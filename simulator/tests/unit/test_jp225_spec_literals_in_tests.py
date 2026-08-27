@@ -12,6 +12,11 @@
 **恒久の緑**として機能する（判定は ``test_the_ledger_agrees_with_the_scan_in_both_directions``
 が持つ）。残る ``xfail`` は JSON fixture 1 件のみで、これは別裁定（下記）。
 
+**本ファイルが見ないもの（射程の明示）**: 判定は「組み立ての Call kwargs」に限る。
+**期待値側に書き写された銘柄仕様**（``assert x.volume_min == 0.1`` の類）は原理的に
+検出範囲外であり、それは姉妹ゲート ``test_symbol_spec_expectation_literals_in_tests.py``
+が別の判定・別の母集団で見る（ISSUE-445 段階 C の申し送り）。
+
 **``test_tool_symbol_specs_from_snapshot.py`` と別ファイルにした理由**:
 向こうの ``_spec_literals`` は**銘柄を問わない**走査（銘柄仕様 8 キーへの数値リテラルを
 すべて挙げる）である。テストコードに向けると EURUSD 相当（``contract_size=100000.0``）や
