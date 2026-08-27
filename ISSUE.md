@@ -10636,6 +10636,68 @@ reconcile（`tests/integration/test_ma_slope_reconcile.py:79-90`）は
      とすれば済むが、既存テストの改変は本作業の許可範囲外）・本番コードの改変（0 バイト）・
      `marketdata/` の改変（0 バイト）・姉妹ゲートの判定ロジックの変更（docstring のみ追加）。
 
+   → **TBD-D（二重所在）の食い違いを可視化するゲートを新設（2026-08-27・段階 F-0・`tdd-executor` に委譲）**:
+   台帳が 2 つあり、**共通概念 2 つの両方で値が食い違っている**。本作業は「統合の是非」には
+   一切踏み込まず（TBD-D は段階 3 の別裁定のまま）、**値を 1 つも変えずに**「食い違いが
+   気付かれないまま動くこと」だけを遮断する。追加のみ・本番コード 0 バイト改変。
+   - **食い違いの実測（2026-08-27・JP225）**:
+
+     | 概念 | 台帳 A `marketdata/symbol_spec.py:SYMBOL_SPECS["JP225"]` | 台帳 B `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json` | 差 |
+     |---|---|---|---|
+     | 呼び値 | `tick = 1.0` | `symbol.trade_tick_size = 0.1` | **10 倍** |
+     | 表示桁 | `digits = 0` | `symbol.digits = 1` | **1 桁** |
+
+     共通概念はこの 2 つだけであり、**2 つとも食い違う**。台帳 A は OANDA 証券 CFD、
+     台帳 B は OANDA-Japan MT5（96 フィールド）で、供給元が違うので所在 2 自体は正しい（設計書 §3.5）。
+   - **RC-1 と同型の構造であることの実測**: 両台帳を読むファイルは**新設ファイルを除いて 0 件**
+     （`.py` 全数の AST import 走査 ＋ `symbol_specs` パス直読みの `command grep` 全数調査。
+     後者のヒットはすべて docstring・コメント）。台帳 A の消費者は JS の表示・入力量子化、
+     台帳 B の消費者は Python の約定・証拠金計算で**消費者集合は素**である。よって 2 値が
+     同じ計算に混ざる経路は無いが、**ずれを検出する機構も 1 つも無い**（＝ RC-1 と同型）。
+   - **`tick` と `point_size` の区別（次に読む人が最も踏みやすい罠）**: 呼び値に対応する MT5
+     フィールドは `trade_tick_size` であり、**リポジトリ内の消費者は 0 件**（全数調査）。
+     `point`（→ `point_size`）は呼び値ではなく「点（point）単位のパラメータ → 価格差」の乗数で、
+     用法は SL/TP 換算（`simulator/domain/sltp.py:34-35`）・スプレッド換算
+     （`usecase/_execution.py:75`）・傾き閾値（`adapter/strategy/ma_slope.py:82`）など複数ある。
+     JP225 では `point` も `trade_tick_size` も **0.1** で偶然一致するため値では区別できない。
+   - **新設**: `marketdata/tests/test_symbol_spec_ledger_divergence.py`（**6 検定**）。
+     共通概念の対応（`tick`↔`trade_tick_size` / `digits`↔`digits`）は `SHARED_CONCEPTS`
+     **1 箇所**で宣言し、食い違いは `RECORDED_DIVERGENCE` に**出典コメント付き**で記録する。
+     **一致に転じても赤／どちらかが別の値になっても赤**（一致＝統合されたという重大な変化）。
+     突合対象は「両台帳に在る銘柄」の積集合として導出する——`TSLA` は台帳 B に無いが、これは
+     食い違いではなく**取扱いの差**（台帳 B は MT5 が扱う銘柄だけを持つ供給元）であり、
+     不在を欠損とみなすと無意味に赤くなるため、機械的に対象外になる形にした。
+   - **これは真値の主張ではない（RC-1 と混同しないこと）**: 書き下した数値は「2026-08-27 時点の
+     観測の写し」であり権威ではない。権威は各台帳の側にあり、どちらかが動いた瞬間に赤にする
+     ためだけに存在する。A-1 裁定（`tick=1.0`＝安全側の既定）も供給元スナップショットも
+     **1 バイトも変更していない**。
+   - **非空虚性の実測**: (a) 台帳 A の `tick` を一時的に `0.1` へ改変すると、新設ファイルでは
+     `test_共通概念の値は記録どおり食い違う` **だけ**が赤（**1 failed / 5 passed**）。巻き添えは
+     既存 `test_symbol_spec_ledger.py` の 5 件（A-1 裁定ピン・digits 整合・JS parity 2 件ほか）で、
+     `marketdata` 全体では 6 failed / 298 passed。**Edit で復元し `git diff` 空・`marketdata`
+     304 passed を確認**してから次へ進んだ。(b) 台帳 B は機械生成物で改変できないため判定を
+     純関数 `pairs_from` へ切り出し、合成入力 3 例（B だけ動く／A だけ動く／一致に転じる）で
+     検出を**常設検定**として固定した。
+   - **既存検定と重複しない根拠**: `test_symbol_spec_ledger.py` は台帳 A の**自己完結**ピンと
+     JS 生成物 parity のみで台帳 B を 1 度も読まない。`test_symbol_spec_snapshot.py` は台帳 B の
+     **ローダ**の検定のみで台帳 A を 1 度も読まない。本ファイルが持つのは「**2 台帳の突合**」
+     という、どちらのファイルも持っていない問い 1 つだけである。
+   - **実測（全走）**: `python -m pytest simulator marketdata tools -q` =
+     **1 failed / 5448 passed / 1 skipped / 1 xfailed**（同一コマンドで新設ファイルのみ
+     `--ignore` したベースライン: **1 failed / 5442 passed / 1 skipped / 1 xfailed**）。
+     増分は **+6 passed のみ**で新設ファイルの検定数と完全一致し、failed / skipped / xfailed は
+     1 件も動いていない。赤は既存の
+     `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+     1 件のみ（ISSUE-427/371・無関係）。
+   - **同一性を確定させる方法（依頼者作業。これが決着すれば TBD-D を裁定できる）**:
+     (1) MT5 口座 `900005560`（残高 `¥176,832`）と OANDA 証券 CFD 取引画面の口座が**同一か**の確認、
+     または (2) 取扱銘柄ページ（`docs/oanda_indices_cfd_about.md:286` が挙げる
+     `https://www.oanda.jp/indices/lineup`）で JP225 CFD の**呼び値・最小/最大取引数量**を記録すること。
+     リポジトリ内に一次証拠は無い（同 `:104` は「銘柄毎に異なる（取扱銘柄ページ参照）」とだけ述べる）。
+     どちらかが取れるまで A-1 の「未確定下では 1.0 が安全側」は有効であり、統合は行わない。
+   - **やっていないこと**: 統合の是非の裁定・台帳の値の変更（0 バイト）・供給元スナップショットの
+     変更（0 バイト）・本番コードの変更（0 バイト）・既存検定の変更（0 バイト）。
+
 - **関連**: ISSUE-368（銘柄仕様の供給経路）・ISSUE-013（MT5 クランプ仕様 未確認）・
   `marketdata/symbol_spec.py` の A-1 裁定（2026-08-20）・TBD-D（二重所在）。
   `marketdata/symbol_spec.py:24-35` は「真値判明時の変更点は台帳 1 行では済まない（6 ファイル 18 か所）」と
