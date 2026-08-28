@@ -122,10 +122,22 @@ def causal_mtf_series(
     prefix_fp = _prefix_fingerprints(source_bars) if memo is not None else None
     out: "dict[Any, dict]" = {}
     order: "list[Any]" = []
+    # 確定 H 足の切れ目は期間ラベルの昇順に単調前進する（group_by_period は chart_bars の順序を
+    #   保ち、chart_bars は時刻昇順）。期間ごとに source_bars を全走査すると走査量が
+    #   「期間数 × H 足数」に膨らむ（実測 C=1m / H=5m で 5,244,435 行）ため、切れ目は
+    #   ポインタで前進させる。昇順でない入力が来たときだけ従来の全走査へ落ちる（安全側）。
+    src_times = [int(b["time"]) for b in source_bars]
+    cut = 0
+    prev_label: "int | None" = None
     for label, part in group_by_period(
             chart_bars, compute_tf=compute_tf, bar_time_unix=bar_time_unix):
-        confirmed = [b for b in source_bars if int(b["time"]) < label]
-        confirmed_fp = prefix_fp[len(confirmed)] if prefix_fp is not None else None
+        if prev_label is not None and label < prev_label:
+            cut = 0                                   # 昇順が崩れた＝ポインタを捨てて数え直す
+        prev_label = label
+        while cut < len(src_times) and src_times[cut] < label:
+            cut += 1
+        confirmed = source_bars[:cut]
+        confirmed_fp = prefix_fp[cut] if prefix_fp is not None else None
         tails: "list[list[dict]]" = []
         times: "list[int]" = []
         plan: "list[tuple[int, Any, Any]]" = []   # (τ, 記憶にあった点 or None, 指紋 or None)
@@ -133,9 +145,15 @@ def causal_mtf_series(
         for b in part:
             acc = fold_bars([acc, b] if acc else [b], time=label)
             t = int(b["time"])
+            # 出力窓の外のバー（fold_from が足す期間先頭側の C 足）は、畳み acc へ寄与させる
+            #   ためだけに必要で、その時点の指標値は出力に使わない。ここで計算を発行すると
+            #   結果を作ってから捨てることになる（実測 C=1m / H=1M で発行 25,124 件のうち
+            #   24,624 件＝98.0% が破棄）。畳みは上で済んでいるので、発行せずに次へ進む。
+            if t not in keep:
+                continue
             fingerprint = None
             cached = None
-            if memo is not None and t in keep:
+            if memo is not None:
                 fingerprint = hash((confirmed_fp, _bar_signature(acc)))
                 cached = memo.get(t, fingerprint)
             if cached is not None:

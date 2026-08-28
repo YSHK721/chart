@@ -45,10 +45,40 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
 
     確定プレフィクスの DataFrame 化は **群につき 1 回**だけ行い、時点ごとには末尾差分
     （1 本）だけを結合する（時点ごとに窓全体を組み直すと、指標計算そのものより変換が重い）。
+
+    さらに、呼び出しをまたいだ再構築も避ける。``causal_mtf_series`` は期間ラベルの昇順に
+    本関数を呼び、``prefix_bars`` は**単調に伸びる同一の接頭辞**である（確定 H 足の
+    ``time < label`` 部分）。にもかかわらず毎回ゼロから DataFrame 化していたため、変換量は
+    「期間数 × 確定 H 足数」に比例していた（実測 C=1m / H=5m で 105 期間・累計 5,244,435 行）。
+    直前の結果を保持し、伸びたぶんだけ結合する＝累計は確定 H 足数に比例する。
+
+    健全性の確認は O(1) で行う: 保持している接頭辞の**末尾バーが今回の同位置と一致する**ときだけ
+    差分結合を使い、一致しなければ従来どおり全体を組み直す（別系列・訂正・逆順の入力で
+    誤った土台を使わない）。
     """
+    cache: "dict[str, Any]" = {"n": 0, "df": None, "tail_sig": None}
+
+    def _prefix_frame(prefix_bars: "list[dict]"):
+        n = len(prefix_bars)
+        if n == 0:
+            return None
+        cached_n, cached_df = cache["n"], cache["df"]
+        if cached_df is not None and 0 < cached_n <= n \
+                and cache["tail_sig"] == _bar_key(prefix_bars[cached_n - 1]):
+            if n > cached_n:
+                grown = pd.concat(
+                    [cached_df, frame_from_bars(prefix_bars[cached_n:])
+                     .reindex(columns=cached_df.columns)])
+            else:
+                grown = cached_df
+        else:
+            grown = frame_from_bars(prefix_bars)
+        cache["n"], cache["df"] = n, grown
+        cache["tail_sig"] = _bar_key(prefix_bars[n - 1])
+        return grown
 
     def _run(prefix_bars: "list[dict]", tails: "list[list[dict]]") -> "list[list[dict]]":
-        prefix_df = frame_from_bars(prefix_bars) if prefix_bars else None
+        prefix_df = _prefix_frame(prefix_bars)
         out: "list[list[dict]]" = []
         for tail in tails:
             tail_df = frame_from_bars(tail)
@@ -60,6 +90,16 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
         return out
 
     return _run
+
+
+def _bar_key(bar: dict) -> tuple:
+    """バーの同一性キー（時刻＋OHLCV）。接頭辞の土台が同じものかを O(1) で確かめる。"""
+    return (
+        int(bar["time"]),
+        float(bar.get("open") or 0.0), float(bar.get("high") or 0.0),
+        float(bar.get("low") or 0.0), float(bar.get("close") or 0.0),
+        float(bar.get("volume") or 0.0),
+    )
 
 
 def causal_mtf_frames(
