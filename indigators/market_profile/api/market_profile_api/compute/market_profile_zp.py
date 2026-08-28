@@ -252,13 +252,18 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "ZpRollup | None"
     if completed:
         disk, cached_sig = _store.load_null(path)
         if disk is not _store.CACHE_MISS and cached_sig == cur_sig:
-            if disk is not None:
-                _NULL_CACHE[key] = disk
+            # 「この日はデータ無し（None）」も**確定した答え**なので記憶する（ISSUE-450 原因 L）。
+            #   記憶しないと、全期間集計のたびに休場日ぶんの署名取得（tick parquet の走査）と
+            #   ディスク読みをやり直す。実測 1 リクエスト 5,187 日のうち 1,545 日（30%）が
+            #   これに当たり、630 ms のほぼ全部を占めていた。判定は ``key in _NULL_CACHE``
+            #   なので None を入れても正しく早期返却される。
+            _NULL_CACHE[key] = disk
             return disk
 
     grid = _mgrid_of_day(symbol, day_start, now)
     if grid is None:
         if completed:
+            _NULL_CACHE[key] = None          # データ無しも確定した答え（ISSUE-450 原因 L）
             try:
                 _store.save_null(path, None, cur_sig)
             except Exception:
@@ -288,8 +293,8 @@ def _zp_day_rollup(symbol: str, day_start: int, now: float) -> "ZpRollup | None"
         obs = obs_cell_counts(closes, klo, khi, col_hi=col_hi)
         roll = ZpRollup(kmin=klo, obs=obs, mean=mean, var=var)
     if completed:
-        if roll is not None:
-            _NULL_CACHE[key] = roll
+        # 計算した結果も、データ無し（None）を含めて記憶する（上と同じ理由）。
+        _NULL_CACHE[key] = roll
         try:
             _store.save_null(path, roll, cur_sig)
         except Exception:
