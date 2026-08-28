@@ -140,6 +140,8 @@ from marketdata import serving_cache
 
 _BASE_CACHE = serving_cache._BASE_CACHE
 _RESAMPLE_CACHE = serving_cache._RESAMPLE_CACHE
+# 1m 末尾読みキャッシュ（ISSUE-450）。上と同じく serving_cache の実体を指す別名。
+_TAIL_CACHE = serving_cache._TAIL_CACHE
 
 
 def _csv_mtime(ref: str) -> int | None:

@@ -17,6 +17,18 @@ import pandas as pd
 from adapter.compute import dataset
 
 
+def _clear_caches() -> None:
+    """供給キャッシュを空にする（ISSUE-450 で 1m 末尾読みにも mtime キャッシュが入った）。
+
+    本ファイルが固定するのは**経路**（1m は tail_reader・上位足は rollup_store）であって
+    「毎回ディスクを読むこと」ではない。キャッシュが効くと 2 回目の呼び出しがスパイへ届かず
+    経路を確認できないため、確認したい呼び出しの直前で明示的に空にする。
+    """
+    dataset.serving_cache._BASE_CACHE.clear()
+    dataset.serving_cache._RESAMPLE_CACHE.clear()
+    dataset.serving_cache._TAIL_CACHE.clear()
+
+
 def _fake_df():
     idx = pd.date_range("2020-01-01 00:00:00", periods=3, freq="1min")
     return pd.DataFrame(
@@ -43,8 +55,10 @@ def test_jp225_m1_atomic_routes_to_tail_reader(monkeypatch):
 
     monkeypatch.setattr(dataset.tail_reader, "read_tail", _spy_tail)
     monkeypatch.setattr(dataset.rollup_store, "read", _spy_rollup)
-    # Act: 1m（None）と '1m' の両方。
+    # Act: 1m（None）と '1m' の両方。どちらも経路を通ることを見たいので都度キャッシュを空にする。
+    _clear_caches()
     out_none = dataset.load_dataframe("jp225_m1", None)
+    _clear_caches()
     out_1m = dataset.load_dataframe("jp225_m1", "1m")
     # Assert: tail_reader 経由（rollup_store は呼ばない）。
     assert calls["tail"] == 2
@@ -62,6 +76,7 @@ def test_jp225_m1_tail_reader_applies_lookback_upper_bound(monkeypatch):
         return _fake_df()
 
     monkeypatch.setattr(dataset.tail_reader, "read_tail", _spy_tail)
+    _clear_caches()
     dataset.load_dataframe("jp225_m1", "1m")
     # Assert: 有限の安全上限が適用される（全件読みではない・正の有限値）。
     assert isinstance(seen["n_rows"], int)
@@ -77,6 +92,7 @@ def test_jp225_m1_upper_timeframe_routes_to_rollup_store(monkeypatch):
     monkeypatch.setattr(dataset.tail_reader, "read_tail", lambda *a, **k: (calls.__setitem__("tail", calls["tail"] + 1), fake)[1])
     monkeypatch.setattr(dataset.rollup_store, "read", lambda ref, tf: (calls.__setitem__("rollup", calls["rollup"] + 1), fake)[1])
 
+    _clear_caches()
     for tf in ("5m", "15m", "1h", "4h", "1D", "1W", "1M"):
         dataset.load_dataframe("jp225_m1", tf)
     # Assert: 全上位足が rollup_store 経由（tail_reader は呼ばない・base resample しない）。
