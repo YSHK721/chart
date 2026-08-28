@@ -50,9 +50,18 @@ def _bar_signature(bar: dict) -> tuple:
     )
 
 
+#: 空の前置き（0 本）の指紋。連鎖の種であり、逐次版と一括版で必ず同じ値を使う。
+_EMPTY_PREFIX_FP = hash(("mtf_causal", 0))
+
+
 def _prefix_fingerprints(bars: "list[dict]") -> "list[int]":
-    """``bars`` の各前置き（0..n 本）の指紋。``out[i]`` は先頭 i 本ぶんの指紋。"""
-    out = [hash(("mtf_causal", 0))]
+    """``bars`` の各前置き（0..n 本）の指紋。``out[i]`` は先頭 i 本ぶんの指紋。
+
+    本体（:func:`causal_mtf_series`）は読む位置までしか連鎖を伸ばさない逐次版を使う
+    （ISSUE-450 F）。本関数は連鎖の**定義**であり、逐次版が同じ値を出すことを
+    ``tests/test_mtf_causal_memo.py`` が突合する。
+    """
+    out = [_EMPTY_PREFIX_FP]
     acc = out[0]
     for b in bars:
         acc = hash((acc, _bar_signature(b)))
@@ -119,7 +128,12 @@ def causal_mtf_series(
     if not chart_bars or not source_bars:
         return []
     keep = {int(b["time"]) for b in (window_bars if window_bars is not None else chart_bars)}
-    prefix_fp = _prefix_fingerprints(source_bars) if memo is not None else None
+    # 接頭辞の指紋は**期間の切れ目でしか読まれない**。全位置ぶんを先に作ると、読まれない位置の
+    #   指紋を作って捨てることになる（実測 C=1m / H=1h で 50,001 個作って 10 個しか読まない
+    #   ＝ISSUE-450 F）。連鎖は切れ目まで前進させれば足りるので、走る累算器 1 本で持つ。
+    #   値は `_prefix_fingerprints(source_bars)[cut]` と同一である（同じ順序・同じ合成）。
+    fp_acc = _EMPTY_PREFIX_FP if memo is not None else None
+    fp_pos = 0
     out: "dict[Any, dict]" = {}
     order: "list[Any]" = []
     # 確定 H 足の切れ目は期間ラベルの昇順に単調前進する（group_by_period は chart_bars の順序を
@@ -137,7 +151,14 @@ def causal_mtf_series(
         while cut < len(src_times) and src_times[cut] < label:
             cut += 1
         confirmed = source_bars[:cut]
-        confirmed_fp = prefix_fp[cut] if prefix_fp is not None else None
+        confirmed_fp = None
+        if fp_acc is not None:
+            if cut < fp_pos:                          # 切れ目が戻った＝連鎖を先頭から作り直す
+                fp_acc, fp_pos = _EMPTY_PREFIX_FP, 0
+            while fp_pos < cut:                       # 読む位置まで**だけ**連鎖を伸ばす
+                fp_acc = hash((fp_acc, _bar_signature(source_bars[fp_pos])))
+                fp_pos += 1
+            confirmed_fp = fp_acc
         tails: "list[list[dict]]" = []
         times: "list[int]" = []
         plan: "list[tuple[int, Any, Any]]" = []   # (τ, 記憶にあった点 or None, 指紋 or None)

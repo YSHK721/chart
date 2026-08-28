@@ -93,20 +93,62 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
     return _run
 
 
+def _index_unix_seconds(index: Any):
+    """``DatetimeIndex`` → UNIX 秒の int64 配列。解像度に依らず正しい値を返す（None は非対応）。
+
+    ``index.asi8`` は **その索引自身の単位**（s / ms / us / ns）の生値であり、ns とは限らない。
+    実データの索引は秒解像度で、ns と決め打つと値が 10^9 倍ずれる（2026-08-28 実測: 期待
+    1339632000 に対し 1339632 が返り、先頭側 C 足が 1 本も選ばれなくなった）。単位を秒へ
+    揃えてから取り出す。値は :func:`adapter.compute.fake_chart.to_unix_seconds` と一致する。
+    """
+    try:
+        return index.as_unit("s").asi8
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _head_frame_of_first_period(
+    fold_from: Any, *, first: int, label0: int,
+    compute_tf: str, bar_time_unix: Callable[[str, int], int],
+) -> Any:
+    """``first`` の直前に連なる「同じ期間 ``label0``」の C 足を **DataFrame のまま**切り出す。
+
+    畳みに要るのはこの区間だけである。``fold_from`` 全体を dict 化してから絞ると、要らない
+    行まで作って捨てることになる（実測 C=1m / H=1M で 50,000 行を変換して 3 行しか使わない
+    ケースがある＝ISSUE-450 E）。ここで先に行を絞り、変換は呼び出し側が切り出し後に行う。
+
+    時刻・期間ラベルはどちらも時刻昇順に非減少なので、位置は二分探索で求まる
+    （期間判定の呼び出しは O(log n)）。昇順でない入力では ``None`` を返し、呼び出し側の
+    従来経路（全件走査）へ落ちる（安全側）。
+    """
+    if fold_from is None or len(fold_from) == 0:
+        return None
+    times = _index_unix_seconds(fold_from.index)
+    if times is None:
+        return None
+    if len(times) > 1 and int(times[0]) > int(times[-1]):
+        return None                                          # 昇順でない＝前提が崩れている
+    hi = int(bisect_left(times, first))
+    if hi <= 0:
+        return fold_from.iloc[0:0]
+    lo, high = 0, hi
+    while lo < high:                                         # label0 が始まる位置を二分探索
+        mid = (lo + high) // 2
+        if int(bar_time_unix(compute_tf, int(times[mid]))) < label0:
+            lo = mid + 1
+        else:
+            high = mid
+    return fold_from.iloc[lo:hi]
+
+
 def _head_of_first_period(
     chart_all: "list[dict]", *, first: int, label0: int,
     compute_tf: str, bar_time_unix: Callable[[str, int], int],
 ) -> "list[dict]":
-    """``first`` の直前に連なる「同じ期間 ``label0``」の C 足を、末尾から遡って集める。
-
-    ``chart_all`` は時刻昇順なので、``first`` より前の区間を後ろから見て期間が変わった時点で
-    打ち切れる。前方から全件を判定する必要はない（判定回数が要る本数に比例する）。
-    昇順でない・``first`` が見つからない入力では従来どおり全件走査へ落ちる（安全側）。
-    """
+    """``_head_frame_of_first_period`` の bar 列版（DataFrame を持たない経路のフォールバック）。"""
     n = len(chart_all)
     if n == 0:
         return []
-    # 昇順であることを O(1) で確認できる範囲だけ確認する（端点の比較）。
     if int(chart_all[0]["time"]) > int(chart_all[-1]["time"]):
         return [b for b in chart_all if int(b["time"]) < first
                 and int(bar_time_unix(compute_tf, int(b["time"]))) == label0]
@@ -155,15 +197,25 @@ def causal_mtf_frames(
     source = bars_from_frame(df_source)
     if not source:
         return []
-    chart_all = bars_from_frame(fold_from) if fold_from is not None else window
     first = int(window[0]["time"])
     label0 = int(bar_time_unix(compute_tf, first))
     # 出力窓の先頭が属する期間は、窓より前の C 足も畳みに要る（途中から畳むと値がずれる）。
-    #   その C 足は「窓の直前に連なる同一期間の連続区間」なので、末尾から遡って期間が変わった
-    #   ところで止めれば足りる。全件を走査してラベルを付けると、要る本数（実測 C=1m/H=1M で
-    #   24,624 本）に対して C 足全体（同 50,000 本）ぶんの期間判定を回すことになる（ISSUE-450）。
-    head = _head_of_first_period(chart_all, first=first, label0=label0,
-                                 compute_tf=compute_tf, bar_time_unix=bar_time_unix)
+    #   要るのは「窓の直前に連なる同一期間の連続区間」だけなので、**DataFrame のまま行を絞って
+    #   から** dict 化する。先に全体を dict 化すると、要らない行まで作って捨てることになる
+    #   （実測 C=1m / H=1M で 50,000 行を変換して 3 行しか使わないケースがある＝ISSUE-450 E）。
+    if fold_from is None:
+        head = _head_of_first_period(window, first=first, label0=label0,
+                                     compute_tf=compute_tf, bar_time_unix=bar_time_unix)
+    else:
+        head_frame = _head_frame_of_first_period(
+            fold_from, first=first, label0=label0,
+            compute_tf=compute_tf, bar_time_unix=bar_time_unix)
+        if head_frame is None:                    # 昇順でない等＝従来経路（全件走査）へ落ちる
+            head = _head_of_first_period(
+                bars_from_frame(fold_from), first=first, label0=label0,
+                compute_tf=compute_tf, bar_time_unix=bar_time_unix)
+        else:
+            head = bars_from_frame(head_frame)
     return causal_mtf_series(
         chart_bars=[*head, *window],
         source_bars=source,
