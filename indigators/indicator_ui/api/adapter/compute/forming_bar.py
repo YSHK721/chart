@@ -33,7 +33,7 @@ from pathlib import Path as _Path
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
-from marketdata.tick_m1 import forming_bar_from_ticks  # noqa: E402
+from marketdata.tick_m1 import day_parquet_files, forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
 from marketdata.session_day import session_bar_time, session_day_start  # noqa: E402
 
@@ -68,19 +68,61 @@ _FIXED_TF_SECONDS = {
 _MAX_GAP_FILL_PERIODS = 5
 
 
+#: 形成中バーの記憶。``(ref, tf, now_unix)`` → ``(素材の指紋, バー)`` を **1 件だけ**持つ。
+#:   ``now_unix`` が進めば鍵が変わるので、古い断面は自然に捨てられる（有界）。
+_FORMING_CACHE: "dict[tuple[str, str], tuple[tuple, Any, Optional[dict]]]" = {}
+
+
+def clear_forming_cache() -> None:
+    """形成中バーの記憶を空にする（テスト・診断用）。"""
+    _FORMING_CACHE.clear()
+
+
+def _tick_source_token(start_unix: int, end_unix: int) -> "tuple | None":
+    """``[start, end)`` を覆う tick parquet の状態（パス・mtime・サイズ）を返す。
+
+    記憶を使ってよいかを O(1) 相当（stat 数回）で確かめるための指紋。取得できないときは
+    ``None`` を返し、呼び出し側は**記憶を使わない**（古い断面を配る危険を作らない）。
+    """
+    try:
+        s = pd.Timestamp(int(start_unix), unit="s")
+        e = pd.Timestamp(int(end_unix), unit="s")
+        files = day_parquet_files(s.normalize(), e.normalize())
+        return tuple(
+            (str(p), os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in files
+        )
+    except Exception:                      # パス解決不能・stat 失敗＝記憶を使わない
+        return None
+
+
 def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     """``ref``/``tf`` の現在形成中バーを返す（対象外 ref/tf・ティック無しは ``None``）。
 
     ``[floor(now, tf), now)`` の実ティックを :func:`forming_bar_from_ticks` で集計する。
+
+    費用（ISSUE-450 原因 K）: 本関数は ``/compute`` 1 本ごとに呼ばれるため、1 回のチャート起動で
+    **指標の本数ぶん**（実測 12〜16 回）走り、合計 195〜362 ms＝起動全体の 15〜35% を占めていた。
+    答えは ``(ref, tf, now_unix)`` と素材（tick parquet）の状態だけで決まるので、その両方を鍵に
+    記憶して同じ組み立てを繰り返さない。**素材の状態を確かめられないときは記憶を使わない**
+    （古い断面を配り続けない）。副次的に、1 回の起動に並ぶ全指標が**同じ形成中バー**を見る
+    （従来は指標ごとに別の瞬間の tick を見ていた）。
     """
     if not is_tick_ref(ref) or not is_supported_timeframe(tf):
         return None
     start = period_start_unix(now_unix, tf)
+    token = _tick_source_token(start, int(now_unix))
+    cache_key = (str(ref), str(tf))
+    if token is not None:
+        cached = _FORMING_CACHE.get(cache_key)
+        if cached is not None and cached[0] == token and cached[1] == int(now_unix):
+            return None if cached[2] is None else dict(cached[2])
     bar = forming_bar_from_ticks(start, int(now_unix))
     # ISSUE-078: 1D の time はセッション日ラベルの UTC 深夜へ再ラベル（rollup 1D バーと同一規約・
     #   チャート日付軸整合）。データ窓（start..now）はセッション始端基準のまま。
     if bar is not None and tf == "1D":
         bar = {**bar, "time": session_bar_time(start)}
+    if token is not None:
+        _FORMING_CACHE[cache_key] = (token, int(now_unix), None if bar is None else dict(bar))
     return bar
 
 
