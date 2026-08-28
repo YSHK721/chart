@@ -78,6 +78,11 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
         cache["tail_sig"] = _bar_key(prefix_bars[n - 1])
         return grown
 
+    # 時点ごとの結合をやめて「窓を 1 回組み、末尾行を差し替える」形も試したが、**時間は縮まな
+    #   かった**（ISSUE-450 H・2026-08-28 実測）。結合 500 回を消しても `.iloc[-1] = ...` の
+    #   代入が同等に高く、24 ケース合計 6,157ms → 6,324ms（0.97 倍）で悪化ケースもあった。
+    #   `work` を作り直さず使い回すぶん別名参照の危険も増えるため採らない。**「発行回数を
+    #   減らした」だけでは速くならない**実例として残す（次に同じ案を試す前にここを読むこと）。
     def _run(prefix_bars: "list[dict]", tails: "list[list[dict]]") -> "list[list[dict]]":
         prefix_df = _prefix_frame(prefix_bars)
         out: "list[list[dict]]" = []
