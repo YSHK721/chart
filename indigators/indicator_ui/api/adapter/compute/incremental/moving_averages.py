@@ -28,7 +28,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from typing import Any
 
 import numpy as np
@@ -56,6 +56,7 @@ class _Request:
     length: int
     offset: int
     valid_from: int      # warm-up マスク開始（ema は 0・他は length-1）
+    kind: Any = None     # 実効価格の種別（``replace_last`` が末尾 1 点を作り直すのに使う）
 
 
 @dataclass(frozen=True)
@@ -143,8 +144,48 @@ class MovingAveragesIncrementer:
         valid_from = 0 if ma_type in src.MA_FROM_ZERO else length - 1
         return _Request(
             prices=prices, times=times, n=n, ma_type=ma_type,
-            length=length, offset=offset, valid_from=valid_from,
+            length=length, offset=offset, valid_from=valid_from, kind=kind,
         )
+
+    # ------------------------------------------------------------------ #
+    # replace_last（末尾 1 点だけの差し替え・ISSUE-450 第 5 段）
+    # ------------------------------------------------------------------ #
+    def replace_last(self, req: "_Request", bar: "dict") -> "_Request | None":
+        """``req`` の**末尾 1 点だけ**を ``bar`` 由来へ差し替えて返す（O(1)）。
+
+        上位足投影は「同じ確定プレフィクス＋畳んだ末尾 1 本」を時点ぶん繰り返す。毎回
+        :meth:`prepare` を呼ぶと、変わっていない確定プレフィクスの配列を作り直すため費用が
+        「時点数 × プレフィクス長」に比例する（実測 1 リクエスト 500 回・MTF 1 本 311〜428 ms
+        ＝ISSUE-450）。確定プレフィクスは不変なので、末尾の 1 要素だけ書き換えれば足りる。
+
+        安全性: ``_State.prices`` / ``_State.buffer`` は ``req.prices[:n-1]`` の**ビュー**であり、
+        ここで書き換えるのは添字 ``-1``（＝``n-1``）だけなので状態は汚れない。``emit`` は
+        ``state`` を読み取るだけで、末尾 1 本ぶんを作業バッファへ複製して進める。
+
+        差し替えられない入力（列の欠落・非数値）は ``None`` を返し、呼び出し側が従来経路
+        （時点ごとの ``prepare``）へ落ちる。**黙って値を変えない。**
+        """
+        if req.kind is None:
+            return None
+        try:
+            o = np.asarray([float(bar["open"])], dtype=np.float64)
+            h = np.asarray([float(bar["high"])], dtype=np.float64)
+            low = np.asarray([float(bar["low"])], dtype=np.float64)
+            c = np.asarray([float(bar["close"])], dtype=np.float64)
+            price = float(applied_price(req.kind, o, h, low, c)[0])
+            stamp = int(bar["time"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        # ``prepare`` が返す配列は読み取り専用のことがある（applied_price / pandas 由来）。
+        #   その場合だけ書き込み可へ複製する。複製は**初回の 1 回だけ**で、以後の時点は
+        #   同じ配列を使い回すため費用は時点数に比例しない。確定プレフィクス部分の値は
+        #   複製しても同一なので、``state`` が持つ元配列のビューとも矛盾しない。
+        if not req.prices.flags.writeable or not req.times.flags.writeable:
+            req = dataclass_replace(req, prices=np.array(req.prices, dtype=np.float64),
+                                    times=np.array(req.times, dtype=np.int64))
+        req.prices[-1] = price
+        req.times[-1] = stamp
+        return req
 
     # ------------------------------------------------------------------ #
     # build / adapt（状態の構築と前進）

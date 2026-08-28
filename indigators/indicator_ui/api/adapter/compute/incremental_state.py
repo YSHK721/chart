@@ -172,3 +172,66 @@ def compute(
     _cache_put(_STATES, key, state)
 
     return incrementer.emit(state, req, skeleton, k)
+
+
+def compute_seq(
+    adapter: Any,
+    compute_id: str,
+    variant: str,
+    df: Any,
+    bars: "list[dict]",
+    params: dict[str, Any],
+    *,
+    name: str,
+    k: "int | None",
+) -> "list[list[dict[str, Any]] | None] | None":
+    """確定プレフィクス共通・末尾 1 本だけが違う複数時点を、``prepare`` 1 回で計算する。
+
+    上位足投影（:mod:`adapter.compute.mtf_causal`）は、1 つの期間について「同じ確定プレフィクス
+    ＋その時点まで畳んだ末尾 1 本」を時点ぶん繰り返し要求する。時点ごとに :func:`compute` を
+    呼ぶと ``prepare`` が毎回プレフィクス全体の配列を作り直し、費用が「時点数 × プレフィクス長」に
+    比例する（実測: 1 リクエストで 500 回・冷えた MTF 1 本 311〜428 ms＝ISSUE-450 第 5 段）。
+
+    Args:
+        df: プレフィクス ＋ ``bars[0]`` を末尾に持つ DataFrame（``compute`` へ渡すのと同じ形）。
+        bars: 各時点の畳み足（``time``/``open``/``high``/``low``/``close``/``volume``）。
+            ``bars[0]`` は ``df`` の末尾行と同一でなければならない。
+
+    Returns:
+        ``bars`` と同数の系列 JSON（各要素は :func:`compute` の戻りと同形）。
+        増分器が ``replace_last`` を持たない・対象外・入力不正のときは ``None``
+        （呼び出し側は時点ごとの従来経路へ落ちる＝**黙って値を変えない**）。
+    """
+    if not bars:
+        return []
+    incrementer = _incremental_registry.resolve(name)
+    if incrementer is None:
+        return None
+    replace_last = getattr(incrementer, "replace_last", None)
+    if replace_last is None:
+        return None                     # 未対応の増分器は従来経路（劣化を隠さない）
+    req = incrementer.prepare(df, params)
+    if req is None:
+        return None
+
+    key = (compute_id, variant, name, _params_key(params))
+    skeleton = _skeleton(adapter, compute_id, variant, df, params, key)
+    if skeleton is None:
+        return None
+
+    state = _cache_get(_STATES, key)
+    if state is not None:
+        state = incrementer.adapt(state, req)
+    if state is None:
+        state = incrementer.build(req)
+    _cache_put(_STATES, key, state)
+
+    out: "list[list[dict[str, Any]] | None]" = []
+    for index, bar in enumerate(bars):
+        if index > 0:                   # bars[0] は df の末尾行＝prepare 済み
+            stepped = replace_last(req, bar)
+            if stepped is None:
+                return None             # 途中で扱えなくなったら全体を従来経路へ委ねる
+            req = stepped
+        out.append(incrementer.emit(state, req, skeleton, k))
+    return out

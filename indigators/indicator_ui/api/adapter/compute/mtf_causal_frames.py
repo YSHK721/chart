@@ -41,7 +41,8 @@ def frame_from_bars(bars: "list[dict]") -> "pd.DataFrame":
                         index=pd.to_datetime(times, unit="s"))
 
 
-def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
+def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"],
+                    compute_latest_seq: "Callable[[Any, list[dict]], Any] | None" = None):
     """``(prefix_bars, tails) -> [series, ...]`` を作る。
 
     確定プレフィクスの DataFrame 化は **群につき 1 回**だけ行い、時点ごとには末尾差分
@@ -85,6 +86,18 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
     #   減らした」だけでは速くならない**実例として残す（次に同じ案を試す前にここを読むこと）。
     def _run(prefix_bars: "list[dict]", tails: "list[list[dict]]") -> "list[list[dict]]":
         prefix_df = _prefix_frame(prefix_bars)
+        # 逐次経路（ISSUE-450 第 5 段）: 1 期間の時点はすべて「同じ確定プレフィクス＋畳んだ
+        #   末尾 1 本」であり、変わるのは末尾だけである。増分器が対応していれば prepare を
+        #   期間につき 1 回で済ませる。対応しない指標・扱えない入力では None が返り、下の
+        #   時点ごとの経路へ落ちる（値は 1 ビットも変えない）。
+        if compute_latest_seq is not None and tails:
+            bars = [tail[-1] for tail in tails]
+            first = frame_from_bars(tails[0])
+            if prefix_df is not None and len(prefix_df) > 0:
+                first = pd.concat([prefix_df, first.reindex(columns=prefix_df.columns)])
+            stepped = compute_latest_seq(first, bars)
+            if stepped is not None:
+                return list(stepped)
         out: "list[list[dict]]" = []
         for tail in tails:
             tail_df = frame_from_bars(tail)
@@ -184,6 +197,7 @@ def causal_mtf_frames(
     compute_tf: str,
     bar_time_unix: Callable[[str, int], int],
     compute_latest: Callable[["pd.DataFrame"], "list[dict]"],
+    compute_latest_seq: "Callable[[Any, list[dict]], Any] | None" = None,
     fold_from: Any = None,
     memo: Any = None,
 ) -> "list[dict]":
@@ -226,7 +240,7 @@ def causal_mtf_frames(
         source_bars=source,
         compute_tf=compute_tf,
         bar_time_unix=bar_time_unix,
-        latest_seq=latest_seq_over(compute_latest),
+        latest_seq=latest_seq_over(compute_latest, compute_latest_seq),
         window_bars=window,
         memo=memo,
     )

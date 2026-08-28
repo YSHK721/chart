@@ -47,6 +47,33 @@ def _trail(series: list[dict[str, Any]], k: int | None) -> list[dict[str, Any]]:
     return trimmed
 
 
+def latest_seq_compute(
+    adapter: Any, compute_id: str, variant: str, df: Any, bars: "list[dict[str, Any]]",
+    params: dict[str, Any], *, min_tail: "int | None" = None,
+) -> "list[list[dict[str, Any]]] | None":
+    """確定プレフィクス共通・末尾 1 本だけが違う複数時点を 1 回の ``prepare`` で計算する。
+
+    上位足投影（``mtf_causal``）専用の高速経路。``df`` は「プレフィクス ＋ ``bars[0]``」、
+    ``bars`` は各時点の畳み足である。増分器が対応していない・扱えない場合は ``None`` を返し、
+    呼び出し側は時点ごとの :func:`latest_compute` へ落ちる（**値は 1 ビットも変えない**）。
+
+    費用の理由は :func:`adapter.compute.incremental_state.compute_seq` の docstring を参照
+    （時点ごとに ``prepare`` を呼ぶと「時点数 × プレフィクス長」に比例する＝ISSUE-450 第 5 段）。
+    """
+    meta = latest_meta(compute_id, variant, params)
+    if meta.archetype != "incremental" or meta.incremental is None:
+        return None
+    k = meta.trailing_k
+    if k is not None and min_tail is not None and min_tail > k:
+        k = min_tail
+    series_list = incremental_state.compute_seq(
+        adapter, compute_id, variant, df, bars, params, name=meta.incremental, k=k
+    )
+    if series_list is None or any(s is None for s in series_list):
+        return None
+    return series_list
+
+
 def latest_compute(
     adapter: Any, compute_id: str, variant: str, df: Any, params: dict[str, Any],
     *, min_tail: "int | None" = None,

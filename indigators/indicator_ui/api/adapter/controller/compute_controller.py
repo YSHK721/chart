@@ -29,7 +29,7 @@ from typing import Any
 from adapter.compute import ComputeError, IndicatorComputeAdapter
 from marketdata import dataset  # noqa: F401  # monkeypatch 対象（_cc.dataset）＋既定 gateway の委譲先。
 from adapter.compute import forming_bar as forming_bar_mod
-from adapter.compute.latest_dispatch import full_compute, latest_compute
+from adapter.compute.latest_dispatch import full_compute, latest_compute, latest_seq_compute
 from adapter.compute.mtf_causal_frames import causal_mtf_frames
 from adapter.compute.mtf_causal_memo import memo_for
 from usecase.compute_indicators import ComputeRequest, ComputeResult, compute_indicators
@@ -73,6 +73,11 @@ def _causal_mtf(adapter: Any, body: dict[str, Any]):
             bar_time_unix=bar_time_unix,
             compute_latest=lambda df: latest_compute(
                 adapter, indicator_id, variant, df, dict(params)),
+            # ISSUE-450 第 5 段: 1 期間の時点は「同じ確定プレフィクス＋畳んだ末尾 1 本」なので、
+            #   増分器が対応していれば prepare を期間につき 1 回で済ませる。対応しない指標・
+            #   扱えない入力では None が返り、上の時点ごとの経路へ落ちる（値は不変）。
+            compute_latest_seq=lambda df, bars: latest_seq_compute(
+                adapter, indicator_id, variant, df, bars, dict(params)),
             fold_from=fold_from,
             # ISSUE-297: 各バーの値は τ より後のデータに依存しない（ISSUE-294/295）ため、
             #   同じ入力の同じ τ を計算し直さない。指紋不一致（形成中・データ訂正）は記録を使わない。
