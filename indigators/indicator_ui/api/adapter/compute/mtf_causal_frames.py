@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from typing import Any, Callable
 
 import pandas as pd
@@ -92,6 +93,33 @@ def latest_seq_over(compute_latest: Callable[["pd.DataFrame"], "list[dict]"]):
     return _run
 
 
+def _head_of_first_period(
+    chart_all: "list[dict]", *, first: int, label0: int,
+    compute_tf: str, bar_time_unix: Callable[[str, int], int],
+) -> "list[dict]":
+    """``first`` の直前に連なる「同じ期間 ``label0``」の C 足を、末尾から遡って集める。
+
+    ``chart_all`` は時刻昇順なので、``first`` より前の区間を後ろから見て期間が変わった時点で
+    打ち切れる。前方から全件を判定する必要はない（判定回数が要る本数に比例する）。
+    昇順でない・``first`` が見つからない入力では従来どおり全件走査へ落ちる（安全側）。
+    """
+    n = len(chart_all)
+    if n == 0:
+        return []
+    # 昇順であることを O(1) で確認できる範囲だけ確認する（端点の比較）。
+    if int(chart_all[0]["time"]) > int(chart_all[-1]["time"]):
+        return [b for b in chart_all if int(b["time"]) < first
+                and int(bar_time_unix(compute_tf, int(b["time"]))) == label0]
+    hi = bisect_left([int(b["time"]) for b in chart_all], first)
+    lo = hi
+    while lo > 0:
+        t = int(chart_all[lo - 1]["time"])
+        if int(bar_time_unix(compute_tf, t)) != label0:
+            break
+        lo -= 1
+    return chart_all[lo:hi]
+
+
 def _bar_key(bar: dict) -> tuple:
     """バーの同一性キー（時刻＋OHLCV）。接頭辞の土台が同じものかを O(1) で確かめる。"""
     return (
@@ -131,8 +159,11 @@ def causal_mtf_frames(
     first = int(window[0]["time"])
     label0 = int(bar_time_unix(compute_tf, first))
     # 出力窓の先頭が属する期間は、窓より前の C 足も畳みに要る（途中から畳むと値がずれる）。
-    head = [b for b in chart_all if int(b["time"]) < first
-            and int(bar_time_unix(compute_tf, int(b["time"]))) == label0]
+    #   その C 足は「窓の直前に連なる同一期間の連続区間」なので、末尾から遡って期間が変わった
+    #   ところで止めれば足りる。全件を走査してラベルを付けると、要る本数（実測 C=1m/H=1M で
+    #   24,624 本）に対して C 足全体（同 50,000 本）ぶんの期間判定を回すことになる（ISSUE-450）。
+    head = _head_of_first_period(chart_all, first=first, label0=label0,
+                                 compute_tf=compute_tf, bar_time_unix=bar_time_unix)
     return causal_mtf_series(
         chart_bars=[*head, *window],
         source_bars=source,
