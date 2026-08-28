@@ -97,6 +97,10 @@ data/marketdata
 *.json
 !.devcontainer/devcontainer.json
 !pyproject.toml
+# 規約の機械的強制（ISSUE-450・絶対命令 2026-08-28）。禁止 git コマンドを Bash 実行前に遮断する
+#   PreToolUse フックの結線。追跡しないと別チェックアウト・worktree で遮断が消え、規約が
+#   「文章だけ」へ戻る。個人設定は settings.local.json 側（引き続き無視）。
+!.claude/settings.json
 # フロント各スライスの manifest / lockfile は追跡する（ISSUE-280）。上の blanket `*.json` は
 #   データファイル向けであり、これに巻き込まれると clean clone で `npm ci` が成立しない
 #   （実際 unified_ui/web/package.json だけが未追跡のまま lockfile だけ commit されていた）。
