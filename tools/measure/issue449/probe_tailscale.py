@@ -32,15 +32,16 @@ from common import event_quantiles as _evq
 D = os.environ.get("ISSUE449_DIR", os.path.dirname(os.path.abspath(__file__))) + "/"
 BASE = os.environ.get("ISSUE449_API", "http://127.0.0.1:8001")
 REF = "jp225_tick"
-TFS = ["1m", "5m", "15m", "1h", "4h", "1D", "1W", "1M"]
+TFS = [t for t in os.environ.get("ISSUE449_TFS", "1m,5m,15m,1h,4h,1D,1W,1M").split(",") if t]
 OSC = ["ma_marod", "btlm_trail_marod", "profit_rsi", "tickvol"]
 VALUE = {"ma_marod": "ma_marod", "btlm_trail_marod": "btlm_trail_marod",
          "profit_rsi": "rsi", "tickvol": "tickvol"}
 HI = {"ma_marod": "ma_marod_q95", "btlm_trail_marod": "btlm_trail_marod_q95",
       "profit_rsi": "rsi_q90", "tickvol": "tickvol_q90"}
 QHI = {"ma_marod": 0.95, "btlm_trail_marod": 0.95, "profit_rsi": 0.90, "tickvol": 0.90}
-LIM = {"1m": 20000, "5m": 15000, "15m": 6000, "1h": 2500,
-       "4h": 2000, "1D": 2000, "1W": 1500, "1M": 800}
+# 履歴を使い切る本数（実測 2026-08-29: 4h 21,214 / 1D 3,706 / 1W 742 / 1M 171）。
+LIM = {"1m": 60000, "5m": 60000, "15m": 60000, "1h": 60000,
+       "4h": 25000, "1D": 5000, "1W": 1500, "1M": 800}
 K_EVENTS = 50
 
 
