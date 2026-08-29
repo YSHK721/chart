@@ -38,6 +38,11 @@ class ElapsedFractionPool:
         self._cumsum: "list[float]" = [0.0]
         self._starts: "list[int]" = []       # 各足の先頭サブ単位の位置
         self._keys: "list[int]" = []         # 各足のキー（順序の検査に使う）
+        # 各足の長さ。**増分で維持する**（読むたびに導き直すと 1 本の取り出しが
+        # O(親足数²) になる）。`_seen` は重複検出を O(1) にする（線形走査だと取り込み
+        # 全体が O(親足数²) になる）。どちらも `close_unit` だけが書き足す。
+        self._lengths: "list[int]" = []
+        self._seen: "set[int]" = set()
         self._cache: "dict[int, np.ndarray]" = {}
 
     # ------------------------------------------------------------------ 構築
@@ -67,17 +72,23 @@ class ElapsedFractionPool:
             raise ValueError(f"サブ単位の値は有限値が必要です: {value!r}")
         key = int(bar_key)
         if self._keys and key != self._keys[-1]:
-            if key in self._keys:
+            if key in self._seen:
                 raise ValueError(
                     f"閉じた足のキーが再び現れました: {key}（素材を時刻で一意化・整列すること）"
                 )
-            self._starts.append(len(self._cumsum) - 1)
-            self._keys.append(key)
+            self._open_bar(key, len(self._cumsum) - 1)
         elif not self._keys:
-            self._starts.append(0)
-            self._keys.append(key)
+            self._open_bar(key, 0)
         self._cumsum.append(self._cumsum[-1] + number)
+        self._lengths[-1] += 1
         self._cache.clear()
+
+    def _open_bar(self, key: int, start: int) -> None:
+        """新しい足を開く（長さ 0 から増分で伸ばす）。"""
+        self._starts.append(start)
+        self._keys.append(key)
+        self._seen.add(key)
+        self._lengths.append(0)
 
     # ------------------------------------------------------------------ 参照
     @property
@@ -91,8 +102,8 @@ class ElapsedFractionPool:
 
     @property
     def bar_lengths(self) -> "tuple[int, ...]":
-        bounds = [*self._starts, self.unit_count]
-        return tuple(bounds[i + 1] - bounds[i] for i in range(len(self._starts)))
+        """各足のサブ単位数（増分で維持済み。読み出しは写しを作るだけ）。"""
+        return tuple(self._lengths)
 
     def partial_sum(self, bar_index: int, k: int) -> float:
         """足 `bar_index` の先頭 `k` サブ単位の和（prefix cumsum の差で O(1)）。
@@ -103,7 +114,7 @@ class ElapsedFractionPool:
         """
         if not 0 <= bar_index < self.bar_count:
             raise IndexError(f"足の番号が範囲外です: {bar_index}（0..{self.bar_count - 1}）")
-        length = self.bar_lengths[bar_index]
+        length = self._lengths[bar_index]
         if not 1 <= int(k) <= length:
             raise ValueError(
                 f"経過 k は 1..{length} が必要です（足 {bar_index}）: k={k}"
@@ -125,7 +136,7 @@ class ElapsedFractionPool:
             return cached
         values = [
             self.partial_sum(index, elapsed)
-            for index, length in enumerate(self.bar_lengths)
+            for index, length in enumerate(self._lengths)
             if length >= elapsed
         ]
         array = np.asarray(values, dtype=np.float64)

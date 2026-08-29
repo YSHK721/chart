@@ -63,3 +63,69 @@ def test_the_stored_amount_tracks_units_and_nothing_else() -> None:
     """オーダーの表明（2 点固定）: 保持はサブ単位数だけで決まる。"""
     assert _pool(20, 5).unit_count == 100
     assert _pool(40, 5).unit_count == 200
+
+
+# ---------------------------------------------- 親足数に対する仕事量（🟡-4）
+class ScanCountingKeys(list):
+    """`in` の走査を **1 要素ずつ** 数える list（C 実装の list では数えられない）。
+
+    重複検出が線形走査のままだと、サブ単位を 1 つ閉じるたびに親足数ぶん走査する
+    ＝素材の取り込み全体が O(n²) になる。時間ではなく**走査した要素数**で表明する。
+    """
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self.scanned = 0
+
+    def __contains__(self, value) -> bool:
+        for item in self:
+            self.scanned += 1
+            if item == value:
+                return True
+        return False
+
+
+def _fill(pool: ElapsedFractionPool, bar_count: int, units_per_bar: int) -> None:
+    for bar in range(bar_count):
+        for _ in range(units_per_bar):
+            pool.close_unit(bar, float(bar + 1))
+
+
+def test_closing_units_does_not_rescan_the_closed_bars() -> None:
+    """オーダーの表明（2 点固定）: 取り込みの走査量が親足数に比例して増えない。"""
+    scanned = {}
+    for bar_count in (20, 40):
+        pool = ElapsedFractionPool()
+        pool._keys = ScanCountingKeys()          # noqa: SLF001 — 走査量を数える唯一の面
+        _fill(pool, bar_count, 5)
+        scanned[bar_count] = pool._keys.scanned  # noqa: SLF001
+
+    assert scanned[20] == scanned[40]
+
+
+def test_reading_the_comparison_set_derives_the_length_table_at_most_once(
+    monkeypatch,
+) -> None:
+    """発行 − 使用 = 0: 長さの表（O(親足数)）は 1 回導けば足りる。
+
+    足ごとに導き直すと、比較集合 1 本の取り出しが O(親足数²) になる。
+    """
+    original = ElapsedFractionPool.bar_lengths
+    derived = {}
+
+    for bar_count in (20, 40):
+        calls = []
+
+        def counting(self, _calls=calls):
+            _calls.append(1)
+            return original.fget(self)
+
+        monkeypatch.setattr(ElapsedFractionPool, "bar_lengths", property(counting))
+        pool = _pool(bar_count, 5)
+        calls.clear()
+
+        pool.partial_sums_at(3)
+        derived[bar_count] = len(calls)
+
+    assert derived[20] == derived[40]
+    assert derived[20] <= 1
