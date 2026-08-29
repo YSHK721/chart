@@ -76,7 +76,7 @@ class TestInBandRankLatest:
         values = np.sin(index * 0.7) + 0.5 * np.cos(index * 0.13)
         values[::17] = np.nan
         cases = [(window_n, length)
-                 for window_n in (2, 10, 500) for length in (2, 3, 40, 300)]
+                 for window_n in (2, 10, 500) for length in (1, 2, 3, 40, 300)]
 
         expected = [in_band_ranks(values[:length], window_n=window_n)[-1]
                     for window_n, length in cases]
