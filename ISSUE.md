@@ -12573,3 +12573,41 @@ epoch（bar_time, run_hi, run_lo）を持ち越すのと同じ構造を P-1 に�
 
 ISSUE-449（本体・`74838dc` でマージ済み。費用の実測と再現手順は基本設計書 §9-4）・
 ISSUE-257／ISSUE-450（「作ってから捨てる」系の先行裁定）・ISSUE-456（ライブ /compute 滞留・別経路）。
+
+---
+
+## ISSUE-458: [不具合] 供給不能な指標が 1 本テンプレートに混ざるとシート全体が 400 で全滅する
+
+- **ステータス**: RESOLVED（2026-08-29 検出・同日是正・実 HTTP で解消確認）
+- **重大度**: 高（ユーザーの実テンプレート構成でダッシュボードが一切表示されない）
+- **発見経路**: マージ後のユーザー実ブラウザ確認。`POST /dashboard/reach_sheet` が連続 400。
+  検証ブラウザ（束縛= ma_marod のみ）では再現せず、実テンプレートに含まれる
+  ライブ core 非束縛の指標（例: `trade_markers`）が引き金だった。
+
+### 原因（実測）
+
+- `bridge.full_compute` は (indicatorId, variant) が束縛台帳に無いと `KeyError` を投げる。
+- `reach_sheet_controller.handle` の `except (ValueError, KeyError)` がこれを**要求全体の
+  supply 失敗**として `ok:false`（HTTP 400）に変換していた。テンプレートはダッシュボード
+  非対応の指標も運びうるため、1 本で全滅する。ISSUE-449 レビュー 🟡-2（前進評価不能）と同型。
+
+### 是正（抜本・対症療法ではない）
+
+- `usecase/sheet_ports.py` に契約例外 `SeriesSupplyUnavailable` を新設（P-1 の契約上の失敗。
+  `ForwardEvaluationUnavailable` と対称）。
+- `adapter/gateway/indicator_ui_compute_gateway.full_series` が bridge の `KeyError` を
+  本型へ翻訳。`usecase/build_reach_sheet` が当該 instance を §5.5.1 の構造的除外として外し、
+  理由を `degradations`（granularity=none）へ必ず出す（無言の縮退禁止）。controller は
+  投影・比較の材料から外すのみ（縮退の記録は usecase が一元所有）。
+- 要求全体の失敗（表示時間足の足が無い等）は従来どおり `ok:false` のまま（挙動不変）。
+
+### 検証
+
+- TDD: Red 2 件（`test_reach_sheet_controller.py` 末尾・現行実装で例外貫通を実証）→ Green。
+- 回帰: dashboard_ui + common 570 passed・静的品質検定 新規違反 0。
+- 実 HTTP（8000→8481 再起動後）: `trade_markers`+`ma_marod` 混在要求で
+  `ok:true / cells 1 / degradations [('trade_markers','none','系列を供給できないため除外した…')]`。
+
+### 関連
+
+ISSUE-449（本体）・レビュー 🟡-2（同型の先行是正）・§5.5.1（構造的除外）・§7（縮退の明示）。

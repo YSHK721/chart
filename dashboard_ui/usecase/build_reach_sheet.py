@@ -38,6 +38,7 @@ from dashboard_ui.usecase.sheet_models import (
     SheetInstance,
     UpdateGranularity,
 )
+from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
 class TailFitCache:
     """GPD の当てはめを**イベント確定のときだけ**行うためのキャッシュ（§7）。
@@ -107,15 +108,27 @@ def build_reach_sheet(
     degradations: "list[Degradation]" = []
 
     for instance in instances:
-        series = dict(
-            series_port.full_series(
-                indicator_id=instance.indicator_id,
-                variant=instance.variant,
-                params=instance.params,
-                dataset_ref=request.dataset_ref,
-                timeframe=instance.timeframe,
+        try:
+            series = dict(
+                series_port.full_series(
+                    indicator_id=instance.indicator_id,
+                    variant=instance.variant,
+                    params=instance.params,
+                    dataset_ref=request.dataset_ref,
+                    timeframe=instance.timeframe,
+                )
             )
-        )
+        except SeriesSupplyUnavailable as error:
+            # 供給不能はその instance の構造的除外（§5.5.1）。シート全体を落とさず、
+            #   除外した instance と理由を必ず応答へ出す（§7・無言の縮退禁止）。
+            degradations.append(
+                Degradation(
+                    instance_key=instance.key,
+                    granularity=UpdateGranularity.NONE,
+                    reason=f"系列を供給できないため除外した: {error}",
+                )
+            )
+            continue
         if not instance.intrabar_capable:
             degradations.append(
                 Degradation(

@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from marketdata.tf_meta import period_start_unix
 
 from dashboard_ui.domain.bar import Bar
+from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
 #: 系列 JSON の点の形（§6.3.2: time は UNIX 秒・value は float / 欠測は None）。
 _DATA = "data"
@@ -59,9 +60,17 @@ class IndicatorUiComputeGateway:
             return cached
         bridge = self._resolve_bridge()
         frame = self._frame(dataset_ref, timeframe)
-        series = bridge.full_compute(
-            bridge.adapter, indicator_id, variant, frame, dict(params)
-        )
+        try:
+            series = bridge.full_compute(
+                bridge.adapter, indicator_id, variant, frame, dict(params)
+            )
+        except KeyError as error:
+            # ライブ core の束縛台帳に (indicatorId, variant) が無い。テンプレートは
+            #   ダッシュボード非対応の指標も運びうるため、当該 instance に固有の
+            #   契約上の失敗として usecase 境界の型で伝える（シート全体を落とさない）。
+            raise SeriesSupplyUnavailable(
+                f"ライブ core に束縛がありません: ({indicator_id!r}, {variant!r})"
+            ) from error
         self._series[key] = _as_points(series)
         return self._series[key]
 

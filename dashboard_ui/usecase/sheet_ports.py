@@ -44,6 +44,20 @@ class BarSupplyPort(Protocol):
         """形成中の足（無ければ None）。"""
 
 
+class SeriesSupplyUnavailable(RuntimeError):
+    """P-1 がその instance の系列を供給できない（契約上の失敗）。
+
+    ライブ core に (indicatorId, variant) の束縛が無い等、**当該 instance に固有**の
+    供給失敗を表す。実装（adapter）が投げる具象例外は本型を継承するか本型で包む。
+
+    扱いは `ForwardEvaluationUnavailable` と同じく §5.5.1 の構造的除外である:
+    シート全体を落とさず当該 instance だけを外し、除外した instance と理由を
+    応答の縮退一覧（degradations）へ必ず出す（§7・無言の縮退禁止）。
+    表示時間足の足が 1 本も無い等の**要求全体**の失敗は本型ではなく ValueError のまま
+    （現在値が決まらない以上、返せるシートが存在しない）。
+    """
+
+
 class ForwardEvaluationUnavailable(RuntimeError):
     """P-3 がその instance の値を出せない（契約上の失敗）。
 

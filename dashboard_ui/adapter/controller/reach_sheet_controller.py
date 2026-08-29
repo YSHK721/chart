@@ -32,6 +32,7 @@ from dashboard_ui.usecase.sheet_models import (
     SheetInstance,
     UpdateGranularity,
 )
+from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 from dashboard_ui.usecase.update_reach_sheet import ProjectionCache, refresh_projection
 
 #: 受け付ける更新モード（§7 の 2 段）。
@@ -172,16 +173,24 @@ class ReachSheetController:
             )
         now_unix = int(chart_bars[-1].time)
 
-        series_by_key = {
-            instance.key: dict(
-                self._series_port.full_series(
-                    indicator_id=instance.indicator_id, variant=instance.variant,
-                    params=instance.params, dataset_ref=parsed.dataset_ref,
-                    timeframe=instance.timeframe,
+        # 供給不能な instance はここで畳まず素通しする: 除外の判断と縮退の記録は
+        #   `build_reach_sheet` が一元的に持つ（§5.5.1・二重記録を作らない）。ここは
+        #   投影・比較の材料からその instance を外すだけでよい。
+        series_by_key: "dict[tuple, dict]" = {}
+        for instance in instances:
+            try:
+                series_by_key[instance.key] = dict(
+                    self._series_port.full_series(
+                        indicator_id=instance.indicator_id, variant=instance.variant,
+                        params=instance.params, dataset_ref=parsed.dataset_ref,
+                        timeframe=instance.timeframe,
+                    )
                 )
-            )
-            for instance in instances
-        }
+            except SeriesSupplyUnavailable:
+                continue
+        instances = [
+            instance for instance in instances if instance.key in series_by_key
+        ]
         specs = {
             instance.key: self._roles.oscillator_spec(
                 instance=instance,

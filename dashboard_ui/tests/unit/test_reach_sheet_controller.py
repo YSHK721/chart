@@ -24,7 +24,10 @@ from dashboard_ui.adapter.gateway.elapsed_comparison_gateway import (
 )
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
 from dashboard_ui.domain.bar import Bar
-from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
+from dashboard_ui.usecase.sheet_ports import (
+    ForwardEvaluationUnavailable,
+    SeriesSupplyUnavailable,
+)
 
 REF = "jp225_tick"
 #: 2026-08-28 20:00:00 UTC。
@@ -458,3 +461,69 @@ def test_an_instance_that_cannot_be_forward_evaluated_is_named_in_the_degradatio
     assert unprojectable
     assert all("前進評価" in entry["reason"] for entry in unprojectable)
     assert all(len(entry["instance_key"]) == 4 for entry in unprojectable)
+
+
+# -------------------------------------------- 系列を供給できない instance（実UI 400）
+class UnresolvableSupply:
+    """P-1 が特定 instance の系列を解決できない（ライブ core に束縛が無い等）。
+
+    実 UI で観測された欠陥の再現: テンプレートに供給不能な指標が 1 本混ざるだけで、
+    シート全体が `{"ok": false, "error": {"type": "supply"}}`（HTTP 400）に落ちていた。
+    """
+
+    def __init__(self, inner, *, unresolvable: str) -> None:
+        self._inner = inner
+        self._unresolvable = unresolvable
+
+    def full_series(self, *, indicator_id, variant, params, dataset_ref, timeframe):
+        if indicator_id == self._unresolvable:
+            raise SeriesSupplyUnavailable(
+                f"系列を供給できません: ({indicator_id!r}, {variant!r})"
+            )
+        return self._inner.full_series(
+            indicator_id=indicator_id, variant=variant, params=params,
+            dataset_ref=dataset_ref, timeframe=timeframe,
+        )
+
+    def bars(self, *, dataset_ref, timeframe):
+        return self._inner.bars(dataset_ref=dataset_ref, timeframe=timeframe)
+
+    def forming_bar(self, *, dataset_ref, timeframe, now_unix):
+        return self._inner.forming_bar(
+            dataset_ref=dataset_ref, timeframe=timeframe, now_unix=now_unix
+        )
+
+
+def _unresolvable_controller() -> ReachSheetController:
+    series = UnresolvableSupply(
+        SeriesPortFake(series_material()), unresolvable="moving_averages"
+    )
+    return ReachSheetController(
+        series_port=series,
+        bar_port=BarPortFake({"1m": bars(60, step=60)}),
+        roles=SeriesRoleTable(),
+        registry=BreakpointRegistry(),
+        forward_port=ForwardSpy(),
+        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        is_intrabar_capable=lambda indicator_id, variant, params: True,
+    )
+
+
+def test_an_instance_whose_series_cannot_be_supplied_still_returns_a_sheet() -> None:
+    """供給不能は当該 instance の構造的除外であって、シート全体の失敗ではない（§5.5.1）。"""
+    response = handle(_unresolvable_controller(), body())
+
+    assert response["ok"] is True
+    assert any(cell["indicator_id"] == "ma_marod" for cell in response["cells"])
+    assert all(cell["indicator_id"] != "moving_averages" for cell in response["cells"])
+
+
+def test_an_instance_whose_series_cannot_be_supplied_is_named_in_the_degradations() -> None:
+    """無言で外さない（§7）。除外した instance と理由が応答に載る。"""
+    response = handle(_unresolvable_controller(), body())
+
+    entries = [entry for entry in response["degradations"]
+               if entry["instance_key"][0] == "moving_averages"]
+    assert entries
+    assert all(entry["granularity"] == "none" for entry in entries)
+    assert all("供給" in entry["reason"] for entry in entries)
