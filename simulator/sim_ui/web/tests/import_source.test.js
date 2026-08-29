@@ -58,6 +58,8 @@ const SCHEMA_FALLBACK = "sim_schema_fallback_view.js";
 const RUN_STATUS = "sim_run_status_view.js";
 // Phase 9 段階 3（§19.6）: ジョブ状態の照会（M7・HTTP / timer のみ・DOM を知らない）。
 const STATUS_CLIENT = "job_status_client.js";
+// ISSUE-441: 投入フォームの版面（設定 / 入力の 2 列・DOM だけ・面の実装を 1 つも知らない）。
+const RUN_LAYOUT = "sim_run_layout_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -76,8 +78,16 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     SUBMIT_CLIENT, RUN_ACTION, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
-    RUN_STATUS, STATUS_CLIENT,
+    RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT,
   ].sort());
+});
+
+// --- 1f. 版面は面の実装を知らない（ISSUE-441）------------------------------------------
+// 「どこへ置くか」だけを持つ器が面の実装を掴むと、置き場所を変えるたびに面の側も動く。
+// 依存 0 で保つ（合成根が置き先を配る）。
+
+test("the run layout view imports nothing (版面は依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(RUN_LAYOUT)), []);
 });
 
 // --- 1e. 掲示面は他の front モジュールに依存しない（Phase 9 段階 3 S1 M6）--------------

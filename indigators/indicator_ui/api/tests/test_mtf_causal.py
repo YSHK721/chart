@@ -87,11 +87,28 @@ def test_in_progress_source_bar_is_never_used():
 
 
 def test_window_bars_limits_the_output_but_not_the_folding():
-    """出力窓が期間の途中から始まっても、畳みは期間の先頭から行う。"""
+    """出力窓が期間の途中から始まっても、畳みは期間の先頭から行う。
+
+    窓外の C 足は畳み ``acc`` へ寄与させるだけで、その時点の指標計算は発行しない
+    （発行しても結果は出力に使われず捨てられる＝ISSUE-450）。よってここで固定するのは
+    「発行回数」ではなく **渡された畳み足が期間の先頭から畳まれていること**と、
+    **値が全窓計算と一致すること**である。前者は ``open`` が期間先頭の C 足のものか否かで
+    判別できる（窓の 1 本だけで畳むと open=2.5 になる）。
+    """
     out, rec = _run(window_bars=_CHART[-1:])
+    full, _ = _run()
 
     assert [p["time"] for p in out[0]["data"]] == [_CHART[-1]["time"]], "出力は窓ぶんだけ"
-    assert [f["high"] for f in rec.formings()] == [2, 2, 3, 4], "畳みは窓に縛られない"
+
+    formings = rec.formings()
+    assert len(formings) == 1, "窓外のバーぶんの計算は発行しない（捨てる計算を作らない）"
+    assert formings[0]["open"] == 2, "畳みは期間の先頭 C 足から（窓の 1 本だけで畳んでいない）"
+    assert formings[0]["high"] == 4, "畳みは窓に縛られない"
+    assert formings[0]["low"] == 1.8, "期間先頭からの累積最小"
+    assert formings[0]["time"] == 10 * DAY, "畳んだ足に載せる time は期間のラベル"
+
+    assert out[0]["data"][-1]["value"] == full[0]["data"][-1]["value"], (
+        "窓を絞っても最終点の値は全窓計算と一致する")
 
 
 def test_values_do_not_change_when_more_data_arrives():

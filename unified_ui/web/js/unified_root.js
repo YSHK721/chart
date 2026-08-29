@@ -17,6 +17,8 @@
 //     渡さない（live root 側で null 注入）。既定ビュー（MP 無効）で単一化・チラつき解消を成立させる。
 
 import { installOpLog } from './op_log.js';
+// 版面の縦 2 分割（下部ペイン＋分割線）の器。表示層はここへ挿す（裁定 2026-08-21）。
+import { createBottomPaneView } from './bottom_pane_view.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
@@ -33,6 +35,11 @@ import {
 } from './mode_ui_view.js';
 
 const DATASET_REF = 'jp225_tick';
+
+// 中身の高さへ足す余白（ISSUE-442 / ISSUE-443）。小数の高さがそのまま切り上がってスクロール
+//   バーが出るのを避けるためだけの最小値にする。14px にしていたときは中身の下に目に見える
+//   帯が残った（依頼者指摘 2026-08-22「下部余白が存在する」）。
+const SIM_PANE_CONTENT_MARGIN_PX = 4;
 
 // 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
@@ -300,12 +307,31 @@ async function main() {
     boot.controller.clearRevealCache(); // 初期 setup の一括リビール基底を破棄（live に不要）。
   }
 
+  // 下部ペイン（分割線＋ペイン）を版面へ足す。チャートは畳まず、表示層はこのペインへ出す
+  //   （裁定 2026-08-21・参照実装 MT5 のストラテジーテスター＝下部ドックペイン）。
+  //   出し入れは CSS（body:not(.um-chart-api)）が持つので、ここでは器を置くだけ。
+  //   `above` は分割線の上で高さを譲る要素＝価格チャートの版面。可動域の上限はこの要素の
+  //   下限から決まる（版面 #app にはツールバー等の分割に与らない兄弟が居るので #app 高では
+  //   計算できない・実測 2026-08-21）。
+  const bottomPane = createBottomPaneView({ doc: document });
+  bottomPane.mount(document.getElementById('app'), { above: document.querySelector('.chart-wrap') });
+
   // sim 表示層のハンドル（enable/disable のみ）。器・CSS・3 窓・明細は sim 側が所有する。
+  //   置き場所は**統合層が決める**（sim 側は渡された host へ挿すだけ＝統合ページの id を知らない）。
   //   job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
   const simHandle = await setupSimDisplay({
     doc: document,
     lwc: window.LightweightCharts,
-    host: document.body,
+    host: bottomPane.host(),
+    // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
+    //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
+    //   削られ、指標ペインが狭くなって手で広げる作業が要った。決めるのは統合層（ペインの所有者）で、
+    //   sim は測って渡すだけ。利用者が一度でも分割線を掴んでいたら**触らない**（自動介入の禁止）。
+    onContentHeight: (px) => {
+      if (!bottomPane.isUserSized()) {
+        bottomPane.setHeightPx(px + SIM_PANE_CONTENT_MARGIN_PX);
+      }
+    },
   });
 
   modeController = createModeController({

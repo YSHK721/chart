@@ -112,6 +112,33 @@ const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
 //   「配信前の初期値」＝現行リテラルとしてのみ使う（未配信時の挙動は不変・D-11）。
 const INITIAL_CHROME_SLOTS = Object.freeze({ ...CHROME_CURRENT });
 
+// 版面の増減を指標ペインで吸収するときの下限（ISSUE-440(2)・依頼者裁定 2026-08-21）。
+//   これ未満へ詰めると軸ラベルも凡例も読めなくなるので、指標側で吸収し切れないぶんだけ
+//   価格ペインが譲る（版面が極端に低いときに価格ペインを 0 にしないための床）。
+const MIN_INDICATOR_PANE_PX = 40;
+const MIN_PRICE_PANE_PX = 60;
+
+/**
+ * 小数の配分を**合計を保ったまま**整数へ丸める（最大剰余法・ISSUE-442）。
+ *
+ * 単純な四捨五入だと合計が版面とずれ、ずれたぶんだけ lwc の実高が小数になって、そこから
+ * 派生する凡例の位置と 1px 食い違う（実測 2026-08-22: ペイン上端 373 に対しラベル 374）。
+ */
+function roundKeepingSum(values, total) {
+  const floors = values.map((v) => Math.floor(v));
+  let rest = total - floors.reduce((a, b) => a + b, 0);
+  // 端数の大きい順に 1px ずつ配る（同値なら添字の若い方＝上のペインから）。
+  const order = values
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
+  for (const { i } of order) {
+    if (rest <= 0) break;
+    floors[i] += 1;
+    rest -= 1;
+  }
+  return floors;
+}
+
 // 受け取った配線点だけを上書きした新しい保持値を返す（未指定＝undefined の配線点は現状維持）。
 //   lightweight-charts の applyOptions が部分マージであることと同じ規約にする。
 function mergeChromeSlots(held, patch) {
@@ -196,6 +223,20 @@ export class ChartRenderer {
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
+    // ペイン領域の総高を「その場で測る」関数（setPaneAreaHeightProvider で供給・ISSUE-440）。
+    //   未供給なら _paneHeight へ縮退する（既存の呼び出しは不変）。
+    this._paneAreaHeightProvider = null;
+    // 最後に凡例 DTO を配ったときのペイン幾何の指紋（refreshPaneLegendIfGeometryChanged 用）。
+    this._lastPaneGeometrySig = null;
+    // 次フレームでの幾何突き合わせを予約済みか（多重予約を作らない・_scheduleGeometryRecheck）。
+    this._geometryRecheckPending = false;
+    // 利用者が最後に決めたペイン配分（総高が変わらないあいだの実測）。総高が変わったとき、
+    //   価格ペインをこの高さへ戻すための目標にする（ISSUE-440(2)）。
+    this._paneGoal = null;
+    // 目標を控えた時点の版面総高。これと違う総高を観測したら「利用者以外の要因」と判定する。
+    this._lastPaneArea = null;
+    // 自分が配り直した高さ（利用者の意思と区別するための印）。
+    this._appliedPaneHeights = null;
     // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
     this._interactionEnabled = true;
     this._interactionSuppressors = new Set();
@@ -685,8 +726,34 @@ export class ChartRenderer {
   }
 
   // ペイン別凡例 DTO を構築してコールバックへ渡す（ISSUE-276）。
+  //   発行のたびに幾何の指紋を控える。どの経路で発行されても「最後に配った幾何」が 1 つに
+  //   決まるので、refreshPaneLegendIfGeometryChanged が二重発行にならない（ISSUE-440）。
   _emitPaneLegend(param = null) {
+    this._lastPaneGeometrySig = this._paneGeometrySignature();
     this._onPaneLegend(this.paneLegendModel(param));
+    this._scheduleGeometryRecheck();
+  }
+
+  // 配った直後の幾何は**まだ確定していないことがある**（ISSUE-440）。ペインの増減は
+  //   lightweight-charts が次の描画で高さを配り直すため、指標を適用した瞬間に発行した DTO は
+  //   古い高さで組まれている。実測 2026-08-21: 起動直後（マウス操作なし）の凡例が
+  //   ペイン上端 558/745px に対し 698/930px に出たまま動かなかった（マウスを動かすと直る
+  //   ＝発行の契機が無いだけで、位置の規則は正しい）。
+  //   よって発行のたびに**次フレームで突き合わせ**、変わっていれば配り直す。変わっていなければ
+  //   何も起きないので、通常のクロスヘア移動で余計な再描画は生まれない（多重予約もしない）。
+  _scheduleGeometryRecheck() {
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+    if (!raf || this._geometryRecheckPending) {
+      return;
+    }
+    this._geometryRecheckPending = true;
+    raf(() => {
+      this._geometryRecheckPending = false;
+      // 幾何の突き合わせと同時に「利用者が決めた配分」の控えも更新する（ISSUE-440(2)）。
+      //   起動直後はペインが増えるたびに高さが確定し直すので、ここで控えないと最初の
+      //   版面変化のときに目標が無い（＝lwc の比率保持のまま価格ペインが縮む）。
+      this.syncPaneGeometry();
+    });
   }
 
   // 指標ペインの並べ替え（ドラッグ&ドロップの着地点・ユーザー指示 2026-08-09）。
@@ -824,19 +891,194 @@ export class ChartRenderer {
     });
   }
 
+  // ペイン領域の総高（container 高 − 時間軸高）。**測れるなら必ず測り直す**（ISSUE-440）。
+  //   保持値（_paneHeight・setPaneHeight で push される）は、push しない経路（起動直後・
+  //   ペイン区切りのドラッグ・版面のリサイズ）で古いままになる。総高がずれると下の区切り高が
+  //   ずれ、凡例の位置とクリック→ペイン判定が同じだけ狂う（実測 2026-08-21: 起動直後の凡例が
+  //   正位置より 42px 下、区切りドラッグ後は 100px 下）。供給者（composition root）が測る関数を
+  //   渡していればそれを毎回呼ぶ＝幾何は「使う時点の実測」だけを根拠にする。
+  _paneAreaHeight() {
+    if (typeof this._paneAreaHeightProvider === 'function') {
+      const measured = this._paneAreaHeightProvider();
+      if (Number.isFinite(measured) && measured > 0) {
+        return measured;
+      }
+    }
+    return this._paneHeight > 0 ? this._paneHeight : 0;
+  }
+
+  /**
+   * ペイン領域の総高を「その場で測る」関数を供給する（composition root が結ぶ）。
+   * 未供給なら従来どおり保持値（setPaneHeight）を使う＝既存の呼び出しは 1 バイトも変わらない。
+   */
+  setPaneAreaHeightProvider(fn) {
+    this._paneAreaHeightProvider = typeof fn === 'function' ? fn : null;
+  }
+
   // ペイン間の区切り高（px）。lightweight-charts はペインを 1px 前後の区切りで積むが、その値は
   //   upstream のスタイル由来なので定数で持たない。「ペイン領域の総高 − 各ペイン高の合計」を
-  //   ペイン間の数で割って実測から求める。総高は composition root が供給する _paneHeight
-  //   （container 高 − 時間軸高）を使う（upstream への問い合わせを増やさない）。
+  //   ペイン間の数で割って実測から求める。総高は _paneAreaHeight()（実測優先）から取る。
   //   求まらない環境では 0（数 px のズレはチップ位置として無害・例外を出す側へは倒さない）。
   _paneSeparatorPx(heights) {
-    if (heights.length < 2 || !(this._paneHeight > 0)) {
+    const area = this._paneAreaHeight();
+    if (heights.length < 2 || !(area > 0)) {
       return 0;
     }
     const sum = heights.reduce((a, b) => a + b, 0);
-    const rest = this._paneHeight - sum;
-    return rest > 0 ? rest / (heights.length - 1) : 0;
+    const rest = area - sum;
+    // **切り捨てる**（ISSUE-442）。差分には区切り以外の 1px（枠線など）も混じり得るので、
+    //   割り切って四捨五入すると区切りを実際より厚く見積もり、凡例の上端が 1px 下へずれる
+    //   （実測 2026-08-22: 区切りの実測 1px に対し推定 1.5px → ラベル 374 / ペイン上端 373）。
+    //   薄く見積もる側へ倒せば、ずれても内側（ペインの中）に留まる。
+    return rest > 0 ? Math.floor(rest / (heights.length - 1)) : 0;
   }
+
+  // いまのペイン幾何を表す指紋（高さの並び＋領域総高）。値が変わったときだけ凡例を引き直す
+  //   ための比較用で、DTO の再構築より桁違いに安い（数値の連結だけ）。
+  _paneGeometrySignature() {
+    return `${this._paneHeights().join('/')}|${Math.round(this._paneAreaHeight())}`;
+  }
+
+  /**
+   * 版面の総高が変わったとき、**利用者が決めた配分の比を保ったまま**全ペインを伸縮させる
+   * （ISSUE-442・依頼者裁定 2026-08-22）。
+   *
+   * 経緯: 前の規則（価格ペインの px を保ち、差分を指標ペインへ配る・ISSUE-440(2)）は、
+   *   面積が大きく減る場面（sim を開くと版面 928→472px）で**指標ペインを下限 40px まで潰した**。
+   *   価格 557px を保つと指標側に 80px しか残らないためで、開くたびに手で広げる作業が要った。
+   *   比で伸縮すれば全ペインが同じ割合で譲るので調整作業が要らず、面積が戻れば元の px へ戻る。
+   *
+   * 下限は安全弁として残す（版面が極端に低いときに 0 へ潰さない）。下限に当たったペインは
+   *   その高さで固定し、残りを他のペインへ**同じ比**で配り直す。
+   *
+   * @returns {boolean} 高さの割り当てを変えたか
+   */
+  _applyGoalRatios(area, heights, goal) {
+    const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+    // 区切りの総高は「総高 − 各ペイン高の合計」。ペインへ配れるのは残りだけ。
+    const avail = sum(heights);
+    const goalSum = sum(goal);
+    if (!(avail > 0) || !(goalSum > 0)) {
+      return false;
+    }
+    const priceIdx = this._pricePaneIndex();
+    const floorOf = (i) => (i === priceIdx ? MIN_PRICE_PANE_PX : MIN_INDICATOR_PANE_PX);
+    // 比で配る → 下限を割ったペインを固定 → 残りを未固定のペインへ同じ比で配り直す。
+    //   固定は 1 回増えるごとに配れる量が減るので、変化が無くなるまで（高々ペイン数）繰り返す。
+    const targets = goal.map(() => 0);
+    const fixed = goal.map(() => false);
+    for (let pass = 0; pass <= goal.length; pass += 1) {
+      const freeIdx = goal.map((_, i) => i).filter((i) => !fixed[i]);
+      const freeSpace = avail - goal.reduce((acc, _h, i) => acc + (fixed[i] ? targets[i] : 0), 0);
+      const freeGoal = sum(freeIdx.map((i) => goal[i]));
+      let changed = false;
+      for (const i of freeIdx) {
+        const share = freeGoal > 0 ? freeSpace * (goal[i] / freeGoal) : freeSpace / freeIdx.length;
+        if (share < floorOf(i)) {
+          targets[i] = floorOf(i);
+          fixed[i] = true;
+          changed = true;
+        } else {
+          targets[i] = share;
+        }
+      }
+      if (!changed) break;
+    }
+    // 整数へ丸める（合計は保つ・最大剰余法）。小数のまま配ると lwc の実高も小数になり、
+    //   凡例の上端（丸めた整数）と 1px ずれる（実測 2026-08-22: ペイン上端 373 に対し
+    //   ラベル 374）。配る側で整数にしておけば、派生する位置も一致する。
+    const rounded = roundKeepingSum(targets, Math.round(avail));
+    // 1px 未満の差で毎フレーム書き換えない（描画のばたつきを作らない）。
+    if (rounded.every((h, i) => Math.abs(h - heights[i]) < 1)) {
+      return false;
+    }
+    // 高さの比＝ストレッチ比。lightweight-charts はペインを比で配るので、目標高をそのまま
+    //   比として与えれば（合計が版面と一致するため）目標どおりの px になる。
+    const panes = typeof this._chart.panes === 'function' ? this._chart.panes() : [];
+    let applied = false;
+    panes.forEach((pane, i) => {
+      if (pane && typeof pane.setStretchFactor === 'function' && rounded[i] > 0) {
+        pane.setStretchFactor(rounded[i]);
+        applied = true;
+      }
+    });
+    // 自分が配った値の印（次の観測でこれと一致する高さは「利用者の意思」ではない）。
+    this._appliedPaneHeights = applied ? rounded : null;
+    return applied;
+  }
+
+  /**
+   * 幾何を実測へ揃える（総高が変わっていれば再配分し、変わっていれば凡例を配り直す）。
+   *
+   * 呼ぶのは版面の寸法変化の観測点（installPaneGeometryFollow）。区切りドラッグのように
+   *   総高が変わらない変更では再配分せず、利用者が決めた高さを**目標として控える**だけにする。
+   *
+   * @returns {boolean} 凡例を配り直したか
+   */
+  syncPaneGeometry() {
+    const area = this._paneAreaHeight();
+    const heights = this._paneHeights();
+    if (area > 0 && heights.length > 0) {
+      const areaChanged = this._lastPaneArea !== null && this._lastPaneArea !== area;
+      if (areaChanged && this._paneGoal && this._paneGoal.length === heights.length && heights.length >= 2) {
+        // 総高が変わった＝利用者以外の要因（下部ペイン・ウィンドウ）。目標の**比**へ寄せ直す。
+        //   目標そのものは書き換えない（面積が戻ったときに元の px へ戻すため）。
+        this._applyGoalRatios(area, heights, this._paneGoal);
+        this._lastPaneArea = area;
+      } else {
+        this._notePaneGeometry();
+      }
+    }
+    return this.refreshPaneLegendIfGeometryChanged();
+  }
+
+  // 総高が変わっていないあいだの高さ＝**利用者が決めた配分**として控える（ISSUE-440(2)）。
+  //   自分が配り直した直後の値は控えない（それは利用者の意思ではない）。控えてしまうと、
+  //   版面が戻ったときに「詰められた高さ」が正解として復元され、元の配分へ戻らなくなる。
+  _notePaneGeometry() {
+    const area = this._paneAreaHeight();
+    if (!(area > 0)) {
+      return;
+    }
+    const heights = this._paneHeights();
+    if (heights.length === 0) {
+      return;
+    }
+    // 自分が配った状態のままなら控えない（詰めた高さを「利用者が決めた配分」にしない）。
+    const isOurs = this._appliedPaneHeights
+      && this._appliedPaneHeights.length === heights.length
+      && this._appliedPaneHeights.every((h, i) => Math.abs(h - heights[i]) <= 2);
+    if (isOurs) {
+      this._lastPaneArea = area;
+      return;
+    }
+    if (this._lastPaneArea === null || this._lastPaneArea === area) {
+      this._paneGoal = heights;
+      this._appliedPaneHeights = null;
+    }
+    this._lastPaneArea = area;
+  }
+
+  /**
+   * ペイン幾何が前回発行時から変わっていれば、凡例 DTO を作り直す（変わっていなければ何もしない）。
+   *
+   * なぜ要るか（実測 2026-08-21・ISSUE-440）: 凡例の位置はペイン幾何の従属変数なのに、
+   *   再発行の契機が「データ・構成・クロスヘア」しか無かった。ペイン区切りのドラッグと版面の
+   *   リサイズはそのどれでもないため、**ラベルだけが古い位置に取り残される**（実測: 区切りを
+   *   100px 上へ引いてもラベルは動かず、ペイン上端 458px に対しラベル 558px）。
+   *   「幾何が動いたら引き直す」を成立させる呼び出し口がこれである。
+   *
+   * @returns {boolean} 引き直したか
+   */
+  refreshPaneLegendIfGeometryChanged() {
+    const sig = this._paneGeometrySignature();
+    if (sig === this._lastPaneGeometrySig) {
+      return false;
+    }
+    this._emitPaneLegend(null);
+    return true;
+  }
+
 
   // 各ペインの上端 y（チャート要素基準）を paneIndex 順で返す。
   //   ペイン幾何の派生規則（上端＝それより上のペイン高と区切り高の累積）を持つのは**ここだけ**。

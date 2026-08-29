@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+
 _REPO_ROOT = Path(__file__).resolve().parents[2].parent
 _FIXTURE = (
     _REPO_ROOT / "simulator" / "tests" / "confirmation"
@@ -31,11 +33,12 @@ pytestmark = pytest.mark.skipif(
 
 def _base_kwargs(csv_path: Path) -> dict:
     # SP2 結合先例（test_optimize_sp1_degenerate.py）と同一 config（決定論）。
+    # 銘柄仕様 8 キーは供給元スナップショットだけを権威とする（ISSUE-445 段階 C）。
     return dict(
         data_path=str(csv_path), symbol="JP225", period="M1",
-        ea_name="StopEntryProbe_EA", initial_deposit=10_000.0, contract_size=10.0,
-        volume_min=0.01, volume_max=100.0, volume_step=0.01, stops_level=0, digits=1,
-        point_size=0.1, leverage=10.0, ma_period=60, ma_method="ema", lot_size=0.1,
+        ea_name="StopEntryProbe_EA", initial_deposit=10_000.0,
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
+        ma_period=60, ma_method="ema", lot_size=0.1,
         stop_loss_points=200, take_profit_points=500, entry_offset_points=100.0,
         entry_type="stop",
         config_overrides={
@@ -121,6 +124,13 @@ def test_single_window_single_candidate_matches_sp2_and_precedent():
     assert len(result.window_results) == 1
     wr = result.window_results[0]
     # 先例 bit-exact（SP2 degenerate と同値）
+    #
+    # ⚠ ISSUE-445 段階 B/C: 以下の IS/OOS 4 値と stitch 値は**是正で動かない**ピンである
+    # （実測 2026-08-26）。段階 C で `_base_kwargs` の銘柄仕様を供給元へ**対で**寄せた結果、
+    # 積 `lot × contract_size` が 0.1 × 10.0 = 1.0 × 1.0 で不変になり、1 ビットも動かなかった
+    # （実走で確認・下記は是正前に測った値のまま）。
+    # 一方 `contract_size` だけを寄せると profit +11370 → **+1137**。
+    # 赤になったら**期待値を書き換えず**、是正が片側だけになっていないかを疑うこと。
     assert wr.best_params == {"stop_loss_points": 200}
     assert wr.is_stats.trades == 5224
     assert wr.is_stats.profit == 11370.0

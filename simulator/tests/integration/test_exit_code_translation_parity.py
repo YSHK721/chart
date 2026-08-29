@@ -26,6 +26,7 @@ import pytest
 
 import simulator.main as simulator_main
 from simulator.adapter.controller import BacktestController
+from simulator.usecase.models import AccountSpec
 from simulator.domain.exceptions import BacktestError, ConfigError, DataError
 from simulator.main.tester_settings.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 
@@ -34,6 +35,12 @@ from simulator.main.tester_settings.exit_codes import SUCCESS_EXIT_CODE, exit_co
 CONFIG_ERROR = ConfigError("突合用（設定不正）")
 BACKTEST_ERROR = DataError("突合用（実行時）")
 
+
+#: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
+#: 口座の契約 1 型に束ね、既定値をどのフィールドにも置かない）。本モジュールのスタブ
+#: Interactor は request を解釈しないため、これらの値は観測される結果に一切影響しない
+#: （証拠金計算を通らない）。
+_UNUSED_ACCOUNT = AccountSpec(initial_deposit=0.0, leverage=1.0, stop_out_level=0.0)
 
 class _RaisingMarketData:
     """`BacktestController.run` の翻訳を起動するための最小の `MarketDataPort` 代役。"""
@@ -57,7 +64,7 @@ def _harvest_from_controller(error: "BaseException | None") -> int:
     controller = BacktestController(
         market_data=_RaisingMarketData(error), interactor=_NoopInteractor()
     )
-    return controller.run(config=None, source_ref="-")
+    return controller.run(config=None, source_ref="-", symbol_spec=None, account=_UNUSED_ACCOUNT)
 
 
 def _harvest_from_run_backtest(error: "BaseException | None", monkeypatch) -> int:

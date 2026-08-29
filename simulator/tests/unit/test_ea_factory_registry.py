@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
@@ -68,10 +69,26 @@ def _write_comma_csv(path: Path, n: int = 12) -> Path:
 
 
 def _mt5_kwargs(csv_path: Path, ea_name: str) -> dict:
+    """⚠ ISSUE-445 段階 C: 本モジュールは銘柄仕様の**正しさを検証していない**。
+
+    銘柄仕様 8 項目は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）だけを権威とする
+    （段階 B までは `contract_size=10.0` ほか 5 項目が供給元と食い違うリテラルだった）。
+    本モジュールが見るのは strategy の型・market_data の型・registry の系列名の解決
+    だけであり、いずれも backtest を**走らせない**段階で決まる。実測（2026-08-26）:
+    `contract_size` だけを真値 1.0 にしても、5 項目を対で真値へ寄せても、8 検定とも
+    緑のまま通った。
+
+    したがって数値ピンを足す余地が無い。本モジュールの緑を「銘柄仕様の是正が
+    正しい」根拠にしてはならない。損益への波及は
+    `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンが見る。
+    （`_comma_kwargs` は JP225 を名乗るが `contract_size=1.0`＝真値であり是正対象外。
+    そちらは comma ローダ経路の合成仕様であり JP225 の権威値ではない。）
+    """
     return dict(
         data_path=csv_path, symbol="JP225", period="M1", ea_name=ea_name,
-        initial_deposit=10_000.0, contract_size=10.0, volume_min=0.1, volume_max=100.0,
-        volume_step=0.1, stops_level=0, digits=1, point_size=0.1, leverage=10.0,
+        initial_deposit=10_000.0,
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=20, ma_method="ema", lot_size=0.1, stop_loss_points=0,
         take_profit_points=0, slope_shift=1, slope_min_points=1.0,
         config_overrides={"tick_model": "open_only", "entry_price_basis": "current_open",

@@ -23,9 +23,16 @@ import pytest
 
 import simulator.main as simulator_main
 from simulator.adapter.controller import BacktestController
+from simulator.usecase.models import AccountSpec
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import ConfigError, DataError
 
+
+#: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
+#: 口座の契約 1 型に束ね、既定値をどのフィールドにも置かない）。本モジュールのスタブ
+#: Interactor は request を解釈しないため、これらの値は観測される結果に一切影響しない
+#: （証拠金計算を通らない）。
+_UNUSED_ACCOUNT = AccountSpec(initial_deposit=0.0, leverage=1.0, stop_out_level=0.0)
 
 class _MarketData:
     """`BacktestController` が要求する最小の `MarketDataPort` 代役。"""
@@ -43,8 +50,9 @@ class _Request:
 
     config = None
     symbol_spec = None
-    initial_deposit = 0.0
-    stop_out_level = 0.0
+    # 口座の契約は 1 つの型に束ねた（ISSUE-445 段階 3-D3）。`run_backtest` は request の
+    # 中身を読まないため、代役は形だけを持つ。
+    account = None
     bars: "list" = []
     trading_start = None
 
@@ -147,5 +155,5 @@ class TestTheMarketDataIsLoadedOnlyOnce:
         controller = BacktestController(
             market_data=market_data, interactor=_RecordingInteractor(object())
         )
-        controller.run(None, "-")
+        controller.run(None, "-", symbol_spec=None, account=_UNUSED_ACCOUNT)
         assert market_data.loads == 1

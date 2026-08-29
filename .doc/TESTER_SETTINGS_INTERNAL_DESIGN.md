@@ -44,7 +44,7 @@
 | D-07 | ロガー 1 本（`simulator.tester_settings`）・ハンドラ非設定・例外送出は境界関数で 1 回だけ `ERROR` 記録 | §7.4 | 確定 |
 | D-08 | 4 層を simulator 既存レイヤへ割付: 列挙・DTO＝`usecase/tester_settings/`、字句層＝`adapter/tester_settings/`、検証層＝`framework/tester_settings/`、変換層＋実行 facade＝`main/tester_settings/`、例外＝`domain/tester_settings_exceptions.py`。既存ファイル改変 0 | §3 | 確定 |
 | D-09 | `TICK_MODEL_REGISTRY` へ 5 件目として登録され、`build_interactor` 経由の単一経路で実行。既存 4 エントリは無改変。§8.2 の参照実装が実測で確定 | §8.2 | 確定（実施済み・A-1） |
-| D-10 | 決済通貨は**変換層の必須注入引数** `settlement_currency` とする。内部に暫定既定値を持たない。供給元は **A-2 承認により恒久化済み**（`RunProfile.settlement_currency`＝既定値なしの必須フィールド、`SymbolSpecCatalog` が `"JPY"` を権威供給）。値の出典は golden fixture 4 点で実測確認（`case.yaml` の `currency`・`report.json` の `settings.currency` と `derived.note`「1 JPY per price unit」＝損益の建て通貨・`tester.log`）。v1.0.5 で「未検証」記述を解消 | §8.3 | **確定（供給元も確定）** |
+| D-10 | 決済通貨は**変換層の必須注入引数** `settlement_currency` とする。内部に暫定既定値を持たない。供給元は **A-2 承認により恒久化済み**（`RunProfile.settlement_currency`＝既定値なしの必須フィールド、`SymbolSpecCatalog` が `"JPY"` を権威供給）。値の出典は golden fixture と権威スナップショットで実測確認（`expected/report.json` の `settings.currency` と `derived.note`「1 JPY per price unit」＝損益の建て通貨・`tester.log`・権威 `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json` の `currency_profit: JPY`）。`case.yaml` の `currency` は段階 3-E2b で撤去済み。v1.0.5 で「未検証」記述を解消 | §8.3 | **確定（供給元も確定）** |
 | D-11 | 期間窓は「機構の予測」ではなく「**適用結果の事後検証**」で担保する。`marketdata_window` は UTC aware datetime の半開区間で渡し、`build_interactor` 生成後に `request.bars` の実時刻範囲を検証。窓が効かない経路は `UnsupportedSettingError`（新 N-15） | §8.4 | 確定 |
 
 ---

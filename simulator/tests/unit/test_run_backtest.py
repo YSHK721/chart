@@ -17,10 +17,20 @@ import numpy as np
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import (
+    OANDA_JAPAN_MT5_LIVE,
+    SYMBOL_FIELD_SOURCES,
+    load_spec_fields,
+)
 from simulator.domain.bar import Bar
 from simulator.domain.exceptions import MarginCallError
 from simulator.domain.order import Order
-from simulator.usecase.models import BacktestConfig, BacktestResult, SymbolSpec
+from simulator.usecase.models import (
+    AccountSpec,
+    BacktestConfig,
+    BacktestResult,
+    SymbolSpec,
+)
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 
@@ -93,6 +103,12 @@ def _config():
     )
 
 
+#: 合成 run の口座レバレッジ。ISSUE-445 段階 3-D2 で `SymbolSpec` から
+#: `RunBacktestRequest`（口座属性の面）へ移した値であり、**移設前と同じ数**である
+#: （本モジュールの合成シナリオの必要証拠金を変えないため）。
+_LEVERAGE = 100.0
+
+
 def _symbol_spec():
     return SymbolSpec(
         contract_size=1.0,
@@ -102,18 +118,20 @@ def _symbol_spec():
         stops_level=0,
         digits=5,
         point_size=0.00001,
-        leverage=100.0,
     )
 
 
 def _request(bars, *, config=None, initial_deposit=10_000.0, stop_out_level=0.0,
-             symbol_spec=None):
+             symbol_spec=None, leverage=_LEVERAGE):
     return RunBacktestRequest(
         config=config or _config(),
         bars=bars,
         symbol_spec=symbol_spec or _symbol_spec(),
-        initial_deposit=initial_deposit,
-        stop_out_level=stop_out_level,
+        account=AccountSpec(
+            initial_deposit=initial_deposit,
+            leverage=leverage,
+            stop_out_level=stop_out_level,
+        ),
     )
 
 
@@ -252,7 +270,6 @@ class TestFailStopOnMarginCall:
         spec = SymbolSpec(
             contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
             volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
-            leverage=100.0,
         )
         strategy = SpyStrategyPort(log, orders_by_bar={0: [order]})
         interactor = RunBacktestInteractor(
@@ -389,18 +406,42 @@ def _config_open_fill():
     )
 
 
+# --- ISSUE-445 段階 B/C: `_jp225_spec()` を使う 4 検定の損益ピン ----------------------
+#
+# なぜ要るか（実測 2026-08-26）: 下の 4 検定は `entry_price` / `exit_price` しか見ておらず、
+# **約定価格は `contract_size` に依存しない**。そのため `_jp225_spec()` の `contract_size` を
+# 供給元の真値 1.0 へ寄せても 4 件とも緑のまま通る（実測）。損益 `pnl()` は
+# `(exit - entry) × sign × volume × contract_size`（`domain/trade_record.py:62-73`）であり、
+# ここだけが銘柄仕様の誤りに反応する。
+#
+# **これは「更新が要る」ピンだった（不変ピンではない）**:
+#   本モジュールの `Order(volume=1.0)` は**テストが直接書いた数**であり、`lot_size` →
+#   `NormalizeLot` → `volume_min` の経路を通らない。したがって ISSUE-445 の「2 つの誤りの
+#   相殺」（積 `lot × contract_size` が保存される関係）は**ここでは成立しない**。
+#   実測: `contract_size` だけ 1.0 にしても、銘柄仕様 5 項目を対で真値へ寄せても、
+#   pnl はどちらも 1/10（280.0 → 28.0）になり**同じ値**になった。
+#   ⇒ このピンは是正の**失敗と成功を区別しない**。段階 C の是正で下記のとおり 1/10 へ
+#     更新したが、「更新したから正しい」とは言えない。対で是正できたかの判定は
+#     `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンで行うこと。
+#   段階 C の更新の導出（`contract_size` 10.0 → 供給元の真値 1.0・volume は 1.0 のまま）と、
+#   **約定価格 39412.0 / 39402.0 / 39440.0 / 39450.0 が是正前後で不変**であることは
+#   下の各検定の `entry_price` / `exit_price` の assert が同じ実行で固定している。
+#   旧ピン（退行との識別用）: 280.0 / -480.0 / 100.0。
+_JP225_BUY_OPEN_SPREAD_PNL = 28.0    # (39440 - 39412) × 1.0 × 1.0
+_JP225_SELL_OPEN_BID_PNL = -48.0     # (39450 - 39402) × -1 × 1.0 × 1.0
+_JP225_DEFAULT_CLOSE_PNL = 10.0      # (39450 - 39440) × 1.0 × 1.0
+
+
 def _jp225_spec():
-    """JP225 相当（point_size=0.1・contract=10・leverage=10）。"""
-    return SymbolSpec(
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
-    )
+    """JP225（銘柄仕様 8 項目は供給元スナップショットだけを権威とする）。
+
+    ISSUE-445 段階 C: 段階 B までは `contract_size=10.0` / `volume_min=0.01` /
+    `volume_max=100.0` / `volume_step=0.01` / `stops_level=0` を人が書いており、
+    供給元（`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`＝1.0 / 1.0 /
+    10000.0 / 1.0 / 5）と食い違っていた。ここにリテラルを書かない＝人が値を選べない。
+    """
+    supplied = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")
+    return SymbolSpec(**{name: supplied[name] for name in SYMBOL_FIELD_SOURCES})
 
 
 class TestConfigDrivenSpreadOpenFill:
@@ -428,6 +469,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: buy entry_price == open(39402) + spread(100) * point(0.1) == 39412.0
         assert result.trades[0].side == "buy"
         assert result.trades[0].entry_price == pytest.approx(39412.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
 
     def test_sell_fills_at_open_bid_when_enabled(self):
         # Arrange: sell は bid（=現バー open）で約定（spread 寄与 0）。
@@ -445,6 +489,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: sell entry_price == open(39402)（bid 基準・spread 寄与 0）
         assert result.trades[0].side == "sell"
         assert result.trades[0].entry_price == pytest.approx(39402.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
 
     def test_default_config_keeps_close_fill_zero_spread(self):
         # 後方互換特性化: 新フィールド既定（"close"）では従来どおり buy=close・spread 無視。
@@ -463,6 +510,9 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: 従来どおり close(39440) で約定（open でも open+spread でもない）
         assert result.trades[0].side == "buy"
         assert result.trades[0].entry_price == pytest.approx(39440.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert result.trades[0].pnl() == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
+        assert result.stats.profit == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
 
 
 # ---- cycle2-2c: equity カーブが毎バー floating 込みで記録される（特性化・既実装の退行防止） ----
@@ -528,11 +578,11 @@ class TestFloatingPnlBasisWiring:
         )
         spec = SymbolSpec(
             contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+            stops_level=0, digits=1, point_size=0.1,
         )
         req = RunBacktestRequest(
             config=self._config("bid_ask"), bars=bars, symbol_spec=spec,
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
         )
         # Act
         result = interactor.execute(req)
@@ -551,11 +601,11 @@ class TestFloatingPnlBasisWiring:
         )
         spec = SymbolSpec(
             contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-            stops_level=0, digits=1, point_size=0.1, leverage=100.0,
+            stops_level=0, digits=1, point_size=0.1,
         )
         req = RunBacktestRequest(
             config=self._config("close"), bars=bars, symbol_spec=spec,
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
         )
         # Act
         result = interactor.execute(req)
@@ -597,6 +647,8 @@ class TestReverseShortCloseSpread:
         reverse_trade = next(t for t in result.trades if t.exit_reason == "reverse")
         assert reverse_trade.side == "sell"
         assert reverse_trade.exit_price == pytest.approx(39450.0)
+        # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
+        assert reverse_trade.pnl() == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
 
 
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
@@ -638,7 +690,6 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
     spec = SymbolSpec(
         contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
         volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
-        leverage=100.0,
     )
     order = Order(side="buy", kind="market", volume=1.0, price=None)
     strategy = SpyStrategyPort([], orders_by_bar=orders_by_bar or {0: [order]})
@@ -879,7 +930,7 @@ def _tc_invariance_setup(strategy):
     }
     spec = SymbolSpec(
         contract_size=1.0, volume_min=0.01, volume_max=100.0, volume_step=0.01,
-        stops_level=0, digits=5, point_size=0.0001, leverage=100.0,
+        stops_level=0, digits=5, point_size=0.0001,
     )
     registry = PandasIndicatorRegistry(
         {"madiff": pd.Series(madiff), "close": pd.Series(close)}
@@ -889,7 +940,7 @@ def _tc_invariance_setup(strategy):
     )
     req = RunBacktestRequest(
         config=_RunConfigLike(base, params), bars=bars, symbol_spec=spec,
-        initial_deposit=100_000.0, stop_out_level=0.0,
+        account=AccountSpec(initial_deposit=100_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
     )
     return interactor, req
 
@@ -958,7 +1009,7 @@ class TestTradingStartWarmupExclusion:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -986,7 +1037,7 @@ class TestTradingStartWarmupExclusion:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1054,7 +1105,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1078,7 +1129,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=self._config_primed(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act
@@ -1102,7 +1153,7 @@ class TestPrimeFirstTradingBar:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_symbol_spec(),
-            initial_deposit=10_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
             trading_start=np.datetime64("2025-01-01T00:00"),
         )
         # Act

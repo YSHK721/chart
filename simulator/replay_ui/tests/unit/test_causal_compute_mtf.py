@@ -144,14 +144,25 @@ def test_causality_is_kept_for_both_timeframes():
 
 
 def test_limit_window_still_folds_from_the_period_start():
-    """窓（limit）が期間の途中から始まっても、畳みは期間の先頭から行う。"""
+    """窓（limit）が期間の途中から始まっても、畳みは期間の先頭から行う。
+
+    窓外の C 足は畳み ``acc`` へ寄与させるだけで、その時点の指標計算は発行しない
+    （発行しても結果は出力に使われず捨てられる＝ISSUE-450 の真因 A）。よってここで固定するのは
+    「発行回数」ではなく **渡された畳み足が期間の先頭から畳まれていること**である。窓の 1 本
+    だけで畳むと ``open`` が 2.5・``high`` が 4 になるため、``open`` で判別できる。
+    ライブ側 ``indigators/indicator_ui/api/tests/test_mtf_causal.py`` の同名テストと対。
+    """
     port = _FakePort()
 
     out = causal_compute(request=_req(compute_timeframe="1D", limit=1), compute_port=port)
 
     assert [p["time"] for p in out[0]["data"]] == [_CHART[-1]["time"]], "出力は窓ぶんだけ"
-    assert [f["high"] for f in port.formings()] == [3, 4], (
-        "窓外の同一期間の C 足（10*DAY-2h）も畳みへ入れる")
+
+    formings = port.formings()
+    assert len(formings) == 1, "窓外のバーぶんの計算は発行しない（捨てる計算を作らない）"
+    assert formings[0]["open"] == 2, "畳みは期間の先頭 C 足から（窓の 1 本だけで畳んでいない）"
+    assert formings[0]["high"] == 4, "畳みは窓に縛られない"
+    assert formings[0]["time"] == 10 * DAY, "畳んだ足に載せる time は期間のラベル"
 
 
 def test_no_projection_when_compute_timeframe_is_absent_or_chart():

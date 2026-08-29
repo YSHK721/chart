@@ -22,7 +22,9 @@ import {
   SIM_FRAME_CSS,
   SIM_REPORT_VIEW_PATH,
   createSimFrameView,
+  waitForContent,
 } from "../js/adapter/front/sim_frame_view.js";
+
 
 function mounted(jobId = "job-1") {
   const doc = fakeDoc();
@@ -136,4 +138,69 @@ test("childWindow is null before mount and after unmount", () => {
   view.mount(doc.body, "j");
   view.unmount();
   assert.equal(view.childWindow(), null);
+});
+
+// --- ISSUE-442: 中身の高さを宿主へ伝える（下部ペインの既定高さの入力）-----------------
+// 何を測るか＝投入フォームの版面（#simRunForm）だけ。結果ビューアでは測らない（広い方が
+// 読みやすく「収まる高さ」という概念が当てはまらない＝狭める既定を勝手に決めない）。
+// いつ測るか＝子が組み立て完了を表明（`__simReportViewReady`）してから。load 直後は
+// 組み立て途中の高さになる（実測 2026-08-22: 109px → ペインが 123px で開いた）。
+
+test("contentHeightPx は子文書の投入フォームの高さを返す", () => {
+  // Arrange
+  const doc = fakeDoc();
+  const view = createSimFrameView({ doc });
+  view.mount(doc.body, null);
+  const form = { scrollHeight: 287 };
+  view.frameElement().contentDocument = { getElementById: (id) => (id === "simRunForm" ? form : null) };
+  // Act / Assert
+  assert.equal(view.contentHeightPx(), 287);
+});
+
+test("contentHeightPx はフォームが無ければ null（結果ビューア・未読込）", () => {
+  // Arrange
+  const doc = fakeDoc();
+  const view = createSimFrameView({ doc });
+  view.mount(doc.body, "job-1");
+  // Assert: contentDocument 未設定（未読込相当）
+  assert.equal(view.contentHeightPx(), null);
+  // Assert: 読み込めてもフォームが無い（結果ビューア）
+  view.frameElement().contentDocument = { getElementById: () => null };
+  assert.equal(view.contentHeightPx(), null);
+});
+
+test("waitForContent は子の組み立て完了を待ってから 1 回だけ知らせる", () => {
+  // Arrange: 3 フレーム目で完了を表明する子。
+  const frames = [];
+  const raf = (fn) => frames.push(fn);
+  const child = { __simReportViewReady: false };
+  const seen = [];
+  const frame = { childWindow: () => child, contentHeightPx: () => 287 };
+  // Act
+  waitForContent(frame, raf, (h) => seen.push(h));
+  const run = () => { const q = frames.splice(0); q.forEach((fn) => fn()); };
+  run(); run();                      // まだ未完了＝知らせない
+  assert.deepEqual(seen, []);
+  child.__simReportViewReady = true;
+  run();                             // 完了を検出 → もう 1 フレーム置く
+  assert.deepEqual(seen, []);
+  run();                             // ここで測って知らせる
+  // Assert
+  assert.deepEqual(seen, [287]);
+  run();
+  assert.deepEqual(seen, [287], "知らせるのは 1 回だけ");
+});
+
+test("waitForContent は待ち続けない（表明が来なければ諦める）", () => {
+  // Arrange: 一生 ready にならない子。
+  const frames = [];
+  const raf = (fn) => frames.push(fn);
+  const seen = [];
+  waitForContent({ childWindow: () => ({}), contentHeightPx: () => 287 }, raf, (h) => seen.push(h));
+  // Act: 予約が尽きるまで回す（上限が無ければ無限に回り続ける）。
+  let ticks = 0;
+  while (frames.length && ticks < 1000) { frames.splice(0).forEach((fn) => fn()); ticks += 1; }
+  // Assert
+  assert.equal(seen.length, 0);
+  assert.ok(ticks < 1000, `予約が尽きない（上限が効いていない）: ${ticks}`);
 });

@@ -12,7 +12,7 @@ fixtures/mt5/
 ├── __init__.py                      # 統一ローダ (load_case / list_cases)
 ├── README.md                        # このファイル
 └── <case_name>/                     # 例: ma_slope_jp225_202501
-    ├── case.yaml                    # run config + 銘柄仕様 + EA入力 + 期待サマリー (人が読むメタ)
+    ├── case.yaml                    # run config + 銘柄同一性 + EA入力 + 期待サマリー (人が読むメタ)
     ├── input/
     │   └── *.csv                    # MT5 エクスポートの価格データ (タブ区切り)
     ├── expert/
@@ -29,7 +29,7 @@ fixtures/mt5/
 
 | パス | 役割 |
 |---|---|
-| `case.yaml` | 銘柄仕様・口座・EA 入力・実行条件・期待サマリーの **人が読む要約**。数値の最終正は `expected/report.json`。 |
+| `case.yaml` | 銘柄同一性（`name: JP225` のみ、仕様は別途 `marketdata/symbol_specs/` から供給）・口座・EA 入力・実行条件・期待サマリーの **人が読む要約**。数値の最終正は `expected/report.json`。銘柄仕様定数は段階 3-E2b で撤去済み（権威: `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）。 |
 | `input/*.csv` | テスターに与えた価格データ (MT5 エクスポート)。再実行・再検証用。 |
 | `expert/*.mq5` | 突合対象 EA のソース原典。ロジック確認用。 |
 | `mt5_report/` | テスターレポート原本・ジャーナル・設定スクショ。一次証跡 (人が参照)。 |
@@ -62,7 +62,8 @@ case.deals                   # case.expected["deals"] のショートカット (
    - EA ソース → `expert/<EA名>.mq5`
    - テスターレポート → `mt5_report/ReportTester-*.xlsx`、ジャーナル → `mt5_report/tester.log`、設定 → `mt5_report/settings.jpg`
    - パース済み正解 → `expected/report.json`
-3. `case.yaml` を作成する (銘柄仕様・口座・EA 入力・実行条件・期待サマリー)。
+3. `case.yaml` を作成する (銘柄同一性 (`name:` のみ)・口座・EA 入力・実行条件・期待サマリー)。
+   **銘柄仕様定数は記載しないこと**（権威: `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）。
    数値の最終正は `expected/report.json` の `results` であることを注記する。
 4. `git check-ignore <新パス>` で全ファイルが追跡可能 (ignore されない) ことを確認する。
    `fixtures/` は `.gitignore` で除外解除済 (`!simulator/tests/fixtures/**`)。

@@ -50,9 +50,18 @@ def _bar_signature(bar: dict) -> tuple:
     )
 
 
+#: 空の前置き（0 本）の指紋。連鎖の種であり、逐次版と一括版で必ず同じ値を使う。
+_EMPTY_PREFIX_FP = hash(("mtf_causal", 0))
+
+
 def _prefix_fingerprints(bars: "list[dict]") -> "list[int]":
-    """``bars`` の各前置き（0..n 本）の指紋。``out[i]`` は先頭 i 本ぶんの指紋。"""
-    out = [hash(("mtf_causal", 0))]
+    """``bars`` の各前置き（0..n 本）の指紋。``out[i]`` は先頭 i 本ぶんの指紋。
+
+    本体（:func:`causal_mtf_series`）は読む位置までしか連鎖を伸ばさない逐次版を使う
+    （ISSUE-450 F）。本関数は連鎖の**定義**であり、逐次版が同じ値を出すことを
+    ``tests/test_mtf_causal_memo.py`` が突合する。
+    """
+    out = [_EMPTY_PREFIX_FP]
     acc = out[0]
     for b in bars:
         acc = hash((acc, _bar_signature(b)))
@@ -119,13 +128,37 @@ def causal_mtf_series(
     if not chart_bars or not source_bars:
         return []
     keep = {int(b["time"]) for b in (window_bars if window_bars is not None else chart_bars)}
-    prefix_fp = _prefix_fingerprints(source_bars) if memo is not None else None
+    # 接頭辞の指紋は**期間の切れ目でしか読まれない**。全位置ぶんを先に作ると、読まれない位置の
+    #   指紋を作って捨てることになる（実測 C=1m / H=1h で 50,001 個作って 10 個しか読まない
+    #   ＝ISSUE-450 F）。連鎖は切れ目まで前進させれば足りるので、走る累算器 1 本で持つ。
+    #   値は `_prefix_fingerprints(source_bars)[cut]` と同一である（同じ順序・同じ合成）。
+    fp_acc = _EMPTY_PREFIX_FP if memo is not None else None
+    fp_pos = 0
     out: "dict[Any, dict]" = {}
     order: "list[Any]" = []
+    # 確定 H 足の切れ目は期間ラベルの昇順に単調前進する（group_by_period は chart_bars の順序を
+    #   保ち、chart_bars は時刻昇順）。期間ごとに source_bars を全走査すると走査量が
+    #   「期間数 × H 足数」に膨らむ（実測 C=1m / H=5m で 5,244,435 行）ため、切れ目は
+    #   ポインタで前進させる。昇順でない入力が来たときだけ従来の全走査へ落ちる（安全側）。
+    src_times = [int(b["time"]) for b in source_bars]
+    cut = 0
+    prev_label: "int | None" = None
     for label, part in group_by_period(
             chart_bars, compute_tf=compute_tf, bar_time_unix=bar_time_unix):
-        confirmed = [b for b in source_bars if int(b["time"]) < label]
-        confirmed_fp = prefix_fp[len(confirmed)] if prefix_fp is not None else None
+        if prev_label is not None and label < prev_label:
+            cut = 0                                   # 昇順が崩れた＝ポインタを捨てて数え直す
+        prev_label = label
+        while cut < len(src_times) and src_times[cut] < label:
+            cut += 1
+        confirmed = source_bars[:cut]
+        confirmed_fp = None
+        if fp_acc is not None:
+            if cut < fp_pos:                          # 切れ目が戻った＝連鎖を先頭から作り直す
+                fp_acc, fp_pos = _EMPTY_PREFIX_FP, 0
+            while fp_pos < cut:                       # 読む位置まで**だけ**連鎖を伸ばす
+                fp_acc = hash((fp_acc, _bar_signature(source_bars[fp_pos])))
+                fp_pos += 1
+            confirmed_fp = fp_acc
         tails: "list[list[dict]]" = []
         times: "list[int]" = []
         plan: "list[tuple[int, Any, Any]]" = []   # (τ, 記憶にあった点 or None, 指紋 or None)
@@ -133,9 +166,15 @@ def causal_mtf_series(
         for b in part:
             acc = fold_bars([acc, b] if acc else [b], time=label)
             t = int(b["time"])
+            # 出力窓の外のバー（fold_from が足す期間先頭側の C 足）は、畳み acc へ寄与させる
+            #   ためだけに必要で、その時点の指標値は出力に使わない。ここで計算を発行すると
+            #   結果を作ってから捨てることになる（実測 C=1m / H=1M で発行 25,124 件のうち
+            #   24,624 件＝98.0% が破棄）。畳みは上で済んでいるので、発行せずに次へ進む。
+            if t not in keep:
+                continue
             fingerprint = None
             cached = None
-            if memo is not None and t in keep:
+            if memo is not None:
                 fingerprint = hash((confirmed_fp, _bar_signature(acc)))
                 cached = memo.get(t, fingerprint)
             if cached is not None:

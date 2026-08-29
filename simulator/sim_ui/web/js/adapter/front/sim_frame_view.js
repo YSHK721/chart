@@ -72,5 +72,59 @@ export function createSimFrameView({ doc } = {}) {
 
     /** 子文書の iframe 要素（load 待ちの購読点）。未 mount なら null。 */
     frameElement() { return frame; },
+
+    /**
+     * 子文書の**中身が必要としている高さ**（px）。分からなければ null（ISSUE-442）。
+     *
+     * 何のためか: 統合ページの下部ペインの既定高さを「中身が収まる高さ」にするため
+     *   （依頼者裁定 2026-08-22）。既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方で
+     *   チャート側は必要以上に削られ、指標ペインが狭くなって手で広げる作業が要った。
+     *
+     * 何を測るか: 投入フォームの版面（`#simRunForm`）の中身の高さだけ。結果ビューア
+     *   （`?job=<id>`）では null を返す——結果は広いほど読みやすく、「収まる高さ」という
+     *   概念が当てはまらない（狭める既定を勝手に決めない＝ビュー自動介入の禁止）。
+     *   同一オリジンなので直接読める。まだ読み込まれていない・別オリジンなら null。
+     */
+    contentHeightPx() {
+      const doc2 = frame ? (frame.contentDocument || null) : null;
+      const form = doc2 && typeof doc2.getElementById === "function"
+        ? doc2.getElementById("simRunForm") : null;
+      if (!form) return null;
+      const h = form.scrollHeight;
+      return Number.isFinite(h) && h > 0 ? h : null;
+    },
   };
+}
+
+/** 子文書の組み立て完了を待つ回数の上限（1 フレーム ≒ 16ms なので約 2 秒）。 */
+const CONTENT_READY_MAX_FRAMES = 120;
+
+/**
+ * 子文書が組み上がってから中身の高さを 1 回だけ知らせる（ISSUE-442）。
+ *
+ * 子は `window.__simReportViewReady` で完了を表明する（`report_view.html` の finally）。
+ * 表明を待たずに測ると組み立て途中の高さを掴む。上限まで待っても表明されない・高さが
+ * 測れない（結果ビューア）ときは**何も知らせない**——分からない値で版面を動かさない。
+ *
+ * @param {object}   frame  器の View（contentHeightPx / childWindow を持つ）
+ * @param {function} raf    次フレームの予約（注入・テストは自前の駆動を渡す）
+ * @param {function} notify 高さの通知先
+ */
+export function waitForContent(frame, raf, notify) {
+  if (typeof raf !== "function") return;
+  let frames = 0;
+  const tick = () => {
+    const win = frame.childWindow();
+    if (win && win.__simReportViewReady) {
+      // 表明の直後はまだ描画が確定していないことがあるので、もう 1 フレーム置いて測る。
+      raf(() => {
+        const h = frame.contentHeightPx();
+        if (h) notify(h);
+      });
+      return;
+    }
+    frames += 1;
+    if (frames <= CONTENT_READY_MAX_FRAMES) raf(tick);
+  };
+  raf(tick);
 }

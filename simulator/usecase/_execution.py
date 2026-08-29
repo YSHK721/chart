@@ -23,6 +23,34 @@ def mt5_bid_ask(base: float, *, spread: float, point: float) -> "tuple[float, fl
     return base, base + spread * point
 
 
+def admit_orders(orders, spec) -> "list[Order]":
+    """戦略が返した発注を実行経路へ受理する**唯一の門**（ISSUE-445 段階 3-C）。
+
+    受理前に :meth:`Order.validate` で銘柄仕様の不変条件（side/kind の整合・volume の
+    範囲と刻み・SL/TP の stops_level 距離）を検査し、違反時は ``InvalidPriceError`` を
+    送出する。適合時は受け取った発注をそのまま（順序を保って）返す。
+
+    **なぜ検査が要るか（欠落の実測）**: `Order.validate` は 2026-06 の domain 実装当初から
+    存在したが、実行経路のどこからも呼ばれていなかった（実測 2026-08-26: 本番コードでの
+    `.validate(` 呼出は `account_engine` の 2 件のみ）。そのため銘柄仕様に反する発注が
+    そのまま約定し、MT5 では成立しない結果を無言で生成し得た。ISSUE-445 の RC-2
+    （`MaSlope` が原典の `NormalizeLot` を欠き `volume=0.1 < volume_min=1.0` を発注していた）は
+    まさにこの型であり、**本関数が結線されていれば発注の時点で赤になっていた**
+    （`test_admission_would_have_caught_rc2` が実測で固定する）。
+
+    **なぜ拒否＋続行ではなく送出か**: 原典 EA（`MA_Slope_EA.mq5` ほか）はいずれも
+    `OrderSend` の前に自前で `NormalizeLot` を掛けており、**不正な発注はサーバへ到達しない**。
+    つまり「MT5 サーバが不正発注をどう扱うか」は参照実装の定義域の外にある。ここで
+    「拒否して続行」を選ぶと、参照実装が定義していない挙動を推測で作り込むことになり、
+    かつ壊れたアダプタが「トレード 0 件」という一見正当な結果を無言で返す。よって
+    受理側は判断せず送出し、人が裁定する（不正発注＝アダプタが原典から乖離した証拠）。
+    """
+    admitted = list(orders)
+    for order in admitted:
+        order.validate(spec)
+    return admitted
+
+
 def fill_market_order(
     order: Order,
     *,

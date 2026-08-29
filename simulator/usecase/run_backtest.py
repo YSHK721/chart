@@ -18,6 +18,7 @@ from simulator.domain.exceptions import MarginCallError
 from simulator.domain.position import Position
 from simulator.domain.trade_record import TradeRecord
 from simulator.usecase._execution import (
+    admit_orders,
     check_sltp_hit,
     check_sltp_hit_at_tick,
     close_price_for,
@@ -26,7 +27,7 @@ from simulator.usecase._execution import (
     resolve_eval_quote,
 )
 from simulator.usecase.compute_stats import compute_stats
-from simulator.usecase.models import BacktestResult
+from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.session_gate import SessionGate
@@ -85,8 +86,14 @@ class RunBacktestRequest:
     config: Any
     bars: Any
     symbol_spec: Any
-    initial_deposit: float
-    stop_out_level: float = 0.0
+    # 契約は 2 軸（ISSUE-445 段階 3-D3・設計書 §3.4）。`symbol_spec`＝銘柄の契約、
+    # `account`＝口座の契約。段階 3-D2 では口座属性（`initial_deposit` / `leverage` /
+    # `stop_out_level`）を本 DTO が 3 つフラットに持っていたが、供給元スナップショットの
+    # `account` セクションは既に 5 キーを持ち、実口座からは `margin_mode` /
+    # `margin_so_call` / `margin_so_so` も実測記録されている。口座属性が増えるたびに
+    # 本 DTO を改変するのは OCP 違反であるため、`AccountSpec` に閉じる。
+    # **既定値は持たない**（`AccountSpec` 側も全フィールド既定なし）。
+    account: AccountSpec
     # warmup/trading_start（config-gated・既定 None=全バー取引＝後方互換）。
     # 指定時は bar.time < trading_start のバーを「指標 update のみ実施し、トレード/
     # equity_curve/stats から除外する」ウォームアップ区間として扱う（指標 seed の収束のみ
@@ -262,7 +269,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
         floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
         account = Account(
-            balance=request.initial_deposit,
+            balance=request.account.initial_deposit,
             contract_size=contract_size,
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
@@ -276,7 +283,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=spec.leverage,
+                leverage=request.account.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -328,13 +335,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     bar, entry_price_basis="current_open", point_size=spec.point_size
                 )
                 account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
-                if account.margin_level() < request.stop_out_level:
+                if account.margin_level() < request.account.stop_out_level:
                     if config.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました（bar open 評価）",
                             context={
                                 "margin_level": account.margin_level(),
-                                "stop_out_level": request.stop_out_level,
+                                "stop_out_level": request.account.stop_out_level,
                             },
                             bar_index=bar_index,
                         )
@@ -361,10 +368,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     account.update_floating_pnl_at(bid=nb_bid, ask=nb_ask)
             # D 保有状態 / E シグナル評価（EA ロジック）
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
+            #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
             orders = (
                 []
                 if halted
-                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+                else admit_orders(
+                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
+                    spec,
+                )
             )
             # 市場閉鎖バーは新規成行を約定しない（ドテン反転の reverse 決済も含め全約定を
             #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
@@ -400,7 +411,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
                 )
                 account.open_positions.append(position)
-                account.margin += position.required_margin(spec.leverage, contract_size)
+                account.margin += position.required_margin(request.account.leverage, contract_size)
                 open_trades.append(
                     _OpenTrade(
                         position=position,
@@ -466,14 +477,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             )
             account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
             equity_curve.append(account.equity)
-            if account.margin_level() < request.stop_out_level:
+            if account.margin_level() < request.account.stop_out_level:
                 # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
                 if config.stop_out_action != "close_and_halt":
                     raise MarginCallError(
                         "margin_level が stop_out_level を下回りました",
                         context={
                             "margin_level": account.margin_level(),
-                            "stop_out_level": request.stop_out_level,
+                            "stop_out_level": request.account.stop_out_level,
                         },
                         bar_index=bar_index,
                     )
@@ -505,7 +516,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             trades=trades,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
-            initial_deposit=request.initial_deposit,
+            initial_deposit=request.account.initial_deposit,
         )
         return BacktestResult(
             trades=trades,
@@ -571,7 +582,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         contract_size = spec.contract_size
         floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
         account = Account(
-            balance=request.initial_deposit,
+            balance=request.account.initial_deposit,
             contract_size=contract_size,
             floating_pnl_basis=floating_pnl_basis,
             point_size=spec.point_size,
@@ -585,7 +596,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 contract_size=contract_size,
-                leverage=spec.leverage,
+                leverage=request.account.leverage,
                 account=account,
                 trades=trades,
                 deals=deals,
@@ -692,7 +703,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
                 for order, pos in filled:
                     account.open_positions.append(pos)
-                    account.margin += pos.required_margin(spec.leverage, contract_size)
+                    account.margin += pos.required_margin(request.account.leverage, contract_size)
                     open_trades.append(
                         _OpenTrade(
                             position=pos,
@@ -709,10 +720,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
             #   halt 後は発注しない（玉を増やさない）。open-tick SL/TP 後の保有で評価する。
+            #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
             orders = (
                 []
                 if halted
-                else (self._strategy.on_new_bar(bar_index, self._indicators, account) or [])
+                else admit_orders(
+                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
+                    spec,
+                )
             )
             # 注文方式で経路を分ける（kind="market" は足境界の成行・既存経路／指値・逆指値の
             #   ペンディングは足途中ティックでトリガ評価する別経路）。pending EA は kind が
@@ -755,7 +770,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     )
                     account.open_positions.append(position)
                     account.margin += position.required_margin(
-                        spec.leverage, contract_size
+                        request.account.leverage, contract_size
                     )
                     open_trades.append(
                         _OpenTrade(
@@ -903,7 +918,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     for order, pos in filled:
                         account.open_positions.append(pos)
                         account.margin += pos.required_margin(
-                            spec.leverage, contract_size
+                            request.account.leverage, contract_size
                         )
                         open_trades.append(
                             _OpenTrade(
@@ -933,8 +948,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     and not resting_pending
                     and not session_gate.is_closed(bar_index)
                 ):
-                    rearm = (
-                        self._strategy.on_tick(bar_index, q_bid, q_ask, account) or []
+                    # 再アームも発注であり、受理の門（admit_orders）を通す。
+                    rearm = admit_orders(
+                        self._strategy.on_tick(bar_index, q_bid, q_ask, account) or [],
+                        spec,
                     )
                     if rearm:
                         resting_pending = list(rearm)
@@ -955,15 +972,15 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     #   保有列は account.open_positions と open_trades が常時 lockstep のため
                     #   走査対象・順序・式が inline 版と同一＝byte-identical。
                     margin_level = account.hedged_margin_level(
-                        leverage=spec.leverage, contract_size=contract_size
+                        leverage=request.account.leverage, contract_size=contract_size
                     )
-                if margin_level < request.stop_out_level:
+                if margin_level < request.account.stop_out_level:
                     if config.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました",
                             context={
                                 "margin_level": account.margin_level(),
-                                "stop_out_level": request.stop_out_level,
+                                "stop_out_level": request.account.stop_out_level,
                             },
                             bar_index=bar_index,
                         )
@@ -1011,7 +1028,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             trades=trades,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
-            initial_deposit=request.initial_deposit,
+            initial_deposit=request.account.initial_deposit,
         )
         return BacktestResult(
             trades=trades,

@@ -35,6 +35,9 @@ function fakeRenderer(overrides = {}) {
     panPriceByPixels: (dy) => { calls.panPriceByPixels.push(dy); },
     handlePriceWheel: (x, y, dy) => { calls.handlePriceWheel.push([x, y, dy]); return false; },
     isOverPriceAxis: () => false,
+    // ISSUE-440: 幾何が動いたら凡例を引き直す面（ChartInteractionController が pointermove /
+    //   pointerup で呼ぶ）。ダブルも契約を満たす（部分実装を通さない＝fail-close）。
+    syncPaneGeometry: () => false,
     resetPriceZoom: () => { calls.resetPriceZoom = (calls.resetPriceZoom || 0) + 1; },
     setPaneHeight: (h) => { calls.setPaneHeight.push(h); },
   };

@@ -318,15 +318,33 @@ async function capturingErrors(fn) {
   return seen;
 }
 
+// ISSUE-441 以降、面は版面（#simRunForm）の 2 列（設定 / 入力）へ入る。「直下」の判定は
+//   入力列の中で見る（不変条件は同じ: 掲示はスタートの直下）。
+function inputColumnIds(body) {
+  const col = findById(body, "simRunFormInputs");
+  return (col ? col.children : []).map((c) => c.id);
+}
+
 test("the run status surface is mounted right below the run action surface (§19.6 R2)", async () => {
   // Arrange / Act
   const doc = fakeDoc();
   await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
   // Assert
-  const ids = doc.body.children.map((c) => c.id);
+  const ids = inputColumnIds(doc.body);
   assert.ok(ids.includes("simRunStatusPanel"), "掲示面が組まれていない");
   assert.equal(ids[ids.indexOf("simRunActionPanel") + 1], "simRunStatusPanel",
     `掲示面がスタートの直下にありません: ${ids.join(",")}`);
+});
+
+test("the run form splits settings and inputs into two columns (ISSUE-441)", async () => {
+  // Arrange / Act: 依頼者指示 2026-08-22「Setting 項目と input 項目に分けろ」。
+  const doc = fakeDoc();
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
+  // Assert: 設定列に Tester Settings、入力列に Inputs・スタート・掲示。
+  const settings = findById(doc.body, "simRunFormSettings");
+  assert.deepEqual((settings ? settings.children : []).map((c) => c.id), ["simTesterPanel"]);
+  assert.deepEqual(inputColumnIds(doc.body),
+    ["simEaInputsPanel", "simRunActionPanel", "simRunStatusPanel"]);
 });
 
 test("a successful submit posts the job id and status on the status surface", async () => {
@@ -658,15 +676,23 @@ test("an abandoned watch stops claiming the job is still running (🟡-3)", asyn
 // 器を組めなかったときも、掲示面だけは出して理由を出す。
 
 /** n 回目の `appendChild` で落ちる host（面の mount 失敗の再現）。 */
+// n 回目の「面の設置」で落ちる host を作る。ISSUE-441 以降、面は版面（#simRunForm）の
+//   列へ入るので、数えるのは body だけでなく**列の appendChild** も含める（body だけを
+//   数えると、面がいくつ組めていても数が増えず「遅い失敗」を再現できない）。
 function hostFailingAt(doc, n) {
   const body = doc.body;
-  const original = body.appendChild.bind(body);
   let calls = 0;
-  body.appendChild = (child) => {
-    calls += 1;
-    if (calls === n) throw new Error("パネルを組み立てられません");
-    return original(child);
+  const guard = (el) => {
+    const original = el.appendChild.bind(el);
+    el.appendChild = (child) => {
+      calls += 1;
+      if (calls === n) throw new Error("パネルを組み立てられません");
+      const out = original(child);
+      if (child && child.id === "simRunForm") (child.children || []).forEach(guard);
+      return out;
+    };
   };
+  guard(body);
   return body;
 }
 
@@ -755,8 +781,8 @@ test("the normal path keeps the status surface below the run action surface (§1
   const doc = fakeDoc();
   await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch({ schema: settingsSchema() }) });
   // Assert
-  const ids = doc.body.children.map((c) => c.id);
-  assert.notEqual(ids[0], "simRunStatusPanel", "成功経路で掲示面を最上部へ動かしています");
+  assert.notEqual(doc.body.children[0].id, "simRunStatusPanel", "成功経路で掲示面を最上部へ動かしています");
+  const ids = inputColumnIds(doc.body);
   assert.equal(ids[ids.indexOf("simRunActionPanel") + 1], "simRunStatusPanel");
 });
 

@@ -46,8 +46,10 @@ def _run_main(tmp_path: Path, out_name: str):
         "--data-path", str(_FIXTURE),
         "--ea-name", "StopEntryProbe_EA",
         "--symbol", "JP225", "--period", "M1",
-        "--contract-size", "10.0", "--digits", "1", "--point-size", "0.1",
-        "--leverage", "10.0", "--lot-size", "0.1",
+        # 銘柄仕様 8 項目は指定しない＝供給元スナップショットから引かせる
+        # （ISSUE-445・2026-08-26・test_walk_forward_determinism.py と同じ理由）。
+        # `--lot-size` は EA 入力であり銘柄仕様ではないため据え置く。
+        "--lot-size", "0.1",
         "--stop-loss-points", "200", "--take-profit-points", "500",
         "--entry-offset-points", "100.0", "--entry-type", "stop",
         "--config-override", "tick_model=ohlc_expand",

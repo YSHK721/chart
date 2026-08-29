@@ -1224,7 +1224,7 @@ BacktestError
 | TBD-14 | `FromDate` / `ToDate` の期間境界（`ToDate` 当日を含むか）と `Dates=2`（last year）の起点定義 | §5.3 V-2・V-4 を暫定規則として定義している。境界差は trades の bit-exact 一致（MT5 突合の通過条件）を崩す | MT5 公式ドキュメント／同一データで MT5 実行結果のバー数と比較（D-11 の等価性テストと連動） |
 | TBD-15 | 本 corpus 外の `[Tester]` キー（`Report` / `ReplaceReport` / `ShutdownTerminal` / `UseLocal` 等）の完全集合と型 | corpus に出現しない（§2.2.3）。R12 により現状は例外となる | MT5 公式ドキュメント（端末起動設定ファイル仕様） |
 | TBD-16 | `Deposit` に小数表記が許容されるか | 実測は整数のみ（`10000` / `139500`）。R7 は入力トークンを保持するため小数でも往復は成立するが、MT5 側の受容性が不明 | MT5 で小数の初期証拠金を設定して保存し実測 |
-| TBD-17 | `Currency` の許容値集合 | 実測は `JPY` のみ。ISO 4217 3 文字（規則 L）は形式検証であり、MT5 の許容集合とは別 | MT5 の通貨選択肢の実測。**リポジトリ内傍証**: golden fixture `case.yaml:20` に `currency: JPY`（MT5 実走の確定値）の記録あり（v1.1 追記） |
+| TBD-17 | `Currency` の許容値集合 | 実測は `JPY` のみ。ISO 4217 3 文字（規則 L）は形式検証であり、MT5 の許容集合とは別 | MT5 の通貨選択肢の実測。**リポジトリ内傍証**: golden fixture の `expected/report.json` の `settings.currency: JPY`（MT5 実走の確定値）および権威 `marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json` の `currency_profit: JPY`。`case.yaml` の `currency` は段階 3-E2b で撤去済み。 |
 | TBD-18 | 本書 §4.7 のプリセットを MT5 に読み戻して同一 UI 状態を再現できるか | MT5 実行環境が存在しない（CON-06） | MT5 端末での実機確認 |
 
 ---

@@ -28,6 +28,10 @@ from simulator.tools.optimize_cli import (
     make_run_segment_factory,
 )
 from simulator.tools.run_is_oos_cli import assert_safe_output_dir, normalize_time
+from simulator.tools.symbol_spec_args import (
+    add_lot_size_argument,
+    add_symbol_spec_arguments,
+)
 from simulator.usecase.walk_forward import WalkForwardRequest, walk_forward
 
 
@@ -189,17 +193,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol", default="JP225")
     p.add_argument("--period", default="M1")
     p.add_argument("--initial-deposit", type=float, default=10_000.0)
-    p.add_argument("--contract-size", type=float, default=10.0)
-    p.add_argument("--volume-min", type=float, default=0.01)
-    p.add_argument("--volume-max", type=float, default=100.0)
-    p.add_argument("--volume-step", type=float, default=0.01)
-    p.add_argument("--stops-level", type=int, default=0)
-    p.add_argument("--digits", type=int, default=1)
-    p.add_argument("--point-size", type=float, default=0.1)
-    p.add_argument("--leverage", type=float, default=10.0)
+    # 銘柄仕様 8 項目は既定値を置かず供給元から解決する（ISSUE-445 RC-1・単一ソース）。
+    # 解決そのものは SP2 の _build_base_kwargs（再利用）が行う。
+    add_symbol_spec_arguments(p)
     p.add_argument("--ma-period", type=int, default=60)
     p.add_argument("--ma-method", default="ema")
-    p.add_argument("--lot-size", type=float, default=0.1)
+    # EA 入力 lot も既定値を置かず供給元の最小発注単位から引く（解決は SP2 の
+    # `_build_base_kwargs`（再利用）が行う・ISSUE-445 と同じ単一ソース）。
+    add_lot_size_argument(p)
     p.add_argument("--stop-loss-points", type=int, default=0)
     p.add_argument("--take-profit-points", type=int, default=0)
     p.add_argument("--entry-offset-points", type=float, default=0.0)

@@ -52,7 +52,6 @@ def test_symbol_spec_holds_order_validate_required_attributes():
         stops_level=10,
         digits=5,
         point_size=0.00001,
-        leverage=100.0,
     )
 
     # Assert: domain.order.validate が duck typing で参照する 5 属性 + 依頼仕様の属性
@@ -63,7 +62,10 @@ def test_symbol_spec_holds_order_validate_required_attributes():
     assert spec.point_size == 0.00001
     assert spec.contract_size == 100_000.0
     assert spec.digits == 5
-    assert spec.leverage == 100.0
+    # `leverage` は口座属性であり SymbolSpec は持たない（ISSUE-445 段階 3-D2・設計書 §3.4）。
+    # 「持たないこと」自体は
+    # `simulator/tests/unit/test_symbol_spec_fields_are_symbol_sourced.py` が
+    # 供給元の section から機械的に固定する（ここに名前を書いて二重化しない）。
 
 
 def test_symbol_spec_satisfies_domain_order_validate_duck_typing():
@@ -79,7 +81,6 @@ def test_symbol_spec_satisfies_domain_order_validate_duck_typing():
         stops_level=10,
         digits=5,
         point_size=0.00001,
-        leverage=100.0,
     )
     order = Order(side="buy", kind="market", volume=0.10, price=None)
 

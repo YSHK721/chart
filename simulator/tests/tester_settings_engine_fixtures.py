@@ -25,7 +25,8 @@
 
 4. 依存:
     標準: datetime / pathlib / typing
-    プロジェクト内: simulator.usecase.models（`SymbolSpec`＝銘柄仕様 8 フィールド）
+    プロジェクト内: simulator.usecase.models（`SymbolSpec`＝銘柄仕様 7 フィールド。
+                    口座属性 `leverage` は ISSUE-445 段階 3-D2 で分離済み）
                     simulator.sim_ui.adapter.symbol_spec_catalog（権威値の出所・テスト限定）
                     simulator.framework.tester_settings（API-03）
                     simulator.main.tester_settings.kwargs_mapper（本フェーズの検証対象）
@@ -93,6 +94,19 @@ def jp225_symbol_spec() -> SymbolSpec:
     return SymbolSpec(**{field.name: getattr(profile, field.name) for field in fields(SymbolSpec)})
 
 
+def jp225_leverage() -> float:
+    """口座属性 `leverage` を `SymbolSpecCatalog` の権威値から引く。
+
+    ISSUE-445 段階 3-D2 で `SymbolSpec` から外れた（`mt5.symbol_info()` に無い値であり、
+    供給元でも `account` セクションから引く）。`EngineBinding.leverage` は既定値を持たない
+    必須注入であるため、テスト側が与える——ただし**値は書き写さない**（`RunProfile` が
+    `jp225_symbol_spec()` と同じ単一ソースであり、供給元スナップショット由来である）。
+    """
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+
+    return float(build_run_options_port().datasets()[0].leverage)
+
+
 def catalog_ea_names() -> frozenset[str]:
     """N-01 の判定源（実行可能な EA 名の集合）。カタログが権威。"""
     from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
@@ -103,6 +117,7 @@ def catalog_ea_names() -> frozenset[str]:
 def engine_binding(
     *,
     symbol_spec: SymbolSpec | None = None,
+    leverage: float | None = None,
     symbol: str = "JP225",
     period: str = "Daily",
     data_path: Any = None,
@@ -119,6 +134,7 @@ def engine_binding(
     """
     return EngineBinding(
         symbol_spec=symbol_spec if symbol_spec is not None else jp225_symbol_spec(),
+        leverage=leverage if leverage is not None else jp225_leverage(),
         symbol=symbol,
         period=period,
         data_path=data_path,

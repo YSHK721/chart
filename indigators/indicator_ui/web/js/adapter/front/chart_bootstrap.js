@@ -93,16 +93,65 @@ export function createChartWithMainSeries({ lwc, container, symbolSpec = null })
 //   （SSR/テスト）では設定できないため no-op（handlePriceWheel は pane 高未供給時に安全に false）。
 //   リサイズで container 高が変わるため、呼び出し側（wheel 発火時等）が随時再実行して追随する。
 export function makeUpdatePaneHeight({ container, chart, renderer }) {
+  const measure = makeMeasurePaneAreaHeight({ container, chart });
   return () => {
     if (typeof renderer.setPaneHeight !== 'function') {
       return;
     }
-    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
-    const ts = typeof chart.timeScale === 'function' ? chart.timeScale() : null;
-    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
-    const paneHeight = ch - th;
+    const paneHeight = measure();
     if (paneHeight > 0) {
       renderer.setPaneHeight(paneHeight);
     }
+  };
+}
+
+/**
+ * 版面（container）の寸法変化にペイン幾何の再発行を追随させる（ISSUE-440）。
+ *
+ * なぜ lwc の `subscribeSizeChange` を使わないか（実測 2026-08-21）: 購読を張っても
+ *   `autoSize` 由来のリサイズ（下部ペインの分割線・ウィンドウ）では**発火しない**。
+ *   実測: ウィンドウを 1000→800 に縮めても凡例の DOM 変化は 0 件で、位置は古いまま
+ *   （ペイン上端 45/80px に対しラベル 458/805px）。マウスを動かした瞬間に正位置へ直った
+ *   ＝発火していないことの証拠。よって寸法変化は**自分で観測する**。
+ *
+ * 二度呼ぶ理由: 同じ container を lwc も ResizeObserver で見ており、ペイン高の再計算が
+ *   こちらのコールバックより後になり得る。その場合 1 回目は古い高さを見るので、次フレームで
+ *   もう一度突き合わせる（幾何が変わっていなければ何も起きない＝無駄な再描画は生まれない）。
+ *
+ * @returns {function} 購読解除（観測できない環境では no-op）
+ */
+export function installPaneGeometryFollow({ container, renderer, win = globalThis }) {
+  // 版面の総高が変わったときは、価格ペイン高の保存（ISSUE-440(2)）まで含めて揃える。
+  const refresh = () => renderer.syncPaneGeometry();
+  const Observer = win && win.ResizeObserver;
+  if (!container || typeof Observer !== 'function') {
+    return () => {};
+  }
+  const observer = new Observer(() => {
+    refresh();
+    if (typeof win.requestAnimationFrame === 'function') {
+      win.requestAnimationFrame(refresh);
+    }
+  });
+  observer.observe(container);
+  return () => observer.disconnect();
+}
+
+// ペイン領域の総高（container 高 − 時間軸高）を **その場で測る**関数を作る。
+//
+//   なぜ push（setPaneHeight）と別に pull が要るか（実測 2026-08-21・ISSUE-440）:
+//   この値はペイン幾何の派生（区切り高＝総高 − 各ペイン高の合計）に使われるが、供給が
+//   「呼び出し側が随時 setPaneHeight する」形だと、呼ばれなかった経路（起動直後・ペイン区切り
+//   のドラッグ・版面のリサイズ）では**古い総高**のまま区切り高が逆算される。実測では起動直後の
+//   凡例が正しい位置より 42px 下（740px / 正 698px）に出て、価格軸でホイールを回す
+//   （＝setPaneHeight が走る唯一の経路）と 698px へ直った。
+//   幾何は使う時点で測るのが唯一の是正である（保持値は同期漏れを構造的に持つ）。
+export function makeMeasurePaneAreaHeight({ container, chart }) {
+  return () => {
+    const ch = container && typeof container.clientHeight === 'number' ? container.clientHeight : 0;
+    const ts = chart && typeof chart.timeScale === 'function' ? chart.timeScale() : null;
+    const th = ts && typeof ts.height === 'function' ? ts.height() : 0;
+    const h = ch - th;
+    return Number.isFinite(h) && h > 0 ? h : 0;
   };
 }

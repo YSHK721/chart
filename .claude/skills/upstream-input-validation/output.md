@@ -1,224 +1,190 @@
-# upstream-input-validation 検証結果
+# 上流入力検証結果（upstream-input-validation）
 
-## step S-1：上流入力の整理
+## 上流入力の整理（step S-1）
 
-| 種別 | 件数 | 内容 |
-|------|------|------|
-| 依頼者指示 | 1 | ISSUE-368 工程 4 の成果を 1 コミットで保全する（指定 7 ファイル + コミットメッセージ） |
-| 他者レビュー指摘 | 0 | なし |
-| 前段成果物 | 0 | なし |
-| 既存合意の引き継ぎ | 1 | CLAUDE.md の禁止事項・厳守事項（git add -A 禁止、破壊的コマンド禁止など） |
+本タスクで受領した入力を 4 種別で分類。
 
-**判定**：上流入力 2 件（依頼者指示 + 既存合意）→ 本スキル継続
+### 分類結果
+
+| 種別 | 件数 | 備考 |
+|---|---|---|
+| 依頼者指示 | 1 件 | ISSUE.md の 1 行是正・コミット要求 |
+| 他者レビュー指摘 | 0 件 | 該当なし |
+| 前段成果物 | 0 件 | 修正は既に作業ツリーに存在（コミット待ち） |
+| 既存合意の引き継ぎ | 0 件 | 該当なし |
+
+**上流入力合計**：1 件（依頼者指示のみ）
 
 ---
 
-## step S-2：前提抽出
+## 前提抽出（step S-2）
 
-### 上流入力 1：依頼者指示「指定 7 ファイルを 1 コミットで保全」
+依頼者指示「ISSUE.md の見出しを是正してコミット」に内在する暗黙の前提を抽出。
 
-**主張内容**：
-```
-ISSUE-368 工程 4（SOLID リファクタ）の成果を指定 7 ファイルで 1 コミット化し保全する。
-テストは変更しない。破壊的 git コマンド・git add -A を使わない。
-```
+### 前提 1: ISSUE-368 見出しの「OPEN・保留」表記が不正
+
+**明示文言**：「見出しが `（2026-08-11・OPEN・保留）` のままで、直下の `**ステータス**: RESOLVED` と矛盾していた」
 
 **暗黙の前提**：
-1. 指定 7 ファイルが現在変更中（M ステータス）であること
-2. 指定 7 ファイル以外のワークツリー変更は保護（コミット対象外）であること
-3. `tests/` 配下は別エージェントが作業中で、そこへのコミット禁止であること
-4. コミットメッセージの形式と内容が指定されていることが規則に従うこと
-5. ブランチ名 `feature/issue-368-position-sizing-ui` が有効であること
+- 見出しと本文の状態表記が一致すべき（メタデータ整合性ルール）
+- 本文の「**ステータス**: RESOLVED」が正しい状態を表す（Authority）
+- 見出しの「OPEN・保留」は過去のスナップショット残存（修正対象と特定）
 
-**独立検証可能性**：✓ すべて `git status` / `git diff` / コード確認で可能
+**独立検証可能性**：✅ 可能（ISSUE.md の実コンテンツで直接確認）
 
 ---
 
-### 上流入力 2：既存合意「CLAUDE.md 禁止・厳守事項」
+### 前提 2: コミットは `develop` ブランチで実施すべき
 
-**主張内容**：
-```
-git add -A / git add . 禁止、パス明示指定のみ。
-破壊的コマンド（checkout -- / restore / reset --hard / stash / clean）禁止。
-コミット前に git diff --cached --stat で検証。
-既知未追跡・スキル output.md には触れない。
-```
+**明示文言**：「ブランチを切り替えない（develop のまま）」
 
 **暗黙の前提**：
-1. 指定パスのステージングが `git add <明示パス>` 形で実現可能であること
-2. 破壊的コマンドを使わずに変更を巻き戻せる代替手段があること（Edit ツール）
-3. 検証コマンド（`git diff --cached --stat`）の出力が信頼できること
-4. スキル output.md は別プロセス（別スキル実行）から更新されるため、本操作では触れないこと
+- develop ブランチが現在の作業対象ブランチ
+- コミットは develop HEAD に追加すべき（既存ブランチ構成の維持）
 
-**独立検証可能性**：✓ すべて git コマンド履歴 + CLAUDE.md 記載で確認可能
+**独立検証可能性**：✅ 可能（`git branch` で状態確認）
 
 ---
 
-## step S-3：証拠先行検証
+### 前提 3: `git add -A` は禁止、パス明示必須
 
-### 前提 1-1：指定 7 ファイルが現在 M（修正）であること
+**明示文言**：「`git add -A` / `git add .` は**使用禁止**。`git add ISSUE.md` とパスを明示する」
 
-**実証手段**：`git status --porcelain` で全ファイルのステータス確認
+**暗黙の前提**：
+- ISSUE.md のみ変更対象（他ファイルはステージ対象外）
+- 未追跡ファイル（`.claude/worktree-archive/` 等）が存在する環境（`git add -A` はこれらを拾う）
 
-**実証コマンド**：
-```bash
-git status --porcelain | grep "^ M"
-```
-
-**実証結果**：
-```
- M .claude/skills/prompt-validation-workflow/output.md
- M .claude/skills/upstream-input-validation/output.md
- M indigators/indicator_ui/web/js/adapter/front/chart_app_wiring.js
- M indigators/indicator_ui/web/js/adapter/front/chart_bootstrap.js
- M indigators/indicator_ui/web/js/adapter/front/position_sizing_controller.js
- M indigators/indicator_ui/web/js/adapter/front/position_sizing_dialog.js
- M indigators/indicator_ui/web/js/adapter/front/price_pick_resolver.js
- M indigators/indicator_ui/web/js/adapter/front/symbol_spec_catalog.js
- M indigators/indicator_ui/web/js/domain/price_quantize.js
-```
-
-**検証判定**：
-- ✓ 指定 7 ファイル実存（M ステータス）
-- ✓ スキル output.md も M（別プロセスで更新中）だが、コミット対象外として保護
+**独立検証可能性**：✅ 可能（`git status` で環境状態確認）
 
 ---
 
-### 前提 1-2：tests/ 配下にテストファイル新規作成がないこと
+## 証拠先行検証（step S-3）
 
-**実証手段**：`git status --porcelain | grep "^??.*tests/"`
+各前提について実証コマンド・出力を記録。
 
-**実証コマンド**：
+### 前提 1 の検証: ISSUE-368 見出しが修正されている
+
+**実証手段**：実コード Read（ISSUE.md の該当行）
+
+**実行**：
 ```bash
-git status --porcelain | grep "^??" | grep tests/
+grep -n "^## ISSUE-368:" ISSUE.md | head -1
 ```
 
-**実証結果**：
+**出力**：
 ```
-（出力なし）
+6918:## ISSUE-368: [機能] ポジションサイズ計算機のチャート UI 統合（2026-08-11 起票・2026-08-20 RESOLVED）
 ```
 
-**検証判定**：
-- ✓ tests/ 配下に ?? （未追跡）ファイルなし
-- ✓ 並行作業の妨害なし
+**検証結果**：
+- 見出しが「（2026-08-11 起票・2026-08-20 RESOLVED）」に修正されている ✅
+- 直後の行に「**ステータス**: RESOLVED」が確認されている ✅
+- 見出しと本文の状態表記が一致している ✅
+
+**実証強度**：★★★（実コンテンツの直接確認）
 
 ---
 
-### 前提 1-3：git add 明示指定が実行されたこと
+### 前提 2 の検証: develop ブランチで実施されている
 
-**実証手段**：実行ログの確認（Bash コマンド履歴）
+**実証手段**：git コマンド（`git branch / git log`）
 
-**実証コマンド**（参考）：
+**実行**：
 ```bash
-git add \
-  indigators/indicator_ui/web/js/domain/price_quantize.js \
-  indigators/indicator_ui/web/js/adapter/front/symbol_spec_catalog.js \
-  ... （7 ファイル明示）
+git branch --show-current
+git log -1 --oneline
 ```
 
-**実証結果**：
-- ✓ `git add -A` / `git add .` を使用せず
-- ✓ 7 ファイルを明示指定して add
+**出力**：
+```
+develop
+d74dcc2 docs(ISSUE-368): 見出しの状態表記を本文の RESOLVED と一致させる
+```
+
+**検証結果**：
+- 現在ブランチが develop ✅
+- コミット SHA `d74dcc2` が develop HEAD に存在 ✅
+- コミットは develop に追加されている ✅
+
+**実証強度**：★★★（git 状態の直接確認）
 
 ---
 
-### 前提 1-4：コミット前に git diff --cached --stat で検証
+### 前提 3 の検証: `git add ISSUE.md` でステージし、他ファイルが混入していない
 
-**実証手段**：`git diff --cached --stat` の実出力確認
+**実証手段**：git コマンド（`git diff --cached --stat / git status --short`）
 
-**実証コマンド**：
+**実行**：
 ```bash
+# ステージ確認（実施時の出力）
 git diff --cached --stat
+# → ISSUE.md | 2 +-
+
+# 最終状態の作業ツリー確認
+git status --short
+# →
+# ?? .claude/worktree-archive/
+# ?? MQL5_Profiles_Tester.zip
+# ?? integrated_position_sizing_calculator.html.bak-260811
 ```
 
-**実証結果**（コミット前）：
-```
- .../web/js/adapter/front/chart_app_wiring.js       | 18 ++++++++++++----
- .../web/js/adapter/front/chart_bootstrap.js        |  5 ++++-
- .../js/adapter/front/position_sizing_controller.js |  9 +++++++-
- .../web/js/adapter/front/position_sizing_dialog.js |  9 +++++++-
- .../web/js/adapter/front/price_pick_resolver.js    | 11 ++++++----
- .../web/js/adapter/front/symbol_spec_catalog.js    | 24 +++++++++++++++++++---
- .../indicator_ui/web/js/domain/price_quantize.js   | 23 +++++++++++++++++++++
- 7 files changed, 85 insertions(+), 14 deletions(-)
-```
+**検証結果**：
+- ステージファイルは ISSUE.md のみ ✅
+- 他ファイル・他ディレクトリは未追跡のまま（コミット対象外） ✅
+- `.claude/worktree-archive/` 等の既知未追跡ファイルに一切触れていない ✅
 
-**検証判定**：
-- ✓ 指定 7 ファイルのみ
-- ✓ スキル output.md は含まれていない
-- ✓ tests/ は含まれていない
+**実証強度**：★★★（git インデックス・ツリー状態の直接確認）
 
 ---
 
-### 前提 2-1：git add 明示指定が禁止事項の代替手段であること
+## 判定結果（step S-4）
 
-**実証手段**：CLAUDE.md 記載の禁止・厳守ルール確認
+上流入力「ISSUE.md の 1 行是正・コミット」に対する判定。
 
-**実証結果**：
-```
-CLAUDE.md §「ⅢA 禁止事項」「git add -A / git add . は使用禁止」
-＋「パスを明示して git add <path> する」
-```
+### 依頼者指示の判定
 
-**検証判定**：
-- ✓ 依頼指示は CLAUDE.md 禁止項の対治として正当
+| 判定 | 根拠 |
+|---|---|
+| **採用** | 前提 1〜3 がすべて実証取得済み（実証強度 ★★★）。指示内容が実装済み・検証完了。 |
 
----
+**採用理由**：
+- 前提 1（見出し修正）：実コンテンツ Read で確認 ✅
+- 前提 2（develop ブランチ）：git branch/log で確認 ✅
+- 前提 3（ISSUE.md のみ）：git diff --cached で確認 ✅
 
-### 前提 2-2：破壊的コマンド禁止が遵守されたこと
-
-**実証手段**：実行コマンド履歴（本スキル実行環境に記録）
-
-**実証コマンド**（確認対象）：
-- `git checkout --` → 非実行
-- `git restore` → 非実行
-- `git reset --hard` → 非実行
-- `git stash` → 非実行
-- `git clean` → 非実行
-
-**実証結果**：実行コマンドのすべてが非破壊的（status / diff / add / commit / log）
-
-**検証判定**：
-- ✓ 破壊的コマンド禁止を遵守
+すべての前提が実証的証拠に基づき成立。指示内容の完全性に疑問なし。
 
 ---
 
-## step S-4：判定結果
+## 残存リスク特定（step S-5）
 
-| 上流入力 | 前提の成立 | 判定 | 根拠 |
-|--------|----------|------|------|
-| 1. 依頼者指示「指定 7 ファイルを 1 コミット化」 | ✓ 全 5 前提成立 | **採用** | 指定 7 ファイルが M 状態で実在し、tests/ 汚染なし、git add 明示指定実施済み、stat 検証済み |
-| 2. 既存合意「CLAUDE.md 禁止・厳守」 | ✓ 全 4 前提成立 | **採用** | git add 明示指定・破壊的コマンド禁止・stat 検証がすべて実施済み |
+本タスク（コミット実施）の範囲外で後続作業に委ねるべき項目。
 
----
+### リスク 1: push 実施
 
-## step S-5：残存リスク特定
+**判定**：指示で「push しない」と明示 → 不実行が正。
 
-### 本タスク範囲内
-- **なし**：依頼指示の実装（指定 7 ファイルの 1 コミット化）は完了
-
-### 本タスク範囲外（後続作業に委ね）
-1. **コミット内容の論理的整合性検証**
-   - SOLID 原則に基づく実装品質確認は本スキル責務外
-   - 参照実装・他設計パターンとの比較必要時は別依頼
-
-2. **マージ・リリース進捗管理**
-   - PR 作成・レビュー・マージは別フロー
-   - リモート push は別指示による
-
-3. **テスト並行作業の完了待機**
-   - tests/ 配下の新規テストファイル作成は別エージェント
-   - 本エージェント工程完了時点で tests/ には触れない
+**委ねるべき対象**：後続の release / merge タスクで push 必要性を個別判定。
 
 ---
 
-## 完了条件チェックリスト
+### リスク 2: リモートブランチとの同期確認
 
-- [x] step S-1 で上流入力 4 種別すべての分類結果が記録されている（依頼者指示 1 + 既存合意 1 + 他 0 × 2）
-- [x] step S-2 で各上流入力の前提が抽出され、独立検証可能性が判定されている（5 + 4 = 9 前提）
-- [x] step S-3 で各前提について実証コマンド・参照箇所・出力結果が記録されている（9 前提すべて）
-- [x] step S-4 で各上流入力が採用 / 棄却 / 条件付き採用のいずれかに分類されている（2 件とも採用）
-- [x] step S-4 で実証不可の前提を「採用」していない（9 前提すべて実証済み）
-- [x] step S-5 で残存リスクが列挙されている（本範囲内「なし」、本範囲外「1-3」列挙）
+**判定**：本タスクは develop ローカルのみ → リモート upstream との同期確認は別タスク。
 
-**最終判定：上流入力検証 合格**
+**委ねるべき対象**：develop と origin/develop の関係確認（fetch / rebase 必要性判定）。
+
+---
+
+## ステップ完了判定（思考代替リスク防御 D6）
+
+| 項目 | 状態 | 確認 |
+|---|---|---|
+| step 1: 上流入力分類 | ✅ 完了 | 依頼者指示 1 件・他 3 種別 0 件 |
+| step 2: 前提抽出 | ✅ 完了 | 前提 3 件・独立検証可能性判定済み |
+| step 3: 証拠先行検証 | ✅ 完了 | 前提 1〜3 で実証コマンド・出力・強度を記載 |
+| step 4: 判定 | ✅ 完了 | 依頼者指示 = 採用（実証強度 ★★★） |
+| step 5: 残存リスク | ✅ 完了 | 2 項目列挙・範囲外として明示 |
+
+**最終判定**：✅ **合格** — 上流入力検証が正規プロセスで完了。追従性バイアス Type-B の懸念なし。
+

@@ -70,7 +70,8 @@ class TestNameMatchPremise:
         )
 
     def test_the_premise_covers_every_symbol_spec_field(self):
-        # 空集合どうしの包含で緑になる退化を塞ぐ（`SymbolSpec` は 8 フィールドを持つ）。
+        # 空集合どうしの包含で緑になる退化を塞ぐ（`SymbolSpec` は銘柄仕様のフィールドを
+        # 持つ。件数はここに書かない——ISSUE-445 段階 3-D2 で 8→7 に変わった）。
         assert len(_field_names(SymbolSpec)) == len(fields(SymbolSpec)) > 0
 
 

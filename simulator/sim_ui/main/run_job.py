@@ -259,6 +259,12 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     供給元（憶測で埋めない）:
         銘柄仕様   — 投入された `backtest`（front が profile から導いた 8 キー）。
                      `SymbolSpec` のフィールド名と同名であるため機械的に写す。
+        leverage   — 同じ `backtest` の口座属性（ISSUE-445 段階 3-D2）。`SymbolSpec` から
+                     外れたため機械導出（`fields(SymbolSpec)`）に載らない。**明示注入する**
+                     ——ここで既定値を置くと、front が送らなくなったことに気付けないまま
+                     人が書いた除数で証拠金計算が回る（RC-1 と同型）。欠落は KeyError で
+                     即座に落ちる（投入 body のキー集合は不変であり、front は従来どおり
+                     `leverage` を送る＝実測）。
         決済通貨   — `SymbolSpecCatalog` の profile（A-2 で恒久化された唯一の供給源）。
                      登録の無い銘柄は**推定しない**で失敗させる。
         EA 固有引数 — `backtest` のうち写像層が供給しない残余（`_settings_supplied_params`）。
@@ -286,6 +292,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     supplied = _settings_supplied_params()
     return EngineBinding(
         symbol_spec=SymbolSpec(**{f.name: backtest[f.name] for f in fields(SymbolSpec)}),
+        leverage=backtest["leverage"],
         symbol=symbol,
         period=backtest["period"],
         data_path=(

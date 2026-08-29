@@ -47,6 +47,13 @@ _BASE_CACHE: "dict[str, tuple[int, pd.DataFrame]]" = {}
 # resample 結果キャッシュ（load_dataframe の1段）。(ref, tf) → (mtime, resampled_df)。
 _RESAMPLE_CACHE: "dict[tuple[str, str | None], tuple[int | None, pd.DataFrame]]" = {}
 
+# 1m 末尾読みキャッシュ。(ref, 行数) → (mtime_ns, DataFrame)。
+#   上位足（5m..1M）は rollup_store.read が mtime キャッシュを持つのに、1m だけ毎回
+#   tail_reader.read_tail でディスクを読み直していた。表示時間足 1m のチャート起動 1 回で
+#   load_dataframe が 15 回走り、3.45 秒中 1.97 秒（57%）がこの読み直しだった（ISSUE-450・
+#   2026-08-28 実測）。同じ素材の同じ断面を作り直さない（無効化はロールアップと同じ mtime）。
+_TAIL_CACHE: "dict[tuple[str, int], tuple[int | None, pd.DataFrame]]" = {}
+
 # ISSUE-156（A）: 供給キャッシュの直列化ロック（計算プール並列時の重複ビルド・torn-read 防止）。
 #   粗粒度 RLock（本モジュールの公開 3 関数全体を包む）。キャッシュヒットはメモリ参照のみで
 #   軽く、ミス時の重い CSV 読込/resample は従来どおり実質直列化される（多重ビルド防止）。
@@ -126,8 +133,24 @@ def _resolve_rollup_dataframe_unlocked(
       （mtime キャッシュ＋torn-read フォールバックは rollup_store 側）。
     """
     if timeframe in (None, "1m"):
-        return tail_reader.read_tail(path, atomic_tail_rows)
+        return _read_tail_cached(ref, path, atomic_tail_rows)
     return rollup_store.read(ref, timeframe)
+
+
+def _read_tail_cached(ref: str, path: Path, n_rows: int) -> pd.DataFrame:
+    """1m 素材の末尾読みを mtime で記憶する（上位足の ``rollup_store.read`` と同じ規約）。
+
+    素材が変わっていなければ直前の DataFrame をそのまま返す。mtime が取得できないとき
+    （CSV 消失等）は記憶を使わず読みに行く＝古い断面を配り続けない。
+    """
+    mtime = csv_mtime(path)
+    key = (ref, int(n_rows))
+    cached = _TAIL_CACHE.get(key)
+    if cached is not None and mtime is not None and cached[0] == mtime:
+        return cached[1]
+    df = tail_reader.read_tail(path, n_rows)
+    _TAIL_CACHE[key] = (mtime, df)
+    return df
 
 
 def _resample_cached_unlocked(

@@ -18,7 +18,7 @@ from simulator.adapter.calendar.session_calendar import (
 )
 from simulator.domain.bar import Bar
 from simulator.domain.order import Order
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 
@@ -208,15 +208,22 @@ def _config(**ov):
     return BacktestConfig(**base)
 
 
+#: 口座レバレッジ（ISSUE-445 段階 3-D2 で `SymbolSpec` から `RunBacktestRequest` へ移設。
+#: 値は移設前と同じ＝必要証拠金は不変）。
+_LEVERAGE = 100.0
+
+
 def _spec():
     return SymbolSpec(contract_size=1.0, volume_min=0.01, volume_max=100.0,
                       volume_step=0.01, stops_level=0, digits=5,
-                      point_size=0.00001, leverage=100.0)
+                      point_size=0.00001)
 
 
 def _request(bars, **ov):
+    account = dict(initial_deposit=10_000.0, leverage=_LEVERAGE, stop_out_level=0.0)
+    account.update({k: ov.pop(k) for k in list(ov) if k in account})
     base = dict(config=_config(), bars=bars, symbol_spec=_spec(),
-                initial_deposit=10_000.0, stop_out_level=0.0)
+                account=AccountSpec(**account))
     base.update(ov)
     return RunBacktestRequest(**base)
 

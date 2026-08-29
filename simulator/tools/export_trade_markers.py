@@ -28,6 +28,7 @@ from typing import Any
 import pandas as pd
 
 from marketdata.paths import DATA_DIR
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
 from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
 from simulator.main import build_interactor
@@ -37,6 +38,11 @@ from simulator.main import build_interactor
 _ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CSV = DATA_DIR / "jp225_m1.csv"
 _DEFAULT_OUT = _ROOT / "indigators" / "indicator_ui" / "web" / "data" / "trade_markers.json"
+
+# 銘柄仕様の供給元（ISSUE-445 段階 2 と同じ唯一の権威）。銘柄名・サーバ名は**同一性**の指定で
+# あって仕様の値ではない（値は 1 つもここに書かない）。
+_SYMBOL = "JP225"
+_SERVER = OANDA_JAPAN_MT5_LIVE
 
 # engine（comma 形式 CsvOHLCRepository）が要求する列順。
 _ENGINE_COLUMNS = ["time", "open", "high", "low", "close", "volume", "spread"]
@@ -109,25 +115,45 @@ def markers_outside_candle_times(payload: dict, candle_times: set[int]) -> list[
 
 
 def _meta(data_path: Any, ea_name: str) -> dict:
-    """JP225 既定の run メタ（design §2.5）。committed build_interactor の全必須引数を満たす。"""
+    """JP225 既定の run メタ（design §2.5）。committed build_interactor の全必須引数を満たす。
+
+    銘柄仕様 8 項目（contract_size / volume_min / volume_max / volume_step / stops_level /
+    digits / point_size / leverage）は**供給元スナップショットだけを権威**とする
+    （ISSUE-445 RC-1・段階 2 と同じ規律）。ここに数値リテラルを書かない＝人が値を選べない。
+
+    以前は ``contract_size`` に 10.0、``leverage`` に 100.0 を直書きしていた。前者は MT5 レポート
+    に一度も現れない逆算値（真値 1.0）であり、後者は実口座値 10 と食い違っていた（ISSUE-445）。
+    ``leverage`` は本ツールでは観測不能である（実測 2026-08-26: 0.5 / 10 / 100 のいずれでも
+    出力が同一）。理由は ``build_interactor(stop_out_level=0.0)`` の既定のまま
+    ``stop_out_level`` を渡しておらず、``margin_level() < stop_out_level`` が成立しないためで、
+    証拠金経路そのものが無効化されている。よって真値へ寄せるのは無償である。
+
+    ``lot_size`` は EA 入力であって銘柄仕様ではないが、``TC24051901`` は原典 ``.mq5`` を持たず
+    ``NormalizeLot`` 相当を実装しない（``cfg["lot_size"]`` を素通し・ISSUE-445 段階 3-B の申し送り）。
+    したがって Root が**発注可能な lot** を供給しなければ ``Order.validate`` が
+    ``InvalidPriceError`` を出す（実測: 供給元の ``volume_min=1.0`` の下で従来の 0.1 は不成立）。
+    本ツールは特定の MT5 run を再現するものではなく最小建玉でマーカーを描くだけなので、
+    最小発注単位＝供給元の ``volume_min`` を用いる（人が選んだ数ではない）。
+    従来値との積 ``lot × contract_size`` は ``0.1×10 = 1.0×1.0`` で不変である。実測（2026-08-26・
+    直近 5000 本）: ``markers`` 配列は従来と **bit-exact 一致**、``pairs`` は ``volume`` が
+    0.1 → 1.0（＝実ブローカーの最小発注単位・MT5 レポートの実約定 volume と同値）になり、
+    602 件中 106 件の ``profit`` が乗算順序に由来する 1 ULP（最大 2.9e-14・相対 1.8e-16）だけ
+    動く。合計損益は最終桁まで同値。
+    """
+    spec = load_spec_fields(_SERVER, _SYMBOL)
     return dict(
         data_path=data_path,
-        symbol="JP225",
+        symbol=_SYMBOL,
         period="M1",
         ea_name=ea_name,
         initial_deposit=10_000.0,
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=100.0,
+        # contract_size / volume_min / volume_max / volume_step / stops_level /
+        # digits / point_size / leverage の 8 キー（供給元が唯一の権威）。
+        **spec,
         ma_period=14,
         ma_method="sma",
-        # Fix-B: 堅牢サイジング（早期 halt 回避・直近高価格でトレードを窓内に分布させる）。
-        lot_size=0.1,
+        # 最小建玉（供給元の最小発注単位）。素通し戦略のため Root で発注可能値を供給する。
+        lot_size=spec["volume_min"],
         stop_loss_points=500,
         take_profit_points=3000,
         # Fix-B: 証拠金割れでも強制決済して完走する（MarginCallError を出さない）。
@@ -163,8 +189,10 @@ def run_and_export(
     try:
         bridged.to_csv(tmp.name, index=False)
         tmp.close()
-        # 3. controller/request 構築（committed IF のみ）。
-        controller, request = build_interactor(**_meta(tmp.name, ea_name))
+        # 3. controller/request 構築（committed IF のみ）。run メタは 1 回だけ組み、
+        #    presenter へ渡す symbol も同じ meta から取る（同じ値を 2 か所に書かない）。
+        meta = _meta(tmp.name, ea_name)
+        controller, request = build_interactor(**meta)
         # 4. result = execute（committed 公開 IF）。
         result = controller.execute(request)
     finally:
@@ -172,7 +200,7 @@ def run_and_export(
 
     # 5. presenter → OUT（新規パス）。
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    spec = _Symbol(name="JP225", digits=1)
+    spec = _Symbol(name=meta["symbol"], digits=meta["digits"])
     # 該当時間足＝建玉の時間足。バックテストは M1（1分足）なので '1m'。
     TradeMarkersPresenter().present_markers(
         result, out_path, symbol=spec, ea_name=ea_name, timeframe="1m"

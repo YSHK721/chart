@@ -22,8 +22,12 @@
 // 書式は共有モジュールの**単一ソース**から取る（協働子ではなく純粋な値変換のみ）。
 //   自前で持つと、同じ規則がピッカー側と 2 か所に割れる（実 UI 実測 2026-08-20 で
 //   ゴーストに生の浮動小数が残った）。
+// 価格欄のラベルとアーム中バーの文言（priceTargetLabel）も同じ単一ソースから取る（ISSUE-435）。
+//   元はこのファイルが module-private の表を持っていたが、同じ表示名をチャートの水準線ラベルと
+//   右クリックの解除項目も使うことになり、外から引けない置き場は写しを強制する。
 import {
   priceInTable, percent1, percent2, signedFixed3, decimal2, decimal3, yen, lotAmount,
+  priceTargetLabel,
 } from './price_format.js';
 
 // 入力の定義表（手書きの DOM を並べない＝行を足すのは表への 1 行）。
@@ -240,21 +244,6 @@ export const FRACTION_CHOICES = [
   ['half', 'ハーフケリー'],
   ['full', 'フルケリー'],
 ];
-
-/**
- * 価格欄の対象名（`entry:i` / `stop` / `take` → 表示名）。
- * 欄のラベルとアーム中バーの文言が**同じ表**から出る（片方だけ直る取り残しを作らない）。
- */
-function priceTargetLabel(target) {
-  if (target === 'stop') {
-    return '損切り';
-  }
-  if (target === 'take') {
-    return '利確';
-  }
-  const m = /^entry:(\d+)$/.exec(String(target ?? ''));
-  return m ? `建値 ${Number(m[1]) + 1}` : '';
-}
 
 export class PositionSizingDialog {
   /**
@@ -746,6 +735,28 @@ export class PositionSizingDialog {
     }
     input.value = String(price);
     this._priceValues.set(target, input.value);
+    this._emitLevels();
+  }
+
+  /**
+   * 外（右クリックの解除項目）から価格欄を**空にする**（ISSUE-435 実装 1）。
+   *
+   * `setPrice` と同じ経路（欄へ書く → `_emitLevels` で通知）を通る。空欄は `_emitLevels` の
+   * `num()` が `null` に写すため、未入力と**完全に同じ状態**になる（欄を選んで Delete したときと
+   * 1 バイトも変わらない）。ここに「水準を null にする」第 2 の書き方を作らない。
+   *
+   * 建値の欄は消しても**本数（K）は減らさない**: K は分割本数という別の入力で、価格が
+   * 未入力であることと本数が減ることは同じではない（K を減らすと他の本の対象名がずれる）。
+   *
+   * @param {string} target 'entry:i' / 'stop' / 'take'
+   */
+  clearPrice(target) {
+    const input = this._prices.get(target);
+    if (!input) {
+      return;   // 閉じている・存在しない欄は no-op（呼び出し側が開いてから呼ぶ）。
+    }
+    input.value = '';
+    this._priceValues.set(target, '');
     this._emitLevels();
   }
 

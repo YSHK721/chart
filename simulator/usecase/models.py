@@ -76,6 +76,17 @@ class BacktestConfig:
 class SymbolSpec:
     """シンボル仕様。domain.order.Order.validate が duck typing で要求する属性
     （volume_min/volume_max/volume_step/stops_level/point_size）を満たす。
+
+    **銘柄の契約だけを持つ**（ISSUE-445 段階 3-D2・設計書
+    `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §3.4）。7 フィールドはいずれも
+    供給元 `mt5.symbol_info()` から引ける（対応表は
+    `marketdata/symbol_spec_snapshot.py:SYMBOL_FIELD_SOURCES` が単一ソース）。
+    口座属性（`leverage` 等）はここに置かない——変更起点が違う契約を同居させると
+    SRP 違反になり、人が書いた値が銘柄仕様の権威のように振る舞う隙間ができる。
+    `leverage` の置き場は `usecase/run_backtest.py:RunBacktestRequest`
+    （`initial_deposit` / `stop_out_level` と同じ口座属性の面）である。
+    この不変条件は `simulator/tests/unit/test_symbol_spec_fields_are_symbol_sourced.py`
+    が機械的に施行する。
     """
 
     contract_size: float
@@ -85,7 +96,44 @@ class SymbolSpec:
     stops_level: int
     digits: int
     point_size: float
+
+
+@dataclass(frozen=True)
+class AccountSpec:
+    """口座仕様。1 run のあいだ変わらない**口座の契約**を 1 つの型に束ねる。
+
+    ISSUE-445 段階 3-D3（案 D・設計書 `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §3.4）。
+    段階 3-D2 で `SymbolSpec` から外した口座属性は `RunBacktestRequest` に 3 つフラットに
+    置かれていた。`SymbolSpec`＝銘柄の契約 / `AccountSpec`＝口座の契約 の 2 軸を型で明示し、
+    口座属性が増えるたびに `RunBacktestRequest` を改変する形（OCP 違反）を閉じる。
+    供給元スナップショットの `account` セクションは既に `company` / `currency` /
+    `leverage` / `server` / `trade_mode` を持ち、実口座からは `margin_mode` /
+    `margin_so_call` / `margin_so_so` も実測記録されている（`ISSUE.md` ISSUE-445）。
+    それらの行き先は本型であって `RunBacktestRequest` ではない。
+
+    **既定値をどのフィールドにも置かない**（機械的に施行するのは
+    `simulator/tests/unit/test_account_spec_holds_only_account_attributes.py`）:
+    既定値は「人が書いた値が権威になる」形（ISSUE-445 RC-1）と同型であり、初期証拠金・
+    必要証拠金の除数・ストップアウト水準を誰も指定しないまま run が通る経路を作る。
+    `stop_out_level` の既定 0.0 も同じ理由で撤去した——供給元は当該キーを供給しておらず
+    （`ACCOUNT_FIELD_SOURCES` は `leverage` のみ）、実口座の値は `margin_so_so=100.0`
+    （ISSUE-445 実測）である。0.0 は「未設定の代用」として置かれた値でありながら
+    `margin_level() < 0.0` は equity が負に落ちれば成立する**生きた閾値**であり、
+    誰も書いていない値が黙って停止条件になっていた。
+
+    **frozen である理由**: 本型は run の途中で変化しない「契約」である。可変な口座
+    **状態**（balance / margin / floating_pnl）は `simulator/domain/account.py:Account`
+    が担い、当該 docstring は「run 全体で状態遷移する集約であり、値オブジェクト方針の
+    例外として可変」と明記している。契約と状態が両方とも可変だと、run の途中で契約側を
+    書き換える経路が型の上で開く。frozen はその経路を閉じる。
+
+    銘柄の契約（`contract_size` / `volume_min` 等）はここに置かない。混入は上記ゲートが
+    供給元の対応表から機械的に検出する（フィールド名をテスト側に書かない）。
+    """
+
+    initial_deposit: float
     leverage: float
+    stop_out_level: float
 
 
 @dataclass

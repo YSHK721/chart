@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.tester_settings_exceptions import SettingsActivationError
 
@@ -124,20 +125,28 @@ def _math_kwargs(**overrides):
 
 
 def _ma_slope_kwargs(**overrides):
+    """⚠ ISSUE-445 段階 C: 本モジュールは銘柄仕様の**正しさを検証していない**。
+
+    銘柄仕様 8 項目は供給元スナップショット
+    （`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`）だけを権威とする
+    （段階 B までは `contract_size=10.0` ほか 5 項目が供給元と食い違うリテラルだった）。
+    本モジュールが見るのは registry の実装クラス名・bars の本数（28097）・規則 S の
+    例外と終了コードだけであり、いずれも損益を計算しない。実測（2026-08-26）:
+    `contract_size` だけを真値 1.0 にしても、5 項目を対で真値へ寄せても、25 検定とも
+    緑のまま通った。
+
+    したがって数値ピンを足す余地が無い。本モジュールの緑を「銘柄仕様の是正が
+    正しい」根拠にしてはならない。損益への波及は
+    `simulator/tests/unit/test_is_oos_barmode_index.py` の不変ピンが見る。
+    """
     base = dict(
         data_path=_MT5_FIXTURE,
         symbol="JP225",
         period="M1",
         ea_name="MA_Slope_EA",
         initial_deposit=10_000.0,
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
+        # 銘柄仕様 8 キー。ここにリテラルを書かない＝人が値を選べない。
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=20,
         ma_method="ema",
         lot_size=0.1,

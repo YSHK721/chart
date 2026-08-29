@@ -6,6 +6,7 @@ R-2: 同一入力で walk_forward_cli.main を 2 回実行し walk_forward.json 
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -56,8 +57,13 @@ def test_same_input_byte_identical_json(tmp_path):
             "--data-path", str(_FIXTURE),
             "--ea-name", "StopEntryProbe_EA",
             "--symbol", "JP225", "--period", "M1",
-            "--contract-size", "10.0", "--digits", "1", "--point-size", "0.1",
-            "--leverage", "10.0", "--lot-size", "0.1",
+            # 銘柄仕様 8 項目は指定しない＝供給元スナップショットから引かせる
+            # （ISSUE-445・2026-08-26）。以前ここには `--contract-size 10.0` 等の 4 項目が
+            # あり、残る 4 項目は CLI の既定値だった。既定値撤去後にこの 4 項目を残すと
+            # 「明示 contract_size=10.0 × 供給元 volume_min=1.0」の混成になり、証拠金が
+            # 足りず **IS trades が 5224 → 1 に落ちて本検定が無言で空虚化する**（実測）。
+            # `--lot-size` は EA 入力（原典の所与）であり銘柄仕様ではないため据え置く。
+            "--lot-size", "0.1",
             "--stop-loss-points", "200", "--take-profit-points", "500",
             "--entry-offset-points", "100.0", "--entry-type", "stop",
             "--config-override", "tick_model=ohlc_expand",
@@ -84,3 +90,7 @@ def test_same_input_byte_identical_json(tmp_path):
     a = _run("run_a")
     b = _run("run_b")
     assert a == b  # byte 同一（NFR-WD1）
+    # 非空虚性: 取引 0 本どうしの byte 同一は自明に成立してしまう（銘柄仕様が食い違うと
+    # 証拠金で全発注が弾かれ、そう壊れる＝上のコメントの実測）。期待値は書かない。
+    windows = json.loads(a)["windows"]
+    assert windows and all(w["is_stats"]["trades"] > 0 for w in windows)

@@ -1,8 +1,9 @@
 /* 投入フォームの表示整形（Phase 9 S6・案 A 改／基本設計 §19.2）。
  *
  * 対象は `report_view.html` を `?job=` **無し**で開いたときの入口だけである。結果ビューア側
- * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて面の id
- * （`#simTesterPanel` / `#simEaInputsPanel` / `#simSchemaFallbackPanel` / `#simRunActionPanel`）
+ * （`?job=<id>`）に出る DOM へは 1 つも当たらない——本ファイルの選択子はすべて版面と面の id
+ * （`#simRunForm` / `#simRunFormSettings` / `#simRunFormInputs` / `#simTesterPanel` /
+ * `#simEaInputsPanel` / `#simSchemaFallbackPanel` / `#simRunActionPanel` / `#simRunStatusPanel`）
  * の配下に閉じてある。素の要素（body / input / select / button）へ当てると結果ビューアの
  * 見た目まで動く（style.css の波及遮断と同じ理由・裁定 B）。閉じていることは
  * `tests/removed_ui_vocabulary_gate.test.js` が選択子を走査して機械強制する。
@@ -12,34 +13,71 @@
  * 必ず link する（`tests/import_source.test.js` が機械強制）ので、変数は常に解決する。
  *
  * 寸法の前提（実測・style.css:16-26）: `body { height:100vh; display:flex; flex-direction:column;
- * overflow:hidden }`。したがって器の中で伸びる子にして **自分の中でスクロールさせない限り、
- * はみ出した分は画面外に消えて操作できない**。面ごとに `min-height:0` ＋ `overflow-y:auto`
- * を与えるのはこのためである（body 側の overflow は触らない＝結果ビューアに波及させない）。
+ * overflow:hidden }`。したがって器の中で **自分の中で送らない限り、はみ出した分は画面外に
+ * 消えて操作できない**。送るのは版面 `#simRunForm` **1 枚だけ**にする（面ごとに
+ * `overflow-y:auto` を与えると入れ子スクロールが増える＝ISSUE-436 #5 の指摘）。
+ * body 側の overflow は触らない（結果ビューアに波及させない）。
  *
- * 寸法の出所は §19.2 の参照値（依頼者確認済みモック variant-a2/a3）であり、この 6 つだけを
- * 動かした: 面の幅と中央寄せ / 群カードの margin・padding / フィールドの gap / ラベル列の幅 /
- * 入力の内側余白 / スタートボタンの位置と色。これ以外の寸法は現行維持である。
+ * 寸法の出所は §19.2 の参照値（依頼者確認済みモック variant-a2/a3）。ISSUE-441（依頼者指示
+ * 2026-08-22）で版面だけを変えた: 4 面の縦積み・幅 min(860px,100%-24px) 中央寄せ →
+ * **設定と入力の 2 列**・幅は版面いっぱい・Tester の群は横へ流す。面の中の寸法（ラベル列の
+ * 幅・入力の内側余白・gap・スタートの位置と色）は現行維持である。
  */
 
+/* --- 版面（ISSUE-441・依頼者指示 2026-08-22）--------------------------------------
+ * 設定（Tester Settings）と入力（Inputs＋実行）を**横に分ける**。旧構成は 4 面を縦に積み、
+ * 幅を min(860px, 100%-24px) の中央寄せにしていたため、下部ペインを縮めると Inputs と
+ * スタートが画面外へ出て操作できなくなった（実測: 版面 1990×約 260px で Inputs 以下が
+ * 見切れ・左右 57% は空白）。縦を使い切る前に横を使う。
+ * 狭いときは 1 列へ落として縦積みへ戻す（横スクロールを作らない）。 */
+#simRunForm {
+  /* 行の高さと入力欄の幅の単一ソース（ISSUE-443）。控えの種類（select / 入力 /
+   * チェックボックス）でも、面（Tester / Inputs / 縮退面）でも割れないよう、
+   * 全面がこの 2 つの値を使う＝群をまたいでも欄の位置と大きさが同じ規則で決まる。 */
+  --sim-field-row-h: 24px;
+  --sim-field-input-w: 150px;
+  display: grid;
+  /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
+   * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 0 12px;
+  box-sizing: border-box;
+  width: calc(100% - 24px);   /* 横は使い切る（中央に寄せて余白を作らない） */
+  margin: 0 auto;
+  min-height: 0;
+  overflow-y: auto;   /* 版面ごと送る（面ごとの入れ子スクロールを増やさない） */
+}
+@media (max-width: 900px) {
+  #simRunForm { grid-template-columns: minmax(0, 1fr); }
+}
+/* 列は中身を縦に積むだけ（列そのものは器＝背景も枠も持たない）。 */
+#simRunFormSettings,
+#simRunFormInputs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* --- 面の器（4 面共通）------------------------------------------------------------ */
-/* flex: 0 1 auto = 中身の高さで置き、入り切らないときだけ縮んで自分の中で送る。
- * 幅は min(860px, 100% - 24px) の中央寄せ（広い画面で 1 行が間延びしない）。 */
+/* 幅は列いっぱい（版面が幅を決める）。高さは中身なり＝面ごとの入れ子スクロールは作らない
+ * （送るのは版面 #simRunForm 1 枚だけ。3 重スクロールは ISSUE-436 #5 の指摘）。 */
 #simTesterPanel,
 #simEaInputsPanel,
 #simSchemaFallbackPanel,
 #simRunActionPanel {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
-  overflow-y: auto;
   box-sizing: border-box;
-  width: min(860px, 100% - 24px);
-  margin: 8px auto 0;
-  padding: 8px 12px;
+  width: 100%;
+  margin: 6px 0 0;
+  padding: 6px 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 4px;
 }
-#simRunActionPanel { margin-bottom: 8px; }
+#simRunActionPanel { margin-bottom: 4px; }
 
 /* --- 面の見出し ------------------------------------------------------------------- */
 #simTesterPanel .tester-title,
@@ -61,18 +99,30 @@
 }
 
 /* --- 群（対象 / 期間 / 実行 / 口座 …）------------------------------------------- */
+/* 群は**カード（枠）にしない**（依頼者指示 2026-08-22）。枠で囲うと、群ごとの行数の差
+ * （対象・口座は 3 行、期間・実行は 6 行）がそのまま「箱の下の空き」として見える。枠と内側
+ * 余白を外し、区切りを見出しの下の罫線だけにすれば、余った領域は地の余白に戻る（面の高さは
+ * どのみち最も高い群で決まるので、消せるのは"箱に見えること"の方である）。
+ * 並べ方は段組み（multicol）。横並び（flex-wrap）だと行の高さが最も高い群に揃い、短い群の
+ * 下に空白が残って次の群が新しい行へ落ちる（実測 2026-08-22: 対象の下に約 100px）。 */
 #simTesterPanel .tester-fields {
-  display: flex;
-  flex-direction: column;
+  columns: 292px;        /* 1 段の中身＝ラベル 136 ＋ 間 6 ＋ 欄 150 */
+  column-gap: 28px;      /* 枠が無いぶん、段の間は広めに取って群の切れ目を見せる */
 }
 #simTesterPanel .tester-group {
-  margin: 6px 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
+  break-inside: avoid;   /* 見出しと中身を段またぎで離さない */
+  /* 幅は段いっぱい、ただし中身が要る幅で頭打ち。中身の幅で置くと群ごとに幅が変わり、
+   * 群の間隔が不揃いになる（依頼者指摘「各グループ同士の要素中心線を揃えたい」）。 */
+  width: auto;
+  max-width: 292px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
 }
 #simTesterPanel .tester-group-title {
-  margin-bottom: 6px;
+  margin-bottom: 5px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--line);   /* 箱の代わりの区切り（面積を取らない） */
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -80,23 +130,30 @@
 }
 
 /* --- フィールドの整列（2 カラム・狭い画面では 1 カラムへ落として横スクロールを作らない）--- */
-#simTesterPanel .tester-group-fields,
+/* 群の中は 1 列（群そのものが横に並ぶので、中でさらに 2 列にすると入力欄が狭くなる）。
+ * Inputs / 縮退面は列の中で 2 列を保つ（項目数が少なく、横が余るため）。 */
+#simTesterPanel .tester-group-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  align-content: start;
+}
+/* Inputs / 縮退面は**自分の幅**で列数を決める（画面幅ではない）。ビューポート基準の
+ * media query だと、列が狭いのに 2 列のままになり入力欄が潰れる（実測 2026-08-22:
+ * 画面 1280px で入力欄が 58px まで縮み、値が切れた）。280px は
+ * 「ラベル列 136px ＋ ゆとり ＋ 入力 ≥120px」が成立する最小幅。 */
 #simEaInputsPanel,
 #simSchemaFallbackPanel {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 4px 12px;
   align-content: start;
 }
 #simEaInputsPanel .ea-inputs-title,
 #simSchemaFallbackPanel .fallback-title {
   grid-column: 1 / -1;
 }
-@media (max-width: 860px) {
-  #simTesterPanel .tester-group-fields,
-  #simEaInputsPanel,
-  #simSchemaFallbackPanel { grid-template-columns: minmax(0, 1fr); }
-}
+
 
 /* --- ラベル / 入力の整列 --------------------------------------------------------- */
 /* label 直下のテキストノードは無名グリッドアイテムになる（CSS Grid 仕様）。よって
@@ -105,9 +162,17 @@
 #simEaInputsPanel .ea-field,
 #simSchemaFallbackPanel .fallback-field {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  /* ラベル列は**最長のラベルに合わせた実測値**（実測 2026-08-22: 最長 134px＝
+   * 「期間をカスタム指定する」／次点 112px＝OptimizationCriterion）。これ未満にすると
+   * 折り返して行が 2 段になり、詰めたはずの縦が増える。 */
+  grid-template-columns: 136px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  /* **行の高さは控えの種類で変えない**（依頼者指摘 2026-08-22「左右の input ボックスの
+   * 中心線がズレている」）。実測では select 24px / 入力 27px / チェックボックス 19px と
+   * まちまちで、群ごとに行ピッチが 28px と 31px に分かれ、隣の群と最大 11px ずれていた。
+   * 行の高さを 1 つに固定すれば、どの群でも N 行目の中心が同じ y に来る。 */
+  min-height: var(--sim-field-row-h);
   color: var(--fg);
 }
 #simTesterPanel .tester-input,
@@ -116,27 +181,48 @@
 #simSchemaFallbackPanel .fallback-ea,
 #simSchemaFallbackPanel .fallback-deposit {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
-  width: 100%;
+  /* 高さは**上下余白ではなく height で決める**。上下余白で決めると、select と input で
+   * 内側の詰まり方が違うぶんだけ高さが割れる（実測: 24px と 27px）。 */
+  height: var(--sim-field-row-h);
+  /* 幅は**全面で同じ 1 つの値**にする（依頼者指摘 2026-08-22「各グループ同士の要素中心線を
+   * 揃えたい」）。「入る余地があるだけ広げる」形だと、面や列の幅が違うぶんだけ欄の幅が
+   * 変わり、群をまたぐと中心線がずれる（実測: Tester Settings 150px / Inputs 164〜176px）。
+   * 150px は最長の選択肢（ENTIRE_HISTORY ＋ 矢印）が切れない実測幅であり、いちばん狭い
+   * 列（4 段組み時の 158px）にも収まる。 */
+  width: var(--sim-field-input-w);
+  max-width: 100%;
   box-sizing: border-box;
-  padding: 0.75em 10px;
+  padding: 0 8px;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 3px;
   font: inherit;
 }
-/* select は行の高さが input と揃わない（矢印の分だけ内側が詰まる）。上下だけ少し薄くする。 */
+/* select は矢印のぶん内側が詰まる。高さは上で固定してあるので左右だけ薄くする。 */
 #simTesterPanel select.tester-input,
 #simSchemaFallbackPanel select.fallback-symbol,
 #simSchemaFallbackPanel select.fallback-ea {
-  padding-top: 0.6em;
-  padding-bottom: 0.6em;
+  padding-left: 6px;
+  padding-right: 2px;
 }
-/* チェックボックスは幅いっぱいにしない（帯にならないよう左端に置く）。 */
+/* チェックボックスの行は**ラベル列を使わない**（依頼者指摘 2026-08-22「『期間をカスタム指定
+ * する』が 2 行になっている」）。この行だけラベルが長く（実測 134px＝ラベル列 136px とほぼ
+ * 同幅）、環境の字幅がわずかに広いだけで折り返して 2 行になり、その群だけ以降の行が 1 行ぶん
+ * 下へずれる＝群どうしの行が揃わない。「✓ ＋ 説明文」の並び（チェックボックスが先）にすれば、
+ * 文字はラベル列の幅に縛られず、行の高さも他と同じままになる。 */
+#simTesterPanel .tester-field:has(.tester-date-mode) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 #simTesterPanel .tester-date-mode {
+  order: -1;             /* 説明文の前に置く（チェックボックスの慣習どおり） */
   width: auto;
+  height: auto;
   padding: 0;
   justify-self: start;
+  flex: 0 0 auto;
 }
 
 /* --- 投入前の警告（データセット不一致）------------------------------------------- */
@@ -165,9 +251,16 @@
   color: var(--fg);
 }
 
-/* 全一覧の開閉。開く中身が 0 件のときはトグルごと消す（押しても何も出ないボタンを残さない）。 */
+/* 全一覧の開閉。開く中身が 0 件のときはトグルごと消す（押しても何も出ないボタンを残さない）。
+ * 置き場所は**見出しの右端**（ISSUE-443・依頼者指摘「下部余白が存在する」）。面の最後に置くと、
+ * それだけで 1 行（実測 30px）を下端に足す一方、見出し行の右側は空いたままだった。面全体に
+ * 掛かる開閉なので見出しに置くのが意味とも合う。中身（一覧）は従来どおり流れの中に出す。 */
+#simTesterPanel { position: relative; }
 #simTesterPanel .tester-unsupported-toggle {
-  margin-top: 8px;
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  margin: 0;
   padding: 2px 8px;
   background: transparent;
   color: var(--muted);
@@ -234,7 +327,7 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
-  margin: 6px 8px;
+  margin: 6px 0;
   padding: 6px 12px;
 }
 #simRunStatusPanel .run-status-phase {

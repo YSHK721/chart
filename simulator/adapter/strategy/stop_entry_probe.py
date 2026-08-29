@@ -11,6 +11,13 @@
       即再アームする（ISSUE-024: バー始値ではなく決済が起きた制御点のクォートを使う）。
     - offset = EntryOffsetPts × point（stops_level×point を下限にクランプ）。
     - SL/TP はペンディング価格基準（Buy: sl=price−SLd, tp=price+TPd / Sell は対称）。
+    - ロットは OnInit で **1 回だけ** NormalizeLot(Lot, vmin, vmax, vstep) して g_lot に保持し、
+      発注（BuyStop/SellStop）は保持値を使う（ISSUE-445 段階 3-B）。Lot<=0 または
+      正規化結果<=0 は INIT_PARAMETERS_INCORRECT＝起動失敗であり、Python 側では on_init が
+      ConfigError を送出する（MaSlope.on_init が SL/TP>0 を拒否するのと同じ扱い）。
+      本 EA の NormalizeLot は MA_Slope_EA.mq5 / 2026-03_ma-limit/ea.mq5 の同名関数とは
+      **別物**（vstep<=0 の扱いと digits 式が異なる）であり共通化しない
+      （差異は tests/unit/test_normalize_lot_originals_diverge.py が固定する）。
     - 設置は「一度だけ」。約定するまで同一価格の注文を保持し続ける（原典は pendings>0 の間
       再設置しない）＝持続モード（config: pending_persistent）で Interactor が resting を約定まで保持。
 
@@ -27,8 +34,15 @@
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
+from simulator.adapter.strategy.mql5_runtime import (
+    math_round,
+    normalize_double,
+    spec_value,
+)
+from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
 from simulator.usecase.ports import StrategyPort
 
@@ -38,9 +52,37 @@ class StopEntryProbe(StrategyPort):
 
     def __init__(self) -> None:
         self._config: dict | None = None
+        self._lot: float = 0.0
 
     def on_init(self, config: Any, indicators: Any) -> None:
+        # 原典 OnInit:53-57 — 正規化前の入力値そのものを検査する。
+        lot = float(config["lot_size"])
+        if lot <= 0.0:
+            raise ConfigError(
+                "StopEntryProbe は lot_size > 0 を要求します"
+                "（原典 2026-04_stop-probe/ea.mq5:53 INIT_PARAMETERS_INCORRECT）",
+                context={"lot_size": lot},
+            )
+        # 原典 OnInit:63-73 — 銘柄仕様に丸めた実効ロットを起動時に 1 回だけ確定して保持する。
         self._config = config
+        g_lot = self._normalize_lot(
+            lot,
+            vmin=spec_value(config, "volume_min"),
+            vmax=spec_value(config, "volume_max"),
+            vstep=spec_value(config, "volume_step"),
+        )
+        if g_lot <= 0.0:
+            self._config = None
+            raise ConfigError(
+                "StopEntryProbe はロットを確定できません"
+                "（原典 2026-04_stop-probe/ea.mq5:69 INIT_PARAMETERS_INCORRECT）",
+                context={
+                    "lot_size": lot,
+                    "volume_min": spec_value(config, "volume_min"),
+                    "volume_step": spec_value(config, "volume_step"),
+                },
+            )
+        self._lot = g_lot
 
     def on_new_bar(self, bar_index: int, indicators: Any, account: Any) -> "list[Order]":
         # 本 EA は OnTick（足途中ティック）で発注する＝バー境界では何もしない。装填・再アームは
@@ -76,9 +118,43 @@ class StopEntryProbe(StrategyPort):
         kind = "buy_stop" if side == "buy" else "sell_stop"
         price = round(price, digits)
         sl, tp = self._calc_sltp(side, price)
+        # 原典 :138 / :149 — 発注は OnInit で確定した g_lot を使う（再正規化しない）。
         return Order(
-            side=side, kind=kind, volume=cfg["lot_size"], price=price, sl=sl, tp=tp
+            side=side, kind=kind, volume=self._lot, price=price, sl=sl, tp=tp
         )
+
+    def _normalize_lot(
+        self, lot: float, *, vmin: float, vmax: float, vstep: float
+    ) -> float:
+        """原典 ``2026-04_stop-probe/ea.mq5:159 NormalizeLot(lot, vmin, vmax, vstep)`` の移植。
+
+        原典（1:1・条件も境界も足さない／削らない）::
+
+            if(vstep <= 0.0) vstep = (vmin > 0.0) ? vmin : 0.01;
+            double v = MathRound(lot / vstep) * vstep;
+            if(v < vmin) v = vmin;
+            if(vmax > 0.0 && v > vmax) v = vmax;
+            int digits = (int)MathMax(0.0, MathCeil(-MathLog10(vstep) - 1e-9));
+            return(NormalizeDouble(v, digits));
+
+        ``MA_Slope_EA.mq5`` / ``2026-03_ma-limit/ea.mq5`` の同名関数と**混同しない**:
+        あちらは ``step <= 0`` で丸めをスキップし ``digits`` を 2 に固定する。ここは
+        ``vstep`` を置換して必ず丸め、``digits`` は 1e-9 のイプシロンを引いてから切り上げる。
+
+        MQL5 プリミティブ（``MathRound`` / ``NormalizeDouble`` / ``SymbolInfoDouble`` 相当）は
+        :mod:`simulator.adapter.strategy.mql5_runtime` が単独で所有する。本メソッドは参照する
+        だけで再実装しない（ISSUE-445・複製の再発は AST ゲートが赤にする）。本メソッド自体は
+        上記のとおり他 2 本と別物であり共通化しない。
+        """
+        if vstep <= 0.0:
+            vstep = vmin if vmin > 0.0 else 0.01
+        v = math_round(lot / vstep) * vstep
+        if v < vmin:
+            v = vmin
+        if vmax > 0.0 and v > vmax:
+            v = vmax
+        digits = int(max(0.0, math.ceil(-math.log10(vstep) - 1e-9)))
+        return normalize_double(v, digits)
 
     def _calc_sltp(self, side: str, price: float) -> "tuple[float | None, float | None]":
         """基準価格から SL/TP を算出（points==0 で None・原典 CalcSlTp）。"""

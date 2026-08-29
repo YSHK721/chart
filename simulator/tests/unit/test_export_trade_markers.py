@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.tools import export_trade_markers as ext
 
 # 実 marketdata（読み取り専用）。Fix v2 受入 3（既定実行が MarginCallError を出さず完走）を
@@ -222,11 +223,17 @@ def test_meta_sets_close_and_halt_to_survive_margin_call():
     assert meta.get("config_overrides", {}).get("stop_out_action") == "close_and_halt"
 
 
-def test_meta_uses_resilient_lot_size():
-    # Arrange / Act
+def test_meta_uses_the_minimum_orderable_lot_size():
+    # Arrange: 銘柄仕様の権威（供給元スナップショット）。期待値をここに書かない。
+    spec = load_spec_fields(OANDA_JAPAN_MT5_LIVE, ext._SYMBOL)
+    # Act
     meta = ext._meta("dummy.csv", "TC24051901")
-    # Assert: 早期 halt 回避のため堅牢サイジング lot_size=0.1（§8.2）
-    assert meta["lot_size"] == 0.1
+    # Assert: lot は供給元の最小発注単位（ISSUE-445・2026-08-26 の是正）。
+    #   旧 assert は `lot_size == 0.1`（§8.2 の「堅牢サイジング」）だった。0.1 は供給元の
+    #   `volume_min=1.0` の下では発注不成立であり（実測: InvalidPriceError）、`contract_size`
+    #   の誤り（10.0・真値 1.0）と積の上で相殺していた対の片割れである。
+    #   TC24051901 は原典 `.mq5` を持たず lot を素通しするため、Root が発注可能値を供給する。
+    assert meta["lot_size"] == spec["volume_min"]
 
 
 # ---- Fix v2 §8.3 受入 3: 既定実行が MarginCallError を出さず完走 ------------

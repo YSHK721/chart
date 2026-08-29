@@ -50,10 +50,34 @@
     body:not(.um-chart-api) #tpl-menu,
     body:not(.um-chart-api) #indicator-open-btn,
     body:not(.um-chart-api) .pane-legend-gear { opacity: .4; pointer-events: none; }
-    /* チャート API を持たない core のモードでは価格チャートの版面を畳む。その領域は
-       そのモードの表示層（sim なら #sim-display）が #app の flex 子として受け取る。
-       モード名を書かない反転記法は上の 4 行と同流儀（第 4 モードでも直さずに済む）。 */
-    body:not(.um-chart-api) .chart-wrap { display: none; }
+    /* チャート API を持たない core のモードでは、そのモードの表示層（sim なら #sim-display）を
+       **下部ペイン**へ出す。チャートは畳まない（裁定 2026-08-21・依頼者指示）。
+       旧規則は `body:not(.um-chart-api) .chart-wrap { display: none }`＝版面の**排他**で、
+       sim を押すとチャートが消えていた（承認 H-C）。参照実装の MT5 はストラテジーテスターを
+       下部ドックペインに出し、チャートは上に残す。よって版面は排他ではなく**縦 2 分割**にする。
+       器（#um-bottom-splitter / #um-bottom-pane）の DOM は bottom_pane_view.js が生成し所有する
+       （HTML は 1 枚も触らない規約＝ISSUE-278 #16）。ここが持つのは寸法と出し入れの規則だけ。
+       出し入れは #replay-bar と同じ反転記法（既定は非表示／条件を満たすときだけ出す）で書く。
+       モード名を書かないので、第 4 モードを表へ足しても本規則は直さなくてよい。 */
+    #um-bottom-splitter, #um-bottom-pane { display: none; }
+    body:not(.um-chart-api) #um-bottom-splitter { display: block; }
+    body:not(.um-chart-api) #um-bottom-pane { display: flex; }
+    /* 分割線: 掴める境界。高さは bottom_pane_view.js の SPLITTER_PX と同値（可動域の計算に使う）。 */
+    #um-bottom-splitter {
+      flex: 0 0 6px; height: 6px; cursor: row-resize; touch-action: none;
+      background: var(--ct-uiBorder, #2a2e39);
+    }
+    #um-bottom-splitter:hover { background: var(--ct-uiTextDim, #787b86); }
+    /* 下部ペイン: 既定は版面の 45%。ドラッグしたときだけ View が flex-basis を px で上書きする
+       （既定値を JS に持たせない＝起動時に版面へ手を入れない）。中身（表示層）は縦に伸ばす。
+       縮み側は 1（ウィンドウを縮めたときはペインも譲る）。譲らせないと、ドラッグで広げた px が
+       そのまま残り、flex はチャート側だけを削ってチャートが消える（実測 2026-08-21）。
+       両側の**下限**（px）はここに書かない: 同じ数値がドラッグの可動域計算と CSS に分かれて
+       置かれるとずれるので、bottom_pane_view.js の定数から View が版面へ書く。 */
+    #um-bottom-pane {
+      flex: 0 1 45%; overflow: hidden; flex-direction: column;
+      background: var(--ct-uiSurface, #131722);
+    }
     /* モード切替ボタンはオン・オフのトグル（全モードで常に表示）。選択中のモードは
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */

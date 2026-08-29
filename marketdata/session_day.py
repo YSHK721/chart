@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -111,6 +112,20 @@ def session_day_starts(ts: "np.ndarray") -> "np.ndarray":
 #   担保」していた（規則の二重表現）。ISSUE-094 🟡-10a: 規則源 resample.period_label_naive への
 #   単方向委譲へ構造変更する（数値/ラベル出力は byte 不変・全期間 40 万点で一致実測済み）。
 # --------------------------------------------------------------------------- #
+@lru_cache(maxsize=8192)
+def _period_label_of_broker_day(tf: str, y: int, m: int, d: int) -> str:
+    """ブローカー暦日 (y, m, d) に対する 1W/1M ラベルを 1 回だけ求める。
+
+    規則の実体は :func:`marketdata.resample.period_label_naive` のまま（写していない）。
+    ここは同じ答えを何度も計算し直さないための記憶であり、規則は持たない。
+
+    暦日だけをキーにしてよい根拠: W-FRI / ME のラベル日は**日内時刻に依存しない**
+    （2012-01-01〜2027-12-31 の全日 × 5 時刻 = 46,752 件で差異 0 件を実測。
+    ``tests/test_session_period_label_cache.py`` が代表点を固定する）。
+    """
+    return period_label_naive(tf, pd.Timestamp(datetime(y, m, d))).strftime("%Y-%m-%d")
+
+
 def session_period_label(tf: str, t: "int | float") -> str:
     """``t`` が属するセッション日の 1W/1M バケットラベル 'YYYY-MM-DD' を返す。
 
@@ -119,10 +134,15 @@ def session_period_label(tf: str, t: "int | float") -> str:
 
     ラベル規則は :func:`marketdata.resample.period_label_naive`（W-FRI/ME の唯一源）へ委譲する。
     ブローカー暦日 ``b`` を naive 化して渡し、pandas offset の rollforward で右端ラベルを得る。
+
+    費用（ISSUE-450）: 本関数は「その時刻がどのバーに属するか」の経路上にあり、上位足投影では
+    チャート足 1 本ごとに呼ばれる（実測 C=1m / H=1M で 1 リクエスト 25,131 回・0.71 秒）。
+    答えはブローカー暦日ごとに一定なので、暦日をキーに記憶して同じ計算を繰り返さない
+    （日内時刻はラベル日を動かさない＝:func:`_period_label_of_broker_day` の根拠を参照）。
+    規則そのものは写さず委譲のままである。
     """
     b = _broker_date(t)
-    lab = period_label_naive(tf, pd.Timestamp(b).tz_localize(None))
-    return lab.strftime("%Y-%m-%d")
+    return _period_label_of_broker_day(tf, b.year, b.month, b.day)
 
 
 def period_session_labels(tf: str, label: str) -> "list[str]":

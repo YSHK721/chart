@@ -23,7 +23,7 @@ from simulator.domain.bar import Bar
 from simulator.domain.order import Order
 from simulator.domain.partial_close_rule import PartialCloseRule
 from simulator.domain.trailing_rule import TrailingRule
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 
@@ -72,6 +72,17 @@ def _config():
     )
 
 
+#: 口座レバレッジ（ISSUE-445 段階 3-D2 で `SymbolSpec` から `RunBacktestRequest` へ移設。
+#: 値は移設前と同じ＝必要証拠金は不変）。段階 3-D3 で `AccountSpec` へ束ねた。
+_LEVERAGE = 100.0
+
+#: ストップアウト水準。段階 3-D2 まで `RunBacktestRequest.stop_out_level` の既定値
+#: （0.0）が入っていた場所であり、段階 3-D3 で既定値を撤去したため呼出側が明示する。
+#: 本モジュールの合成シナリオは初期証拠金 100,000 に対し建玉が小さく equity が正のまま
+#: 推移するため、この値は結果に影響しない（既定に依存していた当時と byte 等価）。
+_STOP_OUT_LEVEL = 0.0
+
+
 def _spec():
     return SymbolSpec(
         contract_size=1.0,
@@ -81,7 +92,6 @@ def _spec():
         stops_level=0,
         digits=1,
         point_size=1.0,
-        leverage=100.0,
     )
 
 
@@ -93,7 +103,11 @@ def _run(bars, orders_by_bar, position_manager):
         position_manager=position_manager,
     )
     request = RunBacktestRequest(
-        config=_config(), bars=bars, symbol_spec=_spec(), initial_deposit=100_000.0
+        config=_config(), bars=bars, symbol_spec=_spec(),
+        account=AccountSpec(
+            initial_deposit=100_000.0, leverage=_LEVERAGE,
+            stop_out_level=_STOP_OUT_LEVEL,
+        ),
     )
     return interactor.execute(request)
 
@@ -269,7 +283,11 @@ def _run_tick(bars, orders_by_bar, ticks_by_bar, position_manager):
         position_manager=position_manager,
     )
     request = RunBacktestRequest(
-        config=_config_tick(), bars=bars, symbol_spec=_spec(), initial_deposit=100_000.0
+        config=_config_tick(), bars=bars, symbol_spec=_spec(),
+        account=AccountSpec(
+            initial_deposit=100_000.0, leverage=_LEVERAGE,
+            stop_out_level=_STOP_OUT_LEVEL,
+        ),
     )
     return interactor.execute(request)
 

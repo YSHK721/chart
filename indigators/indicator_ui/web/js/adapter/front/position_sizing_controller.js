@@ -226,6 +226,22 @@ export class PositionSizingController {
     this.confirmPick('take', price);
   }
 
+  /**
+   * 右クリック「…を解除」→ その水準を未設定（null）へ戻す（ISSUE-435 実装 1）。
+   *
+   * `confirmPick` と**同じ 1 本**（モーダルの入力欄）を通す。解除だけ別経路（usecase へ直接）に
+   * すると、「欄には値が残っているのに水準は消えた」が起きる（ISSUE-368 が除去した症状と同型）。
+   * 閉じていれば開いてから消すのも同じ理由で、書き戻し先の入力欄は `close()` で捨てられるため
+   * 開かずに書くと黙って抜けて完全無音になる（工程 5 🔴-1 と同一の失敗）。
+   *
+   * @param {string} target 'entry:i' / 'stop' / 'take'
+   */
+  clearPrice(target) {
+    this._ensureOpen();
+    this._dialog?.clearPrice?.(target);
+    this._syncPricesFromModel();
+  }
+
   /** 右クリック「この価格を建値に追加」→ 建値を 1 本増やす（閉じていれば開いてから）。 */
   addEntryPrice(price) {
     this._ensureOpen();

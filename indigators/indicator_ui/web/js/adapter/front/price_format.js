@@ -25,6 +25,51 @@
 //   （`toLocaleString()` を引数なしで呼ぶ＝参照実装の記述そのまま）。
 
 /**
+ * 価格水準の対象名（`entry:i` / `stop` / `take` / `losscut`）→ **表示名**（ISSUE-435）。
+ *
+ * 文言の出所（推測で決めない）:
+ *   - `'損切り'` / `'利確'` / `建値 ${n+1}` は `position_sizing_dialog.js:247-257` が持っていた
+ *     表をそのまま移したもの（1 文字も変えていない）。
+ *   - `'ロスカット'` は参照実装 integrated_position_sizing_calculator.html:781 の
+ *     `marker(adLc, …, 'ロスカット', …)`。モーダルに欄が無い（ロスカットは入力ではなく口座状態から
+ *     導出される結果）ため上の表には無く、水準線ラベルで初めて要る。
+ *   - **参照実装の射程外（外挿）**: 参照実装の数直線は 建値（平均 1 本）／損切り／ロスカットの
+ *     3 つしか描かず、`'利確'` と建値の連番（建値 1〜K）は存在しない。ISSUE-435 の裁定どおり
+ *     モーダルのラベルに一致させる。同ファイルの `priceOnLine(value, digits)` と同種の
+ *     「参照実装に定義が無い面だけを裁定で補った」拡張である。
+ *
+ * なぜ**この**ファイルに置くか（置き場の判断・根拠は実測）:
+ *   使う面が 4 つある — (a) モーダルの価格欄 (b) アーム中バー (c) チャートの水準線ラベル
+ *   (d) 右クリックの解除項目。元の置き場は module-private で (c)(d) が写しを持つしかなかった。
+ *   独立モジュールに切り出す案は実測で棄却した: `tests/position_sizing_shared_wiring.test.js`
+ *   の TC-SW22 が「計算機一式は replay ツリー内で相対 import が解決すること」を課しており、
+ *   新設モジュールは replay 側 symlink の追加を要求する（本作業では `simulator/**` を変更できない）。
+ *   実際に切り出した版で TC-SW22 が赤になることを確認済み。既に 4 面すべてから import 可能で
+ *   symlink 済みの純関数モジュールは本ファイルだけであり、View の import 許可リスト
+ *   （TC-SW02 の VIEW_IMPORT_ALLOWLIST）にも既に載っている。
+ *
+ * 全域的（元の表 :256 の `m ? … : ''` と同じ）: 未知・不正な対象名は空文字を返し例外を投げない。
+ * 呼び出し側は「空なら出さない」だけで済む。
+ *
+ * @param {*} target 対象名。
+ * @returns {string} 表示名。未知なら ''。
+ */
+export function priceTargetLabel(target) {
+  const key = String(target ?? '');
+  if (Object.prototype.hasOwnProperty.call(TARGET_LABELS, key)) {
+    return TARGET_LABELS[key];
+  }
+  const m = /^entry:(\d+)$/.exec(key);
+  return m ? `建値 ${Number(m[1]) + 1}` : '';
+}
+
+const TARGET_LABELS = Object.freeze({
+  stop: '損切り',
+  take: '利確',
+  losscut: 'ロスカット',
+});
+
+/**
  * 表示桁として**使える** `digits` か（台帳が解決できたか）。
  *
  * 判定をここに 1 つだけ置く理由（SRP・原因 β と同型の予防）: 同じ「桁が解決できたか」を

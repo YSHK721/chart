@@ -15,7 +15,7 @@ from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
 from simulator.domain.bar import Bar
 from simulator.domain.trading_week import week_id_of
 from simulator.domain.variance_forecast import VarianceForecast
-from simulator.usecase.models import BacktestConfig, SymbolSpec
+from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
 
 # 1 週内の 5 本（同一週・epoch int 5分足）。O≈100, σ̂⁻=σ̂⁺=0.05 で
@@ -36,10 +36,15 @@ def _config():
     )
 
 
+#: 口座レバレッジ（ISSUE-445 段階 3-D2 で `SymbolSpec` から `RunBacktestRequest` へ移設。
+#: 値は移設前と同じ＝必要証拠金は不変）。
+_LEVERAGE = 10.0
+
+
 def _spec():
     return SymbolSpec(
         contract_size=1.0, volume_min=0.0, volume_max=1_000_000.0, volume_step=0.0,
-        stops_level=0, digits=2, point_size=0.01, leverage=10.0,
+        stops_level=0, digits=2, point_size=0.01,
     )
 
 
@@ -92,7 +97,7 @@ def _exit_reason_of_segment(bars, fc, *, spread=0):
     )
     req = RunBacktestRequest(
         config=_config(), bars=bars, symbol_spec=_spec(),
-        initial_deposit=100_000.0, stop_out_level=0.0,
+        account=AccountSpec(initial_deposit=100_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
     )
     res = interactor.execute(req)
     assert len(res.trades) == 1, f"想定外トレード数: {len(res.trades)}"
@@ -160,7 +165,7 @@ class TestWeekSegmentExitReasons:
         )
         req = RunBacktestRequest(
             config=_config(), bars=bars, symbol_spec=_spec(),
-            initial_deposit=100_000.0, stop_out_level=0.0,
+            account=AccountSpec(initial_deposit=100_000.0, leverage=_LEVERAGE, stop_out_level=0.0),
         )
         res = interactor.execute(req)
         assert len(res.trades) == 1

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+
 _REPO_ROOT = Path(__file__).resolve().parents[2].parent
 _FIXTURE = (
     _REPO_ROOT
@@ -42,14 +44,9 @@ def _base_kwargs(csv_path: Path) -> dict:
         period="M1",
         ea_name="StopEntryProbe_EA",
         initial_deposit=10_000.0,
-        contract_size=10.0,
-        volume_min=0.01,
-        volume_max=100.0,
-        volume_step=0.01,
-        stops_level=0,
-        digits=1,
-        point_size=0.1,
-        leverage=10.0,
+        # 銘柄仕様 8 キーは供給元スナップショットだけを権威とする（ISSUE-445 段階 C）。
+        # ここにリテラルを書かない＝人が値を選べない。
+        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=60,
         ma_method="ema",
         lot_size=0.1,
@@ -113,6 +110,14 @@ def test_optimize_degenerate_single_candidate_matches_sp1_precedent_and_no_data_
     )
 
     # Assert: best=唯一候補。IS/OOS が先例 bit-exact（reconcile_is.py / reconcile.py）
+    #
+    # ⚠ ISSUE-445 段階 B/C: 以下の IS/OOS 4 値は**是正で動かない**ピンである
+    # （実測 2026-08-26）。段階 C で `_base_kwargs` の銘柄仕様を供給元へ**対で**寄せた結果、
+    # 積 `lot × contract_size` が 0.1 × 10.0 = 1.0 × 1.0 で不変になり、この 4 値は
+    # 1 ビットも動かなかった（実走で確認・下記は是正前に測った値のまま）。
+    # 一方 `contract_size` だけを寄せると
+    # profit +11370 → **+1137** に壊れる。赤になったら**期待値を書き換えず**、
+    # 是正が片側だけになっていないかを疑うこと。
     assert result.best_params == {"stop_loss_points": 200}
     assert result.best_is_stats.trades == 5224
     assert result.best_is_stats.profit == 11370.0

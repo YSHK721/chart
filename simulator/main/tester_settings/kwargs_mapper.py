@@ -110,7 +110,13 @@ class EngineBinding:
     """Settings 層が持たない実行資源の注入束（§6 の補助 DTO）。
 
     symbol_spec:         銘柄仕様（既存 `usecase/models.py` の DTO をそのまま使う。
-                         8 フィールドが `build_interactor` の銘柄仕様引数と 1:1）。
+                         7 フィールドが `build_interactor` の銘柄仕様引数と 1:1）。
+    leverage:            口座属性（ISSUE-445 段階 3-D2・設計書 §3.4）。`symbol_spec` の
+                         中に置かない——`mt5.symbol_info()` に `leverage` は無く、供給元でも
+                         `account` セクションから引く（変更起点が違う契約を同居させない）。
+                         **既定値を持たない**必須注入（`settlement_currency` / `ea_params`
+                         と同じ規律）。既定を置くと「人が書いた値が権威になる」形（RC-1）が
+                         必要証拠金の除数に入り込む。
     symbol / period / data_path: 実行対象データセットの識別（`.ini` の値との整合を検査する）。
                          ``data_path`` の ``None`` は「バー系列を供給しない」の意であり、
                          規則 S（`MATH_CALCULATIONS` ⇔ バー系列なし）の判定入力になる。
@@ -141,6 +147,7 @@ class EngineBinding:
     known_ea_names: "frozenset[str]"
     settlement_currency: str
     ea_params: "Mapping[str, Any]"
+    leverage: float
     stop_out_level: float = 0.0
     tick_store_root: "str | None" = None
     config_overrides: "dict | None" = None
@@ -350,7 +357,8 @@ def _period(ctx: _MappingContext) -> Any:
 
 
 def _leverage(ctx: _MappingContext) -> Any:
-    injected = float(ctx.binding.symbol_spec.leverage)
+    # 権威値は口座属性の注入（ISSUE-445 段階 3-D2）。銘柄仕様（`symbol_spec`）からは引かない。
+    injected = float(ctx.binding.leverage)
     if "leverage" in ctx.effective.inert_fields:
         return injected
     leverage = ctx.effective.leverage

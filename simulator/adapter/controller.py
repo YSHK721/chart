@@ -23,6 +23,7 @@ from typing import Any
 
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import BacktestError
+from simulator.usecase.models import AccountSpec
 from simulator.usecase.ports import MarketDataPort, RunBacktestInputBoundary
 from simulator.usecase.run_backtest import RunBacktestRequest
 
@@ -93,21 +94,24 @@ class BacktestController:
         timeframe: Any,
         period: Any,
         symbol_spec: Any,
-        initial_deposit: float,
-        stop_out_level: float,
+        account: AccountSpec,
     ) -> RunBacktestRequest:
         """データ取得段: `source_ref` を読み `RunBacktestRequest` を組む。
 
         非公開に留める理由（ISSUE-398 §3）: 取得点は `market_data` プロパティが既に
         公開しており、ここを公開すると**同一操作に 2 つの入口**ができる。`run()` が
         自分の引数から request を組むための内部手続きに閉じる。
+
+        `account`（ISSUE-445 段階 3-D3）は口座の契約であり **既定値を置かない**。
+        初期証拠金・必要証拠金の除数・ストップアウト水準をここで発明すると、人が書いた
+        値が権威になる（RC-1 と同型）。呼出側が値を持たないなら、その呼出は証拠金計算を
+        伴う run を組めていない。
         """
         return RunBacktestRequest(
             config=config,
             bars=self._market_data.load(source_ref, timeframe, period),
             symbol_spec=symbol_spec,
-            initial_deposit=initial_deposit,
-            stop_out_level=stop_out_level,
+            account=account,
         )
 
     def run(
@@ -117,15 +121,31 @@ class BacktestController:
         *,
         timeframe: Any = None,
         period: Any = None,
-        symbol_spec: Any = None,
-        initial_deposit: float = 0.0,
-        stop_out_level: float = 0.0,
+        symbol_spec: Any,
+        account: AccountSpec,
     ) -> int:
         """1 run を実行し終了コード（0/1/2）を返す。
 
         「ロード → request 組立 → 実行 → 翻訳」の順に 2 段（`_build_request` /
         `execute`）へ割り、本メソッドは**翻訳**だけを自分の責務として残す。
-        シグネチャ・戻り値・例外伝播は従来と同一である。
+        戻り値・例外伝播は従来と同一である。
+
+        **契約引数（`config` / `symbol_spec` / `account`）に既定値を置かない**
+        （ISSUE-445 段階 3-D3）。契約引数とは「本メソッドが `RunBacktestRequest` へ
+        そのまま載せる引数」＝当該 DTO のフィールドと同名の引数である（`timeframe` /
+        `period` は `market_data.load` へ渡す取得パラメータであり、`None` が
+        MarketDataPort 契約上の意味を持つため対象外）。
+
+        段階 3-D2 までは `symbol_spec=None` / `initial_deposit=0.0` /
+        `stop_out_level=0.0` の 3 つが既定値を持っていた。前者は「銘柄の契約が無い
+        request」——エンジンは `spec.contract_size` 等を無条件に読むため実行できない——を
+        本メソッドが黙って組める形であり、後の 2 つは「人が書いた値が権威になる」形
+        （RC-1 と同型）だった。口座の契約を 1 型へ束ねた際に後者 2 つは構造的に消え、
+        残った `symbol_spec` の既定も本段階で撤去した。**本番の呼出は 0 件**
+        （`run_backtest` は `execute(request)` を直接呼ぶ・実測 2026-08-27）であり、
+        影響はスタブ Interactor を使うテストのみである。
+        この規律は `simulator/tests/unit/test_backtest_controller.py` の
+        `test_run_places_no_default_on_the_contract_arguments` が機械的に施行する。
         """
         try:
             self.execute(
@@ -135,8 +155,7 @@ class BacktestController:
                     timeframe=timeframe,
                     period=period,
                     symbol_spec=symbol_spec,
-                    initial_deposit=initial_deposit,
-                    stop_out_level=stop_out_level,
+                    account=account,
                 )
             )
             return SUCCESS_EXIT_CODE

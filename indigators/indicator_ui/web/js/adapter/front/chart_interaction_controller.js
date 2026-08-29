@@ -125,6 +125,12 @@ export class ChartInteractionController {
         lastVpanY = e.clientY;
       });
       container.addEventListener('pointermove', (e) => {
+        // ペイン区切りのドラッグ追随（ISSUE-440）: 区切りを掴んで動かすとペイン幾何が変わるが、
+        //   lwc はそれを通知せず、クロスヘア移動も抑止されるため凡例が古い位置に取り残される
+        //   （実測 2026-08-21: 区切りを 100px 上へ引いてもラベルは動かず、ペイン上端 458px に
+        //   対しラベル 558px）。幾何が変わっていなければ何も起きない（指紋比較のみ）ので、
+        //   通常のマウス移動に余計な再描画は生まれない。
+        renderer.syncPaneGeometry();
         if (!vpanActive) {
           return;
         }
@@ -140,7 +146,11 @@ export class ChartInteractionController {
           renderer.panPriceByPixels(dy);
         }
       });
-      const endVpan = () => { vpanActive = false; };
+      // 掴んでいた手を離した時点でも幾何を突き合わせる（移動が届かないまま終わる操作の受け皿）。
+      const endVpan = () => {
+        vpanActive = false;
+        renderer.syncPaneGeometry();
+      };
       container.addEventListener('pointerup', endVpan);
       container.addEventListener('pointerleave', endVpan);
     }

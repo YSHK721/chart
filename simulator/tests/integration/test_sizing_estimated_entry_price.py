@@ -156,7 +156,7 @@ def _measure_diffs(controller, request, basis: str) -> "list[float]":
     spec = request.symbol_spec
     series_name = required_price_series(basis)
     sizing = _sizing_for(spec)
-    equity = request.initial_deposit
+    equity = request.account.initial_deposit
     diffs: "list[float]" = []
     for i, bar in enumerate(request.bars):
         estimated = float(registry.get(series_name).iloc[i])

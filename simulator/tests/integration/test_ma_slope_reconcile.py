@@ -4,6 +4,19 @@ load_case → build_interactor（warmup CSV + trading_start）→ CSV 実走 →
 expected.deals/results と比較し、一致率を定量化する。完全一致を捏造せず、残差
 （sub-minute 時刻表現 / stop-out 発火バー精度）を不変条件テストとして固定する。
 
+銘柄仕様の権威（ISSUE-445 段階 2・2026-08-25 是正）:
+  ``contract_size`` / ``volume_min`` / ``volume_max`` / ``volume_step`` / ``stops_level`` /
+  ``digits`` / ``point_size`` / ``leverage`` の 8 項目は **供給元スナップショット**
+  （``marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json``・MT5 端末から機械取得）
+  から引く。本ファイルにこれらのリテラルを書かない。従来は ``contract_size=10`` と
+  ``volume_min/step=0.1`` を人が書いており、真値（1.0 / 1.0 / 1.0）との誤差が
+  積 ``lot × contract_size`` の上で相殺していた（ISSUE-445 の RC-1）。
+  ``lot_size`` だけは ``case.yaml`` の ``expert.lot``（=0.1）のままにする。これは MT5 の
+  **EA 入力値**の忠実な記録であり、約定ロットではない。原典 ``MA_Slope_EA.mq5:NormalizeLot()``
+  の移植（段階 1）が ``volume_min=1.0`` まで持ち上げ、実約定 1.0 lot になる
+  （実測: 本実走の約定 volume 集合 = {1.0}／MT5 レポートの ``deals[].vol`` は 2327 件すべて 1）。
+  よって積は ``1.0 × 1.0 = 1.0`` で従来の ``0.1 × 10`` と一致し、**下記 golden は bit-exact 不変**。
+
 実走 config（全修正 ON + warmup + stop-out 精度2層・本テストが固定する条件）:
   entry_price_basis="current_open" / spread は Bar から取得 /
   stop_out_action="close_and_halt" / stop_out_level=99.95 /
@@ -44,6 +57,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.main import build_interactor
 from simulator.tests.fixtures.mt5 import load_case
 
@@ -76,6 +90,9 @@ def _to64(mt5_time: str) -> np.datetime64:
 def _run_engine(case):
     c = case.config
     sym, acc, ea = c["symbol"], c["account"], c["expert"]
+    # 銘柄仕様 8 項目は供給元スナップショット（MT5 端末から機械取得）だけを権威とする
+    # （ISSUE-445 段階 2・D3）。ここにリテラルを書かない＝人が値を選べない。
+    spec = load_spec_fields(OANDA_JAPAN_MT5_LIVE, sym["name"])
     controller, request = build_interactor(
         # warmup 込み CSV（2024-12-23 始点）を与え、trading_start 前は EMA seed 収束のみ。
         data_path=case.warmup_csv,
@@ -83,14 +100,9 @@ def _run_engine(case):
         period="M1",
         ea_name="MA_Slope_EA",
         initial_deposit=float(acc["initial_deposit"]),
-        contract_size=float(sym["contract_size"]),
-        volume_min=0.1,
-        volume_max=100.0,
-        volume_step=0.1,
-        stops_level=0,
-        digits=int(sym["digits"]),
-        point_size=float(sym["point_size"]),
-        leverage=float(sym["leverage"]),
+        # contract_size / volume_min / volume_max / volume_step / stops_level /
+        # digits / point_size / leverage の 8 キー。
+        **spec,
         ma_period=int(ea["ma_period"]),
         ma_method=ea["ma_method"],
         lot_size=float(ea["lot"]),
