@@ -1,0 +1,129 @@
+/* dashboard.css — 水準到達シートの寸法・字面だけを持つ。
+ *
+ * 規約:
+ *   1. **配色は持たない。** `p` から色への写像は heat_scale.js が唯一源であり（設計書 §5.5.7:
+ *      「配色の基準は両方とも §5.3 の `p` で、1 冊に 1 つ」）、ここで背景色を決めると第 2 定義に
+ *      なる。index_html_contract.test.js が機械的に禁止している。
+ *   2. **すべての規則を `.dash-` 配下へ閉じる。** ホストは sim と共有する下部ペインの器なので、
+ *      素の要素セレクタを置くと統合ページ全体へ規則が漏れる（sim が iframe を選んだのと同じ
+ *      問題）。これも上記の検定が強制する。
+ *   3. 文字色・地色は宿主のテーマを継承する（`color: inherit`）。明暗どちらのテーマでも読める
+ *      ようにするのが heat_scale 側の不透明度設計の前提である。
+ */
+
+.dash-sheet-host {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 12px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: inherit;
+}
+
+.dash-sheet-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.dash-sheet-message {
+  margin: 0;
+  min-height: 0;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.dash-sheet-message:empty {
+  display: none;
+}
+
+.dash-ladder-table,
+.dash-osc-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-ladder-table th,
+.dash-osc-table th {
+  text-align: left;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 2px 8px;
+}
+
+.dash-ladder-table td,
+.dash-osc-table td {
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+/* 距離は符号で上下を読むので右寄せにして桁を揃える。 */
+.dash-ladder-distance {
+  text-align: right;
+}
+
+/* 価格セル: 背景 3 分割の帯を敷き、その上に価格の文字を置く。 */
+.dash-ladder-price {
+  position: relative;
+  text-align: right;
+}
+
+.dash-ladder-bands {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+/* 3 段は等分（短 / 中 / 長）。色は heat_scale.js が入れる。 */
+.dash-ladder-band {
+  flex: 1 1 0;
+}
+
+.dash-ladder-price-text {
+  position: relative;
+}
+
+.dash-ladder-marks {
+  opacity: 0.8;
+}
+
+/* 現在値の独立行は罫で強調する（§4.7 の「━━ 現在値 ━━」に相当）。 */
+.dash-ladder-current td {
+  border-top: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  font-weight: 700;
+}
+
+.dash-granularity-notice {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* 第 2 表: 1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
+.dash-osc-cell {
+  text-align: right;
+  min-width: 56px;
+}
+
+.dash-osc-value,
+.dash-osc-reach,
+.dash-osc-no-level {
+  display: block;
+}
+
+.dash-osc-reach,
+.dash-osc-no-level {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.dash-osc-name {
+  white-space: nowrap;
+}
