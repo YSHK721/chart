@@ -101,6 +101,11 @@ data/marketdata
 #   PreToolUse フックの結線。追跡しないと別チェックアウト・worktree で遮断が消え、規約が
 #   「文章だけ」へ戻る。個人設定は settings.local.json 側（引き続き無視）。
 !.claude/settings.json
+# 静的品質検定の baseline（ratchet の凍結状態）。追跡しないと別チェックアウトで
+#   「凍結 0 件」になり、既存違反がすべて新規違反として噴き出して検定が使えなくなる。
+#   生成物ではあるが、**何を許しているか**の記録そのものなので追跡する。
+!.claude/scripts/di_baseline.json
+!.claude/scripts/tq_baseline.json
 # フロント各スライスの manifest / lockfile は追跡する（ISSUE-280）。上の blanket `*.json` は
 #   データファイル向けであり、これに巻き込まれると clean clone で `npm ci` が成立しない
 #   （実際 unified_ui/web/package.json だけが未追跡のまま lockfile だけ commit されていた）。
