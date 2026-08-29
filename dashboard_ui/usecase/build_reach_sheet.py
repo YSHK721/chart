@@ -102,6 +102,7 @@ def build_reach_sheet(
 
     levels: "list[LevelInput]" = []
     reach_by_row: "dict[tuple[str, str], ReachState]" = {}
+    instance_by_row: "dict[tuple[str, str], tuple[str, str, str, str]]" = {}
     cells: "list[OscCell]" = []
     degradations: "list[Degradation]" = []
 
@@ -139,6 +140,7 @@ def build_reach_sheet(
                 continue
             levels.append(level)
             reach_by_row[level.row_key] = _level_reach(tuple(points), closes)
+            instance_by_row[level.row_key] = instance.key
 
     ladder = build_ladder(levels, current_price=current_price)
     rows = tuple(
@@ -150,6 +152,7 @@ def build_reach_sheet(
             gap_to_previous=row.gap_to_previous,
             horizon_marks=row.horizon_marks,
             reach=reach_by_row[(row.label, row.timeframe)],
+            instance_key=instance_by_row[(row.label, row.timeframe)],
         )
         for row in ladder.rows
     )

@@ -1,0 +1,199 @@
+"""§3.1 / §3.2 の役割判定（水準 / 非水準・オシレータ宣言）を固定する。
+
+§3.1: 水準でない系列の除外は**名前ではなく実値の桁**（現在値の 0.3〜3 倍）で判定する。
+実測では `btlm_trail_beta`（−2〜218）/ `btlm_trail_sigma`（40〜5,591）/
+`btlm_trail_band_hit_rate`（0.70〜0.92）を水準として数えていた誤りがあった（§11）。
+
+§8 OCP: 「積み上がる量か」も性質の宣言で切り替え、指標名で分岐しない。
+"""
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from dashboard_ui.adapter.series_role_table import SeriesRoleTable
+from dashboard_ui.usecase.sheet_models import SeriesRole, SheetInstance
+
+PRICE = 65_760.0
+
+
+def instance_of(indicator_id: str, params: dict, timeframe: str = "1m") -> SheetInstance:
+    return SheetInstance.of(indicator_id, "default", params, chart_timeframe=timeframe)
+
+
+def role(values, *, indicator_id: str = "btlm_trail", series_name: str = "x") -> SeriesRole:
+    return SeriesRoleTable().role_of(
+        instance=instance_of(indicator_id, {}),
+        series_name=series_name,
+        values=tuple(values),
+        reference_price=PRICE,
+    )
+
+
+def test_a_series_on_the_price_scale_is_a_level() -> None:
+    assert role([PRICE - 30.0, PRICE, PRICE + 30.0]) is SeriesRole.PRICE_LEVEL
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [-2.0, 100.0, 218.0],          # btlm_trail_beta（実測レンジ）
+        [40.0, 900.0, 5_591.0],        # btlm_trail_sigma（実測レンジ）
+        [0.70, 0.81, 0.92],            # btlm_trail_band_hit_rate（実測レンジ）
+        [-0.22, -0.14, -0.06],         # ma_marod（乖離率 %）
+        [31.9, 52.2, 67.4],            # rsi（0-100）
+    ],
+)
+def test_a_series_off_the_price_scale_is_not_a_level(values) -> None:
+    assert role(values) is SeriesRole.NOT_LEVEL
+
+
+@pytest.mark.parametrize(
+    "median, expected",
+    [
+        (0.3 * PRICE, SeriesRole.PRICE_LEVEL),          # 下限は**含む**
+        (3.0 * PRICE, SeriesRole.PRICE_LEVEL),          # 上限は**含む**
+        (0.3 * PRICE - 1.0, SeriesRole.NOT_LEVEL),
+        (3.0 * PRICE + 1.0, SeriesRole.NOT_LEVEL),
+    ],
+)
+def test_the_band_boundaries_are_inclusive(median: float, expected: SeriesRole) -> None:
+    assert role([median, median, median]) is expected
+
+
+def test_a_series_without_any_finite_value_is_not_a_level() -> None:
+    """warm-up だけの系列は水準として数えない（並びを壊さない）。"""
+    assert role([math.nan, math.nan]) is SeriesRole.NOT_LEVEL
+
+
+def test_an_empty_series_is_not_a_level() -> None:
+    assert role([]) is SeriesRole.NOT_LEVEL
+
+
+# ------------------------------------------------------------ オシレータ宣言
+def test_the_band_series_name_follows_the_configured_quantile() -> None:
+    """帯の系列名は設定の `q_high` から作る（§7.1.1 の `_q{q_hi}` 展開と同じ規約）。"""
+    table = SeriesRoleTable()
+
+    marod = table.oscillator_spec(
+        instance=instance_of("ma_marod", {"q_high": 0.95}),
+        series_names=frozenset({"ma_marod", "ma_marod_q95"}),
+    )
+    rsi = table.oscillator_spec(
+        instance=instance_of("profit_rsi", {"q_high": 0.90}),
+        series_names=frozenset({"rsi", "rsi_q90"}),
+    )
+
+    assert (marod.value_series, marod.band_high_series) == ("ma_marod", "ma_marod_q95")
+    assert (rsi.value_series, rsi.band_high_series) == ("rsi", "rsi_q90")
+
+
+def test_the_quantile_defaults_come_from_the_indicator_catalog() -> None:
+    """設定に無い水準パラメータは**カタログ既定**で埋まる（勝手な既定を発明しない）。"""
+    table = SeriesRoleTable()
+
+    spec = table.oscillator_spec(
+        instance=instance_of("profit_rsi", {}),
+        series_names=frozenset({"rsi", "rsi_q90"}),
+    )
+
+    assert spec.band_high_series == "rsi_q90"      # profit_rsi の既定 q_high = 0.90
+    assert spec.q_high == 0.90
+    assert (spec.window_n, spec.k_events) == (500, 50)
+
+
+def test_the_settings_win_over_the_catalog_defaults() -> None:
+    table = SeriesRoleTable()
+
+    spec = table.oscillator_spec(
+        instance=instance_of("profit_rsi", {"q_high": 0.80, "window_n": 200, "k_events": 9}),
+        series_names=frozenset({"rsi", "rsi_q80"}),
+    )
+
+    assert (spec.band_high_series, spec.q_high) == ("rsi_q80", 0.80)
+    assert (spec.window_n, spec.k_events) == (200, 9)
+
+
+def test_only_tickvol_is_declared_cumulative() -> None:
+    """§5.3.3: 積み上がる量かどうかは**性質の宣言**（指標名での分岐を呼び出し側に作らない）。"""
+    table = SeriesRoleTable()
+
+    cumulative = {
+        indicator_id: table.oscillator_spec(
+            instance=instance_of(indicator_id, {}),
+            series_names=frozenset(),
+        ).cumulative
+        for indicator_id in ("ma_marod", "btlm_trail_marod", "profit_rsi", "tickvol")
+    }
+
+    assert cumulative == {"ma_marod": False, "btlm_trail_marod": False,
+                          "profit_rsi": False, "tickvol": True}
+
+
+def test_the_rsi_excess_is_normalised_by_the_headroom() -> None:
+    """RSI は有界量なので超過分を余地 `100 - u` で割る（`profit_rsi/src/levels.py` ③）。"""
+    table = SeriesRoleTable()
+
+    rsi = table.oscillator_spec(
+        instance=instance_of("profit_rsi", {}), series_names=frozenset()
+    )
+    tickvol = table.oscillator_spec(
+        instance=instance_of("tickvol", {}), series_names=frozenset()
+    )
+
+    assert rsi.excess(95.0, 90.0) == 0.5
+    assert tickvol.excess(95.0, 90.0) == 5.0
+
+
+def test_a_price_scale_indicator_has_no_oscillator_cell() -> None:
+    table = SeriesRoleTable()
+
+    assert table.oscillator_spec(
+        instance=instance_of("moving_averages", {}), series_names=frozenset({"MA"})
+    ) is None
+
+
+# ------------------------------------------------------------------ 行ラベル
+def test_the_row_label_separates_instances_that_differ_in_settings() -> None:
+    """§11-2: ラベルはパラメータまで含めて一意にする（同じ足で衝突させない）。"""
+    table = SeriesRoleTable()
+
+    first = table.row_label(
+        instance=instance_of("moving_averages", {"ma_type": "ema", "length": 24}),
+        series_name="MA",
+    )
+    second = table.row_label(
+        instance=instance_of("moving_averages", {"ma_type": "ema", "length": 200}),
+        series_name="MA",
+    )
+
+    assert first != second
+    assert first.startswith("MA")
+
+
+def test_the_row_label_is_stable_for_the_same_settings() -> None:
+    table = SeriesRoleTable()
+    params = {"length": 24, "ma_type": "ema", "source": "hlc3"}
+
+    first = table.row_label(instance=instance_of("moving_averages", params), series_name="MA")
+    second = table.row_label(
+        instance=instance_of("moving_averages", dict(reversed(list(params.items())))),
+        series_name="MA",
+    )
+
+    assert first == second
+
+
+def test_a_missing_level_parameter_is_an_explicit_error() -> None:
+    """水準パラメータの既定を発明しない（黙って別の帯を読みに行かせない）。
+
+    設定にもカタログにも無い場合、適当な既定で `rsi_q90` を読みに行くと、実際には別の帯で
+    動いているセルが「正常」に見えてしまう。供給の欠落は明示的に落とす（§7 無言の縮退禁止）。
+    """
+    table = SeriesRoleTable(param_defaults={"profit_rsi": {"window_n": 500, "k_events": 50}})
+
+    with pytest.raises(KeyError, match="q_high"):
+        table.oscillator_spec(
+            instance=instance_of("profit_rsi", {}), series_names=frozenset()
+        )

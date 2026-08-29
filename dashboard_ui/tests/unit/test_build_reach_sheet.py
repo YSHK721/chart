@@ -377,3 +377,36 @@ class TestTailFitCache:
         second = cache.tail_for(key, [7.0, *window], 30)
 
         assert first is second
+
+
+class TestRowInstanceLink:
+    """行から instance を辿れること（§7: `cvfe` 行に更新粒度を出すために要る）。
+
+    `degradations` は instance 単位で出るため、行が属する instance を答えられないと
+    「どの行がバー確定でしか動かないか」を表に出せない（無言の縮退になる）。
+    """
+
+    def test_every_row_names_the_instance_it_came_from(self) -> None:
+        moving = SheetInstance("moving_averages", "default", {"length": 5}, "1m")
+        cvfe = SheetInstance("cvfe", "default", {}, "1m")
+        series = FakeSeriesPort({
+            moving.key: {"MA": _points([104.0, 105.0])},
+            cvfe.key: {"cvfe_u1": _points([96.0, 95.0])},
+        })
+        bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
+
+        sheet = build_reach_sheet(_request(moving, cvfe), series_port=series,
+                                  bar_port=bars, roles=FakeRoles())
+
+        assert [row.instance_key for row in sheet.rows] == [moving.key, cvfe.key]
+
+    def test_the_row_instance_key_matches_the_degradation_key(self) -> None:
+        """行と縮退の告知が同じキーで突き合わせられること。"""
+        cvfe = SheetInstance("cvfe", "default", {}, "1m", intrabar_capable=False)
+        series = FakeSeriesPort({cvfe.key: {"cvfe_u1": _points([101.0, 102.0])}})
+        bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
+
+        sheet = build_reach_sheet(_request(cvfe), series_port=series, bar_port=bars,
+                                  roles=FakeRoles())
+
+        assert sheet.rows[0].instance_key == sheet.degradations[0].instance_key

@@ -127,6 +127,10 @@ class LadderRow:
     horizon_marks: "frozenset[Horizon]"
     reach: ReachState
     horizon_p: "Mapping[Horizon, float | None]" = field(default_factory=dict)
+    #: この行を出した instance の畳み込みキー（`Degradation.instance_key` と同じ形）。
+    #: §7 の「`cvfe` 行には更新粒度がバー確定であることを表示する」を行単位で解けるように
+    #: するための紐付けであり、行と縮退の告知を同じキーで突き合わせる。
+    instance_key: "tuple[str, str, str, str] | None" = None
 
 
 @dataclass(frozen=True)

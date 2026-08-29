@@ -265,3 +265,185 @@ def test_no_forbidden_root_is_reachable_from_the_inner_layers(layer: str) -> Non
         )
 
     assert reached & _FORBIDDEN_ROOTS == set()
+
+
+# ------------------------------------------------------- R3 / R4 / R5（外側の層）
+#: 外側の技術。**adapter だけ**が知ってよい（pandas・指標計算 Facade・素材・bridge）。
+_ADAPTER_ONLY_ROOTS = (
+    "pandas",
+    "marketdata",
+    "adapter.compute",
+    "simulator.replay_ui.adapter._indicator_ui_bridge",
+)
+
+
+def technology_offenders(modules: "frozenset[str]") -> "frozenset[str]":
+    """adapter だけに許される技術への参照を拾う（R3）。"""
+    return frozenset(
+        module
+        for module in modules
+        for allowed in _ADAPTER_ONLY_ROOTS
+        if module == allowed or module.startswith(allowed + ".")
+    )
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "import pandas as pd\n",
+        "from simulator.replay_ui.adapter import _indicator_ui_bridge\n",
+        "from adapter.compute import full_compute\n",
+        "from marketdata.tf_meta import period_start_unix\n",
+        "from adapter.compute.live_tick_tails import is_incremental\n",
+    ],
+)
+def test_the_technology_detector_sees_the_bridge_and_pandas(
+    form: str, tmp_path: Path
+) -> None:
+    """検出力の自己検査（R3 が空振りしないこと）。技術の入口を 1 つずつ見る。"""
+    modules = imported_modules(
+        tmp_path / "sample.py", package=("dashboard_ui", "framework"), source=form
+    )
+
+    assert technology_offenders(modules) != frozenset(), form
+
+
+def test_the_technology_detector_allows_the_shared_static_file_server(tmp_path: Path) -> None:
+    """誤検出しないこと（共有の静的配信器は技術の越境ではない）。"""
+    modules = imported_modules(
+        tmp_path / "sample.py",
+        package=("dashboard_ui", "framework"),
+        source=(
+            "from simulator.replay_ui.framework.static_file_server import "
+            "StaticFileServer\n"
+        ),
+    )
+
+    assert technology_offenders(modules) == frozenset()
+
+
+@pytest.mark.parametrize("layer", ["domain", "usecase", "framework", "main"])
+def test_only_the_adapter_layer_knows_pandas_and_the_compute_bridge(layer: str) -> None:
+    """R3: pandas・指標計算 Facade・素材・bridge は adapter に閉じる。"""
+    offenders = {
+        str(path.relative_to(_ROOT)): sorted(technology_offenders(imported_modules(path)))
+        for path in _production_sources(layer)
+        if technology_offenders(imported_modules(path))
+    }
+
+    assert offenders == {}
+
+
+def test_the_adapter_layer_actually_uses_those_technologies() -> None:
+    """R3 が「誰も使っていないから緑」になっていないこと（規則の意味の自己検査）。"""
+    reached: "set[str]" = set()
+    for path in _production_sources("adapter"):
+        reached.update(technology_offenders(imported_modules(path)))
+
+    assert reached
+
+
+@pytest.mark.parametrize("layer", ["framework", "adapter"])
+def test_the_framework_and_the_adapter_do_not_know_each_other(layer: str) -> None:
+    """R4: framework と adapter を同時に知ってよいのは main だけ。"""
+    other = "dashboard_ui.adapter" if layer == "framework" else "dashboard_ui.framework"
+    offenders = {
+        str(path.relative_to(_ROOT))
+        for path in _production_sources(layer)
+        if any(
+            module == other or module.startswith(other + ".")
+            for module in imported_modules(path)
+        )
+    }
+
+    assert offenders == set()
+
+
+def test_the_composition_root_binds_both_sides() -> None:
+    """R5: 束縛点が実在し、そこだけが両側を知る。"""
+    root = _ROOT / "main" / "composition_root.py"
+    modules = imported_modules(root)
+
+    assert root.is_file()
+    assert any(module.startswith("dashboard_ui.adapter") for module in modules)
+    assert any(module.startswith("dashboard_ui.framework") for module in modules)
+
+
+@pytest.mark.parametrize(
+    "concrete",
+    ["IndicatorUiComputeGateway", "ForwardEvaluationGateway", "ReachSheetController",
+     "BreakpointRegistry", "SeriesRoleTable", "ElapsedComparisonGateway"],
+)
+def test_the_concrete_pieces_are_wired_only_at_the_binding_point(concrete: str) -> None:
+    """R5: 具象を組み立ててよいのは main だけ（他の層は Protocol 越しに受け取る）。"""
+    importers = {
+        str(path.relative_to(_ROOT))
+        for layer in ("domain", "usecase", "adapter", "framework")
+        for path in _production_sources(layer)
+        if any(module.endswith("." + concrete) for module in imported_modules(path))
+    }
+
+    assert importers <= {"adapter/breakpoints/__init__.py"}
+
+
+def top_level_modules(path: Path, *, source: "str | None" = None) -> "frozenset[str]":
+    """**モジュール本体**（トップレベル）の import だけを集める。
+
+    関数の中の import は「実行時に初めて要る依存」であり、層の依存関係とは別物である。
+    プロセス起動点（`serve_dashboard.main`）が Composition Root を呼ぶのはこの形になる。
+    """
+    tree = ast.parse(source if source is not None else path.read_text(encoding="utf-8"))
+    found: "set[str]" = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+            found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+    return frozenset(found)
+
+
+def test_the_top_level_scan_ignores_imports_inside_functions(tmp_path: Path) -> None:
+    """検出力の自己検査（トップレベルだけを見ていること）。"""
+    source = (
+        "import json\n"
+        "def main():\n"
+        "    from dashboard_ui.main.composition_root import build_dashboard_app\n"
+    )
+
+    modules = top_level_modules(tmp_path / "sample.py", source=source)
+
+    assert "json" in modules
+    assert not any(module.startswith("dashboard_ui") for module in modules)
+
+
+def test_the_framework_body_does_not_bind_anything() -> None:
+    """framework の本体は `dashboard_ui` の中身を知らない（束縛は main だけが行う）。
+
+    プロセス起動点（`python -m dashboard_ui.framework.serve_dashboard <port>`）だけが
+    Composition Root を関数の中で呼ぶ。`unified_ui/serve.sh` がこの形で起動する。
+    """
+    bound = {
+        str(path.relative_to(_ROOT)): sorted(
+            module for module in top_level_modules(path)
+            if module.startswith("dashboard_ui")
+        )
+        for path in _production_sources("framework")
+        if any(module.startswith("dashboard_ui") for module in top_level_modules(path))
+    }
+
+    assert bound == {}
+
+
+def test_the_only_main_reference_from_the_framework_is_the_process_entry_point() -> None:
+    entry = _ROOT / "framework" / "serve_dashboard.py"
+
+    referenced = sorted(
+        module for module in imported_modules(entry)
+        if module.startswith("dashboard_ui")
+    )
+
+    assert referenced == [
+        "dashboard_ui.main.composition_root",
+        "dashboard_ui.main.composition_root.build_dashboard_app",
+    ]
