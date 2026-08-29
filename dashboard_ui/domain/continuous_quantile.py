@@ -81,6 +81,29 @@ def in_band_ranks(values: "np.ndarray | Sequence[float]", window_n: int) -> np.n
     return _bands.rolling_causal_pointwise(values, window_n, empirical_rank)
 
 
+def in_band_rank_latest(
+    values: "np.ndarray | Sequence[float]", window_n: int
+) -> float:
+    """**末尾 1 点**の帯内 `p`（`in_band_ranks(values, window_n)[-1]` と同値）。
+
+    セルの `p` に要るのは当該バー 1 点だけである（§5.3）。系列版を呼ぶと n−1 個の順位を
+    作って捨てることになり、ISSUE-450 と同型の「作ってから捨てる」欠陥になる
+    （レビュー 🔴-1・実測 1 リクエストあたり約 278ms の破棄）。
+
+    窓規則は :func:`common.marod_bands.causal_pointwise_latest` へ委譲する（系列版と
+    **同一の**窓規則の唯一の定義。ここで窓を書き直すと因果窓の第 2 定義が生まれる）。
+
+    Returns:
+        当該バーの経験順位。値が無い・窓が足りない・当該値が非有限なら NaN。
+    """
+    vals = np.asarray(values, dtype=np.float64).ravel()
+    if vals.size == 0:
+        return float("nan")
+    return _bands.causal_pointwise_latest(
+        vals[:-1], float(vals[-1]), window_n, empirical_rank
+    )
+
+
 def fit_tail(events: Sequence[float], *, k_events: int) -> "TailFit | None":
     """超過分の観測列（エピソード極値）の直近 `k_events` 件へ GPD を当てはめる。
 

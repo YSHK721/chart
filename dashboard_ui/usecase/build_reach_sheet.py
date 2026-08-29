@@ -261,7 +261,8 @@ def _build_cell(
     if spec.cumulative:
         return _cumulative_cell(instance, spec, values, reach, comparison)
 
-    ranks = _cq.in_band_ranks(values, spec.window_n)
+    # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
+    rank = _cq.in_band_rank_latest(values, spec.window_n)
     history_values, history_bands = observed.history
     events = _cq.excess_event_history(history_values, history_bands,
                                       excess=spec.excess)
@@ -269,7 +270,7 @@ def _build_cell(
         value=float(values[-1]),
         band_high=float(bands[-1]),
         q_high=spec.q_high,
-        in_band_rank=float(ranks[-1]),
+        in_band_rank=rank,
         tail=tails.tail_for(instance.key, events, spec.k_events),
         excess=spec.excess,
     )

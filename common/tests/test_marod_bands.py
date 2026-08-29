@@ -104,6 +104,77 @@ def test_pointwise_window_rule_is_identical_to_rolling_causal() -> None:
     np.testing.assert_allclose(actual[~only_current_nan], expected[~only_current_nan])
 
 
+def test_pointwise_latest_equals_the_last_element_of_the_series_version() -> None:
+    """末尾 1 点入口（ISSUE-449 レビュー 🔴-1）が系列版と**同一定義**であること。
+
+    既存の 1 バーぶん入口（ISSUE-233）と対称の入口であり、窓規則の第 2 定義を作っていない
+    ことの機械的保証。決定的データ（乱数を使わない）で全長・全窓幅を突き合わせる。
+    """
+    index = np.arange(120, dtype=np.float64)
+    values = np.sin(index * 0.7) + 0.5 * np.cos(index * 0.13)
+    values[::17] = np.nan
+
+    for window_n in (2, 5, 30, 500):
+        expected = marod_bands.rolling_causal_pointwise(values, window_n, _window_sum)
+        actual = [
+            marod_bands.causal_pointwise_latest(
+                values[:t], values[t], window_n, _window_sum
+            )
+            for t in range(values.size)
+        ]
+
+        np.testing.assert_allclose(actual, expected, equal_nan=True)
+
+
+def test_pointwise_latest_does_not_call_fn_when_the_window_is_too_short() -> None:
+    """境界値: 有限窓 < MIN_STAT_OBS では fn を呼ばず NaN（無駄な発行を作らない）。"""
+    called: list[float] = []
+
+    def spy(window: np.ndarray, current: float) -> float:
+        called.append(current)
+        return 0.0
+
+    out = marod_bands.causal_pointwise_latest(np.array([1.0]), 2.0, 10, spy)
+
+    assert np.isnan(out)
+    assert called == []
+
+
+def test_pointwise_latest_returns_nan_when_the_current_value_is_not_finite() -> None:
+    called: list[float] = []
+
+    def spy(window: np.ndarray, current: float) -> float:
+        called.append(current)
+        return 0.0
+
+    out = marod_bands.causal_pointwise_latest(np.array([1.0, 2.0, 3.0]), np.nan, 10, spy)
+
+    assert np.isnan(out)
+    assert called == []
+
+
+def test_pointwise_latest_does_not_issue_more_evaluations_as_input_grows() -> None:
+    """計算量（§4.1）: 末尾 1 点入口は fn を**捨てる分だけ余計に**呼ばない。
+
+    発行 − 使用 = 0。系列長を変えた 2 点で「入力を増やしても発行が増えない」を固定する
+    （回数そのものは焼き込まない）。
+    """
+    issued = {}
+    for length in (10, 1000):
+        calls: list[float] = []
+
+        def spy(window: np.ndarray, current: float) -> float:
+            calls.append(current)
+            return float(window.sum())
+
+        values = np.arange(length, dtype=np.float64)
+        marod_bands.causal_pointwise_latest(values[:-1], values[-1], 5, spy)
+        issued[length] = len(calls)
+
+    assert issued[10] == issued[1000]
+    assert issued[10] > 0
+
+
 def test_pointwise_supports_the_empirical_rank_of_the_current_bar() -> None:
     """ISSUE-449 §5.3 の用途: 帯内 p = 窓内で当該値未満の割合。"""
     values = np.array([1.0, 2.0, 3.0, 4.0, 2.5])

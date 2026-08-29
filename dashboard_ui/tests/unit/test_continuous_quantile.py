@@ -19,6 +19,7 @@ from dashboard_ui.domain.continuous_quantile import (
     QuantileScale,
     excess_event_history,
     fit_tail,
+    in_band_rank_latest,
     in_band_ranks,
     p_at,
 )
@@ -53,6 +54,39 @@ class TestInBandRanks:
 
     def test_an_empty_series_yields_an_empty_result(self) -> None:
         assert in_band_ranks(np.array([]), window_n=10).shape == (0,)
+
+
+class TestInBandRankLatest:
+    """末尾 1 点入口（レビュー 🔴-1）。系列版と**同一の定義**であることを固定する。"""
+
+    def test_it_equals_the_last_element_of_the_series_version(self) -> None:
+        """定義の同一性（第 2 定義を作っていないことの機械的保証）。
+
+        決定的データ（乱数を使わない）: 周期の異なる 2 つの波の和＋NaN 混在。
+        """
+        index = np.arange(300, dtype=np.float64)
+        values = np.sin(index * 0.7) + 0.5 * np.cos(index * 0.13)
+        values[::17] = np.nan
+        cases = [(window_n, length)
+                 for window_n in (2, 10, 500) for length in (2, 3, 40, 300)]
+
+        expected = [in_band_ranks(values[:length], window_n=window_n)[-1]
+                    for window_n, length in cases]
+        actual = [in_band_rank_latest(values[:length], window_n=window_n)
+                  for window_n, length in cases]
+
+        np.testing.assert_allclose(actual, expected, equal_nan=True)
+
+    def test_a_window_shorter_than_the_minimum_is_nan(self) -> None:
+        """境界値: 有限窓 1 本（< MIN_STAT_OBS）は NaN。"""
+        assert np.isnan(in_band_rank_latest(np.array([1.0, 2.0]), window_n=10))
+
+    def test_a_non_finite_current_value_is_nan(self) -> None:
+        assert np.isnan(in_band_rank_latest(np.array([1.0, 2.0, 3.0, np.nan]),
+                                            window_n=10))
+
+    def test_an_empty_series_is_nan(self) -> None:
+        assert np.isnan(in_band_rank_latest(np.array([]), window_n=10))
 
 
 class TestFitTail:

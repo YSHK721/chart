@@ -69,6 +69,38 @@ def rolling_causal(values: np.ndarray, window_n: int, reducer) -> np.ndarray:
     return out
 
 
+def causal_pointwise_latest(
+    prior_values: np.ndarray, current: float, window_n: int, fn
+) -> float:
+    """``prior_values`` の **次のバー**（その値が ``current``）に適用する点別因果統計。
+
+    窓 = ``prior_values[-window_n:]``（有限のみ）。有限本数が :data:`MIN_STAT_OBS` 未満、
+    または ``current`` が非有限なら NaN。**点別 1 バーぶんの算出の唯一の定義**であり、
+    :func:`rolling_causal_pointwise` は本関数を各バーで呼ぶループである。
+
+    位置づけは :func:`causal_stat_latest`（ISSUE-233）と対称で、末尾 1 点だけが要る
+    呼び出し側のための公開入口である。用途（ISSUE-449 §5.3 レビュー 🔴-1）: セルの連続量は
+    当該バー 1 点しか出力に使わないため、系列版を呼ぶと n−1 個の順位を作って捨てる
+    （ISSUE-450 と同型の「作ってから捨てる」欠陥）。入口が無いと呼び出し側が窓を書き直す
+    ことになり、因果窓の**第 2 定義**が生まれる。
+
+    Args:
+        prior_values: 当該バーより**前**の系列（当該バーを含めない）。
+        current: 当該バーの値。
+        window_n: 因果ローリング窓の本数。
+        fn: ``fn(window_finite: np.ndarray, current: float) -> float``。
+    """
+    value = float(current)
+    if not np.isfinite(value):
+        return float("nan")
+    vals = np.asarray(prior_values, dtype=np.float64).ravel()
+    window = vals[max(0, vals.size - window_n):]
+    finite = window[np.isfinite(window)]
+    if finite.size < MIN_STAT_OBS:
+        return float("nan")
+    return float(fn(finite, value))
+
+
 def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarray:
     """各バー t で **窓と当該バーの値の両方**を使う因果統計を適用する（点別版）。
 
@@ -76,6 +108,7 @@ def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarra
     ＝当該バー除外・有限値のみ・有限本数が :data:`MIN_STAT_OBS` 未満のバーは NaN）。
     差は 1 点だけで、``reducer(window)`` ではなく ``fn(window_finite, current)`` を呼ぶ。
     当該バーの値が非有限なら ``fn`` を呼ばず NaN（当該値が結果に効くため）。
+    1 バーぶんの算出は :func:`causal_pointwise_latest` へ委譲する（定義は 1 箇所）。
 
     用途（ISSUE-449 §5.3 水準到達シート）: セルの配色に使う連続量（帯内の経験順位
     ＝窓内で当該値未満の割合）は、窓の中身だけでなく**当該バーの値**を必要とする。
@@ -95,14 +128,7 @@ def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarra
     n = vals.size
     out = np.full(n, np.nan)
     for t in range(n):
-        current = vals[t]
-        if not np.isfinite(current):
-            continue
-        window = vals[max(0, t - window_n):t]
-        finite = window[np.isfinite(window)]
-        if finite.size < MIN_STAT_OBS:
-            continue
-        out[t] = float(fn(finite, float(current)))
+        out[t] = causal_pointwise_latest(vals[:t], vals[t], window_n, fn)
     return out
 
 
