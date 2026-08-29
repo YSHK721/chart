@@ -69,6 +69,43 @@ def rolling_causal(values: np.ndarray, window_n: int, reducer) -> np.ndarray:
     return out
 
 
+def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarray:
+    """各バー t で **窓と当該バーの値の両方**を使う因果統計を適用する（点別版）。
+
+    窓の規約は :func:`rolling_causal` と**完全に同一**（窓 = ``values[max(0, t-window_n): t]``
+    ＝当該バー除外・有限値のみ・有限本数が :data:`MIN_STAT_OBS` 未満のバーは NaN）。
+    差は 1 点だけで、``reducer(window)`` ではなく ``fn(window_finite, current)`` を呼ぶ。
+    当該バーの値が非有限なら ``fn`` を呼ばず NaN（当該値が結果に効くため）。
+
+    用途（ISSUE-449 §5.3 水準到達シート）: セルの配色に使う連続量 ``p``（帯内の経験順位
+    ＝窓内で当該値未満の割合）は、窓の中身だけでなく**当該バーの値**を必要とする。
+    本関数が無いと ``p`` 側で窓規則を書き直すことになり、因果窓の**第 2 定義**が生まれる
+    （同じ規約を 2 箇所に持つと片方だけが直され取り残しを生む）。既存 :func:`rolling_causal`
+    は挙動不変のまま、拡張点だけを加法的に足す。
+
+    Args:
+        values: 対象系列。
+        window_n: 因果ローリング窓の本数。
+        fn: ``fn(window_finite: np.ndarray, current: float) -> float``。
+
+    Returns:
+        長さ ``n`` の配列。適用できないバーは NaN。
+    """
+    vals = np.asarray(values, dtype=np.float64).ravel()
+    n = vals.size
+    out = np.full(n, np.nan)
+    for t in range(n):
+        current = vals[t]
+        if not np.isfinite(current):
+            continue
+        window = vals[max(0, t - window_n):t]
+        finite = window[np.isfinite(window)]
+        if finite.size < MIN_STAT_OBS:
+            continue
+        out[t] = float(fn(finite, float(current)))
+    return out
+
+
 # 因果統計の種別 → reducer（rolling_causal_fast の kind と同一定義・単一情報源）。
 def stat_reducer(kind: str, q: "float | None" = None):
     """kind（quantile/mean/std）→ reducer 関数（``rolling_causal_fast`` と同一）。"""
