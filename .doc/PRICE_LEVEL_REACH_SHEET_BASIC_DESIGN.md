@@ -101,7 +101,7 @@
 |---|---|---|---|
 | `moving_averages` | `MA`（`Smoothing`/`Upper`/`Lower` は現行設定では未出力） | 可 | 57 |
 | `btlm_trail` | `btlm_trail_mean` / `btlm_trail_q5` / `btlm_trail_q95` / `btlm_trail_off_hi` / `btlm_trail_off_lo` | 可 | 8 |
-| `cvfe` | `cvfe_u1` / `cvfe_u2` / `cvfe_l1` / `cvfe_l2`（価格スケール上のバンド） | **不可** | 8 |
+| `cvfe` | `cvfe_u1` / `cvfe_u2` / `cvfe_l1` / `cvfe_l2` / `cvfe_evq_med_hi` / `cvfe_evq_med_lo` / `cvfe_evq_ext_hi` / `cvfe_evq_ext_lo`（価格スケール上のバンドと外れ値水準） | **不可** | 8 |
 
 **`btlm_trail` は価格スケールに乗らない系列も返す**（`btlm_trail_beta` −2〜218 /
 `btlm_trail_sigma` 40〜5,591 / `btlm_trail_band_hit_rate` 0.70〜0.92）。これらは水準ではない。
@@ -674,18 +674,20 @@ price_scale:                       # 第 1 表（価格スケール）
   btlm_trail:
     levels:    [btlm_trail_mean, btlm_trail_q5, btlm_trail_q95,
                 btlm_trail_off_hi, btlm_trail_off_lo]
-    not_levels:[btlm_trail_beta, btlm_trail_sigma, btlm_trail_band_hit_rate]
-  cvfe:        [cvfe_u1, cvfe_u2, cvfe_l1, cvfe_l2]
+    not_levels: [btlm_trail_beta, btlm_trail_sigma, btlm_trail_band_hit_rate]
+  cvfe:        [cvfe_u1, cvfe_u2, cvfe_l1, cvfe_l2,
+                cvfe_evq_med_hi, cvfe_evq_med_lo,
+                cvfe_evq_ext_hi, cvfe_evq_ext_lo]
 oscillator:                        # 第 2 表
-  ma_marod:         [ma_marod, ma_marod_q{q_lo}, ma_marod_q{q_hi},
+  ma_marod:         [ma_marod, "ma_marod_q{q_lo}", "ma_marod_q{q_hi}",
                      ma_marod_evq_med_hi, ma_marod_evq_med_lo,
                      ma_marod_evq_ext_hi, ma_marod_evq_ext_lo]
-  btlm_trail_marod: [btlm_trail_marod, btlm_trail_marod_q{q_lo}, btlm_trail_marod_q{q_hi},
+  btlm_trail_marod: [btlm_trail_marod, "btlm_trail_marod_q{q_lo}", "btlm_trail_marod_q{q_hi}",
                      btlm_trail_marod_evq_med_hi, btlm_trail_marod_evq_med_lo,
                      btlm_trail_marod_evq_ext_hi, btlm_trail_marod_evq_ext_lo]
-  profit_rsi:       [rsi, rsi_q{q_lo}, rsi_q{q_hi},
+  profit_rsi:       [rsi, "rsi_q{q_lo}", "rsi_q{q_hi}",
                      rsi_evq_ext_hi, rsi_evq_ext_lo, rsi_gpd_hi, rsi_gpd_lo]
-  tickvol:          [tickvol, tickvol_q{q_lo}, tickvol_q{q_hi},
+  tickvol:          [tickvol, "tickvol_q{q_lo}", "tickvol_q{q_hi}",
                      tickvol_evq_med_hi, tickvol_evq_ext_hi, tickvol_gpd_hi]
 intrabar_update:                   # 足内更新（増分器の登録有無）
   yes: [moving_averages, btlm_trail, ma_marod, btlm_trail_marod, profit_rsi, tickvol]
@@ -693,6 +695,9 @@ intrabar_update:                   # 足内更新（増分器の登録有無）
 price_invertible:                  # §5.5.1（価格へ逆算できる＝breakpoints() を提供する）
   yes: [ma_marod, btlm_trail_marod, profit_rsi]
   no:  [tickvol]
+cumulative:                        # §5.3.3（足の中で積み上がる量＝同じ経過割合の分布へ当てる）
+  yes: [tickvol]
+  no:  [ma_marod, btlm_trail_marod, profit_rsi]
 constants:
   MIN_GPD_EVENTS: 30               # common.gpd
 ```
