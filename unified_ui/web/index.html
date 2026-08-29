@@ -26,6 +26,14 @@
        モードが増えるたびにセレクタを足す義務が生まれる。「live のとき以外は無効」なら
        第 4 モードでも本規則は変わらない。 */
     body:not(.um-mode-live) #live-follow-toggle { opacity: .4; pointer-events: none; }
+    /* ダッシュボードは**チャート画面には置かない**（設計書 §4.6 依頼者裁定 2026-08-29:
+       チャートは詳細分析の場であり画面を広く保つ）。dashboard モードではチャートを隠し、
+       シートの器（#um-dashboard-area・unified_root.js が生成し所有）が版面全体を使う。
+       既定は非表示＝#replay-bar と同じ「そのモードのときだけ出す」表駆動の性質で、
+       モードを増やしてもこの規則は直さなくてよい（ISSUE-460）。 */
+    #um-dashboard-area { display: none; }
+    .um-mode-dashboard #um-dashboard-area { display: block; flex: 1 1 auto; min-height: 0; overflow: auto; }
+    .um-mode-dashboard .chart-wrap { display: none; }
     /* チャート API（/candles・/compute）を持たない core のモードでは、チャート操作系を
        触らせない。持たない core へ操作を送っても 404 が返るだけで**画面には何も起きない**
        （無音の失敗）ので、押せないことを見た目で示す。判定は body の状態クラスの有無で行い、
@@ -50,8 +58,11 @@
     body:not(.um-chart-api) #tpl-menu,
     body:not(.um-chart-api) #indicator-open-btn,
     body:not(.um-chart-api) .pane-legend-gear { opacity: .4; pointer-events: none; }
-    /* チャート API を持たない core のモードでは、そのモードの表示層（sim なら #sim-display）を
-       **下部ペイン**へ出す。チャートは畳まない（裁定 2026-08-21・依頼者指示）。
+    /* 表示層が**下部ペイン**を使うモード（表の bottomPane=true・sim）では、その表示層
+       （#sim-display）を下部ペインへ出し、チャートは畳まない（裁定 2026-08-21・依頼者指示）。
+       判定はモード名ではなく body の状態クラス um-bottom-pane-mode（applyModeUi が表から
+       付け外し）で行う: um-chart-api の裏返しで書くと、chart API を持たない第 4 モード
+       （dashboard）で**空のペイン**が出る（ISSUE-460 で実発生）。
        旧規則は `body:not(.um-chart-api) .chart-wrap { display: none }`＝版面の**排他**で、
        sim を押すとチャートが消えていた（承認 H-C）。参照実装の MT5 はストラテジーテスターを
        下部ドックペインに出し、チャートは上に残す。よって版面は排他ではなく**縦 2 分割**にする。
@@ -60,8 +71,8 @@
        出し入れは #replay-bar と同じ反転記法（既定は非表示／条件を満たすときだけ出す）で書く。
        モード名を書かないので、第 4 モードを表へ足しても本規則は直さなくてよい。 */
     #um-bottom-splitter, #um-bottom-pane { display: none; }
-    body:not(.um-chart-api) #um-bottom-splitter { display: block; }
-    body:not(.um-chart-api) #um-bottom-pane { display: flex; }
+    body.um-bottom-pane-mode #um-bottom-splitter { display: block; }
+    body.um-bottom-pane-mode #um-bottom-pane { display: flex; }
     /* 分割線: 掴める境界。高さは bottom_pane_view.js の SPLITTER_PX と同値（可動域の計算に使う）。 */
     #um-bottom-splitter {
       flex: 0 0 6px; height: 6px; cursor: row-resize; touch-action: none;

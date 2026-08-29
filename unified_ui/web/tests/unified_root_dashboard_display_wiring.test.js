@@ -35,12 +35,19 @@ describe('unified_root — dashboard 表示層の結線（T-4 拡張点の呼び
     expect(SRC_NO_COMMENTS).toMatch(/await setupDashboardDisplay\(\{/);
   });
 
-  test('dashboard_display_is_hosted_by_the_bottom_pane_like_sim', () => {
+  test('dashboard_display_is_hosted_by_its_own_full_area_not_the_bottom_pane', () => {
     // Assert: 置き場所を決めるのは統合層（器の所有者）。dashboard 側は渡された host へ挿すだけ。
+    //
+    // 是正の記録（ISSUE-460）: 旧検定は sim と同じ bottom pane（＝チャートと同一画面の下部）を
+    //   固定していたが、設計書 §4.6 の依頼者裁定は「**チャート画面には置かない**」。
+    //   誤った置き場所を固定する検定だったため、正しい置き場所（専用の全面ホスト）へ改める。
     const call = SRC_NO_COMMENTS.match(/await setupDashboardDisplay\(\{[\s\S]*?\n\s*\}\)/);
     expect(call).not.toBeNull();
-    expect(call[0]).toMatch(/host:\s*bottomPane\.host\(\)/);
+    expect(call[0]).not.toMatch(/host:\s*bottomPane\.host\(\)/);
+    expect(call[0]).toMatch(/host:\s*dashboardArea/);
     expect(call[0]).toMatch(/doc:\s*document/);
+    // 器の生成は専用 View（dashboard_area_view.js）が所有する（合成根は DOM を作らない規約）。
+    expect(SRC_NO_COMMENTS).toMatch(/mountDashboardArea\(/);
   });
 
   test('dashboard_display_receives_a_read_only_live_scoped_storage', () => {

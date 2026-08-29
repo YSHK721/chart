@@ -20,6 +20,8 @@ import {
   bodyClassOf,
   hasChartApi,
   CHART_API_BODY_CLASS,
+  usesBottomPane,
+  BOTTOM_PANE_BODY_CLASS,
 } from './mode_table.js';
 
 // モード列挙。定義表から導出する（第 2 の定義を持たない＝表へ 1 行足せば列挙も増える）。
@@ -99,6 +101,9 @@ export function applyModeUi(mode) {
   // 「この core はチャート API を持つ」状態も body へ出す（🟡-5）。CSS はモード名ではなく
   //   本クラスの有無だけを見るので、モードを増やしても CSS 側は変わらない。
   document.body.classList.toggle(CHART_API_BODY_CLASS, hasChartApi(mode));
+  // 「このモードの表示層は下部ドックペインを使う」も同形で body へ出す（ISSUE-460）。
+  //   CSS がモード名を列挙せずに済む＝空のペインが第 4 モードで出る欠陥を表駆動で消す。
+  document.body.classList.toggle(BOTTOM_PANE_BODY_CLASS, usesBottomPane(mode));
   // 各トグルの点灯（aria-pressed）も表から。自分のモードのときだけ true、他は false。
   for (const btn of MODE_TOGGLE_BUTTONS) {
     const el = document.getElementById(btn.id);

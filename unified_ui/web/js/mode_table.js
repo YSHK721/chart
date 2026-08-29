@@ -36,6 +36,7 @@ export const MODES = Object.freeze([
     label: null,
     buttonTitle: null,
     chartApi: true,          // indicator_ui core が /candles・/compute を持つ。
+    bottomPane: false,       // 表示層を持たない（チャートのみ）。
   }),
   Object.freeze({
     id: 'replay',
@@ -45,6 +46,7 @@ export const MODES = Object.freeze([
     label: 'リプレイ',
     buttonTitle: 'リプレイ表示のオン・オフ',
     chartApi: true,          // replay_ui core が /candles・/compute を持つ。
+    bottomPane: false,       // 表示層を持たない（チャートのみ）。
   }),
   Object.freeze({
     id: 'sim',
@@ -56,6 +58,9 @@ export const MODES = Object.freeze([
     // Phase 1 の sim core は静的配信のみ（simulator/sim_ui/framework/serve_sim.py）。
     //   ジョブ API を持つ Phase 2 以降も /candles・/compute は持たない設計（§6.1）。
     chartApi: false,
+    // MT5 のストラテジーテスターと同形: 表示層は**下部ドックペイン**に出し、チャートは
+    //   上に残す（縦 2 分割・裁定 2026-08-21）。
+    bottomPane: true,
   }),
   Object.freeze({
     id: 'dashboard',
@@ -70,6 +75,9 @@ export const MODES = Object.freeze([
     //   dashboard core（127.0.0.1:8481・arch-spec §3）は自分の面（/reach_sheet）だけを持ち、
     //   `/candles`・`/compute` は持たない。
     chartApi: false,
+    // 設計書 §4.6（依頼者裁定 2026-08-29・sim の縦 2 分割裁定より後）: **チャート画面には
+    //   置かない**。下部ペインではなく専用の全面ホスト（#um-dashboard-area）を使う（ISSUE-460）。
+    bottomPane: false,
   }),
 ]);
 
@@ -118,11 +126,21 @@ export function prefixOf(id) {
  */
 export const CHART_API_BODY_CLASS = 'um-chart-api';
 
+//: 「このモードの表示層は下部ドックペインを使う」を表す body の状態クラス。CSS はモード名
+//:   ではなく本クラスの有無だけを見る（モードを増やしても CSS 側は変わらない・ISSUE-460）。
+export const BOTTOM_PANE_BODY_CLASS = 'um-bottom-pane-mode';
+
 /** その core がチャート API（/candles・/compute）を持つか。未知は false へ倒す。
  *  （「持つ」と誤認して操作させると無音の 404 になるため、慎重側は「持たない」）。 */
 export function hasChartApi(id) {
   const row = modeOf(id);
   return !!(row && row.chartApi);
+}
+
+/** そのモードの表示層が下部ドックペインを使うか（表が唯一源）。 */
+export function usesBottomPane(id) {
+  const row = MODES.find((mode) => mode.id === id);
+  return !!(row && row.bottomPane);
 }
 
 /** モードの body クラス（未知は null）。 */

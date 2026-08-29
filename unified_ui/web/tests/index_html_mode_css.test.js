@@ -126,16 +126,36 @@ describe('index.html — モード別 CSS の 3 値化', () => {
   // 旧規則 `body:not(.um-chart-api) .chart-wrap { display: none }`（承認 H-C）は、sim を押すと
   //   チャートが消える**排他**の版面だった。参照実装の MT5 はストラテジーテスターを下部ドック
   //   ペインに出し、チャートは上に残す。依頼者指示により版面を縦 2 分割へ置き換えた。
-  test('chart_wrap_is_not_collapsed_in_any_mode', () => {
+  test('chart_wrap_is_not_collapsed_in_live_replay_or_sim', () => {
     // Assert: チャートを畳む規則が残っていない（残ると 2 分割にした意味が消える）。
-    expect(HTML_NO_COMMENTS).not.toMatch(/\.chart-wrap\s*\{[^}]*display:\s*none/);
+    //
+    // 例外の記録（ISSUE-460）: **dashboard モードだけは畳む**。設計書 §4.6 の依頼者裁定
+    //   （2026-08-29）は「ダッシュボードはチャート画面には置かない」であり、2026-08-21 の
+    //   縦 2 分割裁定（sim 用）より後の上位裁定である。よって無条件の畳みと
+    //   live / replay / sim スコープの畳みを禁じ、um-mode-dashboard スコープのみ許す。
+    expect(HTML_NO_COMMENTS).not.toMatch(/(?:^|\})\s*\.chart-wrap\s*\{[^}]*display:\s*none/);
+    expect(HTML_NO_COMMENTS).not.toMatch(/um-mode-(?:live|replay|sim)[^{]*\.chart-wrap\s*\{[^}]*display:\s*none/);
   });
 
-  test('bottom_pane_is_hidden_by_default_and_shown_only_without_chart_api', () => {
-    // Assert: 既定は非表示。chart API を持たない core のときだけ出す（#replay-bar と同流儀）。
+  test('the_empty_bottom_pane_does_not_appear_in_dashboard_mode', () => {
+    // Assert: bottom pane の出し入れは能力クラス（um-bottom-pane-mode・表の bottomPane 属性
+    //   から applyModeUi が付け外し）で駆動する。旧規則（um-chart-api の裏返し）のままだと
+    //   chart API を持たない dashboard で**空のペイン**が出る（ISSUE-460 で実発生）。
+    expect(HTML).toMatch(/body\.um-bottom-pane-mode\s+#um-bottom-splitter\s*\{\s*display:\s*block;?\s*\}/);
+    expect(HTML).toMatch(/body\.um-bottom-pane-mode\s+#um-bottom-pane\s*\{\s*display:\s*flex;?\s*\}/);
+    expect(HTML_NO_COMMENTS).not.toMatch(/body:not\(\.um-chart-api\)\s+#um-bottom/);
+  });
+
+  test('bottom_pane_is_hidden_by_default_and_shown_only_in_bottom_pane_modes', () => {
+    // Assert: 既定は非表示。表示層が下部ペインを使うモード（表の bottomPane=true）のときだけ出す。
+    //
+    // 是正の記録（ISSUE-460）: 旧規則は「chart API を持たないとき出す」（um-chart-api の
+    //   裏返し）だった。chart API の有無とペイン使用は別の性質で、chart API を持たない
+    //   dashboard（表示層は専用の全面ホスト）で**空のペイン**が出た。能力クラス
+    //   um-bottom-pane-mode 駆動へ改める（sim の挙動は不変）。
     expect(HTML).toMatch(/#um-bottom-splitter,\s*#um-bottom-pane\s*\{\s*display:\s*none;?\s*\}/);
-    expect(HTML).toMatch(/body:not\(\.um-chart-api\)\s+#um-bottom-splitter\s*\{\s*display:\s*block;?\s*\}/);
-    expect(HTML).toMatch(/body:not\(\.um-chart-api\)\s+#um-bottom-pane\s*\{\s*display:\s*flex;?\s*\}/);
+    expect(HTML).toMatch(/body\.um-bottom-pane-mode\s+#um-bottom-splitter\s*\{\s*display:\s*block;?\s*\}/);
+    expect(HTML).toMatch(/body\.um-bottom-pane-mode\s+#um-bottom-pane\s*\{\s*display:\s*flex;?\s*\}/);
   });
 
   test('bottom_pane_rules_do_not_enumerate_modes', () => {
@@ -199,5 +219,19 @@ describe('index.html — モード別 CSS の 3 値化', () => {
     for (const b of MODE_TOGGLE_BUTTONS) {
       expect(HTML).toContain(`#${b.id}[aria-pressed="true"]`);
     }
+  });
+});
+
+describe('index.html — dashboard モードの版面（設計書 §4.6・ISSUE-460）', () => {
+  // 依頼者裁定（2026-08-29・設計書 §4.6）: ダッシュボードは**チャート画面には置かない**。
+  //   dashboard モードではチャートを隠し、シートが版面全体を使う。
+  //   既定は非表示（#replay-bar と同じ「そのモードのときだけ出す」表駆動の性質）。
+  test('the_chart_is_hidden_in_dashboard_mode', () => {
+    expect(HTML).toMatch(/\.um-mode-dashboard\s+\.chart-wrap\s*\{\s*display:\s*none;?\s*\}/);
+  });
+
+  test('the_dashboard_area_is_hidden_by_default_and_fills_the_view_in_dashboard_mode', () => {
+    expect(HTML).toMatch(/#um-dashboard-area\s*\{\s*display:\s*none;?\s*\}/);
+    expect(HTML).toMatch(/\.um-mode-dashboard\s+#um-dashboard-area\s*\{[^}]*flex:\s*1\s+1\s+auto/);
   });
 });

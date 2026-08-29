@@ -19,6 +19,7 @@
 import { installOpLog } from './op_log.js';
 // 版面の縦 2 分割（下部ペイン＋分割線）の器。表示層はここへ挿す（裁定 2026-08-21）。
 import { createBottomPaneView } from './bottom_pane_view.js';
+import { mountDashboardArea } from './dashboard_area_view.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
 // テンプレート束は live スコープの storage を**読み取り専用**で渡す（arch-spec §0 T-2）。
@@ -386,12 +387,17 @@ async function main() {
 
   // dashboard 表示層のハンドル（enable/disable のみ）。器・CSS・価格ラダー・時間足一覧は
   //   dashboard 側が所有する（表示要素は View が生成し所有する＝ISSUE-452 禁止事項）。
-  //   置き場所は sim と同じく統合層が決め、dashboard 側は渡された host へ挿すだけ。
+  //   置き場所は統合層が決め、dashboard 側は渡された host へ挿すだけ。
+  //   置き場所は**チャート画面ではない**（設計書 §4.6 依頼者裁定・ISSUE-460）: sim の
+  //   bottom pane（チャートと同一画面の下部）ではなく、dashboard モードで版面全体を使う
+  //   専用の器（#um-dashboard-area）を #app 配下へ統合層が生成する。表示・非表示は
+  //   モード CSS（index.html）が body クラスで切り替える＝enable/disable でスタイルを触らない。
   //   テンプレート束（live スコープの chart テンプレート）は**読み取り専用**で渡す。束を
   //   どう消費するかは dashboard 側の責務で、統合層は出所とスコープだけを固定する（T-2）。
+  const dashboardArea = mountDashboardArea(document);
   const dashboardHandle = await setupDashboardDisplay({
     doc: document,
-    host: bottomPane.host(),
+    host: dashboardArea,
     templates: readOnlyStorage(liveStorage),
   });
 
