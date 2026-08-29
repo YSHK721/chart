@@ -244,6 +244,38 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     assert.equal(h.spy.calls.length, after);
   });
 
+  test('a_response_that_lands_after_disable_is_dropped_without_rejecting', async () => {
+    // モードの切り替えは発行中に起きる。応答が届いたときには View は既に unmount されており、
+    //   そこへ描こうとすると View が throw する。その throw は `issue` の Promise の中で
+    //   起きるため誰も catch せず、**unhandled rejection** としてページ側に現れる
+    //   （周期実行の `() => { refresh(); }` は戻り値を捨てている）。
+    let release = () => {};
+    const gate = new Promise((resolve) => { release = resolve; });
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const handle = await setupDashboardDisplay({
+      doc,
+      host,
+      templates: readOnlyTemplates(2),
+      fetch: () => gate.then(() => ({
+        ok: true, status: 200, json: () => Promise.resolve(PAYLOAD),
+      })),
+      apiPrefix: '/dashboard',
+      now: () => 0,
+      schedule: () => () => {},
+      barCloseTimeOf: () => 100,
+    });
+
+    // Act: 発行中にモードを出て、その後で応答が着弾する。
+    const inFlight = handle.enable();
+    await handle.disable();
+    release();
+
+    // Assert: 例外にならず、器へも 1 要素も戻らない。
+    await inFlight;
+    assert.equal(host.children.length, 0);
+  });
+
   test('the_root_builds_no_dom_of_its_own', async () => {
     // 表示要素は View が生成し所有する（ISSUE-452 禁止事項・overlay_host.js 規約）。
     //   合成根が DOM を作り始めると中央 factory へ育って OCP 違反になる。

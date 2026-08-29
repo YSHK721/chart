@@ -97,8 +97,19 @@ export async function setupDashboardDisplay({
   let poller = null;
   let stopTimer = null;
 
-  /** 応答を両表へ配る（描画は閉形式・ここで計算を発行しない）。 */
+  /**
+   * 応答を両表へ配る（描画は閉形式・ここで計算を発行しない）。
+   *
+   * 有効でないときは配らない。モードを出た後に**発行中だった応答**が着弾すると、View は
+   * 既に unmount されており（`disable()` は host を sim と共有するため必ず畳む）、そこへ
+   * 描こうとすると View が throw する。その throw は `issue` の Promise の中で起きるため
+   * 誰も catch せず、unhandled rejection になる（周期実行は戻り値を捨てている）。
+   * 判定は**ここ 1 箇所**に置く。呼び出し側ごとに書くと足し忘れが生まれる。
+   */
   function present(response) {
+    if (!enabled) {
+      return;
+    }
     ladderView.render(response);
     oscillatorView.render(response);
   }
