@@ -32,6 +32,11 @@ from common import marod_bands as _bands
 #: GPD を当てはめる最小観測数（`_gpd.MIN_GPD_EVENTS` をそのまま使う＝第 2 定義を作らない）。
 MIN_GPD_EVENTS: int = _gpd.MIN_GPD_EVENTS
 
+#: 経験順位を出せる最小観測数（`_bands.MIN_STAT_OBS` をそのまま使う＝第 2 定義を作らない）。
+#: 比較集合の本数の下限は因果窓の規約と同じ量であり、呼び出し側がリテラルで書き直すと、
+#: 片方だけを直したときに「窓は足りているのに比較集合だけ足りない」食い違いが無言で生まれる。
+MIN_STAT_OBS: int = _bands.MIN_STAT_OBS
+
 #: 超過分の既定の定義。指標ごとの差（RSI の `(v-u)/(100-u)`）は呼び出し側が渡す
 #: （指標名での分岐を domain に持ち込まない・§8 OCP）。
 ExcessDefinition = Callable[[float, float], float]
@@ -214,7 +219,7 @@ class QuantileScale:
         window = window[np.isfinite(window)]
         rank = (
             empirical_rank(window, number)
-            if window.size >= _bands.MIN_STAT_OBS
+            if window.size >= MIN_STAT_OBS
             else float("nan")
         )
         return p_at(

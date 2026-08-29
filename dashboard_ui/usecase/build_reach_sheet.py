@@ -313,7 +313,9 @@ def _cumulative_cell(
         dtype=np.float64,
     )
     window = window[np.isfinite(window)]
-    if window.size < 2:
+    # 下限は因果窓の規約と同じ量（domain が再公開する単一ソース）。ここへ数字を書くと
+    # 第 2 定義になり、片方だけ直したときに無言で食い違う。
+    if window.size < _cq.MIN_STAT_OBS:
         return OscCell(
             indicator_id=instance.indicator_id,
             timeframe=instance.timeframe,

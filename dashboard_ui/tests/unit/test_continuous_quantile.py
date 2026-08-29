@@ -15,6 +15,7 @@ import pytest
 
 from dashboard_ui.domain.continuous_quantile import (
     MIN_GPD_EVENTS,
+    MIN_STAT_OBS,
     QuantileReading,
     QuantileScale,
     excess_event_history,
@@ -54,6 +55,13 @@ class TestInBandRanks:
 
     def test_an_empty_series_yields_an_empty_result(self) -> None:
         assert in_band_ranks(np.array([]), window_n=10).shape == (0,)
+
+
+def test_the_minimum_observation_count_has_no_second_definition() -> None:
+    """§5.3 の下限は因果窓の規約と同じ量（`MIN_GPD_EVENTS` の再公開と同形・🟡-5）。"""
+    from common import marod_bands
+
+    assert MIN_STAT_OBS == marod_bands.MIN_STAT_OBS
 
 
 class TestInBandRankLatest:
