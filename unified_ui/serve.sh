@@ -13,9 +13,10 @@
 #
 # 構成（基本設計書 §4・§11）:
 #   [公開 8000] router.py（本スクリプトが foreground 起動）
-#     ├─ /live/*   → 127.0.0.1:8001（indicator_ui core・既存 serve.sh 8001 が起動）
-#     ├─ /replay/* → 127.0.0.1:8281（replay_ui core・既存 serve.sh 8281 が起動）
-#     └─ /sim/*    → 127.0.0.1:8381（sim_ui core・本スクリプトが直接起動）
+#     ├─ /live/*      → 127.0.0.1:8001（indicator_ui core・既存 serve.sh 8001 が起動）
+#     ├─ /replay/*    → 127.0.0.1:8281（replay_ui core・既存 serve.sh 8281 が起動）
+#     ├─ /sim/*       → 127.0.0.1:8381（sim_ui core・本スクリプトが直接起動）
+#     └─ /dashboard/* → 127.0.0.1:8481（dashboard_ui core・本スクリプトが直接起動）
 #
 # 重要:
 #   - live / replay の 2 つの core は必ず既存 serve.sh 経由で起動する（生 python 起動禁止）。既存
@@ -64,11 +65,17 @@ REPLAY_SERVE="${REPO_ROOT}/simulator/replay_ui/serve.sh"
 ROUTER_PY="${SCRIPT_DIR}/router.py"
 # sim core は単独起動 serve.sh を持たない（§11.1 裁定 2）。本スクリプトが web 根を渡して起動する。
 SIM_WEB_DIR="${REPO_ROOT}/simulator/sim_ui/web"
+# dashboard core（ISSUE-452 / arch-spec §3）も単独起動 serve.sh を持たない（sim と同じ裁定）。
+#   live core への相乗りは不可（`framework/server.py` の do_GET が if 連鎖＝拡張点を持たず、
+#   相乗りには既存 core の改変が要る＝「既存 3 モードを改変しない」に反する）。
+DASHBOARD_MODULE="dashboard_ui.framework.serve_dashboard"
+DASHBOARD_ENTRY="${REPO_ROOT}/dashboard_ui/framework/serve_dashboard.py"
 
 PUBLIC_PORT=8000
 LIVE_PORT=8001
 REPLAY_PORT=8281
 SIM_PORT=8381
+DASHBOARD_PORT=8481
 
 # venv python（sim core を直接起動するために要る）。既存 core の serve.sh と同じ規約で解決する:
 #   worktree は git 管理外の実体（venv）を持たないため、dev_paths.local.sh が VENV_PYTHON を
@@ -83,7 +90,9 @@ fi
 VENV_PY="${VENV_PYTHON:-${MAIN_ROOT}/lightweight-charts-python-main/.venv/bin/python}"
 
 # 既存 serve.sh の存在確認（無ければ core を起動できない＝即中断）。
-for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY" "${SIM_WEB_DIR}/index.html"; do
+#   dashboard core の実体（DASHBOARD_ENTRY）もここで見る。無いまま起動すると wait_up の
+#   60 秒タイムアウトで「起動しませんでした」としか出ず、原因（実体不在）がメッセージに現れない。
+for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY" "${SIM_WEB_DIR}/index.html" "$DASHBOARD_ENTRY"; do
   if [ ! -f "$f" ]; then
     echo "エラー: 必須ファイルが見つかりません: $f" >&2
     exit 1
@@ -289,6 +298,7 @@ ensure_sim_port_free() {
 LIVE_PGID=""
 REPLAY_PGID=""
 SIM_PGID=""
+DASHBOARD_PGID=""
 
 # core をグループ起動する（setsid=新セッション＝負の PID でグループ kill 可能）。
 start_core() {
@@ -307,6 +317,16 @@ from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 from simulator.sim_ui.framework.serve_sim_jobs import serve
 serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
 " >/dev/null 2>&1 &
+  echo "$!"
+}
+
+# dashboard core をグループ起動する（sim core と同形）。単独起動 serve.sh を作らない裁定のため、
+#   venv python へ Composition Root（`framework/serve_dashboard`）を直接与える。
+#   argv にモジュール名とポートが載るので、停止側が「どのツリーの dashboard core か」を
+#   PYTHONPATH の絶対パスから特定できる。
+start_dashboard_core() {
+  setsid env PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$VENV_PY" \
+    -m "${DASHBOARD_MODULE}" "${DASHBOARD_PORT}" >/dev/null 2>&1 &
   echo "$!"
 }
 
@@ -329,6 +349,7 @@ cleanup() {
   [ -n "$LIVE_PGID" ] && kill -TERM -"$LIVE_PGID" 2>/dev/null || true
   [ -n "$REPLAY_PGID" ] && kill -TERM -"$REPLAY_PGID" 2>/dev/null || true
   [ -n "$SIM_PGID" ] && kill -TERM -"$SIM_PGID" 2>/dev/null || true
+  [ -n "$DASHBOARD_PGID" ] && kill -TERM -"$DASHBOARD_PGID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -339,19 +360,23 @@ REPLAY_PGID="$(start_core "$REPLAY_SERVE" "$REPLAY_PORT")"
 ensure_sim_port_free
 echo "▶ シミュレーション core を起動（${SIM_PORT}）..."
 SIM_PGID="$(start_sim_core)"
+echo "▶ ダッシュボード core を起動（${DASHBOARD_PORT}）..."
+DASHBOARD_PGID="$(start_dashboard_core)"
 
 echo "▶ core の起動を待機中..."
 wait_up "http://127.0.0.1:${LIVE_PORT}/" "ライブ core (${LIVE_PORT})"
 wait_up "http://127.0.0.1:${REPLAY_PORT}/" "リプレイ core (${REPLAY_PORT})"
 wait_up "http://127.0.0.1:${SIM_PORT}/" "シミュレーション core (${SIM_PORT})"
+wait_up "http://127.0.0.1:${DASHBOARD_PORT}/" "ダッシュボード core (${DASHBOARD_PORT})"
 
 echo "統合ルータを起動します: ${PUBLIC_URL}"
 # 配信元は**必ず**出す。「どのツリーの UI を見ているか」は検証の前提であり、
 #   問い合わせないと分からない状態にしておくと ISSUE-348 の事故がまた起きる。
 echo "  配信元: ${REPO_ROOT}"
-echo "  /live/*   → 127.0.0.1:${LIVE_PORT}"
-echo "  /replay/* → 127.0.0.1:${REPLAY_PORT}"
-echo "  /sim/*    → 127.0.0.1:${SIM_PORT}"
+echo "  /live/*         → 127.0.0.1:${LIVE_PORT}"
+echo "  /replay/*       → 127.0.0.1:${REPLAY_PORT}"
+echo "  /sim/*          → 127.0.0.1:${SIM_PORT}"
+echo "  /dashboard/*    → 127.0.0.1:${DASHBOARD_PORT}"
 echo "  停止: Ctrl-C"
 # router を foreground 起動（生 python は router のみ＝データ watch 不要な新規プロキシ）。
 #   exec しない: trap cleanup を生かし、router 終了（Ctrl-C）時に core をグループごと停止する。
@@ -362,4 +387,5 @@ python3 "$ROUTER_PY" "$PUBLIC_PORT" \
   --upstream "live=http://127.0.0.1:${LIVE_PORT}" \
   --upstream "replay=http://127.0.0.1:${REPLAY_PORT}" \
   --upstream "sim=http://127.0.0.1:${SIM_PORT}" \
+  --upstream "dashboard=http://127.0.0.1:${DASHBOARD_PORT}" \
   --web-root "${SCRIPT_DIR}/web"

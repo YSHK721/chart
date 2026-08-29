@@ -23,9 +23,10 @@ import {
 
 describe('mode_table — モード定義表', () => {
   // --- T1: 表の内容（3 値化の到達点）---
-  test('table_lists_live_replay_sim_in_that_order', () => {
+  test('table_lists_live_replay_sim_dashboard_in_that_order', () => {
     // Assert: 既定モード（live）が先頭。巡回既定はこの順に従う。
-    expect(MODE_IDS).toEqual(['live', 'replay', 'sim']);
+    //   第 4 モード dashboard は末尾（ISSUE-452 / 設計書 §4.6・追加は表の 1 行）。
+    expect(MODE_IDS).toEqual(['live', 'replay', 'sim', 'dashboard']);
     expect(DEFAULT_MODE).toBe('live');
   });
 
@@ -40,6 +41,31 @@ describe('mode_table — モード定義表', () => {
     expect(modeOf('sim')).toMatchObject({
       id: 'sim', prefix: '/sim', bodyClass: 'um-mode-sim', toggleId: 'enter-sim', label: 'シミュレーション',
     });
+  });
+
+  // --- ISSUE-452 / 設計書 §4.6: 第 4 モード dashboard（価格ラダーの置き場所）---------------
+  //
+  // ラダーはチャート画面へ置けない（価格軸整列 2.4px/行・ページ級タブ不在・併置でチャートが
+  //   320px 狭くなる＝いずれも実測で却下）。`/live` `/replay` `/sim` と並ぶ 4 つ目のモードとして
+  //   追加する。追加は**本表への 1 行**で完結し、prefix 判定・body クラス・SW・routed_fetch の
+  //   本体は 1 行も変わらない（それを覆うのが表駆動の各検定）。
+  test('dashboard_row_declares_prefix_body_class_and_toggle_like_the_other_modes', () => {
+    // Assert: 1 行が既存 3 モードと同じ 6 属性を持つ（欠けた属性は無音の失敗になる）。
+    expect(modeOf('dashboard')).toMatchObject({
+      id: 'dashboard',
+      prefix: '/dashboard',
+      bodyClass: 'um-mode-dashboard',
+      toggleId: 'enter-dashboard',
+      label: 'ダッシュボード',
+      buttonTitle: 'ダッシュボード表示のオン・オフ',
+    });
+  });
+
+  test('dashboard_core_declares_that_it_has_no_chart_api', () => {
+    // Assert: dashboard core は `/candles` `/compute` を持たない（専用プロセス・arch-spec §3）。
+    //   true と誤宣言すると、時間足・指標の操作が 404 になるだけで画面に何も起きない（無音の失敗）。
+    expect(modeOf('dashboard').chartApi).toBe(false);
+    expect(hasChartApi('dashboard')).toBe(false);
   });
 
   // --- 🟡-5: core がチャート API を持つか（時間足切替・指標計算の可否）------------------
@@ -82,7 +108,7 @@ describe('mode_table — モード定義表', () => {
 
   // --- T3: 派生表（prefix / body クラス）---
   test('prefixes_are_derived_from_the_table', () => {
-    expect(MODE_PREFIXES).toEqual(['/live', '/replay', '/sim']);
+    expect(MODE_PREFIXES).toEqual(['/live', '/replay', '/sim', '/dashboard']);
   });
 
   test('prefix_of_unknown_mode_falls_back_to_default_mode_prefix', () => {
@@ -99,7 +125,8 @@ describe('mode_table — モード定義表', () => {
   test('next_mode_walks_the_table_and_wraps_around', () => {
     expect(nextMode('live')).toBe('replay');
     expect(nextMode('replay')).toBe('sim');
-    expect(nextMode('sim')).toBe('live');
+    expect(nextMode('sim')).toBe('dashboard');
+    expect(nextMode('dashboard')).toBe('live');
   });
 
   test('next_mode_of_unknown_returns_default_mode', () => {
@@ -109,7 +136,7 @@ describe('mode_table — モード定義表', () => {
   // --- T5: ツールバーのボタン構成（app_chrome_view へ注入する定義配列）---
   test('toggle_buttons_exclude_default_mode_and_carry_id_label_title', () => {
     // 既定モード（live）はトグルの「オフ」状態＝専用ボタンを持たない。
-    expect(MODE_TOGGLE_BUTTONS.map((b) => b.id)).toEqual(['enter-replay', 'enter-sim']);
+    expect(MODE_TOGGLE_BUTTONS.map((b) => b.id)).toEqual(['enter-replay', 'enter-sim', 'enter-dashboard']);
     for (const b of MODE_TOGGLE_BUTTONS) {
       expect(typeof b.label).toBe('string');
       expect(b.label.length).toBeGreaterThan(0);
