@@ -184,6 +184,31 @@ stop_core_if_up() {
 
 # sim core（8381）は serve.sh を持たない＝argv に web 根の絶対パスが載る。これで**どのツリーの
 #   sim core か**が一意に決まる（他ツリーの同名プロセスに触れない）。
+# dashboard core（8481）を**ツリー単位で**特定する argv の断片（起動側と停止側の単一ソース）。
+#
+# なぜ argv なのか: `PYTHONPATH` は `ps` の argv に現れず、`$VENV_PY` は worktree でも
+#   メインツリーの venv を指すため、どちらもツリーの区別に使えない（実測 2026-08-29）。
+#   sim core が `-c` の中に web 根の絶対パスを持つのと同じ役割を `--repo-root` が果たす。
+#   起動側と停止側で文字列が食い違うと停止だけが黙って効かなくなるため、ここが唯一源。
+dashboard_argv_of() {
+  echo "${DASHBOARD_MODULE} ${DASHBOARD_PORT} --repo-root $1"
+}
+
+# dashboard core（8481）は serve.sh を持たない＝argv の `--repo-root` が配信元を一意に決める。
+stop_dashboard_core_if_up() {
+  local root="$1" p
+  curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${DASHBOARD_PORT}/" 2>/dev/null || return 0
+  for p in $(pids_with "$(dashboard_argv_of "$root")"); do
+    echo "  - dashboard core ${DASHBOARD_PORT} (PID ${p}) をプロセスグループごと停止"
+    kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  done
+  if ! wait_down "http://127.0.0.1:${DASHBOARD_PORT}/" 20; then
+    echo "エラー: dashboard core ${DASHBOARD_PORT} が停止しませんでした。手動で確認してください:" >&2
+    echo "        ps -eo pid,args | grep serve_dashboard" >&2
+    exit 1
+  fi
+}
+
 stop_sim_core_if_up() {
   local root="$1" p
   curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${SIM_PORT}/" 2>/dev/null || return 0
@@ -222,6 +247,7 @@ stop_stack() {
   stop_core_if_up "${root}/indigators/indicator_ui/serve.sh" "$LIVE_PORT"
   stop_core_if_up "${root}/simulator/replay_ui/serve.sh" "$REPLAY_PORT"
   stop_sim_core_if_up "$root"
+  stop_dashboard_core_if_up "$root"
   echo "  - 停止しました（配信元だった: ${root}）"
 }
 
@@ -295,6 +321,29 @@ ensure_sim_port_free() {
   exit 1
 }
 
+# 8481 が誰かに握られたまま起動しないようにする（ensure_sim_port_free と同型・ISSUE-348）。
+#
+# なぜ 8000 / 8381 の判定だけでは足りないか: 8481 に**別ツリーの** dashboard core が残っていると、
+#   こちらの dashboard core は bind に失敗して死ぬ。router は起動し、`/dashboard/*` は別ツリーの
+#   core へ proxy される。自分のコードが 1 行も入っていない画面を、自分のものとして検証して
+#   しまう（ISSUE-355 と同じ帰結）。sim core に入れた防御を dashboard core にだけ入れ忘れると、
+#   同じ事故がモード 1 つぶんだけ再導入される。
+ensure_dashboard_port_free() {
+  curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${DASHBOARD_PORT}/" 2>/dev/null || return 0
+  if [ -n "$(pids_with "$(dashboard_argv_of "$REPO_ROOT")")" ]; then
+    echo "▶ ${DASHBOARD_PORT} を自ツリーの dashboard core が握っています。停止してから起動します..."
+    stop_dashboard_core_if_up "$REPO_ROOT"
+    return 0
+  fi
+  echo "エラー: ${DASHBOARD_PORT} は**別のツリー**の dashboard core が占有しています。起動を中止しました。" >&2
+  echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
+  echo "       そのまま進むと、このツリーの変更が入っていない画面を検証することになります。" >&2
+  echo "       （--repo-root を持たない古い形で起動された core もここに来ます。argv を確認してください）" >&2
+  echo "       占有プロセス:" >&2
+  ps -eo pid,args 2>/dev/null | grep -F "serve_dashboard" | grep -v grep >&2 || true
+  exit 1
+}
+
 LIVE_PGID=""
 REPLAY_PGID=""
 SIM_PGID=""
@@ -322,11 +371,13 @@ serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
 
 # dashboard core をグループ起動する（sim core と同形）。単独起動 serve.sh を作らない裁定のため、
 #   venv python へ Composition Root（`framework/serve_dashboard`）を直接与える。
-#   argv にモジュール名とポートが載るので、停止側が「どのツリーの dashboard core か」を
-#   PYTHONPATH の絶対パスから特定できる。
+#   配信元ツリーは `--repo-root` で **argv に載せる**（PYTHONPATH は ps の argv に現れず、
+#   $VENV_PY は worktree でもメインツリーを指すため、どちらもツリーの区別に使えない）。
+#   停止側が読む断片は dashboard_argv_of が唯一源であり、ここは同じ形を組み立てる。
 start_dashboard_core() {
   setsid env PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$VENV_PY" \
-    -m "${DASHBOARD_MODULE}" "${DASHBOARD_PORT}" >/dev/null 2>&1 &
+    -m "${DASHBOARD_MODULE}" "${DASHBOARD_PORT}" --repo-root "${REPO_ROOT}" \
+    >/dev/null 2>&1 &
   echo "$!"
 }
 
@@ -360,6 +411,7 @@ REPLAY_PGID="$(start_core "$REPLAY_SERVE" "$REPLAY_PORT")"
 ensure_sim_port_free
 echo "▶ シミュレーション core を起動（${SIM_PORT}）..."
 SIM_PGID="$(start_sim_core)"
+ensure_dashboard_port_free
 echo "▶ ダッシュボード core を起動（${DASHBOARD_PORT}）..."
 DASHBOARD_PGID="$(start_dashboard_core)"
 

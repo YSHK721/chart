@@ -31,6 +31,12 @@ from simulator.replay_ui.framework.static_file_server import StaticFileServer
 #: シート要求の経路（router が `/dashboard` を剥がした後の形）。
 REACH_SHEET_PATH = "/reach_sheet"
 
+#: 既定の待受けポート（統合 UI の `DASHBOARD_PORT` と同値）。
+DEFAULT_PORT = 8481
+
+#: 配信元ツリーを明示する起動引数（ISSUE-348 の規律）。
+REPO_ROOT_OPTION = "--repo-root"
+
 #: 受け付ける本文の上限（素材は送らない＝束の宣言だけなので小さくてよい）。
 _MAX_BODY = 1_000_000
 
@@ -134,14 +140,35 @@ def serve(app: DashboardApp, host: str = "127.0.0.1", port: "int | None" = None)
 
 
 def main(argv: "list[str] | None" = None) -> None:
-    """`python -m dashboard_ui.framework.serve_dashboard <port>`（統合 UI が使う形）。"""
+    """`python -m dashboard_ui.framework.serve_dashboard <port> [--repo-root <path>]`。
+
+    `--repo-root` は**配信元ツリーの絶対パス**である。省略時は Composition Root が自分の
+    ファイル位置から解決する（既定の挙動は不変）。統合 UI の起動スクリプト（unified_ui/serve.sh）は必ず渡す:
+    PYTHONPATH は ps の argv に現れないため、これが無いと停止側が「8481 を握っているのが
+    どのツリーの core か」を判定できず、別ツリーの残骸を掴んだまま起動する
+    （ISSUE-348 / ISSUE-355 と同型の「他人のコードを自分のものとして見る」事故）。
+    """
     import sys
 
     from dashboard_ui.main.composition_root import build_dashboard_app
 
-    arguments = sys.argv[1:] if argv is None else argv
-    port = int(arguments[0]) if arguments else 8481
-    serve(build_dashboard_app(), port=port)
+    port, repo_root = _parse(list(sys.argv[1:] if argv is None else argv))
+    serve(build_dashboard_app(repo_root=repo_root), port=port)
+
+
+def _parse(arguments: "list[str]") -> "tuple[int, str | None]":
+    """`<port> [--repo-root <path>]` を `(port, repo_root)` へ。"""
+    port = DEFAULT_PORT
+    repo_root: "str | None" = None
+    rest = list(arguments)
+    while rest:
+        token = rest.pop(0)
+        if token == REPO_ROOT_OPTION and rest:
+            repo_root = rest.pop(0)
+            continue
+        if not token.startswith("-"):
+            port = int(token)
+    return port, repo_root
 
 
 if __name__ == "__main__":

@@ -99,6 +99,45 @@ def test_serve_sh_stops_the_dashboard_core_on_exit():
     assert '-"$DASHBOARD_PGID"' in cleanup
 
 
+def test_serve_sh_starts_the_dashboard_core_with_its_serving_tree_in_argv():
+    # Arrange / Act / Assert: `PYTHONPATH` は ps の argv に現れず、`$VENV_PY` は worktree でも
+    #   メインツリーの venv を指す。よって argv に配信元の絶対パスが載っていないと、停止側は
+    #   「8481 を握っているのがどのツリーの core か」を判定できない（ISSUE-348 の規律）。
+    start = SERVE_SH.split("start_dashboard_core()", 1)[1].split("\n}", 1)[0]
+    assert '--repo-root "${REPO_ROOT}"' in start
+
+
+def test_serve_sh_guards_the_dashboard_port_before_starting_like_the_sim_port():
+    # Arrange / Act / Assert: 8481 に別ツリーの残骸が居ると自ツリーの core は bind に失敗し、
+    #   router は `/dashboard/*` を別ツリーへ proxy する（ISSUE-355 と同じ帰結）。
+    #   sim へ入れた防御を dashboard にだけ入れ忘れると、同じ事故がモード 1 つぶん再導入される。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
+    assert "ensure_dashboard_port_free()" in SERVE_SH
+    guard_call = SERVE_SH.index("\nensure_dashboard_port_free\n")
+    start_call = SERVE_SH.index('DASHBOARD_PGID="$(start_dashboard_core)"')
+    # 起動より **前** に判定する（起動してからでは bind 失敗が先に起きる）。
+    assert guard_call < start_call
+
+
+def test_serve_sh_identifies_the_dashboard_core_by_one_shared_argv_fragment():
+    # Arrange / Act / Assert: 起動側と停止側で文字列が食い違うと、停止だけが黙って効かなくなる。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
+    assert "dashboard_argv_of()" in SERVE_SH
+    fragment = SERVE_SH.split("dashboard_argv_of()", 1)[1].split("\n}", 1)[0]
+    assert "${DASHBOARD_MODULE} ${DASHBOARD_PORT} --repo-root" in fragment
+    for user in ("stop_dashboard_core_if_up", "ensure_dashboard_port_free"):
+        body = SERVE_SH.split(f"{user}()", 1)[1].split("\n}", 1)[0]
+        assert "dashboard_argv_of" in body, f"{user} が唯一源の断片を使っていない"
+
+
+def test_serve_sh_stops_the_dashboard_core_when_taking_over_another_tree():
+    # Arrange / Act / Assert: `--takeover` は占有スタックを止めてから起動する。dashboard core を
+    #   stop_stack に足し忘れると 8481 だけが別ツリーのまま残り、引き継いだつもりの画面が
+    #   他人のコードになる（ISSUE-348 / ISSUE-355 の再導入）。
+    stop_stack = SERVE_SH.split("stop_stack() {", 1)[1].split("\n}", 1)[0]
+    assert 'stop_dashboard_core_if_up "$root"' in stop_stack
+
+
 def test_serve_sh_announces_the_dashboard_route_to_the_operator():
     # Arrange / Act / Assert: 起動時に出す経路一覧へ第 4 モードが載っている
     #   （どのモードがどの core へ行くかは検証の前提・ISSUE-348）。
