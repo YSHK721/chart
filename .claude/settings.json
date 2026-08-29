@@ -13,6 +13,20 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/scripts/run_quality_gate.py\"",
+            "timeout": 120,
+            "async": true,
+            "asyncRewake": true,
+            "statusMessage": "静的品質検定（宣言整合性 C1-C3 / テスト品質 T1-T8）"
+          }
+        ]
+      }
     ]
   }
 }
