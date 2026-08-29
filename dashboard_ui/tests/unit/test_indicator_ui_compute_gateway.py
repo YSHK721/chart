@@ -19,6 +19,7 @@ import pytest
 from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
     IndicatorUiComputeGateway,
 )
+from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
 REF = "jp225_tick"
 #: 2026-08-28 20:10:00 UTC。1m 足 4 本ぶんの素材。
@@ -268,3 +269,36 @@ def test_an_unknown_timeframe_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="timeframe"):
         gateway_with(spy).bars(dataset_ref=REF, timeframe="3s")
+
+
+# ------------------------------------------ 計算そのものの失敗（実UI 502・E01 等）
+class FakeComputeError(Exception):
+    """ライブ core の ComputeError 相当（bridge が `compute_error` として公開する型）。"""
+
+
+class FailingCompute(ComputeSpy):
+    """full_compute が検定エラーを投げる（例: E01_INSUFFICIENT_BARS＝上位足の本数不足）。"""
+
+    def full_compute(self, adapter, indicator, variant, df, params):
+        raise FakeComputeError(
+            "validation: E01_INSUFFICIENT_BARS: バー数 171 では出力できない"
+        )
+
+    def namespace(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            dataset=self, adapter=object(), full_compute=self.full_compute,
+            compute_error=FakeComputeError,
+        )
+
+
+def test_a_compute_failure_is_translated_to_the_supply_contract() -> None:
+    """検定エラー（本数不足等）は当該 instance の供給失敗であり、未捕捉のまま
+    ハンドラを貫通させない（実 UI では応答無しの接続断＝502 になっていた）。
+    """
+    gw = gateway_with(FailingCompute())
+
+    with pytest.raises(SeriesSupplyUnavailable):
+        gw.full_series(
+            indicator_id="btlm_trail_marod", variant="default", params={},
+            dataset_ref=REF, timeframe="1m",
+        )

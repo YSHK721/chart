@@ -60,6 +60,10 @@ class IndicatorUiComputeGateway:
             return cached
         bridge = self._resolve_bridge()
         frame = self._frame(dataset_ref, timeframe)
+        # ライブ core の検定エラー（ComputeError: 本数不足 E01 等）も当該 instance に
+        #   固有の供給失敗である。型は bridge が `compute_error` として公開するものを使う
+        #   （core の内部モジュール構成へ直接 import で密結合しない）。
+        translated_failure_types = getattr(bridge, "compute_error", ())
         try:
             series = bridge.full_compute(
                 bridge.adapter, indicator_id, variant, frame, dict(params)
@@ -70,6 +74,12 @@ class IndicatorUiComputeGateway:
             #   契約上の失敗として usecase 境界の型で伝える（シート全体を落とさない）。
             raise SeriesSupplyUnavailable(
                 f"ライブ core に束縛がありません: ({indicator_id!r}, {variant!r})"
+            ) from error
+        except translated_failure_types as error:
+            # 例: 上位足の素材本数が指標の必要本数に満たない（1W 171 本 < 必要 523 本）。
+            #   未捕捉のまま貫通させると応答の無い接続断＝ルータで 502 になる（ISSUE-459）。
+            raise SeriesSupplyUnavailable(
+                f"計算できません: ({indicator_id!r}, {timeframe!r}) — {error}"
             ) from error
         self._series[key] = _as_points(series)
         return self._series[key]

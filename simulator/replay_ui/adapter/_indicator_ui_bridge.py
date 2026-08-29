@@ -93,6 +93,7 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         return cached
     from marketdata import dataset  # noqa: E402
     from adapter.compute import (  # noqa: E402
+        ComputeError,
         IndicatorComputeAdapter,
         full_compute,
         latest_compute,
@@ -105,6 +106,9 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         adapter=IndicatorComputeAdapter(),
         full_compute=full_compute,
         latest_compute=latest_compute,
+        # 検定エラーの型（安定 Facade `adapter.compute` の公開物）。呼び出し側が
+        #   core の内部モジュールを import せずに except できるようにする（ISSUE-459）。
+        compute_error=ComputeError,
         # ISSUE-295: 上位足の因果系列はライブ core と**同一実装**を再利用する（規則を写さない）。
         #   ライブ側 compute_controller もこの関数を通る＝両モードで規約も値も同一になる。
         causal_mtf_series=causal_mtf_series,

@@ -12611,3 +12611,42 @@ ISSUE-257／ISSUE-450（「作ってから捨てる」系の先行裁定）・IS
 ### 関連
 
 ISSUE-449（本体）・レビュー 🟡-2（同型の先行是正）・§5.5.1（構造的除外）・§7（縮退の明示）。
+
+---
+
+## ISSUE-459: [不具合] 指標の検定エラー（本数不足等）が応答の無い接続断になりルータで 502 になる
+
+- **ステータス**: RESOLVED（2026-08-29 検出・同日是正・502 再現要求が 200 になることを実測）
+- **重大度**: 高（実テンプレート構成でダッシュボードが一切表示されず、理由もどこにも残らない）
+- **発見経路**: ISSUE-458 是正後もユーザー実ブラウザで `POST /dashboard/reach_sheet` が連続 502。
+  6 指標×8 時間足の実テンプレート相当要求で再現（19.7 秒後に 502・タイムアウトではない）。
+
+### 原因（実測・診断用コアを 8482 に立てて捕捉）
+
+- ライブ core の `ComputeError`（`validation: E01_INSUFFICIENT_BARS: バー数 171 では σ̂ を
+  1 本も出力できない（523 本以上が必要）`＝上位足 1W/1M の素材本数 < 指標の必要本数）が、
+  gateway → controller の except（ValueError/KeyError/契約例外）のいずれにも入らず
+  `do_POST` を貫通。ハンドラスレッドが応答を書かずに接続を閉じ、ルータの read が
+  OSError → **502**。serve.sh は core の stderr を /dev/null に捨てるため traceback も残らない。
+
+### 是正（抜本・3 点）
+
+1. bridge（`_indicator_ui_bridge.load_compute`）が安定 Facade `adapter.compute` の
+   `ComputeError` 型を namespace で公開（呼び出し側が core 内部へ密結合しない・加法）。
+2. gateway（`indicator_ui_compute_gateway.full_series`）がこれを `SeriesSupplyUnavailable`
+   へ翻訳 → ISSUE-458 と同じ構造的除外（当該 instance のみ除外・理由を degradations へ明示）。
+3. `serve_dashboard.do_POST` に最終防衛を追加: 想定外の例外は応答の無い接続断ではなく
+   500 の JSON 封筒（`{"ok": false, "error": {"type": "internal", ...}}`）で理由を届ける。
+
+### 検証
+
+- TDD Red→Green（`test_indicator_ui_compute_gateway.py` に翻訳の検定を追加）。
+- 回帰: dashboard_ui+common 571 passed・replay_ui 261 passed・静的品質検定 新規違反 0。
+- 実 HTTP（再起動後）: 502 を再現した 48 instance 要求が
+  `200 / ok:true / rows 74 / cells 32 / degradations 8`（cvfe 1M は E01 の理由つき除外）。
+
+### 関連
+
+ISSUE-458（供給不能=束縛なしの同型・直前の是正）・§5.5.1（構造的除外）・§7（縮退の明示）。
+serve.sh の stderr 破棄（>/dev/null 2>&1）は診断性の課題として残る（本 issue では 3. で
+「理由が HTTP 応答に載る」ことをもって恒久対処とした）。

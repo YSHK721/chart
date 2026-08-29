@@ -21,6 +21,7 @@ CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最
 from __future__ import annotations
 
 import json
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -105,7 +106,21 @@ def make_handler(app: DashboardApp):
                 self.end_headers()
                 return
             length = min(int(self.headers.get("Content-Length") or 0), _MAX_BODY)
-            status, payload = app.reach_sheet(self.rfile.read(length))
+            body = self.rfile.read(length)
+            try:
+                status, payload = app.reach_sheet(body)
+            except Exception as error:  # noqa: BLE001 — 最終防衛（下記理由）
+                # 未捕捉例外を貫通させると応答の無い接続断になり、ルータ経由では
+                #   理由の見えない 502 になる（ISSUE-459 で実発生。起動側は stderr を
+                #   /dev/null に捨てるため traceback も残らない）。分類済みの失敗は
+                #   controller が 400/ok:false で返す。ここは想定外だけを 500 の
+                #   JSON 封筒にして**理由を必ず利用者へ届ける**ための境界である。
+                traceback.print_exc()
+                status, payload = 500, {
+                    "ok": False,
+                    "error": {"type": "internal",
+                              "message": f"{type(error).__name__}: {error}"},
+                }
             return _write(
                 self, status, "application/json",
                 json.dumps(payload, ensure_ascii=False).encode("utf-8"),
