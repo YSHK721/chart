@@ -294,7 +294,12 @@ class ReachSheetController:
             for instance in group
             if self._registry.resolve(instance.indicator_id) is not None
         }
-        return None if wanted - set(cache.maps) else cache
+        # 「覆えている」は**答えが出ている**ことであり、係数が在ることではない。前進評価できない
+        # instance のキーは maps に永遠に現れないので、ここで数え落とすとキャッシュを毎回捨てて
+        # 同じ時間足を丸ごと当て直すことになる（epoch 不変でも発行が毎ティック起きる＝
+        # ISSUE-450 と同型。出力は正しいままなので状態検証では落ちない）。
+        covered = set(cache.maps) | set(cache.unprojectable)
+        return None if wanted - covered else cache
 
     def _prev_values(
         self, dataset_ref: str, timeframe: str, instances: "Sequence[SheetInstance]"
