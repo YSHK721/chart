@@ -1,4 +1,4 @@
-# 水準到達シート 基本設計書 v0.6.2
+# 水準到達シート 基本設計書 v0.6.3
 
 - 起票: 2026-08-28（ISSUE-449）／オシレータの価格投影は ISSUE-453
 - 状態: **実装済み（feature/issue-449-price-level-reach-sheet・未マージ）**
@@ -27,6 +27,9 @@
   併せて §5.3.3 の性質宣言を `cumulative` キーとして §7.1.1 へ追加した（T-5。役割判定表と
   突き合わせる検査がこれを読む）。`btlm_trail` の `btlm_trail_off_hi` / `btlm_trail_off_lo` は
   **本書が正しい**（実測: `q_out` を設定した設定でのみ出力される。§3.1 は維持）。
+  併せて **§9-4（段 2 の 1 ティックあたり費用）を実測で埋めた**（条件・再現手順つき）。
+  コードレビューが検出した「帯内経験順位を全系列ぶん発行して末尾 1 点しか使わない」浪費
+  （ISSUE-450 と同型）を除去した結果も同項に記録した。
 - **v0.6.2（2026-08-29）**: **本書と実装の食い違いを赤で落とす契約テストを §7.1 に追加**した。
   計算量テストが防ぐのは無駄な計算であって食い違いではなく、別の検査が要る。期待値は
   **本書から読む**（実装から作るとトートロジーになり何も守らない）。§7.1.1 に機械可読ブロックを
@@ -589,6 +592,8 @@ first_t := min{ s | reached_s = reached_now  かつ  ∀u∈[s, now] : reached_u
 
 費用: 既存記録の実測は 0.5〜0.86 ms/tick/インスタンス（ISSUE-257）。段 2 の対象は第 1 表 88 水準・
 第 2 表 33 セルの合計より少ないが、**着手前に現行コードで再実測する**（記録値をそのまま設計根拠にしない）。
+→ **実測済み（§9-4）**: epoch 不変のティックでの前進評価は **0 回 / 0.0 ms**。要求全体の費用と
+その内訳・再現手順は §9-4 に置いた。
 
 段 1 の実測（2026-08-29・warm・`market_profile` 除く）: 8 時間足ぶんの価格水準（3 指標・71 本）で
 **2,316ms**、同じ 8 時間足の全指標（105 本）で **3,637ms**。ラダーの 71 本は全指標 105 本の
@@ -754,7 +759,71 @@ constants:
    1 回の観測**のみ。長期は標本 6 件しかない。**日をまたいだ再測が要る**。
 3. `market_profile`（POC・VA）と `price_range_power`（価格帯）を水準として追加するか。
    どちらも価格水準でありラダーの定義に合致するが、依頼者指定が無いため対象外にしている。
-4. 段 2 の 1 ティックあたり費用の現行コードでの再実測。
+4. **測定済み（2026-08-29・本項）**。段 2 の 1 ティックあたり費用を現行コードで実測した。
+
+   **先行記録の限界（記録として残す）**: 実装コミット `85a0ca4` のメッセージに
+   「T-6 実測（1 ティック期待 52-70ms）」という数値だけが残っている。**測定条件（束の本数・
+   `bar_limits`・対象時間足・warm / cold・何を計ったか）はコミットにも本書にも無く、測定
+   スクリプトもリポジトリに残っていない**（実測: `tools/measure/issue449/` に該当なし）。
+   条件の無い数値は再現も比較もできないため設計根拠にしない。以下は条件つきで測り直した値
+   であり、先行記録の 52-70ms とは**測った対象が同じである保証が無い**（同一視しない）。
+
+   **条件**: 素材 `jp225_tick`、`bar_limits` は §composition_root の既定表、束は
+   8 時間足 × 5 指標 = **40 instance**（`ma_marod` / `btlm_trail_marod` / `profit_rsi` /
+   `tickvol` / `moving_averages`）、`chart_timeframe="1m"`、`mode="tick"`（epoch 不変）、
+   warm（先に `mode="full"` を 1 回・`mode="tick"` を 2 回通した後）、
+   dev container（Linux 6.12.54-linuxkit）、中央値 / n=5〜7。
+
+   **再現手順**: 本書のリポジトリ根で次を実行する（実 Composition Root・実データ）。
+
+   ```
+   lightweight-charts-python-main/.venv/bin/python - <<'PY'
+   import statistics, sys, time
+   sys.path.insert(0, ".")
+   from dashboard_ui.main.composition_root import build_dashboard_app
+   TFS = ("1m","5m","15m","1h","4h","1D","1W","1M")
+   OSC = (("ma_marod", {"source":"hlc3","ma_type":"ema","length":50}),
+          ("btlm_trail_marod", {"source":"hlc3","maxbars":50}),
+          ("profit_rsi", {"rsi_period":6,"apply":5}),
+          ("tickvol", {}),
+          ("moving_averages", {"source":"hlc3","ma_type":"ema","length":24}))
+   body = {"dataset_ref":"jp225_tick","chart_timeframe":"1m","mode":"tick",
+           "instances":[{"instance_id":f"{i}-{tf}","indicator_id":i,"variant":"default",
+                         "params":dict(p),"timeframe":tf} for tf in TFS for i,p in OSC]}
+   app = build_dashboard_app()
+   app.controller_factory().handle(dict(body, mode="full"))
+   for _ in range(2):
+       app.controller_factory().handle(body)
+   samples = []
+   for _ in range(5):
+       s = time.perf_counter(); app.controller_factory().handle(body)
+       samples.append((time.perf_counter() - s) * 1000.0)
+   print("tick 経路 中央値", statistics.median(samples), "ms")
+   PY
+   ```
+
+   **結果（2026-08-29 実測・中央値）**:
+
+   | 区間 | 費用 | 発行回数 | 備考 |
+   |---|---|---|---|
+   | 要求全体（`mode="tick"`・計測器なし） | **9,452 ms** | — | 上の再現手順そのままの値 |
+   | 要求全体（内訳を採るため各面に計測器を挟んだ場合） | 9,550 ms | — | 以下の内訳はこの回のもの |
+   | └ P-1 系列供給 | **7,440 ms** | 81 回 | ユニーク 40 本＋畳み込み済み 40 本＋比較集合 1 本 |
+   | └ P-3 前進評価 | **0.0 ms** | **0 回** | epoch 不変。§7 の表明どおり |
+   | └ 帯内経験順位 | **0.53 ms** | 24 セル | 是正後（末尾 1 点入口） |
+
+   **是正前後（帯内経験順位・同一条件で入口だけを差し替えて測定）**:
+   **278.57 ms → 0.53 ms**（24 セル / 1 要求）。是正前は全系列ぶん（1 セルあたり系列長ぶん）
+   の順位を作って**末尾 1 点しか使っていなかった**（ISSUE-450 と同型の「作ってから捨てる」）。
+   出力は是正前後で不変であり、**状態検証では原理的に落ちない**。よって発行回数を数える
+   計算量テスト（`dashboard_ui/tests/complexity/test_in_band_rank_issued_once.py`）で
+   「発行 − 使用 = 0」と「系列長 800 / 3000 の 2 点で発行が増えない」を固定した。
+
+   **残る主費用は P-1（要求全体の 78%）である**。これは「要求ごとに口を組み直す」設計
+   （素材の鮮度を優先し、古い足を配らない）の帰結であり、捨てている計算ではない。
+   束を小さくして避けるのは症状の回避なので採らない。抜本策は素材側の畳み込み（同じ足・
+   同じ設定の系列を要求をまたいで共有する）であり、**本書の範囲外・未着手**である
+   （§7 の epoch 分離と同じ考え方を素材にも適用することになる）。
 5. 到達時刻の表示粒度（当日は時刻・過去日は相対表記、の境界規則）。
 6. `tpl#2`（名前 "D"）が未紐付けである理由。設定側の意図確認が必要（本設計では変更しない）。
 7. **§5.5 未測定**: 段の**時間的な安定性**。§4.3 の「指名の持続」に相当する量を段については
