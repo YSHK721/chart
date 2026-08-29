@@ -12457,3 +12457,91 @@ ISSUE-455（1m 実体 CSV の 8 重連結。M6 の初回測定を狂わせた）
 
 ISSUE-167（serving の重複除去）・ISSUE-454（本件を検出した測定）・
 ISSUE-447 / ISSUE-452（ティック供給と長期履歴の取得費用）。
+
+---
+
+## ISSUE-456: [不具合] ライブ `/compute` の滞留で指標が全滅し legend が左上縦積みに縮退する
+
+- **ステータス**: IN_PROGRESS（2026-08-12 検出・**是正コードは取り込み済み（`d5c43fa`）／実 UI での通過条件は未検証**）
+- **重大度**: 高（全指標が未描画になり、表示が ISSUE-276 以前の旧 legend と同じ縦積みへ縮退する）
+- **番号の経緯**: 本件は当初 `worktree-issue-380-compute-backlog` 上で **ISSUE-380** として起票されたが、
+  同番号は本台帳では別件（sim バックテスト Phase 5 のレビュー申し送り）に使われていた。
+  ブランチが 377 commit ぶん取り残されている間に番号が衝突したもので、**新番号で起こし直した**
+  （裁定 2026-08-29）。原記述は commit `f8f7227` にある。
+
+### 症状
+
+ライブ画面で全指標の legend が左上に 1 ボックス縦積みになり、ペイン指標（`ma_marod`・
+`profit_rsi`・`tickvol` 等）の専用ペインが生成されない。見た目が ISSUE-276 以前の旧 legend
+（`#legend` 縦積み）と同一のため「過去の状態に戻った」ように見える。
+
+### 実測（2026-08-12 13:28–13:37 UTC・実 UI ＋ サーバ）
+
+1. 配信元は本チェックアウト（router 8000 → live 8001）。**ツリー違いではない**（ISSUE-348 の型ではない）。
+2. `live:indicatorUi.applied.v1` は健在＝**保存された表示位置・並び順は失われていない**。
+3. 8001 `GET /candles`（4h）は 0.27 秒 200・最終バー正常。
+4. 8001 `POST /compute` は軽量指標（`moving_averages`・limit=50）でも **60 秒無応答**。
+5. サーバはスレッド 120 本。compute-pool 3 スレッドが GIL を取り合いながら連続実行中
+   （futex アドレス同一・カウンタ前進＝**デッドロックではなく重計算の直列消化**）。
+6. ポート 8001 に **CLOSE_WAIT 88 本**＝クライアントが 30 秒タイムアウトで去った後も、その計算が
+   キューに残り 3 ワーカーを占有し続けている。接続数は 60 秒間で 138→142 と**増勢**＝
+   流入が処理を上回り続ける自己増悪。
+7. 再現: applied に 6 指標を種付けしてリロード → 全 compute 30 秒タイムアウト →
+   `.pane-legend` が 1 個に全 6 行縦積み＝報告のスクリーンショットと同一。
+
+### 機構（フロント側の縮退経路・コード確認済み）
+
+compute 未完了だと series が描かれず renderer に `slot.pane` が生成されない →
+`chart_renderer.js:818-824 _slotPaneIndex` が全行 paneIndex 0 を返す →
+`pane_legend_view.js:172-178` が全行を pane 0 の 1 グループへ集約＝縦積み。
+**表示位置の決定・永続化・復元ロジック自体は無変更**である。
+
+### 根本原因
+
+サーバがクライアント切断を検知せず、**破棄済みリクエストの計算を無期限にキュー消化し続ける**
+（仕事の量が無制限）。フロントの 30 秒タイムアウト再試行と組み合わさり、流入 > 処理の恒常化で
+新規 compute が事実上永久に応答しない。ISSUE-257 の裁定「上限は並列度でなく仕事の量に」に反する実装。
+
+### 是正（実施済み・`d5c43fa`）
+
+1. **段階 1**: `/compute` と MP 3 経路が、ワーカー実行直前に接続生存を確認し、切断済みリクエストは
+   計算せず投棄する（`select` + `MSG_PEEK` の非ブロッキング probe）。
+2. **段階 2**: 同一 `(indicatorId, variant, params, datasetRef, timeframe, limit)` の実行中計算へ
+   後続を合流させる（完了で登録解除＝**キャッシュではない**）。
+3. 表示位置は保存済みのため、サーバ側是正後のリロードで自然回復する（フロント変更なし）。
+
+**計算量テスト**（発行回数を数え、無駄の不在を表明する。CLAUDE.md 絶対命令）:
+
+- `test_abandoned_when_all_clients_gone_fn_is_never_called` — 全員去ったら発行 **0**
+- `test_identical_keys_coalesce_into_one_computation` — 同一鍵 N 要求 → 計算 **1 回**
+- `test_completion_unregisters_so_next_identical_request_recomputes` — キャッシュ化していない
+- `test_disconnected_client_compute_is_discarded_before_execution` / `..._coalesced_over_http` — HTTP 経路
+
+検証（2026-08-29・取り込み時）: 新規 **10 件通過**・`indicator_ui` api スイート **911 passed / 0 failed**・
+静的品質検定 新規違反 0。
+
+### 残る通過条件（未検証・着手前に埋める）
+
+- **実 UI での収束確認**: CLOSE_WAIT 滞留下で新規 compute の応答時間が
+  「実計算時間 ＋ 現役キュー分」に収束すること。**取り込み時は単体・結合テストのみで、
+  実サーバでの再現検証はしていない。断定しない。**
+- 同一 16 指標の同時 2 クライアントで compute 実行回数が 16 回のみになること（実 UI 実測）。
+
+### 併走していたもう 1 件の findings（**起票しない**・2026-08-29 裁定）
+
+同ブランチの commit `b9cd679` は「1m チャートで `moving_averages` が全滅する
+（1M MTF の O(N×M) 再構築）」を **ISSUE-381** として起票していた。実測は
+「`frame_from_bars` → `latest_compute` → incremental `prepare` が **8,915 回**呼ばれる
+O(投影バー数 × 状態再構築)」。
+
+**これは既に是正済みである。** `ISSUE-450` の**第 5 段（原因 J）**が同一ファイル
+（`adapter/compute/mtf_causal_frames.py`）の同一欠陥を直している
+（`33ba5b2 perf(ISSUE-450): MTF の prepare を期間につき 1 回にする`・2026-08-28 develop 収録）。
+対策案 段階 2 のメモ化も `d9818ec`（ISSUE-297）で入っている。**重複起票を避けるため新番号を与えない。**
+
+### 関連
+
+ISSUE-257（上限は並列度でなく仕事の量に・本件はその実装）・ISSUE-450（MTF 指標の計算量・第 1〜7 段）・
+ISSUE-297（因果 MTF のバー単位メモ）・ISSUE-259（計算はワーカー／応答書き出しはリクエストスレッド）・
+ISSUE-276（legend の DOM 所有規約）・ISSUE-348（配信ツリーの取り違え＝本件では否定された）。
+原 commit: `f8f7227`（記述）/ `b7604ae`（実装）— `worktree-issue-380-compute-backlog`。
