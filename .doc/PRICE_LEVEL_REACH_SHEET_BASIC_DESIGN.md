@@ -1,7 +1,7 @@
-# 水準到達シート 基本設計書 v0.6.2
+# 水準到達シート 基本設計書 v0.6.3
 
 - 起票: 2026-08-28（ISSUE-449）／オシレータの価格投影は ISSUE-453
-- 状態: **設計確定（実装未着手）**
+- 状態: **実装済み（feature/issue-449-price-level-reach-sheet・未マージ）**
 - 依頼者裁定:
   - 到達時刻は定義 A（現在の到達が始まった時刻）で確定（2026-08-28 承認）
   - オシレータ系・ティックボリュームを**第 2 表**として追加（2026-08-28 承認）
@@ -20,6 +20,16 @@
 
 改訂履歴:
 
+- **v0.6.3（2026-08-29）**: **§7.1 の契約テストを実装した**。初回実行で本書と実装の食い違いを
+  **3 件**検出し、いずれも是正した（§11-7）: §7.1.1 の機械可読ブロックが YAML として読めない
+  構文不正 **2 件**と、`cvfe` の外れ値水準 **4 系列の欠落**（ISSUE-454 と同型＝本書の列挙が
+  実装より少ない）。**設計中の人手の突合では見つからず、検査を実装した瞬間に赤で落ちた**。
+  併せて §5.3.3 の性質宣言を `cumulative` キーとして §7.1.1 へ追加した（T-5。役割判定表と
+  突き合わせる検査がこれを読む）。`btlm_trail` の `btlm_trail_off_hi` / `btlm_trail_off_lo` は
+  **本書が正しい**（実測: `q_out` を設定した設定でのみ出力される。§3.1 は維持）。
+  併せて **§9-4（段 2 の 1 ティックあたり費用）を実測で埋めた**（条件・再現手順つき）。
+  コードレビューが検出した「帯内経験順位を全系列ぶん発行して末尾 1 点しか使わない」浪費
+  （ISSUE-450 と同型）を除去した結果も同項に記録した。
 - **v0.6.2（2026-08-29）**: **本書と実装の食い違いを赤で落とす契約テストを §7.1 に追加**した。
   計算量テストが防ぐのは無駄な計算であって食い違いではなく、別の検査が要る。期待値は
   **本書から読む**（実装から作るとトートロジーになり何も守らない）。§7.1.1 に機械可読ブロックを
@@ -101,7 +111,7 @@
 |---|---|---|---|
 | `moving_averages` | `MA`（`Smoothing`/`Upper`/`Lower` は現行設定では未出力） | 可 | 57 |
 | `btlm_trail` | `btlm_trail_mean` / `btlm_trail_q5` / `btlm_trail_q95` / `btlm_trail_off_hi` / `btlm_trail_off_lo` | 可 | 8 |
-| `cvfe` | `cvfe_u1` / `cvfe_u2` / `cvfe_l1` / `cvfe_l2`（価格スケール上のバンド） | **不可** | 8 |
+| `cvfe` | `cvfe_u1` / `cvfe_u2` / `cvfe_l1` / `cvfe_l2` / `cvfe_evq_med_hi` / `cvfe_evq_med_lo` / `cvfe_evq_ext_hi` / `cvfe_evq_ext_lo`（価格スケール上のバンドと外れ値水準） | **不可** | 8 |
 
 **`btlm_trail` は価格スケールに乗らない系列も返す**（`btlm_trail_beta` −2〜218 /
 `btlm_trail_sigma` 40〜5,591 / `btlm_trail_band_hit_rate` 0.70〜0.92）。これらは水準ではない。
@@ -314,6 +324,18 @@ p_t = 窓内で v_t 未満の割合                  ∈ [0, 1]
 | 接合の跳び（`v = u` 直上） | **0.0000〜0.0031**（全幅の 0.31% 以下）＝連続 |
 | 有限終端（`xi < 0`）の超過 | **0.0〜1.2%**＝無視できる |
 | 単調性 | 構成上成立（`F_GPD` は超過分について単調増加） |
+
+**有限終端（`xi < 0`）の終端以上は `p = 1.0` である**（分布関数の定義どおり。上表の
+「有限終端の超過 0.0〜1.2%」が**そのまま `p = 1.0` に張り付く**）。`common.gpd.gpd_cdf` は
+台の外を NaN で返す（数値計算上の表現であって分布の値ではない）ので、実装はここを
+1.0 へ丸めてから接合式へ渡す。丸めないと**最も極端な観測だけ色が消える**——
+表の 1 行目（張り付き 3〜50% → 0.0%）を達成しながら、最上位の 0.0〜1.2% だけが無色になる。
+
+**参照実装との差分（明記する）**: `tools/measure/issue449/probe_tailscale.py:135-136` は
+`gpd_cdf` の NaN を**素通し**する（同 `:131-134` で終端超過を件数として数え、統計からは
+`np.isfinite` で外している）。参照実装は「終端超過が無視できる量か」を測るのが目的なので
+クランプが要らない。表示側は 1 セルも無色にできないため実装側でクランプする。
+**測る目的と塗る目的で扱いが分かれる箇所であり、参照実装からの逸脱ではない。**
 
 **窓 `window_n` を伸ばして解像する案は採らない。** `levels.py` ③ の実測どおり水準は非定常
 （履歴 4 分割の中央値が 3 倍動く）で、全履歴の当てはめは適合度検定で棄却される。
@@ -582,6 +604,8 @@ first_t := min{ s | reached_s = reached_now  かつ  ∀u∈[s, now] : reached_u
 
 費用: 既存記録の実測は 0.5〜0.86 ms/tick/インスタンス（ISSUE-257）。段 2 の対象は第 1 表 88 水準・
 第 2 表 33 セルの合計より少ないが、**着手前に現行コードで再実測する**（記録値をそのまま設計根拠にしない）。
+→ **実測済み（§9-4）**: epoch 不変のティックでの前進評価は **0 回 / 0.0 ms**。要求全体の費用と
+その内訳・再現手順は §9-4 に置いた。
 
 段 1 の実測（2026-08-29・warm・`market_profile` 除く）: 8 時間足ぶんの価格水準（3 指標・71 本）で
 **2,316ms**、同じ 8 時間足の全指標（105 本）で **3,637ms**。ラダーの 71 本は全指標 105 本の
@@ -674,18 +698,20 @@ price_scale:                       # 第 1 表（価格スケール）
   btlm_trail:
     levels:    [btlm_trail_mean, btlm_trail_q5, btlm_trail_q95,
                 btlm_trail_off_hi, btlm_trail_off_lo]
-    not_levels:[btlm_trail_beta, btlm_trail_sigma, btlm_trail_band_hit_rate]
-  cvfe:        [cvfe_u1, cvfe_u2, cvfe_l1, cvfe_l2]
+    not_levels: [btlm_trail_beta, btlm_trail_sigma, btlm_trail_band_hit_rate]
+  cvfe:        [cvfe_u1, cvfe_u2, cvfe_l1, cvfe_l2,
+                cvfe_evq_med_hi, cvfe_evq_med_lo,
+                cvfe_evq_ext_hi, cvfe_evq_ext_lo]
 oscillator:                        # 第 2 表
-  ma_marod:         [ma_marod, ma_marod_q{q_lo}, ma_marod_q{q_hi},
+  ma_marod:         [ma_marod, "ma_marod_q{q_lo}", "ma_marod_q{q_hi}",
                      ma_marod_evq_med_hi, ma_marod_evq_med_lo,
                      ma_marod_evq_ext_hi, ma_marod_evq_ext_lo]
-  btlm_trail_marod: [btlm_trail_marod, btlm_trail_marod_q{q_lo}, btlm_trail_marod_q{q_hi},
+  btlm_trail_marod: [btlm_trail_marod, "btlm_trail_marod_q{q_lo}", "btlm_trail_marod_q{q_hi}",
                      btlm_trail_marod_evq_med_hi, btlm_trail_marod_evq_med_lo,
                      btlm_trail_marod_evq_ext_hi, btlm_trail_marod_evq_ext_lo]
-  profit_rsi:       [rsi, rsi_q{q_lo}, rsi_q{q_hi},
+  profit_rsi:       [rsi, "rsi_q{q_lo}", "rsi_q{q_hi}",
                      rsi_evq_ext_hi, rsi_evq_ext_lo, rsi_gpd_hi, rsi_gpd_lo]
-  tickvol:          [tickvol, tickvol_q{q_lo}, tickvol_q{q_hi},
+  tickvol:          [tickvol, "tickvol_q{q_lo}", "tickvol_q{q_hi}",
                      tickvol_evq_med_hi, tickvol_evq_ext_hi, tickvol_gpd_hi]
 intrabar_update:                   # 足内更新（増分器の登録有無）
   yes: [moving_averages, btlm_trail, ma_marod, btlm_trail_marod, profit_rsi, tickvol]
@@ -693,6 +719,9 @@ intrabar_update:                   # 足内更新（増分器の登録有無）
 price_invertible:                  # §5.5.1（価格へ逆算できる＝breakpoints() を提供する）
   yes: [ma_marod, btlm_trail_marod, profit_rsi]
   no:  [tickvol]
+cumulative:                        # §5.3.3（足の中で積み上がる量＝同じ経過割合の分布へ当てる）
+  yes: [tickvol]
+  no:  [ma_marod, btlm_trail_marod, profit_rsi]
 constants:
   MIN_GPD_EVENTS: 30               # common.gpd
 ```
@@ -742,7 +771,71 @@ constants:
    1 回の観測**のみ。長期は標本 6 件しかない。**日をまたいだ再測が要る**。
 3. `market_profile`（POC・VA）と `price_range_power`（価格帯）を水準として追加するか。
    どちらも価格水準でありラダーの定義に合致するが、依頼者指定が無いため対象外にしている。
-4. 段 2 の 1 ティックあたり費用の現行コードでの再実測。
+4. **測定済み（2026-08-29・本項）**。段 2 の 1 ティックあたり費用を現行コードで実測した。
+
+   **先行記録の限界（記録として残す）**: 実装コミット `85a0ca4` のメッセージに
+   「T-6 実測（1 ティック期待 52-70ms）」という数値だけが残っている。**測定条件（束の本数・
+   `bar_limits`・対象時間足・warm / cold・何を計ったか）はコミットにも本書にも無く、測定
+   スクリプトもリポジトリに残っていない**（実測: `tools/measure/issue449/` に該当なし）。
+   条件の無い数値は再現も比較もできないため設計根拠にしない。以下は条件つきで測り直した値
+   であり、先行記録の 52-70ms とは**測った対象が同じである保証が無い**（同一視しない）。
+
+   **条件**: 素材 `jp225_tick`、`bar_limits` は §composition_root の既定表、束は
+   8 時間足 × 5 指標 = **40 instance**（`ma_marod` / `btlm_trail_marod` / `profit_rsi` /
+   `tickvol` / `moving_averages`）、`chart_timeframe="1m"`、`mode="tick"`（epoch 不変）、
+   warm（先に `mode="full"` を 1 回・`mode="tick"` を 2 回通した後）、
+   dev container（Linux 6.12.54-linuxkit）、中央値 / n=5〜7。
+
+   **再現手順**: 本書のリポジトリ根で次を実行する（実 Composition Root・実データ）。
+
+   ```
+   lightweight-charts-python-main/.venv/bin/python - <<'PY'
+   import statistics, sys, time
+   sys.path.insert(0, ".")
+   from dashboard_ui.main.composition_root import build_dashboard_app
+   TFS = ("1m","5m","15m","1h","4h","1D","1W","1M")
+   OSC = (("ma_marod", {"source":"hlc3","ma_type":"ema","length":50}),
+          ("btlm_trail_marod", {"source":"hlc3","maxbars":50}),
+          ("profit_rsi", {"rsi_period":6,"apply":5}),
+          ("tickvol", {}),
+          ("moving_averages", {"source":"hlc3","ma_type":"ema","length":24}))
+   body = {"dataset_ref":"jp225_tick","chart_timeframe":"1m","mode":"tick",
+           "instances":[{"instance_id":f"{i}-{tf}","indicator_id":i,"variant":"default",
+                         "params":dict(p),"timeframe":tf} for tf in TFS for i,p in OSC]}
+   app = build_dashboard_app()
+   app.controller_factory().handle(dict(body, mode="full"))
+   for _ in range(2):
+       app.controller_factory().handle(body)
+   samples = []
+   for _ in range(5):
+       s = time.perf_counter(); app.controller_factory().handle(body)
+       samples.append((time.perf_counter() - s) * 1000.0)
+   print("tick 経路 中央値", statistics.median(samples), "ms")
+   PY
+   ```
+
+   **結果（2026-08-29 実測・中央値）**:
+
+   | 区間 | 費用 | 発行回数 | 備考 |
+   |---|---|---|---|
+   | 要求全体（`mode="tick"`・計測器なし） | **9,452 ms** | — | 上の再現手順そのままの値 |
+   | 要求全体（内訳を採るため各面に計測器を挟んだ場合） | 9,550 ms | — | 以下の内訳はこの回のもの |
+   | └ P-1 系列供給 | **7,440 ms** | 81 回 | ユニーク 40 本＋畳み込み済み 40 本＋比較集合 1 本 |
+   | └ P-3 前進評価 | **0.0 ms** | **0 回** | epoch 不変。§7 の表明どおり |
+   | └ 帯内経験順位 | **0.53 ms** | 24 セル | 是正後（末尾 1 点入口） |
+
+   **是正前後（帯内経験順位・同一条件で入口だけを差し替えて測定）**:
+   **278.57 ms → 0.53 ms**（24 セル / 1 要求）。是正前は全系列ぶん（1 セルあたり系列長ぶん）
+   の順位を作って**末尾 1 点しか使っていなかった**（ISSUE-450 と同型の「作ってから捨てる」）。
+   出力は是正前後で不変であり、**状態検証では原理的に落ちない**。よって発行回数を数える
+   計算量テスト（`dashboard_ui/tests/complexity/test_in_band_rank_issued_once.py`）で
+   「発行 − 使用 = 0」と「系列長 800 / 3000 の 2 点で発行が増えない」を固定した。
+
+   **残る主費用は P-1（要求全体の 78%）である**。これは「要求ごとに口を組み直す」設計
+   （素材の鮮度を優先し、古い足を配らない）の帰結であり、捨てている計算ではない。
+   束を小さくして避けるのは症状の回避なので採らない。抜本策は素材側の畳み込み（同じ足・
+   同じ設定の系列を要求をまたいで共有する）であり、**本書の範囲外・未着手**である
+   （§7 の epoch 分離と同じ考え方を素材にも適用することになる）。
 5. 到達時刻の表示粒度（当日は時刻・過去日は相対表記、の境界規則）。
 6. `tpl#2`（名前 "D"）が未紐付けである理由。設定側の意図確認が必要（本設計では変更しない）。
 7. **§5.5 未測定**: 段の**時間的な安定性**。§4.3 の「指名の持続」に相当する量を段については
@@ -833,6 +926,33 @@ constants:
 **誤り 6 だけは種類が違う。** 測定の誤りではなく**本書の記述が実装とずれていた**もので、
 人手で気づくまで何も知らせてくれない。だから §7.1 の契約テストを設けた。
 1〜5 は注意で防ぐしかないが、6 の形は**機械で落とせる**。
+
+7. **本書の列挙が実装より少なかった／期待値の源が機械で読めなかった**（2026-08-29・§7.1.1 /
+   §3.1）。**検出経路が前の 6 件と違う**: 設計中の人手の突合ではなく、**§7.1 の契約テストを
+   実装して初回に走らせた時点で赤になった**。中身は 3 件である。
+   - **§7.1.1 の機械可読ブロックが YAML として読めない（2 件）**。`not_levels:[...]` は `:` の
+     後に空白が無いためキーとして解釈されず、`ma_marod_q{q_lo}` は引用符が無いため flow
+     mapping と誤読される。**期待値の唯一源が機械で読めなければ検査は成立しない**
+     （本書から期待値を読むという §7.1 の前提そのものが崩れる）。是正: 空白の追加と
+     ひな型の引用符化。値は 1 つも変えていない。
+   - **`cvfe` の外れ値水準 4 系列が抜けていた**。実測（2026-08-29・素材 `sample` 5m・実
+     `/compute`）: `show_outliers=true` のとき `cvfe` は `cvfe_u1` / `cvfe_u2` / `cvfe_l1` /
+     `cvfe_l2` に `cvfe_evq_med_hi` / `cvfe_evq_med_lo` / `cvfe_evq_ext_hi` /
+     `cvfe_evq_ext_lo` を加えた **8 本**を返す（`false` では 4 本）。本書は 4 本しか挙げて
+     いなかった。**ISSUE-454 と同型**（本書の列挙が実装より少ない＝出力の多い側が本書から
+     漏れる）。是正: §3.1 / §7.1.1 を 8 本へ。
+     **未確定**: 実テンプレートが `show_outliers=false` で運用されるなら 4 本は出ない。
+     その場合は §3.1 を 4 本へ戻し「`show_outliers=true` のとき 4 本増える」という**注記
+     方式**へ差し戻す（両方を同時に正とする書き方は無い）。
+   - **`btlm_trail` の `btlm_trail_off_hi` / `btlm_trail_off_lo` は本書が正しい**。実測で
+     `q_out=0.99` なら 8 本・`q_out=None` なら 6 本であり、§3.1 は外れ値分位を有効にした
+     設定を前提としている（実測に使った設定も同じ）。**本書は変更していない**。
+
+   併せて §5.3.3 の性質宣言（積み上がる量か）を `cumulative` キーとして §7.1.1 へ追加した
+   （T-5）。役割判定表との突合はこのキーを読む。
+
+**誤り 7 は §7.1 の契約テストが機能することの実証である。** 6 の形（本書と実装のずれ）は
+人手では設計中に 1 件しか拾えなかったが、検査を実装した初回実行で 3 件が自動で落ちた。
 
 ---
 

@@ -57,6 +57,20 @@ export const MODES = Object.freeze([
     //   ジョブ API を持つ Phase 2 以降も /candles・/compute は持たない設計（§6.1）。
     chartApi: false,
   }),
+  Object.freeze({
+    id: 'dashboard',
+    prefix: '/dashboard',
+    bodyClass: 'um-mode-dashboard',
+    toggleId: 'enter-dashboard',
+    label: 'ダッシュボード',
+    buttonTitle: 'ダッシュボード表示のオン・オフ',
+    // ISSUE-452 / 設計書 §4.6: 価格ラダー（全時間足の水準を価格軸 1 本に並べる）と各時間足の
+    //   チャート一覧の置き場所。チャート画面へは置かない（価格軸整列 2.4px/行・ページ級タブ
+    //   不在・併置でチャートが 320px 狭くなる＝3 案とも実測で却下）。
+    //   dashboard core（127.0.0.1:8481・arch-spec §3）は自分の面（/reach_sheet）だけを持ち、
+    //   `/candles`・`/compute` は持たない。
+    chartApi: false,
+  }),
 ]);
 
 /** モード名の一覧（表の順）。 */

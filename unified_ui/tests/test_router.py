@@ -196,6 +196,34 @@ def router_with_sim(upstreams, sim_upstream):
     server.shutdown()
 
 
+@pytest.fixture()
+def dashboard_upstream():
+    """dashboard コアのスタブ上流（第 4 モード・ISSUE-452）。"""
+    srv, _ = _make_stub_upstream("dashboard")
+    yield srv
+    srv.shutdown()
+
+
+@pytest.fixture()
+def router_with_dashboard(upstreams, sim_upstream, dashboard_upstream):
+    """live / replay / sim / dashboard の 4 上流を持つルータ（ISSUE-452 の実構成）。"""
+    live_srv, replay_srv = upstreams
+    server = router_mod.create_router_server(
+        ("127.0.0.1", 0),
+        upstreams={
+            "live": _base_url(live_srv),
+            "replay": _base_url(replay_srv),
+            "sim": _base_url(sim_upstream),
+            "dashboard": _base_url(dashboard_upstream),
+        },
+        web_root=WEB_ROOT,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server, live_srv, replay_srv, sim_upstream, dashboard_upstream
+    server.shutdown()
+
+
 # ---- A1: prefix 除去 + query/method 保存 + 透過 -------------------------------
 
 def test_live_candles_get_is_proxied_to_live_upstream_without_prefix(router):
@@ -476,6 +504,95 @@ def test_mode_prefix_boundary_is_strict_for_every_registered_mode(router_with_si
     assert len(sim_srv.records) == 0
 
 
+# ---- A9: 第 4 モード dashboard（ISSUE-452 / 設計書 §4.6・arch-spec §7）------------------
+#
+# 置き場所の裁定（設計書 §4.6）: 価格ラダーはチャート画面へ置かない。`/live` `/replay` `/sim` と
+#   並ぶ 4 つ目のモード `/dashboard` に置く。ルータ側は「マッピングへ 1 エントリ」で足りる
+#   （§11.1 裁定 6 = V-8 の拡張点）ことを、sim と同じ 4 観点（透過・prefix 除去・隔離・境界）で固定する。
+
+
+def test_dashboard_get_is_proxied_to_dashboard_upstream_without_prefix(router_with_dashboard):
+    # Arrange
+    server, live_srv, _replay, _sim, dash_srv = router_with_dashboard
+    # Act
+    resp = _request(server, "GET", "/dashboard/reach_sheet?tf=1D")
+    # Assert: prefix を除いた素パスが dashboard core へ届く（他 core へは 1 件も行かない）。
+    assert resp.status == 200, f"proxy failed: {resp.error}"
+    assert dash_srv.records[0].path == "/reach_sheet?tf=1D"
+    assert dash_srv.records[0].method == "GET"
+    assert len(live_srv.records) == 0
+
+
+def test_dashboard_post_forwards_body_to_dashboard_upstream(router_with_dashboard):
+    # Arrange: 束（instances）は Input Model の一部として POST で送る（arch-spec §0 T-2）。
+    server, _live, _replay, _sim, dash_srv = router_with_dashboard
+    payload = json.dumps({"instances": [{"indicator_id": "ma_marod"}]}).encode("utf-8")
+    # Act
+    resp = _request(
+        server, "POST", "/dashboard/reach_sheet", body=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    # Assert
+    assert resp.status == 200, f"proxy failed: {resp.error}"
+    assert dash_srv.records[0].method == "POST"
+    assert dash_srv.records[0].body == payload
+    assert dash_srv.records[0].content_type == "application/json"
+
+
+def test_dashboard_prefix_stripped_without_double_slash(router_with_dashboard):
+    # Arrange
+    server, _live, _replay, _sim, dash_srv = router_with_dashboard
+    # Act: prefix そのもの（末尾スラッシュ無し）
+    resp = _request(server, "GET", "/dashboard")
+    # Assert: `/dashboard` 除去後は `/`（`//` を生じない）
+    assert resp.status == 200, f"proxy failed: {resp.error}"
+    assert dash_srv.records[0].path == "/"
+
+
+def test_dashboard_upstream_refused_yields_502_while_the_other_modes_stay_ok(router_with_dashboard):
+    # Arrange: dashboard core の消滅（NFR-02 プロセス隔離）。既存 3 モードは無影響でなければならない。
+    server, live_srv, replay_srv, sim_srv, dash_srv = router_with_dashboard
+    dash_srv.shutdown()
+    dash_srv.server_close()
+    # Act
+    dash_resp = _request(server, "GET", "/dashboard/reach_sheet")
+    live_resp = _request(server, "GET", "/live/candles?tf=1D")
+    replay_resp = _request(server, "GET", "/replay/candles?tf=1D")
+    sim_resp = _request(server, "GET", "/sim/")
+    # Assert
+    assert dash_resp.status == 502, f"expected 502, got {dash_resp.status}/{dash_resp.error}"
+    assert live_resp.status == 200, f"live must stay healthy: {live_resp.error}"
+    assert replay_resp.status == 200, f"replay must stay healthy: {replay_resp.error}"
+    assert sim_resp.status == 200, f"sim must stay healthy: {sim_resp.error}"
+    assert len(live_srv.records) == 1
+    assert len(replay_srv.records) == 1
+    assert len(sim_srv.records) == 1
+
+
+def test_dashboard_prefix_is_not_routed_when_dashboard_upstream_is_not_registered(router_with_sim):
+    """未登録なら誤配せず 404（既存 3 モード構成のルータは dashboard を知らない）。"""
+    # Arrange
+    server, live_srv, replay_srv, sim_srv = router_with_sim
+    # Act
+    resp = _request(server, "GET", "/dashboard/reach_sheet")
+    # Assert
+    assert resp.status == 404, f"expected 404, got {resp.status}/{resp.error}"
+    assert len(live_srv.records) == 0
+    assert len(replay_srv.records) == 0
+    assert len(sim_srv.records) == 0
+
+
+def test_dashboardfoo_is_not_treated_as_dashboard_prefix(router_with_dashboard):
+    """`/dashboardfoo` のような別語は dashboard 配下としない（`/dashboard/` 境界の厳格判定）。"""
+    # Arrange
+    server, _live, _replay, _sim, dash_srv = router_with_dashboard
+    # Act
+    resp = _request(server, "GET", "/dashboardfoo")
+    # Assert
+    assert resp.status == 404, f"expected 404 for /dashboardfoo, got {resp.status}"
+    assert len(dash_srv.records) == 0
+
+
 # ---- S6: CLI の繰り返し指定 `--upstream <mode>=<url>`（§11.1 裁定 6）------------------
 
 
@@ -561,13 +678,53 @@ def test_default_upstreams_pass_their_own_validation():
     assert router_mod.parse_upstream_args(argv) == defaults
 
 
-def test_main_cli_defaults_include_all_three_modes():
-    """`--upstream` 無指定時の既定は 3 モード（serve.sh が明示指定する値と同じ既定）。"""
+def test_main_cli_defaults_include_all_four_modes():
+    """`--upstream` 無指定時の既定は 4 モード（serve.sh が明示指定する値と同じ既定）。
+
+    ISSUE-452 で第 4 モード `dashboard` を足した。既定の集合は front のモード定義表
+    （`unified_ui/web/js/mode_table.js`）と 1:1 でなければならない（片方だけに在るモードは、
+    押しても 404 になるだけで何のエラーも出ない＝無音の失敗になる）。
+    """
     # Arrange / Act
     got = router_mod.default_upstreams()
     # Assert
-    assert set(got) == {"live", "replay", "sim"}
+    assert set(got) == {"live", "replay", "sim", "dashboard"}
     assert got["sim"].endswith(":8381")
+    assert got["dashboard"].endswith(":8481")
+
+
+def test_default_upstreams_bind_the_dashboard_core_to_loopback_8481():
+    """dashboard core は loopback 限定の専用プロセス（arch-spec §3・serve.sh と同値）。"""
+    # Arrange / Act
+    got = router_mod.default_upstreams()
+    # Assert
+    assert got["dashboard"] == "http://127.0.0.1:8481"
+
+
+def test_dashboard_upstream_can_be_overridden_by_its_environment_variable(monkeypatch):
+    """`UNIFIED_DASHBOARD_UPSTREAM` で個別に上書きできる（既存 3 モードと同じ規約）。"""
+    # Arrange
+    monkeypatch.setenv("UNIFIED_DASHBOARD_UPSTREAM", "http://127.0.0.1:19481")
+    # Act
+    got = router_mod.default_upstreams()
+    # Assert: 当該モードだけが差し替わり、他モードは既定のまま。
+    assert got["dashboard"] == "http://127.0.0.1:19481"
+    assert got["live"] == "http://127.0.0.1:8001"
+
+
+@pytest.mark.parametrize("mode", sorted(router_mod._DEFAULT_UPSTREAMS))
+def test_every_default_mode_is_overridable_by_its_own_environment_variable(monkeypatch, mode):
+    """既定表の全モードが `UNIFIED_<MODE>_UPSTREAM` で上書きできる（環境変数の取り残し検出）。
+
+    モードを足したのに環境変数の口を足し忘れると、そのモードだけが上書き不能になる。
+    起動時には何も起きず、上書きしたはずの上流へ行かない形で現れる（無音の失敗）。
+    """
+    # Arrange
+    monkeypatch.setenv(f"UNIFIED_{mode.upper()}_UPSTREAM", "http://127.0.0.1:19999")
+    # Act
+    got = router_mod.default_upstreams()
+    # Assert
+    assert got[mode] == "http://127.0.0.1:19999"
 
 
 # ---- A8: prefix 無し API パスは 404 ------------------------------------------

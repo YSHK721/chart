@@ -6,7 +6,8 @@
 契約:
   - `/<mode>/*` → prefix `/<mode>` を除去して当該モードの upstream へプロキシ
     （モードの集合は `create_router_server(upstreams=…)` のマッピングが唯一源。
-      既定は live=8001 / replay=8281 / sim=8381。モードの追加は 1 エントリで済み本体は不変）
+      既定は live=8001 / replay=8281 / sim=8381 / dashboard=8481。モードの追加は
+      1 エントリで済み本体は不変）
   - method / query / body / status / content-type / header を透過する
   - prefix 除去は二重 slash を生まない（`/live/x` → `/x`、`/live` → `/`）
   - マッピングに無い prefix はどの上流へも倒さない（誤配より 404 を選ぶ）
@@ -57,6 +58,10 @@ _DEFAULT_UPSTREAMS = {
     "live": "http://127.0.0.1:8001",
     "replay": "http://127.0.0.1:8281",
     "sim": "http://127.0.0.1:8381",
+    # ISSUE-452 / 設計書 §4.6: 価格ラダーはチャート画面へ置かない。`/dashboard` は 4 つ目の
+    #   モードで、live core 相乗りではなく専用プロセス（arch-spec §3）。ここは表への 1 エントリ
+    #   追加で足り、振り分け本体（`_match_prefix`）は不変である。
+    "dashboard": "http://127.0.0.1:8481",
 }
 
 
@@ -66,6 +71,7 @@ def default_upstreams():
         "live": "UNIFIED_LIVE_UPSTREAM",
         "replay": "UNIFIED_REPLAY_UPSTREAM",
         "sim": "UNIFIED_SIM_UPSTREAM",
+        "dashboard": "UNIFIED_DASHBOARD_UPSTREAM",
     }
     return {
         mode: os.environ.get(env_keys[mode], url)
@@ -439,7 +445,7 @@ def main(argv=None):
         help=(
             "モードの上流を <mode>=<url> で指定する（繰り返し可）。"
             "例: --upstream live=http://127.0.0.1:8001 --upstream sim=http://127.0.0.1:8381。"
-            "1 つも指定しなければ既定（live/replay/sim）を使う"
+            "1 つも指定しなければ既定（live/replay/sim/dashboard）を使う"
         ),
     )
     parser.add_argument(

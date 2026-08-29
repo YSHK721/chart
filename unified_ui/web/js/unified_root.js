@@ -21,10 +21,12 @@ import { installOpLog } from './op_log.js';
 import { createBottomPaneView } from './bottom_pane_view.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
+// テンプレート束は live スコープの storage を**読み取り専用**で渡す（arch-spec §0 T-2）。
+import { readOnlyStorage } from './readonly_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
 import { createRoutedFetch } from './routed_fetch.js';
 // モード集合・巡回・ツールバー構成の単一ソース（基本設計書 §3.5.6・§11.2）。
-import { DEFAULT_MODE, nextMode, MODE_TOGGLE_BUTTONS } from './mode_table.js';
+import { DEFAULT_MODE, nextMode, MODE_TOGGLE_BUTTONS, MODES } from './mode_table.js';
 import {
   MODE,
   loadVendor,
@@ -50,6 +52,9 @@ const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js
 const REPLAY_BAR_VIEW = '/replay/js/adapter/front/replay_bar_view.js';
 // sim 表示層の合成根（器・3 窓・取引明細を所有する。live root へは注入しない＝独立した層）。
 const SIM_ROOT = '/sim/js/adapter/front/composition_root_front.js';
+// dashboard 表示層の合成根（価格ラダー・各時間足の一覧を所有する。sim と同形の独立した層）。
+//   ISSUE-452 / 設計書 §4.6。live root へは注入しない（チャート画面は無改変で広く保つ）。
+const DASHBOARD_ROOT = '/dashboard/js/adapter/front/composition_root_front.js';
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
 
@@ -59,15 +64,35 @@ let modeController = null; // createModeController の実体（トグルボタ�
 //   （MODE も applyModeUi の依存定数として mode_ui_view.js に置き、ここでは import して再 export する）
 
 // ---- モード切替ステートマシン（純ロジック・単一 mount 前提）------------------------
-//   chart/controller/pollers/replayHandle は注入。**chart を dispose も再生成もしない**（本関数は
-//   remove を一切呼ばない＝再構築なしの構造的実証）。切替は pollers の start/stop、replayHandle の
+//   chart/controller/pollers/表示層は注入。**chart を dispose も再生成もしない**（本関数は
+//   remove を一切呼ばない＝再構築なしの構造的実証）。切替は pollers の start/stop、各層の
 //   enable/disable、controller.clearRevealCache、SW モード通知、body クラスのみで行う。
-//   - replay ON:  pollers stop → clearRevealCache → SW=replay → replayHandle.enable → um-mode-replay
-//   - live  ON:   replayHandle.disable → clearRevealCache → SW=live → pollers start → um-mode-live
+//   - replay ON:  pollers stop → clearRevealCache → SW=replay → replay 層 enable → um-mode-replay
+//   - live  ON:   SW=live → clearRevealCache → 層を畳む → pollers start → um-mode-live
+//
+// 表示層の受け取り方（arch-spec §0 T-4）:
+//   従来はモード別の名前付き引数（`simHandle`）で受け、遷移手続きを `TRANSITIONS` へ手で
+//   並べていた。この形ではモードを 1 つ足すたびに「引数・遷移関数・遷移表」の 3 箇所を同時に
+//   直す義務が生まれ、1 箇所でも取り残すと**無症状で誤動作する**（押しても器が出ない／前の
+//   モードの器が残る）。よって層は `layers`（モード名 → {enable, disable}）の 1 枚で受け、
+//   遷移はモード定義表（MODES）の走査で組む。第 4 モードの追加は表の 1 行と layers の
+//   1 エントリで完結し、本関数は変わらない。
+//   `replayHandle` / `simHandle` は T-4 以前の呼び出し形の**別名**として残す（加法的変更）。
+//
+// 遷移の形はモード名ではなく**表の属性**（既定モードか / chartApi を持つか）から決まる:
+//   1. 既定モード（live）           … SW を戻す → 層を畳む → live pollers を起動
+//   2. chartApi を持つ層（replay）  … pollers 停止 → 層を畳む → SW を向ける → 自層 enable
+//   3. chartApi を持たない層（sim / dashboard）
+//                                   … pollers 停止 → 他の層を畳む → SW を**既定モード**へ →
+//                                     chart 層を畳む → SW を自モードへ → 自層 enable
+//   3 で SW を一度既定モードへ向けるのは、chart 層の `disable()` が出す全長復帰 fetch
+//   （`/candles` 再取得）を **`/candles` を持つ core** へ届けるため。chartApi を持たない core
+//   （sim・dashboard）へ向くと 404 になり、チャートがライブ全長へ戻らない。
 export function createModeController({
   controller,
   replayHandle,
   simHandle,
+  layers,
   pollers = [],
   setSwMode = () => Promise.resolve(false),
   applyMode = () => {},
@@ -75,6 +100,23 @@ export function createModeController({
 } = {}) {
   let activeMode = initialMode;
   let switching = false;
+
+  // モード名 → 表示層。`layers` に明示があればそれを使い、無ければ旧来の名前付き引数を充てる。
+  const layerOf = new Map(layers instanceof Map ? layers : Object.entries(layers || {}));
+  if (replayHandle && MODE.REPLAY && !layerOf.has(MODE.REPLAY)) {
+    layerOf.set(MODE.REPLAY, replayHandle);
+  }
+  if (simHandle && MODE.SIM && !layerOf.has(MODE.SIM)) {
+    layerOf.set(MODE.SIM, simHandle);
+  }
+
+  // 層の 2 種別を表から導く（モード名を本体へ書かない）。
+  //   chart 層 … 単一 chart の上で働き、畳むときに `/candles` を持つ core を必要とする層。
+  //   器の層   … 自前の器（iframe 等）を出し入れするだけの層（chartApi を持たない core）。
+  const CHART_LAYER_MODES = MODES.filter((m) => m.id !== DEFAULT_MODE && m.chartApi).map((m) => m.id);
+  const HOSTED_LAYER_MODES = MODES.filter((m) => !m.chartApi).map((m) => m.id);
+  //: 畳む順序。器の層を先に、chart 層を後に畳む（T-4 前の enterLive / enterReplay と同順）。
+  const FOLD_ORDER = [...HOSTED_LAYER_MODES, ...CHART_LAYER_MODES];
 
   const startPollers = () => {
     for (const p of pollers) {
@@ -96,78 +138,77 @@ export function createModeController({
     }
   };
 
-  // sim 表示層の器は sim モードでだけ出す。live/replay へ出るときは必ず畳む（器・共有 CSS を
-  //   統合ページへ残さない）。未注入（standalone・既存検定）では何も起きない＝無波及。
-  const disableSim = async () => {
-    if (simHandle && typeof simHandle.disable === 'function') {
-      await simHandle.disable();
+  // 層 1 つへの操作（未注入・未実装なら何もしない＝無波及）。**同期関数**であることが要点で、
+  //   層が居ないときに await を 1 つも増やさない（切替の進み方＝マイクロタスクの刻みを
+  //   T-4 前と一致させる。再入排他の検定はこの刻みを観測している）。
+  const callLayer = (id, op) => {
+    const layer = layerOf.get(id);
+    return layer && typeof layer[op] === 'function' ? layer[op]() : undefined;
+  };
+
+  // 目標モード以外の層を畳む。**目標の層は畳まない**（畳んでから開き直す無駄を作らない）。
+  //   走査順は定義表の順（畳む順序が実装ごとに揺れないようにする）。
+  const foldLayers = async (ids, target) => {
+    for (const id of ids) {
+      if (id === target) {
+        continue;
+      }
+      const pending = callLayer(id, 'disable');
+      if (pending && typeof pending.then === 'function') {
+        await pending;
+      }
     }
   };
 
-  async function enterReplay() {
-    stopPollers();
-    clearReveal();
-    await disableSim();
-    // SW を先に replay へ（enable の loadTimeframe が /replay/candles・/replay/compute を叩く）。
-    await setSwMode(MODE.REPLAY);
-    if (replayHandle && typeof replayHandle.enable === 'function') {
-      await replayHandle.enable();
+  // 目標モードの行から遷移手続きを組む（手続きの本体はモード名を 1 つも見ない）。
+  async function enterMode(row) {
+    if (row.id === DEFAULT_MODE) {
+      // SW を先に既定モードへ。これで戻せるのは **注入点を通らない要求**（SW だけが prefix を
+      //   付ける経路）。disable の全長復帰 fetch に prefix を付けるのは front の routedFetch で
+      //   あり、参照するのは activeMode（末尾で更新）なので、行き先は SW ではなく**遷移前
+      //   モード**の core になる。replay→live は /replay/candles へ向かい replay core が答える。
+      //   sim→live はリプレイ層が未 enable ゆえ disable が早期 return し（replay.js:514）、
+      //   要求自体が出ない。（実測: unified_root_restore_fetch_routing.test.js）
+      await setSwMode(row.id);
+      clearReveal();
+      // 器の層 → chart 層の順に畳む（chart 層の disable が reveal トリム解除＋ライブ全長再描画）。
+      await foldLayers(FOLD_ORDER, row.id);
+      startPollers();
+    } else if (row.chartApi) {
+      stopPollers();
+      clearReveal();
+      await foldLayers(FOLD_ORDER, row.id);
+      // SW を先に向ける（enable の loadTimeframe が当該 core の /candles・/compute を叩く）。
+      await setSwMode(row.id);
+      await callLayer(row.id, 'enable');
+    } else {
+      stopPollers();
+      clearReveal();
+      await foldLayers(HOSTED_LAYER_MODES, row.id);
+      // chart 層を畳む復帰要求が届く先を、必ず /candles を持つ core（既定モード）にしておく。
+      await setSwMode(DEFAULT_MODE);
+      await foldLayers(CHART_LAYER_MODES, row.id);
+      // 復帰が終わってから自モードへ切り替える。
+      await setSwMode(row.id);
+      // 器はここで出す（SW を自モードへ向けた後＝chart 層の復帰要求と混ざらない）。
+      await callLayer(row.id, 'enable');
     }
-    activeMode = MODE.REPLAY;
-    applyMode(MODE.REPLAY);
+    activeMode = row.id;
+    applyMode(row.id);
   }
 
-  // sim（シミュレーション）は「再生」ではないのでリプレイ層は畳む。手順は replay と同型だが、
-  //   **SW の向け先だけが異なる**。
-  //
-  //   不変条件: `replayHandle.disable()` の全長復帰 fetch（replay.js:532 catchUpToLiveTail の
-  //   `/candles` 再取得）は、必ず **/candles を持つ core** へ向ける。Phase 1 の sim core は静的配信
-  //   しか持たない（`simulator/sim_ui/framework/serve_sim.py`）ので、そこへ向くと 404 になり
-  //   チャートがライブ全長へ戻らない。front 側は activeMode を末尾まで sim にしないことで
-  //   （＝遷移前モードへ向かう）、SW 側は **disable が終わるまで sim にしない**ことで、これを守る。
-  async function enterSim() {
-    stopPollers();
-    clearReveal();
-    // disable の復帰要求が届く先を、必ず /candles を持つ core（既定モード）にしておく。
-    await setSwMode(DEFAULT_MODE);
-    if (replayHandle && typeof replayHandle.disable === 'function') {
-      await replayHandle.disable();
-    }
-    // 復帰が終わってから sim へ切り替える。
-    await setSwMode(MODE.SIM);
-    // 表示層はここで出す（SW を sim へ向けた後＝リプレイ層の復帰要求と混ざらない）。
-    if (simHandle && typeof simHandle.enable === 'function') {
-      await simHandle.enable();
-    }
-    activeMode = MODE.SIM;
-    applyMode(MODE.SIM);
-  }
+  // 目標モード → 遷移手続き。3 値以上では if/else の二分岐で表せないため表で引く。
+  //   表そのものを**モード定義表の走査で組む**ので、第 4 モードの追加で本ファイルは変わらない
+  //   （旧実装はここへモードごとの遷移関数を 1 行ずつ書き並べていた＝OCP 違反の残骸）。
+  const TRANSITIONS = Object.freeze(Object.fromEntries(
+    MODES.map((row) => [row.id, () => enterMode(row)]),
+  ));
 
-  async function enterLive() {
-    // SW を先に live へ。これで戻せるのは **注入点を通らない要求**（SW だけが prefix を付ける経路）。
-    //   disable の全長復帰 fetch に prefix を付けるのは front の routedFetch であり、参照するのは
-    //   activeMode（末尾で更新）なので、行き先は SW ではなく**遷移前モード**の core になる。
-    //   replay→live は /replay/candles へ向かい replay core が答える。sim→live はリプレイ層が
-    //   未 enable ゆえ disable が早期 return し（replay.js:514）、要求自体が出ない。
-    //   （実測: unified_root_restore_fetch_routing.test.js）
-    await setSwMode(MODE.LIVE);
-    clearReveal();
-    await disableSim();
-    if (replayHandle && typeof replayHandle.disable === 'function') {
-      await replayHandle.disable(); // reveal トリム解除＋ライブ全長再描画（chart 再構築なし）。
-    }
-    startPollers();
-    activeMode = MODE.LIVE;
-    applyMode(MODE.LIVE);
-  }
-
-  // 目標モード → 遷移手続き。3 値以上では if/else の二分岐で表せないため表で引く
-  //   （第 4 モードの追加は本表への 1 行追加で済み、toggle 本体は変わらない）。
-  const TRANSITIONS = {
-    [MODE.LIVE]: enterLive,
-    [MODE.REPLAY]: enterReplay,
-    [MODE.SIM]: enterSim,
-  };
+  // 既存の公開 API（名前付きの入口）。一般化しても呼び出し形を壊さない。
+  const noTransition = () => Promise.resolve();
+  const enterLive = TRANSITIONS[DEFAULT_MODE] || noTransition;
+  const enterReplay = TRANSITIONS[MODE.REPLAY] || noTransition;
+  const enterSim = TRANSITIONS[MODE.SIM] || noTransition;
 
   async function toggle(next) {
     // 既定算出（引数省略時）は定義表由来。既定モードに居るなら表の次のモードへ、
@@ -189,6 +230,8 @@ export function createModeController({
 
   return {
     toggle,
+    // 任意モードの入口（表に無い値は何もしない＝全域性）。第 5 モード以降はこれで足りる。
+    enter: (id) => (TRANSITIONS[id] || noTransition)(),
     enterReplay,
     enterLive,
     enterSim,
@@ -235,6 +278,7 @@ async function main() {
   let ReplayMarketProfileActor;
   let installReplayBar;
   let setupSimDisplay;
+  let setupDashboardDisplay;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
@@ -242,6 +286,7 @@ async function main() {
     ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
     ({ installReplayBar } = await import(REPLAY_BAR_VIEW));
     ({ setupSimDisplay } = await import(SIM_ROOT));
+    ({ setupDashboardDisplay } = await import(DASHBOARD_ROOT));
   } catch (err) {
     showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
     return;
@@ -253,6 +298,11 @@ async function main() {
     clearInterval: globalThis.clearInterval.bind(globalThis),
   });
 
+  // live スコープの storage（チャートテンプレート等の既存資産の置き場所）。live root へは
+  //   そのまま渡し、dashboard へは読み取り専用にして渡す（arch-spec §0 T-2: どのスコープを
+  //   読むかを決めるのは合成根であり、View は自分でスコープを選ばない）。
+  const liveStorage = scopedStorage(globalThis.localStorage, MODE.LIVE);
+
   // ★ 単一 mount: chart/mainSeries/renderer/controller(=ReplayIndicatorController)/live pollers/
   //   リプレイ層ハンドルを 1 回だけ生成する（以降 toggle で再生成しない）。
   let boot;
@@ -261,7 +311,7 @@ async function main() {
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
-      storage: scopedStorage(globalThis.localStorage, MODE.LIVE),
+      storage: liveStorage,
       // ISSUE-362: 配下の全 API クライアントはこの 1 つの fetch を使う（this._fetch）。
       //   ここで prefix 付与を担保するので、ルーティングが SW の可用性に依存しない。
       fetch: routedFetch,
@@ -334,10 +384,27 @@ async function main() {
     },
   });
 
+  // dashboard 表示層のハンドル（enable/disable のみ）。器・CSS・価格ラダー・時間足一覧は
+  //   dashboard 側が所有する（表示要素は View が生成し所有する＝ISSUE-452 禁止事項）。
+  //   置き場所は sim と同じく統合層が決め、dashboard 側は渡された host へ挿すだけ。
+  //   テンプレート束（live スコープの chart テンプレート）は**読み取り専用**で渡す。束を
+  //   どう消費するかは dashboard 側の責務で、統合層は出所とスコープだけを固定する（T-2）。
+  const dashboardHandle = await setupDashboardDisplay({
+    doc: document,
+    host: bottomPane.host(),
+    templates: readOnlyStorage(liveStorage),
+  });
+
   modeController = createModeController({
     controller: boot.controller,
     replayHandle: boot.replayHandle,
-    simHandle,
+    // 表示層は「モード名 → {enable, disable}」の 1 枚で渡す（arch-spec §0 T-4）。モードごとの
+    //   名前付き引数を足していく形だと、増えるたびに本呼び出しと controller の両方を直す義務が
+    //   残り、取り残しが無音の失敗になる。
+    layers: new Map([
+      [MODE.SIM, simHandle],
+      [MODE.DASHBOARD, dashboardHandle],
+    ]),
     pollers: [boot.liveUpdater, boot.formingBarUpdater, boot.liveTickPlayer],
     setSwMode: notifySwMode,
     applyMode: applyModeUi,

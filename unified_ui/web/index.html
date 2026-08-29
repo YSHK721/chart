@@ -82,7 +82,8 @@
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */
     #enter-replay[aria-pressed="true"],
-    #enter-sim[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
+    #enter-sim[aria-pressed="true"],
+    #enter-dashboard[aria-pressed="true"] { background: #2962ff; color: #fff; border-color: #2962ff; }
   </style>
 </head>
 <!-- 初期クラスは既定モード（live）の状態と一致させる。applyModeUi が走るのは bootstrap 完了後
