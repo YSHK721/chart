@@ -54,7 +54,9 @@ def reference_forward(bridge):
     """参照実装（各指標の core を直接呼ぶ）— `probe_inverse.py:90-118` と同じ形。"""
     from adapter.compute.call_binding import indicator_src
 
-    ma_marod = importlib.import_module(indicator_src("ma_marod").__name__ + ".core")
+    # 束縛名を指標 id と同名にしない（宣言整合性検定の記号索引はリポジトリ全体で 1 つで、
+    # ここで束縛すると他モジュールの散文中の同名語まで「実在する記号」に変わるため）。
+    marod = importlib.import_module(indicator_src("ma_marod").__name__ + ".core")
     btlm = importlib.import_module(indicator_src("btlm_trail_marod").__name__ + ".core")
     rsi = importlib.import_module(indicator_src("profit_rsi").__name__ + ".core")
 
@@ -70,7 +72,7 @@ def reference_forward(bridge):
         closes[-1] = close
         if indicator_id == "ma_marod":
             candles = pd.DataFrame({"open": open_, "high": high, "low": low, "close": closes})
-            return float(ma_marod.ma_marod_series(
+            return float(marod.ma_marod_series(
                 candles, source=params["source"], ma_type=params["ma_type"],
                 length=int(params["length"]))[-1])
         if indicator_id == "btlm_trail_marod":

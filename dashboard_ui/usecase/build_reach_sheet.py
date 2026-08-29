@@ -252,19 +252,19 @@ def _build_cell(
             ),
         )
 
-    times = [int(time) for time, _ in value_points]
-    values = np.asarray([float(value) for _, value in value_points], dtype=np.float64)
-    band_by_time = {int(time): float(value) for time, value in band_points}
-    bands = np.asarray([band_by_time.get(time, np.nan) for time in times],
-                       dtype=np.float64)
-    reach = reach_state(times, list(values), list(bands), side=LevelSide.ABOVE)
+    # 突き合わせと因果境界は domain の観測が唯一の所有者（背景色の目盛りと同じ観測を使う）。
+    observed = _cq.BandObservations.of(value_points, band_points)
+    values, bands = observed.values, observed.bands
+    reach = reach_state(list(observed.times), list(values), list(bands),
+                        side=LevelSide.ABOVE)
 
     if spec.cumulative:
         return _cumulative_cell(instance, spec, values, reach, comparison)
 
     ranks = _cq.in_band_ranks(values, spec.window_n)
-    # 因果境界: 当該バーは観測に含めない（当該バーの水準は当該バーより前だけで決まる）。
-    events = _cq.excess_event_history(values[:-1], bands[:-1], excess=spec.excess)
+    history_values, history_bands = observed.history
+    events = _cq.excess_event_history(history_values, history_bands,
+                                      excess=spec.excess)
     reading = _cq.p_at(
         value=float(values[-1]),
         band_high=float(bands[-1]),

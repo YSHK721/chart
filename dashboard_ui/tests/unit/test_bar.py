@@ -98,9 +98,18 @@ class TestRunningExtreme:
         assert extreme.extended_by(90.0) == extreme
 
     def test_equal_extremes_compare_equal(self) -> None:
-        """UC-02 の epoch=(bar_time, run_hi, run_lo) 不変判定の土台。"""
-        assert RunningExtreme(high=110.0, low=90.0) == RunningExtreme(high=110.0, low=90.0)
-        assert RunningExtreme(high=110.0, low=90.0) != RunningExtreme(high=110.1, low=90.0)
+        """UC-02 の epoch=(bar_time, run_hi, run_lo) 不変判定の土台。
+
+        同一式どうしを比べても何も固定できない（恒真）。**別々に構築した**2 つが等値で
+        あること＝同一性が値だけで決まることを見る。
+        """
+        # Arrange: 同じ値から別々に構築する（片方は「内側の終値では動かない」経路で作る）
+        built_now = RunningExtreme(high=110.0, low=90.0)
+        built_again = RunningExtreme(high=110.0, low=90.0).extended_by(100.0)
+
+        # Assert
+        assert built_now == built_again
+        assert built_now != RunningExtreme(high=110.1, low=90.0)
 
     def test_rejects_high_below_low(self) -> None:
         with pytest.raises(ValueError):

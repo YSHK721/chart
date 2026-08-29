@@ -2,10 +2,10 @@
 
 `indigators/indicator_ui/api/tests/test_server_smoke.py` と同型: エフェメラルポートで
 `ThreadingHTTPServer` を立て、`urllib.request` で叩く（fake を挟まない・stdlib のみ）。
-純ロジック（`p` の算出・ラダー・到達判定）は単体で網羅済みなので、ここで見るのは
+純ロジック（連続量 p の算出・ラダー・到達判定）は単体で網羅済みなので、ここで見るのは
 **結線**である: Composition Root が束ねた口が実データで応答するか。
 
-`unified_ui/serve.sh` は `GET /` が 200 を返すまで待ってから router を起動する
+unified_ui/serve.sh は `GET /` が 200 を返すまで待ってから router を起動する
 （`wait_up`）。したがって `GET /` は web/ が未実装でも 200 でなければならない。
 """
 from __future__ import annotations

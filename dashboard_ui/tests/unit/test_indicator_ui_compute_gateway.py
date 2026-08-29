@@ -108,7 +108,7 @@ def test_points_without_a_value_are_dropped() -> None:
 
 
 def test_an_empty_duplicate_series_does_not_hide_the_real_one() -> None:
-    """実測: `ma_marod` は同名で line（点あり）と horizontal_line（点なし）を返す。
+    """実測: 指標 ma_marod は同名で line（点あり）と horizontal_line（点なし）を返す。
 
     素直に名前で辞書へ入れると、後から来た空の系列が実体を消す（水準が丸ごと落ちる）。
     """

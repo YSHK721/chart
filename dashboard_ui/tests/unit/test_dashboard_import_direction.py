@@ -390,7 +390,7 @@ def top_level_modules(path: Path, *, source: "str | None" = None) -> "frozenset[
     """**モジュール本体**（トップレベル）の import だけを集める。
 
     関数の中の import は「実行時に初めて要る依存」であり、層の依存関係とは別物である。
-    プロセス起動点（`serve_dashboard.main`）が Composition Root を呼ぶのはこの形になる。
+    プロセス起動点（serve_dashboard の main）が Composition Root を呼ぶのはこの形になる。
     """
     tree = ast.parse(source if source is not None else path.read_text(encoding="utf-8"))
     found: "set[str]" = set()
@@ -421,7 +421,7 @@ def test_the_framework_body_does_not_bind_anything() -> None:
     """framework の本体は `dashboard_ui` の中身を知らない（束縛は main だけが行う）。
 
     プロセス起動点（`python -m dashboard_ui.framework.serve_dashboard <port>`）だけが
-    Composition Root を関数の中で呼ぶ。`unified_ui/serve.sh` がこの形で起動する。
+    Composition Root を関数の中で呼ぶ。unified_ui/serve.sh がこの形で起動する。
     """
     bound = {
         str(path.relative_to(_ROOT)): sorted(

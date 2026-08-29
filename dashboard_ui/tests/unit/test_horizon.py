@@ -16,6 +16,10 @@ from dashboard_ui.domain.horizon import (
 )
 
 
+#: 地平の入れ子の並び（短い順）。§4.3 の表そのものであり、実装から作らない。
+_NESTED_ORDER = (Horizon.SHORT, Horizon.MEDIUM, Horizon.LONG)
+
+
 def test_the_timeframe_order_is_the_eight_timeframes_of_the_design() -> None:
     assert TIMEFRAME_ORDER == ("1m", "5m", "15m", "1h", "4h", "1D", "1W", "1M")
 
@@ -72,8 +76,16 @@ class TestHorizonsOf:
 
     @pytest.mark.parametrize("timeframe", TIMEFRAME_ORDER)
     def test_the_horizons_are_nested(self, timeframe: str) -> None:
-        """§4.3 の段は入れ子（長期 ⊂ 中期 ⊂ 短期）。段が交差すると「次のターゲット」が壊れる。"""
-        if includes(Horizon.LONG, timeframe):
-            assert includes(Horizon.MEDIUM, timeframe)
-        if includes(Horizon.MEDIUM, timeframe):
-            assert includes(Horizon.SHORT, timeframe)
+        """§4.3 の段は入れ子（長期 ⊂ 中期 ⊂ 短期）。段が交差すると「次のターゲット」が壊れる。
+
+        入れ子であることは「その足が属する地平が、短い順の並びの**接頭辞**になる」と同値
+        である（長期に入るなら中期にも短期にも入る＝途中を飛ばした組み合わせが現れない）。
+        接頭辞の形で書くと分岐が要らない: 分岐で書くと入力によって実行経路が変わり、
+        条件に入らない足では**何も検査しないまま緑になる**。
+        """
+        # Act
+        marks = horizons_of(timeframe)
+
+        # Assert
+        assert marks == _NESTED_ORDER[: len(marks)]
+        assert marks[0] is Horizon.SHORT

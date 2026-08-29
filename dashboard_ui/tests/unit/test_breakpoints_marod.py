@@ -1,7 +1,7 @@
 """§5.5.2 marod 系の区分の境目（走行 H / L の折れ）を固定する。
 
 境目の定義は参照実装 `tools/measure/issue449/probe_inverse.py`（区分 `C<L` / `L<=C<=H` /
-`C>H` の 3 分割）の実測に従う。適用価格（hlc3 等）は `C` が走行 H を越えれば高値も動き、
+`C>H` の 3 分割）の実測に従う。適用価格（hlc3 等）は終値 C が走行 H を越えれば高値も動き、
 走行 L を割れば安値も動くため、その 2 点で傾きが折れる。
 
 検出力の自己検査（§7.1 の失敗形「赤くならないテスト」を踏まない）: 折れを 1 つ落とした
@@ -26,7 +26,7 @@ def applied_hlc3(bar: Bar, close: float) -> float:
 
 
 def forward_of(bar: Bar):
-    """hlc3 のメビウス（＝`C` について区分メビウス）。折れは hlc3 の折れだけで決まる。"""
+    """hlc3 のメビウス（＝終値 C について区分メビウス）。折れは hlc3 の折れだけで決まる。"""
 
     def forward(close: float) -> float:
         x = applied_hlc3(bar, close)

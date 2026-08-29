@@ -1,8 +1,8 @@
 """§7.1 契約テスト — 本書と実装の食い違いを赤で落とす。
 
-期待値は **`.doc/PRICE_LEVEL_REACH_SHEET_BASIC_DESIGN.md` §7.1.1 の機械可読ブロックだけ**
-から来る（読むのは `design_doc_contract` 1 か所）。実装からは 1 つも作らない。監査
-（`docs/tdd-divergence-audit-2026-08-09.md`）が挙げた「赤くならないテスト」の 3 つの形を
+期待値は **.doc/PRICE_LEVEL_REACH_SHEET_BASIC_DESIGN.md §7.1.1 の機械可読ブロックだけ**
+から来る（読むのは design_doc_contract の 1 か所）。実装からは 1 つも作らない。監査
+（docs/tdd-divergence-audit-2026-08-09.md）が挙げた「赤くならないテスト」の 3 つの形を
 いずれも踏まない:
 
 ===============================  ==========================================
@@ -23,7 +23,7 @@
 
 素材について:
     `datasetRef="sample"` を使う。系列**名**の集合は素材に依らないことを実測で確認した
-    （2026-08-29・`sample` 2,459 本と `jp225_tick` 5m 49,069 本で全 7 指標の名前集合が一致）。
+    （2026-08-29・"sample" 2,459 本と `jp225_tick` 5m 49,069 本で全 7 指標の名前集合が一致）。
     §7.1「対象外」のとおり、固定するのは列挙だけで実測値は固定しない。
 """
 from __future__ import annotations
@@ -33,15 +33,25 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
-from pathlib import Path
 
 import pytest
 
 from dashboard_ui.tests.contract import design_doc_contract as doc
 
-#: ライブ core の HTTP 殻。`indigators/indicator_ui/api` を import パスへ載せてから読む
-#: （`indicator_ui/api/tests/test_server_smoke.py` と同じ殻・同じ起動の仕方）。
-_API_DIR = Path(__file__).resolve().parents[3] / "indigators" / "indicator_ui" / "api"
+
+def open_live_core() -> None:
+    """ライブ core を in-process で読めるようにする（import 境界はプロダクト側が所有）。
+
+    ライブ core の import パス準備は
+    `simulator.replay_ui.adapter._indicator_ui_bridge` が唯一の所有者であり、
+    dashboard core（`dashboard_ui.adapter.gateway.indicator_ui_compute_gateway`）も
+    replay / sim も同じ入口を通る（arch-spec §3）。テスト側で sys.path を触ると
+    「テストが読むモジュール」と「プロダクトが読むモジュール」の同一性が食い違いうるので、
+    第 2 の準備を書かない。
+    """
+    from simulator.replay_ui.adapter import _indicator_ui_bridge
+
+    _indicator_ui_bridge.load_compute()
 
 #: 素材。名前の集合は素材に依らない（module docstring の実測）。
 DATASET_REF = "sample"
@@ -49,8 +59,8 @@ DATASET_REF = "sample"
 #: リクエストの params（＝ユーザー設定側。被検査コードから引かない）。
 #:
 #: 既定と違えている設定と、その根拠:
-#:   `btlm_trail` の `q_out` … 既定は `None` で、そのとき
-#:       `indigators/btlm_trail/src/trail.py:201-210` は `off_high` / `off_low` を `None` の
+#:   btlm_trail の "q_out" … 既定は None で、そのとき
+#:       `indigators/btlm_trail/src/trail.py:201-210` は上下の外れ値水準を None の
 #:       ままにする＝`btlm_trail_off_hi` / `btlm_trail_off_lo` を出さない。本書 §3.1 が
 #:       この 2 本を水準として挙げているのは外れ値分位を有効にした設定（`q_out > q_high`）
 #:       である。実測に使った設定も同じで、`tools/measure/issue449/probe_levels.py:37-41` の
@@ -95,10 +105,7 @@ REQUEST_PARAMS: "dict[str, dict[str, object]]" = {
 @pytest.fixture(scope="module")
 def compute_base() -> str:
     """本番の HTTP 殻をエフェメラルポートで起動する（`test_server_smoke.py` と同型）。"""
-    import sys
-
-    if str(_API_DIR) not in sys.path:
-        sys.path.insert(0, str(_API_DIR))
+    open_live_core()
     from framework.server import IndicatorUIRequestHandler
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), IndicatorUIRequestHandler)
@@ -187,10 +194,7 @@ def contract_indicator_ids() -> "frozenset[str]":
 
 def incrementer_names() -> "frozenset[str]":
     """増分器 factory に登録されている名前（実装側の真・§7.1「何を固定するか」）。"""
-    import sys
-
-    if str(_API_DIR) not in sys.path:
-        sys.path.insert(0, str(_API_DIR))
+    open_live_core()
     from adapter.compute.incremental import _FACTORIES
 
     return frozenset(_FACTORIES)
@@ -211,11 +215,8 @@ def test_the_document_intrabar_update_matches_the_incrementer_registry() -> None
 
 
 def declared_archetype(indicator_id: str) -> "str | None":
-    """`call_binding` の `latest_meta` が宣言する archetype（未宣言は `None`）。"""
-    import sys
-
-    if str(_API_DIR) not in sys.path:
-        sys.path.insert(0, str(_API_DIR))
+    """`call_binding` の latest_meta が宣言する archetype（未宣言は None）。"""
+    open_live_core()
     from adapter.compute.call_binding import latest_meta_fields
 
     meta = latest_meta_fields(indicator_id, "default", dict(REQUEST_PARAMS[indicator_id]))
@@ -223,11 +224,8 @@ def declared_archetype(indicator_id: str) -> "str | None":
 
 
 def declared_incrementer(indicator_id: str) -> "str | None":
-    """`call_binding` の `latest_meta` が指名する増分器名（未宣言は `None`）。"""
-    import sys
-
-    if str(_API_DIR) not in sys.path:
-        sys.path.insert(0, str(_API_DIR))
+    """`call_binding` の latest_meta が指名する増分器名（未宣言は None）。"""
+    open_live_core()
     from adapter.compute.call_binding import latest_meta_fields
 
     meta = latest_meta_fields(indicator_id, "default", dict(REQUEST_PARAMS[indicator_id]))
@@ -240,7 +238,7 @@ def declared_incrementer(indicator_id: str) -> "str | None":
 def test_the_intrabar_capable_indicator_names_a_registered_incrementer(
     indicator_id: str,
 ) -> None:
-    """増分器は 2 か所の宣言が揃って初めて効く（factory ＋ `call_binding` の `latest_meta`）。
+    """増分器は 2 か所の宣言が揃って初めて効く（factory ＋ `call_binding` の latest_meta）。
 
     片方だけの宣言は例外を出さずに重い経路へ黙って縮退する（ISSUE-262・
     `indigators/indicator_ui/api/adapter/compute/incremental/__init__.py` の docstring）。
@@ -264,7 +262,7 @@ def test_the_intrabar_incapable_indicator_declares_no_incremental_archetype(
 ) -> None:
     """本書が「足内更新 不可」と言う指標は increment の archetype を宣言していない。
 
-    §7 段 2 の対象はこの宣言で決まる。ここがずれると `cvfe` の更新粒度がバー確定である
+    §7 段 2 の対象はこの宣言で決まる。ここがずれると cvfe の更新粒度がバー確定である
     ことを表示できず、無言の縮退になる（§7・§5.2）。
     """
     # Act
@@ -328,9 +326,9 @@ def test_the_non_invertible_indicator_has_no_breakpoint_source(indicator_id: str
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("indicator_id", sorted(doc.oscillator_ids()))
 def test_the_document_cumulative_matches_the_series_role_table(indicator_id: str) -> None:
-    """§5.3.3 / §7.1.1 の `cumulative` = 役割判定表の性質宣言。
+    """§5.3.3 / §7.1.1 の "cumulative" = 役割判定表の性質宣言。
 
-    `tickvol` だけが足の中で積み上がる量であり、同じ経過割合の分布へ当てる（§5.3.3）。
+    tickvol だけが足の中で積み上がる量であり、同じ経過割合の分布へ当てる（§5.3.3）。
     本書と宣言がずれると、積み上がらない量を経過割合の分布へ当てる（あるいはその逆の）
     配色が出る。出力は「それらしい色」のまま正しくないので、状態検証では落ちない。
     """
@@ -356,7 +354,10 @@ def test_the_document_cumulative_matches_the_series_role_table(indicator_id: str
 # 6. §3.1 / §3.2 の人間向けの表と機械可読ブロックの一致
 # --------------------------------------------------------------------------- #
 def test_the_prose_table_of_section_3_1_lists_the_same_indicators_as_the_block() -> None:
-    """§3.1 の表の indicatorId 列 = §7.1.1 `price_scale` のキー。"""
+    """§3.1 の表の indicatorId 列 = §7.1.1 の price_scale のキー。"""
+    # 左辺は §3.1 の人間向けの表、右辺は §7.1.1 の機械可読ブロック。doc はどちらも
+    # 本書（.md）を読むだけの reader であり、被検査コードは 1 つも呼んでいない。
+    # di-ok(C3): 両辺とも本書の別々の箇所を読んだ値であり、期待値の自己生成に当たらない
     assert doc.prose_price_scale_levels().keys() == doc.price_scale_ids()
 
 
@@ -364,7 +365,7 @@ def test_the_prose_table_of_section_3_1_lists_the_same_indicators_as_the_block()
 def test_the_prose_table_of_section_3_1_lists_the_same_levels_as_the_block(
     indicator_id: str,
 ) -> None:
-    """§3.1 の表の「水準系列」列 = §7.1.1 の `levels`（写しを機械的に縛る）。"""
+    """§3.1 の表の「水準系列」列 = §7.1.1 の "levels"（写しを機械的に縛る）。"""
     # Arrange
     params = REQUEST_PARAMS[indicator_id]
     expected = doc.contract_levels(indicator_id, params)
@@ -377,9 +378,9 @@ def test_the_prose_table_of_section_3_1_lists_the_same_levels_as_the_block(
 
 
 def test_the_prose_of_section_3_1_lists_the_same_non_levels_as_the_block() -> None:
-    """§3.1 の「価格スケールに乗らない系列」段落 = §7.1.1 の `not_levels`。
+    """§3.1 の「価格スケールに乗らない系列」段落 = §7.1.1 の "not_levels"。
 
-    §11-6 で人手で見つけた誤り（`beta` と `btlm_trail_beta`）はこの形で落ちる。
+    §11-6 で人手で見つけた誤り（beta と btlm_trail_beta の取り違え）はこの形で落ちる。
     """
     # Arrange
     expected: "frozenset[str]" = frozenset()
@@ -394,7 +395,8 @@ def test_the_prose_of_section_3_1_lists_the_same_non_levels_as_the_block() -> No
 
 
 def test_the_prose_table_of_section_3_2_lists_the_same_indicators_as_the_block() -> None:
-    """§3.2 の表の indicatorId 列 = §7.1.1 `oscillator` のキー。"""
+    """§3.2 の表の indicatorId 列 = §7.1.1 の oscillator のキー。"""
+    # di-ok(C3): 左辺は §3.2 の表・右辺は §7.1.1 のブロックで、どちらも本書を読んだ値
     assert doc.prose_oscillator_ids() == doc.oscillator_ids()
 
 

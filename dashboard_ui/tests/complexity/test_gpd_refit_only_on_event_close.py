@@ -1,9 +1,9 @@
 """計算量 5（§7 §5.3 固有）: GPD の再当てはめはイベント確定のときだけ。
 
 §7 の表明そのもの:
-    - `p` は既存系列から導く量であり、**新規の compute を発行してはならない**。
+    - 連続量 p は既存系列から導く量であり、**新規の compute を発行してはならない**。
     - **GPD の再当てはめはイベント確定のときだけ**。エピソードが閉じないバーでの当てはめ回数が 0
-      （`p` を求めるたびに当てはめ直さない）。
+      （p を求めるたびに当てはめ直さない）。
     - オーダーの表明: 表示するセル数を 33 → 66 にしても、当てはめ回数が**変わらない**。
 
 回数そのものは期待値に焼き込まない。
@@ -80,7 +80,7 @@ def test_no_refit_while_the_episode_is_still_open(fit_spy: FitSpy) -> None:
 
 
 def test_repeating_the_build_without_new_events_refits_nothing(fit_spy: FitSpy) -> None:
-    """`p` を求めるたびに当てはめ直さない（同じ確定観測列なら再当てはめ 0）。"""
+    """p を求めるたびに当てはめ直さない（同じ確定観測列なら再当てはめ 0）。"""
     cache = TailFitCache()
     spy = SeriesSpy()
     values = [10.0] * 3 + [95.0, 10.0] * 20
@@ -152,7 +152,7 @@ def test_the_number_of_ladder_rows_does_not_change_the_fit_count(
 
 
 def test_the_sheet_issues_no_compute_beyond_the_series_it_reads() -> None:
-    """`p` は既存系列から導く量であり、新規の計算を発行しない。"""
+    """p は既存系列から導く量であり、新規の計算を発行しない。"""
     spy = SeriesSpy()
     values = [10.0] * 3 + [95.0, 10.0] * 20
     spy.add(_OSC, _series(values, [90.0] * len(values)))

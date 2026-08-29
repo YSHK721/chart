@@ -88,8 +88,10 @@ def test_pointwise_window_rule_is_identical_to_rolling_causal() -> None:
 
     current を無視する fn を渡せば、既存 :func:`rolling_causal` と完全一致する。
     """
-    rng = np.random.default_rng(20260829)
-    values = rng.normal(size=200)
+    # 決定的データ（乱数を使わない）: 周期の異なる 2 つの波の和。単調でも定数でもなく、
+    # 窓ごとに平均が動くので「窓の切り出しが同一か」を区別できる。実行のたびに同じ列になる。
+    index = np.arange(200, dtype=np.float64)
+    values = np.sin(index * 0.7) + 0.5 * np.cos(index * 0.13)
     values[::17] = np.nan
 
     expected = marod_bands.rolling_causal(values, 30, lambda finite: float(finite.mean()))

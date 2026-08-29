@@ -3,7 +3,7 @@
     帯内 : p = 経験順位（当該バー除外の因果窓）                       ∈ [0, q_high]
     帯外 : p = q_high + (1 - q_high) * F_GPD(v - u ; xi, beta)        ∈ (q_high, 1]
 
-参照実装: `tools/measure/issue449/probe_tailscale.py`（`common.gpd` を無改変で使用・
+参照実装: `tools/measure/issue449/probe_tailscale.py`（common の GPD 実装を無改変で使用・
 エピソード極値へ畳んだ超過分の直近 k_events 件へ当てはめる）。
 観測が `MIN_GPD_EVENTS` 未満のセルは帯外を解像できない＝**目盛りが無い**ことを
 `tail_unscaled` で明示する（§5.3.2。濃淡でごまかさない）。
@@ -69,6 +69,7 @@ class TestFitTail:
     def test_only_the_most_recent_k_events_are_used(self) -> None:
         events = _exponential_events(80)
 
+        # di-ok(C3): 同一関数の 2 入力の関係（直近 40 件だけが効く）を見る変形テスト
         assert fit_tail(events, k_events=40) == fit_tail(events[-40:], k_events=40)
 
     def test_non_finite_events_are_dropped_before_counting(self) -> None:

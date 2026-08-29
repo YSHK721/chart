@@ -341,7 +341,7 @@ class TestTailFitCache:
 
     参照実装 `probe_tailscale.py:125` のキャッシュキーは `(窓の本数, 窓の末尾, 窓の先頭)` で
     あり、本数だけではない。本数だけを見ると、窓がずれて中身が入れ替わった場合に古い
-    当てはめを返す（`k_events` 件のローリング窓なので本数は上限で頭打ちになる）。
+    当てはめを返す（直近 k_events 件のローリング窓なので本数は上限で頭打ちになる）。
     """
 
     def test_a_window_with_the_same_length_but_different_content_is_refitted(self) -> None:

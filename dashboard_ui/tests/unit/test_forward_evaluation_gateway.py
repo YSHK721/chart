@@ -2,12 +2,12 @@
 
 §5.5.4: 係数決定に要る前進評価は「窓の末尾バーだけを終値候補で差し替えて増分器を呼ぶ」
 形である（参照実装 `tools/measure/issue449/probe_inverse.py:90-118`・ライブ側
-`adapter/compute/live_tick_tails.py` の `make_tail_at` と同じ規律）。
+`adapter/compute/live_tick_tails.py` の末尾差し替え関数と同じ規律）。
 
 ここで固定するのは**規律**である:
     - 窓は instance ごとに 1 回だけ複製し、以降は末尾行の代入だけを繰り返す
       （毎回 DataFrame を作り直すと 1 ステップの費用が窓長に比例する）。
-    - 走行極値は `H = max(H0, C)` / `L = min(L0, C)`（`Bar` / 参照実装と同一規約）。
+    - 走行極値は `H = max(H0, C)` / `L = min(L0, C)`（domain の Bar / 参照実装と同一規約）。
     - 増分器を持たない指標は**明示的に落とす**（黙って窓全体の再計算へ落ちない）。
 
 値そのものの一致は `test_forward_matches_reference_probe.py` が参照実装と突き合わせる。

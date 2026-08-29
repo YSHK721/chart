@@ -3,9 +3,9 @@
 依頼者裁定（2026-08-29）と実測:
   - 1 色（全 instance のうち最も 0.5 から離れたもの）は **82/82 行が両端に潰れる**ため採らない。
     短期の instance が常に最も 0.5 から離れており、`max` がそれを全行へ伝播させる。
-  - 3 分割では 3 地平の `p` が 0.1 超ずれる行が 35/82（43%）ある。1 色にするとこの情報が消える。
-  - 各地平のセルには、その地平に属する instance のうち **`p` が 0.5 から最も離れたもの**を採る。
-  - `p` が定義できない instance はその地平の候補から外す。候補が 1 つも残らないときは**空**に
+  - 3 分割では 3 地平の p が 0.1 超ずれる行が 35/82（43%）ある。1 色にするとこの情報が消える。
+  - 各地平のセルには、その地平に属する instance のうち **p が 0.5 から最も離れたもの**を採る。
+  - p が定義できない instance はその地平の候補から外す。候補が 1 つも残らないときは**空**に
     し、色を置かない（**無言で 0.5 を埋めない**）。
 """
 from __future__ import annotations
@@ -122,7 +122,7 @@ class TestProjection:
 
 class TestUnavailable:
     def test_an_instance_without_a_defined_p_is_dropped_from_the_horizon(self) -> None:
-        """§5.5.5: `p` が定義できないセルはその地平の候補から外す。"""
+        """§5.5.5: p が定義できないセルはその地平の候補から外す。"""
         unscaled = InstanceProjection(
             timeframe="1D", value_map=_identity_map(),
             scale=QuantileScale(window_values=np.array([1.0, 2.0, 3.0]),

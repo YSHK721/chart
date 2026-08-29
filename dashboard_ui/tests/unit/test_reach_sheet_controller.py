@@ -4,7 +4,7 @@
     - シリアライズは `dashboard_ui.usecase.sheet_models` のフィールド名を**そのまま**使う
       （別名を発明しない）。Enum は `.value`、`frozenset[Horizon]` はソート済みリスト、
       `Mapping[Horizon, float | None]` は `{"short":…, "mid/medium":…, "long":…}` 形。
-    - フロントは数値の再計算をしない。`p` の算出・並び替え・到達判定はすべてサーバ側で終える。
+    - フロントは数値の再計算をしない。連続量 p の算出・並び替え・到達判定はすべてサーバ側で終える。
     - 失敗は `{"ok": false, "error": {...}}`（例外を素通しして 500 にしない）。
 
 計算量（§7・T-1）: 段 2（`mode="tick"`）で epoch が不変なら前進評価の発行は **0** である。
@@ -190,7 +190,7 @@ def test_the_horizon_marks_are_sorted_enum_values() -> None:
 
 
 def test_every_row_carries_all_three_horizons() -> None:
-    """§5.5.5: 塗る単位は地平 3 段。候補が無い地平は `null`（0.5 で埋めない）。"""
+    """§5.5.5: 塗る単位は地平 3 段。候補が無い地平は JSON の null（0.5 で埋めない）。"""
     response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
 
     for row in response["rows"]:

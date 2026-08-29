@@ -29,7 +29,7 @@ from common import event_quantiles as _evq
 from common import gpd as _gpd
 from common import marod_bands as _bands
 
-#: GPD を当てはめる最小観測数（`common.gpd` の値をそのまま使う＝第 2 定義を作らない）。
+#: GPD を当てはめる最小観測数（`_gpd.MIN_GPD_EVENTS` をそのまま使う＝第 2 定義を作らない）。
 MIN_GPD_EVENTS: int = _gpd.MIN_GPD_EVENTS
 
 #: 超過分の既定の定義。指標ごとの差（RSI の `(v-u)/(100-u)`）は呼び出し側が渡す
@@ -202,6 +202,46 @@ class QuantileScale:
             tail=self.tail,
             excess=self.excess,
         )
+
+
+@dataclass(frozen=True)
+class BandObservations:
+    """値系列と上帯系列を時刻で突き合わせた観測。**因果境界の唯一の所有者**。
+
+    同じ観測を 2 人が使う（§5.2 / §5.3 の第 2 表のセルと、§5.5.5 の背景色の目盛り）。
+    突き合わせと因果境界（当該バーを観測に含めない）を 2 か所へ手書きすると、片方だけを
+    直したときにセルの色と背景の色が**別々の窓**で決まる。出力はどちらも「それらしい色」の
+    ままなので、状態検証では原理的に落ちない（ISSUE-450 と同型）。
+
+    Attributes:
+        times: 値系列の時刻（UNIX 秒・古い順）。
+        values: 値。
+        bands: 同時刻の上帯（供給が無い時刻は NaN。長さは values と必ず一致する）。
+    """
+
+    times: "tuple[int, ...]"
+    values: np.ndarray
+    bands: np.ndarray
+
+    @classmethod
+    def of(
+        cls,
+        value_points: "Sequence[tuple[int, float]]",
+        band_points: "Sequence[tuple[int, float]]",
+    ) -> "BandObservations":
+        """(時刻, 値) の 2 系列を時刻で突き合わせる（帯は値系列の時刻へ揃える）。"""
+        times = tuple(int(time) for time, _value in value_points)
+        values = np.asarray([float(value) for _time, value in value_points],
+                            dtype=np.float64)
+        band_by_time = {int(time): float(value) for time, value in band_points}
+        bands = np.asarray([band_by_time.get(time, np.nan) for time in times],
+                           dtype=np.float64)
+        return cls(times=times, values=values, bands=bands)
+
+    @property
+    def history(self) -> "tuple[np.ndarray, np.ndarray]":
+        """当該バーを除いた観測（因果境界: 当該バーの水準は当該バーより前だけで決まる）。"""
+        return self.values[:-1], self.bands[:-1]
 
 
 def excess_event_history(

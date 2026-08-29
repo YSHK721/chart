@@ -31,7 +31,7 @@ _MIN_SPAN: float = 1.0
 
 @dataclass(frozen=True)
 class Epoch:
-    """当てはめが有効な期間の識別子。**終値は含めない**（係数は `C` に依存しない）。"""
+    """当てはめが有効な期間の識別子。**終値は含めない**（係数は終値 C に依存しない）。"""
 
     bar_time: int
     running: RunningExtreme

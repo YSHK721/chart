@@ -1,6 +1,6 @@
 """§5.5.2/§5.5.3 区分メビウス `v = (aC + b) / (C + d)` の当てはめと逆写像を固定する。
 
-参照実装: `tools/measure/issue449/probe_heatmap.py:155-176`（`breakpoints` / `fit_mobius` / `ev`）。
+参照実装: `tools/measure/issue449/probe_heatmap.py:155-176`（境目の列挙・3 点当てはめ・評価の 3 つ）。
 実測（§5.5.2）で 3 指標とも `v(C)` は区分メビウスであり、3 点当てはめの残差は 6.0e-14〜3.9e-12、
 全区分で単調増加だった。したがって:
 

@@ -15,7 +15,8 @@ T-8（丸め禁止）: 経過割合を 0.05 / 0.10 刻みで丸める案は不�
 比較集合は経過 `k` ごとにキャッシュし、素材が 1 単位進んだときにだけ作り直す
 （＝窓の再評価は最小単位の境界ごとに 1 回）。
 
-参照実装: `tools/measure/issue449/probe_forming_long.py`（`causal_pct_against` の比較集合）。
+参照実装: `tools/measure/issue449/probe_forming_long.py`（比較集合の作り方はその causal_pct_against
+に従う）。
 """
 from __future__ import annotations
 

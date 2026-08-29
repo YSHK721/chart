@@ -2,7 +2,7 @@
 
 実測（§5.5.2・参照実装 `tools/measure/issue449/probe_inverse.py`）: `profit_rsi` の `v(C)` は
 **区分 6**（marod 系は 3）。増えるぶんは RSI の差分 `x_t - x_{t-1}` の符号で式が変わる
-**上下分岐**である。分岐の位置は `x(C) = x_{t-1}` を満たす `C` であり、`x(C)` は走行 H / L で
+**上下分岐**である。分岐の位置は `x(C) = x_{t-1}` を満たす終値 C であり、`x(C)` は走行 H / L で
 折れる区分アフィンなので、区分ごとに 1 つずつ候補が立つ（折れ 2 点 ＋ 候補 3 点 ＝ 5 つの
 境目 ＝ 6 区分）。
 
@@ -121,9 +121,9 @@ def test_the_previous_value_is_the_applied_price_of_the_previous_bar() -> None:
 
 
 def test_the_default_applied_price_follows_the_indicator_own_mapping() -> None:
-    """既定の適用価格は `profit_rsi` 自身の `apply` 写像に従う（写しを持たない）。
+    """既定の適用価格は `profit_rsi` 自身の適用価格の写像に従う（写しを持たない）。
 
-    `apply=5` は hlc3（TYPICAL）。`common.applied_price.AppliedPrice` の値 5 は MEDIAN で
+    params の "apply" が 5 なら hlc3（TYPICAL）。common.applied_price の列挙で 5 は MEDIAN で
     あって TYPICAL ではないため、素の列挙で読み替えると**別の価格**になる。
     """
     default = ProfitRsiBreakpoints()

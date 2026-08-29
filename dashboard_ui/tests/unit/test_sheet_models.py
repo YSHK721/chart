@@ -115,7 +115,7 @@ class TestReachSheetRequest:
 
 class TestOutputModels:
     def test_a_degradation_states_the_update_granularity_and_the_reason(self) -> None:
-        """§7: `cvfe` は増分器が無く段 1 でしか更新されない。これを隠さず表示へ渡す。"""
+        """§7: cvfe は増分器が無く段 1 でしか更新されない。これを隠さず表示へ渡す。"""
         degradation = Degradation(
             instance_key=("cvfe", "default", "{}", "5m"),
             granularity=UpdateGranularity.BAR_CLOSE,
@@ -161,7 +161,7 @@ class TestPorts:
         assert not isinstance(Fake(), IndicatorSeriesPort)
 
     def test_a_breakpoint_registry_reports_the_invertible_indicators(self) -> None:
-        """§5.5.1: `tickvol` の除外は列挙で書かず `breakpoints()` を提供できない形で現れる。"""
+        """§5.5.1: tickvol の除外は列挙で書かず `breakpoints()` を提供できない形で現れる。"""
 
         class Fake:
             def resolve(self, indicator_id):

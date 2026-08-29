@@ -1,6 +1,6 @@
 """UC-02（段 2・ティック）: epoch が不変なら前進評価を 1 回も発行しない。
 
-§5.5.4 / §7 の実測: メビウス係数は**現在の価格 `C` に依存しない**（前バーの状態と走行 H / L
+§5.5.4 / §7 の実測: メビウス係数は**現在の価格 C に依存しない**（前バーの状態と走行 H / L
 だけで決まる）。したがって再当てはめの契機は「バー確定」と「走行 H / L の更新」だけであり、
 それ以外のティックでの発行は **0 回**でなければならない。
 実測（§9-8）: H/L 更新ティック率は bid 7.8% / mid 13.0%。ティックの 87〜92% は発行 0 回。
@@ -71,7 +71,8 @@ class TestEpoch:
                               running=RunningExtreme(high=110.0, low=90.0))
 
     def test_the_close_does_not_take_part_in_the_epoch(self) -> None:
-        """係数は `C` に依存しない。終値が動いただけで epoch を変えてはならない。"""
+        """係数は終値 C に依存しない。終値が動いただけで epoch を変えてはならない。"""
+        # di-ok(C3): 同一関数の 2 入力の関係（終値だけ違う足で epoch が一致する）を見る変形テスト
         assert Epoch.of(_bar(close=100.0)) == Epoch.of(_bar(close=105.0))
 
 
@@ -150,7 +151,7 @@ class TestRefitTriggers:
 
 class TestScope:
     def test_an_indicator_without_a_breakpoint_source_gets_no_map(self) -> None:
-        """§5.5.1: `tickvol` の除外は列挙で書かない。`breakpoints()` が無い形で現れる。"""
+        """§5.5.1: tickvol の除外は列挙で書かない。`breakpoints()` が無い形で現れる。"""
         forward = FakeForward()
 
         cache = _refresh(None, _bar(), forward=forward,

@@ -1,4 +1,4 @@
-"""`unified_ui/serve.sh` と `router.py` の結線契約テスト（ISSUE-452 / arch-spec §7）。
+"""unified_ui/serve.sh と `router.py` の結線契約テスト（ISSUE-452 / arch-spec §7）。
 
 なぜソースを読むのか（ISSUE-291 の実測と同型）: 受け口（router のマッピング）を作っても、
 起動側が送らなければ**無言で死ぬ**。router の既定表にモードが在るのに serve.sh が
@@ -9,6 +9,12 @@
 実プロセスは起動しない（core 実体は別工程で作る）。本テストが固定するのは
 **router が `/dashboard` を 8481 へプロキシする結線**であり、その実プロキシ挙動そのものは
 `test_router.py` の A9 群が実サーバで固定している。
+
+宣言整合性検定 C2（被検査ソース文字列への assertion）を各 assert で明示的に抑止している。
+起動スクリプトは実行してしまうと 4 つの core を実際に立ち上げることになり、CI で観測可能な
+別の形が存在しない。よって本文そのものが検査対象であり、C2 が防ごうとしている
+「実装のソースを grep して *実装がある* と主張する」形（振る舞いの代わりに文字列を見る）
+には当たらない。
 
 構造は AAA。テスト名は「対象_条件_期待結果」。
 """
@@ -55,6 +61,7 @@ def test_serve_sh_passes_every_default_mode_as_an_upstream_argument(mode):
     # Arrange
     expected = f'--upstream "{mode}=http://127.0.0.1:${{{mode.upper()}_PORT}}"'
     # Act / Assert: 渡し忘れたモードは router の既定へ落ちるか、そもそも振り分けられない。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
     assert expected in SERVE_SH, f"serve.sh が {mode} の --upstream を渡していない"
 
 
@@ -64,14 +71,18 @@ def test_serve_sh_waits_for_every_default_mode_core_to_come_up(mode):
     expected = f'wait_up "http://127.0.0.1:${{{mode.upper()}_PORT}}/"'
     # Act / Assert: 起動待ちが無いモードは、core が立ち上がる前にルータが公開され、
     #   最初の要求だけが 502 になる（再現しにくい起動時レースになる）。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
     assert expected in SERVE_SH, f"serve.sh が {mode} core の起動を待っていない"
 
 
 def test_serve_sh_starts_the_dashboard_core_with_the_venv_python():
     # Arrange / Act / Assert: dashboard core は単独起動 serve.sh を持たない（sim と同じ裁定）。
     #   venv python へ Composition Root を直接与える形（sim core の start_sim_core と同形）。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
     assert "start_dashboard_core()" in SERVE_SH
+    # di-ok(C2): 同上
     assert 'DASHBOARD_PGID="$(start_dashboard_core)"' in SERVE_SH
+    # di-ok(C2): 同上
     assert "dashboard_ui.framework.serve_dashboard" in SERVE_SH
     # venv python で起動する（生 python では import パスも依存も解決できない）。
     start = SERVE_SH.split("start_dashboard_core()", 1)[1].split("\n}", 1)[0]
@@ -82,6 +93,7 @@ def test_serve_sh_starts_the_dashboard_core_with_the_venv_python():
 def test_serve_sh_stops_the_dashboard_core_on_exit():
     # Arrange / Act / Assert: 停止側に足し忘れると、Ctrl-C 後も 8481 が握られたまま残り、
     #   次回起動の bind が失敗する（sim core が ISSUE-348 で通った経路と同型）。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
     assert 'DASHBOARD_PGID=""' in SERVE_SH
     cleanup = SERVE_SH.split("cleanup() {", 1)[1].split("\n}", 1)[0]
     assert '-"$DASHBOARD_PGID"' in cleanup
@@ -90,4 +102,5 @@ def test_serve_sh_stops_the_dashboard_core_on_exit():
 def test_serve_sh_announces_the_dashboard_route_to_the_operator():
     # Arrange / Act / Assert: 起動時に出す経路一覧へ第 4 モードが載っている
     #   （どのモードがどの core へ行くかは検証の前提・ISSUE-348）。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
     assert 'echo "  /dashboard/*    → 127.0.0.1:${DASHBOARD_PORT}"' in SERVE_SH

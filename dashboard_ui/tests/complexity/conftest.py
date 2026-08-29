@@ -53,8 +53,9 @@ class SeriesSpy:
 
 
 class BarSpy:
-    def __init__(self, bars_by_timeframe) -> None:
+    def __init__(self, bars_by_timeframe, *, forming: bool = False) -> None:
         self._bars_by_timeframe = dict(bars_by_timeframe)
+        self._forming = bool(forming)
         self.requested: "list[str]" = []
 
     def bars(self, *, dataset_ref, timeframe):
@@ -62,7 +63,9 @@ class BarSpy:
         return self._bars_by_timeframe.get(timeframe, ())
 
     def forming_bar(self, *, dataset_ref, timeframe, now_unix):
-        return None
+        """形成中の足（既定は無し。`forming=True` のとき末尾の足を形成中として返す）。"""
+        supplied = self._bars_by_timeframe.get(timeframe) or ()
+        return supplied[-1] if (self._forming and supplied) else None
 
 
 class ForwardSpy:
@@ -102,6 +105,10 @@ class Roles:
 class BreakpointStub:
     def breakpoints(self, *, bar, params, prev_value):
         return (bar.low, bar.high)
+
+    def previous_value(self, *, bar, params):
+        """上下分岐を持たない指標の面（P-4 と同じ面を持ち None を返す・LSP）。"""
+        return None
 
 
 class Registry:

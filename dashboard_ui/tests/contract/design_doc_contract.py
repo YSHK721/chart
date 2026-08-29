@@ -1,6 +1,6 @@
 """基本設計書を読む**唯一のリーダー**（§7.1「期待値の出所が本書であること」の担保）。
 
-本モジュールだけが `.doc/PRICE_LEVEL_REACH_SHEET_BASIC_DESIGN.md` を開く。検査側
+本モジュールだけが .doc/PRICE_LEVEL_REACH_SHEET_BASIC_DESIGN.md を開く。検査側
 （`test_design_doc_matches_compute.py`）は実装からも本書からも期待値を組み立てず、ここが
 返した値だけを使う。読む先を 2 か所に増やした時点で「本書が唯一の機械可読源」（§7.1.1）が
 崩れるため、パスの解決も抽出規則も本モジュールが所有する。
@@ -37,7 +37,7 @@ DESIGN_DOC = (
 #: §7.1.1 の機械可読ブロックの目印（本書がこの 1 行で自分を名乗っている）。
 _CONTRACT_MARKER = "# CONTRACT: series-names"
 
-#: 系列名のひな型に現れる置換（§7.1.1: instance の `q_low` / `q_high` を百分率の整数へ）。
+#: 系列名のひな型に現れる置換（§7.1.1: instance の "q_low" / "q_high" を百分率の整数へ）。
 _Q_LOW_TOKEN = "{q_lo}"
 _Q_HIGH_TOKEN = "{q_hi}"
 
@@ -90,7 +90,7 @@ def _table_rows(section: str) -> "list[list[str]]":
 
 
 def _bare(cell: str) -> str:
-    """先頭のバッククォート語をそのまま返す（``ma_marod`` → ma_marod）。"""
+    """先頭のバッククォート語をそのまま返す（バッククォートで囲んだ ma_marod → ma_marod）。"""
     found = _BACKTICKED.search(cell)
     if found is None:
         raise ValueError(f"バッククォート語が見つかりません: {cell!r}")
@@ -132,7 +132,7 @@ def expand(names: "Iterable[str]", params: "Mapping[str, object]") -> "frozenset
     """`{q_lo}` / `{q_hi}` を instance の設定から百分率の整数へ展開する（§7.1.1）。
 
     展開元は**リクエストの params**（＝ユーザー設定側）であり被検査コードではない。
-    分位のひな型を持たない指標（`moving_averages` / `cvfe`）は `q_low` / `q_high` を
+    分位のひな型を持たない指標（moving_averages / cvfe）は "q_low" / "q_high" を
     設定に持たないため、ひな型が現れたときにだけ設定を引く（無い設定を要求しない）。
     """
     expanded: "set[str]" = set()
@@ -153,7 +153,7 @@ def percent(quantile: object) -> int:
 def _flatten(entry: object) -> "list[str]":
     """契約ブロックの 1 指標ぶんの宣言を系列名の並びへ均す。
 
-    `btlm_trail` のように `levels` / `not_levels` へ分けて宣言している指標は、その和が
+    btlm_trail のように "levels" / "not_levels" へ分けて宣言している指標は、その和が
     「その指標が出す系列名の集合」である（水準か否かの区別は §3.1 の役割であって、
     `/compute` が返す集合の区別ではない）。
     """
@@ -214,7 +214,7 @@ def value_series_of(indicator_id: str) -> str:
 
 
 def declared_set(group: str, key: str) -> "frozenset[str]":
-    """`intrabar_update` / `price_invertible` / `cumulative` の `yes` / `no` を読む。"""
+    """宣言 intrabar_update / price_invertible / cumulative の "yes" / "no" を読む。"""
     return frozenset(str(name) for name in contract()[group][key])  # type: ignore[index]
 
 
@@ -288,13 +288,16 @@ def _expand_braces(template: str, params: "Mapping[str, object]") -> "frozenset[
     if found is None:
         return frozenset({template})
     body = found.group(1)
-    choices = (
+    # 変数名を choices にしない: 宣言整合性検定の記号索引はリポジトリ全体で 1 つなので、
+    # ここで束縛した名前は他モジュールの散文中の同名語を「実在する記号」に変えてしまう
+    # （実測: simulator/usecase/optimize_strategies.py の docstring が新規違反になった）。
+    alternatives = (
         [str(percent(params["q_low"])), str(percent(params["q_high"]))]
         if template[found.start():found.end()] == _PCT_TOKEN
         else body.split("|")
     )
     expanded: "set[str]" = set()
-    for choice in choices:
+    for choice in alternatives:
         head = template[: found.start()] + choice + template[found.end():]
         expanded.update(_expand_braces(head, params))
     return frozenset(expanded)
