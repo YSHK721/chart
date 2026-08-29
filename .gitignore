@@ -244,3 +244,14 @@ simulator/sim_ui/data/
 # MT5 一次情報 corpus（Tester Settings .ini 44 件・UTF-16LE バイナリ）。
 #   TESTER_SETTINGS_BASIC_DESIGN.md の一次情報。追跡外（D-06 前提・ISSUE-385 承認 2026-08-17）
 sample/
+
+# 生成物・データ実体・バックアップ（ISSUE-449/450 の作業で作業ツリーへ溜まったもの）。
+#   いずれもリポジトリの成果物ではない。CLAUDE.md「環境依存物・データ実体・バックアップは
+#   コミットしない」に従い追跡対象から外す（2026-08-29）。
+.claude/worktree-archive/
+data/test/
+MQL5_Profiles_Tester.zip
+ReportTester-*.html
+*.bak-*
+# 一時作業用。残す価値のある成果物は .doc/ へ置く（scratchpad は消えてよい場所）。
+scratchpad/
