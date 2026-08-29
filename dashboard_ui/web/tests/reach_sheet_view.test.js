@@ -215,6 +215,40 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.match(textOf(notice), /5m/);
   });
 
+  test('an_instance_that_cannot_be_projected_is_shown_with_its_reason', () => {
+    // §7 / レビュー 🟡-2: `granularity: "none"` は「バー確定でも回復しない」＝背景が塗られない。
+    //   掲示を bar_close だけに絞ると、この欠落は画面上で無言になる（サーバが理由を送っても
+    //   誰も読まない＝結線が端まで通っていない状態）。
+    const response = sheetResponse({
+      rows: THREE_ROWS, current_index: 2,
+      degradations: [{
+        instance_key: ['ma_marod', 'default', '{}', '1h'], granularity: 'none',
+        reason: '増分器が宣言されていないため前進評価できません',
+      }],
+    });
+    const { host } = renderInto(response);
+    const notice = flatten(host).find((el) => el.classList.contains('dash-granularity-notice'));
+    assert.ok(notice, '掲示がありません');
+    assert.match(textOf(notice), /ma_marod/);
+    assert.match(textOf(notice), /1h/);
+    assert.match(textOf(notice), /前進評価/);
+  });
+
+  test('a_bar_close_notice_is_not_replaced_by_the_unprojectable_one', () => {
+    // 2 種類が同時に出ても、どちらも消えない（片方だけ残す実装への退行を防ぐ）。
+    const response = sheetResponse({
+      rows: THREE_ROWS, current_index: 2,
+      degradations: [
+        { instance_key: ['cvfe', 'default', '{}', '5m'], granularity: 'bar_close', reason: '増分器が無い' },
+        { instance_key: ['ma_marod', 'default', '{}', '1h'], granularity: 'none', reason: '前進評価できません' },
+      ],
+    });
+    const { host } = renderInto(response);
+    const notice = flatten(host).find((el) => el.classList.contains('dash-granularity-notice'));
+    assert.match(textOf(notice), /cvfe/);
+    assert.match(textOf(notice), /ma_marod/);
+  });
+
   test('no_degradation_means_no_notice_is_shown', () => {
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2, degradations: [] }));
     assert.equal(flatten(host).some((el) => el.classList.contains('dash-granularity-notice')), false);

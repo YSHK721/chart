@@ -226,6 +226,24 @@ def test_the_forming_bar_is_the_last_bar_of_the_period_that_contains_now() -> No
     assert forming.time == START + 3 * 60
 
 
+def test_the_forming_bar_is_the_same_object_as_the_tail_of_bars() -> None:
+    """P-2 の契約（レビュー 🟡-8）: `bars()` の末尾は **形成中の足でありうる**。
+
+    `bars()` を「確定足の全件」と読むと `bars()[-1]` を確定足として扱う実装が生まれ、
+    形成中の足を確定値として使う無言の誤りになる。実装の真実は「末尾は `forming_bar()` と
+    同一物」であり、確定足だけを見たい呼び出し側は `bars()[-2]` を取る
+    （参照実装 `tools/measure/issue449/probe_heatmap.py:131-132` の `h[-2]` と同じ位置）。
+    """
+    spy = ComputeSpy()
+    gateway = gateway_with(spy)
+
+    supplied = gateway.bars(dataset_ref=REF, timeframe="1m")
+    forming = gateway.forming_bar(dataset_ref=REF, timeframe="1m",
+                                  now_unix=START + 3 * 60 + 30)
+
+    assert forming is supplied[-1]
+
+
 def test_there_is_no_forming_bar_once_the_last_period_is_over() -> None:
     """素材が現在の周期を覆っていないときは None（古い足を「形成中」と偽らない）。"""
     spy = ComputeSpy()

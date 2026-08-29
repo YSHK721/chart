@@ -26,9 +26,11 @@ from dashboard_ui.usecase.project_quantiles_to_price import (
     project_quantiles_to_price,
 )
 from dashboard_ui.usecase.sheet_models import (
+    Degradation,
     OscillatorSpec,
     ReachSheetRequest,
     SheetInstance,
+    UpdateGranularity,
 )
 from dashboard_ui.usecase.update_reach_sheet import ProjectionCache, refresh_projection
 
@@ -204,9 +206,11 @@ class ReachSheetController:
             elapsed_comparisons=comparisons,
             tail_fit_cache=self._state.tails,
         )
-        projections = self._projections_of(parsed, instances, series_by_key, specs,
-                                           now_unix)
+        projections, unprojectable = self._projections_of(
+            parsed, instances, series_by_key, specs, now_unix
+        )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
+        degradations = [*sheet.degradations, *_unprojectable_degradations(unprojectable)]
         return {
             "ok": True,
             "current_price": float(sheet.current_price),
@@ -216,7 +220,7 @@ class ReachSheetController:
             ],
             "current_index": int(sheet.current_index),
             "cells": [_cell_json(cell) for cell in sheet.cells],
-            "degradations": [_degradation_json(entry) for entry in sheet.degradations],
+            "degradations": [_degradation_json(entry) for entry in degradations],
         }
 
     # -------------------------------------------------------------- 価格投影
@@ -227,12 +231,13 @@ class ReachSheetController:
         series_by_key: "Mapping[tuple, Mapping[str, tuple]]",
         specs: "Mapping[tuple, OscillatorSpec | None]",
         now_unix: int,
-    ) -> "list[InstanceProjection]":
-        """§5.5 の係数を（時間足ごとに）用意し、投影材料へ束ねる。"""
+    ) -> "tuple[list[InstanceProjection], dict[tuple, str]]":
+        """§5.5 の係数を（時間足ごとに）用意し、投影材料と**出せなかった理由**を返す。"""
         if parsed.mode == "full":
             self._state.projections.clear()
 
         maps: "dict[tuple, Any]" = {}
+        unprojectable: "dict[tuple, str]" = {}
         for timeframe in sorted({instance.timeframe for instance in instances}):
             group = [
                 instance for instance in instances if instance.timeframe == timeframe
@@ -251,6 +256,7 @@ class ReachSheetController:
             )
             self._state.projections[timeframe] = cache
             maps.update(cache.maps)
+            unprojectable.update(cache.unprojectable)
 
         projections: "list[InstanceProjection]" = []
         for instance in instances:
@@ -269,7 +275,7 @@ class ReachSheetController:
                     timeframe=instance.timeframe, value_map=value_map, scale=scale
                 )
             )
-        return projections
+        return projections, unprojectable
 
     def _covering_cache(
         self, timeframe: str, group: "Sequence[SheetInstance]"
@@ -293,7 +299,14 @@ class ReachSheetController:
     def _prev_values(
         self, dataset_ref: str, timeframe: str, instances: "Sequence[SheetInstance]"
     ) -> "dict[tuple, float]":
-        """上下分岐の高さ（前バーの適用価格）。要らない指標は None を返すので入らない。"""
+        """上下分岐の高さ（前バーの適用価格）。要らない指標は None を返すので入らない。
+
+        `bars[-2]` を取るのは、P-2 の `bars()` の**末尾が形成中の足**（`forming_bar()` と
+        同一物）だからである。参照実装 `tools/measure/issue449/probe_heatmap.py:131-132` も
+        同じ位置を取る（`x_prev = (h[-2] + l[-2] + c[-2]) / 3`。同 `:128` の `H0/L0 = h[-1]/l[-1]`
+        が形成中バーの走行極値であることと対になっている）。`bars[-1]` を使うと、まだ動く
+        値を「前バーの確定値」として区分の境目に据えることになる。
+        """
         bars = self._bar_port.bars(dataset_ref=dataset_ref, timeframe=timeframe)
         if len(bars) < 2:
             return {}
@@ -310,6 +323,25 @@ class ReachSheetController:
 
 
 # ------------------------------------------------------------------ 直列化
+def _unprojectable_degradations(
+    reasons: "Mapping[tuple, str]",
+) -> "list[Degradation]":
+    """価格投影を出せなかった instance を縮退として持ち出す（無言で外さない・§7）。
+
+    `UpdateGranularity.NONE` は「バー確定でも回復しない」を意味し、UpdateGranularity.BAR_CLOSE（ティックでは
+    更新されないが確定では更新される）とは別物である。同じ値にすると、回復しない欠落が
+    「次の確定で直る」と読める（無言の縮退と同じ害になる）。
+    """
+    return [
+        Degradation(
+            instance_key=key,
+            granularity=UpdateGranularity.NONE,
+            reason=reason,
+        )
+        for key, reason in reasons.items()
+    ]
+
+
 def _failure(kind: str, message: str) -> "dict[str, Any]":
     return {"ok": False, "error": {"type": kind, "message": message}}
 

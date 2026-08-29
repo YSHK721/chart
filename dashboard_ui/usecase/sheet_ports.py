@@ -30,7 +30,13 @@ class BarSupplyPort(Protocol):
     """P-2 足の供給。"""
 
     def bars(self, *, dataset_ref: str, timeframe: str) -> "tuple[Bar, ...]":
-        """確定足の全件（時刻昇順）。"""
+        """供給されている足の全件（時刻昇順）。
+
+        **末尾は形成中の足でありうる**（現在の周期に届いていれば :meth:`forming_bar` が
+        返すのと**同一物**である）。「確定足の全件」ではない: そう読むと `bars()[-1]` を
+        確定値として扱う実装が生まれ、形成中の足を確定値として使う無言の誤りになる。
+        確定足だけを見たい呼び出し側は `bars()[-2]` を取る。
+        """
 
     def forming_bar(
         self, *, dataset_ref: str, timeframe: str, now_unix: int
@@ -38,9 +44,25 @@ class BarSupplyPort(Protocol):
         """形成中の足（無ければ None）。"""
 
 
+class ForwardEvaluationUnavailable(RuntimeError):
+    """P-3 がその instance の値を出せない（契約上の失敗）。
+
+    実装（adapter）が投げる具象例外は本型を継承する。usecase が adapter の例外型を知らずに
+    「出せない instance」を扱えるようにするための境界であり、依存方向は外→内のままである。
+
+    扱いは §5.5.1 の**構造的除外と同じ**である（`breakpoints()` を提供できない指標が
+    価格投影の対象外になるのと同型）。ただし**無言では外さない**: 除外した instance と理由は
+    応答の縮退一覧（degradations）へ必ず現れる（§7）。
+    """
+
+
 @runtime_checkable
 class ForwardEvaluationPort(Protocol):
-    """P-3 前進評価 `forward(C) -> value`（既存の増分器をそのまま呼ぶ・core は無改変）。"""
+    """P-3 前進評価 `forward(C) -> value`（既存の増分器をそのまま呼ぶ・core は無改変）。
+
+    Raises:
+        ForwardEvaluationUnavailable: その instance の値を出せないとき。
+    """
 
     def value_at_close(
         self, *, indicator_id: str, variant: str, params: Mapping[str, object],

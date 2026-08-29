@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from dashboard_ui.domain.bar import RunningExtreme
+from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
 
 #: 系列 JSON の点の形（§6.3.2）。
 _DATA = "data"
@@ -31,8 +32,13 @@ _HIGH = "high"
 _LOW = "low"
 
 
-class MissingIncrementalError(RuntimeError):
-    """前進評価に要る増分器が宣言されていない（＝この指標は価格投影の対象にできない）。"""
+class MissingIncrementalError(ForwardEvaluationUnavailable):
+    """前進評価に要る増分器が宣言されていない（＝この指標は価格投影の対象にできない）。
+
+    P-3 の契約型（`ForwardEvaluationUnavailable`）を継承する。継承していないと、usecase は
+    この失敗を「出せない instance」として扱えず、例外が controller の翻訳を貫通して
+    **HTTP 応答が 1 つも返らなくなる**（レビュー 🟡-2 の実害）。
+    """
 
 
 class ForwardEvaluationGateway:

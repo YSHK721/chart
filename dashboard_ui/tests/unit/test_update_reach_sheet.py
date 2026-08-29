@@ -11,6 +11,7 @@ import pytest
 
 from dashboard_ui.domain.bar import Bar, RunningExtreme
 from dashboard_ui.usecase.sheet_models import SheetInstance
+from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
 from dashboard_ui.usecase.update_reach_sheet import Epoch, refresh_projection
 
 
@@ -24,6 +25,34 @@ class FakeForward:
                        timeframe, close):
         self.calls.append((indicator_id, timeframe, close))
         return (2.0 * close + 300.0) / (close + 200.0)
+
+
+class RaisingForward:
+    """値を出せない P-3（増分器が無い等）。契約上の失敗は port が宣言する型で出る。"""
+
+    def __init__(self, error: Exception, failing_id: str = "ma_marod") -> None:
+        self._error = error
+        self._failing_id = failing_id
+        self.calls: list[tuple] = []
+
+    def value_at_close(self, *, indicator_id, variant, params, dataset_ref,
+                       timeframe, close):
+        self.calls.append((indicator_id, timeframe, close))
+        if indicator_id == self._failing_id:
+            raise self._error
+        return (2.0 * close + 300.0) / (close + 200.0)
+
+
+class NonFiniteForward:
+    """値が定義できない P-3（warm-up 等）。区分メビウスの係数が有限にならない。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def value_at_close(self, *, indicator_id, variant, params, dataset_ref,
+                       timeframe, close):
+        self.calls.append((indicator_id, timeframe, close))
+        return float("nan")
 
 
 class FakeBreakpoints:
@@ -45,6 +74,7 @@ class FakeRegistry:
 _INSTANCE = SheetInstance("ma_marod", "default", {"length": 24}, "1m",
                           intrabar_capable=True)
 _TICKVOL = SheetInstance("tickvol", "default", {}, "1m", intrabar_capable=True)
+_OTHER = SheetInstance("cvfe", "default", {"length": 20}, "1m", intrabar_capable=False)
 
 
 def _bar(time: int = 1_700_000_000, high: float = 110.0, low: float = 90.0,
@@ -186,3 +216,58 @@ class TestScope:
 
         # 無限端の区分は走行幅の 4 倍だけ外へ伸ばす（90 - 4*20 = 10 が最外の端）。
         assert probes[0] == pytest.approx(10.0 + (90.0 - 10.0) * 0.15)
+
+
+class TestUnprojectableInstances:
+    """前進評価できない instance は §5.5.1 の構造的除外と**同じ扱い**にする（レビュー 🟡-2）。
+
+    それまでは増分器不在・当てはめ失敗の例外（どちらも RuntimeError 派生）が
+    controller の except (ValueError, KeyError) を貫通し、**HTTP 応答が 1 つも返らなかった**。
+    束に 1 本混ざるだけでシート全体が落ちる（表示できる 39 本まで巻き添えになる）。
+    落とす代わりに **projections から外して理由を持ち出す**（無言で外さない）。
+    """
+
+    def test_a_forward_port_that_cannot_evaluate_does_not_break_the_whole_bundle(
+        self,
+    ) -> None:
+        # Arrange
+        forward = RaisingForward(
+            ForwardEvaluationUnavailable("増分器が宣言されていません")
+        )
+
+        # Act
+        cache = _refresh(None, _bar(), forward=forward,
+                         instances=(_INSTANCE, _OTHER), ids={"ma_marod", "cvfe"})
+
+        # Assert: 出せない 1 本だけが外れ、出せる方は残る。
+        assert _OTHER.key in cache.maps
+        assert _INSTANCE.key not in cache.maps
+
+    def test_the_reason_is_carried_out_instead_of_being_swallowed(self) -> None:
+        # Arrange
+        forward = RaisingForward(
+            ForwardEvaluationUnavailable("増分器が宣言されていません")
+        )
+
+        # Act
+        cache = _refresh(None, _bar(), forward=forward)
+
+        # Assert: 無言の縮退を作らない（§7）。
+        assert "増分器が宣言されていません" in cache.unprojectable[_INSTANCE.key]
+
+    def test_a_degenerate_fit_is_reported_instead_of_raising(self) -> None:
+        """当てはめ失敗は増分器の有無と無関係に起きる（別条件・同じ扱い）。"""
+        # Arrange: 値が非有限だと区分メビウスの係数が有限にならない。
+        forward = NonFiniteForward()
+
+        # Act
+        cache = _refresh(None, _bar(), forward=forward)
+
+        # Assert
+        assert _INSTANCE.key not in cache.maps
+        assert cache.unprojectable[_INSTANCE.key]
+
+    def test_instances_that_project_are_not_listed_as_unprojectable(self) -> None:
+        cache = _refresh(None, _bar(), forward=FakeForward())
+
+        assert cache.unprojectable == {}

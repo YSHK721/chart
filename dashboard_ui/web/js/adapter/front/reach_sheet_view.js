@@ -196,19 +196,36 @@ export function createReachSheetView({ doc } = {}) {
   function renderNotice(degradations) {
     const list = Array.isArray(degradations) ? degradations : [];
     const barClose = list.filter((d) => d && d.granularity === 'bar_close');
+    // `none` は「バー確定でも回復しない」＝その instance の背景が塗られない（レビュー 🟡-2）。
+    //   bar_close だけを掲示すると、サーバが理由を送っていても画面上は無言の欠落になる。
+    const unprojectable = list.filter((d) => d && d.granularity === 'none');
     if (notice.parentNode) {
       notice.parentNode.removeChild(notice);
     }
     notice.textContent = '';
-    if (barClose.length === 0) {
+    if (barClose.length === 0 && unprojectable.length === 0) {
       return;
     }
-    const named = barClose.map((d) => {
-      const key = Array.isArray(d.instance_key) ? d.instance_key : [];
-      return `${key[0] ?? '?'}（${key[3] ?? '?'}）`;
-    });
-    notice.textContent = `更新粒度がバー確定のもの: ${named.join('・')}。ティックでは更新されません。`;
+    const sentences = [];
+    if (barClose.length > 0) {
+      sentences.push(`更新粒度がバー確定のもの: ${barClose.map(nameOf).join('・')}。ティックでは更新されません。`);
+    }
+    if (unprojectable.length > 0) {
+      sentences.push(`背景を塗れないもの: ${unprojectable.map(reasonOf).join('・')}。`);
+    }
+    notice.textContent = sentences.join(' ');
     root.appendChild(notice);
+  }
+
+  /** 縮退 1 件を「指標（時間足）」で名指す（契約が与える単位＝instance）。 */
+  function nameOf(degradation) {
+    const key = Array.isArray(degradation.instance_key) ? degradation.instance_key : [];
+    return `${key[0] ?? '?'}（${key[3] ?? '?'}）`;
+  }
+
+  /** 縮退 1 件を「指標（時間足）: 理由」で名指す（理由を落とすと原因が消える）。 */
+  function reasonOf(degradation) {
+    return `${nameOf(degradation)}: ${degradation.reason ?? '理由の記載なし'}`;
   }
 
   /**

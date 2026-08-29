@@ -34,6 +34,9 @@ class UpdateGranularity(Enum):
 
     TICK = "tick"
     BAR_CLOSE = "bar_close"
+    #: 更新されない（その instance の価格投影が出せない＝背景が塗られない）。
+    #: バー確定でも回復しないので `BAR_CLOSE` とは別物である（レビュー 🟡-2）。
+    NONE = "none"
 
 
 @dataclass(frozen=True)

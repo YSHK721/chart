@@ -22,8 +22,9 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from dashboard_ui.domain.bar import Bar, RunningExtreme
-from dashboard_ui.domain.price_value_map import PriceValueMap
+from dashboard_ui.domain.price_value_map import MobiusFitError, PriceValueMap
 from dashboard_ui.usecase.sheet_models import SheetInstance
+from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
 
 #: 無限端の区分を伸ばす幅の下限（参照実装 probe_heatmap.py:189 の `max(H0 - L0, 1.0)`）。
 _MIN_SPAN: float = 1.0
@@ -43,10 +44,20 @@ class Epoch:
 
 @dataclass(frozen=True)
 class ProjectionCache:
-    """epoch とその epoch で決めた係数の束。"""
+    """epoch とその epoch で決めた係数の束。
+
+    Attributes:
+        epoch: 当てはめが有効な期間。
+        maps: instance キー → 係数。
+        unprojectable: 係数を決められなかった instance キー → 理由。**無言で外さない**ため
+            に持つ（§7。呼び出し側は応答の縮退一覧へ載せる）。
+    """
 
     epoch: "Epoch | None"
     maps: "Mapping[tuple[str, str, str, str], PriceValueMap]" = field(
+        default_factory=dict
+    )
+    unprojectable: "Mapping[tuple[str, str, str, str], str]" = field(
         default_factory=dict
     )
 
@@ -85,6 +96,7 @@ def refresh_projection(
     previous = dict(prev_values or {})
     span = max(forming_bar.high - forming_bar.low, _MIN_SPAN)
     maps: "dict[tuple[str, str, str, str], PriceValueMap]" = {}
+    unprojectable: "dict[tuple[str, str, str, str], str]" = {}
     for instance in instances:
         source = registry.resolve(instance.indicator_id)
         if source is None:
@@ -94,10 +106,15 @@ def refresh_projection(
             params=instance.params,
             prev_value=previous.get(instance.key),
         )
-        maps[instance.key] = PriceValueMap.fit(
-            _forward_for(instance, dataset_ref, forward_port), cuts, span=span
-        )
-    return ProjectionCache(epoch=epoch, maps=maps)
+        try:
+            maps[instance.key] = PriceValueMap.fit(
+                _forward_for(instance, dataset_ref, forward_port), cuts, span=span
+            )
+        except (ForwardEvaluationUnavailable, MobiusFitError) as error:
+            # §5.5.1 の構造的除外と**同じ扱い**にする（束に 1 本混ざっただけで
+            # シート全体を落とさない）。ただし理由は必ず持ち出す＝無言で外さない（§7）。
+            unprojectable[instance.key] = str(error)
+    return ProjectionCache(epoch=epoch, maps=maps, unprojectable=unprojectable)
 
 
 def _forward_for(instance: SheetInstance, dataset_ref: str, forward_port):

@@ -24,6 +24,7 @@ from dashboard_ui.adapter.gateway.elapsed_comparison_gateway import (
 )
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
 from dashboard_ui.domain.bar import Bar
+from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
 
 REF = "jp225_tick"
 #: 2026-08-28 20:00:00 UTC。
@@ -398,3 +399,62 @@ def test_a_new_instance_gets_its_coefficients_even_on_a_tick_update() -> None:
 
     assert len(forward.calls) > issued_before
     assert any(row["horizon_p"]["short"] is not None for row in response["rows"])
+
+
+# ------------------------------------------------ 前進評価できない instance（🟡-2）
+class UnavailableForward:
+    """P-3 が契約上の失敗を返す（増分器が無い等）。ma_marod だけが出せない。"""
+
+    def __init__(self) -> None:
+        self.calls: "list[tuple[str, str, float]]" = []
+
+    def value_at_close(self, *, indicator_id, variant, params, dataset_ref,
+                       timeframe, close):
+        self.calls.append((indicator_id, timeframe, close))
+        raise ForwardEvaluationUnavailable(
+            f"増分器が宣言されていないため前進評価できません: indicatorId={indicator_id!r}"
+        )
+
+
+def test_an_instance_that_cannot_be_forward_evaluated_still_returns_a_sheet() -> None:
+    """増分器不在・当てはめ失敗の例外は RuntimeError 派生で、handle の
+    except (ValueError, KeyError) を**貫通していた**（＝HTTP 応答が返らない）。
+    束に 1 本混ざるだけでシート全体が落ちるのを、構造的除外へ揃えて根本から消す。
+    """
+    series = SeriesPortFake(series_material())
+    controller = ReachSheetController(
+        series_port=series,
+        bar_port=BarPortFake({"1m": bars(60, step=60)}),
+        roles=SeriesRoleTable(),
+        registry=BreakpointRegistry(),
+        forward_port=UnavailableForward(),
+        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        is_intrabar_capable=lambda indicator_id, variant, params: True,
+    )
+
+    response = handle(controller, body())
+
+    assert response["ok"] is True
+    assert response["rows"]
+
+
+def test_an_instance_that_cannot_be_forward_evaluated_is_named_in_the_degradations() -> None:
+    """無言で外さない（§7）。理由と instance が応答に載る。"""
+    series = SeriesPortFake(series_material())
+    controller = ReachSheetController(
+        series_port=series,
+        bar_port=BarPortFake({"1m": bars(60, step=60)}),
+        roles=SeriesRoleTable(),
+        registry=BreakpointRegistry(),
+        forward_port=UnavailableForward(),
+        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        is_intrabar_capable=lambda indicator_id, variant, params: True,
+    )
+
+    response = handle(controller, body())
+
+    unprojectable = [entry for entry in response["degradations"]
+                     if entry["granularity"] == "none"]
+    assert unprojectable
+    assert all("前進評価" in entry["reason"] for entry in unprojectable)
+    assert all(len(entry["instance_key"]) == 4 for entry in unprojectable)
