@@ -131,6 +131,15 @@
   box-sizing: border-box;
 }
 
+/* モックの .wrap（max-width:1480px; margin:0 auto）の写し。器（host）は下部ペイン全幅の
+   まま、内容物（各節・掲示）を上限幅で中央に置く。これが無いと広い画面で表が全幅へ
+   引き伸ばされ、4 列が画面幅いっぱいに散って読めない（依頼者指摘 2026-08-30）。 */
+.dash-sheet-host > * {
+  width: 100%;
+  max-width: 1480px;
+  margin-inline: auto;
+}
+
 /* ===== 節と見出し（モックの section / h2 / .tag / .lead） ===== */
 .dash-ladder,
 .dash-osc {
