@@ -41,6 +41,11 @@ const TICK_INTERVAL_MS = 1_000;
 /** CSS の置き場所（配信位置から導く＝prefix を書き写さない）。 */
 const STYLE_PATH = '/css/dashboard.css';
 
+/** 期間プリセット換算表の唯一源（indicator_ui の period_presets.js）。統合ページでは
+ *  live モードの配信パスから実行時に import して借りる（表を写して持たない）。
+ *  取得できない環境（単体テスト・live 停止）では注記なし＝本数のみ表示に縮退する。 */
+const PERIOD_PRESETS_PATH = '/live/js/usecase/period_presets.js';
+
 /**
  * 統合ページ側の入口。器と 2 つの表を出し、`/reach_sheet` の発行を回す。
  *
@@ -54,6 +59,8 @@ const STYLE_PATH = '/css/dashboard.css';
  * @param {Function} [opts.schedule]     周期実行の予約（既定はブラウザの setInterval）。
  *                                       戻り値は停止する関数。注入すると検定が実時間を待たない。
  * @param {Function} [opts.barCloseTimeOf] 最新の確定バー時刻を返す（段の切り替えの契機）
+ * @param {Function} [opts.loadPeriodPresets] 期間プリセット module の読み込み
+ *                                       （既定は PERIOD_PRESETS_PATH の動的 import。検定は fake を注入）
  * @returns {Promise<{enable: Function, disable: Function, refresh: Function}>}
  */
 export async function setupDashboardDisplay({
@@ -65,6 +72,7 @@ export async function setupDashboardDisplay({
   now,
   schedule,
   barCloseTimeOf,
+  loadPeriodPresets = () => import(PERIOD_PRESETS_PATH),
 } = {}) {
   const prefix = typeof apiPrefix === 'string' ? apiPrefix : deriveApiPrefix(import.meta.url);
   const transport = typeof fetchFn === 'function'
@@ -87,7 +95,25 @@ export async function setupDashboardDisplay({
     };
 
   const sheetHost = createSheetHost({ doc, styleHref: `${prefix}${STYLE_PATH}` });
-  const ladderView = createReachSheetView({ doc });
+
+  // 期間セルの暦期間注記（例 '1週'）。換算表の読み込みは非同期・失敗容認で、
+  //   読み込み前・失敗時は null（＝本数のみ表示）。次の描画周期（1s）から効き始める。
+  let presetsFor = null;
+  loadPeriodPresets().then((mod) => {
+    presetsFor = mod && typeof mod.presetsFor === 'function' ? mod.presetsFor : null;
+  }).catch(() => {});
+  const periodAnnotator = (timeframe, bars) => {
+    if (!presetsFor || !Number.isFinite(bars)) {
+      return null;
+    }
+    const hit = presetsFor({
+      datasetRef: DATASET_REF, timeframe: String(timeframe),
+      maxBars: Number.MAX_SAFE_INTEGER,
+    }).find((preset) => preset.bars === bars);
+    return hit ? hit.label : null;
+  };
+
+  const ladderView = createReachSheetView({ doc, periodAnnotator });
   const oscillatorView = createOscillatorSheetView({ doc, now: () => Math.floor(clock() / 1000) });
   const client = transport
     ? createReachSheetClient({ fetch: transport, apiPrefix: prefix })

@@ -186,6 +186,44 @@ def test_the_row_label_names_each_parameter() -> None:
     assert "source=low" in label
 
 
+def test_the_row_naming_splits_name_period_and_source() -> None:
+    """依頼者指示 2026-08-30: 指標名 / 期間 / ソースの 3 分割。既定どおりでも常に値を返す。"""
+    table = SeriesRoleTable()
+
+    naming = table.row_naming(
+        instance=instance_of("moving_averages", {"length": 24, "source": "low"}),
+        series_name="MA",
+    )
+
+    assert naming["name"] == "MA"
+    assert naming["period"] == 24
+    assert naming["source"] == "low"
+    assert "length" not in naming["extra"] and "source" not in naming["extra"]
+
+
+def test_the_row_naming_uses_catalog_defaults_when_params_are_omitted() -> None:
+    table = SeriesRoleTable()
+
+    naming = table.row_naming(
+        instance=instance_of("moving_averages", {}), series_name="MA"
+    )
+
+    assert naming["period"] == 9          # カタログ既定 length
+    assert naming["source"] == "close"    # カタログ既定 source
+
+
+def test_the_row_naming_keeps_other_non_default_params_in_extra() -> None:
+    table = SeriesRoleTable()
+
+    naming = table.row_naming(
+        instance=instance_of("cvfe", {"n_har": 981, "sigma_outer": 3.0}),
+        series_name="cvfe_u2",
+    )
+
+    assert naming["period"] == 981
+    assert naming["extra"] == "sigma_outer=3.0"
+
+
 def test_the_row_label_drops_parameters_unknown_to_the_catalog() -> None:
     """撤去済みパラメータの残骸（例: `wait_for_close`・ISSUE-286 で撤去）が保存済み
     テンプレートから漏れてもラベルへ出さない（計算に使われない値を表示しない。

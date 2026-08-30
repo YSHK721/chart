@@ -134,6 +134,9 @@ class LadderRow:
     #: §7 の「足内更新を持たない指標の行には更新粒度がバー確定であることを表示する」を
     #: 行単位で解けるようにするための紐付けであり、行と縮退の告知を同じキーで突き合わせる。
     instance_key: "tuple[str, str, str, str] | None" = None
+    #: 表示 3 分割 {name, period, source, extra}（依頼者指示 2026-08-30）。識別は従来どおり
+    #: `label` が担い、こちらは版面の読みやすさのためだけに使う。
+    naming: "Mapping[str, object] | None" = None
 
 
 @dataclass(frozen=True)

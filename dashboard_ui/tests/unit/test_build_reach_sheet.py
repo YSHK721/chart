@@ -85,6 +85,9 @@ class FakeRoles:
     def row_label(self, *, instance, series_name):
         return f"{instance.indicator_id} {series_name} {instance.params_key}"
 
+    def row_naming(self, *, instance, series_name):
+        return {"name": series_name, "period": None, "source": None, "extra": ""}
+
     def oscillator_spec(self, *, instance, series_names):
         return self._specs.get(instance.indicator_id)
 

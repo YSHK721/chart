@@ -19,10 +19,10 @@ import { createReachSheetView } from '../js/adapter/front/reach_sheet_view.js';
 import { colorForP } from '../js/adapter/front/heat_scale.js';
 
 /** 版面を組んで応答を 1 回描く（AAA の Arrange をまとめる）。 */
-function renderInto(response) {
+function renderInto(response, { periodAnnotator = null } = {}) {
   const doc = fakeDoc();
   const host = fakeEl('div');
-  const view = createReachSheetView({ doc });
+  const view = createReachSheetView({ doc, periodAnnotator });
   view.mount(host);
   view.render(response);
   return { doc, host, view };
@@ -40,9 +40,9 @@ function cellText(row, name) {
 }
 
 const THREE_ROWS = [
-  ladderRow({ price: 66099.7, timeframe: '1D', label: 'MA ema5 hlc3', distance: 343.7, gap_to_previous: null, horizon_marks: ['long'], horizon_p: { short: 0.93, medium: 0.71, long: 0.88 } }),
-  ladderRow({ price: 65770.7, timeframe: '5m', label: 'cvfe 内側上 1σ', distance: 14.7, gap_to_previous: 7.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 } }),
-  ladderRow({ price: 65754.5, timeframe: '1m', label: 'MA ema60 high', distance: -1.5, gap_to_previous: 31.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 } }),
+  ladderRow({ price: 66099.7, timeframe: '1D', label: 'MA ema5 hlc3', distance: 343.7, gap_to_previous: null, horizon_marks: ['long'], horizon_p: { short: 0.93, medium: 0.71, long: 0.88 }, naming: { name: 'MA', period: 5, source: 'hlc3', extra: '' } }),
+  ladderRow({ price: 65770.7, timeframe: '5m', label: 'cvfe 内側上 1σ', distance: 14.7, gap_to_previous: 7.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'cvfe_u1', period: 1329, source: null, extra: 'sigma_outer=3.0' } }),
+  ladderRow({ price: 65754.5, timeframe: '1m', label: 'MA ema60 high', distance: -1.5, gap_to_previous: 31.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'MA', period: 60, source: 'high', extra: '' } }),
 ];
 
 describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
@@ -53,16 +53,36 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.ok(flatten(host).some((el) => el.tagName === 'TABLE'));
   });
 
-  test('every_ladder_row_shows_distance_price_gap_timeframe_and_label', () => {
-    // 版面はモック（ISSUE-463）の 4 列へ移した。旧版面は「差」を独立した列に持っていたが、
-    //   モックは価格の直下へ小さく置く。**読める中身は変えていない**ので、期待する値は
-    //   旧検定のまま据え置き、どの要素から読むかだけを新構造へ改めた。
+  test('every_ladder_row_shows_distance_price_gap_timeframe_and_naming', () => {
+    // 水準列は指標名 / 期間 / ソースの 3 列（依頼者指示 2026-08-30）。中身はサーバの
+    //   `naming`（構造化）から読む。label は識別子であり版面には出さない。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     assert.equal(cellText(first, 'distance'), '+343.7');
     assert.equal(cellText(first, 'price'), '66,099.7');
     assert.equal(cellText(first, 'timeframe'), '1D');
-    assert.equal(cellText(first, 'label'), 'MA ema5 hlc3');
+    assert.equal(cellText(first, 'name'), 'MA');
+    assert.equal(cellText(first, 'period'), '5');
+    assert.equal(cellText(first, 'source'), 'hlc3');
+  });
+
+  test('a_row_without_structured_naming_still_shows_its_label', () => {
+    // 旧応答（naming なし）でも情報を落とさない（指標名セルへ label をそのまま出す）。
+    const rows = [ladderRow({ price: 66099.7, timeframe: '1D', label: 'MA ema5 hlc3', distance: 343.7, gap_to_previous: null, horizon_marks: [], horizon_p: {} })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 1 }));
+    const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    assert.equal(cellText(first, 'name'), 'MA ema5 hlc3');
+  });
+
+  test('the_period_cell_carries_the_preset_annotation_when_the_table_knows_the_bars', () => {
+    // 期間の暦期間注記は注入された換算（唯一源 = period_presets.js）から。無注入なら本数のみ。
+    const annotator = (timeframe, bars) => (timeframe === '5m' && bars === 1329 ? '1週' : null);
+    const { host } = renderInto(
+      sheetResponse({ rows: THREE_ROWS, current_index: 2 }), { periodAnnotator: annotator },
+    );
+    const second = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'))[1];
+    assert.match(cellText(second, 'period'), /1329/);
+    assert.match(textOf(second.querySelector('.dash-ladder-period-preset')), /1週/);
   });
 
   test('the_gap_column_is_empty_on_the_top_row_because_there_is_no_row_above_it', () => {

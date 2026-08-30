@@ -397,6 +397,8 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
         "instance_key": (
             None if row.instance_key is None else list(row.instance_key)
         ),
+        # 表示 3 分割（依頼者指示 2026-08-30: 指標名 / 期間 / ソース）。識別は label が担う。
+        "naming": (None if row.naming is None else dict(row.naming)),
     }
 
 

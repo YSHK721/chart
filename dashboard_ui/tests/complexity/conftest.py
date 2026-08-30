@@ -102,6 +102,9 @@ class Roles:
         # 台帳を持たない fake は判定しない（None＝全キー素通し。SeriesRolePort の契約）。
         return None
 
+    def row_naming(self, *, instance, series_name):
+        return {"name": series_name, "period": None, "source": None, "extra": ""}
+
     def oscillator_spec(self, *, instance, series_names):
         return self._specs.get(instance.indicator_id)
 

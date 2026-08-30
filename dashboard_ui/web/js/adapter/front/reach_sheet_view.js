@@ -58,13 +58,19 @@ function unknownHorizonKeys(rows) {
   return [...found].sort();
 }
 
-/** 列見出し（モックの 4 列）。 */
+/** 列見出し。水準列はモックの 1 列から指標名 / 期間 / ソースの 3 列へ分割
+ *  （依頼者指示 2026-08-30。行の識別は従来どおりサーバの `label` が担う）。 */
 const COLUMNS = Object.freeze([
   { cell: 'distance', head: '距離 · 次のターゲット', className: 'dash-ladder-head-distance' },
   { cell: 'price', head: '価格', hint: '（下は直前行との差）', className: 'dash-ladder-head-price' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
-  { cell: 'label', head: '水準（指標インスタンス）', className: 'dash-ladder-head-label' },
+  { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
+  { cell: 'period', head: '期間', hint: '（プリセット）', className: 'dash-ladder-head-period' },
+  { cell: 'source', head: 'ソース', className: 'dash-ladder-head-source' },
 ]);
+
+/** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
+const NAMING_CELLS = 3;
 
 /** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
 function formatPrice(value) {
@@ -110,9 +116,13 @@ function isReached(distance) {
  *
  * @param {object} opts
  * @param {object} opts.doc DOM 実装（注入）
+ * @param {?Function} [opts.periodAnnotator] (timeframe, bars) => string|null。
+ *   期間（バー本数）に対応する暦期間プリセット表記（例 '1週'）。唯一源は
+ *   indicator_ui の period_presets.js で、composition root が実行時 import して注入する
+ *   （写しを持たない）。無ければ本数だけを出す（注記の欠落で版面は壊さない）。
  * @returns {{mount: Function, render: Function, unmount: Function}}
  */
-export function createReachSheetView({ doc } = {}) {
+export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   let root = null;
   let tbody = null;
   let notice = null;
@@ -266,12 +276,49 @@ export function createReachSheetView({ doc } = {}) {
 
     tr.appendChild(buildPriceCell(row));
     tr.appendChild(buildTimeframeCell(row.timeframe, tone));
-    tr.appendChild(el('td', {
-      className: 'dash-ladder-label',
-      textContent: String(row.label ?? ''),
-      dataset: { cell: 'label' },
-    }));
+    appendNamingCells(tr, row);
     return tr;
+  }
+
+  /**
+   * 水準情報の 3 セル（指標名 / 期間 / ソース・依頼者指示 2026-08-30）。
+   *
+   * サーバの `naming`（構造化）だけを読む。`label` の文字列を刻み直すと綴りの写しになり、
+   * サーバ側の命名変更で無言にずれる。naming を欠く応答（旧サーバ）では label を
+   * 指標名セルへそのまま出す（情報を落とさない後方互換）。
+   */
+  function appendNamingCells(tr, row) {
+    const naming = row.naming ?? null;
+    if (!naming) {
+      tr.appendChild(el('td', {
+        className: 'dash-ladder-name', colSpan: NAMING_CELLS,
+        textContent: String(row.label ?? ''), dataset: { cell: 'name' },
+      }));
+      return;
+    }
+    const extra = naming.extra ? ` ${naming.extra}` : '';
+    tr.appendChild(el('td', {
+      className: 'dash-ladder-name',
+      textContent: `${naming.name ?? ''}${extra}`,
+      dataset: { cell: 'name' },
+    }));
+    const periodCell = el('td', { className: 'dash-ladder-period', dataset: { cell: 'period' } });
+    if (naming.period !== null && naming.period !== undefined) {
+      periodCell.appendChild(el('span', { textContent: String(naming.period) }));
+      const preset = typeof periodAnnotator === 'function'
+        ? periodAnnotator(row.timeframe, Number(naming.period)) : null;
+      if (preset) {
+        periodCell.appendChild(el('i', {
+          className: 'dash-ladder-period-preset', textContent: preset,
+        }));
+      }
+    }
+    tr.appendChild(periodCell);
+    tr.appendChild(el('td', {
+      className: 'dash-ladder-source',
+      textContent: naming.source === null || naming.source === undefined ? '' : String(naming.source),
+      dataset: { cell: 'source' },
+    }));
   }
 
   /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。 */
@@ -285,7 +332,7 @@ export function createReachSheetView({ doc } = {}) {
     }));
     tr.appendChild(priceCell);
     tr.appendChild(el('td', {
-      colSpan: 2,
+      colSpan: 1 + NAMING_CELLS,
       textContent: '全時間足で同一の 1 点',
       dataset: { cell: 'label' },
     }));

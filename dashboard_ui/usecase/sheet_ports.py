@@ -123,6 +123,13 @@ class SeriesRolePort(Protocol):
     def row_label(self, *, instance: SheetInstance, series_name: str) -> str:
         """ラダー行のラベル（§11-2: パラメータまで含めて一意にする）。"""
 
+    def row_naming(self, *, instance: SheetInstance, series_name: str) -> "dict[str, object]":
+        """行の表示 3 分割 {name, period, source, extra}（依頼者指示 2026-08-30）。
+
+        `row_label` が識別子（§11-2 一意）であるのに対し、こちらは読むための分解。
+        期間・ソースは既定どおりでも常に値を返す（列の空欄は「無い」と読まれるため）。
+        """
+
     def known_params(self, *, indicator_id: str) -> "frozenset[str] | None":
         """カタログが定義するパラメータ名の集合（指標がカタログに無ければ None）。
 

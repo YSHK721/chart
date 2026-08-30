@@ -32,6 +32,16 @@ _LEVEL_HIGH: float = 3.0
 #: 行ラベルに出さないパラメータ（見た目だけを決めるもの）。
 _COSMETIC_PARAMS: "frozenset[str]" = frozenset({"color"})
 
+#: 表示 3 分割（依頼者指示 2026-08-30）の「期間」に採る主要 lookback パラメータの優先順。
+#: 指標により期間パラメータの名前が違うため、ここが表示上の対応の唯一の宣言点。
+#: 先に一致した 1 つだけを期間列に出す（複数持つ指標の残りは「その他」へ落ちる）。
+_PERIOD_PARAMS: "tuple[str, ...]" = (
+    "length", "maxbars", "n_har", "rsi_period", "window_n", "period",
+)
+
+#: 同じく「ソース」（計算に使う価格系列）に採るパラメータ名の優先順。
+_SOURCE_PARAMS: "tuple[str, ...]" = ("source", "price", "src")
+
 
 def _rsi_headroom_excess(value: float, band_high: float) -> float:
     """RSI の超過分（`(v - u) / (100 - u)`）。上限は指標側 `levels.RSI_MAX` が唯一源。"""
@@ -202,6 +212,38 @@ class SeriesRoleTable:
             if key in defaults and key not in _COSMETIC_PARAMS and value != defaults[key]
         ]
         return series_name if not marks else f"{series_name} {' '.join(marks)}"
+
+    def row_naming(self, *, instance: SheetInstance, series_name: str) -> "dict[str, object]":
+        """行の表示 3 分割（依頼者指示 2026-08-30: 指標名 / 期間 / ソース）。
+
+        `row_label`（§11-2 の一意な識別子）とは役割が違う: こちらは**読むための分解**で、
+        期間・ソースは既定どおりでも常に出す（列になった以上、空欄は「無い」と読まれる）。
+        期間・ソースに該当しない非既定パラメータだけを `extra` へ `名前=値` で残す。
+        """
+        defaults = dict(self._param_defaults().get(instance.indicator_id) or {})
+
+        def effective(names: "tuple[str, ...]") -> "tuple[str | None, object | None]":
+            for name in names:
+                if name in instance.params:
+                    return name, instance.params[name]
+                if name in defaults:
+                    return name, defaults[name]
+            return None, None
+
+        period_key, period = effective(_PERIOD_PARAMS)
+        source_key, source = effective(_SOURCE_PARAMS)
+        consumed = {period_key, source_key} | set(_COSMETIC_PARAMS)
+        extra = " ".join(
+            f"{key}={value}"
+            for key, value in sorted(instance.params.items())
+            if key in defaults and key not in consumed and value != defaults[key]
+        )
+        return {
+            "name": series_name,
+            "period": period,
+            "source": None if source is None else str(source),
+            "extra": extra,
+        }
 
     # ------------------------------------------------------------ セルの宣言
     def oscillator_spec(

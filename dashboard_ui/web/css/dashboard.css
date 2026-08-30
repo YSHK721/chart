@@ -466,16 +466,39 @@
   font-weight: 600;
 }
 
-/* 水準名（モックの td.nm）。 */
-.dash-ladder-table td.dash-ladder-label {
+/* 水準情報 3 列（依頼者指示 2026-08-30: 指標名 / 期間 / ソース。モックの td.nm の分割）。 */
+.dash-ladder-table td.dash-ladder-name,
+.dash-ladder-table td.dash-ladder-period,
+.dash-ladder-table td.dash-ladder-source {
   text-align: left;
-  min-width: 240px;
   font-size: 12.5px;
   color: var(--ink2);
 }
 
-.dash-ladder-row-r0 .dash-ladder-label,
-.dash-ladder-row-r1 .dash-ladder-label {
+.dash-ladder-table td.dash-ladder-name {
+  min-width: 150px;
+}
+
+.dash-ladder-table td.dash-ladder-period {
+  min-width: 90px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 期間の暦期間注記（例 '1週'）。本数の補足であって主役ではない。 */
+.dash-ladder-period .dash-ladder-period-preset {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.dash-ladder-table td.dash-ladder-source {
+  min-width: 70px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.dash-ladder-row-r0 .dash-ladder-name,
+.dash-ladder-row-r1 .dash-ladder-name {
   color: var(--muted);
 }
 
