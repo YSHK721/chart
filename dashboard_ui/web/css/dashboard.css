@@ -728,9 +728,10 @@
 
 .dash-charts-grid {
   display: grid;
-  /* タイル状（依頼者裁定 2026-08-30: 「タイル状で良い」。一列全幅案は差し戻し）。
-     外側の余白は持たない（「余計な余白は必要なし」）——タイル間の gap だけ残す。 */
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  /* 4 段 × 2 列の固定タイル（依頼者指示 2026-08-30。幅で列数が揺れる auto-fill を廃し、
+     8 時間足が常に同じ位置に並ぶ）。各タイルの横幅は列の 1/2 へ追随（minmax(0,1fr) が
+     内容幅に引きずられず均等割りにする）。外側の余白は持たない——タイル間の gap だけ残す。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   padding: 0;
   background: var(--surface);
