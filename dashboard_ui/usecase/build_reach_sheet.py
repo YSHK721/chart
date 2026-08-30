@@ -24,6 +24,7 @@ import numpy as np
 
 from dashboard_ui.domain import continuous_quantile as _cq
 from dashboard_ui.domain.bar import Bar
+from dashboard_ui.domain.material_version import fingerprint_of
 from dashboard_ui.domain.price_ladder import LevelInput, build_ladder
 from dashboard_ui.domain.reach import LevelSide, ReachState, reach_state
 from dashboard_ui.usecase.sheet_models import (
@@ -75,6 +76,38 @@ class TailFitCache:
         return fitted
 
 
+class ExcessEventCache:
+    """帯外イベント履歴を **epoch 単位で持ち越す**（§7・ISSUE-464 ③）。
+
+    超過エピソードの極値列は**確定した履歴**（当該バーを除いた観測）だけから決まるので、
+    epoch の中では不変である。にもかかわらず、第 2 表のセル（`_build_cell`）と §5.5.5 の
+    背景の目盛り（quantile_scale_of）が**それぞれ**毎要求畳み直していた
+    （実測 2026-08-30・8 足束 1 要求: 48 回 / 366 ms ＝ 24 instance × 2 消費者）。
+    畳み込みは 1 点ずつの Python ループなので系列長に比例する。出力は正しいままなので
+    状態検証では原理的に落ちない——ISSUE-450 / ISSUE-257 と同型である。
+
+    版（署名）の取り方は :class:`TailFitCache` と同じ考え方だが、**本数・端だけでは足りない**:
+    確定履歴の途中を遡って訂正されても本数も端も変わらないため、古い観測を配り続けることに
+    なる。版の定義そのものは `dashboard_ui.domain.material_version` が唯一所有する
+    （面ごとに手書きすると片方だけ弱い版になる）。
+    """
+
+    def __init__(self) -> None:
+        self._entries: "dict[tuple, tuple[tuple, list[float]]]" = {}
+
+    def events_for(
+        self, key: "tuple[str, str, str, str]", values, band_highs, *, excess
+    ) -> "list[float]":
+        """確定履歴が変わっていなければ、前回畳んだ観測列をそのまま返す。"""
+        signature = (fingerprint_of(values), fingerprint_of(band_highs))
+        cached = self._entries.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        folded = _cq.excess_event_history(values, band_highs, excess=excess)
+        self._entries[key] = (signature, folded)
+        return folded
+
+
 def build_reach_sheet(
     request: ReachSheetRequest,
     *,
@@ -83,6 +116,7 @@ def build_reach_sheet(
     roles,
     elapsed_comparisons: "Mapping[tuple[str, str, str, str], ElapsedComparison] | None" = None,
     tail_fit_cache: "TailFitCache | None" = None,
+    event_cache: "ExcessEventCache | None" = None,
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
 
@@ -91,6 +125,7 @@ def build_reach_sheet(
     """
     comparisons = dict(elapsed_comparisons or {})
     tails = tail_fit_cache if tail_fit_cache is not None else TailFitCache()
+    events = event_cache if event_cache is not None else ExcessEventCache()
     instances = request.unique_instances()
     bars_by_timeframe = _load_bars(request, instances, bar_port)
 
@@ -142,7 +177,8 @@ def build_reach_sheet(
         )
         if spec is not None:
             cells.append(
-                _build_cell(instance, spec, series, comparisons.get(instance.key), tails)
+                _build_cell(instance, spec, series, comparisons.get(instance.key),
+                            tails, events)
             )
         closes = _closes_by_time(bars_by_timeframe.get(instance.timeframe) or ())
         for series_name, points in series.items():
@@ -249,6 +285,7 @@ def _build_cell(
     series: "Mapping[str, tuple[tuple[int, float], ...]]",
     comparison: "ElapsedComparison | None",
     tails: TailFitCache,
+    events_cache: ExcessEventCache,
 ) -> OscCell:
     """第 2 表のセル 1 つ（§5.2 / §5.3 / §5.3.3）。"""
     value_points = tuple(series.get(spec.value_series) or ())
@@ -277,8 +314,11 @@ def _build_cell(
     # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
     rank = _cq.in_band_rank_latest(values, spec.window_n)
     history_values, history_bands = observed.history
-    events = _cq.excess_event_history(history_values, history_bands,
-                                      excess=spec.excess)
+    # 確定履歴の畳み込みは epoch の中で不変（§7・ISSUE-464 ③）。背景の目盛りと同じ観測を
+    #   読むので、持ち越しの口も 1 つにする（同じ観測を 2 人が別々に畳まない）。
+    events = events_cache.events_for(
+        instance.key, history_values, history_bands, excess=spec.excess
+    )
     reading = _cq.p_at(
         value=float(values[-1]),
         band_high=float(bands[-1]),

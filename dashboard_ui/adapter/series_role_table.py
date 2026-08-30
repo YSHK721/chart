@@ -14,12 +14,15 @@
 """
 from __future__ import annotations
 
+import functools
 import importlib
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
 import numpy as np
 
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
+from dashboard_ui.domain.material_version import fingerprint_of
 from dashboard_ui.usecase.sheet_models import OscillatorSpec, SeriesRole, SheetInstance
 
 #: 価格スケールとみなす倍率の下限・上限（§3.1・境界を含む）。
@@ -75,8 +78,23 @@ def _indicator_module(indicator_id: str, submodule: str):
     return importlib.import_module(f"{src.__name__}.{submodule}")
 
 
+@functools.lru_cache(maxsize=1)
 def _rsi_max() -> float:
+    """RSI の上限（指標 core の定数）。**プロセス寿命で 1 回だけ**解決する（ISSUE-464 ②）。
+
+    値は指標 core の定数であり、epoch にも要求にも依らない。にもかかわらず超過分の定義が
+    評価のたびにこれを引き直していた（実測 2026-08-30: 8 足束 1 要求で 31,788 回・410 ms）。
+    1 回の解決は bridge の探索パス準備と `importlib.import_module` を通るため安くない。
+    出力は正しいままなので状態検証では落ちない——ISSUE-450 / ISSUE-257 と同型である。
+
+    唯一源は依然として指標 core の `levels.RSI_MAX` であり、値の写しはここに持たない。
+    """
     return float(_indicator_module("profit_rsi", "levels").RSI_MAX)
+
+
+def reset_core_constants() -> None:
+    """プロセス寿命で保持している core 由来の定数を捨てる（検定の後始末のための面）。"""
+    _rsi_max.cache_clear()
 
 
 def _catalog_defaults() -> "Mapping[str, Mapping[str, object]]":
@@ -89,11 +107,27 @@ def _catalog_defaults() -> "Mapping[str, Mapping[str, object]]":
     return catalog_defaults()
 
 
-class SeriesRoleTable:
-    """役割宣言ポートの実装。判定表は本モジュールが所有する。"""
+def _finite_values(values: np.ndarray) -> np.ndarray:
+    """有限値だけを残す（O(n)）。**確定ぶんに対して epoch の中で不変**なので持ち越せる。"""
+    return values[np.isfinite(values)]
 
-    def __init__(self, param_defaults: "Mapping[str, Mapping[str, object]] | None" = None) -> None:
+
+class SeriesRoleTable:
+    """役割宣言ポートの実装。判定表は本モジュールが所有する。
+
+    Args:
+        param_defaults: 水準パラメータの既定（省略時は指標カタログから引く）。
+        store: 確定ぶんの中間結果を epoch 単位で持つストア（ISSUE-464 ④）。**省略時は
+            この表だけのストア**になり、共有は自分の寿命で閉じる。要求をまたいで共有
+            するかどうかは Composition Root の決定である（adapter は自分で相手を選ばない）。
+    """
+
+    def __init__(
+        self, param_defaults: "Mapping[str, Mapping[str, object]] | None" = None,
+        *, store: "MaterialStore | None" = None,
+    ) -> None:
         self._defaults = param_defaults
+        self._store = store if store is not None else MaterialStore()
 
     # ------------------------------------------------------------------ 役割
     def role_of(
@@ -109,19 +143,44 @@ class SeriesRoleTable:
            裁定 2026-08-29「tickvol はラダーに一切出さない」）。除外は名前の列挙ではなく
            既存の宣言（_OSCILLATORS.cumulative＝単一ソース）で行う（§11 の再発防止を維持）。
         2. 実値の桁（§3.1・従来どおり）。
+
+        計算量（ISSUE-464 ④）: 系列のうち動くのは**形成中バーの 1 点だけ**であり、確定ぶんの
+        有限値抽出は epoch の中で不変である。確定ぶんはストアへ持ち越し、末尾 1 点だけを
+        毎要求継いで中央値を取る（§7 の 2 段を素材の側で構造にした ISSUE-457 と同じ規律）。
+        中央値そのものは**全点**から取るので判定は従来と 1 ビットも変わらない。
         """
         declaration = _OSCILLATORS.get(instance.indicator_id)
         if declaration is not None and declaration.cumulative:
             return SeriesRole.NOT_LEVEL
-        finite = [
-            float(value) for value in values if np.isfinite(np.float64(value))
-        ]
-        if not finite:
+        finite = self._finite_of(instance, series_name, values)
+        if finite.size == 0:
             return SeriesRole.NOT_LEVEL
-        median = float(np.median(np.asarray(finite, dtype=np.float64)))
+        median = float(np.median(finite))
         price = float(reference_price)
         inside = _LEVEL_LOW * price <= median <= _LEVEL_HIGH * price
         return SeriesRole.PRICE_LEVEL if inside else SeriesRole.NOT_LEVEL
+
+    def _finite_of(
+        self, instance: SheetInstance, series_name: str, values: "tuple[float, ...]"
+    ) -> np.ndarray:
+        """系列の有限値（確定ぶんは持ち越し、形成中の 1 点だけを毎回継ぐ）。
+
+        並びは元の系列の順のままである（`np.median` は同じ入力に対して決定的なので、
+        持ち越しても中央値はビット単位で一致する）。
+        """
+        confirmed = np.asarray(values[:-1], dtype=np.float64)
+        shared = self._store.material(
+            key=("role", instance.key, series_name),
+            epoch=fingerprint_of(confirmed),
+            name="finite",
+            factory=lambda: _finite_values(confirmed),
+        )
+        if not values:
+            return shared
+        forming = np.float64(values[-1])
+        return (
+            np.append(shared, forming) if np.isfinite(forming) else shared
+        )
 
     # ---------------------------------------------------------------- ラベル
     def row_label(self, *, instance: SheetInstance, series_name: str) -> str:

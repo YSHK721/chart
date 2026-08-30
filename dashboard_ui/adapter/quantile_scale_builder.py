@@ -9,16 +9,15 @@
 
 当てはめは呼び出し側から渡された当てはめキャッシュを通す。第 2 表のセルと同じキー・同じ窓
 なので、同じ epoch では当てはめが 1 回で済む（§7: 分位を求めるたびに当てはめ直さない）。
+帯外イベント履歴の畳み込みも同じ理由で同じ持ち越しの口を通す（ISSUE-464 ③: セルと背景が
+同じ確定履歴を別々に畳んでいた＝実測 24 instance × 2 消費者 × 毎要求）。
 """
 from __future__ import annotations
 
 from typing import Mapping
 
-from dashboard_ui.domain.continuous_quantile import (
-    BandObservations,
-    QuantileScale,
-    excess_event_history,
-)
+from dashboard_ui.domain.continuous_quantile import BandObservations, QuantileScale
+from dashboard_ui.usecase.build_reach_sheet import ExcessEventCache
 from dashboard_ui.usecase.sheet_models import OscillatorSpec
 
 
@@ -28,6 +27,7 @@ def quantile_scale_of(
     series: "Mapping[str, tuple[tuple[int, float], ...]]",
     tails,
     key: "tuple[str, str, str, str]",
+    events: "ExcessEventCache | None" = None,
 ) -> "QuantileScale | None":
     """1 instance ぶんの目盛り。素材が足りなければ None（無言で 0.5 を埋めない）。"""
     value_points = tuple(series.get(spec.value_series) or ())
@@ -38,11 +38,12 @@ def quantile_scale_of(
     # 突き合わせと因果境界は domain の観測が唯一の所有者（第 2 表のセルと同じ観測を使う）。
     observed = BandObservations.of(value_points, band_points)
     history_values, history_bands = observed.history
-    events = excess_event_history(history_values, history_bands, excess=spec.excess)
+    cache = events if events is not None else ExcessEventCache()
+    folded = cache.events_for(key, history_values, history_bands, excess=spec.excess)
     return QuantileScale(
         window_values=history_values[-int(spec.window_n):],
         band_high=float(observed.bands[-1]),
         q_high=float(spec.q_high),
-        tail=tails.tail_for(key, events, spec.k_events),
+        tail=tails.tail_for(key, folded, spec.k_events),
         excess=spec.excess,
     )

@@ -20,7 +20,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 from dashboard_ui.adapter.quantile_scale_builder import quantile_scale_of
 from dashboard_ui.domain.horizon import Horizon
-from dashboard_ui.usecase.build_reach_sheet import TailFitCache, build_reach_sheet
+from dashboard_ui.usecase.build_reach_sheet import (
+    ExcessEventCache,
+    TailFitCache,
+    build_reach_sheet,
+)
 from dashboard_ui.usecase.project_quantiles_to_price import (
     InstanceProjection,
     project_quantiles_to_price,
@@ -45,14 +49,18 @@ class RequestError(ValueError):
 
 @dataclass
 class SheetState:
-    """要求をまたいで持ち越す状態（当てはめの epoch と GPD の当てはめ結果）。
+    """要求をまたいで持ち越す状態（epoch の中で不変な量）。
 
     サーバは素材の鮮度のために**要求ごとに口（gateway）を組み直す**（古い足を配らない）。
     一方、係数の当てはめ契機は epoch `(bar_time, run_hi, run_lo)` で決まり、口の寿命とは
     無関係である。両者を分けるためにここへ置く（§7 段 2: epoch 不変なら発行 0 回）。
+
+    帯外イベント履歴（ISSUE-464 ③）も同じ理由で同じ場所へ置く: 確定履歴だけから決まる量で
+    あり、形成中バーが動いても変わらない。
     """
 
     tails: TailFitCache = field(default_factory=TailFitCache)
+    events: ExcessEventCache = field(default_factory=ExcessEventCache)
     projections: "dict[str, ProjectionCache]" = field(default_factory=dict)
 
 
@@ -214,6 +222,7 @@ class ReachSheetController:
             roles=self._roles,
             elapsed_comparisons=comparisons,
             tail_fit_cache=self._state.tails,
+            event_cache=self._state.events,
         )
         projections, unprojectable = self._projections_of(
             parsed, instances, series_by_key, specs, now_unix
@@ -275,7 +284,7 @@ class ReachSheetController:
                 continue
             scale = quantile_scale_of(
                 spec=spec, series=series_by_key[instance.key], tails=self._state.tails,
-                key=instance.key,
+                key=instance.key, events=self._state.events,
             )
             if scale is None:
                 continue

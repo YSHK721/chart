@@ -15,6 +15,13 @@ T-8（丸め禁止）: 経過割合を 0.05 / 0.10 刻みで丸める案は不�
 
 計算量（§7）: 最小単位の系列は **1 回だけ**発行し、対象の全時間足で共有する（束契約 T-1）。
 保持は `ElapsedFractionPool` の prefix cumsum 1 本であり、ティック数に比例しない。
+
+比較集合の持ち越し（ISSUE-464 ①・§7 の epoch 分離をこの面へも適用する）:
+    比較集合は「最小単位の確定系列」と「現在が最小単位のどの周期に居るか」だけで決まる。
+    したがって **1m の周期が進むまで不変**である。にもかかわらず対象の時間足ごとに 1m 全点の
+    周期始端を求め直していた（実測 2026-08-30・8 足束 1 要求: 42,023 回 / 1,438 ms
+    ＝ 3,000 点 × 2 回 × 7 足）。出力は正しいままなので状態検証では原理的に落ちない。
+    確定素材と同じストア（:class:`MaterialStore`）へ併置し、版が変わったら丸ごと捨てる。
 """
 from __future__ import annotations
 
@@ -22,7 +29,9 @@ from typing import Mapping, Sequence
 
 from marketdata.tf_meta import period_start_unix
 
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.domain.elapsed_fraction_pool import ElapsedFractionPool
+from dashboard_ui.domain.material_version import fingerprint_of
 from dashboard_ui.usecase.sheet_models import (
     ElapsedComparison,
     OscillatorSpec,
@@ -34,11 +43,22 @@ _SUB_TIMEFRAME = "1m"
 
 
 class ElapsedComparisonGateway:
-    """積み上がる量の比較集合を組み立てる（P-1 を読むだけ・新しい計算を発行しない）。"""
+    """積み上がる量の比較集合を組み立てる（P-1 を読むだけ・新しい計算を発行しない）。
 
-    def __init__(self, *, series_port, sub_timeframe: str = _SUB_TIMEFRAME) -> None:
+    Args:
+        series_port: P-1。`sub_timeframe`: 比較の最小単位。
+        store: epoch 単位で持ち越すストア（ISSUE-464 ①）。**省略時はこの口だけのストア**に
+            なり、共有は 1 要求で閉じる（従来と同じ費用）。要求をまたいで共有するかどうかは
+            Composition Root の決定である（adapter は自分で相手を選ばない）。
+    """
+
+    def __init__(
+        self, *, series_port, sub_timeframe: str = _SUB_TIMEFRAME,
+        store: "MaterialStore | None" = None,
+    ) -> None:
         self._series_port = series_port
         self._sub_timeframe = sub_timeframe
+        self._store = store if store is not None else MaterialStore()
 
     def comparisons(
         self,
@@ -62,19 +82,53 @@ class ElapsedComparisonGateway:
 
         # 最小単位の系列は (指標, variant, params) ごとに 1 回だけ発行する。足の数だけ
         # 呼ぶと、同じ 1m 系列を 8 回計算することになる（T-1 の畳み込みはここが持つ）。
-        folded: "dict[tuple[str, str, str], tuple[tuple[int, float], ...]]" = {}
+        prepared: "dict[tuple[str, str, str], tuple]" = {}
         units_by_instance: "dict[tuple[str, str, str, str], ElapsedComparison]" = {}
         for instance, spec in targets:
             fold_key = (instance.indicator_id, instance.variant, instance.params_key)
-            if fold_key not in folded:
-                folded[fold_key] = self._sub_units(dataset_ref, instance, spec)
-            points = folded[fold_key]
-            comparison = _comparison_of(points, instance.timeframe, int(now_unix))
+            if fold_key not in prepared:
+                prepared[fold_key] = self._prepare(
+                    dataset_ref, fold_key,
+                    self._sub_units(dataset_ref, instance, spec), int(now_unix),
+                )
+            key, epoch, completed = prepared[fold_key]
+            # 親足でのまとめ（O(最小単位数)）も 1m の周期が進むまで不変なので持ち越す。
+            comparison = self._store.material(
+                key=key, epoch=epoch, name=("comparison", instance.timeframe),
+                factory=lambda timeframe=instance.timeframe: _comparison_of(
+                    completed, timeframe, int(now_unix)
+                ),
+            )
             if comparison is not None:
                 units_by_instance[instance.key] = comparison
         return units_by_instance
 
     # ------------------------------------------------------------------ 内部
+    def _prepare(
+        self, dataset_ref: str, fold_key: "tuple[str, str, str]",
+        points: "Sequence[tuple[int, float]]", now_unix: int,
+    ) -> tuple:
+        """その (指標, 設定) の版と、完了した最小単位の列（対象の足に依らない部分）。
+
+        版は「今どの 1m 周期に居るか」と「確定した 1m 素材の内容」の 2 つで決まる。周期だけを
+        版にすると遡り訂正を 1 周期ぶん見落とす（`MaterialStore` の版と同じ理由・ISSUE-457）。
+        形成中の 1m 点は完了単位に入らないので版から外す——入れるとティックごとに版が変わり、
+        共有が成立しない。
+
+        完了した 1m 単位の切り出しは 1m 全点の走査であり、**対象の足に依らない**。足ごとに
+        切り直すと同じ走査を足の数だけ繰り返す（実測 42,023 回の半分がこれ）。
+        """
+        key = ("elapsed", dataset_ref, self._sub_timeframe, fold_key)
+        epoch = (
+            period_start_unix(now_unix, self._sub_timeframe),
+            fingerprint_of(points[:-1]),
+        )
+        completed = self._store.material(
+            key=key, epoch=epoch, name="completed",
+            factory=lambda: _completed_units(points, now_unix, self._sub_timeframe),
+        )
+        return key, epoch, completed
+
     def _sub_units(
         self, dataset_ref: str, instance: SheetInstance, spec: OscillatorSpec
     ) -> "tuple[tuple[int, float], ...]":
@@ -95,16 +149,25 @@ class ElapsedComparisonGateway:
         return tuple(points)
 
 
-def _comparison_of(
-    points: "Sequence[tuple[int, float]]", timeframe: str, now_unix: int
-) -> "ElapsedComparison | None":
-    """最小単位の列を親足でまとめ、確定した過去と形成中の部分和へ分ける。"""
-    forming_sub_unit = period_start_unix(now_unix, _SUB_TIMEFRAME)
-    completed = [
+def _completed_units(
+    points: "Sequence[tuple[int, float]]", now_unix: int, sub_timeframe: str
+) -> "list[tuple[int, float]]":
+    """完了した最小単位だけを取り出す（形成中の 1m は数えない・T-8）。
+
+    最小単位の全点を走査する。**対象の時間足には依らない**ので、足ごとに切り直さない。
+    """
+    forming_sub_unit = period_start_unix(now_unix, sub_timeframe)
+    return [
         (int(time), float(value))
         for time, value in points
-        if period_start_unix(int(time), _SUB_TIMEFRAME) < forming_sub_unit
+        if period_start_unix(int(time), sub_timeframe) < forming_sub_unit
     ]
+
+
+def _comparison_of(
+    completed: "Sequence[tuple[int, float]]", timeframe: str, now_unix: int
+) -> "ElapsedComparison | None":
+    """完了した最小単位の列を親足でまとめ、確定した過去と形成中の部分和へ分ける。"""
     if not completed:
         return None
 

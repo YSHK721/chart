@@ -10,9 +10,11 @@
 
     要求をまたいで持ち越すのはプロセス寿命の 3 つだけである（どれも「足の鮮度と無関係な
     量」＝epoch の中で不変な量である点で同型）:
-      - `SheetState`     … 当てはめの epoch と GPD の当てはめ結果。
-      - `MaterialStore`  … **確定足ぶんの full 系列**（ISSUE-457）。形成中足の 1 点は
-                           gateway が毎要求作って継ぐので、現在値・走行 H/L は古くならない。
+      - `SheetState`     … 当てはめの epoch・GPD の当てはめ結果・帯外イベント履歴。
+      - `MaterialStore`  … **確定足ぶんの full 系列**（ISSUE-457）と、確定素材に対して
+                           epoch の中で不変な派生量（§5.3.3 の比較集合・役割判定の中央値
+                           ＝ISSUE-464）。形成中足の 1 点は gateway が毎要求作って継ぐので、
+                           現在値・走行 H/L は古くならない。
       - `ParamScopes`    … variant ごとの受理 param 集合（ISSUE-466）。指標記述子から導かれる
                            定数であり、epoch にも要求にも依らない。
     これが §7 の 2 段（段 1＝バー確定で作り直す／段 2＝ティックでは末尾だけ動かす）を
@@ -93,7 +95,7 @@ def build_dashboard_app(
     state = SheetState()
     materials = MaterialStore()
     scopes = ParamScopes()
-    roles = SeriesRoleTable()
+    roles = SeriesRoleTable(store=materials)
 
     def controller_factory() -> ReachSheetController:
         series_gateway = IndicatorUiComputeGateway(
@@ -108,7 +110,9 @@ def build_dashboard_app(
                 value_series_of=_value_series_of(roles), bar_limits=limits,
                 param_scopes=scopes,
             ),
-            elapsed_gateway=ElapsedComparisonGateway(series_port=series_gateway),
+            elapsed_gateway=ElapsedComparisonGateway(
+                series_port=series_gateway, store=materials
+            ),
             is_intrabar_capable=capability,
             state=state,
         )
