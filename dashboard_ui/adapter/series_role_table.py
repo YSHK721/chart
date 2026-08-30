@@ -227,6 +227,12 @@ class SeriesRoleTable:
             excess=declaration.excess,
         )
 
+    # ------------------------------------------------------------ パラメータ台帳
+    def known_params(self, *, indicator_id: str) -> "frozenset[str] | None":
+        """カタログが定義するパラメータ名（指標がカタログに無ければ None＝判定しない）。"""
+        defaults = self._param_defaults().get(indicator_id)
+        return None if defaults is None else frozenset(defaults)
+
     # ------------------------------------------------------------------ 内部
     def _param_defaults(self) -> "Mapping[str, Mapping[str, object]]":
         if self._defaults is None:

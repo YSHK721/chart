@@ -300,13 +300,29 @@ def compute_price_range_power(
     upper = bands + interval  # 元 resPRP(i,0)+iv（次バンドではなく下端+刻み）
     m = bands.size
 
-    # 帯メンバシップ（M, N）: 下端 <= 値 < 下端+刻み。
-    lo = bands[:, None]
-    hi = upper[:, None]
-    low_in = (lo <= low_a[None, :]) & (hi > low_a[None, :])
-    high_in = (lo <= high_a[None, :]) & (hi > high_a[None, :])
-    low_in_f = low_in.astype(np.float64)
-    high_in_f = high_in.astype(np.float64)
+    # 帯メンバシップ: 下端 <= 値 < 下端+刻み。
+    #
+    # (M, N) の密行列は作らない（ISSUE-468）。全履歴×既定 interval=0.1 では M が数十万帯に
+    #   なり、単一行列で数十 GB＝OOM でプロセスごと死ぬ。帯下端は RoundUp 生成のため
+    #   `bands[k] + interval <= bands[k+1]`（重複なし・隙間はあり得る）が成り立つので、
+    #   各値の所属帯は高々 1 本。searchsorted で候補帯を引き、元と同一の比較
+    #   （下端 <= 値 < 下端+刻み）で確定する。値・境界挙動とも行列版と完全同値で、
+    #   メモリは O(M+N)。同値性は test_core.py が旧行列実装（テスト内に凍結）との
+    #   全要素一致で固定する。
+    def band_index(values: np.ndarray) -> np.ndarray:
+        """各値の所属帯 index（無所属・NaN は -1）。"""
+        k = np.searchsorted(bands, values, side="right") - 1
+        k_safe = np.clip(k, 0, m - 1)
+        member = (k >= 0) & (bands[k_safe] <= values) & (upper[k_safe] > values)
+        return np.where(member, k_safe, -1)
+
+    low_idx = band_index(low_a)
+    high_idx = band_index(high_a)
+
+    def band_counts(idx: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+        """帯別度数（mask があれば mask==1 のバーのみ）。行列版の sum / @ と同値。"""
+        sel = (idx >= 0) if mask is None else (idx >= 0) & (mask != 0.0)
+        return np.bincount(idx[sel], minlength=m).astype(np.float64)
 
     stats = {name: wick_stats(name, samples[name]) for name in WICK_NAMES}
 
@@ -321,20 +337,20 @@ def compute_price_range_power(
     lh1, lh2, lh3 = bin_masks("lh")
 
     counts = np.zeros((m, len(COUNT_COLUMNS)), dtype=np.float64)
-    counts[:, 0] = low_in_f.sum(axis=1)        # fda_f_l
-    counts[:, 1] = low_in_f @ ol1              # f_ol_a1
-    counts[:, 2] = low_in_f @ ol2              # f_ol_a2
-    counts[:, 3] = low_in_f @ ol3              # f_ol_a3
-    counts[:, 4] = low_in_f @ lh1              # f_lh_a1
-    counts[:, 5] = low_in_f @ lh2              # f_lh_a2
-    counts[:, 6] = low_in_f @ lh3              # f_lh_a3
-    counts[:, 7] = high_in_f.sum(axis=1)       # fda_f_h
-    counts[:, 8] = high_in_f @ hc1             # f_hc_a1
-    counts[:, 9] = high_in_f @ hc2             # f_hc_a2
-    counts[:, 10] = high_in_f @ hc3            # f_hc_a3
-    counts[:, 11] = high_in_f @ hl1            # f_hl_a1
-    counts[:, 12] = high_in_f @ hl2            # f_hl_a2
-    counts[:, 13] = high_in_f @ hl3            # f_hl_a3
+    counts[:, 0] = band_counts(low_idx)        # fda_f_l
+    counts[:, 1] = band_counts(low_idx, ol1)   # f_ol_a1
+    counts[:, 2] = band_counts(low_idx, ol2)   # f_ol_a2
+    counts[:, 3] = band_counts(low_idx, ol3)   # f_ol_a3
+    counts[:, 4] = band_counts(low_idx, lh1)   # f_lh_a1
+    counts[:, 5] = band_counts(low_idx, lh2)   # f_lh_a2
+    counts[:, 6] = band_counts(low_idx, lh3)   # f_lh_a3
+    counts[:, 7] = band_counts(high_idx)       # fda_f_h
+    counts[:, 8] = band_counts(high_idx, hc1)  # f_hc_a1
+    counts[:, 9] = band_counts(high_idx, hc2)  # f_hc_a2
+    counts[:, 10] = band_counts(high_idx, hc3)  # f_hc_a3
+    counts[:, 11] = band_counts(high_idx, hl1)  # f_hl_a1
+    counts[:, 12] = band_counts(high_idx, hl2)  # f_hl_a2
+    counts[:, 13] = band_counts(high_idx, hl3)  # f_hl_a3
 
     # 比率（分母 = fda_f_l または fda_f_h）。分母/分子いずれか 0 は NaN（元 Empty）。
     fda_l = counts[:, 0]

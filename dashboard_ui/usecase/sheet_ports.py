@@ -123,6 +123,14 @@ class SeriesRolePort(Protocol):
     def row_label(self, *, instance: SheetInstance, series_name: str) -> str:
         """ラダー行のラベル（§11-2: パラメータまで含めて一意にする）。"""
 
+    def known_params(self, *, indicator_id: str) -> "frozenset[str] | None":
+        """カタログが定義するパラメータ名の集合（指標がカタログに無ければ None）。
+
+        撤去済みパラメータの残骸（保存済みテンプレート由来）を入口で正規化除去するために
+        使う。残骸を残すと、実質同一の instance が別キーに割れて行ラベルの §11-2 一意性と
+        衝突する（2026-08-30 実測: `wait_for_close` だけが違う MA 2 本が 400 全滅を起こした）。
+        """
+
     def oscillator_spec(
         self, *, instance: SheetInstance, series_names: "frozenset[str]"
     ) -> "OscillatorSpec | None":

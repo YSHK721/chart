@@ -154,7 +154,15 @@ class ReachSheetController:
         params = entry.get("params") or {}
         if not isinstance(params, Mapping):
             raise RequestError("instances[].params は JSON オブジェクトである必要があります")
-        settings = dict(params)
+        # カタログに無いキー（撤去済みパラメータの残骸。保存済みテンプレート由来）を
+        #   入口で除去する。残すと実質同一の instance が別キーに割れ、`unique_instances` で
+        #   畳まれず行ラベルの §11-2 一意性検査と衝突して全滅 400 になる（2026-08-30 実測:
+        #   `wait_for_close` だけが違う MA 2 本）。カタログに無い指標は判定材料が無いので
+        #   そのまま通す（発明しない）。
+        known = self._roles.known_params(indicator_id=indicator_id)
+        settings = {
+            k: v for k, v in params.items() if known is None or k in known
+        }
         if entry.get("timeframe"):
             settings["timeframe"] = entry["timeframe"]
         return SheetInstance.of(

@@ -98,6 +98,10 @@ class Roles:
         # `|` 区切り（params_key は空白を含むため空白区切りにしない）。
         return f"{instance.indicator_id}|{series_name}|{instance.params_key}"
 
+    def known_params(self, *, indicator_id):
+        # 台帳を持たない fake は判定しない（None＝全キー素通し。SeriesRolePort の契約）。
+        return None
+
     def oscillator_spec(self, *, instance, series_names):
         return self._specs.get(instance.indicator_id)
 

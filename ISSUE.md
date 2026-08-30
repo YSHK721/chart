@@ -12886,7 +12886,11 @@ C2・C3）。凍結済み違反の上流に無関係な行を挿入すると ide
 
 ## ISSUE-468: [不具合] price_range_power の全履歴計算がメモリ暴発し dashboard core を OOM で殺す
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-30 依頼者承認・同日是正。帯メンバシップを searchsorted＋bincount の
+  O(M+N) へ変更（境界挙動・値とも行列版と完全同値）。旧行列実装をテスト内へ凍結した全要素一致検定と
+  メモリ計算量テスト（M 10 倍でもピーク割当が帯あたり 1KB 未満）を新設＝`test_core_band_membership.py`。
+  prp 24 passed。実測: 実テンプレート 115 instance（prp 込み）の /reach_sheet が OOM なしで 200・
+  warm 1.35 秒・cgroup 暴発なし）
 - **重大度**: 高（/reach_sheet に prp instance が 1 本入るとプロセスごと SIGKILL＝シート全滅・traceback なし）
 - **発見経路**: 2026-08-30 ラベル修正反映のための core 入れ替え後の実測調査。
 
@@ -12913,3 +12917,30 @@ C2・C3）。凍結済み違反の上流に無関係な行を挿入すると ide
 行列を作らず帯番号への digitize（`np.searchsorted`）で O(N) 集計する（出力同値・メモリ O(M+N)）。
 価格域と interval から M を事前に見積もって上限検査を置き、超過時は理由つき 400/縮退掲示
 （無言のプロセス死を禁じる）。着手時は計算量テスト（N・M を増やしても割当が O(M+N)）を先置き。
+
+---
+
+## ISSUE-469: [不具合] 残骸パラメータのラベル除外（a8e8a44）が実質同一 instance のラベル衝突を誘発し全滅 400
+
+- **ステータス**: RESOLVED（2026-08-30 同日是正。残骸キーの除去を表示（row_label）でなく**入口
+  （reach_sheet_controller._instance_of）の正規化**へ移動。実質同一の instance は `unique_instances`
+  で 1 本に畳まれ、§11-2 一意性と矛盾しない。SeriesRolePort に `known_params` を追加（台帳の
+  唯一源はカタログ既定）。回帰テスト追加・dashboard_ui 511 passed。実測: 実ブラウザ捕捉体
+  （115 instance）で 200・(label, timeframe) 重複 0・残骸ラベル 0）
+- **重大度**: 高（ダッシュボード全滅。ポーリングの度に 400）
+- **発見経路**: 依頼者報告（コンソール 400 連発・2026-08-30）→ 診断ラッパで実要求体を捕捉して確定。
+
+### 原因（実測）
+
+保存済みテンプレートに、撤去済み `wait_for_close`（ISSUE-286）の有無**だけ**が違う MA instance が
+2 本並存（1D・length=5・source=hlc3）。a8e8a44 はラベルから残骸キーを除外したが instance の
+キー（params_key）はそのままのため、2 本が**別 instance のまま同一ラベル**になり、
+`price_ladder` の §11-2 一意性検査（「行の識別子が重複しています」）が supply エラー＝400 を返した。
+旧コアはこの 400 が先に出るため prp 計算（ISSUE-468）へ到達せず、OOM が隠れていた。
+
+### 抜本策（実施済み）
+
+表示だけ直すのは症状回避。**残骸キーは境界（controller 入口）で除去**し、同一計算になる
+instance を同一キーへ畳む。カタログに無い指標（market_profile 等の actor 駆動）は判定材料が
+無いため素通し（発明しない）。実テンプレート全キーをカタログと突合し、除去対象が
+`wait_for_close`（MA）と `ma_period`（profit_rsi・ISSUE-246 で撤去）のみであることを実測確認。

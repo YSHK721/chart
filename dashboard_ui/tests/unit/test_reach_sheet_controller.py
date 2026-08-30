@@ -527,3 +527,28 @@ def test_an_instance_whose_series_cannot_be_supplied_is_named_in_the_degradation
     assert entries
     assert all(entry["granularity"] == "none" for entry in entries)
     assert all("供給" in entry["reason"] for entry in entries)
+
+
+def test_orphan_params_fold_effectively_identical_instances_into_one() -> None:
+    """撤去済みパラメータの残骸だけが違う 2 本は同一 instance として畳まれる。
+
+    2026-08-30 実測: `wait_for_close`（ISSUE-286 で撤去）だけが違う MA 2 本が保存済み
+    テンプレートに残っており、ラベル衝突 → §11-2 一意性検査 → シート全滅 400 を起こした。
+    入口の正規化（カタログに無いキーの除去）で同一キーに畳まれることを固定する。
+    """
+    forward = ForwardSpy()
+    controller = controller_of(forward, SeriesPortFake(series_material()))
+    request = body()
+    request["instances"] = [
+        {"instance_id": "a", "indicator_id": "moving_averages", "variant": "default",
+         "params": {"length": 24, "wait_for_close": False}},
+        {"instance_id": "b", "indicator_id": "moving_averages", "variant": "default",
+         "params": {"length": 24}},
+    ]
+
+    response = handle(controller, request)
+
+    assert response["ok"] is True
+    labels = [row["label"] for row in response["rows"] if "MA" in row["label"]]
+    assert labels == sorted(set(labels)), f"ラベルが重複: {labels}"
+    assert all("wait_for_close" not in label for label in labels)
