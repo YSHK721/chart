@@ -42,7 +42,7 @@ class SeriesSpy:
     def __init__(self, values) -> None:
         self._values = list(values)
 
-    def replace(self, values) -> None:
+    def resupply(self, values) -> None:
         self._values = list(values)
 
     def full_series(self, *, indicator_id, variant, params, dataset_ref, timeframe):
@@ -183,10 +183,31 @@ def test_a_moving_forming_sub_unit_does_not_rescan(scan_spy: ScanSpy) -> None:
     _request(spy, store, timeframes=("5m", "15m"), minutes=120)
     warmed = (scan_spy.slices, scan_spy.folds)
 
-    spy.replace([*values[:-1], 99.0])
+    spy.resupply([*values[:-1], 99.0])
     _request(spy, store, timeframes=("5m", "15m"), minutes=120)
 
     assert (scan_spy.slices, scan_spy.folds) == warmed
+
+
+def test_a_revised_last_completed_unit_rebuilds_the_comparison(scan_spy: ScanSpy) -> None:
+    """不変量 D': 末尾が**完了済み**の単位のとき、その値の訂正も版に効く。
+
+    版から末尾 1 点を外すのは「末尾は形成中でありうる」ためだが、最小単位の供給に現在の
+    1m 周期の点が無いとき、末尾は**完了した単位**であり比較集合に入る。そこを版から外すと
+    その 1 点の遡り訂正を最大 1 分間見落とす（古い比較集合を配る）。周期の内か外かは
+    O(1) で判る。
+    """
+    values = _minutes(120)
+    spy = SeriesSpy(values)
+    store = MaterialStore()
+    # now は 121 本目の 1m 周期（＝供給の末尾 120 本目は完了済み）。
+    _request(spy, store, timeframes=("5m",), minutes=121)
+    warmed = (scan_spy.slices, scan_spy.folds)
+
+    spy.resupply([*values[:-1], 88.0])          # 完了済みの末尾 1 点を遡って訂正する
+    _request(spy, store, timeframes=("5m",), minutes=121)
+
+    assert (scan_spy.slices, scan_spy.folds) != warmed
 
 
 def test_a_new_sub_unit_rebuilds_the_comparison(period_spy) -> None:
@@ -197,7 +218,7 @@ def test_a_new_sub_unit_rebuilds_the_comparison(period_spy) -> None:
     _request(spy, store, timeframes=("5m",), minutes=120)
     warmed = period_spy.calls
 
-    spy.replace([*values, 7.0])                       # 1m が 1 本確定した
+    spy.resupply([*values, 7.0])                       # 1m が 1 本確定した
     _request(spy, store, timeframes=("5m",), minutes=121)
 
     assert period_spy.calls - warmed > 0
