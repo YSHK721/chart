@@ -1,64 +1,97 @@
-/* dashboard.css — 水準到達シートの寸法・字面だけを持つ。
+/* dashboard.css — 水準到達シートの版面。**参照実装は既存チャート UI**
+ * （indigators/indicator_ui/web/css/app.css）であり、そこで使われている語彙・寸法・密度に
+ * 揃える。新しい色体系も新しい語も作らない（ISSUE-461・案 A 承認 2026-08-29）。
  *
  * 規約:
- *   1. **配色は持たない。** `p` から色への写像は heat_scale.js が唯一源であり（設計書 §5.5.7:
- *      「配色の基準は両方とも §5.3 の `p` で、1 冊に 1 つ」）、ここで背景色を決めると第 2 定義に
- *      なる。index_html_contract.test.js が機械的に禁止している。
- *   2. **すべての規則を `.dash-` 配下へ閉じる。** ホストは sim と共有する下部ペインの器なので、
- *      素の要素セレクタを置くと統合ページ全体へ規則が漏れる（sim が iframe を選んだのと同じ
- *      問題）。これも上記の検定が強制する。
- *   3. 文字色・地色は宿主のテーマを継承する（`color: inherit`）。明暗どちらのテーマでも読める
- *      ようにするのが heat_scale 側の不透明度設計の前提である。
+ *   1. **色は必ずトークン経由**（`var(--ct-*, <app.css と同じ fallback>)`）。宿主のテーマが
+ *      :root へ供給する（chrome_theme_applier.js）。生の色を直書きすると、テーマを変えた
+ *      ときにここだけ取り残される。`dashboard_theme_contrast.test.js` が機械的に禁止する。
+ *   2. **`p` から色への写像は持たない。** 目盛りの色は heat_scale.js が唯一源（§5.5.7）。
+ *      ここが背景色を決めると第 2 定義になる（index_html_contract.test.js が禁止）。
+ *   3. **すべての規則を `.dash-` 配下へ閉じる。** ホストは sim と共有する下部ペインの器なので、
+ *      素の要素セレクタを置くと統合ページ全体へ規則が漏れる（同検定が強制）。
+ *   4. **薄さで階層を作らない。** 旧版は opacity .7〜.8 と 10px で副次情報を弱めていたが、
+ *      opacity は文字と地の対比をそのまま削るため、heat で塗ったセルの上では実効
+ *      コントラスト比が 3.11 まで落ちていた（実測・contrast 検定の冒頭に記録）。
+ *      階層は**トークン（色の意味）と大きさ**で作り、heat の地に載る文字は uiText で統一する。
  */
 
+/* ===== ホスト（版面の器） =====
+   font-family は宿主から継承する（app.css / index.html が既に宣言している。写しを持つと
+   二重定義になる）。字面は app.css の本文 13px に対し、表主体の面なので 12px を基準にする。 */
 .dash-sheet-host {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 8px 12px;
+  gap: 14px;
+  padding: 10px 12px;
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
-  color: inherit;
+  background: var(--ct-uiSurface, #131722);
+  color: var(--ct-uiText, #d1d4dc);
 }
 
+/* 見出し。app.css の .prop-group-heading（11px / 700 / letter-spacing .4px / 下罫）に倣う。
+   色だけは uiTextWeak ではなく uiTextLabel を使う（下部ペインは面が小さく、
+   uiTextWeak では地に対する比が 4.24 まで落ちる）。 */
 .dash-sheet-title {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  opacity: 0.75;
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  color: var(--ct-uiTextLabel, #b2b5be);
+  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39);
 }
 
+/* 掲示欄は**異常だけ**を出す（契約のズレ・取得失敗）。app.css の削除系と同じ danger 語彙。 */
 .dash-sheet-message {
-  margin: 0;
-  min-height: 0;
+  margin: 0 0 8px;
+  padding: 4px 8px;
   font-size: 12px;
-  opacity: 0.9;
+  color: var(--ct-uiDangerText, #e0564a);
+  background: var(--ct-uiPanel, #1e222d);
+  border-left: 2px solid var(--ct-uiDanger, #ef5350);
+  border-radius: 3px;
 }
 
 .dash-sheet-message:empty {
   display: none;
 }
 
+/* ===== 表（第 1 表・第 2 表で同じ流儀） ===== */
 .dash-ladder-table,
 .dash-osc-table {
   border-collapse: collapse;
   width: 100%;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .dash-ladder-table th,
 .dash-osc-table th {
+  padding: 5px 8px;
   text-align: left;
-  font-weight: 600;
-  opacity: 0.7;
-  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--ct-uiTextLabel, #b2b5be);
+  background: var(--ct-uiPanel, #1e222d);
+  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39);
 }
 
 .dash-ladder-table td,
 .dash-osc-table td {
-  padding: 2px 8px;
+  padding: 5px 8px;
   white-space: nowrap;
+  color: var(--ct-uiText, #d1d4dc);
+  border-bottom: 1px solid var(--ct-uiDivider, #23272f);
+}
+
+/* 行の指し示しは app.css の一覧（.ind-row:hover / .chart-context-item:hover）と同じ地。 */
+.dash-ladder-row:hover,
+.dash-osc-row:hover {
+  background: var(--ct-uiBorder, #2a2e39);
 }
 
 /* 距離は符号で上下を読むので右寄せにして桁を揃える。 */
@@ -85,45 +118,72 @@
   flex: 1 1 0;
 }
 
+/* 帯の上に載る文字。heat の地は p で動くので、薄めずに uiText のまま置く（規約 4）。 */
 .dash-ladder-price-text {
   position: relative;
+  color: var(--ct-uiText, #d1d4dc);
 }
 
-.dash-ladder-marks {
-  opacity: 0.8;
-}
-
-/* 現在値の独立行は罫で強調する（§4.7 の「━━ 現在値 ━━」に相当）。 */
-.dash-ladder-current td {
-  border-top: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  font-weight: 700;
-}
-
-.dash-granularity-notice {
-  margin: 0;
+/* 地平の印（← 長期・上 等）。意味装飾は保持し、色だけトークンにする。
+   選択子を `td` まで書くのは詳細度のため（`.dash-ladder-table td` の色宣言と同じ 0-1-1 にし、
+   後勝ちで効かせる）。クラスだけだと 0-1-0 で負け、この宣言が死ぬ。 */
+.dash-ladder-table td.dash-ladder-marks {
   font-size: 11px;
-  opacity: 0.8;
+  color: var(--ct-uiTextAux, #9aa0ad);
+  white-space: nowrap;
 }
 
-/* 第 2 表: 1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
+/* 現在値の独立行（§4.7 の「━━ 現在値 ━━」）。一目で位置が分かるようアクセントで括る。 */
+.dash-ladder-current td {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ct-uiTextStrong, #ffffff);
+  background: var(--ct-uiAccentSubtle, #2962ff22);
+  border-top: 1px solid var(--ct-uiAccent, #2962ff);
+  border-bottom: 1px solid var(--ct-uiAccent, #2962ff);
+}
+
+.dash-ladder-current td:first-child {
+  border-left: 2px solid var(--ct-uiAccent, #2962ff);
+}
+
+/* 更新粒度・縮退の掲示（§7）。異常ではないので danger は使わず、控えめな帯に収める。 */
+.dash-granularity-notice {
+  margin: 8px 0 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ct-uiTextAux, #9aa0ad);
+  background: var(--ct-uiPanel, #1e222d);
+  border-left: 2px solid var(--ct-uiBorderStrong, #363a45);
+  border-radius: 3px;
+}
+
+/* ===== 第 2 表 =====
+   1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
 .dash-osc-cell {
+  min-width: 64px;
   text-align: right;
-  min-width: 56px;
 }
 
 .dash-osc-value,
 .dash-osc-reach,
 .dash-osc-no-level {
   display: block;
+  color: var(--ct-uiText, #d1d4dc);
 }
 
+/* 副文は**色ではなく大きさ**で下げる（heat の地の上でも比が落ちない・規約 4）。 */
 .dash-osc-reach,
 .dash-osc-no-level {
-  font-size: 10px;
-  opacity: 0.75;
+  font-size: 11px;
 }
 
-.dash-osc-name {
+/* 行の名前（指標）は行見出し（tbody の th）。表頭と同じ地に載るので一段強い文字にする。
+   `th` まで書くのは上の `.dash-osc-table th` と同詳細度にして後勝ちさせるため（上と同じ理由）。 */
+.dash-osc-table th.dash-osc-name {
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ct-uiTextHeading, #e6e9ef);
 }
