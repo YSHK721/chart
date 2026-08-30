@@ -12876,6 +12876,8 @@ C2・C3）。凍結済み違反の上流に無関係な行を挿入すると ide
    `test_ratchet_is_monotonic`（従来は対象ファイル不在で不発だった）を実効化。
 4. baseline を新方式で再凍結（件数完全一致 1859/450＝違反集合は不変、ID 意味論のみ変更）。
 
-### 残作業（分類器により本セッションでは書込不可・ユーザー手動）
+### 残作業（完了 2026-08-30）
 
-`.claude/settings.json` へ prune の permissions allowlist を追記（本文はセッション報告参照）。
+`.claude/settings.json` へ prune の permissions allowlist をユーザーが手動追記（相対・絶対パス
+2 エントリ）。動作確認済み: 分類器の遮断なしで `--prune-baseline` exit 0・「解消済み 0 件を除去
+（凍結 1859/450 件）」・baseline byte 不変・gate exit 0・pytest 9 passed（2 回実測）。残作業なし。
