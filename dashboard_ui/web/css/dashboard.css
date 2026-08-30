@@ -153,6 +153,13 @@
 .dash-charts { grid-area: charts; }
 .dash-osc { grid-area: osc; }
 
+/* チャート節は自分の grid 領域（右列 70%）の **100%** を使う（依頼者指示 2026-08-30
+   「section.dash-charts を 100% 表示しろ。余計な余白は必要なし」）。中央寄せ上限
+   （上の 1480px 規則）は表向け——広い画面でこの節へ効くと、列の内側へ左右の空白が出る。 */
+.dash-charts {
+  max-width: none;
+}
+
 /* 2 列が収まらない幅では縦積みへ倒す（並びは左列の上から: ラダー → 第 2 表 → チャート）。 */
 @media (max-width: 1100px) {
   .dash-sheet-host {
@@ -687,11 +694,11 @@
 
 .dash-charts-grid {
   display: grid;
-  /* 1 タイル = 右列（70%）の全幅（依頼者指示 2026-08-30: 「横幅を 70% の範囲の 100% に表示」。
-     複数列に割ると 1 枚あたりが小さくなるため、タイルは縦に 1 枚ずつ並べる）。 */
-  grid-template-columns: minmax(0, 1fr);
+  /* タイル状（依頼者裁定 2026-08-30: 「タイル状で良い」。一列全幅案は差し戻し）。
+     外側の余白は持たない（「余計な余白は必要なし」）——タイル間の gap だけ残す。 */
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 12px;
-  padding: 14px;
+  padding: 0;
   background: var(--surface);
 }
 
