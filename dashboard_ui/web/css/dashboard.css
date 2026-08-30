@@ -728,10 +728,11 @@
 
 .dash-charts-grid {
   display: grid;
-  /* 4 段 × 2 列の固定タイル（依頼者指示 2026-08-30。幅で列数が揺れる auto-fill を廃し、
-     8 時間足が常に同じ位置に並ぶ）。各タイルの横幅は列の 1/2 へ追随（minmax(0,1fr) が
-     内容幅に引きずられず均等割りにする）。外側の余白は持たない——タイル間の gap だけ残す。 */
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 4 列 × 2 段の固定タイル（依頼者指示 2026-08-30・「2列×4」→「4列×2」へ是正指示）。
+     幅で列数が揺れる auto-fill は使わない＝8 時間足が常に同じ位置に並ぶ。各タイルの横幅は
+     列の 1/4 へ追随（minmax(0,1fr) が内容幅に引きずられず均等割りにする）。
+     外側の余白は持たない——タイル間の gap だけ残す。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   padding: 0;
   background: var(--surface);
