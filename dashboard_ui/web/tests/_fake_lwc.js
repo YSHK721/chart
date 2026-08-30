@@ -17,6 +17,7 @@ export function fakeLwc() {
     createPriceLine: 0,
     removePriceLine: 0,
     applyOptions: 0,
+    scrollToPosition: 0,
     chartRemove: 0,
   };
 
@@ -61,11 +62,24 @@ export function fakeLwc() {
         options: chartOptions ?? {},
         series: [],
         removed: false,
+        scrollCalls: [],
         addSeries(kind, seriesOptions) {
           stats.addSeries += 1;
           const series = makeSeries(kind, seriesOptions);
           chart.series.push(series);
           return series;
+        },
+        timeScale() {
+          return {
+            scrollToPosition(position, animated) {
+              stats.scrollToPosition += 1;
+              chart.scrollCalls.push({ position, animated });
+              chart.scrollPos = position;
+            },
+            scrollPosition() {
+              return chart.scrollPos ?? 0;
+            },
+          };
         },
         remove() {
           stats.chartRemove += 1;

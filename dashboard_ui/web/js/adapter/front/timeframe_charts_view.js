@@ -37,6 +37,19 @@ export function chartsLibUsable(lwc) {
   return !!(lwc && typeof lwc.createChart === 'function');
 }
 
+/** 右端の余白（ローソク本数・依頼者指示 2026-08-30「1 本分」→「プラス 5 本分」）。
+ *  createChart の rightOffset と、setCandles 後の再アンカーの**唯一源**。
+ *
+ *  なぜ再アンカーが要るか（実測 2026-08-30）: タイルは enable の時点＝ダッシュボード面が
+ *  表示される前（幅 0）に生成され、lightweight-charts は幅 0 のとき scroll を 0 へクランプ、
+ *  後から幅が付いても rightOffset は戻らない（対照実験: 可視の器で生成＝余白 37px・
+ *  幅 0 → 拡大＝0px）。よってローソク供給後に scrollToPosition で戻し、適用結果を
+ *  scrollPosition() で検証して、効くまで描画周期ごとに再試行する（内部幅の確定は
+ *  ResizeObserver 経由で非同期のため 1 回では効かないことがある）。
+ *  なお末尾へホワイトスペース点を敷く案は不成立（本ビルドは末尾の空白点を右端の基準に
+ *  数えない・実測で余白 1px）。 */
+const RIGHT_OFFSET_BARS = 6;
+
 /** 価格線の見た目（破線）。lwc.LineStyle が引けない環境（テストダブル）は v5 の実値 2。 */
 function dashedStyleOf(lwc) {
   return lwc && lwc.LineStyle && Number.isFinite(lwc.LineStyle.Dashed) ? lwc.LineStyle.Dashed : 2;
@@ -168,11 +181,13 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
         horzLines: { color: COLORS.grid },
       },
       rightPriceScale: { borderColor: COLORS.grid },
-      // rightOffset: 最新足とスケールの間にローソク 6 本分の余白（依頼者指示 2026-08-30
-      //   「1 本分」→ 同日追指示「まだ狭いのでプラス 5 本分」。最新足が右端へ張り付くと、
-      //   スケールの水準ラベルと最新足の対照が窮屈になる）。
+      // rightOffset は既定値としても宣言する（幅 0 生成で失われるため、実体は
+      //   setCandles 後の再アンカー。RIGHT_OFFSET_BARS の定義コメント参照）。
       timeScale: {
-        borderColor: COLORS.grid, timeVisible: true, secondsVisible: false, rightOffset: 6,
+        borderColor: COLORS.grid,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: RIGHT_OFFSET_BARS,
       },
     });
     const series = chart.addSeries(lwc.CandlestickSeries, {
@@ -183,9 +198,38 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
       borderVisible: false,
     });
     slots.set(timeframe, {
-      chart, series, status, levelLines: new Map(),
+      chart, series, status, levelLines: new Map(), pendingAnchor: false, anchorTries: 0,
     });
     return tile;
+  }
+
+  /** tryAnchor の再試行上限（描画周期＝1s 刻み）。恒久に効かない状態（素材空など）で
+   *  毎秒撃ち続けないための天井。通常は内部レイアウト確定後の 1〜2 回で収束する。 */
+  const ANCHOR_MAX_TRIES = 10;
+
+  /**
+   * 右端の余白（RIGHT_OFFSET_BARS）への再アンカーを試みる（定義コメント参照）。
+   * 適用結果を scrollPosition() で検証し、効いた時点で保留を解く。読み戻せない環境
+   * （テストダブル）は 1 回で成立とみなす。
+   */
+  function tryAnchor(slot) {
+    if (!slot.pendingAnchor) {
+      return;
+    }
+    const timeScale = typeof slot.chart.timeScale === 'function' ? slot.chart.timeScale() : null;
+    if (!timeScale || typeof timeScale.scrollToPosition !== 'function') {
+      slot.pendingAnchor = false;
+      return;
+    }
+    timeScale.scrollToPosition(RIGHT_OFFSET_BARS, false);
+    const applied = typeof timeScale.scrollPosition === 'function'
+      ? timeScale.scrollPosition() : RIGHT_OFFSET_BARS;
+    slot.anchorTries += 1;
+    if (Math.abs(Number(applied) - RIGHT_OFFSET_BARS) < 0.5
+        || slot.anchorTries >= ANCHOR_MAX_TRIES) {
+      slot.pendingAnchor = false;
+      slot.anchorTries = 0;
+    }
   }
 
   /** 水準 1 本の印を作る。
@@ -261,6 +305,7 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     //   現在値はローソク系列自身の最終値表示とラダーの現在値行が担う）。
     for (const [timeframe, slot] of slots) {
       reconcileLevels(slot, wantedLinesOf(response.rows, timeframe));
+      tryAnchor(slot);   // 供給時に効かなかった右端余白の再試行（保留が無ければ即 no-op）。
     }
   }
 
@@ -283,6 +328,11 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     }
     const cleaned = toStrictlyIncreasing(candles);
     slot.series.setData(cleaned);
+    // 右端の余白を設定値へ再アンカーする（RIGHT_OFFSET_BARS の定義コメント参照）。
+    //   まだ効かない場合は保留になり、描画周期（render → tryAnchor）で収束するまで再試行。
+    slot.pendingAnchor = true;
+    slot.anchorTries = 0;
+    tryAnchor(slot);
     slot.status.textContent = `${cleaned.length} 本`;
     slot.status.className = 'dash-chart-status';
   }

@@ -49,6 +49,25 @@ describe('timeframe_charts_view — 版面と水準線', () => {
     }
   });
 
+  test('set_candles_re_anchors_the_right_offset_because_charts_are_born_at_zero_width', () => {
+    // 幅 0 の器で生成されたチャートは scroll が 0 へクランプされ rightOffset が失われる
+    //   （実測 2026-08-30: 可視の器なら余白 37px・幅 0 → 拡大では 0px）。ローソク供給時に
+    //   scrollToPosition で設定値へ戻し、適用を scrollPosition() で検証する（唯一源は
+    //   オプションの rightOffset と同じ値）。
+    const h = harness();
+    // Act
+    h.view.setCandles('1m', [{ time: 60, open: 1, high: 2, low: 0.5, close: 1.5 }]);
+    // Assert
+    const chart = h.spy.charts[0];
+    assert.equal(chart.scrollCalls.length, 1);
+    assert.equal(chart.scrollCalls[0].position, chart.options.timeScale.rightOffset);
+    assert.equal(chart.scrollCalls[0].animated, false);
+    // 適用済み（scrollPosition が設定値）なら、以後の描画周期から撃ち直さない（無駄の不在）。
+    h.view.render(sheetResponse({ rows: [] }));
+    h.view.render(sheetResponse({ rows: [] }));
+    assert.equal(chart.scrollCalls.length, 1);
+  });
+
   test('mount_without_a_host_fails_closed', () => {
     const view = createTimeframeChartsView({ doc: fakeDoc(), lwc: fakeLwc().lwc });
     assert.throws(() => view.mount(null), /ホスト/);
