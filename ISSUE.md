@@ -12788,7 +12788,7 @@ ISSUE-449 §3.1/§5.5.1・ISSUE-461（表示は正しくとも意味が壊れる
 
 ## ISSUE-464: [非効率] epoch 内で不変な量を毎要求作り直す残り 4 件（計 2,625ms/要求）
 
-- **ステータス**: OPEN（2026-08-30 起票・ISSUE-457 是正時の実測で局在化）
+- **ステータス**: RESOLVED（2026-08-30 是正 `cba644e`。4 量とも epoch 持ち越し（MaterialStore/SheetState/lru_cache）へ合流。計算量テスト 4 面新設・応答不変）
 - **重大度**: 中（8 足束ティック要求の残余費用の 25%）
 
 ### 実測（2026-08-30・8 足束・1 要求あたり）
@@ -12807,7 +12807,7 @@ epoch 持ち越し（MaterialStore / SheetState の規律）への合流。
 
 ## ISSUE-465: [非効率] ライブ core の増分器状態キャッシュのキーが素材（時間足）を区別しない
 
-- **ステータス**: IN_PROGRESS（2026-08-30 起票・同日依頼者承認・是正中）
+- **ステータス**: RESOLVED（2026-08-30 依頼者承認・同日是正 `ddef2ae`。識別=(datasetRef,timeframe) を DataFrame.attrs で運ぶ＝内部設計書の無効化契約への復帰。末尾1点 8,663→35ms・8足束 tick 4,016→176ms・値 192/192 bit 一致・core 916 テスト緑）
 - **重大度**: 高（8 足束ティック要求の残余費用の主因・ダッシュボード初回 29.4 秒の主因）
 - **該当**: `indigators/indicator_ui/api/adapter/compute/incremental_state.py:162`
 
@@ -12828,7 +12828,7 @@ epoch 持ち越し（MaterialStore / SheetState の規律）への合流。
 
 ## ISSUE-466: [不具合] テンプレートのパラメータを paramScopes でフィルタせず MA/RSI が誤除外される
 
-- **ステータス**: OPEN（2026-08-30 起票・対策確定/実装待ち）
+- **ステータス**: RESOLVED（2026-08-30 是正 `a807d39`/`4dae4ae`。gateway が paramScopes（単一ソース）で受理集合へフィルタ＝MA/RSI の誤除外を解消。縮退掲示は同因集約+人間向け文言へ（原文は title 退避））
 - **重大度**: 高（実テンプレートで MA 全 8 足×3 本と profit_rsi が縮退掲示へ落ちる）
 - **発見経路**: 依頼者が縮退掲示の全文を提示（`wait_for_close`/`ma_period` の validation 拒否が多数）。
 
