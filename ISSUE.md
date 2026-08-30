@@ -12881,3 +12881,35 @@ C2・C3）。凍結済み違反の上流に無関係な行を挿入すると ide
 `.claude/settings.json` へ prune の permissions allowlist をユーザーが手動追記（相対・絶対パス
 2 エントリ）。動作確認済み: 分類器の遮断なしで `--prune-baseline` exit 0・「解消済み 0 件を除去
 （凍結 1859/450 件）」・baseline byte 不変・gate exit 0・pytest 9 passed（2 回実測）。残作業なし。
+
+---
+
+## ISSUE-468: [不具合] price_range_power の全履歴計算がメモリ暴発し dashboard core を OOM で殺す
+
+- **ステータス**: OPEN
+- **重大度**: 高（/reach_sheet に prp instance が 1 本入るとプロセスごと SIGKILL＝シート全滅・traceback なし）
+- **発見経路**: 2026-08-30 ラベル修正反映のための core 入れ替え後の実測調査。
+
+### 実測（2026-08-30）
+
+- `POST /reach_sheet`（dataset_ref=jp225 / 4h / price_range_power 単体）でプロセスが exit 137（SIGKILL）。
+  stderr 出力なし。cgroup `memory.peak` = 15.93GB（ホスト全量）＝ OOM killer。
+- RSS 監視付き in-process 再現で暴発点を特定:
+  `indigators/price_range_power/src/core.py:308 compute_price_range_power`
+  （経路: reach_sheet_controller._build → indicator_ui_compute_gateway.full_series →
+  latest_dispatch.full_compute → add_price_range_power）。RSS 4GB 超過時点のスタックで確定。
+- 原因構造: 帯メンバシップ行列 `(M, N)` を密に確保する。M＝(range_to−range_from)/interval は
+  既定 interval=0.1・全履歴の価格域（数万円幅）で **数十万帯**、N＝全履歴バー数。
+  bool/float64 で単一行列が数 GB〜数十 GB。チャート経路は表示窓に限定された N・価格域で
+  顕在化しなかった。dashboard の full_series（全履歴）が初めて全域を踏んだ。
+
+### 特記
+
+- 旧 core（02:27 起動）はブラウザ要求が別の 400（原因調査中）で先に弾かれ、prp 計算へ
+  到達していなかった可能性がある（クラッシュ未発生の説明候補・未確定）。
+
+### 抜本策（案・承認待ち）
+
+行列を作らず帯番号への digitize（`np.searchsorted`）で O(N) 集計する（出力同値・メモリ O(M+N)）。
+価格域と interval から M を事前に見積もって上限検査を置き、超過時は理由つき 400/縮退掲示
+（無言のプロセス死を禁じる）。着手時は計算量テスト（N・M を増やしても割当が O(M+N)）を先置き。
