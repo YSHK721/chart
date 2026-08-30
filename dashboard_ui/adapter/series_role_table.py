@@ -263,11 +263,38 @@ class SeriesRoleTable:
             name, level = series_name, ""
         return {
             "name": name,
-            "level": level,
+            "level": self._level_display(level, effective),
             "period": period,
             "source": None if source is None else str(source),
             "extra": extra,
         }
+
+    @staticmethod
+    def _level_display(level: str, effective) -> str:
+        """水準トークンの日本語表記（依頼者指示 2026-08-30: u1→内側上 1σ の形）。
+
+        語は依頼者所有の版面モック（アーティファクト 1707bef3）の表記に従う:
+        内側上/内側下・外側上/外側下（σ 倍率つき）・外れ上/外れ下・中心。
+        σ の数字は当該 instance の実効値（sigma_inner / sigma_outer）で、既定を書き写さない。
+        対応の無いトークン（q95・mean 等・モックも原語のまま）は変換しない。
+        """
+        def sigma(name: str) -> str:
+            _key, value = effective((name,))
+            if value is None:
+                return "?"
+            text = f"{float(value):g}"
+            return text
+        table = {
+            "u1": lambda: f"内側上 {sigma('sigma_inner')}σ",
+            "l1": lambda: f"内側下 {sigma('sigma_inner')}σ",
+            "u2": lambda: f"外側上 {sigma('sigma_outer')}σ",
+            "l2": lambda: f"外側下 {sigma('sigma_outer')}σ",
+            "off_hi": lambda: "外れ上",
+            "off_lo": lambda: "外れ下",
+            "mid": lambda: "中心",
+        }
+        entry = table.get(level)
+        return level if entry is None else entry()
 
     # ------------------------------------------------------------ セルの宣言
     def oscillator_spec(

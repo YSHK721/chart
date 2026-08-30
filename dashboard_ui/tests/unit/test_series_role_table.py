@@ -212,7 +212,26 @@ def test_the_row_naming_splits_the_level_out_of_the_series_name() -> None:
     )
 
     assert naming["name"] == "btlm_trail"
-    assert naming["level"] == "q95"
+    assert naming["level"] == "q95"       # モックも原語のまま＝変換しない
+
+
+def test_the_level_tokens_are_shown_in_japanese_with_effective_sigma() -> None:
+    """依頼者指示 2026-08-30: u1→内側上 1σ の形。σ は実効値（既定の写しではない）。"""
+    table = SeriesRoleTable()
+
+    inner = table.row_naming(
+        instance=instance_of("cvfe", {"sigma_inner": 2.0}), series_name="cvfe_u1"
+    )
+    outer_default = table.row_naming(
+        instance=instance_of("cvfe", {}), series_name="cvfe_l2"
+    )
+    off = table.row_naming(
+        instance=instance_of("btlm_trail", {}), series_name="btlm_trail_off_hi"
+    )
+
+    assert inner["level"] == "内側上 2σ"
+    assert outer_default["level"] == "外側下 2σ"   # カタログ既定 sigma_outer=2.0
+    assert off["level"] == "外れ上"
 
 
 def test_the_row_naming_uses_catalog_defaults_when_params_are_omitted() -> None:
