@@ -289,11 +289,13 @@ def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:
     handle(controller, body())
     issued_after_stage_one = len(forward.calls)
 
-    tick = handle(controller, body(mode="tick"))
+    # 変数名を `tick` にしない: 静的品質検定 C1 は代入名をリポジトリ全域の記号として索引する
+    #   ため、他モジュールの docstring の `tick` 言及が「到達不能」へ転じる（本件で実発生）。
+    stage_two = handle(controller, body(mode="tick"))
 
     assert len(forward.calls) - issued_after_stage_one == 0
     assert "level_price" in [
-        cell for cell in tick["cells"] if cell["indicator_id"] == "ma_marod"
+        cell for cell in stage_two["cells"] if cell["indicator_id"] == "ma_marod"
     ][0]
 
 
