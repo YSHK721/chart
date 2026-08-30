@@ -172,6 +172,20 @@ def test_the_row_label_separates_instances_that_differ_in_settings() -> None:
     assert first.startswith("MA")
 
 
+def test_the_row_label_names_each_parameter() -> None:
+    """裸の値（`False`・`981`）が何のパラメータか読者に復元できるよう `名前=値` で添える
+    （依頼者承認 2026-08-30。値だけを並べる旧形式への回帰を禁じる）。"""
+    table = SeriesRoleTable()
+
+    label = table.row_label(
+        instance=instance_of("moving_averages", {"length": 24, "source": "low"}),
+        series_name="MA",
+    )
+
+    assert "length=24" in label
+    assert "source=low" in label
+
+
 def test_the_row_label_is_stable_for_the_same_settings() -> None:
     table = SeriesRoleTable()
     params = {"length": 24, "ma_type": "ema", "source": "hlc3"}

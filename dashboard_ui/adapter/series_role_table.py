@@ -186,12 +186,14 @@ class SeriesRoleTable:
     def row_label(self, *, instance: SheetInstance, series_name: str) -> str:
         """ラダー行のラベル（§11-2: パラメータまで含めて一意にする）。
 
-        既定と異なるパラメータだけを添える。同一足・同一指標で 2 本の instance が並ぶのは
-        設定が違うときだけなので、違いを添えれば一意になり、かつ既定どおりの行は短く出る。
+        既定と異なるパラメータだけを `名前=値` で添える。同一足・同一指標で 2 本の instance が
+        並ぶのは設定が違うときだけなので、違いを添えれば一意になり、既定どおりの行は短く出る。
+        値だけを並べる形（旧実装）は `False` や `981` が何のパラメータか読者に復元できず、
+        認知負荷の厳命と衝突した（依頼者承認 2026-08-30 で名前つきへ変更）。
         """
         defaults = dict(self._param_defaults().get(instance.indicator_id) or {})
         marks = [
-            f"{value}"
+            f"{key}={value}"
             for key, value in sorted(instance.params.items())
             if key not in _COSMETIC_PARAMS and value != defaults.get(key)
         ]
