@@ -74,15 +74,33 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(textOf(cellAt(host, 'ma_marod', '1m')), /0\.8/);
   });
 
-  test('a_cell_shows_the_price_reaching_its_quantile_band_when_the_server_projects_one', () => {
-    // 依頼者指示 2026-08-30: 分位水準に達したときの価格を表示（サーバの閉形式逆写像・
-    //   フロントは数値を再計算しない）。表記は第 1 表と同じ唯一源（format.js）。
-    const cells = [oscCell({ indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31, level_price: 65930.55 })];
+  test('a_cell_shows_the_prices_reaching_both_quantile_bands', () => {
+    // 依頼者指示 2026-08-30（上下 2 値は同日承認）: 分位水準に達したときの価格を表示
+    //   （サーバの閉形式逆写像＋往復検証・フロントは数値を再計算しない）。
+    //   ↑＝上帯（q_high）・↓＝下帯（q_low）。表記は第 1 表と同じ唯一源（format.js）。
+    const cells = [oscCell({
+      indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31,
+      level_prices: { q_high: 65930.55, q_low: 63120.4 },
+    })];
     const { host } = renderInto(sheetResponse({ cells }));
     const shown = flatten(cellAt(host, 'ma_marod', '1m'))
-      .find((el) => el.classList.contains('dash-osc-level-price'));
-    assert.ok(shown, '分位水準到達価格が表示されていません');
-    assert.equal(textOf(shown), '65,930.6');
+      .filter((el) => el.classList.contains('dash-osc-level-price'));
+    assert.equal(shown.length, 2, '上下 2 値が表示されていません');
+    assert.equal(textOf(shown[0]), '\u2191 65,930.6');
+    assert.equal(textOf(shown[1]), '\u2193 63,120.4');
+  });
+
+  test('a_cell_with_only_one_reachable_band_shows_just_that_side', () => {
+    // 片側だけ検証が通ることは正当（もう片側は発明しない）。
+    const cells = [oscCell({
+      indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31,
+      level_prices: { q_high: 65930.55, q_low: null },
+    })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const shown = flatten(cellAt(host, 'ma_marod', '1m'))
+      .filter((el) => el.classList.contains('dash-osc-level-price'));
+    assert.equal(shown.length, 1);
+    assert.match(textOf(shown[0]), /\u2191/u);
   });
 
   test('a_cell_without_a_projection_shows_no_level_price', () => {

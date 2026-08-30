@@ -319,18 +319,28 @@ class ReachSheetController:
                     timeframe=instance.timeframe, value_map=value_map, scale=scale
                 )
             )
-            # 分位水準（帯上端 u）に達する価格（依頼者指示 2026-08-30）。
+            # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認）。
+            #   上帯 = scale.band_high（q_high）・下帯 = band_low 系列の末尾値（q_low）。
+            sides: "dict[str, float | None]" = {"q_high": None, "q_low": None}
             if math.isfinite(float(scale.band_high)):
-                price = self._level_price_of(
+                sides["q_high"] = self._level_price_of(
                     instance, parsed.dataset_ref, value_map,
-                    band=float(scale.band_high),
+                    band=float(scale.band_high), side="q_high",
                 )
-                if price is not None:
-                    level_prices[instance.key] = float(price)
+            band_low = _latest_of(
+                series_by_key[instance.key].get(spec.band_low_series or "")
+            )
+            if band_low is not None:
+                sides["q_low"] = self._level_price_of(
+                    instance, parsed.dataset_ref, value_map,
+                    band=band_low, side="q_low",
+                )
+            if sides["q_high"] is not None or sides["q_low"] is not None:
+                level_prices[instance.key] = sides
         return projections, unprojectable, level_prices
 
     def _level_price_of(
-        self, instance, dataset_ref: str, value_map, *, band: float
+        self, instance, dataset_ref: str, value_map, *, band: float, side: str
     ) -> "float | None":
         """帯上端 `band` に達する価格。
 
@@ -348,7 +358,8 @@ class ReachSheetController:
         epoch = getattr(
             self._state.projections.get(instance.timeframe), "epoch", None
         )
-        cached = self._state.level_prices.get(instance.key)
+        cache_key = (*instance.key, side)   # 上下は別スロット（同居させると毎要求再検証になる）。
+        cached = self._state.level_prices.get(cache_key)
         if cached is not None and cached[0] == epoch and cached[1] == band:
             return cached[2]
         price: "float | None" = value_map.price_at_nominal(band)
@@ -374,7 +385,7 @@ class ReachSheetController:
                     price = None
         else:
             price = None
-        self._state.level_prices[instance.key] = (epoch, band, price)
+        self._state.level_prices[cache_key] = (epoch, band, price)
         return price
 
     def _covering_cache(
@@ -476,7 +487,16 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
     }
 
 
-def _cell_json(cell, level_price: "float | None" = None) -> "dict[str, Any]":
+def _latest_of(points) -> "float | None":
+    """系列の末尾値（系列なし・空・非有限は None）。"""
+    if not points:
+        return None
+    value = float(points[-1][1])
+    return value if math.isfinite(value) else None
+
+
+def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -> "dict[str, Any]":
+    sides = level_prices or {}
     return {
         "indicator_id": cell.indicator_id,
         "timeframe": cell.timeframe,
@@ -485,9 +505,12 @@ def _cell_json(cell, level_price: "float | None" = None) -> "dict[str, Any]":
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
         "unavailable_reason": cell.unavailable_reason,
-        # 分位水準（帯上端）に達する価格（依頼者指示 2026-08-30・§5.5 の係数の閉形式逆写像。
-        #   逆算不能な instance＝tickvol 等は None）。
-        "level_price": None if level_price is None else float(level_price),
+        # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認。§5.5 の係数の
+        #   閉形式逆写像＋往復検証。逆算不能＝tickvol 等・検証不成立は None）。
+        "level_prices": {
+            "q_high": None if sides.get("q_high") is None else float(sides["q_high"]),
+            "q_low": None if sides.get("q_low") is None else float(sides["q_low"]),
+        },
     }
 
 

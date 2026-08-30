@@ -92,6 +92,10 @@ class OscillatorSpec:
     q_high: float
     window_n: int
     k_events: int
+    #: 下帯（q_low）の系列名と分位。設定にもカタログにも q_low が無い指標では None
+    #: （発明しない・依頼者承認 2026-08-30: 分位水準到達価格の上下 2 値表示）。
+    band_low_series: "str | None" = None
+    q_low: "float | None" = None
     cumulative: bool = False
     excess: Callable[[float, float], float] = field(
         default=lambda value, band_high: value - band_high

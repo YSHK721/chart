@@ -360,10 +360,20 @@ class SeriesRoleTable:
             defaults=dict(self._param_defaults().get(instance.indicator_id) or {}),
         )
         q_high = float(settings.value("q_high"))
+        # 下帯（q_low）は設定にもカタログにも無ければ持たない（既定を発明しない）。
+        try:
+            q_low = float(settings.value("q_low"))
+        except KeyError:
+            q_low = None
         return OscillatorSpec(
             value_series=declaration.value_series,
             band_high_series=f"{declaration.level_prefix}_q{_percent(q_high)}",
             q_high=q_high,
+            band_low_series=(
+                None if q_low is None
+                else f"{declaration.level_prefix}_q{_percent(q_low)}"
+            ),
+            q_low=q_low,
             window_n=int(settings.value("window_n")),
             k_events=int(settings.value("k_events")),
             cumulative=declaration.cumulative,

@@ -220,7 +220,8 @@ def test_the_cells_use_the_model_field_names() -> None:
     cell = response["cells"][0]
 
     assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
-                         "reach", "unavailable_reason", "level_price"}
+                         "reach", "unavailable_reason", "level_prices"}
+    assert set(cell["level_prices"]) == {"q_high", "q_low"}
 
 
 def test_the_cumulative_cell_on_the_sub_unit_timeframe_says_why_it_has_no_level() -> None:
@@ -263,10 +264,10 @@ def test_the_projectable_cell_carries_the_price_reaching_its_quantile_band() -> 
 
     marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
 
-    assert marod["level_price"] is not None
+    assert marod["level_prices"]["q_high"] is not None
     round_trip = forward.value_at_close(
         indicator_id="probe", variant="default", params={}, dataset_ref=REF,
-        timeframe="1m", close=float(marod["level_price"]),
+        timeframe="1m", close=float(marod["level_prices"]["q_high"]),
     )
     assert abs(round_trip - reachable_band) < 1e-9
 
@@ -285,8 +286,8 @@ def test_a_band_beyond_the_probe_range_is_shown_after_a_round_trip_verification(
 
     marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
 
-    assert marod["level_price"] is not None
-    assert abs(float(marod["level_price"]) - 99800.0) < 0.01
+    assert marod["level_prices"]["q_high"] is not None
+    assert abs(float(marod["level_prices"]["q_high"]) - 99800.0) < 0.01
 
 
 def test_a_band_whose_solution_is_not_a_positive_price_stays_hidden() -> None:
@@ -296,7 +297,27 @@ def test_a_band_whose_solution_is_not_a_positive_price_stays_hidden() -> None:
 
     marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
 
-    assert marod["level_price"] is None
+    assert marod["level_prices"]["q_high"] is None
+
+
+def test_the_lower_band_price_is_shown_alongside_the_upper_one() -> None:
+    """依頼者承認 2026-08-30: 上下 2 値。下帯（q_low）の系列からも到達価格を出す。
+
+    Spy の帯 1.9 の真の到達価格は C=800（1.9(C+200) = 2C+300 → 0.1C = 80）。
+    """
+    forward = ForwardSpy()
+    material = series_material()
+    material[("ma_marod", "1m")]["ma_marod_q95"] = points(60, lambda i: 1.999, step=60)
+    material[("ma_marod", "1m")]["ma_marod_q5"] = points(60, lambda i: 1.9, step=60)
+    request = body()
+    request["instances"][1]["params"]["q_low"] = 0.05
+    response = handle(controller_of(forward, SeriesPortFake(material)), request)
+
+    marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
+
+    assert marod["level_prices"]["q_high"] is not None
+    assert marod["level_prices"]["q_low"] is not None
+    assert abs(float(marod["level_prices"]["q_low"]) - 800.0) < 0.01
 
 
 def test_an_uninvertible_cell_has_no_level_price() -> None:
@@ -305,7 +326,7 @@ def test_an_uninvertible_cell_has_no_level_price() -> None:
 
     tickvol = [cell for cell in response["cells"] if cell["indicator_id"] == "tickvol"][0]
 
-    assert tickvol["level_price"] is None
+    assert tickvol["level_prices"] == {"q_high": None, "q_low": None}
 
 
 def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:
@@ -325,7 +346,7 @@ def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:
     # 往復検証（探針範囲外の帯 1.999）は段 1 の 1 回だけで、段 2 は持ち越しから返している。
     assert [
         cell for cell in stage_two["cells"] if cell["indicator_id"] == "ma_marod"
-    ][0]["level_price"] is not None
+    ][0]["level_prices"]["q_high"] is not None
 
 
 def test_the_degradations_name_the_instance_key() -> None:
