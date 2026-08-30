@@ -705,5 +705,12 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     currentDirection = null;
   }
 
-  return { mount, render, unmount };
+  /** まだ描き切っていない視覚効果が残っているか（ティック効果のフェード中など）。
+   *  合成根の「同一内容なら描かない」ゲート（省リソース段階 1）が、フェードの減衰を
+   *  止めてしまわないための照会口。 */
+  function hasPendingEffects() {
+    return tickStrength > 0;
+  }
+
+  return { mount, render, unmount, hasPendingEffects };
 }

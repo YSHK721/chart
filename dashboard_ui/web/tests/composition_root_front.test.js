@@ -296,6 +296,73 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     assert.equal(h.spy.calls[h.spy.calls.length - 1].body.mode, 'full');
   });
 
+  // ---- 省リソース段階 1+2（依頼者承認 2026-08-30） --------------------------
+  test('an_identical_response_does_not_rebuild_the_sheet_dom', async () => {
+    // 段階 1: 内容が不変なら第 1 表・第 2 表の DOM を 1 要素も作り直さない
+    //   （毎秒の全再構築は内容不変時にはまるごと浪費）。
+    const h = harness();
+    const handle = await h.setup;
+    await handle.enable();
+    const rowBefore = flatten(h.host).find((el) => el.classList.contains('dash-ladder-row'));
+    assert.ok(rowBefore, '初回描画が行を建てていません');
+    // Act: 同一内容の応答で契機を 3 回通す（周期をまたいで発行させる）。
+    for (let i = 0; i < 3; i += 1) {
+      h.advance(1_100);
+      await handle.refresh();
+    }
+    // Assert: 行が同一オブジェクトのまま＝作り直していない。
+    const rowAfter = flatten(h.host).find((el) => el.classList.contains('dash-ladder-row'));
+    assert.equal(rowAfter, rowBefore);
+  });
+
+  test('a_known_state_token_travels_back_and_an_unchanged_reply_touches_nothing', async () => {
+    // 段階 2: 完全応答の state を次要求の known_state に載せ、unchanged の極小応答では
+    //   版面へ一切触らない（内容はサーバが「不変」と言った直前の完全応答のまま）。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const bodies = [];
+    let fullServed = 0;
+    const fetchFn = (url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.known_state === 's1') {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: () => Promise.resolve({ ok: true, unchanged: true, state: 's1' }),
+        });
+      }
+      fullServed += 1;
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ ...PAYLOAD, state: 's1' }),
+      });
+    };
+    let nowMs = 0;
+    const handle = await setupDashboardDisplay({
+      doc, host, templates: readOnlyTemplates(2), fetch: fetchFn, apiPrefix: '/dashboard',
+      now: () => nowMs, schedule: () => () => {}, barCloseTimeOf: () => 100,
+    });
+    await handle.enable();
+    assert.equal(bodies[0].known_state, null);   // 初回は完全応答を要求する。
+    const rowBefore = flatten(host).find((el) => el.classList.contains('dash-ladder-row'));
+    // Act: 以後の契機はトークン付きで発行され、unchanged が返る。
+    for (let i = 0; i < 3; i += 1) {
+      nowMs += 1_100;
+      await handle.refresh();
+    }
+    // Assert
+    assert.ok(bodies.length >= 3);
+    assert.ok(bodies.slice(1).every((body) => body.known_state === 's1'));
+    assert.equal(fullServed, 1, 'unchanged が効いていません（完全応答が繰り返されています）');
+    const rowAfter = flatten(host).find((el) => el.classList.contains('dash-ladder-row'));
+    assert.equal(rowAfter, rowBefore);   // 版面は初回のまま（1 要素も作り直していない）。
+    // Act: 出入りの後は必ず完全応答を要求し直す（unchanged では空の版面が残るため）。
+    await handle.disable();
+    await handle.enable();
+    assert.equal(bodies[bodies.length - 1].known_state, null);
+    assert.equal(fullServed, 2);
+  });
+
   test('no_request_is_issued_after_disable', async () => {
     // モードを出た後も dashboard core を叩き続けると、live のプールを奪う。
     const h = harness();

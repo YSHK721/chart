@@ -153,6 +153,13 @@ export async function setupDashboardDisplay({
   let poller = null;
   let candlePoller = null;
   let stopTimer = null;
+  /** サーバの状態トークン（省リソース段階 2・依頼者承認 2026-08-30）。次要求の known_state に
+   *  載せ、素材が不変ならサーバは unchanged の極小応答を返す（シート計算ごと省かれる）。 */
+  let sheetState = null;
+  /** 直近の完全応答（unchanged 時のチャート差分再描画＝アンカー再試行の材料）。 */
+  let lastFullResponse = null;
+  /** 直近に描いた内容の鍵（省リソース段階 1: 同一内容なら第 1・第 2 表を作り直さない）。 */
+  let lastRenderedKey = null;
 
   /**
    * 応答を両表へ配る（描画は閉形式・ここで計算を発行しない）。
@@ -167,10 +174,35 @@ export async function setupDashboardDisplay({
     if (!enabled) {
       return;
     }
-    ladderView.render(response);
-    oscillatorView.render(response);
-    // チャート一覧は**同じ応答**で描く（ISSUE-452 禁止事項: 二重発行の不在。水準の計算は
-    //   /reach_sheet の 1 往復が唯一源で、チャートのために計算を増やさない）。
+    // 省リソース段階 2: unchanged＝素材不変。トークンだけ受け取り、DOM は一切触らない
+    //   （チャートの差分描画のみ通す＝右端余白アンカーの再試行が枯れないように）。
+    if (response && response.ok === true && response.unchanged === true) {
+      if (typeof response.state === 'string') {
+        sheetState = response.state;
+      }
+      if (lastFullResponse) {
+        chartsView.render(lastFullResponse);
+      }
+      return;
+    }
+    if (response && response.ok === true) {
+      if (typeof response.state === 'string') {
+        sheetState = response.state;
+      }
+      lastFullResponse = response;
+    }
+    // 省リソース段階 1: 内容が直前の描画と同一なら第 1・第 2 表を作り直さない
+    //   （毎秒の全再構築は内容不変時にはまるごと浪費・依頼者指摘 2026-08-30）。
+    //   日付印を鍵へ含める＝到達時刻の「今日/昨日」表記が日替わりで確実に描き直される。
+    //   ラダーのフェード効果が残っている間は減衰のために描き続ける。
+    const key = `${Math.floor(clock() / 86_400_000)}|${JSON.stringify(response)}`;
+    if (key !== lastRenderedKey || ladderView.hasPendingEffects()) {
+      ladderView.render(response);
+      oscillatorView.render(response);
+      lastRenderedKey = key;
+    }
+    // チャート一覧は**同じ応答**で描く（ISSUE-452 禁止事項: 二重発行の不在）。差分適用のみ
+    //   なので同一内容では発行 0（charts_paint_complexity で固定済み）。
     chartsView.render(response);
   }
 
@@ -208,6 +240,9 @@ export async function setupDashboardDisplay({
         dataset_ref: DATASET_REF,
         chart_timeframe: CHART_TIMEFRAME,
         instances: bundle.instances,
+        // 省リソース段階 2: 既知トークン。素材が不変ならサーバは unchanged を返す。
+        //   bodyKey（同一周期の畳み込み）はこの欄を見ない＝畳み込みは従来どおり。
+        known_state: sheetState,
       },
       barCloseTime: barClock(),
     });
@@ -229,6 +264,10 @@ export async function setupDashboardDisplay({
     oscillatorView.mount(anchor);
     chartsView.mount(anchor);
     enabled = true;
+    // 器を出し直した直後は必ず完全応答が要る（unchanged では空の版面が残る）。
+    sheetState = null;
+    lastFullResponse = null;
+    lastRenderedKey = null;
 
     if (!client) {
       present({ ok: false, error: { type: 'TransportUnavailable', message: 'この環境では通信できません' } });

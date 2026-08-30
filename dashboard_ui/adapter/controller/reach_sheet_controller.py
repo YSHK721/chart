@@ -15,6 +15,8 @@ domain が持つ（フロントも再計算しない＝単一ソース）。シ�
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
@@ -82,6 +84,9 @@ class _Parsed:
     chart_timeframe: str
     mode: str
     instances: "tuple[SheetInstance, ...]"
+    #: クライアントが既知の状態トークン（依頼者承認 2026-08-30・省リソース段階 2）。
+    #: 現在の素材から計算したトークンと一致すれば、シートは**計算もせず** unchanged を返す。
+    known_state: "str | None" = None
 
 
 class ReachSheetController:
@@ -145,6 +150,7 @@ class ReachSheetController:
         raw = request.get("instances")
         if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
             raise RequestError("instances は配列である必要があります")
+        known_state = request.get("known_state")
         return _Parsed(
             dataset_ref=dataset_ref,
             chart_timeframe=chart_timeframe,
@@ -152,6 +158,7 @@ class ReachSheetController:
             instances=tuple(
                 self._instance_of(entry, chart_timeframe) for entry in raw
             ),
+            known_state=known_state if isinstance(known_state, str) else None,
         )
 
     def _instance_of(self, entry: Any, chart_timeframe: str) -> SheetInstance:
@@ -198,6 +205,16 @@ class ReachSheetController:
                 f"表示時間足の足が供給されていません: timeframe={parsed.chart_timeframe!r}"
             )
         now_unix = int(chart_bars[-1].time)
+        # 省リソース段階 2（依頼者承認 2026-08-30）: 状態トークン＝束＋表示足の素材
+        #   （最終確定足と形成中足）。全系列はティック素材から導かれるため、表示足の形成中足が
+        #   不変なら応答内容も不変である。一致なら**シートを一切計算せず** unchanged を返す
+        #   （休場・閑散時は毎秒のシート計算がまるごと消える）。
+        state = _state_token(parsed, instances, chart_bars, self._bar_port.forming_bar(
+            dataset_ref=parsed.dataset_ref, timeframe=parsed.chart_timeframe,
+            now_unix=now_unix,
+        ))
+        if parsed.known_state is not None and parsed.known_state == state:
+            return {"ok": True, "unchanged": True, "state": state}
 
         # 供給不能な instance はここで畳まず素通しする: 除外の判断と縮退の記録は
         #   `build_reach_sheet` が一元的に持つ（§5.5.1・二重記録を作らない）。ここは
@@ -260,6 +277,9 @@ class ReachSheetController:
                 for cell in sheet.cells
             ],
             "degradations": [_degradation_json(entry) for entry in degradations],
+            # 状態トークン。クライアントは次要求の known_state に載せ、素材が不変なら
+            #   unchanged の極小応答を受ける（省リソース段階 2）。
+            "state": state,
         }
 
     # -------------------------------------------------------------- 価格投影
@@ -497,6 +517,32 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
         # 表示 3 分割（依頼者指示 2026-08-30: 指標名 / 期間 / ソース）。識別は label が担う。
         "naming": (None if row.naming is None else dict(row.naming)),
     }
+
+
+def _state_token(parsed, instances, chart_bars, forming) -> str:
+    """応答内容を一意に定める素材の指紋（省リソース段階 2）。
+
+    含めるもの: 束（畳み込み後の instance キー・順序不問）・表示足・素材の末尾
+    （最終確定足のタプルと本数・形成中足のタプル）。全系列は同じティック素材から
+    導かれるため、これが不変なら応答内容も不変である（新ティックは形成中足の
+    volume を最低でも動かす）。
+    """
+    last = chart_bars[-1]
+    material = [
+        parsed.dataset_ref,
+        parsed.chart_timeframe,
+        sorted(str(instance.key) for instance in instances),
+        len(chart_bars),
+        [int(last.time), float(last.open), float(last.high), float(last.low),
+         float(last.close), float(last.volume)],
+        None if forming is None else [
+            int(forming.time), float(forming.open), float(forming.high),
+            float(forming.low), float(forming.close), float(forming.volume),
+        ],
+    ]
+    return hashlib.sha1(
+        json.dumps(material, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _quantile_label(quantile: "float | None") -> "str | None":

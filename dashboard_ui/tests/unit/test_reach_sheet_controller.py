@@ -63,6 +63,12 @@ class BarPortFake:
     def __init__(self, bars_by_timeframe) -> None:
         self._bars = dict(bars_by_timeframe)
 
+    def replace_last(self, timeframe: str, bar: Bar) -> None:
+        """素材の末尾を差し替える（新ティック到来の再現・省リソース段階 2 の検定用）。"""
+        supplied = list(self._bars[timeframe])
+        supplied[-1] = bar
+        self._bars[timeframe] = tuple(supplied)
+
     def bars(self, *, dataset_ref, timeframe):
         return self._bars.get(timeframe, ())
 
@@ -141,7 +147,8 @@ def test_the_response_carries_the_contracted_top_level_keys() -> None:
 
     assert response["ok"] is True
     assert set(response) == {"ok", "current_price", "rows", "current_index", "cells",
-                             "degradations"}
+                             "degradations", "state"}
+    assert isinstance(response["state"], str) and response["state"]
 
 
 def test_the_response_is_json_serialisable() -> None:
@@ -372,6 +379,58 @@ def test_the_degradations_name_the_instance_key() -> None:
     assert set(entry) == {"instance_key", "granularity", "reason"}
     assert len(entry["instance_key"]) == 4
     assert entry["granularity"] == "bar_close"
+
+
+# ---------------------------------------------------- 省リソース段階 2（unchanged）
+def test_a_request_with_the_current_state_token_returns_unchanged_without_any_computation() -> None:
+    """依頼者承認 2026-08-30: 素材が不変なら計算もシリアライズもしない（休場の浪費を根絶）。"""
+    forward = ForwardSpy()
+    series = SeriesPortFake(series_material())
+    controller = controller_of(forward, series)
+    first = handle(controller, body())
+    issued_series = len(series.issued)
+    issued_forward = len(forward.calls)
+
+    request = body(mode="tick")
+    request["known_state"] = first["state"]
+    second = handle(controller, request)
+
+    assert second == {"ok": True, "unchanged": True, "state": first["state"]}
+    # 系列供給も前進評価も 1 本も発行していない（シート本体を計算していない証拠）。
+    assert len(series.issued) == issued_series
+    assert len(forward.calls) == issued_forward
+
+
+def test_a_new_tick_invalidates_the_state_token_and_serves_a_full_sheet() -> None:
+    """検出力: 形成中足が動けば unchanged にならない（「常に unchanged」への退行を防ぐ）。"""
+    forward = ForwardSpy()
+    series = SeriesPortFake(series_material())
+    controller = controller_of(forward, series)
+    bar_port = controller._bar_port  # noqa: SLF001 — 検定は素材の変化を注入する
+    first = handle(controller, body())
+
+    old = bar_port._bars["1m"][-1]  # noqa: SLF001
+    bar_port.replace_last("1m", Bar(
+        time=old.time, open=old.open, high=old.high, low=old.low,
+        close=old.close + 1.0, volume=old.volume + 1.0,
+    ))
+    request = body(mode="tick")
+    request["known_state"] = first["state"]
+    second = handle(controller, request)
+
+    assert second.get("unchanged") is not True
+    assert second["ok"] is True
+    assert second["state"] != first["state"]
+    assert second["rows"] is not None
+
+
+def test_a_stale_or_absent_state_token_serves_a_full_sheet() -> None:
+    request = body()
+    request["known_state"] = "stale-token"
+    response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), request)
+
+    assert response.get("unchanged") is not True
+    assert response["ok"] is True
 
 
 # -------------------------------------------------------------------- 計算量
