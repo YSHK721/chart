@@ -74,6 +74,26 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(textOf(cellAt(host, 'ma_marod', '1m')), /0\.8/);
   });
 
+  test('a_cell_shows_the_price_reaching_its_quantile_band_when_the_server_projects_one', () => {
+    // 依頼者指示 2026-08-30: 分位水準に達したときの価格を表示（サーバの閉形式逆写像・
+    //   フロントは数値を再計算しない）。表記は第 1 表と同じ唯一源（format.js）。
+    const cells = [oscCell({ indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31, level_price: 65930.55 })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const shown = flatten(cellAt(host, 'ma_marod', '1m'))
+      .find((el) => el.classList.contains('dash-osc-level-price'));
+    assert.ok(shown, '分位水準到達価格が表示されていません');
+    assert.equal(textOf(shown), '65,930.6');
+  });
+
+  test('a_cell_without_a_projection_shows_no_level_price', () => {
+    // 逆算できない instance（tickvol 等）は null＝出さない（値を発明しない）。
+    const { host } = renderInto(sheetResponse({ cells: CELLS }));
+    assert.equal(
+      flatten(cellAt(host, 'tickvol', '1W')).some((el) => el.classList.contains('dash-osc-level-price')),
+      false,
+    );
+  });
+
   test('a_cell_never_prints_the_name_of_a_band', () => {
     // §5.3 / §5.4:「**段の名前は出さない**」（v0.6.0 の依頼者裁定で廃止された語彙）。
     const { host } = renderInto(sheetResponse({ cells: CELLS }));

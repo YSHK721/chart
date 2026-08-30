@@ -17,6 +17,8 @@
 
 import { colorForP, tailUnscaledColor } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
+// 価格表記の唯一源（第 1 表と共有・写しを持たない）。
+import { formatPrice } from './format.js';
 // 列（表示時間足 8 本）は束を組む側と同じ並びを使う（写しを持たない）。
 import { DASHBOARD_TIMEFRAMES as TIMEFRAMES } from './timeframes.js';
 
@@ -153,6 +155,15 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       td.style.backgroundColor = colorForP(cell.p);
     }
     td.appendChild(el('span', { className: 'dash-osc-value', textContent: formatValue(cell.value) }));
+    // 分位水準（帯上端）に達したときの価格（依頼者指示 2026-08-30・§5.5 の閉形式逆写像）。
+    //   逆算できない instance（tickvol 等）は null＝出さない（発明しない）。
+    if (cell.level_price !== null && cell.level_price !== undefined) {
+      td.appendChild(el('span', {
+        className: 'dash-osc-level-price',
+        textContent: formatPrice(cell.level_price),
+        title: '分位水準（帯上端）に達したときの価格',
+      }));
+    }
     td.appendChild(el('span', { className: 'dash-osc-reach', textContent: formatReachTime(cell.reach, nowUnix) }));
     return td;
   }

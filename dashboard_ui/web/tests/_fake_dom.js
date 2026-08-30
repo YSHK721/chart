@@ -148,6 +148,7 @@ export function oscCell(overrides = {}) {
     tail_unscaled: false,
     reach: null,
     unavailable_reason: null,
+    level_price: null,
     ...overrides,
   };
 }

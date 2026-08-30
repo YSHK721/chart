@@ -859,3 +859,11 @@
   font: inherit;
   cursor: pointer;
 }
+
+/* 分位水準（帯上端）に達したときの価格（依頼者指示 2026-08-30・§5.5 の閉形式逆写像）。 */
+.dash-osc-level-price {
+  display: block;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ink2);
+}

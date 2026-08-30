@@ -220,7 +220,7 @@ def test_the_cells_use_the_model_field_names() -> None:
     cell = response["cells"][0]
 
     assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
-                         "reach", "unavailable_reason"}
+                         "reach", "unavailable_reason", "level_price"}
 
 
 def test_the_cumulative_cell_on_the_sub_unit_timeframe_says_why_it_has_no_level() -> None:
@@ -240,6 +240,61 @@ def test_the_oscillator_cell_carries_a_quantile() -> None:
 
     assert marod["p"] is not None
     assert marod["unavailable_reason"] is None
+
+
+def test_the_projectable_cell_carries_the_price_reaching_its_quantile_band() -> None:
+    """依頼者指示 2026-08-30: 分位水準（帯上端）に達したときの価格をセルへ出す。
+
+    正しさは Test Spy 自身の前進評価との**往復整合**で表明する: forward(level_price) が
+    帯上端の値と一致するなら、逆写像は正しい（期待値の焼き込みではなく性質で固定する）。
+    帯上端は現在値近傍で到達可能な値にする（既定素材の 3.0 は Spy の値域 v<2 の外＝None）。
+    """
+    forward = ForwardSpy()
+    material = series_material()
+    reachable_band = forward.value_at_close(
+        indicator_id="probe", variant="default", params={}, dataset_ref=REF,
+        timeframe="1m", close=PRICE + 1.0,
+    )
+    forward.calls.clear()   # 期待値づくりの発行は数えない。
+    material[("ma_marod", "1m")]["ma_marod_q95"] = points(
+        60, lambda i: reachable_band, step=60
+    )
+    response = handle(controller_of(forward, SeriesPortFake(material)), body())
+
+    marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
+
+    assert marod["level_price"] is not None
+    round_trip = forward.value_at_close(
+        indicator_id="probe", variant="default", params={}, dataset_ref=REF,
+        timeframe="1m", close=float(marod["level_price"]),
+    )
+    assert abs(round_trip - reachable_band) < 1e-9
+
+
+def test_an_uninvertible_cell_has_no_level_price() -> None:
+    """tickvol は価格に逆算できない（§5.5.1 の構造的除外）。発明せず None を出す。"""
+    response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
+
+    tickvol = [cell for cell in response["cells"] if cell["indicator_id"] == "tickvol"][0]
+
+    assert tickvol["level_price"] is None
+
+
+def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:
+    """計算量（絶対命令 §4.1）: 価格は既存係数の閉形式逆写像だけ＝段 2 でも発行 0 のまま。"""
+    forward = ForwardSpy()
+    material = series_material()
+    material[("ma_marod", "1m")]["ma_marod_q95"] = points(60, lambda i: 1.999, step=60)
+    controller = controller_of(forward, SeriesPortFake(material))
+    handle(controller, body())
+    issued_after_stage_one = len(forward.calls)
+
+    tick = handle(controller, body(mode="tick"))
+
+    assert len(forward.calls) - issued_after_stage_one == 0
+    assert "level_price" in [
+        cell for cell in tick["cells"] if cell["indicator_id"] == "ma_marod"
+    ][0]
 
 
 def test_the_degradations_name_the_instance_key() -> None:

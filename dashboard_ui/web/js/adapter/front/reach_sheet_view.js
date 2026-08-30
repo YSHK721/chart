@@ -24,6 +24,8 @@
 
 import { colorForP } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
+// 価格表記の唯一源（第 2 表と共有・写しを持たない）。
+import { formatPrice } from './format.js';
 // 足別トーン（モックの r0〜r7）の並びは列を出す側と同じ唯一源を使う（写しを持たない）。
 import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
@@ -114,11 +116,6 @@ const TF_GROUPS = (() => {
     { key: 'long', label: '長期', tfs: DASHBOARD_TIMEFRAMES.slice(longAt) },
   ]);
 })();
-
-/** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
-function formatPrice(value) {
-  return Number(value).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-}
 
 /** 距離の表記（符号を必ず付ける＝上下が符号だけで読める）。 */
 function formatDistance(value) {

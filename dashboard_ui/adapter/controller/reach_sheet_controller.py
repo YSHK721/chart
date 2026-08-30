@@ -15,6 +15,7 @@ domain が持つ（フロントも再計算しない＝単一ソース）。シ�
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -232,7 +233,7 @@ class ReachSheetController:
             tail_fit_cache=self._state.tails,
             event_cache=self._state.events,
         )
-        projections, unprojectable = self._projections_of(
+        projections, unprojectable, level_prices = self._projections_of(
             parsed, instances, series_by_key, specs, now_unix
         )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
@@ -245,7 +246,10 @@ class ReachSheetController:
                 for row, horizon_p in zip(sheet.rows, background)
             ],
             "current_index": int(sheet.current_index),
-            "cells": [_cell_json(cell) for cell in sheet.cells],
+            "cells": [
+                _cell_json(cell, level_prices.get(cell.instance_key))
+                for cell in sheet.cells
+            ],
             "degradations": [_degradation_json(entry) for entry in degradations],
         }
 
@@ -257,8 +261,12 @@ class ReachSheetController:
         series_by_key: "Mapping[tuple, Mapping[str, tuple]]",
         specs: "Mapping[tuple, OscillatorSpec | None]",
         now_unix: int,
-    ) -> "tuple[list[InstanceProjection], dict[tuple, str]]":
-        """§5.5 の係数を（時間足ごとに）用意し、投影材料と**出せなかった理由**を返す。"""
+    ) -> "tuple[list[InstanceProjection], dict[tuple, str], dict[tuple, float]]":
+        """§5.5 の係数を（時間足ごとに）用意し、投影材料・**出せなかった理由**・
+        分位水準（帯上端）に達する価格（依頼者指示 2026-08-30・第 2 表セルへ表示）を返す。
+
+        価格は既存の係数（value_map）の閉形式逆写像 `price_at` だけで求める——前進評価の
+        追加発行は 0 回（§5.5.4 の不変条件。ラダー背景と同じ係数を使い回す）。"""
         if parsed.mode == "full":
             self._state.projections.clear()
 
@@ -285,6 +293,7 @@ class ReachSheetController:
             unprojectable.update(cache.unprojectable)
 
         projections: "list[InstanceProjection]" = []
+        level_prices: "dict[tuple, float]" = {}
         for instance in instances:
             value_map = maps.get(instance.key)
             spec = specs.get(instance.key)
@@ -301,7 +310,13 @@ class ReachSheetController:
                     timeframe=instance.timeframe, value_map=value_map, scale=scale
                 )
             )
-        return projections, unprojectable
+            # 分位水準（帯上端 u）に達する価格。閉形式の逆写像だけで求める（発行 0 回）。
+            #   到達しうる区分が無い（None）ときはセルへ出さない（発明しない）。
+            if math.isfinite(float(scale.band_high)):
+                price = value_map.price_at(float(scale.band_high))
+                if price is not None:
+                    level_prices[instance.key] = float(price)
+        return projections, unprojectable, level_prices
 
     def _covering_cache(
         self, timeframe: str, group: "Sequence[SheetInstance]"
@@ -402,7 +417,7 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
     }
 
 
-def _cell_json(cell) -> "dict[str, Any]":
+def _cell_json(cell, level_price: "float | None" = None) -> "dict[str, Any]":
     return {
         "indicator_id": cell.indicator_id,
         "timeframe": cell.timeframe,
@@ -411,6 +426,9 @@ def _cell_json(cell) -> "dict[str, Any]":
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
         "unavailable_reason": cell.unavailable_reason,
+        # 分位水準（帯上端）に達する価格（依頼者指示 2026-08-30・§5.5 の係数の閉形式逆写像。
+        #   逆算不能な instance＝tickvol 等は None）。
+        "level_price": None if level_price is None else float(level_price),
     }
 
 

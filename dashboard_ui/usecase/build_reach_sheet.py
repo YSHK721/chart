@@ -299,6 +299,7 @@ def _build_cell(
         return OscCell(
             indicator_id=instance.indicator_id,
             timeframe=instance.timeframe,
+            instance_key=instance.key,
             value=None,
             p=None,
             tail_unscaled=False,
@@ -335,6 +336,7 @@ def _build_cell(
     return OscCell(
         indicator_id=instance.indicator_id,
         timeframe=instance.timeframe,
+        instance_key=instance.key,
         value=float(values[-1]),
         p=reading.p,
         tail_unscaled=reading.tail_unscaled,
@@ -358,6 +360,7 @@ def _cumulative_cell(
         return OscCell(
             indicator_id=instance.indicator_id,
             timeframe=instance.timeframe,
+            instance_key=instance.key,
             value=float(values[-1]),
             p=None,
             tail_unscaled=False,
@@ -377,6 +380,7 @@ def _cumulative_cell(
         return OscCell(
             indicator_id=instance.indicator_id,
             timeframe=instance.timeframe,
+            instance_key=instance.key,
             value=float(comparison.forming_sum),
             p=None,
             tail_unscaled=False,
@@ -386,6 +390,7 @@ def _cumulative_cell(
     return OscCell(
         indicator_id=instance.indicator_id,
         timeframe=instance.timeframe,
+        instance_key=instance.key,
         value=float(comparison.forming_sum),
         p=_cq.empirical_rank(window, float(comparison.forming_sum)),
         tail_unscaled=False,

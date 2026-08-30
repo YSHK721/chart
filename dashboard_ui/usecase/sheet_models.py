@@ -163,6 +163,10 @@ class OscCell:
     tail_unscaled: bool
     reach: "ReachState | None" = None
     unavailable_reason: "str | None" = None
+    #: この セルを出した instance の畳み込みキー（LadderRow.instance_key と同じ形）。
+    #: §5.5 の価格射影（分位水準に達する価格・依頼者指示 2026-08-30）をセルへ紐付けるための
+    #: 識別子。(indicator_id, timeframe) はキーにならない（§5.1: ma_marod は 1D に 2 本）。
+    instance_key: "tuple[str, str, str, str] | None" = None
 
 
 @dataclass(frozen=True)
