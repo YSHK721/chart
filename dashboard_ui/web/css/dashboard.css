@@ -25,7 +25,7 @@
  *   明 --cyan   #1596a8 → #117988 （--surface2 上の文字で 3.110・地平バッジの地で 3.252）
  *   明 --down   #c9403d → #c33e3b （地 --down-bg で 4.292）
  *   明 --amber  #a9701a → #966417 （地 --amber-bg で 3.705）
- *   暗 --muted  #7d8899 → #808b9b （--surface2 で 4.414・到達行で 4.352）
+ *   暗 --muted  #7d8899 → #828d9d （--surface2 で 4.414・到達行で 4.089）
  * いずれも WCAG 2.1 SC 1.4.3 の 4.5:1 を割っていた組で、色相・彩度は保っている。
  */
 
@@ -40,7 +40,10 @@
   --ink2: #3c4654;
   --muted: #636e82;
   --up: #1a7e74;
+  /* --up-bg は到達側の地の**定義**（モックのトークン）。版面が実際に敷くのはこれを 55% まで
+     薄めた --up-band で、両者の関係は dashboard_theme_contrast.test.js が計算で固定する。 */
   --up-bg: #e2f2f0;
+  --up-band: #eff8f7;
   --up-bar: #26a69a;
   --down: #c33e3b;
   --down-bg: #fdecec;
@@ -64,9 +67,10 @@
     --line2: #333d4a;
     --ink: #dfe6ee;
     --ink2: #b6c1ce;
-    --muted: #808b9b;
+    --muted: #828d9d;
     --up: #4bbfb2;
     --up-bg: #12302e;
+    --up-band: #142729;
     --up-bar: #26a69a;
     --down: #f0736f;
     --down-bg: #3a1e1e;
@@ -88,9 +92,10 @@
   --line2: #333d4a;
   --ink: #dfe6ee;
   --ink2: #b6c1ce;
-  --muted: #808b9b;
+  --muted: #828d9d;
   --up: #4bbfb2;
   --up-bg: #12302e;
+  --up-band: #142729;
   --up-bar: #26a69a;
   --down: #f0736f;
   --down-bg: #3a1e1e;
@@ -107,6 +112,8 @@
    ローカルで fonts.googleapis.com へ到達しない。届かない <link> は待ち時間だけ増やして
    何も変えない）。IBM Plex が端末に入っていれば効き、無ければ後続のシステム書体へ落ちる。 */
 .dash-sheet-host {
+  /* 表頭の高さ。sticky な現在値行がこの真下へ貼り付く（唯一源・上の thead 参照）。 */
+  --head-h: 34px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -254,7 +261,10 @@
   position: sticky;
   top: 0;
   z-index: 5;
-  padding: 8px 14px;
+  /* 高さを**固定**する。現在値行はこの真下へ貼り付く（--head-h）ので、表頭の高さが
+     字面や余白で動くと現在値行が表頭の裏へ潜る。数値を 2 か所に書かないための唯一源。 */
+  height: var(--head-h);
+  padding: 0 14px;
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
   font-weight: 500;
@@ -283,10 +293,19 @@
 }
 
 /* 到達側（現在値より下＝支持側）。モックの tr.lad.hit と同じ帯＋左 3px。
-   帯は素の --up-bg ではなく 55% で薄める（モックのまま）。素の --up-bg まで濃くすると
-   その上の --muted / --up が 4.455 / 4.250 まで落ちて本文の下限を割る（実測）。 */
+   帯は素の --up-bg ではなく 55% 相当まで薄める（モックのまま）。素の --up-bg まで濃くすると
+   その上の --muted / --up が 4.455 / 4.250 まで落ちて本文の下限を割る（実測）。
+   モックは `color-mix(in srgb, var(--up-bg) 55%, transparent)` で薄めるが、本ファイルは
+   **合成済みの実色を --up-band として持つ**。理由は 2 つ:
+     1. color-bix を解さない実装では宣言ごと落ちて、到達側の帯が**無言で消える**。
+     2. 検定が地の実色を読むとき、合成規則を検定側へ写す必要がなくなる（写しを持たない）。 */
 .dash-ladder-hit {
-  background: color-mix(in srgb, var(--up-bg) 55%, transparent);
+  background: var(--up-band);
+}
+
+/* 左の 3px は**セル**へ置く。`tr` への box-shadow は描かれない実装があり、そこでは
+   到達側の印が帯だけになって無言で弱まる（モックも td 側へ置いている）。 */
+.dash-ladder-hit .dash-ladder-distance-cell {
   box-shadow: inset 3px 0 0 var(--up-bar);
 }
 
@@ -449,7 +468,7 @@
 .dash-ladder-current th,
 .dash-ladder-current td {
   position: sticky;
-  top: 31px;
+  top: var(--head-h);
   z-index: 4;
   padding: 5px 16px;
   background: var(--ink);
@@ -498,7 +517,7 @@
 }
 
 .dash-legend-swatch-hit {
-  background: var(--up-bg);
+  background: var(--up-band);
   box-shadow: inset 3px 0 0 var(--up-bar);
 }
 

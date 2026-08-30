@@ -79,12 +79,10 @@ const SURFACES = Object.freeze([
   },
   // .dash-panel-head / thead th / .dash-tf-pill（一段沈めた地）。
   { name: '表頭と枠の頭', ground: '--surface2', texts: ['--ink', '--ink2', '--muted', '--cyan'] },
-  // .dash-ladder-hit（到達側の帯・55% で薄めたもの）。
+  // .dash-ladder-hit（到達側の帯）。--up-bg を 55% 薄めた合成済みの実色。
   {
     name: '到達行の帯',
-    ground: '--up-bg',
-    groundAlpha: 0.55,
-    over: '--surface',
+    ground: '--up-band',
     texts: ['--ink', '--ink2', '--muted', '--up'],
     heatTexts: ['--ink', '--ink2'],
   },
@@ -211,11 +209,9 @@ function colorOf(palette, token) {
   return [parsed[0], parsed[1], parsed[2]];
 }
 
-/** SURFACES の 1 項から地の実色を作る（薄める指定があれば下地へ合成する）。 */
+/** SURFACES の 1 項から地の実色を作る。 */
 function groundOf(palette, surface) {
-  const base = colorOf(palette, surface.ground);
-  if (surface.groundAlpha === undefined) return base;
-  return composite([...base, surface.groundAlpha], colorOf(palette, surface.over));
+  return colorOf(palette, surface.ground);
 }
 
 /** 目盛りの上の色（p の全域）と帯外単一色を、指定の地へ合成した一覧。 */
@@ -351,6 +347,36 @@ describe('dashboard の版面 — 読めることを計算で固定する', () =
       assert.ok(declaredGrounds.has(surface.ground),
         `SURFACES の「${surface.name}」の地 ${surface.ground} を CSS が使っていません`);
     }
+  });
+
+  test('the_reached_band_stays_the_declared_dilution_of_the_reached_ground', () => {
+    // モックは `color-mix(in srgb, var(--up-bg) 55%, transparent)` で帯を作るが、本 CSS は
+    //   合成済みの実色 --up-band を持つ（color-mix を解さない実装で帯が無言で消えないため）。
+    //   合成済みにすると「元の色との関係」が CSS から読めなくなるので、その関係をここで固定する。
+    const DILUTION = 0.55;
+    for (const [themeName, palette] of THEMES) {
+      const expected = composite([...colorOf(palette, '--up-bg'), DILUTION], colorOf(palette, '--surface'));
+      const actual = colorOf(palette, '--up-band');
+      for (const i of [0, 1, 2]) {
+        assert.ok(
+          Math.abs(actual[i] - expected[i]) <= 0.5,
+          `${themeName}: --up-band が --up-bg の ${DILUTION * 100}% ではありません`
+          + `（期待 ${expected.map((v) => Math.round(v)).join(',')} / 実際 ${actual.join(',')}）`,
+        );
+      }
+    }
+  });
+
+  test('the_two_ways_of_asking_for_dark_declare_the_same_palette', () => {
+    // 暗色は「端末が暗色を望む」と「data-theme で明示」の 2 つの規則が同じ値を宣言する。
+    //   片方だけ直すと、どちらの経路で暗色になったかで配色が変わる（無言の食い違い）。
+    const blocks = styleRules(CSS)
+      .filter((rule) => rule.selector.includes('.dash-sheet-host') && isDarkRule(rule))
+      .map((rule) => new Map(declarations(rule.body)
+        .filter((d) => d.prop.startsWith('--'))
+        .map((d) => [d.prop, d.value])));
+    assert.equal(blocks.length, 2, '暗色の宣言が 2 つ（media と data-theme）ではありません');
+    assert.deepEqual([...blocks[0]].sort(), [...blocks[1]].sort());
   });
 
   test('both_themes_declare_the_same_set_of_tokens', () => {
