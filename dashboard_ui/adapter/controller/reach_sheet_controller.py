@@ -321,7 +321,7 @@ class ReachSheetController:
             )
             # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認）。
             #   上帯 = scale.band_high（q_high）・下帯 = band_low 系列の末尾値（q_low）。
-            #   `level` は第 1 表の水準列と同じ語彙（q95 / q5・依頼者指摘 2026-08-30:
+            #   応答の level 欄は第 1 表の水準列と同じ語彙（q95 / q5・依頼者指摘 2026-08-30:
             #   矢印だけでは判断に迷う→どの分位かを名前で示す）。
             sides: "dict[str, dict | None]" = {"q_high": None, "q_low": None}
             if math.isfinite(float(scale.band_high)):
