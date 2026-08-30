@@ -470,6 +470,146 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.throws(() => view.render(sheetResponse()), /mount/);
   });
 
+  // ---- 現在値中心の窓（依頼者指示 2026-08-30: 本数を絞る・縦スクロール不要） ----
+  test('a_long_ladder_is_windowed_around_the_current_row', () => {
+    // Arrange: 100 本・現在値は 50 本目の位置。
+    const many = Array.from({ length: 100 }, (_unused, i) =>
+      ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
+    // Act
+    const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));
+    // Assert: 建つのは前後 15 本＋現在値行だけ。中心に現在値行が居る。
+    const rows = rowsOf(host);
+    assert.equal(rows.length, 31);
+    assert.equal(rows[15].classList.contains('dash-ladder-current'), true);
+    // 窓の直外の行は無く、窓の内の端は在る（切り出し位置の表明）。
+    assert.equal(/L34\b/.test(textOf(host)), false);
+    assert.equal(/L35\b/.test(textOf(host)), true);
+    assert.equal(/L64\b/.test(textOf(host)), true);
+    assert.equal(/L65\b/.test(textOf(host)), false);
+  });
+
+  test('the_window_note_posts_how_many_rows_continue_outside', () => {
+    // 無言の縮退禁止: 窓の外の水準が「存在しない」と読める版面にしない。
+    const many = Array.from({ length: 100 }, (_unused, i) =>
+      ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
+    const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));
+    // Assert
+    assert.match(textOf(host), /全 100 本中/);
+    assert.match(textOf(host), /上に 35 本・下に 35 本/);
+  });
+
+  test('a_short_ladder_shows_everything_and_posts_no_window_note', () => {
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    assert.equal(rowsOf(host).length, 4);
+    assert.equal(/全 3 本中/.test(textOf(host)), false);
+  });
+
+  test('a_window_at_the_top_edge_keeps_the_current_row_and_posts_only_the_lower_rest', () => {
+    // 境界値: 現在値が先頭側（上に隠す行が無い）。
+    const many = Array.from({ length: 40 }, (_unused, i) =>
+      ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 2 - i }));
+    const { host } = renderInto(sheetResponse({ rows: many, current_index: 2 }));
+    const rows = rowsOf(host);
+    assert.equal(rows[2].classList.contains('dash-ladder-current'), true);
+    assert.match(textOf(host), /上に 0 本・下に 23 本/);
+  });
+
+  test('window_build_cost_does_not_grow_with_the_ladder_length', () => {
+    // 計算量（絶対命令 §4.1・2 点固定）: 窓の外は**建てない**。入力を倍にしても
+    //   建つ行数は変わらない（建ててから隠すと捨てる色計算が毎描画発生する）。
+    const build = (n) => {
+      const many = Array.from({ length: n }, (_unused, i) =>
+        ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
+      const { host } = renderInto(sheetResponse({ rows: many, current_index: Math.floor(n / 2) }));
+      return rowsOf(host).length;
+    };
+    assert.equal(build(100), build(200));
+  });
+
+  // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・オール） ----
+  const scopeButton = (host, key) => flatten(host)
+    .find((node) => node.dataset && node.dataset.scope === key);
+  const press = (button) => { (button._listeners.click || []).forEach((fn) => fn({})); };
+  const MIXED = [
+    ladderRow({ price: 68000, timeframe: '1W', label: 'W-up', distance: 2244 }),
+    ladderRow({ price: 67000, timeframe: '1D', label: 'D-up', distance: 1244 }),
+    ladderRow({ price: 66500, timeframe: '4h', label: 'H4-up', distance: 744 }),
+    ladderRow({ price: 66000, timeframe: '1h', label: 'H1-up', distance: 244 }),
+    ladderRow({ price: 65900, timeframe: '15m', label: 'M15-up', distance: 144 }),
+    ladderRow({ price: 65800, timeframe: '1m', label: 'M1-up', distance: 44 }),
+    ladderRow({ price: 65700, timeframe: '1h', label: 'H1-dn', distance: -56 }),
+    ladderRow({ price: 65600, timeframe: '1D', label: 'D-dn', distance: -156 }),
+  ];
+
+  test('the_scope_bar_offers_the_four_ranges_with_short_active_by_default', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    for (const key of ['short', 'medium', 'long', 'all']) {
+      assert.ok(scopeButton(host, key), `範囲 ${key} のボタンがありません`);
+    }
+    assert.ok(scopeButton(host, 'short').classList.contains('is-active'));
+    assert.match(textOf(host), /短期/);
+    assert.match(textOf(host), /オール/);
+  });
+
+  test('the_medium_scope_shows_only_levels_of_1h_and_above', () => {
+    // §4.3: 中期＝1h 以上（区分を発明しない）。
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    // Act
+    press(scopeButton(host, 'medium'));
+    // Assert
+    assert.equal(rowsOf(host).length, 7);   // 水準 6 本 ＋ 現在値行。
+    assert.equal(/M1-up|M15-up/.test(textOf(host)), false);
+    assert.match(textOf(host), /H1-up/);
+    assert.match(textOf(host), /D-dn/);
+    // 現在値行は距離の符号の変わり目（H1-up と H1-dn の間）に入る。
+    const rows = rowsOf(host);
+    assert.equal(rows[4].classList.contains('dash-ladder-current'), true);
+  });
+
+  test('the_long_scope_shows_only_levels_of_1D_and_above', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    press(scopeButton(host, 'long'));
+    assert.equal(rowsOf(host).length, 4);   // W-up / D-up ＋ 現在値行 ＋ D-dn。
+    assert.equal(/H4-up|H1-up|H1-dn/.test(textOf(host)), false);
+    const rows = rowsOf(host);
+    assert.equal(rows[2].classList.contains('dash-ladder-current'), true);
+  });
+
+  test('the_all_scope_drops_the_window_and_shows_every_row', () => {
+    // オール＝窓なし全表示（従来の全量へ戻す選択肢）。
+    const many = Array.from({ length: 100 }, (_unused, i) =>
+      ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
+    const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));
+    // Act
+    press(scopeButton(host, 'all'));
+    // Assert: 全 100 本＋現在値行・窓の掲示なし。
+    assert.equal(rowsOf(host).length, 101);
+    assert.equal(/全 100 本中/.test(textOf(host)), false);
+  });
+
+  test('switching_back_to_short_restores_the_windowed_view_without_a_new_response', () => {
+    // 切替は直近の応答の描き直しだけ（発行を生まない——発行判定は sheet_poller の唯一責務）。
+    const many = Array.from({ length: 100 }, (_unused, i) =>
+      ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
+    const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));
+    press(scopeButton(host, 'all'));
+    // Act
+    press(scopeButton(host, 'short'));
+    // Assert
+    assert.equal(rowsOf(host).length, 31);
+    assert.match(textOf(host), /全 100 本中/);
+  });
+
+  test('reselecting_the_active_scope_does_not_rebuild_the_table', () => {
+    // 無駄の不在（絶対命令 §4.1）: 同じ範囲の再選択は 1 行も作り直さない。
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    const firstRowBefore = rowsOf(host)[0];
+    // Act
+    press(scopeButton(host, 'short'));
+    // Assert: 行が同一オブジェクトのまま（描き直しが走っていない）。
+    assert.equal(rowsOf(host)[0], firstRowBefore);
+  });
+
   test('the_view_never_talks_to_the_network_itself', async () => {
     // 表示層は描くだけ（発行は sheet_poller / reach_sheet_client の責務）。混ざると
     //   「描くたびに発行する」欠陥が入り込み、出力は正しいまま無駄が増える。

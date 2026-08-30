@@ -498,9 +498,11 @@
   flex: 1 1 0;
 }
 
+/* 価格と直前行との差は**同じ 1 行**に並べる（依頼者指示 2026-08-30: 2 行表示を 1 行にして
+   行の縦幅を縮める。窓に入る本数がそのぶん増える）。 */
 .dash-ladder-price-text {
   position: relative;
-  display: block;
+  display: inline;
   color: var(--ink);
 }
 
@@ -508,7 +510,8 @@
    薄さではなく**大きさ**で下げる（規約 4）。 */
 .dash-ladder-gap {
   position: relative;
-  display: block;
+  display: inline;
+  margin-left: 6px;
   font-style: normal;
   font-size: 10px;
   color: var(--ink2);
@@ -775,4 +778,43 @@
      （下限 360px＝旧 220px の約 1.6 倍を保証・上限 640px＝1 枚が版面を独占しない）。 */
   height: clamp(360px, 45vh, 640px);
   min-width: 0;
+}
+
+/* 価格ラダーの窓の掲示（現在値の前後だけを建てる・reach_sheet_view の WINDOW_RADIUS）。 */
+.dash-ladder-window-note {
+  margin: 0;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  background: var(--surface2);
+}
+
+.dash-ladder-window-note:empty {
+  display: none;
+}
+
+/* 表示範囲の切替（短期 / 中期 / 長期 / オール・reach_sheet_view の SCOPES）。 */
+.dash-ladder-scope {
+  display: flex;
+  gap: 6px;
+}
+
+.dash-ladder-scope-btn {
+  padding: 3px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line2);
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+/* active は地平バッジ（中期）と同じ登録済みの組（地 --cyan・文字 --bg）。
+   dashboard_theme_contrast.test.js の SURFACES に無い組を新設しない。 */
+.dash-ladder-scope-btn.is-active {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: var(--bg);
 }

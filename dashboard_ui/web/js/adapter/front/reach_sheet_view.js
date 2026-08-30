@@ -62,7 +62,7 @@ function unknownHorizonKeys(rows) {
  *  （依頼者指示 2026-08-30。行の識別は従来どおりサーバの `label` が担う）。 */
 const COLUMNS = Object.freeze([
   { cell: 'distance', head: '距離 · 次のターゲット', className: 'dash-ladder-head-distance' },
-  { cell: 'price', head: '価格', hint: '（下は直前行との差）', className: 'dash-ladder-head-price' },
+  { cell: 'price', head: '価格', hint: '（右は直前行との差）', className: 'dash-ladder-head-price' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
   { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
   { cell: 'level', head: '水準', className: 'dash-ladder-head-level' },
@@ -72,6 +72,33 @@ const COLUMNS = Object.freeze([
 
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
 const NAMING_CELLS = 4;
+
+/** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
+ *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
+ *  適合させる（fitWindow・縦スクロールが出ない本数まで縮める）。窓の外は**建てない**
+ *  （建ててから隠すと「作ってから捨てる」色計算が毎描画発生する・絶対命令 §4.1）。
+ *  窓の外の存在は window-note が掲示する（無言の縮退禁止）。 */
+const WINDOW_RADIUS = 15;
+
+/** 表示範囲の切替（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」）。
+ *
+ *  短期 / 中期 / 長期の区分は §4.3 の確定語彙そのもの（**短期＝すべて / 中期＝1h 以上 /
+ *  長期＝1D 以上**・新しい区分を発明しない）。オールは窓を外した全表示（従来の全量。
+ *  縦スクロールが戻ることは選択の結果であり縮退ではない）。
+ *  minTfIndex は DASHBOARD_TIMEFRAMES（短い順・唯一源）上の下限位置。 */
+const SCOPES = Object.freeze([
+  { key: 'short', label: '短期', minTf: null, windowed: true },
+  { key: 'medium', label: '中期', minTf: '1h', windowed: true },
+  { key: 'long', label: '長期', minTf: '1D', windowed: true },
+  { key: 'all', label: 'オール', minTf: null, windowed: false },
+]);
+
+/** 時間足が下限以上か（並びの唯一源 DASHBOARD_TIMEFRAMES で判定。未知の足は含めない
+ *  ——どの段か判定できない足を黙って混ぜると区分の意味が壊れる）。 */
+function timeframeAtLeast(timeframe, minTf) {
+  const at = DASHBOARD_TIMEFRAMES.indexOf(String(timeframe));
+  return at >= 0 && at >= DASHBOARD_TIMEFRAMES.indexOf(minTf);
+}
 
 /** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
 function formatPrice(value) {
@@ -128,6 +155,18 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   let tbody = null;
   let notice = null;
   let message = null;
+  let windowNote = null;
+  /** 表示範囲（既定は短期＝§4.3 の全時間足・窓あり）。 */
+  let scope = SCOPES[0];
+  /** 切替の再描画用に直近の応答を保つ（切替は**発行を生まない**——描き直すだけ）。 */
+  let lastResponse = null;
+  let scopeButtons = [];
+  /** 走査域の実体（fitWindow が高さを実測する対象）。 */
+  let scrollBox = null;
+  /** 器の実高に適合させた窓の半径（null＝未適合＝WINDOW_RADIUS を使う）。 */
+  let fittedRadius = null;
+  /** fitWindow の再入ガード（適合の描き直しの中で再適合を測らない）。 */
+  let fitting = false;
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
@@ -152,9 +191,11 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       className: 'dash-panel-lead',
       textContent: '水準を束ねず 1 本 1 行で価格降順に並べる。時間足は比較の軸ではなく各行の属性。',
     }));
+    head.appendChild(buildScopeBar());
     panel.appendChild(head);
 
     const scroll = el('div', { className: 'dash-scroll' });
+    scrollBox = scroll;
     const table = el('table', { className: 'dash-ladder-table' });
     const thead = el('thead');
     const headRow = el('tr');
@@ -172,6 +213,10 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     table.appendChild(tbody);
     scroll.appendChild(table);
     panel.appendChild(scroll);
+    // 窓の掲示欄。窓の外の水準は建てない（WINDOW_RADIUS）ため、外に何本続いているかを
+    //   ここで必ず掲示する（隠れた行が「存在しない」と読める版面にしない）。
+    windowNote = el('p', { className: 'dash-ladder-window-note' });
+    panel.appendChild(windowNote);
     root.appendChild(panel);
 
     root.appendChild(buildLegend());
@@ -179,6 +224,35 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     notice = el('p', { className: 'dash-granularity-notice' });
     host.appendChild(root);
     return root;
+  }
+
+  /** 表示範囲の切替バー（短期 / 中期 / 長期 / オール・§4.3 の語彙）。
+   *  切替は**描き直すだけ**で発行を生まない（発行判定は sheet_poller の唯一責務のまま）。 */
+  function buildScopeBar() {
+    const bar = el('div', { className: 'dash-ladder-scope', role: 'group' });
+    scopeButtons = SCOPES.map((candidate) => {
+      const button = el('button', {
+        className: 'dash-ladder-scope-btn',
+        type: 'button',
+        textContent: candidate.label,
+        dataset: { scope: candidate.key },
+      });
+      button.setAttribute?.('aria-pressed', String(candidate === scope));
+      if (candidate === scope) button.classList.add('is-active');
+      button.addEventListener('click', () => {
+        if (scope === candidate) return;   // 同じ範囲の再選択で描き直さない（無駄の不在）。
+        scope = candidate;
+        for (const b of scopeButtons) {
+          const active = b.dataset.scope === candidate.key;
+          b.setAttribute?.('aria-pressed', String(active));
+          if (active) b.classList.add('is-active'); else b.classList.remove('is-active');
+        }
+        if (lastResponse) render(lastResponse);
+      });
+      bar.appendChild(button);
+      return button;
+    });
+    return bar;
   }
 
   /** 凡例（モックの .legend）。読み方を版面の外へ持ち出させない。 */
@@ -192,7 +266,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     };
     legend.appendChild(item('dash-legend-swatch-hit', '現在値より下（到達済み＝支持側）'));
     legend.appendChild(item('', '現在値より上（未到達＝抵抗側）'));
-    legend.appendChild(item('dash-legend-swatch-gap', '価格の下の小さな数字＝直前行との差'));
+    legend.appendChild(item('dash-legend-swatch-gap', '価格の右の小さな数字＝直前行との差'));
     return legend;
   }
 
@@ -470,7 +544,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       const key = Array.isArray(degradation.instance_key) ? degradation.instance_key : [];
       const indicatorId = key[0] ?? '?';
       const { kind, summary } = readReason(degradation.reason);
-      const id = `${indicatorId} ${kind}`;
+      const id = `${indicatorId} ${kind}`;
       if (!groups.has(id)) {
         groups.set(id, { indicatorId, summary, count: 0, timeframes: new Set(), reasons: new Set() });
       }
@@ -491,6 +565,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     if (!root || !tbody) {
       throw new Error('reach_sheet_view: mount より先に render は呼べない');
     }
+    lastResponse = response;   // 範囲の切替は直近の応答を描き直す（発行を生まない）。
     while (tbody.children.length > 0) {
       tbody.removeChild(tbody.children[0]);
     }
@@ -502,25 +577,93 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       renderNotice([]);
       return;
     }
-    const rows = Array.isArray(response.rows) ? response.rows : [];
+    const allRows = Array.isArray(response.rows) ? response.rows : [];
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
-    const unknown = unknownHorizonKeys(rows);
+    const unknown = unknownHorizonKeys(allRows);
     message.textContent = unknown.length === 0
       ? ''
       : `未知の地平キーが応答に含まれています: ${unknown.join(', ')}（対象は ${HORIZON_KEYS.join(' / ')}）`;
 
-    // 現在値行の位置はサーバが決める（並びの単一ソース）。範囲外の指定は端へ倒す。
-    const at = Math.max(0, Math.min(Number(response.current_index) || 0, rows.length));
-    rows.forEach((row, index) => {
-      if (index === at) {
+    // 表示範囲（§4.3 の地平＝時間足の下限）で絞る。並びはサーバのまま（順序を再計算しない）。
+    const rows = scope.minTf === null
+      ? allRows
+      : allRows.filter((row) => timeframeAtLeast(row.timeframe, scope.minTf));
+    // 現在値行の位置: 全量ではサーバの current_index が唯一源（範囲外の指定は端へ倒す）。
+    //   絞った範囲では行が抜けるため、同じ定義（現在値より上＝距離が正の行数）で**数え直す**
+    //   （数値の再計算ではない。距離の符号はサーバの値そのもの）。
+    const at = scope.minTf === null
+      ? Math.max(0, Math.min(Number(response.current_index) || 0, rows.length))
+      : rows.filter((row) => Number(row.distance) >= 0).length;
+    // 現在値を中心とした窓だけを建てる（縦スクロールを不要にする）。半径は器の実高への
+    //   適合値（fitWindow）を優先し、未適合は上限 WINDOW_RADIUS。窓の外の行はここで
+    //   **建てない**——建ててから隠すと捨てる色計算が毎描画発生する。
+    //   オールは窓なし（全量。従来の表示に戻す選択肢）。
+    const radius = fittedRadius ?? WINDOW_RADIUS;
+    const start = scope.windowed ? Math.max(0, at - radius) : 0;
+    const end = scope.windowed ? Math.min(rows.length, at + radius) : rows.length;
+    const visible = rows.slice(start, end);
+    const currentAt = at - start;
+    visible.forEach((row, index) => {
+      if (index === currentAt) {
         tbody.appendChild(buildCurrentRow(response.current_price));
       }
       tbody.appendChild(buildLevelRow(row));
     });
-    if (at >= rows.length) {
+    if (currentAt >= visible.length) {
       tbody.appendChild(buildCurrentRow(response.current_price));
     }
+    renderWindowNote(rows.length, radius, start, rows.length - end);
     renderNotice(response.degradations);
+    fitWindow();
+  }
+
+  /**
+   * 窓の半径を器の実高へ適合させる（依頼者指示「縦スクロールは必要なし」を画面の高さに
+   * 依らず成立させる）。初回描画で溢れていたときだけ、行の実高から収まる本数を計算して
+   * **一度だけ**描き直す。以後の周期描画は適合済みの半径で建てるため、描き直しは
+   * 繰り返されない（縮める方向にしか動かない・再入ガードつき）。
+   * 実高を測れない環境（テストダブル）は何もしない＝WINDOW_RADIUS のまま（検定は決定的）。
+   */
+  function fitWindow() {
+    if (fitting || !scope.windowed || !scrollBox || !tbody) {
+      return;
+    }
+    const boxH = scrollBox.clientHeight;
+    const contentH = scrollBox.scrollHeight;
+    if (typeof boxH !== 'number' || typeof contentH !== 'number' || boxH <= 0 || contentH <= boxH) {
+      return;
+    }
+    const first = tbody.children[0];
+    const rowH = first && typeof first.getBoundingClientRect === 'function'
+      ? first.getBoundingClientRect().height : 0;
+    if (!rowH) {
+      return;
+    }
+    const headerH = contentH - tbody.children.length * rowH;
+    const capacity = Math.floor((boxH - headerH) / rowH);
+    const next = Math.max(1, Math.floor((capacity - 1) / 2));
+    if (next >= (fittedRadius ?? WINDOW_RADIUS)) {
+      return;   // 縮める方向にしか動かない（拡縮の往復で毎描画作り直さない）。
+    }
+    fittedRadius = next;
+    if (lastResponse) {
+      fitting = true;
+      try {
+        render(lastResponse);
+      } finally {
+        fitting = false;
+      }
+    }
+  }
+
+  /** 窓の掲示（上下に何本続いているか）。全量が窓に収まるときは何も出さない。 */
+  function renderWindowNote(total, radius, hiddenAbove, hiddenBelow) {
+    if (hiddenAbove === 0 && hiddenBelow === 0) {
+      windowNote.textContent = '';
+      return;
+    }
+    windowNote.textContent = `全 ${total} 本中、現在値の前後 ${radius} 本を表示`
+      + `（この上に ${hiddenAbove} 本・下に ${hiddenBelow} 本）`;
   }
 
   /** 版面を畳む（共有の器へ何も残さない）。 */
@@ -532,6 +675,11 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     tbody = null;
     notice = null;
     message = null;
+    windowNote = null;
+    scopeButtons = [];
+    lastResponse = null;
+    scrollBox = null;
+    fittedRadius = null;
   }
 
   return { mount, render, unmount };
