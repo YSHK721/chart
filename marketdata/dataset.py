@@ -27,7 +27,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from marketdata import rollup_store, tail_reader
+from marketdata import material_identity, rollup_store, tail_reader
 
 # datasetRef 台帳は marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）から
 # 導出する。従来 4 断片（DATASET_WHITELIST・_OUTLIER_CLAMP_REFS_SET・_ROLLUP_REFS・
@@ -176,6 +176,11 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
     1m（None/'1m'）は末尾安全上限ぶんを ``tail_reader.read_tail`` で逆シーク読み、上位足（5m..1M）は
     事前生成のロールアップ CSV を ``rollup_store.read`` で読む。それ以外の ref（sample/jp225 日足等・
     小データ）は従来経路（base + resample）据置（A' resample キャッシュも sample 経路のみ通る・D-3）。
+
+    ★素材の識別（ISSUE-465）: 返す素材へ ``(ref, timeframe)`` を載せる
+    （:func:`marketdata.material_identity.label`）。「どの素材か」を知っているのは供給側だけ
+    であり、受け取る側（増分計算の状態キャッシュ）は素材の由来を推測しない。載せるのは
+    ``DataFrame.attrs`` だけで、値・列・index は変わらない。
     """
     # ★読み取り時 外れ値バー補正（_clamp_outlier_bars）は全返却経路の最終返却前に一様適用する
     #   （原子1m / rollup_store / resample のいずれも通過）。市場 ref 以外・正常バーは no-op。
@@ -187,12 +192,14 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
             path=DATASET_WHITELIST[ref],
             atomic_tail_rows=_ATOMIC_TAIL_LOOKBACK_ROWS,
         )
-        return _clamp_outlier_bars(df, ref)
+        return material_identity.label(
+            _clamp_outlier_bars(df, ref), ref=ref, timeframe=timeframe)
 
     base = _load_base_dataframe(ref)
     if timeframe is None:
         # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。
-        return _clamp_outlier_bars(base, ref)
+        return material_identity.label(
+            _clamp_outlier_bars(base, ref), ref=ref, timeframe=timeframe)
     # resample キャッシュ（P-1 base 世代 mtime キー・P-2 有界）は serving_cache が担う。resample_ohlc は
     # 本モジュール属性を注入する（monkeypatch.setattr(dataset, "resample_ohlc", ...) が有効に働く）。
     resampled = serving_cache.resample_cached(
@@ -200,7 +207,8 @@ def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
         resample_fn=resample_ohlc,
         rule=TIMEFRAME_RULES.get(timeframe),
     )
-    return _clamp_outlier_bars(resampled, ref)
+    return material_identity.label(
+        _clamp_outlier_bars(resampled, ref), ref=ref, timeframe=timeframe)
 
 
 # 原子窓読みの clamp 済み全期間 DataFrame キャッシュ（ref → (csv mtime, clamped df)）。

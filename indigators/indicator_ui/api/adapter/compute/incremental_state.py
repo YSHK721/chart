@@ -5,6 +5,13 @@
     「非破壊 step / 確定時 advance」の規約で駆動する。**指標の中身は一切知らない**
     （計算式・系列名・パラメータ意味論はすべて増分器側）。
 
+キーの単位（ISSUE-465）:
+    状態のキーは「指標・variant・増分器・params」＋ **素材の識別**（どのデータの・どの足か）
+    である。状態はその素材の確定プレフィクスまで進めた計算なので、別の素材へは流用できない
+    （``adapt`` が不一致で ``None`` を返す）。素材を区別しないと、8 足を巡回する要求では
+    足が替わるたびに全再構築が起きる。骨格（系列 metadata）は素材に依らないため、
+    素材を含めないキーで共有する。
+
 なぜキャッシュが「最適化」ではなく「仕様」か:
     増分計算は「前バーまでの状態を保持し 1 点だけ進める」計算であり、状態を持たなければ
     成立しない。キャッシュが外れても値は full と同一（再構築するだけ）であり、遅くなっても
@@ -30,10 +37,13 @@ from collections import OrderedDict
 from typing import Any, Protocol
 
 from adapter.compute import incremental as _incremental_registry
+from marketdata.material_identity import material_of
 
-# 状態エントリの上限（§5.3.3: インスタンス数 × 2 程度）。実測構成 7 指標＝14 だが、時間足・
-# パラメータ違いの併存を見込んで余裕を持たせる。超過は LRU で破棄し次回再構築する。
-_MAX_ENTRIES = 64
+# 状態エントリの上限。1 つの状態は「指標インスタンス × 素材（データセット・時間足）」ごとに
+# 要る（ISSUE-465）。ダッシュボードは 1 要求で 8 素材を巡回し、指標インスタンスは数十本に
+# なるため、素材数ぶんの余裕が無いと LRU 追い出しで再構築が復活する（キー拡張が無効化される）。
+# 超過は LRU で破棄し次回再構築する（値は変わらない・遅くなるだけ）。
+_MAX_ENTRIES = 512
 
 _LOCK = threading.Lock()
 _STATES: "OrderedDict[tuple, Any]" = OrderedDict()
@@ -77,6 +87,21 @@ class Incrementer(Protocol):
 def _params_key(params: dict[str, Any]) -> str:
     """params を決定論的な文字列キーへ（順序非依存・非 JSON 値は repr で安定化）。"""
     return json.dumps(params, sort_keys=True, default=repr, ensure_ascii=False)
+
+
+def _state_key(key: tuple, df: Any) -> tuple:
+    """状態のキー＝骨格のキー ＋ **素材の識別**（ISSUE-465）。
+
+    状態は「その素材の確定プレフィクスまで進めた計算」であり、別の素材（別の時間足・別の
+    データセット）へは流用できない（増分器の ``adapt`` が不一致で ``None`` を返す）。素材を
+    区別しないキーで 1 つしか持たないと、素材が交互に来るたびに全再構築が起きる
+    （実測 2026-08-30: 8 足巡回で末尾 1 点が 0.2〜2.7ms → 212〜374ms）。
+
+    識別は素材そのものが運ぶ（:func:`marketdata.material_identity.material_of`）。識別を
+    持たない素材（合成 DataFrame・上位足投影の畳み足）は ``None``＝従来どおり 1 つの
+    入れ物を共有する（挙動は変わらない）。
+    """
+    return key + (material_of(df),)
 
 
 def _cache_get(store: OrderedDict, key: tuple) -> Any:
@@ -164,12 +189,13 @@ def compute(
     if skeleton is None:
         return None
 
-    state = _cache_get(_STATES, key)
+    state_key = _state_key(key, df)
+    state = _cache_get(_STATES, state_key)
     if state is not None:
         state = incrementer.adapt(state, req)
     if state is None:
         state = incrementer.build(req)
-    _cache_put(_STATES, key, state)
+    _cache_put(_STATES, state_key, state)
 
     return incrementer.emit(state, req, skeleton, k)
 
@@ -219,12 +245,13 @@ def compute_seq(
     if skeleton is None:
         return None
 
-    state = _cache_get(_STATES, key)
+    state_key = _state_key(key, df)
+    state = _cache_get(_STATES, state_key)
     if state is not None:
         state = incrementer.adapt(state, req)
     if state is None:
         state = incrementer.build(req)
-    _cache_put(_STATES, key, state)
+    _cache_put(_STATES, state_key, state)
 
     out: "list[list[dict[str, Any]] | None]" = []
     for index, bar in enumerate(bars):
