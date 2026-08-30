@@ -687,7 +687,9 @@
 
 .dash-charts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  /* 1 タイル = 右列（70%）の全幅（依頼者指示 2026-08-30: 「横幅を 70% の範囲の 100% に表示」。
+     複数列に割ると 1 枚あたりが小さくなるため、タイルは縦に 1 枚ずつ並べる）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   padding: 14px;
   background: var(--surface);
