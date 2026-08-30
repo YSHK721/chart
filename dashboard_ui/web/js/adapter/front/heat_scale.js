@@ -98,3 +98,24 @@ export function colorForP(p) {
 export function tailUnscaledColor() {
   return TAIL_UNSCALED_COLOR;
 }
+
+/**
+ * チャート一覧（timeframe_charts_view）の canvas 内配色（ISSUE-452 内容 2）。
+ *
+ * canvas の内側には CSS トークン（var(--…)）が届かないため、色値をここへ置く。置き場所が
+ * 本モジュールなのは「front の色定義は 1 冊に 1 つ」（§5.5.7 と同じ規約・heat_scale.test.js の
+ * `the_scale_has_no_second_definition_in_the_front_tree` が機械的に強制）だからである。
+ *
+ * 意味の対応（dashboard.css のパレットと同じ）:
+ *   up = --up-bar（支持側＝現在値より下の水準・上昇ローソク）
+ *   down = --down（抵抗側＝現在値より上の水準・下降ローソク）
+ *   current = 統合ページのアクセント（モード切替ボタンの active と同色）
+ *   text / grid = 明暗どちらのテーマの地（--surface）でも読める中間トーン
+ */
+export const CHART_COLORS = Object.freeze({
+  up: '#26a69a',
+  down: '#c33e3b',
+  current: '#2962ff',
+  text: '#8a94a6',
+  grid: 'rgba(128, 140, 160, 0.18)',
+});

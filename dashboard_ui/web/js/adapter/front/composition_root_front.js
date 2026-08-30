@@ -25,9 +25,13 @@
 import { createSheetHost } from './sheet_host.js';
 import { createReachSheetView } from './reach_sheet_view.js';
 import { createOscillatorSheetView } from './oscillator_sheet_view.js';
+import { createTimeframeChartsView, chartsLibUsable } from './timeframe_charts_view.js';
 import { createReachSheetClient, deriveApiPrefix } from './reach_sheet_client.js';
+import { createCandlesClient } from './candles_client.js';
 import { readInstanceBundle, DASHBOARD_TIMEFRAMES } from './template_binding_reader.js';
+import { TIMEFRAME_REFRESH_MS } from './timeframes.js';
 import { createSheetPoller } from '../../usecase/sheet_poller.js';
+import { createCandlePoller } from '../../usecase/candle_poller.js';
 
 /** 素材（arch-spec T-10: live と同一データセット固定）。 */
 const DATASET_REF = 'jp225_tick';
@@ -46,6 +50,15 @@ const STYLE_PATH = '/css/dashboard.css';
  *  取得できない環境（単体テスト・live 停止）では注記なし＝本数のみ表示に縮退する。 */
 const PERIOD_PRESETS_PATH = '/live/js/usecase/period_presets.js';
 
+/** ローソクの供給元（live core の /candles・T-10: live と同一データセット）。dashboard core は
+ *  配信面を複製しない（ISSUE-348 と同型の取り違えを作らない）。period_presets と同じ
+ *  「live から借りる」規約であり、単体起動（live 不在）では各タイルへ理由が掲示される。 */
+const CANDLES_API_PREFIX = '/live';
+
+/** チャート一覧のローソク本数（末尾から）。水準の照合ではなく文脈の表示が目的なので、
+ *  タイル幅で読める程度に留める（増やすほど live core の I/O を 8 面ぶん引く）。 */
+const CANDLE_LIMIT = 180;
+
 /**
  * 統合ページ側の入口。器と 2 つの表を出し、`/reach_sheet` の発行を回す。
  *
@@ -61,6 +74,10 @@ const PERIOD_PRESETS_PATH = '/live/js/usecase/period_presets.js';
  * @param {Function} [opts.barCloseTimeOf] 最新の確定バー時刻を返す（段の切り替えの契機）
  * @param {Function} [opts.loadPeriodPresets] 期間プリセット module の読み込み
  *                                       （既定は PERIOD_PRESETS_PATH の動的 import。検定は fake を注入）
+ * @param {object}   [opts.lwc]          lightweight-charts（既定は global LightweightCharts。
+ *                                       unified_root が live vendor の読込後に dashboard を
+ *                                       import するため、統合ページでは既定で解決できる）
+ * @param {string}   [opts.candlesApiPrefix] ローソク供給元の prefix（既定は live モード）
  * @returns {Promise<{enable: Function, disable: Function, refresh: Function}>}
  */
 export async function setupDashboardDisplay({
@@ -73,6 +90,8 @@ export async function setupDashboardDisplay({
   schedule,
   barCloseTimeOf,
   loadPeriodPresets = () => import(PERIOD_PRESETS_PATH),
+  lwc,
+  candlesApiPrefix = CANDLES_API_PREFIX,
 } = {}) {
   const prefix = typeof apiPrefix === 'string' ? apiPrefix : deriveApiPrefix(import.meta.url);
   const transport = typeof fetchFn === 'function'
@@ -115,12 +134,24 @@ export async function setupDashboardDisplay({
 
   const ladderView = createReachSheetView({ doc, periodAnnotator });
   const oscillatorView = createOscillatorSheetView({ doc, now: () => Math.floor(clock() / 1000) });
+  // lwc は注入が無ければ global から解決する（unified_root は live vendor を読み込んでから
+  //   dashboard を import する＝統合ページでは必ず居る。無い環境は View が文字で掲示する）。
+  const chartLib = lwc !== undefined
+    ? lwc
+    : (typeof globalThis !== 'undefined' ? globalThis.LightweightCharts ?? null : null);
+  const chartsView = createTimeframeChartsView({ doc, lwc: chartLib });
   const client = transport
     ? createReachSheetClient({ fetch: transport, apiPrefix: prefix })
+    : null;
+  // 描けない環境（lwc 不在＝View が理由を掲示する）ではローソクを**取得しない**。取得だけ
+  //   して捨てるのは「作ってから捨てる」型の浪費で、出力検証では落ちない（絶対命令 §4.1）。
+  const candlesClient = transport && chartsLibUsable(chartLib)
+    ? createCandlesClient({ fetch: transport, apiPrefix: candlesApiPrefix })
     : null;
 
   let enabled = false;
   let poller = null;
+  let candlePoller = null;
   let stopTimer = null;
 
   /**
@@ -138,12 +169,34 @@ export async function setupDashboardDisplay({
     }
     ladderView.render(response);
     oscillatorView.render(response);
+    // チャート一覧は**同じ応答**で描く（ISSUE-452 禁止事項: 二重発行の不在。水準の計算は
+    //   /reach_sheet の 1 往復が唯一源で、チャートのために計算を増やさない）。
+    chartsView.render(response);
   }
 
-  /** 契機を 1 つ通す（発行するかは sheet_poller が決める）。 */
+  /** ローソク 1 時間足ぶんの取得と供給（発行するかは candle_poller が決める）。 */
+  async function issueCandles(timeframe) {
+    const result = await candlesClient.fetchCandles({
+      datasetRef: DATASET_REF, timeframe, limit: CANDLE_LIMIT,
+    });
+    if (!enabled) {
+      return result;   // モードを出た後の遅延着弾は捨てる（present と同じ 1 箇所ガード）。
+    }
+    if (result.ok) {
+      chartsView.setCandles(timeframe, result.candles);
+    } else {
+      chartsView.setCandleError(timeframe, result.error.message);
+    }
+    return result;
+  }
+
+  /** 契機を 1 つ通す（発行するかは sheet_poller / candle_poller が決める）。 */
   async function refresh() {
     if (!enabled || !poller) {
       return null;
+    }
+    if (candlePoller) {
+      candlePoller.tick();
     }
     const bundle = readInstanceBundle({ storage: templates });
     if (!bundle.ok) {
@@ -169,7 +222,10 @@ export async function setupDashboardDisplay({
     if (!anchor) {
       return;                                // DOM 非対応環境（描画対象そのものが無い）。
     }
+    // DOM の並びは版面の読み順（ラダー左 → チャート右 → 第 2 表下段・依頼者指示 2026-08-30）。
+    //   置き場所そのものは CSS（dashboard.css の grid-template-areas）が唯一源。
     ladderView.mount(anchor);
+    chartsView.mount(anchor);
     oscillatorView.mount(anchor);
     enabled = true;
 
@@ -186,6 +242,14 @@ export async function setupDashboardDisplay({
       now: clock,
       tickIntervalMs: TICK_INTERVAL_MS,
     });
+    candlePoller = candlesClient
+      ? createCandlePoller({
+        issue: issueCandles,
+        now: clock,
+        timeframes: DASHBOARD_TIMEFRAMES,
+        refreshMs: TIMEFRAME_REFRESH_MS,
+      })
+      : null;
     await refresh();
     stopTimer = startTimer(() => { refresh(); }, TICK_INTERVAL_MS);
   }
@@ -200,12 +264,17 @@ export async function setupDashboardDisplay({
       poller.stop();
       poller = null;
     }
+    if (candlePoller) {
+      candlePoller.stop();
+      candlePoller = null;
+    }
     if (typeof stopTimer === 'function') {
       stopTimer();
       stopTimer = null;
     }
     ladderView.unmount();
     oscillatorView.unmount();
+    chartsView.unmount();
     sheetHost.unmount();
   }
 

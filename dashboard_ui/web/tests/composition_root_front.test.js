@@ -25,7 +25,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { fakeDoc, fakeEl, flatten, sheetResponse, ladderRow, oscCell } from './_fake_dom.js';
+import { fakeLwc } from './_fake_lwc.js';
 import { TEMPLATE_STORAGE_KEYS } from '../js/adapter/front/template_binding_reader.js';
+import { DASHBOARD_TIMEFRAMES } from '../js/adapter/front/timeframes.js';
 import { setupDashboardDisplay } from '../js/adapter/front/composition_root_front.js';
 
 /** 読み取り専用 storage（unified_ui の readOnlyStorage と同じ契約: 書けば throw）。 */
@@ -54,18 +56,28 @@ const PAYLOAD = sheetResponse({
   cells: [oscCell()],
 });
 
-/** fetch の Test Spy。発行を数え、送ったボディを残す。 */
+/** fetch の Test Spy。/reach_sheet（POST）と /candles（GET）を別々に数える。 */
 function spyFetch() {
   const calls = [];
+  const candleCalls = [];
   const fetchFn = (url, init) => {
-    calls.push({ url, body: JSON.parse(init.body) });
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(PAYLOAD) });
+    if (init && init.body) {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(PAYLOAD) });
+    }
+    candleCalls.push(url);
+    return Promise.resolve({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        ok: true, candles: [{ time: 60, open: 1, high: 2, low: 0.5, close: 1.5 }],
+      }),
+    });
   };
-  return { fetchFn, calls };
+  return { fetchFn, calls, candleCalls };
 }
 
 /** 手回しの時計（自動の timer を使わない＝検定が実時間を待たない）。 */
-function harness({ instanceCount = 2, tickIntervalMs = 1_000 } = {}) {
+function harness({ instanceCount = 2, tickIntervalMs = 1_000, lwc = null } = {}) {
   const doc = fakeDoc();
   const host = fakeEl('div');
   const spy = spyFetch();
@@ -81,6 +93,8 @@ function harness({ instanceCount = 2, tickIntervalMs = 1_000 } = {}) {
     // 時計を注入し、勝手に setInterval を張らせない（監視が検定の後も走り続けない）。
     schedule: () => () => {},
     barCloseTimeOf: () => barCloseTime,
+    // 既定 null: 既存の検定はチャート無し環境（掲示のみ）で回る。チャートの検定は fakeLwc を渡す。
+    lwc,
   });
   return {
     doc, host, spy, setup,
@@ -110,9 +124,62 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     const handle = await h.setup;
     // Act
     await handle.enable();
-    // Assert: 第 1 表と第 2 表がどちらも器の中に在る。
+    // Assert: 第 1 表・第 2 表・チャート一覧（ISSUE-452 内容 2）がすべて器の中に在る。
     assert.ok(flatten(h.host).some((el) => el.classList.contains('dash-ladder')));
     assert.ok(flatten(h.host).some((el) => el.classList.contains('dash-osc')));
+    assert.ok(flatten(h.host).some((el) => el.classList.contains('dash-charts')));
+  });
+
+  test('enable_with_a_chart_library_fetches_candles_once_per_timeframe', async () => {
+    // チャート一覧のローソクは live の /candles から時間足ごとに 1 本（初回）。
+    const h = harness({ lwc: fakeLwc().lwc });
+    const handle = await h.setup;
+    // Act
+    await handle.enable();
+    // Assert: 発行先は live の配信面・全時間足を 1 回ずつ（重複なし・欠落なし）。
+    const fetched = h.spy.candleCalls.map((url) => new URLSearchParams(url.split('?')[1]).get('timeframe'));
+    assert.deepEqual([...fetched].sort(), [...DASHBOARD_TIMEFRAMES].sort());
+    assert.ok(h.spy.candleCalls.every((url) => url.startsWith('/live/candles?')));
+  });
+
+  test('no_candles_are_fetched_when_the_chart_library_is_absent', async () => {
+    // 描けない環境で取得だけするのは「作ってから捨てる」型の浪費（絶対命令 §4.1）。
+    const h = harness({ lwc: null });
+    const handle = await h.setup;
+    // Act
+    await handle.enable();
+    h.advance(3_600_000);
+    await handle.refresh();
+    // Assert
+    assert.equal(h.spy.candleCalls.length, 0);
+  });
+
+  test('candle_fetches_do_not_grow_while_no_bar_slot_advances', async () => {
+    // 無駄の不在（結線ぶんの表明）: 周期の内側の契機ではローソクを取り直さない。
+    const h = harness({ lwc: fakeLwc().lwc });
+    const handle = await h.setup;
+    await handle.enable();
+    const afterEnable = h.spy.candleCalls.length;
+    // Act: 1m の枠（60s）の内側で 5 回契機を与える。
+    for (let i = 0; i < 5; i += 1) {
+      h.advance(1_000);
+      await handle.refresh();
+    }
+    // Assert
+    assert.equal(h.spy.candleCalls.length, afterEnable);
+  });
+
+  test('no_candle_fetch_is_issued_after_disable', async () => {
+    const h = harness({ lwc: fakeLwc().lwc });
+    const handle = await h.setup;
+    await handle.enable();
+    await handle.disable();
+    const after = h.spy.candleCalls.length;
+    // Act
+    h.advance(3_600_000);
+    await handle.refresh();
+    // Assert
+    assert.equal(h.spy.candleCalls.length, after);
   });
 
   test('disable_unmounts_everything_because_the_host_is_shared_with_sim', async () => {

@@ -114,8 +114,15 @@
 .dash-sheet-host {
   /* 表頭の高さ。sticky な現在値行がこの真下へ貼り付く（唯一源・上の thead 参照）。 */
   --head-h: 34px;
-  display: flex;
-  flex-direction: column;
+  /* 版面の割り付け（依頼者指示 2026-08-30）: 価格ラダーは左・チャート一覧は右。
+     第 2 表（オシレータ・時間足 8 列の横長の表）は狭い列に入れると潰れるため全幅で下段。
+     置き場所は**この表だけ**が持つ（grid-area の名前 1 対 1）。View 側は並び順を知らない。 */
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(360px, 1fr);
+  grid-template-areas:
+    "ladder charts"
+    "osc    osc";
+  align-items: start;
   gap: 20px;
   padding: 16px 18px 24px;
   overflow: auto;
@@ -138,6 +145,22 @@
   width: 100%;
   max-width: 1480px;
   margin-inline: auto;
+}
+
+/* 割り付け先（host の grid-template-areas と 1 対 1）。 */
+.dash-ladder { grid-area: ladder; }
+.dash-charts { grid-area: charts; }
+.dash-osc { grid-area: osc; }
+
+/* 2 列が収まらない幅では縦積みへ倒す（並びは左→右の読み順のまま: ラダー → チャート → 第 2 表）。 */
+@media (max-width: 1100px) {
+  .dash-sheet-host {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "ladder"
+      "charts"
+      "osc";
+  }
 }
 
 /* ===== 節と見出し（モックの section / h2 / .tag / .lead） ===== */
@@ -649,4 +672,58 @@
   border-radius: 4px;
   background: var(--amber-bg);
   color: var(--amber);
+}
+
+/* ===== 各時間足チャート一覧（ISSUE-452 内容 2・依頼者指示 2026-08-30） =====
+   1 時間足 = 1 タイル。ローソクは canvas（lightweight-charts）で、CSS が塗るのは
+   タイルの枠と見出しだけ。canvas の内側の色は timeframe_charts_view.js の COLORS が持つ
+   （var() が届かない領域。意味の対応はそちらの冒頭に記録）。 */
+.dash-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dash-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+}
+
+.dash-chart-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.dash-chart-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 11px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--line);
+}
+
+.dash-chart-status {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ローソクが取れないことは**隠さない**（§5.2 の規約と同じ。空チャートと区別できる文字で）。 */
+.dash-chart-status-error {
+  color: var(--down);
+}
+
+.dash-chart-canvas {
+  height: 220px;
+  min-width: 0;
 }
