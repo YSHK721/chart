@@ -172,6 +172,38 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(levelRows[2].classList.contains('dash-ladder-hit'), true);
   });
 
+  test('a_reached_row_shows_its_reach_time_between_gap_and_timeframe', () => {
+    // 依頼者指示 2026-08-30:「差」と「時間足」の間に「到達時間」。表記 YYYY/MM/DD HH:MM:SS（UTC）。
+    //   1767229323 = 2026-01-01 01:02:03 UTC（時刻系は marketdata と同じ UTC・§6.2 定義 A）。
+    const rows = [ladderRow({ price: 65754.5, timeframe: '1m', label: 'a', distance: -1.5, gap_to_previous: null, horizon_marks: [], horizon_p: {}, reach: { reached: true, since_time: 1767229323, truncated: false } })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    assert.equal(cellText(row, 'reach_time'), '2026/01/01 01:02:03');
+    // 列の位置＝差と時間足の間（見出し行の並びで表明する）。
+    const heads = flatten(host)
+      .filter((el) => el.tagName === 'TH' && el.dataset && el.dataset.cell)
+      .map((el) => el.dataset.cell);
+    const at = (cell) => heads.indexOf(cell);
+    assert.ok(at('gap') >= 0 && at('gap') < at('reach_time') && at('reach_time') < at('timeframe'));
+  });
+
+  test('an_unreached_row_leaves_the_reach_time_blank_instead_of_inventing_one', () => {
+    // 未到達（reached=false・since_time=null）は空欄。0 や現在時刻を埋めない（発明しない）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const pending = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'))[0];
+    assert.equal(cellText(pending, 'reach_time'), '');
+  });
+
+  test('a_truncated_reach_time_carries_a_qualifier_tooltip', () => {
+    // 履歴の先頭で切れているときは「これ以前から到達している可能性」を title で限定する
+    //   （§9-5: 縮退・不確かさを無言にしない）。
+    const rows = [ladderRow({ price: 65754.5, timeframe: '1m', label: 'a', distance: -1.5, gap_to_previous: null, horizon_marks: [], horizon_p: {}, reach: { reached: true, since_time: 1767229323, truncated: true } })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const cell = flatten(row).find((el) => el.dataset.cell === 'reach_time');
+    assert.match(cell.title, /これ以前から到達/);
+  });
+
   test('the_timeframe_of_a_row_carries_the_tone_of_its_place_in_the_display_order', () => {
     // モックの r0〜r7。並びの唯一源は timeframes.js（第 2 表の列と同じ）。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));

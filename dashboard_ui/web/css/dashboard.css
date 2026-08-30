@@ -879,3 +879,12 @@
   font-size: 10px;
   color: var(--muted);
 }
+
+/* 到達時間列（依頼者指示 2026-08-30: 差と時間足の間・YYYY/MM/DD HH:MM:SS・UTC）。 */
+.dash-ladder-table td.dash-ladder-reach-time {
+  width: 1%;
+  white-space: nowrap;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ink2);
+}

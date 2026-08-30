@@ -25,7 +25,7 @@
 import { colorForP } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
 // 価格表記の唯一源（第 2 表と共有・写しを持たない）。
-import { formatPrice } from './format.js';
+import { formatPrice, formatReachTimestamp } from './format.js';
 // 足別トーン（モックの r0〜r7）の並びは列を出す側と同じ唯一源を使う（写しを持たない）。
 import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
@@ -70,6 +70,8 @@ const COLUMNS = Object.freeze([
   { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
   // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
   { cell: 'gap', head: '差', hint: '（直前行と）', className: 'dash-ladder-head-gap' },
+  // 到達時間（依頼者指示 2026-08-30: 差と時間足の間・YYYY/MM/DD HH:MM:SS・UTC）。
+  { cell: 'reach_time', head: '到達時間', className: 'dash-ladder-head-reach-time' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
   { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
   { cell: 'level', head: '水準', className: 'dash-ladder-head-level' },
@@ -451,6 +453,20 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       textContent: formatGap(row.gap_to_previous),
       dataset: { cell: 'gap' },
     }));
+    // 到達時間（定義 A＝現在の到達が始まった時刻・§6.2）。未到達は空欄。履歴の先頭で
+    //   切れているとき（truncated）は断定を避ける限定を title へ持つ（§9-5 の規約を保つ）。
+    const reach = row.reach ?? null;
+    const reached = !!(reach && reach.reached === true
+      && reach.since_time !== null && reach.since_time !== undefined);
+    const reachCell = el('td', {
+      className: 'dash-ladder-reach-time',
+      textContent: reached ? formatReachTimestamp(reach.since_time) : '',
+      dataset: { cell: 'reach_time' },
+    });
+    if (reached && reach.truncated === true) {
+      reachCell.title = '履歴の先頭で切れているため、実際にはこれ以前から到達している可能性があります';
+    }
+    tr.appendChild(reachCell);
     tr.appendChild(buildTimeframeCell(row.timeframe, tone));
     appendNamingCells(tr, row);
     return tr;
@@ -549,9 +565,9 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     }));
     tr.appendChild(priceCell);
     tr.appendChild(el('td', {
-      // 差＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS 側と
-      //   ここの定数 2（差・時間足）を数え直す）。ラベル文は置かない（上記）。
-      colSpan: 2 + NAMING_CELLS,
+      // 差＋到達時間＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS
+      //   側とここの定数 3（差・到達時間・時間足）を数え直す）。ラベル文は置かない（上記）。
+      colSpan: 3 + NAMING_CELLS,
       dataset: { cell: 'label' },
     }));
     return tr;
