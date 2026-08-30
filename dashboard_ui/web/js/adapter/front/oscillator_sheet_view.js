@@ -105,7 +105,6 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     // 枠・見出し・走査域はモックの .prop / .hd / .scroll と同じ流儀（第 1 表と揃える）。
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
-    head.appendChild(el('span', { className: 'dash-panel-stamp', textContent: '指標 × 時間足' }));
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: 'オシレータ水準到達表' }));
     head.appendChild(el('p', {
       className: 'dash-panel-lead',

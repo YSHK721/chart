@@ -114,7 +114,6 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
 
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
-    head.appendChild(el('span', { className: 'dash-panel-stamp', textContent: '1 時間足 = 1 枚' }));
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '各時間足チャート' }));
     head.appendChild(el('p', {
       className: 'dash-panel-lead',

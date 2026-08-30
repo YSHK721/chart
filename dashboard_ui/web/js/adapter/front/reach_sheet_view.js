@@ -191,7 +191,6 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
 
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
-    head.appendChild(el('span', { className: 'dash-panel-stamp', textContent: '水準 1 本 = 1 行' }));
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '価格ラダー' }));
     head.appendChild(el('p', {
       className: 'dash-panel-lead',
