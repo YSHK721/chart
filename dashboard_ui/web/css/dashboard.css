@@ -115,11 +115,13 @@
   /* 表頭の高さ。sticky な現在値行がこの真下へ貼り付く（唯一源・上の thead 参照）。 */
   --head-h: 34px;
   /* 版面の割り付け（依頼者指示 2026-08-30 追補）: 左列＝価格ラダー＋オシレーターラダー
-     （縦積み）・右列＝チャート一覧を**版面幅の 70%** で表示する。70% は指示の数値そのもの
-     （gap 20px は残りの左列側から出る）。置き場所は**この表だけ**が持つ
+     （縦積み）・右列＝チャート一覧。左列の幅は**価格ラダーの全列が横スクロールなしで
+     収まる内容幅**（依頼者指示「価格ラダーの項目をスライドなしで表示できる幅に調整しろ」。
+     この指示が先の 70% 固定を上書きし、チャートは残り幅を全て使う）。第 2 表は左列の幅を
+     押し広げない（下の .dash-osc の封じ込め）。置き場所は**この表だけ**が持つ
      （grid-area の名前 1 対 1）。View 側は並び順を知らない。 */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 70%);
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
   grid-template-areas:
     "ladder charts"
     "osc    charts";
@@ -151,7 +153,29 @@
 /* 割り付け先（host の grid-template-areas と 1 対 1）。 */
 .dash-ladder { grid-area: ladder; }
 .dash-charts { grid-area: charts; }
-.dash-osc { grid-area: osc; }
+
+/* 左列の幅の決め手は**ラダーの表だけ**（依頼者指示 2026-08-30「価格ラダーの項目をスライド
+   なしで表示できる幅に調整しろ」）。文章ブロック（掲示・凡例・リード文）は max-content 測定で
+   無折返しの 1 行ぶん（実測: 縮退掲示 120 字 ≈ 1,331px）を列幅へ持ち込み、表が width:100% で
+   それに追随して全列が意味なく太る。width:0 で内在幅の寄与を消し、min-width:100% で
+   確定した列幅いっぱいへ戻す（文言は削らない——折り返して全文表示される）。 */
+.dash-ladder .dash-sheet-message,
+.dash-ladder .dash-panel-lead,
+.dash-ladder .dash-legend,
+.dash-ladder .dash-granularity-notice {
+  width: 0;
+  min-width: 100%;
+}
+
+/* 第 2 表は左列の**幅の決定に参加しない**（width:0 で内在幅の寄与を消し、min-width:100% で
+   決まった列幅いっぱいへ戻す）。左列の幅の唯一の決め手は価格ラダーであり（上の指示）、
+   横に長い第 2 表（時間足 8 列）が列を押し広げると、チャートの残り幅が意味もなく痩せる。
+   第 2 表自身は内側の .dash-scroll が横に送る（従来どおり）。 */
+.dash-osc {
+  grid-area: osc;
+  width: 0;
+  min-width: 100%;
+}
 
 /* チャート節は自分の grid 領域（右列 70%）の **100%** を使う（依頼者指示 2026-08-30
    「section.dash-charts を 100% 表示しろ。余計な余白は必要なし」）。中央寄せ上限
@@ -340,6 +364,13 @@
   text-transform: none;
 }
 
+/* ラダーの見出しヒントは**見出し語の下の行**へ折る（依頼者指示 2026-08-30「スライドなしで
+   表示できる幅に調整しろ」）。インラインのままだと「価格（下は直前行との差）」の 1 行ぶんが
+   列の内容幅になり、左列全体を押し広げる。文言は削らない（折るだけ）。 */
+.dash-ladder-table thead .dash-sheet-hint {
+  display: block;
+}
+
 /* ===== 第 1 表 = 価格ラダー ===== */
 .dash-ladder-row {
   background: var(--surface);
@@ -412,9 +443,12 @@
   color: var(--up);
 }
 
-/* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。 */
+/* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。
+   距離の**下の行**に折る（依頼者指示 2026-08-30・上のヒントと同じ理由）。距離の数字と
+   横並びのままだと 3 印そろった行の 1 行ぶん（実測 242px）が列幅になる。 */
 .dash-ladder-marks {
-  white-space: nowrap;
+  display: block;
+  white-space: normal;
 }
 
 .dash-ladder-next {
