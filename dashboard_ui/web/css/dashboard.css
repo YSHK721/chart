@@ -325,19 +325,37 @@
   box-shadow: inset 3px 0 0 var(--up-bar);
 }
 
+/* 距離・時間足は内容幅へ詰める（依頼者指示 2026-08-30「まだ広い」）。width:1% は
+   table-layout:auto での「内容より広げない」の常套で、余白はすべて指標名列（左詰め文字）
+   へ集める。バッジ込みでも折り返さないよう nowrap を併せて置く。 */
 .dash-ladder-table th.dash-ladder-head-distance {
-  min-width: 210px;
+  width: 1%;
+  min-width: 110px;
+  white-space: nowrap;
 }
 
+/* 価格・期間・ソースも内容幅へ固定する。狭めた距離・時間足の余白がここへ流れると
+   価格セルのヒート帯だけが横に肥大するため、余白の受け皿は指標名列（width:auto）に
+   一本化する。 */
 .dash-ladder-table td.dash-ladder-price,
 .dash-ladder-table th.dash-ladder-head-price {
+  width: 1%;
   min-width: 150px;
+  white-space: nowrap;
+}
+
+.dash-ladder-table td.dash-ladder-period,
+.dash-ladder-table td.dash-ladder-source {
+  width: 1%;
+  white-space: nowrap;
 }
 
 /* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。 */
 .dash-ladder-table th.dash-ladder-distance-cell {
   text-align: right;
-  min-width: 210px;
+  width: 1%;
+  min-width: 110px;
+  white-space: nowrap;
   background: transparent;
   border-right: 1px solid var(--line);
 }
@@ -427,7 +445,9 @@
 /* 時間足のピル（モックの td.tf u）。 */
 .dash-ladder-table td.dash-ladder-timeframe {
   text-align: left;
-  min-width: 130px;
+  width: 1%;
+  min-width: 48px;
+  white-space: nowrap;
 }
 
 .dash-tf-pill {
