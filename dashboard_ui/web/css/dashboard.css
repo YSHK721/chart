@@ -498,22 +498,18 @@
   flex: 1 1 0;
 }
 
-/* 価格と直前行との差は**同じ 1 行**に並べる（依頼者指示 2026-08-30: 2 行表示を 1 行にして
-   行の縦幅を縮める。窓に入る本数がそのぶん増える）。 */
 .dash-ladder-price-text {
   position: relative;
   display: inline;
   color: var(--ink);
 }
 
-/* 直前行との差。モックは i.gap を opacity .7 で沈めるが、heat の地の上では対比が落ちるので
-   薄さではなく**大きさ**で下げる（規約 4）。 */
+/* 直前行との差＝**独立列**（依頼者指示 2026-08-30。1 行の高さは保つ）。モックは opacity .7 で
+   沈めるが、薄さではなく**大きさ**で下げる（規約 4）。 */
 .dash-ladder-gap {
-  position: relative;
-  display: inline;
-  margin-left: 6px;
-  font-style: normal;
   font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
   color: var(--ink2);
 }
 

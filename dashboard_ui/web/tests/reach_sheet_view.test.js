@@ -128,11 +128,18 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(cellText(second, 'gap'), '7.6');
   });
 
-  test('the_price_column_head_says_where_the_smaller_number_under_it_comes_from', () => {
-    // 「差」の語を欄から外した以上、その意味は表頭が持たねばならない（意味の消失を防ぐ）。
+  test('the_gap_has_its_own_column_whose_head_says_what_it_is', () => {
+    // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
+    //   数値だけの欄なので、意味（直前行との差）は列見出しが持つ。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
-    const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'price');
-    assert.match(textOf(head), /直前行との差/);
+    const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'gap');
+    assert.ok(head, '差の列見出しがありません');
+    assert.match(textOf(head), /差/);
+    assert.match(textOf(head), /直前行/);
+    // 価格セルの中には差が同居しない（分離の表明）。
+    const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const priceCell = flatten(first).find((el) => el.classList.contains('dash-ladder-price'));
+    assert.equal(flatten(priceCell).some((el) => el.dataset.cell === 'gap'), false);
   });
 
   test('a_level_below_the_current_price_is_marked_as_reached_and_one_above_is_not', () => {
@@ -526,7 +533,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(build(100), build(200));
   });
 
-  // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・オール） ----
+  // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・全期間） ----
   const scopeButton = (host, key) => flatten(host)
     .find((node) => node.dataset && node.dataset.scope === key);
   const press = (button) => { (button._listeners.click || []).forEach((fn) => fn({})); };
@@ -548,7 +555,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     }
     assert.ok(scopeButton(host, 'short').classList.contains('is-active'));
     assert.match(textOf(host), /短期/);
-    assert.match(textOf(host), /オール/);
+    assert.match(textOf(host), /全期間/);
   });
 
   test('the_medium_scope_shows_only_levels_of_1h_and_above', () => {
@@ -576,7 +583,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
   });
 
   test('the_all_scope_drops_the_window_and_shows_every_row', () => {
-    // オール＝窓なし全表示（従来の全量へ戻す選択肢）。
+    // 全期間＝窓なし全表示（従来の全量へ戻す選択肢）。
     const many = Array.from({ length: 100 }, (_unused, i) =>
       ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
     const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));

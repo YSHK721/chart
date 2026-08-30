@@ -6,7 +6,7 @@
 //
 // 設計入力:
 //   §4.1 / §4.7: 行 = 水準 1 本（**束ねない**）。現在値は独立行として価格順の位置に入る。
-//     「差」= 直前行との価格差で、モックに倣い価格の直下へ小さく置く（列は分けない）。
+//     「差」= 直前行との価格差。独立列（依頼者指示 2026-08-30。モックの「価格の直下」から変更）。
 //   §4.3 / §4.7: 地平 3 段（短期 = すべて / 中期 = 1h 以上 / 長期 = 1D 以上）の直上・直下に
 //     「次のターゲット」の印を付ける。印はモックの b.next（地平ごとの色）で出す。
 //   §5.5.5 / §5.5.6: 価格セルの背景を地平 3 段で 3 分割し、各地平の `p` を heat_scale で塗る。
@@ -62,7 +62,9 @@ function unknownHorizonKeys(rows) {
  *  （依頼者指示 2026-08-30。行の識別は従来どおりサーバの `label` が担う）。 */
 const COLUMNS = Object.freeze([
   { cell: 'distance', head: '距離 · 次のターゲット', className: 'dash-ladder-head-distance' },
-  { cell: 'price', head: '価格', hint: '（右は直前行との差）', className: 'dash-ladder-head-price' },
+  { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
+  // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
+  { cell: 'gap', head: '差', hint: '（直前行と）', className: 'dash-ladder-head-gap' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
   { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
   { cell: 'level', head: '水準', className: 'dash-ladder-head-level' },
@@ -80,17 +82,17 @@ const NAMING_CELLS = 4;
  *  窓の外の存在は window-note が掲示する（無言の縮退禁止）。 */
 const WINDOW_RADIUS = 15;
 
-/** 表示範囲の切替（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」）。
+/** 表示範囲の切替（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」。
+ *  「オール」の呼称は同日の依頼者指示で「全期間」へ変更）。
  *
  *  短期 / 中期 / 長期の区分は §4.3 の確定語彙そのもの（**短期＝すべて / 中期＝1h 以上 /
- *  長期＝1D 以上**・新しい区分を発明しない）。オールは窓を外した全表示（従来の全量。
- *  縦スクロールが戻ることは選択の結果であり縮退ではない）。
- *  minTfIndex は DASHBOARD_TIMEFRAMES（短い順・唯一源）上の下限位置。 */
+ *  長期＝1D 以上**・新しい区分を発明しない）。全期間は窓を外した全表示（従来の全量。
+ *  縦スクロールが戻ることは選択の結果であり縮退ではない）。 */
 const SCOPES = Object.freeze([
   { key: 'short', label: '短期', minTf: null, windowed: true },
   { key: 'medium', label: '中期', minTf: '1h', windowed: true },
   { key: 'long', label: '長期', minTf: '1D', windowed: true },
-  { key: 'all', label: 'オール', minTf: null, windowed: false },
+  { key: 'all', label: '全期間', minTf: null, windowed: false },
 ]);
 
 /** 時間足が下限以上か（並びの唯一源 DASHBOARD_TIMEFRAMES で判定。未知の足は含めない
@@ -226,7 +228,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     return root;
   }
 
-  /** 表示範囲の切替バー（短期 / 中期 / 長期 / オール・§4.3 の語彙）。
+  /** 表示範囲の切替バー（短期 / 中期 / 長期 / 全期間・§4.3 の語彙）。
    *  切替は**描き直すだけ**で発行を生まない（発行判定は sheet_poller の唯一責務のまま）。 */
   function buildScopeBar() {
     const bar = el('div', { className: 'dash-ladder-scope', role: 'group' });
@@ -266,7 +268,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     };
     legend.appendChild(item('dash-legend-swatch-hit', '現在値より下（到達済み＝支持側）'));
     legend.appendChild(item('', '現在値より上（未到達＝抵抗側）'));
-    legend.appendChild(item('dash-legend-swatch-gap', '価格の右の小さな数字＝直前行との差'));
+    // 差は独立列になり見出し（差・直前行と）が意味を持つため、凡例からは外した
+    //   （依頼者指示 2026-08-30・同じ説明を 2 か所に置かない）。
     return legend;
   }
 
@@ -288,7 +291,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     return holder;
   }
 
-  /** 価格セル（3 分割の背景＋価格の文字＋直前行との差）。 */
+  /** 価格セル（3 分割の背景＋価格の文字）。差は独立列（依頼者指示 2026-08-30）。 */
   function buildPriceCell(row) {
     const cell = el('td', { className: 'dash-ladder-price' });
     const bands = el('span', { className: 'dash-ladder-bands' });
@@ -311,11 +314,6 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       className: 'dash-ladder-price-text',
       textContent: formatPrice(row.price),
       dataset: { cell: 'price' },
-    }));
-    cell.appendChild(el('i', {
-      className: 'dash-ladder-gap',
-      textContent: formatGap(row.gap_to_previous),
-      dataset: { cell: 'gap' },
     }));
     return cell;
   }
@@ -350,6 +348,11 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     tr.appendChild(distanceCell);
 
     tr.appendChild(buildPriceCell(row));
+    tr.appendChild(el('td', {
+      className: 'dash-ladder-gap',
+      textContent: formatGap(row.gap_to_previous),
+      dataset: { cell: 'gap' },
+    }));
     tr.appendChild(buildTimeframeCell(row.timeframe, tone));
     appendNamingCells(tr, row);
     return tr;
@@ -430,7 +433,9 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     }));
     tr.appendChild(priceCell);
     tr.appendChild(el('td', {
-      colSpan: 1 + NAMING_CELLS,
+      // 差＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS 側と
+      //   ここの定数 2（差・時間足）を数え直す）。
+      colSpan: 2 + NAMING_CELLS,
       textContent: '全時間足で同一の 1 点',
       dataset: { cell: 'label' },
     }));
@@ -597,7 +602,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     // 現在値を中心とした窓だけを建てる（縦スクロールを不要にする）。半径は器の実高への
     //   適合値（fitWindow）を優先し、未適合は上限 WINDOW_RADIUS。窓の外の行はここで
     //   **建てない**——建ててから隠すと捨てる色計算が毎描画発生する。
-    //   オールは窓なし（全量。従来の表示に戻す選択肢）。
+    //   全期間は窓なし（全量。従来の表示に戻す選択肢）。
     const radius = fittedRadius ?? WINDOW_RADIUS;
     const start = scope.windowed ? Math.max(0, at - radius) : 0;
     const end = scope.windowed ? Math.min(rows.length, at + radius) : rows.length;
