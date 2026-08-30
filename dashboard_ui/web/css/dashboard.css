@@ -190,6 +190,13 @@
   border: 1px solid var(--line2);
 }
 
+/* 掲示の 1 項目（同一の指標・理由種別を畳んだ単位・ISSUE-466）。原文は title に載る。 */
+.dash-notice-item {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
 /* ===== ラダーの枠（モックの .prop / .prop>.hd） ===== */
 .dash-panel {
   padding: 0;

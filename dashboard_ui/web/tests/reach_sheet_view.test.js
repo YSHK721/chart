@@ -294,6 +294,73 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.match(textOf(notice), /ma_marod/);
   });
 
+  // ---- ISSUE-466 掲示の集約と人間向け文言 ---------------------------------
+  //
+  // 実テンプレートでは同じ理由の縮退が 24 件（8 足 × 3 本）まとめて出る。1 件 1 文で
+  // 並べると内部エラーの原文が 24 回繰り返され、読む側は「何が起きたか」を取り出せない
+  // （認知負荷の最小化・厳命 2026-07-30）。**隠さない**性質は保ったまま、同一の
+  // (指標, 理由種別) を 1 行へ畳み、件数を出し、原文は title へ退避する。
+  const MA_KEYS = ['1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'].flatMap((tf) => (
+    [24, 50, 200].map((length) => ['moving_averages', 'default', `{"length": ${length}}`, tf])
+  ));
+  const CORE_REASON = "系列を供給できないため除外した: 計算できません: ('moving_averages', '1h')"
+    + ' — validation: add_moving_averages が受理しない param が渡されました:'
+    + " ['wait_for_close']。variant ごとの受理引数は GET /catalog の paramScopes を参照してください。";
+  const MA_DEGRADATIONS = MA_KEYS.map((instance_key) => ({
+    instance_key, granularity: 'none', reason: CORE_REASON,
+  }));
+
+  /** 掲示の要素（無ければ undefined）。 */
+  function noticeOf(host) {
+    return flatten(host).find((el) => el.classList.contains('dash-granularity-notice'));
+  }
+
+  test('the_same_indicator_and_reason_are_aggregated_into_one_line', () => {
+    const { host } = renderInto(sheetResponse({
+      rows: THREE_ROWS, current_index: 2, degradations: MA_DEGRADATIONS,
+    }));
+
+    const text = textOf(noticeOf(host));
+    // 指標名は 1 回だけ（24 回並べない）。
+    assert.equal(text.split('moving_averages').length - 1, 1);
+    // 件数は出す（何本が落ちたかを読める）。
+    assert.match(text, /8 足/);
+    assert.match(text, /24 本/);
+  });
+
+  test('the_internal_error_text_is_moved_to_the_title_and_summarised_in_the_body', () => {
+    const { host } = renderInto(sheetResponse({
+      rows: THREE_ROWS, current_index: 2, degradations: MA_DEGRADATIONS,
+    }));
+
+    const notice = noticeOf(host);
+    // 本文は人間向け 1 行（内部エラーの原文を本文に出さない）。
+    assert.equal(/paramScopes を参照してください/.test(textOf(notice)), false);
+    assert.match(textOf(notice), /受理されないパラメータ wait_for_close/);
+    // 原文は捨てない（title へ退避する＝隠さない）。
+    const carrier = flatten(notice).find((el) => String(el.title).includes('paramScopes'));
+    assert.ok(carrier, '内部エラーの原文が title に残っていません');
+  });
+
+  test('two_different_reasons_of_one_indicator_stay_separate', () => {
+    // 恒真にしない: 集約は (指標, 理由種別) 単位であり、指標だけで畳まない。
+    const { host } = renderInto(sheetResponse({
+      rows: THREE_ROWS, current_index: 2,
+      degradations: [
+        { instance_key: ['profit_rsi', 'default', '{}', '1W'], granularity: 'none', reason: CORE_REASON },
+        {
+          instance_key: ['profit_rsi', 'default', '{}', '1M'], granularity: 'none',
+          reason: "系列を供給できないため除外した: 計算できません: ('profit_rsi', '1M')"
+            + ' — validation: E01_INSUFFICIENT_BARS: バー数 171 では σ̂ を 1 本も出力できない（523 本以上が必要）',
+        },
+      ],
+    }));
+
+    const text = textOf(noticeOf(host));
+    assert.match(text, /受理されないパラメータ/);
+    assert.match(text, /本数/);
+  });
+
   test('no_degradation_means_no_notice_is_shown', () => {
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2, degradations: [] }));
     assert.equal(flatten(host).some((el) => el.classList.contains('dash-granularity-notice')), false);

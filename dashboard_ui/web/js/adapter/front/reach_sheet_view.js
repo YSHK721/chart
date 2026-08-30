@@ -300,13 +300,18 @@ export function createReachSheetView({ doc } = {}) {
    * instance を突き合わせる手掛かりが契約に無い。ラベルの綴りから推測して行へ印を置くと、
    * ラベルの書式が変わった瞬間に無言で外れる（＝推測に基づく実装）。よってここでは
    * 契約が実際に与える単位（instance）で掲示する。
+   *
+   * ISSUE-466: 実テンプレートでは同じ理由の縮退が 24 件（8 足 × 3 本）まとめて出る。
+   *   1 件 1 文で並べると内部エラーの原文が 24 回繰り返され、読む側は「何が起きたか」を
+   *   取り出せない（認知負荷の最小化）。**隠さない**性質は保ったまま、同一の
+   *   (指標, 理由種別) を 1 行へ畳み、件数を出し、原文は `title` へ退避する。
    */
   function renderNotice(degradations) {
     const list = Array.isArray(degradations) ? degradations : [];
-    const barClose = list.filter((d) => d && d.granularity === 'bar_close');
+    const barClose = groupDegradations(list.filter((d) => d && d.granularity === 'bar_close'));
     // `none` は「バー確定でも回復しない」＝その instance の背景が塗られない（レビュー 🟡-2）。
     //   bar_close だけを掲示すると、サーバが理由を送っていても画面上は無言の欠落になる。
-    const unprojectable = list.filter((d) => d && d.granularity === 'none');
+    const unprojectable = groupDegradations(list.filter((d) => d && d.granularity === 'none'));
     if (notice.parentNode) {
       notice.parentNode.removeChild(notice);
     }
@@ -314,26 +319,96 @@ export function createReachSheetView({ doc } = {}) {
     if (barClose.length === 0 && unprojectable.length === 0) {
       return;
     }
-    const sentences = [];
     if (barClose.length > 0) {
-      sentences.push(`更新粒度がバー確定のもの: ${barClose.map(nameOf).join('・')}。ティックでは更新されません。`);
+      appendSentence('更新粒度がバー確定のもの: ', barClose, '。ティックでは更新されません。');
     }
     if (unprojectable.length > 0) {
-      sentences.push(`背景を塗れないもの: ${unprojectable.map(reasonOf).join('・')}。`);
+      appendSentence('背景を塗れないもの: ', unprojectable, '。');
     }
-    notice.textContent = sentences.join(' ');
     root.appendChild(notice);
   }
 
-  /** 縮退 1 件を「指標（時間足）」で名指す（契約が与える単位＝instance）。 */
-  function nameOf(degradation) {
-    const key = Array.isArray(degradation.instance_key) ? degradation.instance_key : [];
-    return `${key[0] ?? '?'}（${key[3] ?? '?'}）`;
+  /** 導入句 ＋ 集約した項目（原文を持つ）＋ 締めの句 を掲示欄へ足す。 */
+  function appendSentence(lead, groups, tail) {
+    if (notice.children.length > 0) {
+      notice.appendChild(el('span', { textContent: ' ' }));
+    }
+    notice.appendChild(el('span', { textContent: lead }));
+    groups.forEach((group, index) => {
+      if (index > 0) {
+        notice.appendChild(el('span', { textContent: '・' }));
+      }
+      notice.appendChild(el('span', {
+        className: 'dash-notice-item',
+        textContent: `${group.indicatorId}: ${scopeTextOf(group)} — ${group.summary}`,
+        // 原文は捨てず title へ退避する（本文は人間向け 1 行・原因は失わない）。
+        title: [...group.reasons].join('\n'),
+      }));
+    });
+    notice.appendChild(el('span', { textContent: tail }));
   }
 
-  /** 縮退 1 件を「指標（時間足）: 理由」で名指す（理由を落とすと原因が消える）。 */
-  function reasonOf(degradation) {
-    return `${nameOf(degradation)}: ${degradation.reason ?? '理由の記載なし'}`;
+  /** 何本・何足が該当したか（1 本だけなら時間足そのものを出す＝件数より具体が読める）。 */
+  function scopeTextOf(group) {
+    return group.timeframes.size === 1 && group.count === 1
+      ? [...group.timeframes][0]
+      : `${group.timeframes.size} 足 ${group.count} 本`;
+  }
+
+  /**
+   * 内部エラーの原文 → (理由種別, 人間向け 1 行)。
+   *
+   * 表で持つ（分岐を書かない）。新しい原文が増えたら**行を足す**だけで済む（§8 OCP）。
+   * どの規則にも当たらない原文は本文へそのまま出す——読めない文でも、消すよりはよい
+   * （無言の縮退禁止）。その場合は原文そのものが理由種別になるので、別々に並ぶ。
+   */
+  const REASON_RULES = Object.freeze([
+    {
+      kind: 'unaccepted_params',
+      pattern: /受理しない param が渡されました:\s*\[([^\]]*)\]/,
+      summarise: (m) => `受理されないパラメータ ${m[1].replace(/['"]/g, '')}`,
+    },
+    {
+      kind: 'insufficient_bars',
+      pattern: /E01_INSUFFICIENT_BARS/,
+      summarise: () => '素材の本数が指標の必要本数に足りない',
+    },
+    {
+      kind: 'not_bound',
+      pattern: /ライブ core に束縛がありません/,
+      summarise: () => 'ダッシュボードの計算に対応していない指標',
+    },
+  ]);
+
+  /** 理由 1 件を (種別, 人間向け 1 行) へ写す。 */
+  function readReason(reason) {
+    const text = String(reason ?? '理由の記載なし');
+    for (const rule of REASON_RULES) {
+      const matched = rule.pattern.exec(text);
+      if (matched) {
+        return { kind: rule.kind, summary: rule.summarise(matched) };
+      }
+    }
+    return { kind: `raw:${text}`, summary: text };
+  }
+
+  /** 同一 (指標, 理由種別) を 1 件へ畳む（掲示の単位）。 */
+  function groupDegradations(degradations) {
+    const groups = new Map();
+    for (const degradation of degradations) {
+      const key = Array.isArray(degradation.instance_key) ? degradation.instance_key : [];
+      const indicatorId = key[0] ?? '?';
+      const { kind, summary } = readReason(degradation.reason);
+      const id = `${indicatorId} ${kind}`;
+      if (!groups.has(id)) {
+        groups.set(id, { indicatorId, summary, count: 0, timeframes: new Set(), reasons: new Set() });
+      }
+      const group = groups.get(id);
+      group.count += 1;
+      group.timeframes.add(String(key[3] ?? '?'));
+      group.reasons.add(String(degradation.reason ?? '理由の記載なし'));
+    }
+    return [...groups.values()];
   }
 
   /**
