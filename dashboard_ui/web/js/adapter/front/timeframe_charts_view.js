@@ -226,7 +226,11 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     }
   }
 
-  /** 現在値の線（全タイル共通の 1 点・§4.1）。変わったときだけ動かす。 */
+  /** 現在値の線（全タイル共通の 1 点・§4.1）。変わったときだけ動かす。
+   *
+   *  ラベルは付けない（依頼者指示 2026-08-30: 「現在値」ラベルがローソクを覆い隠し、
+   *  水準確認の認知負荷になる）。現在値の同定は色（COLORS.current・実線）が担い、
+   *  数値はラダーの現在値行とローソク系列自身の最終値表示が既に持っている。 */
   function reconcileCurrent(slot, currentPrice) {
     if (!Number.isFinite(Number(currentPrice))) {
       return;
@@ -237,11 +241,10 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
         price,
         line: slot.series.createPriceLine({
           price,
-          title: '現在値',
           color: COLORS.current,
           lineWidth: 1,
           lineStyle: 0,
-          axisLabelVisible: true,
+          axisLabelVisible: false,
         }),
       };
       return;

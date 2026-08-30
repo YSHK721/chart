@@ -63,26 +63,33 @@ describe('timeframe_charts_view — 版面と水準線', () => {
     });
     // Act
     h.view.render(response);
-    // Assert: 5m のタイルには 5m の水準（＋現在値）だけ、1m のタイルには現在値だけ。
+    // Assert: 5m のタイルには 5m の水準（＋現在値の線）だけ、1m のタイルには現在値の線だけ。
+    //   水準線は title（水準名）を持ち、現在値の線は title を持たない（下の検定を参照）。
     const seriesOf = (tf) => h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf(tf)].series[0];
-    const titles = (tf) => seriesOf(tf).priceLines.map((line) => line.options.title).sort();
-    assert.deepEqual(titles('5m'), ['cvfe 外側上 2σ', '現在値']);
-    assert.deepEqual(titles('1D'), ['MA ema5 hlc3', '現在値']);
-    assert.deepEqual(titles('1m'), ['現在値']);
-    const level = seriesOf('5m').priceLines.find((line) => line.options.title !== '現在値');
+    const levelTitles = (tf) => seriesOf(tf).priceLines
+      .map((line) => line.options.title).filter(Boolean).sort();
+    assert.deepEqual(levelTitles('5m'), ['cvfe 外側上 2σ']);
+    assert.deepEqual(levelTitles('1D'), ['MA ema5 hlc3']);
+    assert.deepEqual(levelTitles('1m'), []);
+    const level = seriesOf('5m').priceLines.find((line) => line.options.title);
     assert.equal(level.options.price, 65803.4);
   });
 
-  test('the_current_price_line_is_the_same_single_point_on_every_tile', () => {
-    // §4.1: 現在値は全時間足で同一の 1 点。
+  test('the_current_price_line_is_the_same_single_point_on_every_tile_without_a_label', () => {
+    // §4.1: 現在値は全時間足で同一の 1 点。ラベルは**出さない**（依頼者指示 2026-08-30:
+    //   「現在値」ラベルがローソクを覆い隠し、水準確認の認知負荷になる）。同定は
+    //   title を持たない実線 1 本であること・軸ラベルも出さないことで表明する。
     const h = harness();
     // Act
     h.view.render(sheetResponse({ current_price: 65756.0 }));
     // Assert
     for (const chart of h.spy.charts) {
-      const current = chart.series[0].priceLines.filter((line) => line.options.title === '現在値');
+      const current = chart.series[0].priceLines.filter((line) => !line.options.title);
       assert.equal(current.length, 1);
       assert.equal(current[0].options.price, 65756.0);
+      assert.equal(current[0].options.axisLabelVisible, false);
+      // ローソクを覆う文字を 1 本も持ち込まない（回帰の芯）。
+      assert.ok(chart.series[0].priceLines.every((line) => line.options.title !== '現在値'));
     }
   });
 
