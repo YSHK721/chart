@@ -91,7 +91,7 @@ class IndicatorUiComputeGateway:
 
         confirmed_points = self._store.material(
             key=(dataset_ref, timeframe),
-            epoch=period_start_unix(_unix_seconds(forming), timeframe),
+            epoch=_material_epoch(confirmed, forming, timeframe),
             name=(indicator_id, variant, _params_key(params)),
             factory=lambda: _as_points(
                 self._compute(bridge.full_compute, bridge, indicator_id, variant,
@@ -205,15 +205,42 @@ def _unix_seconds(frame: Any) -> int:
     return int(frame.index.values.astype("datetime64[s]").astype("int64")[-1])
 
 
+def _material_epoch(confirmed: Any, forming: Any, timeframe: str) -> tuple:
+    """確定素材の版（この署名が同じなら確定素材は同じ物である）。
+
+    周期の始端だけでは足りない。周期が進まないまま確定素材が入れ替わる経路が実在する
+    （ロールアップの再生成・読み取り時の外れ値補正の変更・供給の遡り訂正）。周期だけを版に
+    すると、その差し替えを 1 周期ぶん（1M なら 1 か月）見落とす。**古い素材を配らない**方が
+    共有より優先する。
+
+    署名の形は GPD 当てはめキャッシュの窓署名（usecase 側）と同じ考え方である
+    ——本数だけを署名にしてはならない。
+    周期の判定そのものは `marketdata.tf_meta.period_start_unix` が唯一源のままである。
+    """
+    seconds = confirmed.index.values.astype("datetime64[s]").astype("int64")
+    return (
+        period_start_unix(_unix_seconds(forming), timeframe),   # どの周期か
+        int(len(seconds)),                                      # 窓の本数
+        int(seconds[0]),                                        # 窓の先頭
+        float(confirmed["close"].iloc[-1]),                     # 窓の末尾の値
+    )
+
+
 def _splice(
     confirmed: "Mapping[str, tuple[tuple[int, float], ...]]",
     forming: "Mapping[str, tuple[tuple[int, float], ...]]",
 ) -> "Mapping[str, tuple[tuple[int, float], ...]]":
     """確定系列の末尾へ、形成中足の点（確定の末尾より後のものだけ）を継ぐ。
 
-    形成中の点を持たない系列（増分器が末尾 1 点を出せない系列）は確定足で終わる。これは
-    ライブ core の毎ティック末尾値アダプタ（live_tick_tails）と同じ粒度であり、当該
-    instance の更新粒度は応答の縮退一覧へ既に出ている（§7・無言の縮退を作らない）。
+    形成中の点を持たない系列（増分器が末尾 1 点を出せない系列）は確定足で終わる。粒度は
+    ライブ core の毎ティック末尾値アダプタ（live_tick_tails）と同一である＝チャートで
+    ティックごとに動く線と動かない線の区別に一致する。
+
+    **これは instance 単位の縮退一覧では表せない**（同じ instance の中で系列ごとに粒度が
+    違うため）。実測 2026-08-30: 該当は profit_rsi の 4 系列（帯外・GPD）だけであり、
+    第 1 表の水準にも第 2 表のセルにも使われていない（40 instance の応答を是正前後で突合し
+    完全一致を確認済み）。**シートが読む系列に該当が出たら、そのときは縮退として出す**
+    （出さないまま粒度が落ちれば無言の縮退になる）。
     """
     names = [*confirmed, *(name for name in forming if name not in confirmed)]
     spliced: "dict[str, tuple[tuple[int, float], ...]]" = {}

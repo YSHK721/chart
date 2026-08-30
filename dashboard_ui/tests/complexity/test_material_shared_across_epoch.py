@@ -43,6 +43,10 @@ class Material:
         self.closes = [base + index for index in range(rows)]
 
     # --- テストが素材を動かす操作 ---
+    def revise_confirmed_bar(self, close: float) -> None:
+        """周期は進めずに**確定足**を差し替える（遡り訂正・ロールアップ再生成の相当）。"""
+        self.closes[-2] = float(close)
+
     def advance_epoch(self) -> None:
         """周期を 1 つ進める（新しい足が現れる＝確定素材が変わる）。"""
         self.times.append(self.times[-1] + self.step)
@@ -213,6 +217,26 @@ def test_an_advanced_epoch_does_not_invalidate_the_other_timeframes_forever() ->
 
     assert additional[1] == 0
     assert additional[3] == 0
+
+
+def test_a_revised_confirmed_bar_invalidates_the_shared_material() -> None:
+    """周期が進まなくても**確定素材が入れ替わったら**作り直す（古い素材を配らない）。
+
+    共有の版を「どの周期か」だけにすると、遡り訂正やロールアップ再生成の差し替えを 1 周期
+    ぶん（1M なら 1 か月）見落とす。速いことより古い素材を配らないことが優先する。
+    """
+    materials = {"1m": Material("1m", rows=6, base=100.0)}
+    spy = BridgeSpy(materials)
+    store = MaterialStore()
+    first = _request(spy, store)["1m"]["series"]
+    warmed = len(spy.full_calls)
+
+    materials["1m"].revise_confirmed_bar(777.0)
+    revised = _request(spy, store)["1m"]["series"]
+
+    assert len(spy.full_calls) - warmed > 0
+    assert revised != first
+    assert (materials["1m"].times[-2], 777.0) in revised["osc"]
 
 
 # ------------------------------------------------------------ 不変量 C: 鮮度

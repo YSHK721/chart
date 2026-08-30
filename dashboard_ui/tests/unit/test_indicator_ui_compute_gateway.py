@@ -238,8 +238,9 @@ def test_the_confirmed_material_is_computed_without_the_forming_bar() -> None:
 def test_a_series_without_a_forming_point_ends_at_the_last_confirmed_bar() -> None:
     """増分器が末尾 1 点を出せない系列は確定足で終わる（ライブ core と同じ粒度）。
 
-    ライブの毎ティック末尾値アダプタ（live_tick_tails）も増分宣言のある系列しか動かさない。
-    当該 instance の更新粒度は応答の縮退一覧に既に出ている（§7・無言の縮退を作らない）。
+    ライブの毎ティック末尾値アダプタ（live_tick_tails）も増分宣言のある系列しか動かさない
+    ＝チャートでティックごとに動く線と動かない線の区別に一致する。実測 2026-08-30 の該当は
+    profit_rsi の帯外 4 系列だけで、第 1 表・第 2 表のどちらにも使われていない。
     """
     spy = ComputeSpy(
         {"x": [line("a", [(START, 1.0)]), line("b", [(START, 9.0)])]},
