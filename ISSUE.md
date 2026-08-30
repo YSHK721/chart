@@ -12807,7 +12807,7 @@ epoch 持ち越し（MaterialStore / SheetState の規律）への合流。
 
 ## ISSUE-465: [非効率] ライブ core の増分器状態キャッシュのキーが素材（時間足）を区別しない
 
-- **ステータス**: OPEN（2026-08-30 起票・**core 改変につき依頼者承認待ち**）
+- **ステータス**: IN_PROGRESS（2026-08-30 起票・同日依頼者承認・是正中）
 - **重大度**: 高（8 足束ティック要求の残余費用の主因・ダッシュボード初回 29.4 秒の主因）
 - **該当**: `indigators/indicator_ui/api/adapter/compute/incremental_state.py:162`
 
