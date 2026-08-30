@@ -66,6 +66,20 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(cellText(first, 'source'), 'hlc3');
   });
 
+  test('the_level_cell_is_painted_by_its_defining_quantile_and_stays_blank_otherwise', () => {
+    // 依頼者裁定 2026-08-30: 水準セルの背景は定義分位 p（heat_scale が唯一源）。
+    //   p を持たない水準（σ 帯・mean）は色を置かない。
+    const rows = [
+      ladderRow({ price: 66298.9, timeframe: '15m', label: 'a', distance: 542.9, gap_to_previous: null, horizon_marks: [], horizon_p: {}, naming: { name: 'btlm_trail', level: 'q95', level_p: 0.95, period: 252, source: 'hlc3', extra: '' } }),
+      ladderRow({ price: 66071.5, timeframe: '5m', label: 'b', distance: 315.5, gap_to_previous: null, horizon_marks: [], horizon_p: {}, naming: { name: 'btlm_trail', level: 'mean', level_p: null, period: 266, source: 'hlc3', extra: '' } }),
+    ];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 2 }));
+    const [q95Row, meanRow] = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    const cellOf = (tr) => flatten(tr).find((el2) => el2.dataset && el2.dataset.cell === 'level');
+    assert.match(cellOf(q95Row).style.backgroundColor, /^rgba\(/);
+    assert.equal(cellOf(meanRow).style.backgroundColor, '');
+  });
+
   test('the_level_part_of_the_series_shows_in_its_own_column', () => {
     // q95 等の水準も列へ分割（依頼者指示 2026-08-30）。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));

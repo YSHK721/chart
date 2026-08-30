@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import re
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
@@ -264,10 +265,25 @@ class SeriesRoleTable:
         return {
             "name": name,
             "level": self._level_display(level, effective),
+            "level_p": self._level_p(level),
             "period": period,
             "source": None if source is None else str(source),
             "extra": extra,
         }
+
+    @staticmethod
+    def _level_p(level: str) -> "float | None":
+        """水準の定義分位（依頼者裁定 2026-08-30: 水準セルを p で塗る）。
+
+        §5.3 の規約どおり、分位しきい値として定義された水準（`q{pct}` 系）だけが p を持つ。
+        σ 帯（u1/l2 等）・mean・外れは p 目盛りに載らないため None＝色を置かない
+        （無言で 0.5 を埋めない・新しい統計を作らない）。
+        """
+        m = re.search(r"(?:^|_)q(\d{1,3})$", level)
+        if m is None:
+            return None
+        pct = int(m.group(1))
+        return pct / 100.0 if 0 <= pct <= 100 else None
 
     @staticmethod
     def _level_display(level: str, effective) -> str:

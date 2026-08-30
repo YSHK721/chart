@@ -234,6 +234,23 @@ def test_the_level_tokens_are_shown_in_japanese_with_effective_sigma() -> None:
     assert off["level"] == "外れ上"
 
 
+def test_the_level_p_is_the_defining_quantile_only_for_quantile_levels() -> None:
+    """依頼者裁定 2026-08-30: 水準セルは定義分位 p で塗る。q{pct} 系のみ p を持ち、
+    σ 帯・mean は p 目盛りに載らない（None＝無色。無言で 0.5 を埋めない）。"""
+    table = SeriesRoleTable()
+
+    def p_of(indicator, series):
+        return table.row_naming(
+            instance=instance_of(indicator, {}), series_name=series
+        )["level_p"]
+
+    assert p_of("btlm_trail", "btlm_trail_q95") == 0.95
+    assert p_of("btlm_trail", "btlm_trail_q5") == 0.05
+    assert p_of("btlm_trail", "btlm_trail_mean") is None
+    assert p_of("cvfe", "cvfe_u1") is None
+    assert p_of("btlm_trail", "btlm_trail_off_hi") is None
+
+
 def test_the_row_naming_uses_catalog_defaults_when_params_are_omitted() -> None:
     table = SeriesRoleTable()
 

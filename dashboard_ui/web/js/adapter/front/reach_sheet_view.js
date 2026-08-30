@@ -310,11 +310,18 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       }));
     }
     tr.appendChild(nameCell);
-    tr.appendChild(el('td', {
+    // 水準セルの背景 = 定義分位 p（依頼者裁定 2026-08-30）。q{pct} 系だけが p を持ち、
+    //   σ 帯・mean は p 目盛りに載らないため無色（level_p=null → colorForP が色を置かない）。
+    //   色の唯一源は heat_scale（§5.5.7・価格セルの 3 分割と同じ目盛り）。
+    const levelCell = el('td', {
       className: 'dash-ladder-level',
       textContent: naming.level === null || naming.level === undefined ? '' : String(naming.level),
       dataset: { cell: 'level' },
-    }));
+    });
+    levelCell.style.backgroundColor = colorForP(
+      naming.level_p === undefined ? null : naming.level_p,
+    );
+    tr.appendChild(levelCell);
     const periodCell = el('td', { className: 'dash-ladder-period', dataset: { cell: 'period' } });
     if (naming.period !== null && naming.period !== undefined) {
       periodCell.appendChild(el('span', { textContent: String(naming.period) }));
