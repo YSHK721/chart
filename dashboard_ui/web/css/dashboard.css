@@ -345,6 +345,7 @@
 }
 
 .dash-ladder-table td.dash-ladder-period,
+.dash-ladder-table td.dash-ladder-level,
 .dash-ladder-table td.dash-ladder-source {
   width: 1%;
   white-space: nowrap;
@@ -486,8 +487,9 @@
   font-weight: 600;
 }
 
-/* 水準情報 3 列（依頼者指示 2026-08-30: 指標名 / 期間 / ソース。モックの td.nm の分割）。 */
+/* 水準情報 4 列（依頼者指示 2026-08-30: 指標名 / 水準 / 期間 / ソース。モックの td.nm の分割）。 */
 .dash-ladder-table td.dash-ladder-name,
+.dash-ladder-table td.dash-ladder-level,
 .dash-ladder-table td.dash-ladder-period,
 .dash-ladder-table td.dash-ladder-source {
   text-align: left;
@@ -525,6 +527,7 @@
   margin-left: 6px;
 }
 
+.dash-ladder-table td.dash-ladder-level,
 .dash-ladder-table td.dash-ladder-source {
   min-width: 70px;
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

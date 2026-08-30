@@ -40,9 +40,9 @@ function cellText(row, name) {
 }
 
 const THREE_ROWS = [
-  ladderRow({ price: 66099.7, timeframe: '1D', label: 'MA ema5 hlc3', distance: 343.7, gap_to_previous: null, horizon_marks: ['long'], horizon_p: { short: 0.93, medium: 0.71, long: 0.88 }, naming: { name: 'MA', period: 5, source: 'hlc3', extra: '' } }),
-  ladderRow({ price: 65770.7, timeframe: '5m', label: 'cvfe 内側上 1σ', distance: 14.7, gap_to_previous: 7.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'cvfe_u1', period: 1329, source: null, extra: 'sigma_outer=3.0' } }),
-  ladderRow({ price: 65754.5, timeframe: '1m', label: 'MA ema60 high', distance: -1.5, gap_to_previous: 31.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'MA', period: 60, source: 'high', extra: '' } }),
+  ladderRow({ price: 66099.7, timeframe: '1D', label: 'MA ema5 hlc3', distance: 343.7, gap_to_previous: null, horizon_marks: ['long'], horizon_p: { short: 0.93, medium: 0.71, long: 0.88 }, naming: { name: 'MA', level: '', period: 5, source: 'hlc3', extra: '' } }),
+  ladderRow({ price: 65770.7, timeframe: '5m', label: 'cvfe 内側上 1σ', distance: 14.7, gap_to_previous: 7.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'cvfe', level: 'u1', period: 1329, source: null, extra: 'sigma_outer=3.0' } }),
+  ladderRow({ price: 65754.5, timeframe: '1m', label: 'MA ema60 high', distance: -1.5, gap_to_previous: 31.6, horizon_marks: ['short'], horizon_p: { short: 0.052, medium: 0.067, long: 0.126 }, naming: { name: 'MA', level: '', period: 60, source: 'high', extra: '' } }),
 ];
 
 describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
@@ -64,6 +64,14 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(cellText(first, 'name'), 'MA');
     assert.equal(cellText(first, 'period'), '5');
     assert.equal(cellText(first, 'source'), 'hlc3');
+  });
+
+  test('the_level_part_of_the_series_shows_in_its_own_column', () => {
+    // q95 等の水準も列へ分割（依頼者指示 2026-08-30）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const second = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'))[1];
+    assert.equal(cellText(second, 'name'), 'cvfe+1');   // 名前セル＝名前と +N 印のみ
+    assert.equal(cellText(second, 'level'), 'u1');
   });
 
   test('a_row_without_structured_naming_still_shows_its_label', () => {

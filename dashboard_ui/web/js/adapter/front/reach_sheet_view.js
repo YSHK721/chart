@@ -65,12 +65,13 @@ const COLUMNS = Object.freeze([
   { cell: 'price', head: '価格', hint: '（下は直前行との差）', className: 'dash-ladder-head-price' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
   { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
+  { cell: 'level', head: '水準', className: 'dash-ladder-head-level' },
   { cell: 'period', head: '期間', hint: '（プリセット）', className: 'dash-ladder-head-period' },
   { cell: 'source', head: 'ソース', className: 'dash-ladder-head-source' },
 ]);
 
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
-const NAMING_CELLS = 3;
+const NAMING_CELLS = 4;
 
 /** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
 function formatPrice(value) {
@@ -309,6 +310,11 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       }));
     }
     tr.appendChild(nameCell);
+    tr.appendChild(el('td', {
+      className: 'dash-ladder-level',
+      textContent: naming.level === null || naming.level === undefined ? '' : String(naming.level),
+      dataset: { cell: 'level' },
+    }));
     const periodCell = el('td', { className: 'dash-ladder-period', dataset: { cell: 'period' } });
     if (naming.period !== null && naming.period !== undefined) {
       periodCell.appendChild(el('span', { textContent: String(naming.period) }));

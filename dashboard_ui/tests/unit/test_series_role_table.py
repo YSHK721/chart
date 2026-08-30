@@ -196,9 +196,23 @@ def test_the_row_naming_splits_name_period_and_source() -> None:
     )
 
     assert naming["name"] == "MA"
+    assert naming["level"] == ""            # 接頭辞規約に乗らない系列は水準なし
     assert naming["period"] == 24
     assert naming["source"] == "low"
     assert "length" not in naming["extra"] and "source" not in naming["extra"]
+
+
+def test_the_row_naming_splits_the_level_out_of_the_series_name() -> None:
+    """依頼者指示 2026-08-30: q95 等の水準も列へ分割（系列名 = <indicator>_<水準> の規約）。"""
+    table = SeriesRoleTable()
+
+    naming = table.row_naming(
+        instance=instance_of("btlm_trail", {"maxbars": 156}),
+        series_name="btlm_trail_q95",
+    )
+
+    assert naming["name"] == "btlm_trail"
+    assert naming["level"] == "q95"
 
 
 def test_the_row_naming_uses_catalog_defaults_when_params_are_omitted() -> None:

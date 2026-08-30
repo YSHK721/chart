@@ -253,8 +253,17 @@ class SeriesRoleTable:
             for key, value in sorted(instance.params.items())
             if key in defaults and key not in consumed and value != defaults[key]
         )
+        # 水準部の分離（依頼者指示 2026-08-30: q95 等も列へ分割）。系列名は
+        # `<indicator_id>_<水準>`（例 btlm_trail_q95・cvfe_u1）の規約なので、接頭辞を
+        # 剥がした残りを水準とする。規約に乗らない系列（例 MA）は名前のみ・水準は空。
+        prefix = f"{instance.indicator_id}_"
+        if series_name.startswith(prefix):
+            name, level = instance.indicator_id, series_name[len(prefix):]
+        else:
+            name, level = series_name, ""
         return {
-            "name": series_name,
+            "name": name,
+            "level": level,
             "period": period,
             "source": None if source is None else str(source),
             "extra": extra,
