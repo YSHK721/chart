@@ -321,6 +321,10 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     levelCell.style.backgroundColor = colorForP(
       naming.level_p === undefined ? null : naming.level_p,
     );
+    if (naming.level_note) {
+      // σ 帯の宣言分位は正規換算（唯一の仮定）。仮定を無言にしない（title へ明記）。
+      levelCell.title = String(naming.level_note);
+    }
     tr.appendChild(levelCell);
     const periodCell = el('td', { className: 'dash-ladder-period', dataset: { cell: 'period' } });
     if (naming.period !== null && naming.period !== undefined) {

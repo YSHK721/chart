@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import math
 import re
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -262,28 +263,61 @@ class SeriesRoleTable:
             name, level = instance.indicator_id, series_name[len(prefix):]
         else:
             name, level = series_name, ""
+        level_p, level_note = self._level_p(level, effective)
         return {
             "name": name,
             "level": self._level_display(level, effective),
-            "level_p": self._level_p(level),
+            "level_p": level_p,
+            "level_note": level_note,
             "period": period,
             "source": None if source is None else str(source),
             "extra": extra,
         }
 
     @staticmethod
-    def _level_p(level: str) -> "float | None":
-        """水準の定義分位（依頼者裁定 2026-08-30: 水準セルを p で塗る）。
+    def _level_p(level: str, effective) -> "tuple[float | None, str | None]":
+        """水準の**宣言分位**（依頼者裁定 2026-08-30: 水準セルは宣言された極端度で塗る）。
 
-        §5.3 の規約どおり、分位しきい値として定義された水準（`q{pct}` 系）だけが p を持つ。
-        σ 帯（u1/l2 等）・mean・外れは p 目盛りに載らないため None＝色を置かない
-        （無言で 0.5 を埋めない・新しい統計を作らない）。
+        実測の位置は価格セルの horizon_p（§5.5.5）が担う。ここは「この線がどれだけ端で
+        あることを主張して引かれたか」の宣言のみを読む（1 冊に読み方を 2 つ作らない）:
+          q{pct}      → pct/100（定義そのもの）
+          off_hi/lo   → 実効 q_out / 1−q_out（パラメータが宣言する分位そのもの・仮定ゼロ）
+          mean / mid  → 0.5（中心の宣言。p=0.5 は透明＝色は付かない）
+          ±kσ 帯      → Φ(±k)（σ という宣言の正規換算。唯一の仮定なので注記を添える）
+        宣言を持たない水準は (None, None)＝色を置かない。
         """
         m = re.search(r"(?:^|_)q(\d{1,3})$", level)
-        if m is None:
-            return None
-        pct = int(m.group(1))
-        return pct / 100.0 if 0 <= pct <= 100 else None
+        if m is not None:
+            pct = int(m.group(1))
+            return (pct / 100.0, None) if 0 <= pct <= 100 else (None, None)
+        if level in {"mean", "mid"}:
+            return 0.5, None
+
+        def q_out_p(upper: bool) -> "tuple[float | None, str | None]":
+            _key, value = effective(("q_out",))
+            if value is None:
+                return None, None
+            q = float(value)
+            return (q if upper else 1.0 - q), None
+
+        def sigma_p(name: str, upper: bool) -> "tuple[float | None, str | None]":
+            _key, value = effective((name,))
+            if value is None:
+                return None, None
+            k = float(value)
+            phi = 0.5 * (1.0 + math.erf(k / math.sqrt(2.0)))
+            return (phi if upper else 1.0 - phi), f"正規換算 Φ({k:g}σ)"
+
+        table = {
+            "off_hi": lambda: q_out_p(upper=True),
+            "off_lo": lambda: q_out_p(upper=False),
+            "u1": lambda: sigma_p("sigma_inner", upper=True),
+            "l1": lambda: sigma_p("sigma_inner", upper=False),
+            "u2": lambda: sigma_p("sigma_outer", upper=True),
+            "l2": lambda: sigma_p("sigma_outer", upper=False),
+        }
+        entry = table.get(level)
+        return (None, None) if entry is None else entry()
 
     @staticmethod
     def _level_display(level: str, effective) -> str:

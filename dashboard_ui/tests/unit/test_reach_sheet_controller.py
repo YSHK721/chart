@@ -158,7 +158,8 @@ def test_the_rows_use_the_model_field_names() -> None:
 
     assert set(row) == {"price", "timeframe", "label", "distance", "gap_to_previous",
                         "horizon_marks", "reach", "horizon_p", "instance_key", "naming"}
-    assert set(row["naming"]) == {"name", "level", "level_p", "period", "source", "extra"}
+    assert set(row["naming"]) == {"name", "level", "level_p", "level_note",
+                                  "period", "source", "extra"}
     assert set(row["reach"]) == {"reached", "since_time", "truncated"}
 
 

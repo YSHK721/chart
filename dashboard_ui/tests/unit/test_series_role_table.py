@@ -246,9 +246,33 @@ def test_the_level_p_is_the_defining_quantile_only_for_quantile_levels() -> None
 
     assert p_of("btlm_trail", "btlm_trail_q95") == 0.95
     assert p_of("btlm_trail", "btlm_trail_q5") == 0.05
-    assert p_of("btlm_trail", "btlm_trail_mean") is None
-    assert p_of("cvfe", "cvfe_u1") is None
-    assert p_of("btlm_trail", "btlm_trail_off_hi") is None
+
+
+def test_every_declared_level_maps_to_its_stated_quantile() -> None:
+    """依頼者承認 2026-08-30: 宣言された極端度で統一。外れ=実効 q_out・中心=0.5・σ=Φ(±k)。"""
+    table = SeriesRoleTable()
+
+    def naming_of(indicator, params, series):
+        return table.row_naming(
+            instance=instance_of(indicator, params), series_name=series
+        )
+
+    off_hi = naming_of("btlm_trail", {"q_out": 0.99}, "btlm_trail_off_hi")
+    off_lo = naming_of("btlm_trail", {"q_out": 0.99}, "btlm_trail_off_lo")
+    assert off_hi["level_p"] == 0.99 and off_hi["level_note"] is None
+    assert off_lo["level_p"] == pytest.approx(0.01)
+
+    assert naming_of("btlm_trail", {}, "btlm_trail_mean")["level_p"] == 0.5
+    assert naming_of("cvfe", {}, "cvfe_mid")["level_p"] == 0.5
+
+    u2 = naming_of("cvfe", {"sigma_outer": 2.0}, "cvfe_u2")
+    l1 = naming_of("cvfe", {"sigma_inner": 1.0}, "cvfe_l1")
+    assert u2["level_p"] == pytest.approx(0.97725, abs=1e-4)
+    assert l1["level_p"] == pytest.approx(1 - 0.84134, abs=1e-4)
+    assert "正規換算" in u2["level_note"]
+
+    # 宣言の無い外れ（q_out 未設定・カタログ既定 null）は色を置かない
+    assert naming_of("btlm_trail", {}, "btlm_trail_off_hi")["level_p"] is None
 
 
 def test_the_row_naming_uses_catalog_defaults_when_params_are_omitted() -> None:
