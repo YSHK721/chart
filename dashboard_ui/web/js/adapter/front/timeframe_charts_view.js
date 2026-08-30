@@ -168,10 +168,11 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
         horzLines: { color: COLORS.grid },
       },
       rightPriceScale: { borderColor: COLORS.grid },
-      // rightOffset: 最新足とスケールの間にローソク 1 本分の余白（依頼者指示 2026-08-30。
-      //   最新足が右端へ張り付くと、スケールの水準ラベルと最新足の対照が窮屈になる）。
+      // rightOffset: 最新足とスケールの間にローソク 6 本分の余白（依頼者指示 2026-08-30
+      //   「1 本分」→ 同日追指示「まだ狭いのでプラス 5 本分」。最新足が右端へ張り付くと、
+      //   スケールの水準ラベルと最新足の対照が窮屈になる）。
       timeScale: {
-        borderColor: COLORS.grid, timeVisible: true, secondsVisible: false, rightOffset: 1,
+        borderColor: COLORS.grid, timeVisible: true, secondsVisible: false, rightOffset: 6,
       },
     });
     const series = chart.addSeries(lwc.CandlestickSeries, {
