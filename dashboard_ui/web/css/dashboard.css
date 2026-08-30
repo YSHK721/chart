@@ -394,8 +394,8 @@
 /* 次のターゲット列の見出しは折り返しを許す（「次のターゲット」の 1 行ぶんで列を広げない。
    列幅の決め手は印の実体）。 */
 .dash-ladder-table th.dash-ladder-head-next {
-  width: 1%;
   min-width: 64px;
+  white-space: normal;
 }
 
 /* 価格・期間・ソースも内容幅へ固定する。狭めた距離・時間足の余白がここへ流れると
@@ -425,10 +425,15 @@
   border-right: 1px solid var(--line);
 }
 
-/* 次のターゲット（地平の印）の独立列＝先頭列。印が無い行は空欄（内容幅へ詰める）。 */
-.dash-ladder-table td.dash-ladder-next-cell {
+/* 次のターゲット（地平の印）の独立列＝先頭列。印が無い行は空欄（内容幅へ詰める）。
+   左右 padding は基底の 14px から 6px へ（計 16px の縮小・依頼者指示 2026-08-30
+   「横幅が広いので調整しろ。16px は縮小できる」）。 */
+.dash-ladder-table td.dash-ladder-next-cell,
+.dash-ladder-table th.dash-ladder-head-next {
   width: 1%;
   white-space: nowrap;
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 .dash-ladder-distance {
