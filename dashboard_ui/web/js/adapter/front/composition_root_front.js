@@ -222,11 +222,12 @@ export async function setupDashboardDisplay({
     if (!anchor) {
       return;                                // DOM 非対応環境（描画対象そのものが無い）。
     }
-    // DOM の並びは版面の読み順（ラダー左 → チャート右 → 第 2 表下段・依頼者指示 2026-08-30）。
-    //   置き場所そのものは CSS（dashboard.css の grid-template-areas）が唯一源。
+    // DOM の並びは版面の読み順（左列: ラダー → オシレーターラダー、右列: チャート 70%・
+    //   依頼者指示 2026-08-30 追補）。置き場所そのものは CSS（dashboard.css の
+    //   grid-template-areas）が唯一源。
     ladderView.mount(anchor);
-    chartsView.mount(anchor);
     oscillatorView.mount(anchor);
+    chartsView.mount(anchor);
     enabled = true;
 
     if (!client) {

@@ -114,14 +114,15 @@
 .dash-sheet-host {
   /* 表頭の高さ。sticky な現在値行がこの真下へ貼り付く（唯一源・上の thead 参照）。 */
   --head-h: 34px;
-  /* 版面の割り付け（依頼者指示 2026-08-30）: 価格ラダーは左・チャート一覧は右。
-     第 2 表（オシレータ・時間足 8 列の横長の表）は狭い列に入れると潰れるため全幅で下段。
-     置き場所は**この表だけ**が持つ（grid-area の名前 1 対 1）。View 側は並び順を知らない。 */
+  /* 版面の割り付け（依頼者指示 2026-08-30 追補）: 左列＝価格ラダー＋オシレーターラダー
+     （縦積み）・右列＝チャート一覧を**版面幅の 70%** で表示する。70% は指示の数値そのもの
+     （gap 20px は残りの左列側から出る）。置き場所は**この表だけ**が持つ
+     （grid-area の名前 1 対 1）。View 側は並び順を知らない。 */
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(360px, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 70%);
   grid-template-areas:
     "ladder charts"
-    "osc    osc";
+    "osc    charts";
   align-items: start;
   gap: 20px;
   padding: 16px 18px 24px;
@@ -152,14 +153,14 @@
 .dash-charts { grid-area: charts; }
 .dash-osc { grid-area: osc; }
 
-/* 2 列が収まらない幅では縦積みへ倒す（並びは左→右の読み順のまま: ラダー → チャート → 第 2 表）。 */
+/* 2 列が収まらない幅では縦積みへ倒す（並びは左列の上から: ラダー → 第 2 表 → チャート）。 */
 @media (max-width: 1100px) {
   .dash-sheet-host {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "ladder"
-      "charts"
-      "osc";
+      "osc"
+      "charts";
   }
 }
 
