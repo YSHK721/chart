@@ -271,6 +271,34 @@ def test_the_projectable_cell_carries_the_price_reaching_its_quantile_band() -> 
     assert abs(round_trip - reachable_band) < 1e-9
 
 
+def test_a_band_beyond_the_probe_range_is_shown_after_a_round_trip_verification() -> None:
+    """依頼者報告 2026-08-30「表示されていない価格がある」の是正。
+
+    休場等でバーの値幅が狭いと探針範囲が数点しかなく、帯到達価格はほぼ常に範囲外＝None に
+    なっていた。名目区分へ外挿した候補を**前進評価 1 回の往復で実測検証**してから表示する。
+    Spy の帯 1.999 の真の到達価格は C=99,800（探針範囲の遥か外）。
+    """
+    forward = ForwardSpy()
+    material = series_material()
+    material[("ma_marod", "1m")]["ma_marod_q95"] = points(60, lambda i: 1.999, step=60)
+    response = handle(controller_of(forward, SeriesPortFake(material)), body())
+
+    marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
+
+    assert marod["level_price"] is not None
+    assert abs(float(marod["level_price"]) - 99800.0) < 0.01
+
+
+def test_a_band_whose_solution_is_not_a_positive_price_stays_hidden() -> None:
+    """帯 3.0 の名目解は C=-300（Spy の値域 v<2 の外）。価格の定義域（正）に無い解は
+    表示しない（検証が通る負価格でも「この価格域では到達しない」が正しい読み）。"""
+    response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
+
+    marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
+
+    assert marod["level_price"] is None
+
+
 def test_an_uninvertible_cell_has_no_level_price() -> None:
     """tickvol は価格に逆算できない（§5.5.1 の構造的除外）。発明せず None を出す。"""
     response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
@@ -294,9 +322,10 @@ def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:
     stage_two = handle(controller, body(mode="tick"))
 
     assert len(forward.calls) - issued_after_stage_one == 0
-    assert "level_price" in [
+    # 往復検証（探針範囲外の帯 1.999）は段 1 の 1 回だけで、段 2 は持ち越しから返している。
+    assert [
         cell for cell in stage_two["cells"] if cell["indicator_id"] == "ma_marod"
-    ][0]
+    ][0]["level_price"] is not None
 
 
 def test_the_degradations_name_the_instance_key() -> None:

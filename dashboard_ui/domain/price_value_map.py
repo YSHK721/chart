@@ -191,6 +191,22 @@ class PriceValueMap:
                 return price
         return None
 
+    def price_at_nominal(self, value: float) -> "float | None":
+        """指標値 → 価格。**名目区分**（探針範囲の外側も含む）で解く。
+
+        探針の外への外挿は当てはめだけでは信用しない（§10 の RSI 1W = 345,009 の教訓）。
+        **呼び出し側が前進評価の往復（forward(price) ≒ value）で実測検証してから使う**のが
+        本メソッドの契約である（検証しない表示にこの値を流してはならない）。
+        """
+        for piece in self.pieces:
+            denominator = value - piece.a
+            if denominator == 0.0:
+                continue
+            price = (piece.b - value * piece.d) / denominator
+            if math.isfinite(price) and piece.contains(price):
+                return float(price)
+        return None
+
     def is_monotonic_increasing(self) -> bool:
         """全区分で単調増加か（§5.5.2 の性質。ここが崩れると §6.1 の同値性が失われる）。"""
         return all(piece.is_increasing() for piece in self.pieces)

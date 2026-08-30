@@ -37,7 +37,10 @@ from dashboard_ui.usecase.sheet_models import (
     SheetInstance,
     UpdateGranularity,
 )
-from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
+from dashboard_ui.usecase.sheet_ports import (
+    ForwardEvaluationUnavailable,
+    SeriesSupplyUnavailable,
+)
 from dashboard_ui.usecase.update_reach_sheet import ProjectionCache, refresh_projection
 
 #: 受け付ける更新モード（§7 の 2 段）。
@@ -63,6 +66,12 @@ class SheetState:
     tails: TailFitCache = field(default_factory=TailFitCache)
     events: ExcessEventCache = field(default_factory=ExcessEventCache)
     projections: "dict[str, ProjectionCache]" = field(default_factory=dict)
+    #: 分位水準到達価格の往復検証の持ち越し（instance キー → (epoch, 帯値, 検証済み価格)）。
+    #: 検証は前進評価 1 回を要するため、同じ epoch・同じ帯値では再検証しない
+    #: （§7 段 2: epoch 不変なら発行 0 回、を本表示でも守るための口）。
+    level_prices: "dict[tuple, tuple[object, float, float | None]]" = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -310,13 +319,63 @@ class ReachSheetController:
                     timeframe=instance.timeframe, value_map=value_map, scale=scale
                 )
             )
-            # 分位水準（帯上端 u）に達する価格。閉形式の逆写像だけで求める（発行 0 回）。
-            #   到達しうる区分が無い（None）ときはセルへ出さない（発明しない）。
+            # 分位水準（帯上端 u）に達する価格（依頼者指示 2026-08-30）。
             if math.isfinite(float(scale.band_high)):
-                price = value_map.price_at(float(scale.band_high))
+                price = self._level_price_of(
+                    instance, parsed.dataset_ref, value_map,
+                    band=float(scale.band_high),
+                )
                 if price is not None:
                     level_prices[instance.key] = float(price)
         return projections, unprojectable, level_prices
+
+    def _level_price_of(
+        self, instance, dataset_ref: str, value_map, *, band: float
+    ) -> "float | None":
+        """帯上端 `band` に達する価格。
+
+        1. 探針範囲の内側なら閉形式の逆写像だけで確定（発行 0 回・当てはめ実測済みの範囲）。
+        2. 外側は**名目区分へ外挿した候補を前進評価 1 回の往復で実測検証**してから使う
+           （§10 の発散例のような外挿の作り話を表示しない）。休場等でバーの値幅が狭いと
+           探針範囲が数点しかなく、帯到達価格はほぼ常に外側になる（依頼者報告 2026-08-30
+           「表示されていない価格がある」の原因）。
+        3. 検証結果は (epoch, 帯値) で持ち越す＝同じ epoch のティックでは発行 0 回のまま。
+        4. 価格の定義域は正（JP225）。非正の解は「この帯にはこの価格域では到達しない」＝None。
+        """
+        trusted = value_map.price_at(band)
+        if trusted is not None:
+            return trusted if trusted > 0.0 else None
+        epoch = getattr(
+            self._state.projections.get(instance.timeframe), "epoch", None
+        )
+        cached = self._state.level_prices.get(instance.key)
+        if cached is not None and cached[0] == epoch and cached[1] == band:
+            return cached[2]
+        price: "float | None" = value_map.price_at_nominal(band)
+        if price is not None and price > 0.0:
+            try:
+                round_trip = float(
+                    self._forward_port.value_at_close(
+                        indicator_id=instance.indicator_id,
+                        variant=instance.variant,
+                        params=instance.params,
+                        dataset_ref=dataset_ref,
+                        timeframe=instance.timeframe,
+                        close=price,
+                    )
+                )
+            except ForwardEvaluationUnavailable:
+                price = None
+            else:
+                tolerance = 1e-6 * max(1.0, abs(band))
+                if not (
+                    math.isfinite(round_trip) and abs(round_trip - band) <= tolerance
+                ):
+                    price = None
+        else:
+            price = None
+        self._state.level_prices[instance.key] = (epoch, band, price)
+        return price
 
     def _covering_cache(
         self, timeframe: str, group: "Sequence[SheetInstance]"
