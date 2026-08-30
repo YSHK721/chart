@@ -54,7 +54,9 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
   });
 
   test('every_ladder_row_shows_distance_price_gap_timeframe_and_label', () => {
-    // §4.7 の版面の 5 要素。
+    // 版面はモック（ISSUE-463）の 4 列へ移した。旧版面は「差」を独立した列に持っていたが、
+    //   モックは価格の直下へ小さく置く。**読める中身は変えていない**ので、期待する値は
+    //   旧検定のまま据え置き、どの要素から読むかだけを新構造へ改めた。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     assert.equal(cellText(first, 'distance'), '+343.7');
@@ -65,10 +67,45 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
 
   test('the_gap_column_is_empty_on_the_top_row_because_there_is_no_row_above_it', () => {
     // gap_to_previous は「直前行との価格差」。先頭には直前行が無い（null）。
+    //   語（「差」）は列見出しの補足が担うので、欄には数値だけを置く（モックの i.gap）。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const [first, second] = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
     assert.equal(cellText(first, 'gap'), '');
-    assert.equal(cellText(second, 'gap'), '差 7.6');
+    assert.equal(cellText(second, 'gap'), '7.6');
+  });
+
+  test('the_price_column_head_says_where_the_smaller_number_under_it_comes_from', () => {
+    // 「差」の語を欄から外した以上、その意味は表頭が持たねばならない（意味の消失を防ぐ）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'price');
+    assert.match(textOf(head), /直前行との差/);
+  });
+
+  test('a_level_below_the_current_price_is_marked_as_reached_and_one_above_is_not', () => {
+    // モックの凡例:「現在値より下（到達済み＝支持側）／現在値より上（未到達＝抵抗側）」。
+    //   判定はサーバが与えた距離の符号だけで行う（版面の意味を 2 つにしない）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    assert.equal(levelRows[0].classList.contains('dash-ladder-pending'), true);
+    assert.equal(levelRows[2].classList.contains('dash-ladder-hit'), true);
+  });
+
+  test('the_timeframe_of_a_row_carries_the_tone_of_its_place_in_the_display_order', () => {
+    // モックの r0〜r7。並びの唯一源は timeframes.js（第 2 表の列と同じ）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    const pillOf = (row) => flatten(row).find((el) => el.classList.contains('dash-tf-pill'));
+    assert.equal(pillOf(levelRows[0]).classList.contains('dash-tf-r5'), true);   // 1D
+    assert.equal(pillOf(levelRows[2]).classList.contains('dash-tf-r0'), true);   // 1m
+  });
+
+  test('an_unknown_timeframe_gets_no_tone_instead_of_being_snapped_to_a_nearby_one', () => {
+    // 知らない足に近い番号を与えると、版面上は正しい足に見えたまま取り違える。
+    const rows = [ladderRow({ timeframe: '7m' })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const pill = flatten(host).find((el) => el.classList.contains('dash-tf-pill'));
+    assert.equal(textOf(pill), '7m');
+    assert.equal(/dash-tf-r\d/.test(pill.className), false);
   });
 
   test('a_negative_distance_keeps_its_sign_so_below_levels_read_as_below', () => {
@@ -113,20 +150,28 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
   });
 
   test('a_horizon_mark_names_its_horizon_and_the_direction_from_the_current_price', () => {
-    // §4.7: 「← 長期・上」「← 短期・下」。向きは距離の符号で決まる。
+    // §4.7 の「次のターゲット」。向きは距離の符号で決まる。
+    //   表記は旧版面の「← 長期・上」からモックの地平バッジ「長期 · 上」へ改めた
+    //   （ISSUE-463・版面同期）。名指す内容（地平と向き）は変えていない。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
-    assert.match(cellText(levelRows[0], 'marks'), /長期・上/);
-    assert.match(cellText(levelRows[2], 'marks'), /短期・下/);
+    assert.match(cellText(levelRows[0], 'marks'), /長期 · 上/);
+    assert.match(cellText(levelRows[2], 'marks'), /短期 · 下/);
   });
 
   test('a_row_marked_for_two_horizons_shows_both', () => {
-    // §4.7 の実測行「← 中期・下／長期・下」。
+    // §4.7 の実測行（中期・下 と 長期・下 が同じ行に付く）。
     const rows = [ladderRow({ distance: -209.1, horizon_marks: ['medium', 'long'] })];
     const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
-    const marks = cellText(rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')), 'marks');
-    assert.match(marks, /中期・下/);
-    assert.match(marks, /長期・下/);
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    assert.match(cellText(row, 'marks'), /中期 · 下/);
+    assert.match(cellText(row, 'marks'), /長期 · 下/);
+    // 地平ごとに別の印にする（モックの b.next.h1 / h2 / h3）。同じ見た目だと段が読めない。
+    const badges = flatten(row).filter((el) => el.classList.contains('dash-ladder-next'));
+    assert.deepEqual(
+      badges.map((b) => (b.classList.contains('dash-ladder-next-h2') ? 'h2' : 'h3')),
+      ['h2', 'h3'],
+    );
   });
 
   test('an_unmarked_row_shows_no_mark_at_all', () => {

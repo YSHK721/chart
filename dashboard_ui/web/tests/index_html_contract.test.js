@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { styleRules, stripComments } from './_css.js';
+
 const HTML = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
 const CSS = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
 
@@ -47,15 +49,32 @@ describe('index.html — 配信ページが持つのは版面だけ', () => {
   test('the_stylesheet_scopes_every_rule_under_the_view_owned_host', () => {
     // host は sim と共有の器。素の要素セレクタを置くと統合ページ全体へ規則が漏れる
     //   （sim が iframe を選んだのと同じ問題・style.css 波及の実測）。
-    const rules = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('}')
-      .map((chunk) => chunk.split('{')[0].trim())
-      .filter(Boolean);
-    for (const selector of rules) {
-      for (const part of selector.split(',')) {
+    //
+    // 読み方を `}` 分割から波括弧の数え上げ（_css.js）へ改めた（ISSUE-463）。旧実装は
+    //   `@media` の前置きを選択子と誤認して落ちるため、暗色テーマを持てなかった。**検査する
+    //   性質は変えていない**——「すべての規則の選択子が `.dash-` から始まる」ことである。
+    const rules = styleRules(CSS);
+    assert.ok(rules.length > 0, '規則が 1 つも読めていません（読み取りが壊れています）');
+    for (const rule of rules) {
+      for (const part of rule.selector.split(',')) {
         assert.match(part.trim(), /^\.dash-/,
           `統合ページへ漏れる選択子があります: ${part.trim()}`);
       }
     }
+  });
+
+  test('the_stylesheet_looks_inside_at_rules_instead_of_skipping_them', () => {
+    // 検定の検定: at-rule の中身を素通しにすると、上の検査は `@media` の内側に置かれた
+    //   `:root { … }` を見逃す（＝無言の no-op に化ける）。中身を実際に見ていることを固定する。
+    const nested = styleRules(CSS).filter((rule) => rule.at.length > 0);
+    assert.ok(nested.length > 0, '入れ子（@media 等）の規則を 1 つも読めていません');
+  });
+
+  test('the_stylesheet_publishes_no_token_to_the_shared_document_root', () => {
+    // 版面モックはパレットを `:root` へ置くが、本 CSS は共有ページの <head> へ差し込まれる
+    //   （sheet_host.js）。`--bg` `--ink` のような一般名を `:root` へ出すと、同じ名前を使う
+    //   移植元 style.css（sim）と衝突して統合ページの配色が壊れる。宣言先は host に閉じる。
+    assert.equal(/:root/.test(stripComments(CSS)), false,
+      'CSS が :root へトークンを公開しています（共有ページへ漏れます）');
   });
 });

@@ -1,13 +1,18 @@
 // reach_sheet_view（adapter/front/reach_sheet_view.js）— 第 1 表＝価格ラダーの版面。
 //
+// 版面の参照実装は依頼者所有のモック「水準到達シート」（ISSUE-463・アーティファクト 1707bef3）。
+//   列は 4 本（距離＋次のターゲット / 価格＋直前行との差 / 時間足 / 水準名）で、到達側は
+//   帯（--up-bg）＋左 3px（--up-bar）、現在値行は反転（地 --ink・文字 --bg）。
+//
 // 設計入力:
-//   §4.1 / §4.7: 行 = 水準 1 本（**束ねない**）。列 = 距離 / 価格 / 差 / 時間足 / 水準ラベル。
-//     現在値は独立行として価格順の位置に入る。「差」= 直前行との価格差。
+//   §4.1 / §4.7: 行 = 水準 1 本（**束ねない**）。現在値は独立行として価格順の位置に入る。
+//     「差」= 直前行との価格差で、モックに倣い価格の直下へ小さく置く（列は分けない）。
 //   §4.3 / §4.7: 地平 3 段（短期 = すべて / 中期 = 1h 以上 / 長期 = 1D 以上）の直上・直下に
-//     「次のターゲット」の印を付ける。
+//     「次のターゲット」の印を付ける。印はモックの b.next（地平ごとの色）で出す。
 //   §5.5.5 / §5.5.6: 価格セルの背景を地平 3 段で 3 分割し、各地平の `p` を heat_scale で塗る。
 //     **数値は表示せず色だけ**。候補が 1 つも無い地平は空にし、色を置かない（無言で 0.5 を
-//     埋めない）。
+//     埋めない）。モックにこの背景は無いが、§5.5.5 の要件なので保持した上でモックの
+//     パレットへ調和させている（heat_scale.js 冒頭の記録）。
 //   §7: `cvfe` は増分器が無く段 1 でしか更新されない。更新粒度の差を**隠さず**掲示する。
 //   arch-spec §9: 応答のフィールド名をそのまま読む。**フロントは数値を再計算しない**
 //     （`p` の算出・並び替え・到達判定はすべてサーバ側が単一ソース）。
@@ -19,12 +24,14 @@
 
 import { colorForP } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
+// 足別トーン（モックの r0〜r7）の並びは列を出す側と同じ唯一源を使う（写しを持たない）。
+import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
-  { key: 'short', label: '短期' },
-  { key: 'medium', label: '中期' },
-  { key: 'long', label: '長期' },
+  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1' },
+  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2' },
+  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3' },
 ]);
 
 /** 地平キーの集合（照合用）。 */
@@ -51,14 +58,12 @@ function unknownHorizonKeys(rows) {
   return [...found].sort();
 }
 
-/** §4.7 の列見出し。 */
+/** 列見出し（モックの 4 列）。 */
 const COLUMNS = Object.freeze([
-  { cell: 'distance', head: '距離' },
-  { cell: 'price', head: '価格' },
-  { cell: 'gap', head: '差' },
-  { cell: 'timeframe', head: '時間足' },
-  { cell: 'label', head: '水準' },
-  { cell: 'marks', head: '' },
+  { cell: 'distance', head: '距離 · 次のターゲット', className: 'dash-ladder-head-distance' },
+  { cell: 'price', head: '価格', hint: '（下は直前行との差）', className: 'dash-ladder-head-price' },
+  { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
+  { cell: 'label', head: '水準（指標インスタンス）', className: 'dash-ladder-head-label' },
 ]);
 
 /** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
@@ -72,23 +77,32 @@ function formatDistance(value) {
   return `${n >= 0 ? '+' : '-'}${Math.abs(n).toFixed(1)}`;
 }
 
-/** 直前行との差（先頭行は直前行が無いので空）。 */
+/**
+ * 直前行との差（先頭行は直前行が無いので空）。
+ * 「差」の語は列見出しの補足が担うので、欄には数値だけを置く（モックの i.gap と同じ）。
+ */
 function formatGap(value) {
-  return value === null || value === undefined ? '' : `差 ${Number(value).toFixed(1)}`;
+  return value === null || value === undefined ? '' : Number(value).toFixed(1);
 }
 
 /**
- * 地平の印（§4.7 の「← 長期・上」「← 中期・下／長期・下」）。
- * 向きは**距離の符号**で決まる（サーバが並びと符号の単一ソース）。
+ * 足別トーンの番号（モックの r0〜r7）。表示順＝短い順なので添字がそのままトーンになる。
+ * 知らない時間足には番号を与えない（勝手に近い足へ寄せない＝無言の取り違えを作らない）。
  */
-function formatMarks(marks, distance) {
-  const list = Array.isArray(marks) ? marks : [];
-  if (list.length === 0) {
-    return '';
-  }
-  const direction = Number(distance) >= 0 ? '上' : '下';
-  const names = HORIZONS.filter((h) => list.includes(h.key)).map((h) => `${h.label}・${direction}`);
-  return names.length === 0 ? '' : `← ${names.join('／')}`;
+function toneIndexOf(timeframe) {
+  const at = DASHBOARD_TIMEFRAMES.indexOf(String(timeframe));
+  return at < 0 ? null : at;
+}
+
+/**
+ * 到達側か（モックの tr.lad.hit）。
+ *
+ * 判定はサーバが与えた**距離の符号**だけで行う。モックの凡例が「現在値より下＝到達済み＝
+ * 支持側」と定義しており、その定義そのものが距離の符号である。行の `reach` と or を取ると
+ * 版面の意味が 2 つになるので取らない（到達時刻は第 2 表の担当）。
+ */
+function isReached(distance) {
+  return Number(distance) < 0;
 }
 
 /**
@@ -106,7 +120,7 @@ export function createReachSheetView({ doc } = {}) {
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
-  /** 版面（見出し・本体・掲示欄）を組んでホストへ挿す。 */
+  /** 版面（枠・見出し・本体・掲示欄）を組んでホストへ挿す。 */
   function mount(host) {
     if (!doc || typeof doc.createElement !== 'function') {
       return null;
@@ -115,31 +129,83 @@ export function createReachSheetView({ doc } = {}) {
       throw new Error('reach_sheet_view: ホストが渡されていないため版面を配置できない');
     }
     root = el('section', { className: 'dash-ladder' });
-    root.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '価格ラダー' }));
 
     message = el('p', { className: 'dash-sheet-message' });
     root.appendChild(message);
 
+    const panel = el('div', { className: 'dash-panel' });
+    const head = el('div', { className: 'dash-panel-head' });
+    head.appendChild(el('span', { className: 'dash-panel-stamp', textContent: '水準 1 本 = 1 行' }));
+    head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '価格ラダー' }));
+    head.appendChild(el('p', {
+      className: 'dash-panel-lead',
+      textContent: '水準を束ねず 1 本 1 行で価格降順に並べる。時間足は比較の軸ではなく各行の属性。',
+    }));
+    panel.appendChild(head);
+
+    const scroll = el('div', { className: 'dash-scroll' });
     const table = el('table', { className: 'dash-ladder-table' });
     const thead = el('thead');
     const headRow = el('tr');
     for (const column of COLUMNS) {
-      headRow.appendChild(el('th', { textContent: column.head, dataset: { cell: column.cell } }));
+      const th = el('th', { className: column.className, dataset: { cell: column.cell } });
+      th.appendChild(el('span', { textContent: column.head }));
+      if (column.hint) {
+        th.appendChild(el('span', { className: 'dash-sheet-hint', textContent: column.hint }));
+      }
+      headRow.appendChild(th);
     }
     thead.appendChild(headRow);
     table.appendChild(thead);
     tbody = el('tbody');
     table.appendChild(tbody);
-    root.appendChild(table);
+    scroll.appendChild(table);
+    panel.appendChild(scroll);
+    root.appendChild(panel);
+
+    root.appendChild(buildLegend());
 
     notice = el('p', { className: 'dash-granularity-notice' });
     host.appendChild(root);
     return root;
   }
 
-  /** 価格セル（3 分割の背景＋価格の文字）。 */
+  /** 凡例（モックの .legend）。読み方を版面の外へ持ち出させない。 */
+  function buildLegend() {
+    const legend = el('div', { className: 'dash-legend' });
+    const item = (swatchClass, text) => {
+      const span = el('span', { className: 'dash-legend-item' });
+      span.appendChild(el('i', { className: `dash-legend-swatch ${swatchClass}`.trim() }));
+      span.appendChild(el('span', { textContent: text }));
+      return span;
+    };
+    legend.appendChild(item('dash-legend-swatch-hit', '現在値より下（到達済み＝支持側）'));
+    legend.appendChild(item('', '現在値より上（未到達＝抵抗側）'));
+    legend.appendChild(item('dash-legend-swatch-gap', '価格の下の小さな数字＝直前行との差'));
+    return legend;
+  }
+
+  /** 地平の印（モックの b.next）。向きは**距離の符号**で決まる。 */
+  function buildMarks(marks, distance) {
+    const holder = el('span', { className: 'dash-ladder-marks', dataset: { cell: 'marks' } });
+    const list = Array.isArray(marks) ? marks : [];
+    if (list.length === 0) {
+      return holder;
+    }
+    const direction = Number(distance) >= 0 ? '上' : '下';
+    for (const horizon of HORIZONS) {
+      if (!list.includes(horizon.key)) continue;
+      holder.appendChild(el('b', {
+        className: `dash-ladder-next ${horizon.badge}`,
+        textContent: `${horizon.label} · ${direction}`,
+      }));
+    }
+    return holder;
+  }
+
+  /** 価格セル（3 分割の背景＋価格の文字＋直前行との差）。 */
   function buildPriceCell(row) {
-    const cell = el('td', { className: 'dash-ladder-price', dataset: { cell: 'price' } });
+    const cell = el('td', { className: 'dash-ladder-price' });
     const bands = el('span', { className: 'dash-ladder-bands' });
     const horizonP = row.horizon_p ?? {};
     for (const horizon of HORIZONS) {
@@ -156,31 +222,73 @@ export function createReachSheetView({ doc } = {}) {
     cell.appendChild(bands);
     // 価格の文字は**子要素**として足す。`cell.textContent = ...` と書くと実 DOM では
     //   直前に足した 3 分割の背景が丸ごと消える（textContent の代入は子を捨てる）。
-    cell.appendChild(el('span', { className: 'dash-ladder-price-text', textContent: formatPrice(row.price) }));
+    cell.appendChild(el('span', {
+      className: 'dash-ladder-price-text',
+      textContent: formatPrice(row.price),
+      dataset: { cell: 'price' },
+    }));
+    cell.appendChild(el('i', {
+      className: 'dash-ladder-gap',
+      textContent: formatGap(row.gap_to_previous),
+      dataset: { cell: 'gap' },
+    }));
+    return cell;
+  }
+
+  /** 時間足セル（モックのピル）。 */
+  function buildTimeframeCell(timeframe, tone) {
+    const cell = el('td', { className: 'dash-ladder-timeframe', dataset: { cell: 'timeframe' } });
+    const pill = el('u', {
+      className: tone === null ? 'dash-tf-pill' : `dash-tf-pill dash-tf-r${tone}`,
+      textContent: String(timeframe ?? ''),
+    });
+    cell.appendChild(pill);
     return cell;
   }
 
   /** 水準 1 行。 */
   function buildLevelRow(row) {
-    const tr = el('tr', { className: 'dash-ladder-row' });
-    tr.appendChild(el('td', { className: 'dash-ladder-distance', textContent: formatDistance(row.distance), dataset: { cell: 'distance' } }));
+    const tone = toneIndexOf(row.timeframe);
+    const state = isReached(row.distance) ? 'dash-ladder-hit' : 'dash-ladder-pending';
+    const toneClass = tone === null ? '' : ` dash-ladder-row-r${tone}`;
+    const tr = el('tr', { className: `dash-ladder-row ${state}${toneClass}` });
+
+    const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
+    // `data-cell` は**文字を持つ葉**に置く（欄そのものへ置くと、同じ欄へ同居する
+    //   地平バッジの文字まで距離として読めてしまう）。
+    distanceCell.appendChild(el('span', {
+      className: 'dash-ladder-distance',
+      textContent: formatDistance(row.distance),
+      dataset: { cell: 'distance' },
+    }));
+    distanceCell.appendChild(buildMarks(row.horizon_marks, row.distance));
+    tr.appendChild(distanceCell);
+
     tr.appendChild(buildPriceCell(row));
-    tr.appendChild(el('td', { textContent: formatGap(row.gap_to_previous), dataset: { cell: 'gap' } }));
-    tr.appendChild(el('td', { textContent: String(row.timeframe ?? ''), dataset: { cell: 'timeframe' } }));
-    tr.appendChild(el('td', { textContent: String(row.label ?? ''), dataset: { cell: 'label' } }));
-    tr.appendChild(el('td', { className: 'dash-ladder-marks', textContent: formatMarks(row.horizon_marks, row.distance), dataset: { cell: 'marks' } }));
+    tr.appendChild(buildTimeframeCell(row.timeframe, tone));
+    tr.appendChild(el('td', {
+      className: 'dash-ladder-label',
+      textContent: String(row.label ?? ''),
+      dataset: { cell: 'label' },
+    }));
     return tr;
   }
 
-  /** 現在値の独立行（§4.1）。 */
+  /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。 */
   function buildCurrentRow(currentPrice) {
     const tr = el('tr', { className: 'dash-ladder-row dash-ladder-current' });
-    tr.appendChild(el('td', { textContent: '', dataset: { cell: 'distance' } }));
-    tr.appendChild(el('td', { textContent: formatPrice(currentPrice), dataset: { cell: 'price' } }));
-    tr.appendChild(el('td', { textContent: '', dataset: { cell: 'gap' } }));
-    tr.appendChild(el('td', { textContent: '', dataset: { cell: 'timeframe' } }));
-    tr.appendChild(el('td', { textContent: '現在値', dataset: { cell: 'label' } }));
-    tr.appendChild(el('td', { textContent: '', dataset: { cell: 'marks' } }));
+    tr.appendChild(el('th', { scope: 'row', textContent: '現在値', dataset: { cell: 'distance' } }));
+    const priceCell = el('td', { dataset: { cell: 'price' } });
+    priceCell.appendChild(el('b', {
+      className: 'dash-ladder-current-price',
+      textContent: formatPrice(currentPrice),
+    }));
+    tr.appendChild(priceCell);
+    tr.appendChild(el('td', {
+      colSpan: 2,
+      textContent: '全時間足で同一の 1 点',
+      dataset: { cell: 'label' },
+    }));
     return tr;
   }
 

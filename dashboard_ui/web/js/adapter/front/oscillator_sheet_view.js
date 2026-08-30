@@ -99,14 +99,25 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       throw new Error('oscillator_sheet_view: ホストが渡されていないため版面を配置できない');
     }
     root = el('section', { className: 'dash-osc' });
-    root.appendChild(el('h2', { className: 'dash-sheet-title', textContent: 'オシレータ水準到達表' }));
     message = el('p', { className: 'dash-sheet-message' });
     root.appendChild(message);
 
+    // 枠・見出し・走査域はモックの .prop / .hd / .scroll と同じ流儀（第 1 表と揃える）。
+    const panel = el('div', { className: 'dash-panel' });
+    const head = el('div', { className: 'dash-panel-head' });
+    head.appendChild(el('span', { className: 'dash-panel-stamp', textContent: '指標 × 時間足' }));
+    head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: 'オシレータ水準到達表' }));
+    head.appendChild(el('p', {
+      className: 'dash-panel-lead',
+      textContent: '価格スケールに乗らない指標。単位が指標ごとに違うため第 1 表と同じ縦軸には混ぜない。',
+    }));
+    panel.appendChild(head);
+
+    const scroll = el('div', { className: 'dash-scroll' });
     const table = el('table', { className: 'dash-osc-table' });
     const thead = el('thead');
     const headRow = el('tr');
-    headRow.appendChild(el('th', { textContent: '' }));
+    headRow.appendChild(el('th', { textContent: '指標' }));
     for (const timeframe of TIMEFRAMES) {
       headRow.appendChild(el('th', { textContent: timeframe, dataset: { timeframe } }));
     }
@@ -114,7 +125,9 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     table.appendChild(thead);
     tbody = el('tbody');
     table.appendChild(tbody);
-    root.appendChild(table);
+    scroll.appendChild(table);
+    panel.appendChild(scroll);
+    root.appendChild(panel);
     host.appendChild(root);
     return root;
   }
@@ -181,7 +194,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     const nowUnix = Number(now());
     for (const indicatorId of indicators) {
       const tr = el('tr', { className: 'dash-osc-row', dataset: { indicator: indicatorId } });
-      tr.appendChild(el('th', { className: 'dash-osc-name', textContent: indicatorId }));
+      tr.appendChild(el('th', { className: 'dash-osc-name', scope: 'row', textContent: indicatorId }));
       for (const timeframe of TIMEFRAMES) {
         tr.appendChild(buildCell(byKey.get(`${indicatorId}\u0000${timeframe}`), indicatorId, timeframe, nowUnix));
       }

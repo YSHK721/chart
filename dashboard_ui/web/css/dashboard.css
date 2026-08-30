@@ -1,108 +1,364 @@
-/* dashboard.css — 水準到達シートの版面。**参照実装は既存チャート UI**
- * （indigators/indicator_ui/web/css/app.css）であり、そこで使われている語彙・寸法・密度に
- * 揃える。新しい色体系も新しい語も作らない（ISSUE-461・案 A 承認 2026-08-29）。
+/* dashboard.css — 水準到達シートの版面。**参照実装は依頼者所有の版面モック**
+ * 「水準到達シート」（design-reference.html・アーティファクト 1707bef3）であり、その <style> の
+ * トークン名・寸法・階層をそのまま写す（ISSUE-463・依頼者指示 2026-08-30）。
+ * この指示は先の「案 A ＝ チャート UI の --ct- トークンへ揃える」裁定（ISSUE-461）を上書きする。
+ * したがって `--ct-*` は本ファイルから廃止した。
  *
  * 規約:
- *   1. **色は必ずトークン経由**（`var(--ct-*, <app.css と同じ fallback>)`）。宿主のテーマが
- *      :root へ供給する（chrome_theme_applier.js）。生の色を直書きすると、テーマを変えた
- *      ときにここだけ取り残される。`dashboard_theme_contrast.test.js` が機械的に禁止する。
+ *   1. **色は必ずトークン経由**（`var(--ink)` 等）。生の色を書いてよいのは
+ *      **カスタムプロパティの宣言（`--x: …`）だけ**である。ここがパレットの唯一の定義点になり、
+ *      テーマを足しても取り残しが出ない。`dashboard_theme_contrast.test.js` が機械的に強制する。
  *   2. **`p` から色への写像は持たない。** 目盛りの色は heat_scale.js が唯一源（§5.5.7）。
  *      ここが背景色を決めると第 2 定義になる（index_html_contract.test.js が禁止）。
  *   3. **すべての規則を `.dash-` 配下へ閉じる。** ホストは sim と共有する下部ペインの器なので、
- *      素の要素セレクタを置くと統合ページ全体へ規則が漏れる（同検定が強制）。
- *   4. **薄さで階層を作らない。** 旧版は opacity .7〜.8 と 10px で副次情報を弱めていたが、
- *      opacity は文字と地の対比をそのまま削るため、heat で塗ったセルの上では実効
- *      コントラスト比が 3.11 まで落ちていた（実測・contrast 検定の冒頭に記録）。
- *      階層は**トークン（色の意味）と大きさ**で作り、heat の地に載る文字は uiText で統一する。
+ *      素の要素セレクタや `:root` を置くと統合ページ全体へ規則とトークンが漏れる（同検定が強制）。
+ *      モックは `:root` にパレットを置くが、本ファイルは配信先が共有 document の <head> なので
+ *      （sheet_host.js が <link> を差し込む）**トークンの宣言先を `.dash-sheet-host` へ移した**。
+ *      名前は `--bg` `--ink` のように一般的で、sim 側の移植元 style.css と衝突しうる。
+ *   4. **薄さで階層を作らない。** モックは `opacity:.55〜.7` で副次情報を弱めるが、opacity は
+ *      文字と地の対比をそのまま削る。heat で塗ったセルの上では実効コントラスト比が 3.11 まで
+ *      落ちていた（ISSUE-461 の実測）。階層は**トークン（色の意味）と大きさ**で作る。
+ *
+ * モックからの色の差分（黙って変えないための記録・すべて明度のみの最小変更）:
+ *   明 --muted  #667286 → #636e82 （地 --bg で 4.491・--surface2 で 4.295・到達行で 4.499）
+ *   明 --up     #1d8f84 → #1a7e74 （地 --surface で 3.952・到達行で 3.654）
+ *   明 --cyan   #1596a8 → #117988 （--surface2 上の文字で 3.110・地平バッジの地で 3.252）
+ *   明 --down   #c9403d → #c33e3b （地 --down-bg で 4.292）
+ *   明 --amber  #a9701a → #966417 （地 --amber-bg で 3.705）
+ *   暗 --muted  #7d8899 → #808b9b （--surface2 で 4.414・到達行で 4.352）
+ * いずれも WCAG 2.1 SC 1.4.3 の 4.5:1 を割っていた組で、色相・彩度は保っている。
  */
 
+/* ===== パレット（モックの :root を .dash-sheet-host へ閉じたもの・規約 3） ===== */
+.dash-sheet-host {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface2: #eef1f5;
+  --line: #dde3ea;
+  --line2: #c9d2dd;
+  --ink: #14181f;
+  --ink2: #3c4654;
+  --muted: #636e82;
+  --up: #1a7e74;
+  --up-bg: #e2f2f0;
+  --up-bar: #26a69a;
+  --down: #c33e3b;
+  --down-bg: #fdecec;
+  --cyan: #117988;
+  --amber: #966417;
+  --amber-bg: #fbf0dc;
+  --warn-bg: #fdf3e3;
+  --warn-ink: #8a5a12;
+  --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 8px 24px -12px rgba(20, 30, 50, .18);
+}
+
+/* 暗色は 3 状態（モックと同じ）: 明が既定 / 端末が暗色を望む / data-theme で明示。
+   `:where(…)` を使うのは、祖先（統合ページの <html data-theme="dark">）を見ながら
+   選択子の先頭を `.dash-` に保つため（規約 3）。詳細度も 0 のまま上書きの順序だけで効く。 */
+@media (prefers-color-scheme: dark) {
+  .dash-sheet-host:not([data-theme="light"]):not(:where([data-theme="light"] *)) {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c232c;
+    --line: #262d38;
+    --line2: #333d4a;
+    --ink: #dfe6ee;
+    --ink2: #b6c1ce;
+    --muted: #808b9b;
+    --up: #4bbfb2;
+    --up-bg: #12302e;
+    --up-bar: #26a69a;
+    --down: #f0736f;
+    --down-bg: #3a1e1e;
+    --cyan: #3fc3d4;
+    --amber: #e0a552;
+    --amber-bg: #33260f;
+    --warn-bg: #2e2413;
+    --warn-ink: #e0b46a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
+  }
+}
+
+.dash-sheet-host[data-theme="dark"],
+.dash-sheet-host:where([data-theme="dark"] *) {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #1c232c;
+  --line: #262d38;
+  --line2: #333d4a;
+  --ink: #dfe6ee;
+  --ink2: #b6c1ce;
+  --muted: #808b9b;
+  --up: #4bbfb2;
+  --up-bg: #12302e;
+  --up-bar: #26a69a;
+  --down: #f0736f;
+  --down-bg: #3a1e1e;
+  --cyan: #3fc3d4;
+  --amber: #e0a552;
+  --amber-bg: #33260f;
+  --warn-bg: #2e2413;
+  --warn-ink: #e0b46a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
+}
+
 /* ===== ホスト（版面の器） =====
-   font-family は宿主から継承する（app.css / index.html が既に宣言している。写しを持つと
-   二重定義になる）。字面は app.css の本文 13px に対し、表主体の面なので 12px を基準にする。 */
+   書体はモックの宣言をそのまま写すが、**外部フォントの <link> は張らない**（本環境は
+   ローカルで fonts.googleapis.com へ到達しない。届かない <link> は待ち時間だけ増やして
+   何も変えない）。IBM Plex が端末に入っていれば効き、無ければ後続のシステム書体へ落ちる。 */
 .dash-sheet-host {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 10px 12px;
+  gap: 20px;
+  padding: 16px 18px 24px;
   overflow: auto;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--ct-uiSurface, #131722);
-  color: var(--ct-uiText, #d1d4dc);
+  font-family: "IBM Plex Sans JP", system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  background: var(--bg);
+  color: var(--ink);
 }
 
-/* 見出し。app.css の .prop-group-heading（11px / 700 / letter-spacing .4px / 下罫）に倣う。
-   色だけは uiTextWeak ではなく uiTextLabel を使う（下部ペインは面が小さく、
-   uiTextWeak では地に対する比が 4.24 まで落ちる）。 */
+.dash-sheet-host * {
+  box-sizing: border-box;
+}
+
+/* ===== 節と見出し（モックの section / h2 / .tag / .lead） ===== */
+.dash-ladder,
+.dash-osc {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .dash-sheet-title {
-  margin: 0 0 6px;
-  padding-bottom: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .4px;
-  color: var(--ct-uiTextLabel, #b2b5be);
-  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39);
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  color: var(--ink);
 }
 
-/* 掲示欄は**異常だけ**を出す（契約のズレ・取得失敗）。app.css の削除系と同じ danger 語彙。 */
+.dash-sheet-tag {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .09em;
+  padding: 2px 9px;
+  border: 1px solid var(--line2);
+  border-radius: 99px;
+  color: var(--muted);
+}
+
+/* ===== 掲示欄（モックの .banner の流儀） =====
+   異常（契約のズレ・取得失敗）は down 系、縮退（更新粒度）は warn 系で書き分ける。 */
 .dash-sheet-message {
-  margin: 0 0 8px;
-  padding: 4px 8px;
-  font-size: 12px;
-  color: var(--ct-uiDangerText, #e0564a);
-  background: var(--ct-uiPanel, #1e222d);
-  border-left: 2px solid var(--ct-uiDanger, #ef5350);
-  border-radius: 3px;
+  margin: 0;
+  padding: 11px 14px;
+  font-size: 12.5px;
+  border-radius: 9px;
+  background: var(--down-bg);
+  color: var(--down);
+  border: 1px solid var(--line2);
 }
 
 .dash-sheet-message:empty {
   display: none;
 }
 
+/* §7 の更新粒度・縮退の掲示。異常ではないのでモックの .banner（warn 系）に載せる。 */
+.dash-granularity-notice {
+  margin: 0;
+  padding: 11px 14px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  border-radius: 9px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border: 1px solid var(--line2);
+}
+
+/* ===== ラダーの枠（モックの .prop / .prop>.hd） ===== */
+.dash-panel {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line2);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.dash-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 18px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--line);
+}
+
+.dash-panel-stamp {
+  align-self: flex-start;
+  padding: 2px 10px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  border: 1px solid var(--line2);
+  border-radius: 99px;
+  color: var(--cyan);
+}
+
+.dash-panel-lead {
+  margin: 0;
+  max-width: 74ch;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+/* 走査域。sticky な表頭と現在値行はこの器を基準に貼り付く。 */
+.dash-scroll {
+  max-height: 78vh;
+  overflow: auto;
+  background: var(--surface);
+}
+
 /* ===== 表（第 1 表・第 2 表で同じ流儀） ===== */
 .dash-ladder-table,
 .dash-osc-table {
-  border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
   font-variant-numeric: tabular-nums;
 }
 
 .dash-ladder-table th,
-.dash-osc-table th {
-  padding: 5px 8px;
-  text-align: left;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .3px;
-  color: var(--ct-uiTextLabel, #b2b5be);
-  background: var(--ct-uiPanel, #1e222d);
-  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39);
-}
-
 .dash-ladder-table td,
+.dash-osc-table th,
 .dash-osc-table td {
-  padding: 5px 8px;
+  padding: 5px 14px;
+  text-align: right;
   white-space: nowrap;
-  color: var(--ct-uiText, #d1d4dc);
-  border-bottom: 1px solid var(--ct-uiDivider, #23272f);
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line);
 }
 
-/* 行の指し示しは app.css の一覧（.ind-row:hover / .chart-context-item:hover）と同じ地。 */
-.dash-ladder-row:hover,
-.dash-osc-row:hover {
-  background: var(--ct-uiBorder, #2a2e39);
+.dash-ladder-table thead th,
+.dash-osc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 8px 14px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  background: var(--surface2);
+  color: var(--muted);
+  border-bottom: 1px solid var(--line2);
 }
 
-/* 距離は符号で上下を読むので右寄せにして桁を揃える。 */
+.dash-ladder-table thead th:first-child,
+.dash-osc-table thead th:first-child {
+  text-align: left;
+}
+
+/* 表頭の補足（モックの .hint）。薄さではなく大きさで下げる（規約 4）。 */
+.dash-sheet-hint {
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ===== 第 1 表 = 価格ラダー ===== */
+.dash-ladder-row {
+  background: var(--surface);
+}
+
+/* 到達側（現在値より下＝支持側）。モックの tr.lad.hit と同じ帯＋左 3px。
+   帯は素の --up-bg ではなく 55% で薄める（モックのまま）。素の --up-bg まで濃くすると
+   その上の --muted / --up が 4.455 / 4.250 まで落ちて本文の下限を割る（実測）。 */
+.dash-ladder-hit {
+  background: color-mix(in srgb, var(--up-bg) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--up-bar);
+}
+
+.dash-ladder-table th.dash-ladder-head-distance {
+  min-width: 210px;
+}
+
+.dash-ladder-table td.dash-ladder-price,
+.dash-ladder-table th.dash-ladder-head-price {
+  min-width: 150px;
+}
+
+/* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。 */
+.dash-ladder-table th.dash-ladder-distance-cell {
+  text-align: right;
+  min-width: 210px;
+  background: transparent;
+  border-right: 1px solid var(--line);
+}
+
 .dash-ladder-distance {
-  text-align: right;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  font-weight: 600;
 }
 
-/* 価格セル: 背景 3 分割の帯を敷き、その上に価格の文字を置く。 */
-.dash-ladder-price {
+.dash-ladder-pending .dash-ladder-distance {
+  color: var(--muted);
+}
+
+.dash-ladder-hit .dash-ladder-distance {
+  color: var(--up);
+}
+
+/* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。 */
+.dash-ladder-marks {
+  white-space: nowrap;
+}
+
+.dash-ladder-next {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.dash-ladder-next-h1 {
+  background: var(--muted);
+  color: var(--bg);
+}
+
+.dash-ladder-next-h2 {
+  background: var(--cyan);
+  color: var(--bg);
+}
+
+.dash-ladder-next-h3 {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* 価格セル: 地平 3 段の帯（色は heat_scale.js が入れる・規約 2）の上に価格の文字を置く。 */
+.dash-ladder-table td.dash-ladder-price {
   position: relative;
-  text-align: right;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .dash-ladder-bands {
@@ -113,77 +369,182 @@
   pointer-events: none;
 }
 
-/* 3 段は等分（短 / 中 / 長）。色は heat_scale.js が入れる。 */
 .dash-ladder-band {
   flex: 1 1 0;
 }
 
-/* 帯の上に載る文字。heat の地は p で動くので、薄めずに uiText のまま置く（規約 4）。 */
 .dash-ladder-price-text {
   position: relative;
-  color: var(--ct-uiText, #d1d4dc);
-}
-
-/* 地平の印（← 長期・上 等）。意味装飾は保持し、色だけトークンにする。
-   選択子を `td` まで書くのは詳細度のため（`.dash-ladder-table td` の色宣言と同じ 0-1-1 にし、
-   後勝ちで効かせる）。クラスだけだと 0-1-0 で負け、この宣言が死ぬ。 */
-.dash-ladder-table td.dash-ladder-marks {
-  font-size: 11px;
-  color: var(--ct-uiTextAux, #9aa0ad);
-  white-space: nowrap;
-}
-
-/* 現在値の独立行（§4.7 の「━━ 現在値 ━━」）。一目で位置が分かるようアクセントで括る。 */
-.dash-ladder-current td {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ct-uiTextStrong, #ffffff);
-  background: var(--ct-uiAccentSubtle, #2962ff22);
-  border-top: 1px solid var(--ct-uiAccent, #2962ff);
-  border-bottom: 1px solid var(--ct-uiAccent, #2962ff);
-}
-
-.dash-ladder-current td:first-child {
-  border-left: 2px solid var(--ct-uiAccent, #2962ff);
-}
-
-/* 更新粒度・縮退の掲示（§7）。異常ではないので danger は使わず、控えめな帯に収める。 */
-.dash-granularity-notice {
-  margin: 8px 0 0;
-  padding: 4px 8px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--ct-uiTextAux, #9aa0ad);
-  background: var(--ct-uiPanel, #1e222d);
-  border-left: 2px solid var(--ct-uiBorderStrong, #363a45);
-  border-radius: 3px;
-}
-
-/* ===== 第 2 表 =====
-   1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
-.dash-osc-cell {
-  min-width: 64px;
-  text-align: right;
-}
-
-.dash-osc-value,
-.dash-osc-reach,
-.dash-osc-no-level {
   display: block;
-  color: var(--ct-uiText, #d1d4dc);
+  color: var(--ink);
 }
 
-/* 副文は**色ではなく大きさ**で下げる（heat の地の上でも比が落ちない・規約 4）。 */
-.dash-osc-reach,
-.dash-osc-no-level {
-  font-size: 11px;
+/* 直前行との差。モックは i.gap を opacity .7 で沈めるが、heat の地の上では対比が落ちるので
+   薄さではなく**大きさ**で下げる（規約 4）。 */
+.dash-ladder-gap {
+  position: relative;
+  display: block;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--ink2);
 }
 
-/* 行の名前（指標）は行見出し（tbody の th）。表頭と同じ地に載るので一段強い文字にする。
-   `th` まで書くのは上の `.dash-osc-table th` と同詳細度にして後勝ちさせるため（上と同じ理由）。 */
-.dash-osc-table th.dash-osc-name {
-  white-space: nowrap;
-  font-size: 12px;
+/* 時間足のピル（モックの td.tf u）。 */
+.dash-ladder-table td.dash-ladder-timeframe {
+  text-align: left;
+  min-width: 130px;
+}
+
+.dash-tf-pill {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: .03em;
+  text-decoration: none;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  background: var(--surface2);
+  color: var(--ink2);
+}
+
+/* 足別のトーン（モックの r0〜r7）。短い足ほど沈め、長い足ほど強くする。
+   モックは r2 / r6 / r7 の規則を欠くが、1W・1M が 1D より弱く見えるのは版面の意図と逆なので
+   r5 の規則を r6 / r7 まで伸ばした（モックとの差分・記録）。 */
+.dash-tf-r0,
+.dash-tf-r1 {
+  color: var(--muted);
+}
+
+.dash-tf-r3,
+.dash-tf-r4 {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.dash-tf-r5,
+.dash-tf-r6,
+.dash-tf-r7 {
+  border-color: var(--ink2);
+  color: var(--ink);
   font-weight: 600;
-  color: var(--ct-uiTextHeading, #e6e9ef);
+}
+
+/* 水準名（モックの td.nm）。 */
+.dash-ladder-table td.dash-ladder-label {
+  text-align: left;
+  min-width: 240px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.dash-ladder-row-r0 .dash-ladder-label,
+.dash-ladder-row-r1 .dash-ladder-label {
+  color: var(--muted);
+}
+
+/* 現在値の独立行（§4.1）。モックの tr.now と同じく**反転**して一目で位置が分かるようにする。
+   走査中も見失わないよう、表頭のすぐ下へ貼り付ける。 */
+.dash-ladder-current th,
+.dash-ladder-current td {
+  position: sticky;
+  top: 31px;
+  z-index: 4;
+  padding: 5px 16px;
+  background: var(--ink);
+  color: var(--bg);
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+
+.dash-ladder-current th {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: .1em;
+}
+
+.dash-ladder-current-price {
+  margin-left: 7px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--bg);
+}
+
+/* 凡例（モックの .legend）。 */
+.dash-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 2px;
+  font-size: 12px;
+  color: var(--ink2);
+}
+
+.dash-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dash-legend-swatch {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 3.5px;
+  border: 1px solid var(--line2);
+  background: var(--surface);
+}
+
+.dash-legend-swatch-hit {
+  background: var(--up-bg);
+  box-shadow: inset 3px 0 0 var(--up-bar);
+}
+
+.dash-legend-swatch-gap {
+  background: var(--surface2);
+}
+
+/* ===== 第 2 表 = オシレータ表 =====
+   モックの第 2 表からは**スタイルだけ**を借りる（段の名前 s0〜s3 は §5.3 で廃止済みなので
+   構造は写さない）。1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
+.dash-osc-table th.dash-osc-name {
+  text-align: left;
+  min-width: 200px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--surface);
+  color: var(--ink);
+  border-right: 1px solid var(--line);
+}
+
+.dash-osc-table td.dash-osc-cell {
+  min-width: 96px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.dash-osc-value {
+  display: block;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.dash-osc-reach {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  color: var(--ink2);
+}
+
+/* 水準が無いことは**隠さない**（§5.2）。異常ではないので amber の小片で示す。 */
+.dash-osc-no-level {
+  display: inline-block;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  background: var(--amber-bg);
+  color: var(--amber);
 }
