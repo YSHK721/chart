@@ -157,21 +157,23 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     td.appendChild(el('span', { className: 'dash-osc-value', textContent: formatValue(cell.value) }));
     // 分位水準に達したときの価格（依頼者指示 2026-08-30・上下 2 値は同日承認。
     //   §5.5 の閉形式逆写像＋往復検証）。逆算できない側は null＝出さない（発明しない）。
-    //   ↑＝上帯（q_high）・↓＝下帯（q_low）。上（高い価格）から並べる（ラダーと同じ降順）。
+    //   どの分位かは**名前**（q95 / q5・第 1 表の水準列と同じ語彙）で示す
+    //   （依頼者指摘 2026-08-30: 矢印だけでは認知負荷が大きく判断に迷う）。
+    //   上（高い価格）から並べる（ラダーと同じ降順）。
     const prices = cell.level_prices || {};
-    if (prices.q_high !== null && prices.q_high !== undefined) {
-      td.appendChild(el('span', {
+    for (const side of [prices.q_high, prices.q_low]) {
+      if (!side || side.price === null || side.price === undefined) continue;
+      const row = el('span', {
         className: 'dash-osc-level-price',
-        textContent: `↑ ${formatPrice(prices.q_high)}`,
-        title: '上帯（q_high の分位水準）に達したときの価格',
-      }));
-    }
-    if (prices.q_low !== null && prices.q_low !== undefined) {
-      td.appendChild(el('span', {
-        className: 'dash-osc-level-price',
-        textContent: `↓ ${formatPrice(prices.q_low)}`,
-        title: '下帯（q_low の分位水準）に達したときの価格',
-      }));
+        title: `分位水準 ${side.level ?? ''} に達したときの価格`,
+      });
+      if (side.level) {
+        row.appendChild(el('i', {
+          className: 'dash-osc-level-price-name', textContent: String(side.level),
+        }));
+      }
+      row.appendChild(el('span', { textContent: formatPrice(side.price) }));
+      td.appendChild(row);
     }
     td.appendChild(el('span', { className: 'dash-osc-reach', textContent: formatReachTime(cell.reach, nowUnix) }));
     return td;

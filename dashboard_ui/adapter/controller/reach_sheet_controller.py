@@ -321,20 +321,32 @@ class ReachSheetController:
             )
             # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認）。
             #   上帯 = scale.band_high（q_high）・下帯 = band_low 系列の末尾値（q_low）。
-            sides: "dict[str, float | None]" = {"q_high": None, "q_low": None}
+            #   `level` は第 1 表の水準列と同じ語彙（q95 / q5・依頼者指摘 2026-08-30:
+            #   矢印だけでは判断に迷う→どの分位かを名前で示す）。
+            sides: "dict[str, dict | None]" = {"q_high": None, "q_low": None}
             if math.isfinite(float(scale.band_high)):
-                sides["q_high"] = self._level_price_of(
+                price_high = self._level_price_of(
                     instance, parsed.dataset_ref, value_map,
                     band=float(scale.band_high), side="q_high",
                 )
+                if price_high is not None:
+                    sides["q_high"] = {
+                        "price": float(price_high),
+                        "level": _quantile_label(spec.q_high),
+                    }
             band_low = _latest_of(
                 series_by_key[instance.key].get(spec.band_low_series or "")
             )
             if band_low is not None:
-                sides["q_low"] = self._level_price_of(
+                price_low = self._level_price_of(
                     instance, parsed.dataset_ref, value_map,
                     band=band_low, side="q_low",
                 )
+                if price_low is not None:
+                    sides["q_low"] = {
+                        "price": float(price_low),
+                        "level": _quantile_label(spec.q_low),
+                    }
             if sides["q_high"] is not None or sides["q_low"] is not None:
                 level_prices[instance.key] = sides
         return projections, unprojectable, level_prices
@@ -487,6 +499,13 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
     }
 
 
+def _quantile_label(quantile: "float | None") -> "str | None":
+    """分位の表示名（第 1 表の水準列・系列名 `_q{pct}` と同じ丸め＝語彙を増やさない）。"""
+    if quantile is None:
+        return None
+    return f"q{int(round(float(quantile) * 100))}"
+
+
 def _latest_of(points) -> "float | None":
     """系列の末尾値（系列なし・空・非有限は None）。"""
     if not points:
@@ -506,10 +525,11 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         "reach": None if cell.reach is None else _reach_json(cell.reach),
         "unavailable_reason": cell.unavailable_reason,
         # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認。§5.5 の係数の
-        #   閉形式逆写像＋往復検証。逆算不能＝tickvol 等・検証不成立は None）。
+        #   閉形式逆写像＋往復検証。逆算不能＝tickvol 等・検証不成立は None）。各側は
+        #   {price, level}（level は第 1 表の水準列と同じ分位名・矢印だけでは判断に迷うため）。
         "level_prices": {
-            "q_high": None if sides.get("q_high") is None else float(sides["q_high"]),
-            "q_low": None if sides.get("q_low") is None else float(sides["q_low"]),
+            "q_high": sides.get("q_high"),
+            "q_low": sides.get("q_low"),
         },
     }
 

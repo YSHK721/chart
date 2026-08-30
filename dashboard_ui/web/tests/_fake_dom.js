@@ -148,7 +148,7 @@ export function oscCell(overrides = {}) {
     tail_unscaled: false,
     reach: null,
     unavailable_reason: null,
-    level_prices: { q_high: null, q_low: null },
+    level_prices: { q_high: null, q_low: null },   // 各側は {price, level} | null
     ...overrides,
   };
 }

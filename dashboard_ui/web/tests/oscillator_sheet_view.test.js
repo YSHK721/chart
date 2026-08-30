@@ -80,27 +80,32 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     //   ↑＝上帯（q_high）・↓＝下帯（q_low）。表記は第 1 表と同じ唯一源（format.js）。
     const cells = [oscCell({
       indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31,
-      level_prices: { q_high: 65930.55, q_low: 63120.4 },
+      level_prices: {
+        q_high: { price: 65930.55, level: 'q95' },
+        q_low: { price: 63120.4, level: 'q5' },
+      },
     })];
     const { host } = renderInto(sheetResponse({ cells }));
     const shown = flatten(cellAt(host, 'ma_marod', '1m'))
       .filter((el) => el.classList.contains('dash-osc-level-price'));
     assert.equal(shown.length, 2, '上下 2 値が表示されていません');
-    assert.equal(textOf(shown[0]), '\u2191 65,930.6');
-    assert.equal(textOf(shown[1]), '\u2193 63,120.4');
+    // どの分位かは名前で示す（矢印は使わない・依頼者指摘 2026-08-30）。
+    assert.equal(textOf(shown[0]), 'q9565,930.6');
+    assert.equal(textOf(shown[1]), 'q563,120.4');
+    assert.equal(/\u2191|\u2193/.test(textOf(cellAt(host, 'ma_marod', '1m'))), false);
   });
 
   test('a_cell_with_only_one_reachable_band_shows_just_that_side', () => {
     // 片側だけ検証が通ることは正当（もう片側は発明しない）。
     const cells = [oscCell({
       indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31,
-      level_prices: { q_high: 65930.55, q_low: null },
+      level_prices: { q_high: { price: 65930.55, level: 'q95' }, q_low: null },
     })];
     const { host } = renderInto(sheetResponse({ cells }));
     const shown = flatten(cellAt(host, 'ma_marod', '1m'))
       .filter((el) => el.classList.contains('dash-osc-level-price'));
     assert.equal(shown.length, 1);
-    assert.match(textOf(shown[0]), /\u2191/u);
+    assert.match(textOf(shown[0]), /q95/);
   });
 
   test('a_cell_without_a_projection_shows_no_level_price', () => {

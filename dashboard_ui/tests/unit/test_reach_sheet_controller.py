@@ -222,6 +222,7 @@ def test_the_cells_use_the_model_field_names() -> None:
     assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
                          "reach", "unavailable_reason", "level_prices"}
     assert set(cell["level_prices"]) == {"q_high", "q_low"}
+    # 各側は {price, level}（level は第 1 表の水準列と同じ分位名・矢印では判断に迷うため）。
 
 
 def test_the_cumulative_cell_on_the_sub_unit_timeframe_says_why_it_has_no_level() -> None:
@@ -265,9 +266,10 @@ def test_the_projectable_cell_carries_the_price_reaching_its_quantile_band() -> 
     marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
 
     assert marod["level_prices"]["q_high"] is not None
+    assert marod["level_prices"]["q_high"]["level"] == "q95"
     round_trip = forward.value_at_close(
         indicator_id="probe", variant="default", params={}, dataset_ref=REF,
-        timeframe="1m", close=float(marod["level_prices"]["q_high"]),
+        timeframe="1m", close=float(marod["level_prices"]["q_high"]["price"]),
     )
     assert abs(round_trip - reachable_band) < 1e-9
 
@@ -287,7 +289,7 @@ def test_a_band_beyond_the_probe_range_is_shown_after_a_round_trip_verification(
     marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
 
     assert marod["level_prices"]["q_high"] is not None
-    assert abs(float(marod["level_prices"]["q_high"]) - 99800.0) < 0.01
+    assert abs(float(marod["level_prices"]["q_high"]["price"]) - 99800.0) < 0.01
 
 
 def test_a_band_whose_solution_is_not_a_positive_price_stays_hidden() -> None:
@@ -317,7 +319,8 @@ def test_the_lower_band_price_is_shown_alongside_the_upper_one() -> None:
 
     assert marod["level_prices"]["q_high"] is not None
     assert marod["level_prices"]["q_low"] is not None
-    assert abs(float(marod["level_prices"]["q_low"]) - 800.0) < 0.01
+    assert marod["level_prices"]["q_low"]["level"] == "q5"
+    assert abs(float(marod["level_prices"]["q_low"]["price"]) - 800.0) < 0.01
 
 
 def test_an_uninvertible_cell_has_no_level_price() -> None:

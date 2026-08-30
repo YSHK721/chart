@@ -870,3 +870,11 @@
   font-size: 11px;
   color: var(--ink2);
 }
+
+/* 到達価格に添える分位名（q95 / q5・第 1 表の水準列と同じ語彙）。 */
+.dash-osc-level-price-name {
+  margin-right: 5px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+}
