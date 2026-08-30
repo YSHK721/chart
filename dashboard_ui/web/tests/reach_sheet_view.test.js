@@ -128,6 +128,21 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(cellText(second, 'gap'), '7.6');
   });
 
+  test('the_next_target_marks_have_their_own_column_apart_from_the_distance', () => {
+    // 距離と次のターゲットも別列（依頼者指示 2026-08-30「距離 · 次のターゲットも各列に分離しろ」）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'next');
+    assert.ok(head, '次のターゲットの列見出しがありません');
+    assert.match(textOf(head), /次のターゲット/);
+    // 印は next 列のセルに居て、距離セルには同居しない。
+    const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const distanceCell = flatten(first).find((el) => el.classList.contains('dash-ladder-distance-cell'));
+    assert.equal(flatten(distanceCell).some((el) => el.classList.contains('dash-ladder-marks')), false);
+    const nextCell = flatten(first).find((el) => el.classList.contains('dash-ladder-next-cell'));
+    assert.ok(flatten(nextCell).some((el) => el.classList.contains('dash-ladder-marks')));
+    assert.match(textOf(nextCell), /長期 · 上/);   // THREE_ROWS[0] は long の印を持つ。
+  });
+
   test('the_gap_has_its_own_column_whose_head_says_what_it_is', () => {
     // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
     //   数値だけの欄なので、意味（直前行との差）は列見出しが持つ。

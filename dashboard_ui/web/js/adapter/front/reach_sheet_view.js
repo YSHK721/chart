@@ -61,7 +61,9 @@ function unknownHorizonKeys(rows) {
 /** 列見出し。水準列はモックの 1 列から指標名 / 期間 / ソースの 3 列へ分割
  *  （依頼者指示 2026-08-30。行の識別は従来どおりサーバの `label` が担う）。 */
 const COLUMNS = Object.freeze([
-  { cell: 'distance', head: '距離 · 次のターゲット', className: 'dash-ladder-head-distance' },
+  { cell: 'distance', head: '距離', className: 'dash-ladder-head-distance' },
+  // 次のターゲット（地平の印）は独立列（依頼者指示 2026-08-30「距離 · 次のターゲットも各列に分離しろ」）。
+  { cell: 'next', head: '次のターゲット', className: 'dash-ladder-head-next' },
   { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
   // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
   { cell: 'gap', head: '差', hint: '（直前行と）', className: 'dash-ladder-head-gap' },
@@ -416,15 +418,17 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     const tr = el('tr', { className: `dash-ladder-row ${state}${toneClass}` });
 
     const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
-    // `data-cell` は**文字を持つ葉**に置く（欄そのものへ置くと、同じ欄へ同居する
-    //   地平バッジの文字まで距離として読めてしまう）。
     distanceCell.appendChild(el('span', {
       className: 'dash-ladder-distance',
       textContent: formatDistance(row.distance),
       dataset: { cell: 'distance' },
     }));
-    distanceCell.appendChild(buildMarks(row.horizon_marks, row.distance));
     tr.appendChild(distanceCell);
+
+    // 次のターゲット（地平の印）は独立列（依頼者指示 2026-08-30）。
+    const nextCell = el('td', { className: 'dash-ladder-next-cell' });
+    nextCell.appendChild(buildMarks(row.horizon_marks, row.distance));
+    tr.appendChild(nextCell);
 
     tr.appendChild(buildPriceCell(row));
     tr.appendChild(el('td', {
@@ -504,7 +508,10 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。 */
   function buildCurrentRow(currentPrice) {
     const tr = el('tr', { className: 'dash-ladder-row dash-ladder-current' });
-    tr.appendChild(el('th', { scope: 'row', textContent: '現在値', dataset: { cell: 'distance' } }));
+    // 現在値行は距離＋次のターゲットの 2 列ぶんをまとめる（列の分離・依頼者指示 2026-08-30）。
+    tr.appendChild(el('th', {
+      scope: 'row', colSpan: 2, textContent: '現在値', dataset: { cell: 'distance' },
+    }));
     const priceCell = el('td', { dataset: { cell: 'price' } });
     priceCell.appendChild(el('b', {
       className: 'dash-ladder-current-price',

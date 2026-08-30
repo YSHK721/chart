@@ -387,8 +387,14 @@
    へ集める。バッジ込みでも折り返さないよう nowrap を併せて置く。 */
 .dash-ladder-table th.dash-ladder-head-distance {
   width: 1%;
-  min-width: 110px;
   white-space: nowrap;
+}
+
+/* 次のターゲット列の見出しは折り返しを許す（「次のターゲット」の 1 行ぶんで列を広げない。
+   列幅の決め手は印の実体）。 */
+.dash-ladder-table th.dash-ladder-head-next {
+  width: 1%;
+  min-width: 64px;
 }
 
 /* 価格・期間・ソースも内容幅へ固定する。狭めた距離・時間足の余白がここへ流れると
@@ -408,13 +414,20 @@
   white-space: nowrap;
 }
 
-/* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。 */
+/* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。地平の印は独立列
+   （依頼者指示 2026-08-30）になったため、min-width の確保は不要になった。 */
 .dash-ladder-table th.dash-ladder-distance-cell {
   text-align: right;
   width: 1%;
-  min-width: 110px;
   white-space: nowrap;
   background: transparent;
+}
+
+/* 次のターゲット（地平の印）の独立列。印が無い行は空欄（内容幅へ詰める）。
+   到達側の右境界線は距離列からこちらへ移動（列の並びの最後尾＝価格との境界）。 */
+.dash-ladder-table td.dash-ladder-next-cell {
+  width: 1%;
+  white-space: nowrap;
   border-right: 1px solid var(--line);
 }
 
@@ -432,12 +445,16 @@
   color: var(--up);
 }
 
-/* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。
-   距離の**下の行**に折る（依頼者指示 2026-08-30・上のヒントと同じ理由）。距離の数字と
-   横並びのままだと 3 印そろった行の 1 行ぶん（実測 242px）が列幅になる。 */
+/* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。独立列（依頼者指示
+   2026-08-30）の中で縦に積む——3 印そろった行を横並びにすると 1 行ぶんが列幅になる。 */
 .dash-ladder-marks {
   display: block;
   white-space: normal;
+}
+
+.dash-ladder-marks .dash-ladder-next {
+  display: block;
+  margin: 1px 0;
 }
 
 .dash-ladder-next {
