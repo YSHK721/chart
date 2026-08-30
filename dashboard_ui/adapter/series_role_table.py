@@ -42,6 +42,21 @@ _PERIOD_PARAMS: "tuple[str, ...]" = (
 #: 同じく「ソース」（計算に使う価格系列）に採るパラメータ名の優先順。
 _SOURCE_PARAMS: "tuple[str, ...]" = ("source", "price", "src")
 
+#: ラダーの**水準値を変えない**パラメータ（描画・凡例・付随メトリクス系列のみに効く）。
+#: 行の読み手に伝える情報が無いので、表示 3 分割の `extra` から除く（依頼者指摘 2026-08-30
+#: 「まったく伝わらない」）。カタログ（catalog.js）の宣言と各指標の実装で確認した集合:
+#:   color/width/bull_color/bear_color … 線の見た目のみ
+#:   legend/draw_levels/display_mode/dash_opacity … 描画の有無・形式のみ
+#:   show_metrics（btlm_trail の β・実績率の表示）/ show_outliers（cvfe の外れ線の表示）
+#:     … 系列を出すか出さないかのみで、出ている水準の値は不変
+#:   n_cov … band_hit_rate（価格水準でないメトリクス）の窓のみ
+#: σ倍率（sigma_inner/outer）・q_out・band_method 等は**水準の定義そのもの**なので除かない。
+_LADDER_NOISE_PARAMS: "frozenset[str]" = frozenset({
+    "color", "width", "bull_color", "bear_color",
+    "legend", "draw_levels", "display_mode", "dash_opacity",
+    "show_metrics", "show_outliers", "n_cov",
+})
+
 
 def _rsi_headroom_excess(value: float, band_high: float) -> float:
     """RSI の超過分（`(v - u) / (100 - u)`）。上限は指標側 `levels.RSI_MAX` が唯一源。"""
@@ -232,7 +247,7 @@ class SeriesRoleTable:
 
         period_key, period = effective(_PERIOD_PARAMS)
         source_key, source = effective(_SOURCE_PARAMS)
-        consumed = {period_key, source_key} | set(_COSMETIC_PARAMS)
+        consumed = {period_key, source_key} | _LADDER_NOISE_PARAMS | set(_COSMETIC_PARAMS)
         extra = " ".join(
             f"{key}={value}"
             for key, value in sorted(instance.params.items())

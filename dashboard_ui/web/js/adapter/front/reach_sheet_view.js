@@ -296,12 +296,19 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       }));
       return;
     }
-    const extra = naming.extra ? ` ${naming.extra}` : '';
-    tr.appendChild(el('td', {
-      className: 'dash-ladder-name',
-      textContent: `${naming.name ?? ''}${extra}`,
-      dataset: { cell: 'name' },
-    }));
+    // extra（水準の定義に効く残りの非既定設定）は本文に並べない（依頼者指摘 2026-08-30:
+    //   k=v の羅列は伝わらない）。「+N」の印とツールチップへ退避し、版面は指標名だけにする。
+    const nameCell = el('td', { className: 'dash-ladder-name', dataset: { cell: 'name' } });
+    nameCell.appendChild(el('span', { textContent: String(naming.name ?? '') }));
+    if (naming.extra) {
+      const count = String(naming.extra).split(' ').filter(Boolean).length;
+      nameCell.appendChild(el('i', {
+        className: 'dash-ladder-extra-mark',
+        textContent: `+${count}`,
+        title: `既定と異なる詳細設定: ${naming.extra}`,
+      }));
+    }
+    tr.appendChild(nameCell);
     const periodCell = el('td', { className: 'dash-ladder-period', dataset: { cell: 'period' } });
     if (naming.period !== null && naming.period !== undefined) {
       periodCell.appendChild(el('span', { textContent: String(naming.period) }));

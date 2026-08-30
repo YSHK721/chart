@@ -484,6 +484,19 @@
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* 詳細設定の印（+N）。中身はツールチップ（title）が持つ。版面には数だけ置く。 */
+.dash-ladder-name .dash-ladder-extra-mark {
+  font-style: normal;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 6px;
+  cursor: help;
+}
+
 /* 期間の暦期間注記（例 '1週'）。本数の補足であって主役ではない。 */
 .dash-ladder-period .dash-ladder-period-preset {
   font-style: normal;

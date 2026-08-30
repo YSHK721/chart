@@ -224,6 +224,23 @@ def test_the_row_naming_keeps_other_non_default_params_in_extra() -> None:
     assert naming["extra"] == "sigma_outer=3.0"
 
 
+def test_the_row_naming_drops_params_that_do_not_change_the_level_values() -> None:
+    """描画・凡例・付随メトリクスにしか効かない設定は伝える情報が無い（依頼者指摘 2026-08-30）。"""
+    table = SeriesRoleTable()
+
+    naming = table.row_naming(
+        instance=instance_of(
+            "btlm_trail",
+            {"maxbars": 156, "show_metrics": False, "n_cov": 495, "q_out": 0.999},
+        ),
+        series_name="btlm_trail_q95",
+    )
+
+    assert "show_metrics" not in naming["extra"]
+    assert "n_cov" not in naming["extra"]
+    assert "q_out=0.999" in naming["extra"]   # 水準の定義に効くものは残る
+
+
 def test_the_row_label_drops_parameters_unknown_to_the_catalog() -> None:
     """撤去済みパラメータの残骸（例: `wait_for_close`・ISSUE-286 で撤去）が保存済み
     テンプレートから漏れてもラベルへ出さない（計算に使われない値を表示しない。

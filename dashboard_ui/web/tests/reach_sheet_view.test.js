@@ -74,6 +74,18 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(cellText(first, 'name'), 'MA ema5 hlc3');
   });
 
+  test('extra_settings_collapse_into_a_count_mark_with_a_tooltip', () => {
+    // k=v の羅列は伝わらない（依頼者指摘 2026-08-30）。版面は指標名＋「+N」だけにし、
+    //   中身はツールチップ（title）が持つ。
+    const rows = [ladderRow({ price: 66099.7, timeframe: '1h', label: 'x', distance: 10, gap_to_previous: null, horizon_marks: [], horizon_p: {}, naming: { name: 'btlm_trail_q95', period: 115, source: 'hlc3', extra: 'band_method=empirical q_out=0.999' } })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 1 }));
+    const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const mark = first.querySelector('.dash-ladder-extra-mark');
+    assert.equal(textOf(mark), '+2');
+    assert.match(mark.title, /band_method=empirical q_out=0.999/);
+    assert.doesNotMatch(cellText(first, 'name'), /band_method/);
+  });
+
   test('the_period_cell_carries_the_preset_annotation_when_the_table_knows_the_bars', () => {
     // 期間の暦期間注記は注入された換算（唯一源 = period_presets.js）から。無注入なら本数のみ。
     const annotator = (timeframe, bars) => (timeframe === '5m' && bars === 1329 ? '1週' : null);
