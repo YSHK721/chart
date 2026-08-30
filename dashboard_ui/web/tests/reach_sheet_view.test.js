@@ -164,7 +164,9 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     // 知らない足に近い番号を与えると、版面上は正しい足に見えたまま取り違える。
     const rows = [ladderRow({ timeframe: '7m' })];
     const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
-    const pill = flatten(host).find((el) => el.classList.contains('dash-tf-pill'));
+    // 行のセル内のピルを見る（時間足の選択バーにも同クラスのピルが居るため、行に限定する）。
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const pill = flatten(row).find((el) => el.classList.contains('dash-tf-pill'));
     assert.equal(textOf(pill), '7m');
     assert.equal(/dash-tf-r\d/.test(pill.className), false);
   });
@@ -548,38 +550,48 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     ladderRow({ price: 65600, timeframe: '1D', label: 'D-dn', distance: -156 }),
   ];
 
-  test('the_scope_bar_offers_the_four_ranges_with_short_active_by_default', () => {
+  test('the_period_bar_offers_the_three_groups_and_zenkikan_all_groups_on_by_default', () => {
+    // 期間は複数選択（依頼者指示 2026-08-30）。既定は全選択＝3 グループとも点灯・全期間は消灯。
     const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
     for (const key of ['short', 'medium', 'long', 'all']) {
-      assert.ok(scopeButton(host, key), `範囲 ${key} のボタンがありません`);
+      assert.ok(scopeButton(host, key), `期間 ${key} のボタンがありません`);
     }
     assert.ok(scopeButton(host, 'short').classList.contains('is-active'));
-    assert.match(textOf(host), /短期/);
+    assert.ok(scopeButton(host, 'medium').classList.contains('is-active'));
+    assert.ok(scopeButton(host, 'long').classList.contains('is-active'));
+    assert.equal(scopeButton(host, 'all').classList.contains('is-active'), false);
     assert.match(textOf(host), /全期間/);
   });
 
-  test('the_medium_scope_shows_only_levels_of_1h_and_above', () => {
-    // §4.3: 中期＝1h 以上（区分を発明しない）。
+  test('period_groups_toggle_their_disjoint_timeframe_bands_and_combine_freely', () => {
+    // 期間グループは §4.3 の閾値（1h・1D）で区切った互いに素な帯をまとめてトグルする。
     const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
-    // Act
-    press(scopeButton(host, 'medium'));
+    // Act: 短期の帯（1m/5m/15m）を外す。
+    press(scopeButton(host, 'short'));
     // Assert
-    assert.equal(rowsOf(host).length, 7);   // 水準 6 本 ＋ 現在値行。
+    assert.equal(rowsOf(host).length, 7);   // 中期＋長期 6 本 ＋ 現在値行。
     assert.equal(/M1-up|M15-up/.test(textOf(host)), false);
-    assert.match(textOf(host), /H1-up/);
-    assert.match(textOf(host), /D-dn/);
-    // 現在値行は距離の符号の変わり目（H1-up と H1-dn の間）に入る。
-    const rows = rowsOf(host);
-    assert.equal(rows[4].classList.contains('dash-ladder-current'), true);
-  });
-
-  test('the_long_scope_shows_only_levels_of_1D_and_above', () => {
-    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    // Act: 長期の帯（1D/1W/1M）も外す → 中期の帯だけが残る（複数選択の組合せ）。
     press(scopeButton(host, 'long'));
-    assert.equal(rowsOf(host).length, 4);   // W-up / D-up ＋ 現在値行 ＋ D-dn。
-    assert.equal(/H4-up|H1-up|H1-dn/.test(textOf(host)), false);
+    // Assert
+    assert.equal(rowsOf(host).length, 4);   // H4-up / H1-up ＋ 現在値行 ＋ H1-dn。
+    assert.equal(/W-up|D-up|D-dn/.test(textOf(host)), false);
     const rows = rowsOf(host);
     assert.equal(rows[2].classList.contains('dash-ladder-current'), true);
+  });
+
+  test('a_period_group_lights_only_when_all_its_timeframes_are_selected', () => {
+    // 期間ボタンと時間足ピルは**同一の選択集合**を操作する（軸を 2 本にしない）。
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    // Act: 中期の帯の 1 本（1h）だけをピルで外す。
+    press(tfButton(host, '1h'));
+    // Assert: 中期は消灯（帯が欠けた）・短期と長期は点灯のまま。
+    assert.equal(scopeButton(host, 'medium').classList.contains('is-active'), false);
+    assert.ok(scopeButton(host, 'short').classList.contains('is-active'));
+    assert.ok(scopeButton(host, 'long').classList.contains('is-active'));
+    // Act: 1h を戻すと中期も点灯へ戻る。
+    press(tfButton(host, '1h'));
+    assert.ok(scopeButton(host, 'medium').classList.contains('is-active'));
   });
 
   test('the_all_scope_drops_the_window_and_shows_every_row', () => {
@@ -594,27 +606,83 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(/全 100 本中/.test(textOf(host)), false);
   });
 
-  test('switching_back_to_short_restores_the_windowed_view_without_a_new_response', () => {
+  test('pressing_zenkikan_again_returns_to_the_windowed_view_without_a_new_response', () => {
     // 切替は直近の応答の描き直しだけ（発行を生まない——発行判定は sheet_poller の唯一責務）。
     const many = Array.from({ length: 100 }, (_unused, i) =>
       ladderRow({ price: 70000 - i * 10, label: `L${i}`, distance: 50 - i }));
     const { host } = renderInto(sheetResponse({ rows: many, current_index: 50 }));
     press(scopeButton(host, 'all'));
     // Act
-    press(scopeButton(host, 'short'));
+    press(scopeButton(host, 'all'));
     // Assert
     assert.equal(rowsOf(host).length, 31);
     assert.match(textOf(host), /全 100 本中/);
   });
 
-  test('reselecting_the_active_scope_does_not_rebuild_the_table', () => {
-    // 無駄の不在（絶対命令 §4.1）: 同じ範囲の再選択は 1 行も作り直さない。
+  test('toggling_a_period_group_twice_restores_the_original_rows', () => {
+    // 往復の同値性（トグルの表明）。
     const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
-    const firstRowBefore = rowsOf(host)[0];
-    // Act
+    const before = rowsOf(host).length;
+    press(scopeButton(host, 'medium'));
+    press(scopeButton(host, 'medium'));
+    assert.equal(rowsOf(host).length, before);
+  });
+
+  // ---- 時間足の選択（依頼者指示 2026-08-30: 時間足も選択できるように） ----
+  const tfButton = (host, timeframe) => flatten(host)
+    .filter((node) => node.classList.contains('dash-ladder-tf-btn'))
+    .find((node) => node.dataset.timeframe === timeframe);
+
+  test('the_tf_bar_offers_every_timeframe_all_selected_by_default', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    for (const timeframe of ['1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M']) {
+      assert.ok(tfButton(host, timeframe), `時間足 ${timeframe} の選択が無い`);
+    }
+    // 既定は全選択＝全行が出る（MIXED 8 本＋現在値行）。
+    assert.equal(rowsOf(host).length, 9);
+  });
+
+  test('deselecting_a_timeframe_removes_only_its_rows', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    // Act: 1h を外す。
+    press(tfButton(host, '1h'));
+    // Assert: 1h の 2 本だけ消える（他は残る）。
+    assert.equal(rowsOf(host).length, 7);
+    assert.equal(/H1-up|H1-dn/.test(textOf(host)), false);
+    assert.match(textOf(host), /H4-up/);
+    // 現在値行は距離の符号の変わり目に入り直す（1h を除く正距離 5 本の直後）。
+    const rows = rowsOf(host);
+    const currentAt = rows.findIndex((r) => r.classList.contains('dash-ladder-current'));
+    assert.equal(currentAt, 5);
+  });
+
+  test('timeframe_pills_and_period_groups_edit_the_same_selection', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    // Act: 短期の帯をまとめて外し、さらに 1h をピルで外す → 4h / 1D / 1W だけ。
     press(scopeButton(host, 'short'));
-    // Assert: 行が同一オブジェクトのまま（描き直しが走っていない）。
-    assert.equal(rowsOf(host)[0], firstRowBefore);
+    press(tfButton(host, '1h'));
+    // Assert
+    assert.equal(rowsOf(host).length, 5);   // W-up / D-up / H4-up / D-dn ＋ 現在値行。
+    assert.equal(/H1-up|H1-dn|M15-up|M1-up/.test(textOf(host)), false);
+  });
+
+  test('reselecting_the_timeframe_restores_its_rows', () => {
+    const { host } = renderInto(sheetResponse({ rows: MIXED, current_index: 6 }));
+    press(tfButton(host, '1h'));
+    // Act
+    press(tfButton(host, '1h'));
+    // Assert: 全選択へ戻る＝全行復活。
+    assert.equal(rowsOf(host).length, 9);
+  });
+
+  test('an_empty_selection_is_posted_instead_of_a_silent_blank_table', () => {
+    const rows = [ladderRow({ timeframe: '1m', price: 65800, label: 'only', distance: 44 })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 1 }));
+    // Act: 唯一の該当足を外す。
+    press(tfButton(host, '1m'));
+    // Assert: 水準行は 0 だが、理由を掲示する（無言の空にしない）。
+    assert.equal(rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current')).length, 0);
+    assert.match(textOf(host), /表示できる水準がありません/);
   });
 
   test('the_view_never_talks_to_the_network_itself', async () => {

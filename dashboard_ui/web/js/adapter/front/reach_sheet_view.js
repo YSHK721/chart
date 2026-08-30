@@ -82,25 +82,24 @@ const NAMING_CELLS = 4;
  *  窓の外の存在は window-note が掲示する（無言の縮退禁止）。 */
 const WINDOW_RADIUS = 15;
 
-/** 表示範囲の切替（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」。
- *  「オール」の呼称は同日の依頼者指示で「全期間」へ変更）。
+/** 期間グループ（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」→
+ *  「オール」は「全期間」へ改称 → 「期間も含めて、時間足も**複数選択**できるように」）。
  *
- *  短期 / 中期 / 長期の区分は §4.3 の確定語彙そのもの（**短期＝すべて / 中期＝1h 以上 /
- *  長期＝1D 以上**・新しい区分を発明しない）。全期間は窓を外した全表示（従来の全量。
- *  縦スクロールが戻ることは選択の結果であり縮退ではない）。 */
-const SCOPES = Object.freeze([
-  { key: 'short', label: '短期', minTf: null, windowed: true },
-  { key: 'medium', label: '中期', minTf: '1h', windowed: true },
-  { key: 'long', label: '長期', minTf: '1D', windowed: true },
-  { key: 'all', label: '全期間', minTf: null, windowed: false },
-]);
-
-/** 時間足が下限以上か（並びの唯一源 DASHBOARD_TIMEFRAMES で判定。未知の足は含めない
- *  ——どの段か判定できない足を黙って混ぜると区分の意味が壊れる）。 */
-function timeframeAtLeast(timeframe, minTf) {
-  const at = DASHBOARD_TIMEFRAMES.indexOf(String(timeframe));
-  return at >= 0 && at >= DASHBOARD_TIMEFRAMES.indexOf(minTf);
-}
+ *  複数選択の区分として意味を持つよう、§4.3 の閾値（1h・1D）で**互いに素な時間足の帯**に
+ *  区切る（短期＝1h 未満 / 中期＝1h 以上 1D 未満 / 長期＝1D 以上）。§4.3 の**地平**
+ *  （短期＝すべて…・行の「次のターゲット」印）は別概念のまま変えない——地平は累積の候補集合、
+ *  こちらは表示フィルタの区分である。期間ボタンはそのグループの時間足をまとめてトグルし、
+ *  時間足ピルと**同一の選択集合**を操作する（別のフィルタ軸を作らない）。
+ *  グループの中身は DASHBOARD_TIMEFRAMES（唯一源）から切り出す（写しを持たない）。 */
+const TF_GROUPS = (() => {
+  const mediumAt = DASHBOARD_TIMEFRAMES.indexOf('1h');
+  const longAt = DASHBOARD_TIMEFRAMES.indexOf('1D');
+  return Object.freeze([
+    { key: 'short', label: '短期', tfs: DASHBOARD_TIMEFRAMES.slice(0, mediumAt) },
+    { key: 'medium', label: '中期', tfs: DASHBOARD_TIMEFRAMES.slice(mediumAt, longAt) },
+    { key: 'long', label: '長期', tfs: DASHBOARD_TIMEFRAMES.slice(longAt) },
+  ]);
+})();
 
 /** 価格の表記（§4.7 の版面: 桁区切りあり・小数 1 桁）。 */
 function formatPrice(value) {
@@ -158,8 +157,13 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   let notice = null;
   let message = null;
   let windowNote = null;
-  /** 表示範囲（既定は短期＝§4.3 の全時間足・窓あり）。 */
-  let scope = SCOPES[0];
+  /** 選択中の時間足（唯一の選択状態。期間ボタンも時間足ピルもこの集合を操作する）。
+   *  既定は全選択。全選択のときはフィルタ自体を通さない＝未知の時間足の行も従来どおり出る
+   *  （絞ったときだけ、選んだ足の行に限定する）。 */
+  let selectedTfs = new Set(DASHBOARD_TIMEFRAMES);
+  /** 全期間（窓なし全量）モード。選択を操作した瞬間に解除される。 */
+  let windowless = false;
+  let tfButtons = [];
   /** 切替の再描画用に直近の応答を保つ（切替は**発行を生まない**——描き直すだけ）。 */
   let lastResponse = null;
   let scopeButtons = [];
@@ -194,6 +198,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       textContent: '水準を束ねず 1 本 1 行で価格降順に並べる。時間足は比較の軸ではなく各行の属性。',
     }));
     head.appendChild(buildScopeBar());
+    head.appendChild(buildTfBar());
+    syncSelectors();   // 初期の見た目も選択状態（唯一源）から導く（再 mount でもずれない）。
     panel.appendChild(head);
 
     const scroll = el('div', { className: 'dash-scroll' });
@@ -228,27 +234,97 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     return root;
   }
 
-  /** 表示範囲の切替バー（短期 / 中期 / 長期 / 全期間・§4.3 の語彙）。
+  /** 期間の複数選択バー（短期 / 中期 / 長期 ＋ 全期間）。
+   *  期間ボタンは自分のグループの時間足を selectedTfs へまとめてトグルする（時間足ピルと
+   *  同一の選択集合＝フィルタ軸を 2 本にしない）。全期間は窓なし全量のモード。
    *  切替は**描き直すだけ**で発行を生まない（発行判定は sheet_poller の唯一責務のまま）。 */
   function buildScopeBar() {
     const bar = el('div', { className: 'dash-ladder-scope', role: 'group' });
-    scopeButtons = SCOPES.map((candidate) => {
+    scopeButtons = TF_GROUPS.map((group) => {
       const button = el('button', {
         className: 'dash-ladder-scope-btn',
         type: 'button',
-        textContent: candidate.label,
-        dataset: { scope: candidate.key },
+        textContent: group.label,
+        dataset: { scope: group.key },
       });
-      button.setAttribute?.('aria-pressed', String(candidate === scope));
-      if (candidate === scope) button.classList.add('is-active');
       button.addEventListener('click', () => {
-        if (scope === candidate) return;   // 同じ範囲の再選択で描き直さない（無駄の不在）。
-        scope = candidate;
-        for (const b of scopeButtons) {
-          const active = b.dataset.scope === candidate.key;
-          b.setAttribute?.('aria-pressed', String(active));
-          if (active) b.classList.add('is-active'); else b.classList.remove('is-active');
+        windowless = false;
+        const allOn = group.tfs.every((tf) => selectedTfs.has(tf));
+        for (const tf of group.tfs) {
+          if (allOn) selectedTfs.delete(tf); else selectedTfs.add(tf);
         }
+        syncSelectors();
+        if (lastResponse) render(lastResponse);
+      });
+      bar.appendChild(button);
+      return button;
+    });
+    const allButton = el('button', {
+      className: 'dash-ladder-scope-btn',
+      type: 'button',
+      textContent: '全期間',
+      dataset: { scope: 'all' },
+    });
+    allButton.addEventListener('click', () => {
+      // 全期間 = 全選択＋窓なし。もう一度押すと窓ありへ戻る（選択は全選択のまま）。
+      windowless = !windowless;
+      if (windowless) selectedTfs = new Set(DASHBOARD_TIMEFRAMES);
+      syncSelectors();
+      if (lastResponse) render(lastResponse);
+    });
+    bar.appendChild(allButton);
+    scopeButtons.push(allButton);
+    return bar;
+  }
+
+  /** 期間ボタン・全期間・時間足ピルの見た目を選択状態（唯一源）から導き直す。 */
+  function syncSelectors() {
+    for (const button of scopeButtons) {
+      const group = TF_GROUPS.find((g) => g.key === button.dataset.scope);
+      const active = group
+        ? group.tfs.every((tf) => selectedTfs.has(tf))
+        : windowless;   // 全期間ボタン。
+      button.setAttribute?.('aria-pressed', String(active));
+      if (active) button.classList.add('is-active'); else button.classList.remove('is-active');
+    }
+    for (const button of tfButtons) {
+      const timeframe = button.dataset.timeframe;
+      const tone = DASHBOARD_TIMEFRAMES.indexOf(timeframe);
+      const on = selectedTfs.has(timeframe);
+      button.setAttribute?.('aria-pressed', String(on));
+      const pill = button.children[0];
+      if (pill) {
+        if (on) pill.classList.add(`dash-tf-r${tone}`);
+        else pill.classList.remove(`dash-tf-r${tone}`);
+      }
+    }
+  }
+
+  /** 時間足の選択バー（依頼者指示 2026-08-30「時間足も選択できるように」。トグル・既定は
+   *  全選択）。見た目は行の時間足ピル（dash-tf-pill・足別トーン）と同じ語彙で、外した足は
+   *  トーンを外した無彩のピルにする（薄さで階層を作らない・規約 4）。切替は描き直すだけで
+   *  発行を生まない。 */
+  function buildTfBar() {
+    const bar = el('div', { className: 'dash-ladder-tf-bar', role: 'group' });
+    tfButtons = DASHBOARD_TIMEFRAMES.map((timeframe, tone) => {
+      const button = el('button', {
+        className: 'dash-ladder-tf-btn',
+        type: 'button',
+        dataset: { timeframe },
+      });
+      // 初期状態は selectedTfs から導く（再 mount しても選択が版面とずれない）。
+      const initiallyOn = selectedTfs.has(timeframe);
+      const pill = el('u', {
+        className: initiallyOn ? `dash-tf-pill dash-tf-r${tone}` : 'dash-tf-pill',
+        textContent: timeframe,
+      });
+      button.appendChild(pill);
+      button.setAttribute?.('aria-pressed', String(initiallyOn));
+      button.addEventListener('click', () => {
+        windowless = false;
+        if (selectedTfs.has(timeframe)) selectedTfs.delete(timeframe);
+        else selectedTfs.add(timeframe);
+        syncSelectors();
         if (lastResponse) render(lastResponse);
       });
       bar.appendChild(button);
@@ -589,23 +665,25 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       ? ''
       : `未知の地平キーが応答に含まれています: ${unknown.join(', ')}（対象は ${HORIZON_KEYS.join(' / ')}）`;
 
-    // 表示範囲（§4.3 の地平＝時間足の下限）で絞る。並びはサーバのまま（順序を再計算しない）。
-    const rows = scope.minTf === null
-      ? allRows
-      : allRows.filter((row) => timeframeAtLeast(row.timeframe, scope.minTf));
+    // 絞り込み: 選択中の時間足（期間ボタンとピルが操作する唯一の集合）。並びはサーバのまま
+    //   （順序を再計算しない）。全選択のときはフィルタを通さない（未知の足も従来どおり）。
+    const tfNarrowed = !windowless && selectedTfs.size !== DASHBOARD_TIMEFRAMES.length;
+    const rows = tfNarrowed
+      ? allRows.filter((row) => selectedTfs.has(String(row.timeframe)))
+      : allRows;
     // 現在値行の位置: 全量ではサーバの current_index が唯一源（範囲外の指定は端へ倒す）。
     //   絞った範囲では行が抜けるため、同じ定義（現在値より上＝距離が正の行数）で**数え直す**
     //   （数値の再計算ではない。距離の符号はサーバの値そのもの）。
-    const at = scope.minTf === null
-      ? Math.max(0, Math.min(Number(response.current_index) || 0, rows.length))
-      : rows.filter((row) => Number(row.distance) >= 0).length;
+    const at = tfNarrowed
+      ? rows.filter((row) => Number(row.distance) >= 0).length
+      : Math.max(0, Math.min(Number(response.current_index) || 0, rows.length));
     // 現在値を中心とした窓だけを建てる（縦スクロールを不要にする）。半径は器の実高への
     //   適合値（fitWindow）を優先し、未適合は上限 WINDOW_RADIUS。窓の外の行はここで
     //   **建てない**——建ててから隠すと捨てる色計算が毎描画発生する。
     //   全期間は窓なし（全量。従来の表示に戻す選択肢）。
     const radius = fittedRadius ?? WINDOW_RADIUS;
-    const start = scope.windowed ? Math.max(0, at - radius) : 0;
-    const end = scope.windowed ? Math.min(rows.length, at + radius) : rows.length;
+    const start = windowless ? 0 : Math.max(0, at - radius);
+    const end = windowless ? rows.length : Math.min(rows.length, at + radius);
     const visible = rows.slice(start, end);
     const currentAt = at - start;
     visible.forEach((row, index) => {
@@ -618,6 +696,10 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       tbody.appendChild(buildCurrentRow(response.current_price));
     }
     renderWindowNote(rows.length, radius, start, rows.length - end);
+    // 絞り込みで 1 本も残らないことは正当な状態だが、無言の空にはしない（掲示する）。
+    if (rows.length === 0 && allRows.length > 0) {
+      windowNote.textContent = '選択中の範囲・時間足に表示できる水準がありません';
+    }
     renderNotice(response.degradations);
     fitWindow();
   }
@@ -630,7 +712,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
    * 実高を測れない環境（テストダブル）は何もしない＝WINDOW_RADIUS のまま（検定は決定的）。
    */
   function fitWindow() {
-    if (fitting || !scope.windowed || !scrollBox || !tbody) {
+    if (fitting || windowless || !scrollBox || !tbody) {
       return;
     }
     const boxH = scrollBox.clientHeight;
@@ -682,6 +764,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     message = null;
     windowNote = null;
     scopeButtons = [];
+    tfButtons = [];
     lastResponse = null;
     scrollBox = null;
     fittedRadius = null;

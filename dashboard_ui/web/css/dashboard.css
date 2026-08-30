@@ -814,3 +814,19 @@
   border-color: var(--cyan);
   color: var(--bg);
 }
+
+/* 時間足の選択バー（reach_sheet_view の selectedTfs）。中身のピルは行の時間足と同じ語彙
+   （dash-tf-pill・足別トーン）。外した足はトーンを外した無彩ピル（薄さで階層を作らない・規約 4）。 */
+.dash-ladder-tf-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dash-ladder-tf-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
