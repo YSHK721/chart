@@ -40,10 +40,12 @@ describe('timeframe_charts_view — 版面と水準線', () => {
     const tiles = tilesOf(h.host);
     assert.deepEqual(tiles.map((tile) => tile.dataset.timeframe), [...DASHBOARD_TIMEFRAMES]);
     assert.equal(h.spy.charts.length, DASHBOARD_TIMEFRAMES.length);
-    // 各チャートにローソク系列が 1 本ずつ。
+    // 各チャートにローソク系列が 1 本ずつ。右端はローソク 1 本分の余白
+    //   （依頼者指示 2026-08-30: 最新足をスケールへ張り付けない）。
     for (const chart of h.spy.charts) {
       assert.equal(chart.series.length, 1);
       assert.equal(chart.series[0].kind, h.spy.lwc.CandlestickSeries);
+      assert.equal(chart.options.timeScale.rightOffset, 1);
     }
   });
 
