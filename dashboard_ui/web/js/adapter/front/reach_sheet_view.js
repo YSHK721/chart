@@ -196,8 +196,12 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       className: 'dash-panel-lead',
       textContent: '水準を束ねず 1 本 1 行で価格降順に並べる。時間足は比較の軸ではなく各行の属性。',
     }));
-    head.appendChild(buildScopeBar());
-    head.appendChild(buildTfBar());
+    // 期間と時間足は 1 行に並べる（依頼者指示 2026-08-30。境界の余白は CSS の
+    //   .dash-ladder-selectors の gap が持つ＝両グループの内側の間隔より一段広い）。
+    const selectors = el('div', { className: 'dash-ladder-selectors' });
+    selectors.appendChild(buildScopeBar());
+    selectors.appendChild(buildTfBar());
+    head.appendChild(selectors);
     syncSelectors();   // 初期の見た目も選択状態（唯一源）から導く（再 mount でもずれない）。
     panel.appendChild(head);
 

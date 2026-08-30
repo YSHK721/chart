@@ -779,7 +779,17 @@
   display: none;
 }
 
-/* 表示範囲の切替（短期 / 中期 / 長期 / オール・reach_sheet_view の SCOPES）。 */
+/* 期間と時間足の選択は 1 行（依頼者指示 2026-08-30）。2 グループの**境界**には
+   小さめの余白（14px）を挟む——各グループの内側の間隔（6px）より一段広く、別グループと
+   読める最小の距離。収まらない幅では折り返す。 */
+.dash-ladder-selectors {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+/* 期間の複数選択（短期 / 中期 / 長期 / 全期間・reach_sheet_view の TF_GROUPS）。 */
 .dash-ladder-scope {
   display: flex;
   gap: 6px;
