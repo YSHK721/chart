@@ -113,15 +113,19 @@ class ElapsedComparisonGateway:
         版は「今どの 1m 周期に居るか」と「確定した 1m 素材の内容」の 2 つで決まる。周期だけを
         版にすると遡り訂正を 1 周期ぶん見落とす（`MaterialStore` の版と同じ理由・ISSUE-457）。
         形成中の 1m 点は完了単位に入らないので版から外す——入れるとティックごとに版が変わり、
-        共有が成立しない。
+        共有が成立しない。ただし**末尾が完了済みの単位でありうる**（最小単位の供給に現在の
+        1m 周期の点が無いとき）。その場合は比較集合に入る点なので版へ戻す。周期の内か外かは
+        O(1) で判るので、外すか戻すかを取り違えない。
 
         完了した 1m 単位の切り出しは 1m 全点の走査であり、**対象の足に依らない**。足ごとに
         切り直すと同じ走査を足の数だけ繰り返す（実測 42,023 回の半分がこれ）。
         """
         key = ("elapsed", dataset_ref, self._sub_timeframe, fold_key)
+        forming_sub_unit = period_start_unix(now_unix, self._sub_timeframe)
         epoch = (
-            period_start_unix(now_unix, self._sub_timeframe),
+            forming_sub_unit,
             fingerprint_of(points[:-1]),
+            _completed_tail(points, forming_sub_unit, self._sub_timeframe),
         )
         completed = self._store.material(
             key=key, epoch=epoch, name="completed",
@@ -147,6 +151,24 @@ class ElapsedComparisonGateway:
                 f"timeframe={self._sub_timeframe!r}"
             )
         return tuple(points)
+
+
+def _completed_tail(
+    points: "Sequence[tuple[int, float]]", forming_sub_unit: int, sub_timeframe: str
+) -> "tuple[int, float] | None":
+    """末尾の点が**完了済みの単位**ならそれを返す（形成中なら None）。O(1)。
+
+    版から末尾 1 点を外すのは「末尾は形成中でありうる」ためであり、形成中の点を版に入れると
+    ティックごとに版が変わって共有が成立しない。しかし最小単位の供給に現在の周期の点が無い
+    とき、末尾は完了した単位であり比較集合に**入る**。そこを版から外すと、その 1 点の遡り
+    訂正を最大 1 周期ぶん見落とす（古い比較集合を配る）。どちらであるかは O(1) で判る。
+    """
+    if not points:
+        return None
+    tail = points[-1]
+    if period_start_unix(int(tail[0]), sub_timeframe) >= forming_sub_unit:
+        return None
+    return (int(tail[0]), float(tail[1]))
 
 
 def _completed_units(
