@@ -190,12 +190,16 @@ class SeriesRoleTable:
         並ぶのは設定が違うときだけなので、違いを添えれば一意になり、既定どおりの行は短く出る。
         値だけを並べる形（旧実装）は `False` や `981` が何のパラメータか読者に復元できず、
         認知負荷の厳命と衝突した（依頼者承認 2026-08-30 で名前つきへ変更）。
+
+        カタログに存在しないキーは出さない（依頼者承認 2026-08-30）。撤去済みパラメータ
+        （例: `wait_for_close`・ISSUE-286 で撤去）が保存済みテンプレートに残骸として残ると、
+        既定が引けず必ず「既定と異なる」と判定されて計算に使われない値がラベルへ漏れるため。
         """
         defaults = dict(self._param_defaults().get(instance.indicator_id) or {})
         marks = [
             f"{key}={value}"
             for key, value in sorted(instance.params.items())
-            if key not in _COSMETIC_PARAMS and value != defaults.get(key)
+            if key in defaults and key not in _COSMETIC_PARAMS and value != defaults[key]
         ]
         return series_name if not marks else f"{series_name} {' '.join(marks)}"
 

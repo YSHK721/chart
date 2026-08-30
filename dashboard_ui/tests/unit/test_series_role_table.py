@@ -186,6 +186,22 @@ def test_the_row_label_names_each_parameter() -> None:
     assert "source=low" in label
 
 
+def test_the_row_label_drops_parameters_unknown_to_the_catalog() -> None:
+    """撤去済みパラメータの残骸（例: `wait_for_close`・ISSUE-286 で撤去）が保存済み
+    テンプレートから漏れてもラベルへ出さない（計算に使われない値を表示しない。
+    依頼者承認 2026-08-30）。"""
+    table = SeriesRoleTable()
+
+    label = table.row_label(
+        instance=instance_of(
+            "moving_averages", {"length": 24, "wait_for_close": False}
+        ),
+        series_name="MA",
+    )
+
+    assert label == "MA length=24"
+
+
 def test_the_row_label_is_stable_for_the_same_settings() -> None:
     table = SeriesRoleTable()
     params = {"length": 24, "ma_type": "ema", "source": "hlc3"}
