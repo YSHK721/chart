@@ -176,6 +176,10 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   let fittedRadius = null;
   /** fitWindow の再入ガード（適合の描き直しの中で再適合を測らない）。 */
   let fitting = false;
+  /** 直近の現在値（ティックの上下判定用）。 */
+  let lastCurrentPrice = null;
+  /** 直近に動いた向き（'up' | 'down' | null＝まだ動きを見ていない）。動くまで前の向きを保つ。 */
+  let currentDirection = null;
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
@@ -506,9 +510,14 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     }));
   }
 
-  /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。 */
+  /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。
+   *
+   *  「全時間足で同一の 1 点」の説明文は出さない（依頼者指示 2026-08-30: ラベル削除）。
+   *  直近ティックの上下は行の**地色**で示す（同指示: 動いたときに色で上下を視覚的に。
+   *  up / down クラスの付与だけを持ち、色の実体は dashboard.css の --tick-*-bg）。 */
   function buildCurrentRow(currentPrice) {
-    const tr = el('tr', { className: 'dash-ladder-row dash-ladder-current' });
+    const direction = currentDirection === null ? '' : ` dash-ladder-current-${currentDirection}`;
+    const tr = el('tr', { className: `dash-ladder-row dash-ladder-current${direction}` });
     // 現在値行は距離＋次のターゲットの 2 列ぶんをまとめる（列の分離・依頼者指示 2026-08-30）。
     tr.appendChild(el('th', {
       scope: 'row', colSpan: 2, textContent: '現在値', dataset: { cell: 'distance' },
@@ -521,9 +530,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     tr.appendChild(priceCell);
     tr.appendChild(el('td', {
       // 差＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS 側と
-      //   ここの定数 2（差・時間足）を数え直す）。
+      //   ここの定数 2（差・時間足）を数え直す）。ラベル文は置かない（上記）。
       colSpan: 2 + NAMING_CELLS,
-      textContent: '全時間足で同一の 1 点',
       dataset: { cell: 'label' },
     }));
     return tr;
@@ -669,6 +677,16 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       renderNotice([]);
       return;
     }
+    // 直近ティックの上下（現在値行の地色の向き）。同値のときは前の向きを保つ——
+    //   1 秒周期の描画で毎回無色に戻ると「動いた」ことしか読めなくなる。
+    const currentPrice = Number(response.current_price);
+    if (Number.isFinite(currentPrice) && lastCurrentPrice !== null) {
+      if (currentPrice > lastCurrentPrice) currentDirection = 'up';
+      else if (currentPrice < lastCurrentPrice) currentDirection = 'down';
+    }
+    if (Number.isFinite(currentPrice)) {
+      lastCurrentPrice = currentPrice;
+    }
     const allRows = Array.isArray(response.rows) ? response.rows : [];
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
     const unknown = unknownHorizonKeys(allRows);
@@ -779,6 +797,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     lastResponse = null;
     scrollBox = null;
     fittedRadius = null;
+    lastCurrentPrice = null;
+    currentDirection = null;
   }
 
   return { mount, render, unmount };

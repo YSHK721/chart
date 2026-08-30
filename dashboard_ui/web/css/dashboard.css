@@ -52,6 +52,10 @@
   --amber-bg: #fbf0dc;
   --warn-bg: #fdf3e3;
   --warn-ink: #8a5a12;
+  /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す）。
+     文字は --bg のまま。対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
+  --tick-up-bg: #14695f;
+  --tick-down-bg: #b13330;
   --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 8px 24px -12px rgba(20, 30, 50, .18);
 }
 
@@ -79,6 +83,8 @@
     --amber-bg: #33260f;
     --warn-bg: #2e2413;
     --warn-ink: #e0b46a;
+    --tick-up-bg: #2f9d92;
+    --tick-down-bg: #e4635f;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
   }
 }
@@ -104,6 +110,8 @@
   --amber-bg: #33260f;
   --warn-bg: #2e2413;
   --warn-ink: #e0b46a;
+  --tick-up-bg: #2f9d92;
+  --tick-down-bg: #e4635f;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
 }
 
@@ -639,6 +647,23 @@
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   letter-spacing: .1em;
+}
+
+/* 直近ティックの上下（依頼者指示 2026-08-30）。上昇＝teal 系・下降＝red 系の地へ反転帯ごと
+   切り替える（文字は --bg のまま＝反転の読み方を変えない）。まだ動きを見ていない間は
+   従来の --ink 反転。 */
+.dash-ladder-current-up th,
+.dash-ladder-current-up td {
+  background: var(--tick-up-bg);
+  border-top-color: var(--tick-up-bg);
+  border-bottom-color: var(--tick-up-bg);
+}
+
+.dash-ladder-current-down th,
+.dash-ladder-current-down td {
+  background: var(--tick-down-bg);
+  border-top-color: var(--tick-down-bg);
+  border-bottom-color: var(--tick-down-bg);
 }
 
 .dash-ladder-current-price {

@@ -556,6 +556,43 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(build(100), build(200));
   });
 
+  // ---- 現在値行のティック方向（依頼者指示 2026-08-30: ラベル削除・色で上下） ----
+  const currentRowOf = (host) => rowsOf(host).find((r) => r.classList.contains('dash-ladder-current'));
+
+  test('the_current_row_carries_no_explanatory_label_any_more', () => {
+    // 「全時間足で同一の 1 点」は出さない（依頼者指示: ラベル削除）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    assert.equal(/全時間足で同一/.test(textOf(host)), false);
+    // 行の構造（現在値・価格）は保つ。
+    assert.match(textOf(currentRowOf(host)), /現在値/);
+  });
+
+  test('a_price_move_paints_the_current_row_with_its_direction', () => {
+    // 動いたときに色で上下を示す（色の実体は CSS。View は up / down クラスの付与だけを持つ）。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc });
+    view.mount(host);
+    // Arrange: 初回は向きなし（まだ動きを見ていない）。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    let row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+    assert.equal(row.classList.contains('dash-ladder-current-down'), false);
+    // Act: 上へ動く。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65758.5 }));
+    row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
+    // Act: 同値のままの描画では前の向きを保つ（毎秒無色へ戻さない）。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65758.5 }));
+    row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
+    // Act: 下へ動く。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
+    row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-down'), true);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+  });
+
   // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・全期間） ----
   const scopeButton = (host, key) => flatten(host)
     .find((node) => node.dataset && node.dataset.scope === key);
