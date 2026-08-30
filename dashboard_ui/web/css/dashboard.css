@@ -261,6 +261,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ラダーは全列を内容幅で確定させたので、表自体も内容幅へ畳む（依頼者指示 2026-08-30
+   「指標名をもっと縮小」）。余白を吸収する列を置かず、表の右側を空けるのが最も狭い。 */
+.dash-ladder-table {
+  width: auto;
+}
+
 .dash-ladder-table th,
 .dash-ladder-table td,
 .dash-osc-table th,
@@ -498,7 +504,9 @@
 }
 
 .dash-ladder-table td.dash-ladder-name {
-  min-width: 150px;
+  width: 1%;
+  min-width: 90px;
+  white-space: nowrap;
 }
 
 .dash-ladder-table td.dash-ladder-period {
