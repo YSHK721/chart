@@ -9,6 +9,15 @@
     P-1 は「1 呼出 = 1 計算 = 3 消費者（ラダー / 第 2 表 / 価格投影）で共有」の束契約なので、
     畳み込みはこの面が持つ。素材（DataFrame）も足ごとに 1 回だけ組み立てる。
 
+素材の共有（ISSUE-457・§7 の 2 段をそのまま構造にする）:
+    段 1（バー確定）… **確定足の素材**（形成中足を除いた前半）の full 系列を作る。これは
+    その時間足の周期（epoch）の中では定義上不変なので、:class:`MaterialStore` へ置いて
+    **要求をまたいで共有**する。
+    段 2（ティック）… 形成中足の 1 点だけを `latest_compute`（ライブ core の増分ディスパッチ）
+    で作り、確定系列の末尾へ継ぐ。素材（DataFrame）は毎要求読み直す（実測 1〜6 ms/足）ので、
+    現在値・走行 H/L は共有と引き換えに古くならない。
+    共有しないと epoch 不変のティックでも同じ確定系列を毎秒作り直す（§9-4 実測: 要求の 78%）。
+
 技術隔離（CLEAN_ARCH §6）: pandas と indicator_ui はこのファイル（と同じ gateway 層）に
 閉じる。usecase / domain は `dashboard_ui.usecase.sheet_ports` の Protocol 越しにしか
 外を知らない。
@@ -20,6 +29,7 @@ from typing import Any, Mapping
 
 from marketdata.tf_meta import period_start_unix
 
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
@@ -37,13 +47,18 @@ class IndicatorUiComputeGateway:
         bridge: dataset ＋ 計算面の namespace（None なら既定の bridge を遅延で解決する）。
         bar_limits: 足ごとに読む本数の上限。参照実装 `tools/measure/issue449/probe_inverse.py`
             の本数表と同じ役割で、費用の上限を素材の側で決める。None は全件。
+        store: 確定素材を epoch 単位で持つストア（ISSUE-457）。**省略時はこの口だけの
+            ストア**になり、共有は 1 要求で閉じる（従来と同じ費用）。要求をまたいで共有
+            するかどうかは Composition Root の決定である（adapter は自分で相手を選ばない）。
     """
 
     def __init__(
-        self, *, bridge: Any = None, bar_limits: "Mapping[str, int] | None" = None
+        self, *, bridge: Any = None, bar_limits: "Mapping[str, int] | None" = None,
+        store: "MaterialStore | None" = None,
     ) -> None:
         self._bridge = bridge
         self._bar_limits = dict(bar_limits or {})
+        self._store = store if store is not None else MaterialStore()
         self._frames: "dict[tuple[str, str], Any]" = {}
         self._bars: "dict[tuple[str, str], tuple[Bar, ...]]" = {}
         self._series: "dict[tuple[str, str, str, str], Mapping[str, tuple]]" = {}
@@ -53,21 +68,54 @@ class IndicatorUiComputeGateway:
         self, *, indicator_id: str, variant: str, params: "Mapping[str, object]",
         dataset_ref: str, timeframe: str,
     ) -> "Mapping[str, tuple[tuple[int, float], ...]]":
-        """系列名 → ((time, value), ...)。同一キーは 1 回しか計算しない。"""
+        """系列名 → ((time, value), ...)。同一キーは 1 回しか計算しない。
+
+        確定足ぶんは epoch 単位でストアから受け取り（要求をまたいで共有）、形成中足の
+        1 点だけを毎要求作って継ぐ（§7 の 2 段そのもの・ISSUE-457）。
+        """
         key = (indicator_id, variant, _params_key(params), timeframe)
         cached = self._series.get(key)
         if cached is not None:
             return cached
         bridge = self._resolve_bridge()
         frame = self._frame(dataset_ref, timeframe)
+        settings = dict(params)
+        confirmed, forming = _split_at_forming_bar(frame)
+        if confirmed is None:
+            # 素材が 1 本しかない（形成中足しか無い）。分けようがないので全件で 1 回だけ計算する。
+            self._series[key] = _as_points(
+                self._compute(bridge.full_compute, bridge, indicator_id, variant,
+                              frame, settings, timeframe)
+            )
+            return self._series[key]
+
+        confirmed_points = self._store.material(
+            key=(dataset_ref, timeframe),
+            epoch=period_start_unix(_unix_seconds(forming), timeframe),
+            name=(indicator_id, variant, _params_key(params)),
+            factory=lambda: _as_points(
+                self._compute(bridge.full_compute, bridge, indicator_id, variant,
+                              confirmed, settings, timeframe)
+            ),
+        )
+        # 形成中足の 1 点はライブ core の増分ディスパッチ（`latest_compute`）で作る。
+        #   増分器を宣言した指標では末尾 1 点が full と bit 一致し（実測 2026-08-30）、
+        #   宣言の無い指標では core 側が min_window ぶんの再計算へ落ちる（ライブと同一規約）。
+        forming_points = _as_points(
+            self._compute(bridge.latest_compute, bridge, indicator_id, variant,
+                          frame, settings, timeframe)
+        )
+        self._series[key] = _splice(confirmed_points, forming_points)
+        return self._series[key]
+
+    def _compute(self, compute, bridge, indicator_id, variant, frame, params, timeframe):
+        """計算面 1 回ぶんの呼び出し（失敗は usecase 境界の契約型へ翻訳する）。"""
         # ライブ core の検定エラー（ComputeError: 本数不足 E01 等）も当該 instance に
         #   固有の供給失敗である。型は bridge が `compute_error` として公開するものを使う
         #   （core の内部モジュール構成へ直接 import で密結合しない）。
         translated_failure_types = getattr(bridge, "compute_error", ())
         try:
-            series = bridge.full_compute(
-                bridge.adapter, indicator_id, variant, frame, dict(params)
-            )
+            return compute(bridge.adapter, indicator_id, variant, frame, params)
         except KeyError as error:
             # ライブ core の束縛台帳に (indicatorId, variant) が無い。テンプレートは
             #   ダッシュボード非対応の指標も運びうるため、当該 instance に固有の
@@ -81,8 +129,6 @@ class IndicatorUiComputeGateway:
             raise SeriesSupplyUnavailable(
                 f"計算できません: ({indicator_id!r}, {timeframe!r}) — {error}"
             ) from error
-        self._series[key] = _as_points(series)
-        return self._series[key]
 
     # ------------------------------------------------------------------ P-2
     def bars(self, *, dataset_ref: str, timeframe: str) -> "tuple[Bar, ...]":
@@ -137,6 +183,49 @@ class IndicatorUiComputeGateway:
         limit = self._bar_limits.get(timeframe)
         self._frames[key] = frame if limit is None else frame.tail(int(limit))
         return self._frames[key]
+
+
+def _split_at_forming_bar(frame: Any) -> "tuple[Any | None, Any]":
+    """素材を「確定足ぶん」と「形成中足（末尾 1 本）」へ分ける。
+
+    末尾が形成中の足でありうることは P-2 の契約そのもの（`sheet_ports.BarSupplyPort.bars`
+    の docstring・参照実装 `probe_heatmap.py:128` の `H0/L0 = h[-1]/l[-1]`）。**末尾が既に
+    確定していた場合でも**、その 1 点は段 2 の `latest_compute` が同じ素材から作り直すので
+    値は変わらない（分け方の誤りが出力に漏れない）。
+
+    確定足が 1 本も無いときは `(None, frame)` を返す（分ける意味が無い）。
+    """
+    if len(frame) < 2:
+        return None, frame
+    return frame.iloc[:-1], frame.tail(1)
+
+
+def _unix_seconds(frame: Any) -> int:
+    """素材の末尾行の時刻（UNIX 秒）。`_as_bars` の符号化と同一。"""
+    return int(frame.index.values.astype("datetime64[s]").astype("int64")[-1])
+
+
+def _splice(
+    confirmed: "Mapping[str, tuple[tuple[int, float], ...]]",
+    forming: "Mapping[str, tuple[tuple[int, float], ...]]",
+) -> "Mapping[str, tuple[tuple[int, float], ...]]":
+    """確定系列の末尾へ、形成中足の点（確定の末尾より後のものだけ）を継ぐ。
+
+    形成中の点を持たない系列（増分器が末尾 1 点を出せない系列）は確定足で終わる。これは
+    ライブ core の毎ティック末尾値アダプタ（live_tick_tails）と同じ粒度であり、当該
+    instance の更新粒度は応答の縮退一覧へ既に出ている（§7・無言の縮退を作らない）。
+    """
+    names = [*confirmed, *(name for name in forming if name not in confirmed)]
+    spliced: "dict[str, tuple[tuple[int, float], ...]]" = {}
+    for name in names:
+        head = tuple(confirmed.get(name, ()))
+        boundary = head[-1][0] if head else None
+        tail = tuple(
+            point for point in forming.get(name, ())
+            if boundary is None or point[0] > boundary
+        )
+        spliced[name] = head + tail
+    return spliced
 
 
 def _params_key(params: "Mapping[str, object]") -> str:

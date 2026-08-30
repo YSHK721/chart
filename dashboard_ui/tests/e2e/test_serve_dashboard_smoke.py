@@ -10,6 +10,7 @@ unified_ui/serve.sh は `GET /` が 200 を返すまで待ってから router �
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import urllib.error
@@ -31,8 +32,9 @@ INSTANCES = [
 ]
 
 
-@pytest.fixture(scope="module")
-def base() -> str:
+@contextlib.contextmanager
+def serving():
+    """殻を 1 つ立てて base URL を渡す（**素材ストアはこの殻の寿命**＝冷えた状態で始まる）。"""
     server = make_server(build_dashboard_app(bar_limits={"1m": 600}), port=0)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -43,6 +45,12 @@ def base() -> str:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.fixture(scope="module")
+def base() -> str:
+    with serving() as url:
+        yield url
 
 
 def post(base: str, path: str, payload) -> "tuple[int, dict]":
@@ -114,6 +122,40 @@ def test_the_oscillator_cell_comes_back_with_its_reach_state(base: str) -> None:
     assert len(cells) == 1
     assert cells[0]["value"] is not None
     assert set(cells[0]["reach"]) == {"reached", "since_time", "truncated"}
+
+
+def test_a_repeated_tick_request_issues_no_additional_material(monkeypatch) -> None:
+    """結線の検査（ISSUE-457）: **実 HTTP を繰り返し叩いて** P-1 の追加発行が 0 であること。
+
+    素材の共有は Composition Root の結線でしか成立しない（口は要求ごとに組み直されるため、
+    gateway 単体をいくら正しくしても、ストアを渡し忘れれば無言で毎要求作り直しに戻る）。
+    受け口の単体検査では落ちない欠陥なので、ここは**殻から通す**。殻は本検査専用に立てる
+    （module 共有の殻を使うと素材が既に温まっていて、初回発行 0 の空虚な検査になる）。
+
+    数えるのは確定素材の発行（full_compute）だけである。形成中足の末尾 1 点（増分ディス
+    パッチ）は段 2 の観測値更新であり、要求ごとに出るのが仕様（§7）。
+    """
+    from simulator.replay_ui.adapter import _indicator_ui_bridge
+
+    bridge = _indicator_ui_bridge.load_compute()
+    issued: "list[str]" = []
+    inner = bridge.full_compute
+    monkeypatch.setattr(
+        bridge, "full_compute",
+        lambda *args, **kwargs: (issued.append(args[1]), inner(*args, **kwargs))[1],
+    )
+    body = {"dataset_ref": REF, "chart_timeframe": "1m", "mode": "tick",
+            "instances": INSTANCES}
+
+    with serving() as url:
+        post(url, "/reach_sheet", body)       # この epoch の素材を作る（初回だけ）
+        warmed = len(issued)
+        for _ in range(3):
+            status, response = post(url, "/reach_sheet", body)
+
+    assert (status, response["ok"]) == (200, True)
+    assert warmed > 0                          # 初回は確かに発行している（空虚な検査でない）
+    assert len(issued) - warmed == 0
 
 
 def test_an_unknown_dataset_is_reported_as_a_failure(base: str) -> None:

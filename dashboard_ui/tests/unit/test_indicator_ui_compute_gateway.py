@@ -43,10 +43,12 @@ def frame(rows: int = 4, *, step: int = 60) -> pd.DataFrame:
 class ComputeSpy:
     """`/compute` 面の Test Spy。発行した (指標, 足) を記録する。"""
 
-    def __init__(self, series_by_indicator=None, frames=None) -> None:
+    def __init__(self, series_by_indicator=None, frames=None, latest=None) -> None:
         self.issued: "list[tuple[str, str, int]]" = []
+        self.latest: "list[tuple[str, str, int]]" = []
         self.loaded: "list[tuple[str, str]]" = []
         self._series = dict(series_by_indicator or {})
+        self._latest = dict(latest or {})
         self._frames = dict(frames or {})
 
     # --- dataset 面 ---
@@ -65,9 +67,20 @@ class ComputeSpy:
         self.issued.append((indicator, variant, len(df)))
         return self._series.get(indicator, [])
 
+    def latest_compute(self, adapter, indicator, variant, df, params):
+        """形成中足ぶんの末尾 1 点（ISSUE-457 の段 2）。**`issued` には数えない**。
+
+        数えるのは確定素材の発行（`full_compute`）だけである。末尾 1 点は段 2 の観測値更新で
+        あり、要求ごとに出るのが仕様（§7）。ここで一緒に数えると「無駄の不在」の表明が
+        「更新しないこと」の表明にすり替わる。
+        """
+        self.latest.append((indicator, variant, len(df)))
+        return self._latest.get(indicator, [])
+
     def namespace(self) -> SimpleNamespace:
         return SimpleNamespace(
-            dataset=self, adapter=object(), full_compute=self.full_compute
+            dataset=self, adapter=object(), full_compute=self.full_compute,
+            latest_compute=self.latest_compute,
         )
 
 
@@ -194,6 +207,85 @@ def test_the_bars_of_one_timeframe_are_loaded_once() -> None:
     assert spy.loaded == [(REF, "1m")]
 
 
+# ------------------------------------------------ 確定素材と形成中足の継ぎ目（ISSUE-457）
+def test_the_confirmed_material_and_the_forming_point_are_spliced() -> None:
+    """確定足ぶん（共有される）＋ 形成中足の 1 点（毎要求作る）が 1 本の系列になる。"""
+    spy = ComputeSpy(
+        {"ma": [line("ma", [(START, 1.0), (START + 60, 2.0), (START + 120, 3.0)])]},
+        latest={"ma": [line("ma", [(START + 180, 4.0)])]},
+    )
+
+    series = gateway_with(spy).full_series(
+        indicator_id="ma", variant="default", params={}, dataset_ref=REF, timeframe="1m",
+    )
+
+    assert series == {"ma": ((START, 1.0), (START + 60, 2.0), (START + 120, 3.0),
+                            (START + 180, 4.0))}
+
+
+def test_the_confirmed_material_is_computed_without_the_forming_bar() -> None:
+    """共有できるのは**確定した足だけ**である（形成中足を混ぜたら epoch の中で不変でない）。"""
+    spy = ComputeSpy(frames={"1m": frame(rows=4)})
+
+    gateway_with(spy).full_series(
+        indicator_id="ma", variant="default", params={}, dataset_ref=REF, timeframe="1m",
+    )
+
+    assert [rows for _indicator, _variant, rows in spy.issued] == [3]   # 4 本 − 形成中 1 本
+    assert [rows for _indicator, _variant, rows in spy.latest] == [4]   # 末尾点は全件から
+
+
+def test_a_series_without_a_forming_point_ends_at_the_last_confirmed_bar() -> None:
+    """増分器が末尾 1 点を出せない系列は確定足で終わる（ライブ core と同じ粒度）。
+
+    ライブの毎ティック末尾値アダプタ（live_tick_tails）も増分宣言のある系列しか動かさない。
+    当該 instance の更新粒度は応答の縮退一覧に既に出ている（§7・無言の縮退を作らない）。
+    """
+    spy = ComputeSpy(
+        {"x": [line("a", [(START, 1.0)]), line("b", [(START, 9.0)])]},
+        latest={"x": [line("a", [(START + 180, 2.0)])]},
+    )
+
+    series = gateway_with(spy).full_series(
+        indicator_id="x", variant="default", params={}, dataset_ref=REF, timeframe="1m",
+    )
+
+    assert series == {"a": ((START, 1.0), (START + 180, 2.0)), "b": ((START, 9.0),)}
+
+
+def test_a_single_bar_of_material_is_computed_in_one_go() -> None:
+    """確定足が 1 本も無いときは分けない（分けようがない）。"""
+    spy = ComputeSpy({"ma": [line("ma", [(START, 1.0)])]}, frames={"1m": frame(rows=1)})
+
+    series = gateway_with(spy).full_series(
+        indicator_id="ma", variant="default", params={}, dataset_ref=REF, timeframe="1m",
+    )
+
+    assert series == {"ma": ((START, 1.0),)}
+    assert [rows for _indicator, _variant, rows in spy.issued] == [1]
+    assert spy.latest == []
+
+
+def test_a_forming_point_failure_is_translated_to_the_supply_contract() -> None:
+    """形成中足の計算が落ちても応答無しの接続断にしない（ISSUE-459 と同じ翻訳）。"""
+
+    class FailingLatest(ComputeSpy):
+        def latest_compute(self, adapter, indicator, variant, df, params):
+            raise FakeComputeError("validation: E01_INSUFFICIENT_BARS")
+
+        def namespace(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                dataset=self, adapter=object(), full_compute=self.full_compute,
+                latest_compute=self.latest_compute, compute_error=FakeComputeError,
+            )
+
+    gw = gateway_with(FailingLatest({"ma": [line("ma", [(START, 1.0)])]}))
+
+    with pytest.raises(SeriesSupplyUnavailable):
+        gw.full_series(indicator_id="ma", variant="default", params={},
+                       dataset_ref=REF, timeframe="1m")
+
+
 # ---------------------------------------------------------------------- 足
 def test_the_bars_carry_unix_seconds_and_ohlc() -> None:
     spy = ComputeSpy()
@@ -287,7 +379,7 @@ class FailingCompute(ComputeSpy):
     def namespace(self) -> SimpleNamespace:
         return SimpleNamespace(
             dataset=self, adapter=object(), full_compute=self.full_compute,
-            compute_error=FakeComputeError,
+            latest_compute=self.latest_compute, compute_error=FakeComputeError,
         )
 
 

@@ -6,8 +6,16 @@
 素材の鮮度と計算量の両立:
     要求ごとに口（gateway）を組み直す。gateway は自分の生存期間だけ計算を畳む（同一キーの
     full 系列は 1 回・足は 1 回）ので、**1 枚のシートを作る間の畳み込み**（T-1）は保たれ、
-    次の要求では新しい足が読まれる。要求をまたいで持ち越すのは当てはめの epoch と GPD の
-    当てはめ結果（`SheetState`）だけであり、これは足の鮮度と無関係な量である。
+    次の要求では新しい足が読まれる。
+
+    要求をまたいで持ち越すのはプロセス寿命の 2 つだけである（どちらも「足の鮮度と無関係な
+    量」＝epoch の中で不変な量である点で同型）:
+      - `SheetState`     … 当てはめの epoch と GPD の当てはめ結果。
+      - `MaterialStore`  … **確定足ぶんの full 系列**（ISSUE-457）。形成中足の 1 点は
+                           gateway が毎要求作って継ぐので、現在値・走行 H/L は古くならない。
+    これが §7 の 2 段（段 1＝バー確定で作り直す／段 2＝ティックでは末尾だけ動かす）を
+    そのまま構造にしたものである。共有しないと epoch 不変のティックでも同じ確定系列を
+    毎秒作り直す（§9-4 実測: 要求の 78%）。
 
 読む本数の上限:
     参照実装 tools/measure/issue449/probe_inverse.py:41-42 の本数表をそのまま使う。
@@ -36,6 +44,7 @@ from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
 from dashboard_ui.adapter.gateway.intrabar_capability_gateway import (
     IntrabarCapabilityGateway,
 )
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
 from dashboard_ui.framework.serve_dashboard import DashboardApp
 from dashboard_ui.usecase.sheet_models import SheetInstance
@@ -80,9 +89,10 @@ def build_dashboard_app(
     registry = BreakpointRegistry()
     capability = IntrabarCapabilityGateway()
     state = SheetState()
+    materials = MaterialStore()
 
     def controller_factory() -> ReachSheetController:
-        series_gateway = IndicatorUiComputeGateway(bar_limits=limits)
+        series_gateway = IndicatorUiComputeGateway(bar_limits=limits, store=materials)
         return ReachSheetController(
             series_port=series_gateway,
             bar_port=series_gateway,
