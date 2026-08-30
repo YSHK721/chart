@@ -63,34 +63,36 @@ describe('timeframe_charts_view — 版面と水準線', () => {
     });
     // Act
     h.view.render(response);
-    // Assert: 5m のタイルには 5m の水準（＋現在値の線）だけ、1m のタイルには現在値の線だけ。
-    //   水準線は title（水準名）を持ち、現在値の線は title を持たない（下の検定を参照）。
+    // Assert: 5m のタイルには 5m の水準の印だけ、1m のタイルには何も置かない。
     const seriesOf = (tf) => h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf(tf)].series[0];
-    const levelTitles = (tf) => seriesOf(tf).priceLines
-      .map((line) => line.options.title).filter(Boolean).sort();
-    assert.deepEqual(levelTitles('5m'), ['cvfe 外側上 2σ']);
-    assert.deepEqual(levelTitles('1D'), ['MA ema5 hlc3']);
-    assert.deepEqual(levelTitles('1m'), []);
-    const level = seriesOf('5m').priceLines.find((line) => line.options.title);
-    assert.equal(level.options.price, 65803.4);
+    const prices = (tf) => seriesOf(tf).priceLines.map((line) => line.options.price).sort();
+    assert.deepEqual(prices('5m'), [65803.4]);
+    assert.deepEqual(prices('1D'), [66099.7]);
+    assert.deepEqual(prices('1m'), []);
   });
 
-  test('the_current_price_line_is_the_same_single_point_on_every_tile_without_a_label', () => {
-    // §4.1: 現在値は全時間足で同一の 1 点。ラベルは**出さない**（依頼者指示 2026-08-30:
-    //   「現在値」ラベルがローソクを覆い隠し、水準確認の認知負荷になる）。同定は
-    //   title を持たない実線 1 本であること・軸ラベルも出さないことで表明する。
+  test('levels_are_axis_labels_only_with_no_line_reaching_into_the_past', () => {
+    // 依頼者指示 2026-08-30: 過去まで伸びる線は判断を迷わせる。水準は**価格スケール上の
+    //   ラベルだけ**で示し（axisLabelVisible）、チャートを横断する線は引かない
+    //   （lineVisible:false）。ローソクを覆う文字 title も持ち込まない（v0.7.9 と同じ理由）。
+    //   現在値の線も置かない（ローソク系列自身の最終値表示が担う）。
     const h = harness();
     // Act
-    h.view.render(sheetResponse({ current_price: 65756.0 }));
+    h.view.render(sheetResponse({
+      current_price: 65756.0,
+      rows: [ladderRow({ timeframe: '1m', price: 65700, label: 'L', distance: -56.0 })],
+    }));
     // Assert
     for (const chart of h.spy.charts) {
-      const current = chart.series[0].priceLines.filter((line) => !line.options.title);
-      assert.equal(current.length, 1);
-      assert.equal(current[0].options.price, 65756.0);
-      assert.equal(current[0].options.axisLabelVisible, false);
-      // ローソクを覆う文字を 1 本も持ち込まない（回帰の芯）。
-      assert.ok(chart.series[0].priceLines.every((line) => line.options.title !== '現在値'));
+      for (const line of chart.series[0].priceLines) {
+        assert.equal(line.options.lineVisible, false);
+        assert.equal(line.options.axisLabelVisible, true);
+        assert.equal(line.options.title, undefined);
+      }
     }
+    // 現在値の印は水準とは別に増やさない（1m には水準 1 本だけが載る）。
+    assert.equal(h.spy.charts[0].series[0].priceLines.length, 1);
+    assert.equal(h.spy.charts[1].series[0].priceLines.length, 0);
   });
 
   test('reached_and_pending_levels_take_the_support_and_resistance_colors', () => {
@@ -104,10 +106,10 @@ describe('timeframe_charts_view — 版面と水準線', () => {
       ],
     }));
     const series = h.spy.charts[0].series[0];
-    const lineBy = (title) => series.priceLines.find((line) => line.options.title === title);
+    const lineAt = (price) => series.priceLines.find((line) => line.options.price === price);
     // Assert
-    assert.equal(lineBy('下の水準').options.color, series.options.upColor);
-    assert.equal(lineBy('上の水準').options.color, series.options.downColor);
+    assert.equal(lineAt(65700).options.color, series.options.upColor);
+    assert.equal(lineAt(65800).options.color, series.options.downColor);
   });
 
   test('render_with_a_failed_response_posts_the_reason_and_keeps_existing_lines', () => {

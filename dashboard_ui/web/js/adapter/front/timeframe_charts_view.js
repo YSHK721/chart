@@ -118,7 +118,7 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '各時間足チャート' }));
     head.appendChild(el('p', {
       className: 'dash-panel-lead',
-      textContent: 'ローソクの上に、その時間足の水準（価格ラダーと同じ応答）を価格線で重ねる。',
+      textContent: 'その時間足の水準（価格ラダーと同じ応答）を価格スケール上のラベルで示す。線は引かない。',
     }));
     panel.appendChild(head);
 
@@ -179,20 +179,26 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
       borderVisible: false,
     });
     slots.set(timeframe, {
-      chart, series, status, levelLines: new Map(), currentLine: null,
+      chart, series, status, levelLines: new Map(),
     });
     return tile;
   }
 
-  /** 価格線 1 本を作る（見た目は支持側 / 抵抗側で分ける＝ラダーの凡例と同じ意味）。 */
+  /** 水準 1 本の印を作る。
+   *
+   *  **チャートを横断する線は描かない**（依頼者指示 2026-08-30: 過去まで伸びる線が判断を
+   *  迷わせる。確認は最新足の側＝価格スケールで行う）。lineVisible:false で線を消し、
+   *  axisLabelVisible:true で**ラダーの価格の値をスケール上のラベル**として置く。
+   *  色は支持側 / 抵抗側（ラダーの凡例と同じ意味）。文字 title はローソクを覆うため
+   *  持ち込まない（v0.7.9 の「現在値」ラベル削除と同じ理由。水準の同定はラダーが担う）。 */
   function createLevelLine(slot, spec) {
     return slot.series.createPriceLine({
       price: spec.price,
-      title: spec.label,
       color: spec.reached ? COLORS.up : COLORS.down,
       lineWidth: 1,
       lineStyle: dashedStyleOf(lwc),
-      axisLabelVisible: false,
+      lineVisible: false,
+      axisLabelVisible: true,
     });
   }
 
@@ -226,35 +232,6 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     }
   }
 
-  /** 現在値の線（全タイル共通の 1 点・§4.1）。変わったときだけ動かす。
-   *
-   *  ラベルは付けない（依頼者指示 2026-08-30: 「現在値」ラベルがローソクを覆い隠し、
-   *  水準確認の認知負荷になる）。現在値の同定は色（COLORS.current・実線）が担い、
-   *  数値はラダーの現在値行とローソク系列自身の最終値表示が既に持っている。 */
-  function reconcileCurrent(slot, currentPrice) {
-    if (!Number.isFinite(Number(currentPrice))) {
-      return;
-    }
-    const price = Number(currentPrice);
-    if (!slot.currentLine) {
-      slot.currentLine = {
-        price,
-        line: slot.series.createPriceLine({
-          price,
-          color: COLORS.current,
-          lineWidth: 1,
-          lineStyle: 0,
-          axisLabelVisible: false,
-        }),
-      };
-      return;
-    }
-    if (slot.currentLine.price !== price) {
-      slot.currentLine.line.applyOptions({ price });
-      slot.currentLine.price = price;
-    }
-  }
-
   /**
    * 応答 1 件を描く（/reach_sheet の応答＝ラダーと**同じもの**。ここで計算は発行しない）。
    *
@@ -276,9 +253,10 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
       return;
     }
     message.textContent = '';
+    // 現在値の線・ラベルは置かない（依頼者指示 2026-08-30: 全幅の線が判断を迷わせる。
+    //   現在値はローソク系列自身の最終値表示とラダーの現在値行が担う）。
     for (const [timeframe, slot] of slots) {
       reconcileLevels(slot, wantedLinesOf(response.rows, timeframe));
-      reconcileCurrent(slot, response.current_price);
     }
   }
 
