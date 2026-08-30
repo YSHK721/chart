@@ -197,3 +197,22 @@ def test_a_missing_level_parameter_is_an_explicit_error() -> None:
         table.oscillator_spec(
             instance=instance_of("profit_rsi", {}), series_names=frozenset()
         )
+
+
+# ---------------------------------------- 積み上がる量は価格水準になり得ない（ISSUE-462）
+def test_a_cumulative_quantity_is_never_a_price_level_even_at_price_magnitude() -> None:
+    """実 UI で発生した欠陥の再現: 週足のティック数（中央値 ~10 万）が「現在値の 0.3〜3 倍」の
+    帯へ偶然入り、tickvol 260 が価格 488,103 円の行としてラダーに出た。
+    裁定（2026-08-29・設計書改訂履歴）: tickvol はラダーに一切出さない。
+    除外は名前の列挙ではなく**性質**（cumulative 宣言＝件数は価格ではない）で行う。
+    """
+    price_magnitude = [0.5 * PRICE, 1.5 * PRICE, 2.9 * PRICE]
+
+    verdict = role(price_magnitude, indicator_id="tickvol", series_name="tickvol_q90")
+
+    assert verdict is SeriesRole.NOT_LEVEL
+
+
+def test_a_non_cumulative_series_at_price_magnitude_stays_a_level() -> None:
+    """性質による除外が過剰でないこと（cvfe / MA 等の価格系列は従来どおり水準）。"""
+    assert role([PRICE - 30.0, PRICE, PRICE + 30.0]) is SeriesRole.PRICE_LEVEL

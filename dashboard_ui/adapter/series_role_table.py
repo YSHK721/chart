@@ -100,7 +100,19 @@ class SeriesRoleTable:
         self, *, instance: SheetInstance, series_name: str,
         values: "tuple[float, ...]", reference_price: float,
     ) -> SeriesRole:
-        """その系列が価格スケールの水準か否か（実値の桁で決める）。"""
+        """その系列が価格スケールの水準か否か。
+
+        判定は 2 段:
+        1. **性質による構造的除外**: 積み上がる量（cumulative 宣言・§5.3.3）は件数であり、
+           価格になり得ない。週足のティック数（中央値 ~10 万）が実値の帯（0.3〜3 倍）へ
+           偶然入り、tickvol が価格 488,103 円の行としてラダーに出た（ISSUE-462 で実発生。
+           裁定 2026-08-29「tickvol はラダーに一切出さない」）。除外は名前の列挙ではなく
+           既存の宣言（_OSCILLATORS.cumulative＝単一ソース）で行う（§11 の再発防止を維持）。
+        2. 実値の桁（§3.1・従来どおり）。
+        """
+        declaration = _OSCILLATORS.get(instance.indicator_id)
+        if declaration is not None and declaration.cumulative:
+            return SeriesRole.NOT_LEVEL
         finite = [
             float(value) for value in values if np.isfinite(np.float64(value))
         ]
