@@ -78,6 +78,17 @@ const COLUMNS = Object.freeze([
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
 const NAMING_CELLS = 4;
 
+/** ティック効果（依頼者指示 2026-08-30: 更新をフェードアウトで表現・更新の大きさは色の濃度）。
+ *
+ *  濃度 = clamp(|Δ価格| / TICK_FULL_POINTS, TICK_MIN_STRENGTH%, 100%)。
+ *  TICK_FULL_POINTS は「これ以上で最濃」となる 1 更新あたりの動き（JP225 の 1 秒ティックの
+ *  大きめの動き ≈ 20 点を基準に採った）。下限は「動いたことが見える」最小濃度。
+ *  減衰は描画周期（1s）ごとに TICK_DECAY 倍で、TICK_CUTOFF 未満で 0（無色）へ戻る。 */
+const TICK_FULL_POINTS = 20;
+const TICK_MIN_STRENGTH = 25;
+const TICK_DECAY = 0.5;
+const TICK_CUTOFF = 5;
+
 /** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
  *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
  *  適合させる（fitWindow・縦スクロールが出ない本数まで縮める）。窓の外は**建てない**
@@ -178,8 +189,12 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   let fitting = false;
   /** 直近の現在値（ティックの上下判定用）。 */
   let lastCurrentPrice = null;
-  /** 直近に動いた向き（'up' | 'down' | null＝まだ動きを見ていない）。動くまで前の向きを保つ。 */
+  /** 直近に動いた向き（'up' | 'down' | null＝まだ動きを見ていない）。 */
   let currentDirection = null;
+  /** ティック効果の強度（0〜100）。更新の瞬間に変化幅から決まり、描画周期ごとに減衰する
+   *  ＝フェードアウト（依頼者指示 2026-08-30。行は毎描画作り直されるため、CSS transition
+   *  ではなく描画周期の減衰で消えていく）。0 で無色（従来の --ink 反転）へ戻る。 */
+  let tickStrength = 0;
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
@@ -513,11 +528,21 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
   /** 現在値の独立行（§4.1・モックの tr.now＝反転帯）。
    *
    *  「全時間足で同一の 1 点」の説明文は出さない（依頼者指示 2026-08-30: ラベル削除）。
-   *  直近ティックの上下は行の**地色**で示す（同指示: 動いたときに色で上下を視覚的に。
-   *  up / down クラスの付与だけを持ち、色の実体は dashboard.css の --tick-*-bg）。 */
+   *  更新はフェードアウト効果で示す（同指示）: 向きは up / down クラス（色相）、更新の
+   *  大きさは --tick-strength（0〜100・濃度）で、色の実体と混合は dashboard.css が持つ。
+   *  強度 0 の間はクラスを付けない（無色＝従来の反転帯）。 */
   function buildCurrentRow(currentPrice) {
-    const direction = currentDirection === null ? '' : ` dash-ladder-current-${currentDirection}`;
+    const direction = currentDirection === null || tickStrength <= 0
+      ? '' : ` dash-ladder-current-${currentDirection}`;
     const tr = el('tr', { className: `dash-ladder-row dash-ladder-current${direction}` });
+    if (direction) {
+      // 濃度はカスタムプロパティで渡す（色の値そのものは書かない＝色の唯一源を侵さない）。
+      if (typeof tr.style.setProperty === 'function') {
+        tr.style.setProperty('--tick-strength', String(Math.round(tickStrength)));
+      } else {
+        tr.style['--tick-strength'] = String(Math.round(tickStrength));
+      }
+    }
     // 現在値行は距離＋次のターゲットの 2 列ぶんをまとめる（列の分離・依頼者指示 2026-08-30）。
     tr.appendChild(el('th', {
       scope: 'row', colSpan: 2, textContent: '現在値', dataset: { cell: 'distance' },
@@ -677,12 +702,18 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       renderNotice([]);
       return;
     }
-    // 直近ティックの上下（現在値行の地色の向き）。同値のときは前の向きを保つ——
-    //   1 秒周期の描画で毎回無色に戻ると「動いた」ことしか読めなくなる。
+    // ティック効果（TICK_* の定義コメント参照）: 更新の瞬間に向きと濃度（変化幅に比例）を
+    //   決め、更新の無い描画周期では減衰させる＝フェードアウト。
     const currentPrice = Number(response.current_price);
-    if (Number.isFinite(currentPrice) && lastCurrentPrice !== null) {
-      if (currentPrice > lastCurrentPrice) currentDirection = 'up';
-      else if (currentPrice < lastCurrentPrice) currentDirection = 'down';
+    if (Number.isFinite(currentPrice) && lastCurrentPrice !== null
+        && currentPrice !== lastCurrentPrice) {
+      currentDirection = currentPrice > lastCurrentPrice ? 'up' : 'down';
+      const magnitude = Math.abs(currentPrice - lastCurrentPrice);
+      tickStrength = Math.min(100,
+        Math.max(TICK_MIN_STRENGTH, (magnitude / TICK_FULL_POINTS) * 100));
+    } else {
+      tickStrength *= TICK_DECAY;
+      if (tickStrength < TICK_CUTOFF) tickStrength = 0;
     }
     if (Number.isFinite(currentPrice)) {
       lastCurrentPrice = currentPrice;

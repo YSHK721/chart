@@ -649,21 +649,23 @@
   letter-spacing: .1em;
 }
 
-/* 直近ティックの上下（依頼者指示 2026-08-30）。上昇＝teal 系・下降＝red 系の地へ反転帯ごと
-   切り替える（文字は --bg のまま＝反転の読み方を変えない）。まだ動きを見ていない間は
-   従来の --ink 反転。 */
+/* ティック効果（依頼者指示 2026-08-30）: 更新の瞬間に上昇＝teal 系・下降＝red 系で光り、
+   描画周期ごとに減衰して消える（フェードアウト）。濃度（更新の大きさ）は View が
+   --tick-strength（0〜100）で渡し、ここで基調の --ink と混ぜる。文字は --bg のまま
+   ＝反転の読み方を変えない（端点はどちらも SURFACES 登録済みの組で、中間の混色は
+   両端の間の明度になるため対比は端点の下限を下回らない）。 */
 .dash-ladder-current-up th,
 .dash-ladder-current-up td {
-  background: var(--tick-up-bg);
-  border-top-color: var(--tick-up-bg);
-  border-bottom-color: var(--tick-up-bg);
+  background: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-top-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-bottom-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
 }
 
 .dash-ladder-current-down th,
 .dash-ladder-current-down td {
-  background: var(--tick-down-bg);
-  border-top-color: var(--tick-down-bg);
-  border-bottom-color: var(--tick-down-bg);
+  background: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-top-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-bottom-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
 }
 
 .dash-ladder-current-price {

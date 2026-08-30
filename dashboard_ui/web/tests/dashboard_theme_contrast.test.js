@@ -326,14 +326,22 @@ describe('dashboard の版面 — 読めることを計算で固定する', () =
   test('every_colour_the_stylesheet_paints_is_covered_by_a_surface', () => {
     // 被覆検定: SURFACES が腐って検査が no-op に化けるのを防ぐ。CSS が新しい文字色や
     //   新しい地を使い始めたのに表へ足されていなければ、ここで落ちる。
+    // 色ではないカスタムプロパティ（数値パラメータ）。color-mix の混合率などに現れるが、
+    //   地でも文字色でもないため被覆の対象から除く。**ここへ足してよいのは色でない値だけ**
+    //   （色トークンを足すと検査が黙って抜ける）。
+    const NON_COLOR_TOKENS = new Set(['--tick-strength']);
     const declaredTexts = new Set();
     const declaredGrounds = new Set();
     for (const rule of styleRules(CSS)) {
       for (const d of declarations(rule.body)) {
         if (d.prop.startsWith('--')) continue;
-        if (d.prop === 'color') tokensIn(d.value).forEach((t) => declaredTexts.add(t));
+        if (d.prop === 'color') {
+          tokensIn(d.value).filter((t) => !NON_COLOR_TOKENS.has(t))
+            .forEach((t) => declaredTexts.add(t));
+        }
         if (d.prop === 'background' || d.prop === 'background-color') {
-          tokensIn(d.value).forEach((t) => declaredGrounds.add(t));
+          tokensIn(d.value).filter((t) => !NON_COLOR_TOKENS.has(t))
+            .forEach((t) => declaredGrounds.add(t));
         }
       }
     }
