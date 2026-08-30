@@ -106,10 +106,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: 'オシレータ水準到達表' }));
-    head.appendChild(el('p', {
-      className: 'dash-panel-lead',
-      textContent: '価格スケールに乗らない指標。単位が指標ごとに違うため第 1 表と同じ縦軸には混ぜない。',
-    }));
+    // リード文（説明の段落）は出さない（依頼者指示 2026-08-30: 削除）。
     panel.appendChild(head);
 
     const scroll = el('div', { className: 'dash-scroll' });

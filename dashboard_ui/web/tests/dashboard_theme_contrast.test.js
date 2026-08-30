@@ -91,8 +91,7 @@ const SURFACES = Object.freeze([
   // .dash-ladder-current-up / -down（直近ティックの上下・依頼者指示 2026-08-30）。
   { name: '現在値行（上昇）', ground: '--tick-up-bg', texts: ['--bg'] },
   { name: '現在値行（下降）', ground: '--tick-down-bg', texts: ['--bg'] },
-  // .dash-granularity-notice（縮退の掲示・モックの .banner）。
-  { name: '縮退の掲示', ground: '--warn-bg', texts: ['--warn-ink'] },
+  // 縮退の掲示（--warn 系）は依頼者指示 2026-08-30 で廃止（規則・トークンごと撤去）。
   // .dash-sheet-message（異常の掲示）。
   { name: '異常の掲示', ground: '--down-bg', texts: ['--down'] },
   // .dash-osc-no-level（水準が無いことの小片）。

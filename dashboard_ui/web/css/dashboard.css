@@ -50,8 +50,6 @@
   --cyan: #117988;
   --amber: #966417;
   --amber-bg: #fbf0dc;
-  --warn-bg: #fdf3e3;
-  --warn-ink: #8a5a12;
   /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す）。
      文字は --bg のまま。対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
   --tick-up-bg: #14695f;
@@ -81,8 +79,6 @@
     --cyan: #3fc3d4;
     --amber: #e0a552;
     --amber-bg: #33260f;
-    --warn-bg: #2e2413;
-    --warn-ink: #e0b46a;
     --tick-up-bg: #2f9d92;
     --tick-down-bg: #e4635f;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -108,8 +104,6 @@
   --cyan: #3fc3d4;
   --amber: #e0a552;
   --amber-bg: #33260f;
-  --warn-bg: #2e2413;
-  --warn-ink: #e0b46a;
   --tick-up-bg: #2f9d92;
   --tick-down-bg: #e4635f;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -169,8 +163,7 @@
    確定した列幅いっぱいへ戻す（文言は削らない——折り返して全文表示される）。 */
 .dash-ladder .dash-sheet-message,
 .dash-ladder .dash-panel-lead,
-.dash-ladder .dash-legend,
-.dash-ladder .dash-granularity-notice {
+.dash-ladder .dash-legend {
   width: 0;
   min-width: 100%;
 }
@@ -248,18 +241,6 @@
 
 .dash-sheet-message:empty {
   display: none;
-}
-
-/* §7 の更新粒度・縮退の掲示。異常ではないのでモックの .banner（warn 系）に載せる。 */
-.dash-granularity-notice {
-  margin: 0;
-  padding: 11px 14px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  border-radius: 9px;
-  background: var(--warn-bg);
-  color: var(--warn-ink);
-  border: 1px solid var(--line2);
 }
 
 /* 掲示の 1 項目（同一の指標・理由種別を畳んだ単位・ISSUE-466）。原文は title に載る。 */
