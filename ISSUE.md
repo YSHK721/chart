@@ -12844,3 +12844,38 @@ epoch 持ち越し（MaterialStore / SheetState の規律）への合流。
 gateway が bridge 経由で paramScopes（単一ソース＝`catalog_param_scopes()`）を 1 回取得し、
 full/latest 発行前に params を受理集合へフィルタする。併せて縮退掲示の重複集約と
 内部エラー文の人間向け化（認知負荷の厳命）。
+
+---
+
+## ISSUE-467: [不具合] 静的品質検定の違反 ID が行番号を含み、無関係な行挿入で Stop フックが無限再起動する
+
+- **ステータス**: RESOLVED（2026-08-30 依頼者承認・同日是正。ident を内容アドレス化し baseline 再凍結。
+  隔離再現環境で「凍結違反の上流へ 2 行挿入 → exit 2」が「exit 0」へ転換したことを実測。
+  回帰テスト 4 面新設（行挿入不変・重複付番・prune 削除専用・digest 発行＝使用の計算量テスト）＝
+  `test_ident_stability.py`。既存 `test_static_quality.py` と合わせ 9 passed・本リポジトリ gate exit 0）
+- **重大度**: 高（タスク完遂後もモデルが数十回再起動され、是正手段の baseline 書換は
+  auto モード分類器が「gate 弱体化」として遮断＝自己回復不能のループ）
+- **発見経路**: ユーザー報告（2026-08-30）。ISSUE-452 の行追加でも同型が発生し 48c7c10 で
+  行番号を再凍結して回避していた（＝症状回避。原因は未除去だった）。
+
+### 原因（隔離環境で再現・実測）
+
+`Violation.key` に `L{lineno}` を埋め込む検査が 8 種（T1・T4・T5(module)・T6・T7・T8(syspath)・
+C2・C3）。凍結済み違反の上流に無関係な行を挿入すると ident が変わり（例:
+`test_existing_weak:L2` → `:L4`）、「新規違反」として exit 2 → asyncRewake がモデルを再起動。
+同時に旧 ident は解消扱いになり `test_baseline_is_not_stale` も赤になる二重故障。
+
+### 抜本策（実施済み）
+
+1. **ident の内容アドレス化**（`violation_key.py` 新設・単一ソース）: キー＝AST ノードの
+   構造ダイジェスト（`ast.dump` は位置属性を含まない→行移動で不変）。同一内容の重複は
+   行順の `#k` 付番で件数増減を ident に保存。T6 は関数毎最大 1 件のため関数名のみ。
+2. **`--prune-baseline` 新設**（`run_quality_gate.py`）: 凍結集合∩現在集合しか書かない
+   削除専用更新。追加＝gate 弱体化が構造的に不可能なため、分類器遮断の正当な受け皿になる。
+3. **`ratchet.json` 新規作成**（declaration 1859 / test_quality 450）: 凍結件数の上限を宣言し、
+   `test_ratchet_is_monotonic`（従来は対象ファイル不在で不発だった）を実効化。
+4. baseline を新方式で再凍結（件数完全一致 1859/450＝違反集合は不変、ID 意味論のみ変更）。
+
+### 残作業（分類器により本セッションでは書込不可・ユーザー手動）
+
+`.claude/settings.json` へ prune の permissions allowlist を追記（本文はセッション報告参照）。

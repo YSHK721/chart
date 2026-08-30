@@ -106,6 +106,8 @@ data/marketdata
 #   生成物ではあるが、**何を許しているか**の記録そのものなので追跡する。
 !.claude/scripts/di_baseline.json
 !.claude/scripts/tq_baseline.json
+# 凍結件数の上限（単調ラチェット）。baseline と同じ理由で追跡する（ISSUE-467）。
+!.claude/scripts/ratchet.json
 # フロント各スライスの manifest / lockfile は追跡する（ISSUE-280）。上の blanket `*.json` は
 #   データファイル向けであり、これに巻き込まれると clean clone で `npm ci` が成立しない
 #   （実際 unified_ui/web/package.json だけが未追跡のまま lockfile だけ commit されていた）。

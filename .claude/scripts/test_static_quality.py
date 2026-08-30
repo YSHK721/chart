@@ -5,9 +5,9 @@
 
     pytest .claude/scripts/test_static_quality.py
 
-baseline の更新:
+baseline の更新（解消分の除去は削除専用の prune を使う）:
 
-    .claude/scripts/refresh_quality_baseline.sh
+    python3 .claude/scripts/run_quality_gate.py --prune-baseline
 """
 
 from __future__ import annotations
@@ -59,7 +59,8 @@ def test_baseline_is_not_stale(suite: str) -> None:
     baseline, runner = SUITES[suite]
     stale = _frozen(baseline) - {v.ident() for v in runner()}
     assert not stale, (
-        f"[{suite}] baseline に解消済みの {len(stale)} 件が残存。--write-baseline で更新する:\n  "
+        f"[{suite}] baseline に解消済みの {len(stale)} 件が残存。"
+        f"run_quality_gate.py --prune-baseline で除去する:\n  "
         + "\n  ".join(sorted(stale)[:20])
     )
 

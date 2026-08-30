@@ -37,6 +37,8 @@ import tokenize
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import violation_key as vk
+
 DEFAULT_EXCLUDE = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     ".mypy_cache", ".pytest_cache", "build", "dist", ".tox",
@@ -333,7 +335,7 @@ def check_source_grep(rel: Path, tree: ast.AST) -> list[Violation]:
                     if _names(n) & tracker.tainted:
                         hit = _first(_names(n) & tracker.tainted)
             if hit:
-                out.append(Violation("C2", rel.as_posix(), node.lineno, f"L{node.lineno}",
+                out.append(Violation("C2", rel.as_posix(), node.lineno, vk.node_digest(node),
                                      f"被検査ソース文字列 `{hit}` に対する assertion"))
                 break
     return out
@@ -372,7 +374,7 @@ def check_tautology(rel: Path, tree: ast.AST, sut_prefixes: tuple[str, ...]) -> 
                                                               "assert_array_equal", "assert_frame_equal"}:
             if len(node.args) >= 2:
                 if _calls_sut(node.args[0], sut_names) and _calls_sut(node.args[1], sut_names):
-                    out.append(Violation("C3", rel.as_posix(), node.lineno, f"L{node.lineno}",
+                    out.append(Violation("C3", rel.as_posix(), node.lineno, vk.node_digest(node),
                                          "期待値と実測値の双方が被検査モジュールの呼び出し"))
             continue
         else:
@@ -382,7 +384,7 @@ def check_tautology(rel: Path, tree: ast.AST, sut_prefixes: tuple[str, ...]) -> 
                 left_ok = _calls_sut(n.left, sut_names)
                 right_ok = any(_calls_sut(c, sut_names) for c in n.comparators)
                 if left_ok and right_ok:
-                    out.append(Violation("C3", rel.as_posix(), node.lineno, f"L{node.lineno}",
+                    out.append(Violation("C3", rel.as_posix(), node.lineno, vk.node_digest(node),
                                          "期待値と実測値の双方が被検査モジュールの呼び出し"))
                     break
     return out
@@ -438,7 +440,7 @@ def run(root: Path, sut_prefixes: tuple[str, ...], checks: set[str],
             if v.check in sup.get(v.line, set()):
                 continue
             out.append(v)
-    return sorted(out, key=lambda v: (v.check, v.path, v.line))
+    return vk.disambiguate(sorted(out, key=lambda v: (v.check, v.path, v.line)))
 
 
 def main(argv: list[str]) -> int:

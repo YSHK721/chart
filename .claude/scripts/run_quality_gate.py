@@ -11,10 +11,12 @@
     2  新規違反あり（`asyncRewake` がモデルを起こす）
 
 baseline の更新:
-    python3 .claude/scripts/run_quality_gate.py --write-baseline
+    python3 .claude/scripts/run_quality_gate.py --prune-baseline   # 解消分の除去（削除専用・安全）
+    python3 .claude/scripts/run_quality_gate.py --write-baseline   # 全再凍結（人間の裁定時のみ）
 
 **baseline は「今の違反を許す」ためのものであって、増やしてよいという意味ではない。**
-解消したら書き直す（`test_static_quality.py` が古い baseline を赤で落とす）。
+解消したら --prune-baseline で除去する（`test_static_quality.py` が古い baseline を赤で落とす）。
+凍結件数の上限は `ratchet.json` が持ち、増加は `test_ratchet_is_monotonic` が機械的に禁じる。
 """
 
 from __future__ import annotations
@@ -50,8 +52,22 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="静的品質検定（Stop フック入口）")
     ap.add_argument("--write-baseline", action="store_true",
                     help="現在の違反を baseline へ凍結し直す")
+    ap.add_argument("--prune-baseline", action="store_true",
+                    help="解消済み違反だけを baseline から除去する。"
+                         "凍結集合との積集合しか書かないため、追加（gate 弱体化）は構造的に不可能")
     ap.add_argument("--verbose", action="store_true", help="人間向けに全文を出す")
     a = ap.parse_args(argv)
+
+    if a.prune_baseline:
+        for name, (baseline, runner) in SUITES.items():
+            frozen = _frozen(baseline)
+            if not frozen:
+                continue
+            kept = sorted(frozen & {v.ident() for v in runner()})
+            baseline.write_text(
+                json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+            print(f"{name}: 解消済み {len(frozen) - len(kept)} 件を除去（凍結 {len(kept)} 件）")
+        return 0
 
     lines: list[str] = []
     for name, (baseline, runner) in SUITES.items():

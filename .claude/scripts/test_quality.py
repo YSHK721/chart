@@ -44,6 +44,8 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import violation_key as vk
+
 DEFAULT_EXCLUDE = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     ".mypy_cache", ".pytest_cache", "build", "dist", ".tox",
@@ -234,10 +236,11 @@ def check_weak_and_missing(rel: Path, tree: ast.AST, checks: set[str]) -> list[V
                 # 単独の `is not None` のみ弱いと判定する（補助検査としてなら妥当）
                 if reason == "`is not None` のみ" and len(asserts) > 1:
                     continue
-                out.append(Violation("T1", rel.as_posix(), a.lineno, f"{fn.name}:L{a.lineno}", reason))
+                out.append(Violation("T1", rel.as_posix(), a.lineno,
+                                     f"{fn.name}:{vk.node_digest(a)}", reason))
         for a in asserts:
             if isinstance(a, ast.Call) and callee(a) in {"assertIsNotNone", "assertTrue"} and len(asserts) == 1:
-                out.append(Violation("T1", rel.as_posix(), a.lineno, f"{fn.name}:L{a.lineno}",
+                out.append(Violation("T1", rel.as_posix(), a.lineno, f"{fn.name}:{vk.node_digest(a)}",
                                      f"`{callee(a)}` 単独では検査が弱い"))
     return out
 
@@ -282,7 +285,7 @@ def check_swallow(rel: Path, tree: ast.AST) -> list[Violation]:
         )
         if bare or trivial:
             kind = "bare except" if bare else "例外を握り潰して定数を返す"
-            out.append(Violation("T4", rel.as_posix(), n.lineno, f"L{n.lineno}", kind))
+            out.append(Violation("T4", rel.as_posix(), n.lineno, vk.node_digest(n), kind))
     return out
 
 
@@ -310,7 +313,7 @@ def check_skip(rel: Path, tree: ast.AST) -> list[Violation]:
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and callee(n) == "skip":
             if any(k.arg == "allow_module_level" for k in n.keywords):
-                out.append(Violation("T5", rel.as_posix(), n.lineno, f"module:L{n.lineno}",
+                out.append(Violation("T5", rel.as_posix(), n.lineno, f"module:{vk.node_digest(n)}",
                                      "モジュール全体の skip"))
     return out
 
@@ -325,7 +328,8 @@ def check_conditional(rel: Path, tree: ast.AST) -> list[Violation]:
             if isinstance(n, (ast.If, ast.While)):
                 if isinstance(n, ast.If) and isinstance(n.test, ast.Constant):
                     continue
-                out.append(Violation("T6", rel.as_posix(), n.lineno, f"{fn.name}:L{n.lineno}",
+                # break により関数あたり最大 1 件 -> 関数名だけで一意（行・内容に非依存）
+                out.append(Violation("T6", rel.as_posix(), n.lineno, fn.name,
                                      "テスト本体の分岐。実行経路が入力で変わる"))
                 break
     return out
@@ -342,13 +346,13 @@ def check_mock_spec(rel: Path, tree: ast.AST) -> list[Violation]:
         name = callee(n)
         kw = {k.arg for k in n.keywords if k.arg}
         if name in MOCK_FACTORIES and not (kw & SPEC_KWARGS):
-            out.append(Violation("T7", rel.as_posix(), n.lineno, f"{name}:L{n.lineno}",
+            out.append(Violation("T7", rel.as_posix(), n.lineno, f"{name}:{vk.node_digest(n)}",
                                  f"`{name}` が spec を持たない。実物に無い属性を許す"))
         elif name in {"patch", "object"} and _is_patch(n):
             # 位置引数で置換対象（new）を明示している場合は自動 Mock ではない
             explicit_new = len(n.args) >= (3 if name == "object" else 2)
             if not (kw & SPEC_KWARGS) and not explicit_new:
-                out.append(Violation("T7", rel.as_posix(), n.lineno, f"patch:L{n.lineno}",
+                out.append(Violation("T7", rel.as_posix(), n.lineno, f"patch:{vk.node_digest(n)}",
                                      "`patch` が autospec / new_callable を持たない"))
     return out
 
@@ -403,7 +407,7 @@ def check_structure(root: Path, files: list[Path]) -> list[Violation]:
                 if isinstance(v, ast.Attribute) and v.attr == "path" \
                         and isinstance(v.value, ast.Name) and v.value.id == "sys" \
                         and n.func.attr in {"insert", "append"}:
-                    out.append(Violation("T8", rel.as_posix(), n.lineno, f"syspath:L{n.lineno}",
+                    out.append(Violation("T8", rel.as_posix(), n.lineno, f"syspath:{vk.node_digest(n)}",
                                          "テストが `sys.path` を改変する。"
                                          "モジュール同一性がプロダクトと食い違う"))
     return out
@@ -442,7 +446,7 @@ def run(root: Path, checks: set[str]) -> list[Violation]:
                 out.append(v)
     if "T8" in checks:
         out += check_structure(root, files)
-    return sorted(out, key=lambda v: (v.check, v.path, v.line))
+    return vk.disambiguate(sorted(out, key=lambda v: (v.check, v.path, v.line)))
 
 
 def main(argv: list[str]) -> int:
