@@ -749,11 +749,11 @@
 
 .dash-charts-grid {
   display: grid;
-  /* 4 列 × 2 段の固定タイル（依頼者指示 2026-08-30・「2列×4」→「4列×2」へ是正指示）。
+  /* 3 列 × 3 段の固定タイル（依頼者指示 2026-08-30・4列×2 から変更。8 枚なので最終段は 2 枚）。
      幅で列数が揺れる auto-fill は使わない＝8 時間足が常に同じ位置に並ぶ。各タイルの横幅は
-     列の 1/4 へ追随（minmax(0,1fr) が内容幅に引きずられず均等割りにする）。
+     列の 1/3 へ追随（minmax(0,1fr) が内容幅に引きずられず均等割りにする）。
      外側の余白は持たない——タイル間の gap だけ残す。 */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   padding: 0;
   background: var(--surface);
