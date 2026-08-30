@@ -61,9 +61,10 @@ function unknownHorizonKeys(rows) {
 /** 列見出し。水準列はモックの 1 列から指標名 / 期間 / ソースの 3 列へ分割
  *  （依頼者指示 2026-08-30。行の識別は従来どおりサーバの `label` が担う）。 */
 const COLUMNS = Object.freeze([
-  { cell: 'distance', head: '距離', className: 'dash-ladder-head-distance' },
-  // 次のターゲット（地平の印）は独立列（依頼者指示 2026-08-30「距離 · 次のターゲットも各列に分離しろ」）。
+  // 次のターゲット（地平の印）は独立列・距離より先（依頼者指示 2026-08-30
+  //   「距離 · 次のターゲットも各列に分離しろ」→「順番を逆に」）。
   { cell: 'next', head: '次のターゲット', className: 'dash-ladder-head-next' },
+  { cell: 'distance', head: '距離', className: 'dash-ladder-head-distance' },
   { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
   // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
   { cell: 'gap', head: '差', hint: '（直前行と）', className: 'dash-ladder-head-gap' },
@@ -417,6 +418,11 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     const toneClass = tone === null ? '' : ` dash-ladder-row-r${tone}`;
     const tr = el('tr', { className: `dash-ladder-row ${state}${toneClass}` });
 
+    // 次のターゲット（地平の印）→ 距離 の順（依頼者指示 2026-08-30「順番を逆に」）。
+    const nextCell = el('td', { className: 'dash-ladder-next-cell' });
+    nextCell.appendChild(buildMarks(row.horizon_marks, row.distance));
+    tr.appendChild(nextCell);
+
     const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
     distanceCell.appendChild(el('span', {
       className: 'dash-ladder-distance',
@@ -424,11 +430,6 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       dataset: { cell: 'distance' },
     }));
     tr.appendChild(distanceCell);
-
-    // 次のターゲット（地平の印）は独立列（依頼者指示 2026-08-30）。
-    const nextCell = el('td', { className: 'dash-ladder-next-cell' });
-    nextCell.appendChild(buildMarks(row.horizon_marks, row.distance));
-    tr.appendChild(nextCell);
 
     tr.appendChild(buildPriceCell(row));
     tr.appendChild(el('td', {

@@ -134,6 +134,12 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'next');
     assert.ok(head, '次のターゲットの列見出しがありません');
     assert.match(textOf(head), /次のターゲット/);
+    // 並びは 次のターゲット → 距離（依頼者指示「順番を逆に」）。
+    const headRow = flatten(host).find((el) => el.tagName === 'TR');
+    assert.deepEqual(
+      [...headRow.children].slice(0, 2).map((th) => th.dataset.cell),
+      ['next', 'distance'],
+    );
     // 印は next 列のセルに居て、距離セルには同居しない。
     const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const distanceCell = flatten(first).find((el) => el.classList.contains('dash-ladder-distance-cell'));

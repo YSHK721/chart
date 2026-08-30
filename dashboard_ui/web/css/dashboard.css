@@ -377,8 +377,9 @@
 }
 
 /* 左の 3px は**セル**へ置く。`tr` への box-shadow は描かれない実装があり、そこでは
-   到達側の印が帯だけになって無言で弱まる（モックも td 側へ置いている）。 */
-.dash-ladder-hit .dash-ladder-distance-cell {
+   到達側の印が帯だけになって無言で弱まる（モックも td 側へ置いている）。
+   先頭列は「次のターゲット」（依頼者指示 2026-08-30「順番を逆に」）なのでそちらへ。 */
+.dash-ladder-hit .dash-ladder-next-cell {
   box-shadow: inset 3px 0 0 var(--up-bar);
 }
 
@@ -414,21 +415,20 @@
   white-space: nowrap;
 }
 
-/* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。地平の印は独立列
-   （依頼者指示 2026-08-30）になったため、min-width の確保は不要になった。 */
+/* 距離欄（行見出し）。符号で上下を読むので右寄せで桁を揃える。価格との境界線は
+   この列（並びの後側・依頼者指示「順番を逆に」）が持つ。 */
 .dash-ladder-table th.dash-ladder-distance-cell {
   text-align: right;
   width: 1%;
   white-space: nowrap;
   background: transparent;
+  border-right: 1px solid var(--line);
 }
 
-/* 次のターゲット（地平の印）の独立列。印が無い行は空欄（内容幅へ詰める）。
-   到達側の右境界線は距離列からこちらへ移動（列の並びの最後尾＝価格との境界）。 */
+/* 次のターゲット（地平の印）の独立列＝先頭列。印が無い行は空欄（内容幅へ詰める）。 */
 .dash-ladder-table td.dash-ladder-next-cell {
   width: 1%;
   white-space: nowrap;
-  border-right: 1px solid var(--line);
 }
 
 .dash-ladder-distance {
