@@ -95,6 +95,7 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
     from adapter.compute import (  # noqa: E402
         ComputeError,
         IndicatorComputeAdapter,
+        catalog_param_scopes,
         full_compute,
         latest_compute,
     )
@@ -109,6 +110,10 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         # 検定エラーの型（安定 Facade `adapter.compute` の公開物）。呼び出し側が
         #   core の内部モジュールを import せずに except できるようにする（ISSUE-459）。
         compute_error=ComputeError,
+        # ISSUE-466: variant ごとの受理 param 集合（`GET /catalog` の paramScopes と同一物）。
+        #   受理しない param を送ると core は無言で捨てず validation エラーにする
+        #   （ISSUE-278 #8）。呼び出し側が送る前に絞れるよう、単一ソースをそのまま公開する。
+        catalog_param_scopes=catalog_param_scopes,
         # ISSUE-295: 上位足の因果系列はライブ core と**同一実装**を再利用する（規則を写さない）。
         #   ライブ側 compute_controller もこの関数を通る＝両モードで規約も値も同一になる。
         causal_mtf_series=causal_mtf_series,

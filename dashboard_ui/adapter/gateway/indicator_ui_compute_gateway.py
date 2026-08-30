@@ -30,6 +30,7 @@ from typing import Any, Mapping
 from marketdata.tf_meta import period_start_unix
 
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
+from dashboard_ui.adapter.gateway.param_scopes import ParamScopes, scopes_of
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
@@ -50,15 +51,22 @@ class IndicatorUiComputeGateway:
         store: 確定素材を epoch 単位で持つストア（ISSUE-457）。**省略時はこの口だけの
             ストア**になり、共有は 1 要求で閉じる（従来と同じ費用）。要求をまたいで共有
             するかどうかは Composition Root の決定である（adapter は自分で相手を選ばない）。
+        param_scopes: variant ごとの受理 param 集合（ISSUE-466）。省略時はこの口の bridge
+            から 1 回だけ読む。保持の寿命は Composition Root が決める（store と同じ規律）。
     """
 
     def __init__(
         self, *, bridge: Any = None, bar_limits: "Mapping[str, int] | None" = None,
         store: "MaterialStore | None" = None,
+        param_scopes: "ParamScopes | None" = None,
     ) -> None:
         self._bridge = bridge
         self._bar_limits = dict(bar_limits or {})
         self._store = store if store is not None else MaterialStore()
+        self._param_scopes = (
+            param_scopes if param_scopes is not None
+            else ParamScopes(source=lambda: scopes_of(self._resolve_bridge()))
+        )
         self._frames: "dict[tuple[str, str], Any]" = {}
         self._bars: "dict[tuple[str, str], tuple[Bar, ...]]" = {}
         self._series: "dict[tuple[str, str, str, str], Mapping[str, tuple]]" = {}
@@ -72,14 +80,20 @@ class IndicatorUiComputeGateway:
 
         確定足ぶんは epoch 単位でストアから受け取り（要求をまたいで共有）、形成中足の
         1 点だけを毎要求作って継ぐ（§7 の 2 段そのもの・ISSUE-457）。
+
+        params は**発行の前に** variant の受理集合へ絞る（ISSUE-466）。畳み込みキーも
+        絞った後の params で作る: 受理されないキーの違いは計算に影響しないので、別の
+        キーにすると同じ計算を 2 回発行することになる。
         """
-        key = (indicator_id, variant, _params_key(params), timeframe)
+        bridge = self._resolve_bridge()
+        settings = self._param_scopes.scoped(
+            indicator_id=indicator_id, variant=variant, params=params
+        )
+        key = (indicator_id, variant, _params_key(settings), timeframe)
         cached = self._series.get(key)
         if cached is not None:
             return cached
-        bridge = self._resolve_bridge()
         frame = self._frame(dataset_ref, timeframe)
-        settings = dict(params)
         confirmed, forming = _split_at_forming_bar(frame)
         if confirmed is None:
             # 素材が 1 本しかない（形成中足しか無い）。分けようがないので全件で 1 回だけ計算する。
@@ -92,7 +106,7 @@ class IndicatorUiComputeGateway:
         confirmed_points = self._store.material(
             key=(dataset_ref, timeframe),
             epoch=_material_epoch(confirmed, forming, timeframe),
-            name=(indicator_id, variant, _params_key(params)),
+            name=(indicator_id, variant, _params_key(settings)),
             factory=lambda: _as_points(
                 self._compute(bridge.full_compute, bridge, indicator_id, variant,
                               confirmed, settings, timeframe)

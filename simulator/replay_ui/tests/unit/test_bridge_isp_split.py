@@ -33,6 +33,22 @@ def test_load_compute_exposes_dataset_and_compute_faces():
     assert not hasattr(ns, "handle_market_profile")
 
 
+def test_load_compute_exposes_the_param_scopes_of_the_live_core():
+    """ISSUE-466: variant ごとの受理 param 集合を **加法**で公開する（`compute_error` の前例）。
+
+    受理集合の正はライブ core の ``catalog_param_scopes()``（``GET /catalog`` が front へ配る
+    ものと同一物）である。呼び出し側（dashboard の供給口）が core の内部モジュールを直接
+    import せずに済むよう、bridge が 1 点だけ公開する。**写しを作らない**ことを、core から
+    直接読んだ値との一致で機械的に固定する。
+    """
+    ns = bridge.load_compute()
+    assert hasattr(ns, "catalog_param_scopes")
+
+    from adapter.compute import catalog_param_scopes  # noqa: E402（bridge が path を用意する）
+
+    assert ns.catalog_param_scopes() == catalog_param_scopes()
+
+
 def test_load_mp_handlers_exposes_only_mp_face():
     ns = bridge.load_mp_handlers()
     assert hasattr(ns, "handle_market_profile")

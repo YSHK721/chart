@@ -23,6 +23,7 @@ from dashboard_ui.adapter.gateway.forward_evaluation_gateway import (
     ForwardEvaluationGateway,
     MissingIncrementalError,
 )
+from dashboard_ui.adapter.gateway.param_scopes import ParamScopes
 
 REF = "jp225_tick"
 START = 1_787_003_400
@@ -46,6 +47,8 @@ class BridgeSpy:
         self.loaded: "list[tuple[str, str]]" = []
         self.calls: "list[tuple[int, float, float, float]]" = []
         self.frames: "list[int]" = []
+        #: 発行のたびに実際に渡された params（ISSUE-466: 受理集合で絞れているかを見る面）。
+        self.received_params: "list[dict]" = []
         self._series = series if series is not None else [
             {"name": "ma_marod", "kind": "line",
              "data": [{"time": START, "value": 1.0}, {"time": START + 60, "value": 2.0}]}
@@ -65,6 +68,7 @@ class BridgeSpy:
         self.frames.append(id(df))
         self.calls.append((len(df), float(df["close"].iloc[-1]),
                            float(df["high"].iloc[-1]), float(df["low"].iloc[-1])))
+        self.received_params.append(dict(params))
         self.received = df.copy()
         return self._series
 
@@ -166,3 +170,31 @@ def test_a_missing_value_series_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="ma_marod"):
         evaluate(gateway_of(spy), 100.0)
+
+
+# ------------------------------------- 受理集合（paramScopes）でのフィルタ（ISSUE-466）
+def test_the_params_sent_to_latest_compute_are_scoped_to_the_variant() -> None:
+    """P-1 と同じ規約で絞る（末尾 1 点の発行もライブ core の検定を通るため）。
+
+    P-1 だけを絞ると、供給は通るのに前進評価だけが validation で落ちる。しかも core の
+    検定エラー型は ValueError ではないので controller の翻訳を貫通し、応答が丸ごと 500 に
+    なる（ISSUE-459 と同型の実害。実測 2026-08-30: profit_rsi + ma_period で再現）。
+    絞る場所は「発行の直前」であり、発行の口は 2 つある。
+    """
+    spy = BridgeSpy()
+    gateway = ForwardEvaluationGateway(
+        bridge=spy.namespace(),
+        value_series_of=lambda indicator_id, variant, params: "ma_marod",
+        is_incremental=lambda indicator_id, variant, params: True,
+        param_scopes=ParamScopes(
+            source=lambda: {"ma_marod": {"default": ["length", "timeframe"]}}
+        ),
+    )
+
+    gateway.value_at_close(
+        indicator_id="ma_marod", variant="default",
+        params={"length": 50, "wait_for_close": True},
+        dataset_ref=REF, timeframe="1m", close=100.0,
+    )
+
+    assert spy.received_params == [{"length": 50}]

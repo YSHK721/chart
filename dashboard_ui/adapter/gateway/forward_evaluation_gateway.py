@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
+from dashboard_ui.adapter.gateway.param_scopes import ParamScopes, scopes_of
 from dashboard_ui.domain.bar import RunningExtreme
 from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
 
@@ -51,6 +52,8 @@ class ForwardEvaluationGateway:
         bridge: dataset ＋ 計算面の namespace（None なら既定の bridge を遅延で解決する）。
         bar_limits: 足ごとに読む本数の上限（None は全件）。
         is_incremental: 増分器の宣言有無（None ならライブ側の判定をそのまま使う）。
+        param_scopes: variant ごとの受理 param 集合（ISSUE-466）。省略時はこの口の bridge
+            から 1 回だけ読む。保持の寿命は Composition Root が決める。
     """
 
     def __init__(
@@ -60,11 +63,16 @@ class ForwardEvaluationGateway:
         bridge: Any = None,
         bar_limits: "Mapping[str, int] | None" = None,
         is_incremental: "Callable[[str, str, Mapping[str, object]], bool] | None" = None,
+        param_scopes: "ParamScopes | None" = None,
     ) -> None:
         self._value_series_of = value_series_of
         self._bridge = bridge
         self._bar_limits = dict(bar_limits or {})
         self._is_incremental = is_incremental
+        self._param_scopes = (
+            param_scopes if param_scopes is not None
+            else ParamScopes(source=lambda: scopes_of(self._resolve_bridge()))
+        )
         self._windows: "dict[tuple[str, str, str], Any]" = {}
         self._running: "dict[tuple[str, str, str], RunningExtreme]" = {}
 
@@ -83,8 +91,12 @@ class ForwardEvaluationGateway:
         _set_last_bar(window, close=float(close), high=running.high, low=running.low)
 
         bridge = self._resolve_bridge()
+        # 発行の直前で受理集合へ絞る（ISSUE-466。P-1 と同じ規約・発行の口は 2 つある）。
         series = bridge.latest_compute(
-            bridge.adapter, indicator_id, variant, window, dict(params)
+            bridge.adapter, indicator_id, variant, window,
+            self._param_scopes.scoped(
+                indicator_id=indicator_id, variant=variant, params=params
+            ),
         )
         name = self._value_series_of(indicator_id, variant, params)
         return _tail_value(series, name, indicator_id)

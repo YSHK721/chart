@@ -47,6 +47,9 @@ class ComputeSpy:
         self.issued: "list[tuple[str, str, int]]" = []
         self.latest: "list[tuple[str, str, int]]" = []
         self.loaded: "list[tuple[str, str]]" = []
+        #: 発行のたびに実際に渡された params（ISSUE-466: 受理集合で絞れているかを見る面）。
+        self.full_params: "list[dict]" = []
+        self.latest_params: "list[dict]" = []
         self._series = dict(series_by_indicator or {})
         self._latest = dict(latest or {})
         self._frames = dict(frames or {})
@@ -65,6 +68,7 @@ class ComputeSpy:
     # --- compute 面 ---
     def full_compute(self, adapter, indicator, variant, df, params):
         self.issued.append((indicator, variant, len(df)))
+        self.full_params.append(dict(params))
         return self._series.get(indicator, [])
 
     def latest_compute(self, adapter, indicator, variant, df, params):
@@ -75,6 +79,7 @@ class ComputeSpy:
         「更新しないこと」の表明にすり替わる。
         """
         self.latest.append((indicator, variant, len(df)))
+        self.latest_params.append(dict(params))
         return self._latest.get(indicator, [])
 
     def namespace(self) -> SimpleNamespace:
@@ -395,3 +400,78 @@ def test_a_compute_failure_is_translated_to_the_supply_contract() -> None:
             indicator_id="btlm_trail_marod", variant="default", params={},
             dataset_ref=REF, timeframe="1m",
         )
+
+
+# --------------------------------------- 受理集合（paramScopes）でのフィルタ（ISSUE-466）
+#
+# 実テンプレートは UI 側パラメータ（`wait_for_close`）や廃止パラメータ（`ma_period`）を
+# 運ぶ。ライブ core は ISSUE-278 #8 以降これを**無言で捨てず validation エラー**にするため、
+# 素通しすると当該 instance が丸ごと縮退掲示へ落ちる（実測 2026-08-30: MA 全 8 足 × 3 本と
+# profit_rsi）。参照実装（ライブ UI `catalog.scopedParams` / `probe_inverse.py:67`）は
+# **送る前に variant の受理集合へ絞る**規約であり、ここはその規約の実装である。
+
+def scoped_namespace(spy: ComputeSpy, scopes) -> SimpleNamespace:
+    """`GET /catalog` の paramScopes を公開する bridge namespace（加法）。"""
+    namespace = spy.namespace()
+    namespace.catalog_param_scopes = lambda: scopes
+    return namespace
+
+
+def test_a_param_the_variant_does_not_accept_is_dropped_before_compute() -> None:
+    """受理集合に無いキーは黙って落とす（参照実装と同じ・落とさないと全滅する）。"""
+    spy = ComputeSpy({"moving_averages": [line("ma", [(START, 1.0)])]},
+                     latest={"moving_averages": [line("ma", [(START + 180, 2.0)])]})
+    gateway = IndicatorUiComputeGateway(
+        bridge=scoped_namespace(
+            spy, {"moving_averages": {"default": ["source", "length", "timeframe"]}}
+        )
+    )
+
+    gateway.full_series(
+        indicator_id="moving_averages", variant="default",
+        params={"source": "hlc3", "length": 24, "wait_for_close": True},
+        dataset_ref=REF, timeframe="1m",
+    )
+
+    assert spy.full_params == [{"source": "hlc3", "length": 24}]
+    assert spy.latest_params == [{"source": "hlc3", "length": 24}]
+
+
+def test_an_indicator_without_a_declared_scope_is_passed_through() -> None:
+    """受理集合を持たない指標は現状どおり素通しする（供給失敗の経路を壊さない）。"""
+    spy = ComputeSpy({"trade_markers": [line("m", [(START, 1.0)])]})
+    gateway = IndicatorUiComputeGateway(
+        bridge=scoped_namespace(spy, {"moving_averages": {"default": ["length"]}})
+    )
+
+    gateway.full_series(indicator_id="trade_markers", variant="default",
+                        params={"anything": 1}, dataset_ref=REF, timeframe="1m")
+
+    assert spy.full_params == [{"anything": 1}]
+
+
+def test_a_variant_without_a_declared_scope_is_passed_through() -> None:
+    """variant が受理集合に無いときも素通し（知らない相手を勝手に絞らない）。"""
+    spy = ComputeSpy({"moving_averages": [line("ma", [(START, 1.0)])]})
+    gateway = IndicatorUiComputeGateway(
+        bridge=scoped_namespace(spy, {"moving_averages": {"default": ["length"]}})
+    )
+
+    gateway.full_series(indicator_id="moving_averages", variant="alt",
+                        params={"length": 24, "wait_for_close": True},
+                        dataset_ref=REF, timeframe="1m")
+
+    assert spy.full_params == [{"length": 24, "wait_for_close": True}]
+
+
+def test_a_bridge_without_the_catalog_face_filters_nothing() -> None:
+    """paramScopes を公開しない bridge では従来どおり素通しする（加法の後方互換）。"""
+    spy = ComputeSpy({"moving_averages": [line("ma", [(START, 1.0)])]})
+
+    gateway_with(spy).full_series(
+        indicator_id="moving_averages", variant="default",
+        params={"length": 24, "wait_for_close": True},
+        dataset_ref=REF, timeframe="1m",
+    )
+
+    assert spy.full_params == [{"length": 24, "wait_for_close": True}]
