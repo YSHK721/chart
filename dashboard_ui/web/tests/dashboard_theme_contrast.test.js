@@ -99,7 +99,7 @@ const SURFACES = Object.freeze([
   { name: '水準なしの小片', ground: '--amber-bg', texts: ['--amber'] },
   // 行発光の被膜（次のターゲット移動・依頼者指示 2026-08-31）。セルの上へ 70% 透過で乗り
   //   8 秒で透明へ戻る**一時表示**で、この地の上に文字は置かれない（文字は被膜の下）。
-  { name: '行発光の被膜', ground: '--amber', texts: [] },
+  { name: '行発光の被膜', ground: '--violet', texts: [] },
   // .dash-ladder-next-h1 / -h2 / -h3（地平バッジ）。
   { name: '地平バッジ 短期', ground: '--muted', texts: ['--bg'] },
   { name: '地平バッジ 中期', ground: '--cyan', texts: ['--bg'] },

@@ -50,6 +50,8 @@
   --cyan: #117988;
   --amber: #966417;
   --amber-bg: #fbf0dc;
+  /* 行発光（次のターゲット移動の被膜）の色（依頼者指示 2026-08-31: ダークパープル）。 */
+  --violet: #4b2e83;
   /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す。
      2026-08-31: 行の地が --surface になり文字は --ink＝最濃でも --ink が読める明度で定義）。
      対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
@@ -80,6 +82,7 @@
     --cyan: #3fc3d4;
     --amber: #e0a552;
     --amber-bg: #33260f;
+    --violet: #6b4fd8;
     --tick-up-bg: #1d4f48;
     --tick-down-bg: #5f2422;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -105,6 +108,7 @@
   --cyan: #3fc3d4;
   --amber: #e0a552;
   --amber-bg: #33260f;
+  --violet: #6b4fd8;
   --tick-up-bg: #1d4f48;
   --tick-down-bg: #5f2422;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -480,7 +484,7 @@
      子要素の背景（価格セルの 3 分割帯・時間足ピル）に隠されて「次のターゲットのセルにしか
      色が乗っていない」ように見えた（実測 2026-08-31）。オーバーレイは子の上（z-index）に
      乗るので行全体が確実に染まり、フェードで元の表示へ戻る。
-   - 色は地平によらず --amber 一色（灰は地に紛れる・色数を増やさない）。色の実体は
+   - 色は地平によらず --violet 一色（依頼者指示 2026-08-31: ダークパープル）。色の実体は
      keyframes の中だけ＝終端 transparent で自然状態へ戻る。
    - 経過の引き継ぎは --row-glow-delay（View が行へ負値で置き、セルの ::after が継承）。
    - 発光は表示系列（12 秒遅延の再生）に同期して点く（View の NEXT_MOVE_DELAY_SECONDS）。 */
@@ -505,7 +509,7 @@
 }
 
 @keyframes dash-row-glow {
-  from { background-color: color-mix(in srgb, var(--amber) 70%, transparent); }
+  from { background-color: color-mix(in srgb, var(--violet) 70%, transparent); }
   to { background-color: transparent; }
 }
 
