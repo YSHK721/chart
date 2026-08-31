@@ -481,6 +481,38 @@
   color: var(--bg);
 }
 
+/* 次のターゲット印の移動先の残光（依頼者承認 2026-08-31: 移動が視認できない課題への対策）。
+   移動先セルへ地平のバッジ色を透過へ薄めて乗せ、8 秒でフェードアウトする（時間の唯一源は
+   ここ。View 側の同名定数 8 は「終わった効果を再適用しない」ための賞味期限で、再描画は
+   負の animation-delay で経過を引き継ぐ）。セルの地に素の文字は無く（文字はバッジの中＝
+   バッジ自身の地の上）、対比の組は増えない。 */
+.dash-ladder-next-moved-h1 {
+  animation: dash-next-fade-h1 8s ease-out forwards;
+}
+
+.dash-ladder-next-moved-h2 {
+  animation: dash-next-fade-h2 8s ease-out forwards;
+}
+
+.dash-ladder-next-moved-h3 {
+  animation: dash-next-fade-h3 8s ease-out forwards;
+}
+
+@keyframes dash-next-fade-h1 {
+  from { background-color: color-mix(in srgb, var(--muted) 45%, transparent); }
+  to { background-color: transparent; }
+}
+
+@keyframes dash-next-fade-h2 {
+  from { background-color: color-mix(in srgb, var(--cyan) 45%, transparent); }
+  to { background-color: transparent; }
+}
+
+@keyframes dash-next-fade-h3 {
+  from { background-color: color-mix(in srgb, var(--ink) 45%, transparent); }
+  to { background-color: transparent; }
+}
+
 /* 価格セル: 地平 3 段の帯（色は heat_scale.js が入れる・規約 2）の上に価格の文字を置く。 */
 .dash-ladder-table td.dash-ladder-price {
   position: relative;

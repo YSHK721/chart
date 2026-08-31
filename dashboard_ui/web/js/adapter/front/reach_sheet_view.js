@@ -31,9 +31,9 @@ import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
-  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1' },
-  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2' },
-  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3' },
+  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1', moved: 'dash-ladder-next-moved-h1' },
+  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2', moved: 'dash-ladder-next-moved-h2' },
+  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3', moved: 'dash-ladder-next-moved-h3' },
 ]);
 
 /** 地平キーの集合（照合用）。 */
@@ -92,6 +92,13 @@ const NAMING_CELLS = 4;
  *  （多段の減衰は持たない——時間の唯一源を CSS と 2 つにしない）。 */
 const TICK_FULL_POINTS = 20;
 const TICK_MIN_STRENGTH = 25;
+
+/** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31: 移動が視認できない課題への対策）。
+ *  印（horizon_marks）の持ち主行が前回応答から変わったとき、**移動先**のセルへ地平色を乗せ、
+ *  この秒数かけてフェードアウトする。視覚のフェードの実体は CSS（dash-next-fade-h1〜h3・
+ *  同じ 8s）で、本定数は「効果がもう終わった印」を再適用しないための賞味期限。再描画では
+ *  負の animation-delay で経過を引き継ぐ（途切れ・再点滅を作らない）。 */
+const NEXT_MOVE_FADE_SECONDS = 8;
 
 /** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
  *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
@@ -200,6 +207,12 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   let externalPrice = null;
   /** 直前の応答描画から外部 tick を見たか（見ていない描画周期で効果を落とす）。 */
   let externalTickSeen = false;
+  /** 次のターゲット印の前回の持ち主（markKey `horizon:side` → rowKey）。null＝初回。 */
+  let lastMarkOwners = null;
+  /** 移動した印の記録（markKey → {at: 移動時刻 unix 秒, owner: 移動先 rowKey}）。 */
+  const markMovedAt = new Map();
+  /** 描画時点の時計（unix 秒・render の冒頭で 1 回だけ取る）。null＝時計なし。 */
+  let renderNowSec = null;
   /** 現在値行のその場書き換え先（毎 tick の表再構築を避ける）。 */
   let currentRowEl = null;
   let currentPriceEl = null;
@@ -401,6 +414,73 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     return holder;
   }
 
+  /** 行の論理識別子（印の持ち主の同定用）。label は同名でも時間足で別行になりうるので併記。
+   *  価格は含めない——水準の値が動いただけの行を「移動」と誤認しない。 */
+  function rowKeyOf(row) {
+    return `${row.timeframe}|${row.label}`;
+  }
+
+  /** 印（horizon:side）→ 持ち主行の対応表。側は距離の符号（buildMarks と同じ定義）。 */
+  function markOwnersOf(rows) {
+    const owners = new Map();
+    for (const row of rows) {
+      const side = Number(row.distance) >= 0 ? 'up' : 'down';
+      for (const key of (Array.isArray(row.horizon_marks) ? row.horizon_marks : [])) {
+        owners.set(`${key}:${side}`, rowKeyOf(row));
+      }
+    }
+    return owners;
+  }
+
+  /** 印の移動を検出して記録する（依頼者承認 2026-08-31）。全行（窓の外も含む）で突合する
+   *  ——移動先が窓の外なら何も光らないだけで、記録の意味は変わらない。時計が無い環境では
+   *  効果ごと出さない（経過を測れないまま光らせると消えない残光を発明する）。 */
+  function trackNextTargetMoves(rows) {
+    renderNowSec = typeof now === 'function' ? now() : null;
+    const owners = markOwnersOf(rows);
+    if (renderNowSec !== null && lastMarkOwners !== null) {
+      for (const [mark, owner] of owners) {
+        const before = lastMarkOwners.get(mark);
+        if (before !== undefined && before !== owner) {
+          markMovedAt.set(mark, { at: renderNowSec, owner });
+        }
+      }
+    }
+    lastMarkOwners = owners;
+    for (const [mark, entry] of markMovedAt) {
+      if (renderNowSec === null || renderNowSec - entry.at >= NEXT_MOVE_FADE_SECONDS) {
+        markMovedAt.delete(mark);   // 終わった効果は再適用しない（賞味期限）。
+      }
+    }
+  }
+
+  /** 移動先セルの残光を乗せる。複数の印が同時に来た行は新しい方の地平色を採る。 */
+  function applyNextMoveGlow(cell, row) {
+    if (renderNowSec === null || markMovedAt.size === 0) {
+      return;
+    }
+    const rowKey = rowKeyOf(row);
+    const side = Number(row.distance) >= 0 ? 'up' : 'down';
+    let hit = null;
+    for (const horizon of HORIZONS) {
+      const entry = markMovedAt.get(`${horizon.key}:${side}`);
+      if (entry && entry.owner === rowKey && (hit === null || entry.at > hit.at)) {
+        hit = { horizon, at: entry.at };
+      }
+    }
+    if (hit === null) {
+      return;
+    }
+    cell.classList.add(hit.horizon.moved);
+    // 経過を負の delay で引き継ぐ＝再描画してもフェードは元の残り時間から続く。
+    const elapsed = Math.max(0, renderNowSec - hit.at);
+    if (typeof cell.style.setProperty === 'function') {
+      cell.style.setProperty('animation-delay', `-${elapsed}s`);
+    } else {
+      cell.style.animationDelay = `-${elapsed}s`;
+    }
+  }
+
   /** 価格セル（3 分割の背景＋価格の文字）。差は独立列（依頼者指示 2026-08-30）。 */
   function buildPriceCell(row) {
     const cell = el('td', { className: 'dash-ladder-price' });
@@ -449,6 +529,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     // 次のターゲット（地平の印）→ 距離 の順（依頼者指示 2026-08-30「順番を逆に」）。
     const nextCell = el('td', { className: 'dash-ladder-next-cell' });
     nextCell.appendChild(buildMarks(row.horizon_marks, row.distance));
+    applyNextMoveGlow(nextCell, row);
     tr.appendChild(nextCell);
 
     const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
@@ -723,6 +804,8 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       }
     }
     const allRows = Array.isArray(response.rows) ? response.rows : [];
+    // 次のターゲット印の移動検出（依頼者承認 2026-08-31）。突合は表の構築前に 1 回。
+    trackNextTargetMoves(allRows);
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
     const unknown = unknownHorizonKeys(allRows);
     message.textContent = unknown.length === 0
@@ -836,6 +919,9 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     lastUpdateAt = null;
     externalPrice = null;
     externalTickSeen = false;
+    lastMarkOwners = null;
+    markMovedAt.clear();
+    renderNowSec = null;
     currentRowEl = null;
     currentPriceEl = null;
     currentLabelCell = null;

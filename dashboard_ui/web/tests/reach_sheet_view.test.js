@@ -547,6 +547,84 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.doesNotMatch(textOf(currentRowOf(host)), /UPDATE:/);
   });
 
+  // ---- 次のターゲット印の移動先の残光（依頼者承認 2026-08-31） ----
+
+  /** 印が行 A（先頭）に付いた応答と、行 B（2 行目）へ移った応答（構造は同一）。 */
+  const markedRows = (ownerLabel) => [
+    ladderRow({ price: 66000, timeframe: '1h', label: 'A', distance: 244,
+      horizon_marks: ownerLabel === 'A' ? ['medium'] : [], horizon_p: {} }),
+    ladderRow({ price: 65900, timeframe: '1h', label: 'B', distance: 144,
+      horizon_marks: ownerLabel === 'B' ? ['medium'] : [], horizon_p: {} }),
+  ];
+  const nextCellOf = (host, label) => {
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
+      && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === label);
+    return flatten(row).find((el) => el.classList.contains('dash-ladder-next-cell'));
+  };
+
+  test('a_mark_that_moves_to_another_row_glows_on_the_destination_cell', () => {
+    let clockAt = 1000;
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => clockAt });
+    view.mount(host);
+    view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
+    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+    // Act: 印が B へ移る。
+    clockAt = 1003;
+    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
+    const dest = nextCellOf(host, 'B');
+    assert.equal(dest.classList.contains('dash-ladder-next-moved-h2'), true);
+    assert.equal(dest.style.animationDelay, '-0s');
+    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+  });
+
+  test('a_rebuild_during_the_glow_resumes_the_fade_instead_of_restarting_it', () => {
+    let clockAt = 1000;
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => clockAt });
+    view.mount(host);
+    view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
+    clockAt = 1003;
+    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
+    // Act: 3 秒後に別の内容変化で再構築 → 経過 3 秒を負の delay で引き継ぐ。
+    clockAt = 1006;
+    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2, current_price: 65801.0 }));
+    const dest = nextCellOf(host, 'B');
+    assert.equal(dest.classList.contains('dash-ladder-next-moved-h2'), true);
+    assert.equal(dest.style.animationDelay, '-3s');
+    // Act: 8 秒経過後は乗せ直さない（終わった効果の再適用＝再点滅を作らない）。
+    clockAt = 1011;
+    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
+    assert.equal(nextCellOf(host, 'B').classList.contains('dash-ladder-next-moved-h2'), false);
+  });
+
+  test('the_first_response_and_a_stationary_mark_do_not_glow', () => {
+    // 初回応答は基準（移動ではない）。動かない印も光らせない。時計の無い環境も光らせない。
+    let clockAt = 1000;
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => clockAt });
+    view.mount(host);
+    view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
+    clockAt = 1005;
+    view.render(sheetResponse({ rows: markedRows('A'), current_index: 2, current_price: 65801.0 }));
+    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+    const { host: noClock } = renderInto(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
+    assert.equal(nextCellOf(noClock, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+  });
+
+  test('the_next_move_fade_lives_in_css_as_an_eight_second_animation', async () => {
+    // 時間の唯一源は CSS（8s）。3 地平とも同じ長さで、View 側の賞味期限と一致させる。
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
+    for (const n of [1, 2, 3]) {
+      assert.match(css, new RegExp(`animation:\\s*dash-next-fade-h${n}\\s+8s`));
+    }
+  });
+
   // ---- なめらか tick 再生（依頼者指示 2026-08-31: ライブチャート仕様に合わせる） ----
 
   test('a_smooth_tick_rewrites_the_current_row_in_place_without_rebuilding_the_table', () => {
