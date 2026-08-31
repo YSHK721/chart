@@ -31,9 +31,9 @@ import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
-  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1' },
-  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2' },
-  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3' },
+  { key: 'short', label: '短期' },
+  { key: 'medium', label: '中期' },
+  { key: 'long', label: '長期' },
 ]);
 
 /** 地平キーの集合（照合用）。 */
@@ -409,19 +409,22 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     return legend;
   }
 
-  /** 地平の印（モックの b.next）。向きは**距離の符号**で決まる。 */
+  /** 地平の印（依頼者指示 2026-08-31: [短][中][長] の 1 文字を四角で囲み、上＝赤・下＝緑。
+   *  最大 3 段でも 1 行に収まる）。向きは**距離の符号**で決まる。地平の名前はツールチップが
+   *  持つ（1 文字表記で情報を落とさない）。 */
   function buildMarks(marks, distance) {
     const holder = el('span', { className: 'dash-ladder-marks', dataset: { cell: 'marks' } });
     const list = Array.isArray(marks) ? marks : [];
     if (list.length === 0) {
       return holder;
     }
-    const direction = Number(distance) >= 0 ? '上' : '下';
+    const side = Number(distance) >= 0 ? 'up' : 'down';
     for (const horizon of HORIZONS) {
       if (!list.includes(horizon.key)) continue;
       holder.appendChild(el('b', {
-        className: `dash-ladder-next ${horizon.badge}`,
-        textContent: `${horizon.label} · ${direction}`,
+        className: `dash-ladder-next dash-ladder-next-${side}`,
+        textContent: horizon.label.charAt(0),
+        title: `${horizon.label}の次のターゲット（${side === 'up' ? '上' : '下'}）`,
       }));
     }
     return holder;

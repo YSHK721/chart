@@ -463,41 +463,32 @@
 
 /* 地平の印（モックの b.next）。h1 = 短期 / h2 = 中期 / h3 = 長期。独立列（依頼者指示
    2026-08-30）の中で縦に積む——3 印そろった行を横並びにすると 1 行ぶんが列幅になる。 */
+/* 地平の印（依頼者指示 2026-08-31: [短][中][長] の 1 文字を四角で囲み、上＝赤・下＝緑。
+   線と文字を同色にし、地は透明＝最大 3 段でも 1 行に並ぶ）。色は支持・抵抗と同じ語彙
+   （上＝抵抗側 --down・下＝支持側 --up。「表の地」の登録済みの組＝新しい対比を作らない）。 */
 .dash-ladder-marks {
-  display: block;
-  white-space: normal;
-}
-
-.dash-ladder-marks .dash-ladder-next {
-  display: block;
-  margin: 1px 0;
+  display: inline-flex;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .dash-ladder-next {
   display: inline-block;
-  margin-left: 8px;
-  padding: 1px 7px;
+  padding: 0 4px;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: .06em;
-  border-radius: 4px;
-  background: var(--ink);
-  color: var(--bg);
+  letter-spacing: 0;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  background: transparent;
 }
 
-.dash-ladder-next-h1 {
-  background: var(--muted);
-  color: var(--bg);
+.dash-ladder-next-up {
+  color: var(--down);
 }
 
-.dash-ladder-next-h2 {
-  background: var(--cyan);
-  color: var(--bg);
-}
-
-.dash-ladder-next-h3 {
-  background: var(--ink);
-  color: var(--bg);
+.dash-ladder-next-down {
+  color: var(--up);
 }
 
 /* 次のターゲット印の移動先の残光（依頼者指示 2026-08-31「移動した価格帯の行全体に色を

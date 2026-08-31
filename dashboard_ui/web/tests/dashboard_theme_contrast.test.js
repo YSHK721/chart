@@ -94,8 +94,7 @@ const SURFACES = Object.freeze([
     heatTexts: ['--ink', '--ink2'],
   },
   // .dash-ladder-current（現在値行）。地は他の行と同じ --surface（依頼者指示 2026-08-31・
-  //   「表の地」の組で被覆済み）。--ink の地は次のターゲットの長期バッジが使い続ける。
-  { name: '長期バッジ', ground: '--ink', texts: ['--bg'] },
+  //   「表の地」の組で被覆済み）。
   // .dash-ladder-current-up / -down（直近ティックの上下・依頼者指示 2026-08-30）。
   { name: '現在値行（上昇）', ground: '--tick-up-bg', texts: ['--ink', '--ink2'] },
   { name: '現在値行（下降）', ground: '--tick-down-bg', texts: ['--ink', '--ink2'] },
@@ -107,10 +106,9 @@ const SURFACES = Object.freeze([
   // 行発光の被膜（次のターゲット移動・依頼者指示 2026-08-31）。セルの上へ 70% 透過で乗り
   //   8 秒で透明へ戻る**一時表示**で、この地の上に文字は置かれない（文字は被膜の下）。
   { name: '行発光の被膜', ground: '--violet', texts: [] },
-  // .dash-ladder-next-h1 / -h2 / -h3（地平バッジ）。
-  { name: '地平バッジ 短期', ground: '--muted', texts: ['--bg'] },
-  { name: '地平バッジ 中期', ground: '--cyan', texts: ['--bg'] },
-  { name: '地平バッジ 長期', ground: '--ink', texts: ['--bg'] },
+  // .dash-ladder-scope-btn.is-active（期間・時間足の選択ボタンの点灯）。地平の印は
+  //   2026-08-31 指示で「枠＋同色文字」（表の地の上の --up / --down）へ変わり、地を持たない。
+  { name: '選択ボタン（点灯）', ground: '--cyan', texts: ['--bg'] },
 ]);
 
 // ---------------------------------------------------------------- 色の計算

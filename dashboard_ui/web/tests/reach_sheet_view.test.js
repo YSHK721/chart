@@ -146,7 +146,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(flatten(distanceCell).some((el) => el.classList.contains('dash-ladder-marks')), false);
     const nextCell = flatten(first).find((el) => el.classList.contains('dash-ladder-next-cell'));
     assert.ok(flatten(nextCell).some((el) => el.classList.contains('dash-ladder-marks')));
-    assert.match(textOf(nextCell), /長期 · 上/);   // THREE_ROWS[0] は long の印を持つ。
+    assert.equal(textOf(nextCell), '長');   // THREE_ROWS[0] は long の印（1 文字表記）。
   });
 
   test('the_gap_has_its_own_column_whose_head_says_what_it_is', () => {
@@ -265,29 +265,29 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.match(textOf(host), /現在値/);
   });
 
-  test('a_horizon_mark_names_its_horizon_and_the_direction_from_the_current_price', () => {
-    // §4.7 の「次のターゲット」。向きは距離の符号で決まる。
-    //   表記は旧版面の「← 長期・上」からモックの地平バッジ「長期 · 上」へ改めた
-    //   （ISSUE-463・版面同期）。名指す内容（地平と向き）は変えていない。
+  test('a_horizon_mark_is_a_one_char_square_coloured_by_its_side', () => {
+    // 依頼者指示 2026-08-31: [短][中][長] の 1 文字＋四角。上＝赤（dash-ladder-next-up）・
+    //   下＝緑（dash-ladder-next-down）。地平の名前はツールチップが持つ。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
-    assert.match(cellText(levelRows[0], 'marks'), /長期 · 上/);
-    assert.match(cellText(levelRows[2], 'marks'), /短期 · 下/);
+    const badgeOf = (row) => flatten(row).find((el) => el.classList.contains('dash-ladder-next'));
+    const above = badgeOf(levelRows[0]);
+    assert.equal(textOf(above), '長');
+    assert.equal(above.classList.contains('dash-ladder-next-up'), true);
+    assert.match(above.title, /長期/);
+    const below = badgeOf(levelRows[2]);
+    assert.equal(textOf(below), '短');
+    assert.equal(below.classList.contains('dash-ladder-next-down'), true);
   });
 
-  test('a_row_marked_for_two_horizons_shows_both', () => {
-    // §4.7 の実測行（中期・下 と 長期・下 が同じ行に付く）。
+  test('a_row_marked_for_two_horizons_shows_both_squares_in_one_line', () => {
+    // 最大 3 段でも 1 行（依頼者指示 2026-08-31）。§4.7 の実測行（中期・下 と 長期・下）。
     const rows = [ladderRow({ distance: -209.1, horizon_marks: ['medium', 'long'] })];
     const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
-    assert.match(cellText(row, 'marks'), /中期 · 下/);
-    assert.match(cellText(row, 'marks'), /長期 · 下/);
-    // 地平ごとに別の印にする（モックの b.next.h1 / h2 / h3）。同じ見た目だと段が読めない。
     const badges = flatten(row).filter((el) => el.classList.contains('dash-ladder-next'));
-    assert.deepEqual(
-      badges.map((b) => (b.classList.contains('dash-ladder-next-h2') ? 'h2' : 'h3')),
-      ['h2', 'h3'],
-    );
+    assert.deepEqual(badges.map((b) => textOf(b)), ['中', '長']);
+    assert.ok(badges.every((b) => b.classList.contains('dash-ladder-next-down')));
   });
 
   test('an_unmarked_row_shows_no_mark_at_all', () => {
