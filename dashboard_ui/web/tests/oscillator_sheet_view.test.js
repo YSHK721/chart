@@ -212,6 +212,45 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.equal(flatten(host).filter((el) => el.classList.contains('dash-osc-row')).length, afterFirst);
   });
 
+  // ---- なめらか再生（依頼者指示 2026-08-31: 第 2 表もライブチャートと同じ更新粒度） ----
+
+  test('a_tail_value_rewrites_only_the_cell_value_in_place', () => {
+    // tails の値（サーバ計算）を現在値の文字だけへ流す。配色（p）・到達時刻・水準価格は
+    //   触らない（それらの持ち主は 1s の応答描画のまま）。表は再構築しない。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createOscillatorSheetView({ doc, now: () => NOW_UNIX });
+    view.mount(host);
+    view.render(sheetResponse({ cells: CELLS }));
+    const cellOf = (tf) => flatten(host).find(
+      (el) => el.dataset.indicator === 'ma_marod' && el.dataset.timeframe === tf
+        && el.classList.contains('dash-osc-cell'),
+    );
+    const target = cellOf('1m');
+    const bgBefore = target.style.backgroundColor;
+    const sizeBefore = flatten(host).length;
+    // Act
+    view.updateCellValue('ma_marod', '1m', 1.37);
+    // Assert
+    assert.match(textOf(target), /1\.37/);
+    assert.equal(target.style.backgroundColor, bgBefore);
+    assert.equal(flatten(host).length, sizeBefore);          // 要素は 1 つも作らない。
+    assert.doesNotMatch(textOf(cellOf('1D')), /1\.37/);      // 他のセルへ漏れない。
+  });
+
+  test('a_same_or_unknown_tail_value_touches_nothing', () => {
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createOscillatorSheetView({ doc, now: () => NOW_UNIX });
+    view.mount(host);
+    view.render(sheetResponse({ cells: CELLS }));
+    const before = flatten(host).length;
+    view.updateCellValue('ma_marod', '1m', 0.8);        // 表示と同値 → 何もしない。
+    view.updateCellValue('unknown', '1m', 9.9);         // 未知のセル → 何もしない。
+    view.updateCellValue('ma_marod', '1m', Number.NaN); // 非有限 → 発明しない。
+    assert.equal(flatten(host).length, before);
+  });
+
   test('unmount_removes_everything_the_view_built', () => {
     const doc = fakeDoc();
     const host = fakeEl('div');

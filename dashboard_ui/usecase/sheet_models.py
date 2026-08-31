@@ -171,6 +171,10 @@ class OscCell:
     #: §5.5 の価格射影（分位水準に達する価格・依頼者指示 2026-08-30）をセルへ紐付けるための
     #: 識別子。(indicator_id, timeframe) はキーにならない（§5.1: ma_marod は 1D に 2 本）。
     instance_key: "tuple[str, str, str, str] | None" = None
+    #: 現在値が読んでいる系列の名前（OscillatorSpec.value_series）。フロントのなめらか再生
+    #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこのセルへ
+    #: 流すか」を選ぶための宣言。表示専用で、無くても版面は成立する（None＝流さない）。
+    value_series: "str | None" = None
 
 
 @dataclass(frozen=True)

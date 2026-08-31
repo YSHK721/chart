@@ -227,9 +227,17 @@ def test_the_cells_use_the_model_field_names() -> None:
     cell = response["cells"][0]
 
     assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
-                         "reach", "unavailable_reason", "level_prices"}
+                         "reach", "unavailable_reason", "level_prices",
+                         "instance_key", "value_series"}
     assert set(cell["level_prices"]) == {"q_high", "q_low"}
     # 各側は {price, level}（level は第 1 表の水準列と同じ分位名・矢印では判断に迷うため）。
+    # instance_key / value_series はなめらか再生の宣言（依頼者指示 2026-08-31）。
+    #   instance_key の params_key（第 3 要素）は JSON として復元できること（フロントが
+    #   /live_ticks の specs へ組み直す前提）。
+    import json as _json
+    assert cell["instance_key"] is not None and len(cell["instance_key"]) == 4
+    assert isinstance(_json.loads(cell["instance_key"][2]), dict)
+    assert isinstance(cell["value_series"], str) and cell["value_series"]
 
 
 def test_the_cumulative_cell_on_the_sub_unit_timeframe_says_why_it_has_no_level() -> None:

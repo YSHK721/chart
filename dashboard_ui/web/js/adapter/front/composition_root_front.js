@@ -67,6 +67,12 @@ const CANDLE_LIMIT = 180;
  *  従来どおり 1s 応答の価格表示に縮退する（失敗容認・現在値が消えることはない）。 */
 const LIVE_TICK_PLAYER_PATH = '/live/js/adapter/front/live_tick_player.js';
 
+/** 第 2 表のなめらか再生（依頼者指示 2026-08-31）で `/live_ticks` の tails に使う窓長。
+ *  規約は `/compute` と同一（表示範囲＝計算足の本数・付けないとサーバ 1 ステップの費用が
+ *  全件に比例する）。値はライブチャートが常用する表示範囲と同じ 1,500 本
+ *  （オシレータの窓 window_n=500 とウォームアップを覆う）。 */
+const OSC_TAILS_LIMIT = 1500;
+
 /**
  * 統合ページ側の入口。器と 2 つの表を出し、`/reach_sheet` の発行を回す。
  *
@@ -175,6 +181,50 @@ export async function setupDashboardDisplay({
   let lastFullResponse = null;
   /** 直近に描いた内容の鍵（省リソース段階 1: 同一内容なら第 1・第 2 表を作り直さない）。 */
   let lastRenderedKey = null;
+  /** 第 2 表のなめらか再生の spec 台帳（唯一源＝完全応答の cells・依頼者指示 2026-08-31）。
+   *  セルになった instance **だけ**を申告する（ラダー行の instance へ tails を計算させると
+   *  使わない計算を発行することになる・絶対命令 §4.1）。 */
+  let oscTailSpecs = [];
+  /** instanceId → 流し先（セルの行列と系列名）。specs と同時に組み直す。 */
+  const oscTailTargets = new Map();
+
+  /** 完全応答の cells から tails の申告と流し先を組み直す。 */
+  function rebuildOscTailSpecs(response) {
+    const cells = Array.isArray(response.cells) ? response.cells : [];
+    oscTailSpecs = [];
+    oscTailTargets.clear();
+    for (const cell of cells) {
+      const key = cell ? cell.instance_key : null;
+      if (!Array.isArray(key) || key.length !== 4 || !cell.value_series) {
+        continue;   // 宣言の無いセル（旧応答・積算セル等）は流さない＝従来の 1s 表示のまま。
+      }
+      const instanceId = key.join('\u0000');
+      if (oscTailTargets.has(instanceId)) {
+        continue;
+      }
+      let params;
+      try {
+        params = JSON.parse(key[2]);   // params_key は json.dumps＝JSON として復元できる（契約）。
+      } catch {
+        continue;
+      }
+      if (!params || typeof params !== 'object') {
+        continue;
+      }
+      oscTailSpecs.push({
+        instanceId,
+        indicatorId: key[0],
+        variant: key[1],
+        // 計算足はセルの列（ISSUE-274 の MTF override と同じ規約で params.timeframe に載せる）。
+        params: { ...params, timeframe: key[3] },
+      });
+      oscTailTargets.set(instanceId, {
+        indicatorId: cell.indicator_id,
+        timeframe: cell.timeframe,
+        valueSeries: cell.value_series,
+      });
+    }
+  }
 
   /**
    * 応答を両表へ配る（描画は閉形式・ここで計算を発行しない）。
@@ -205,6 +255,8 @@ export async function setupDashboardDisplay({
         sheetState = response.state;
       }
       lastFullResponse = response;
+      // 第 2 表のなめらか再生: セルの構成が変わりうるのは完全応答のときだけ。
+      rebuildOscTailSpecs(response);
     }
     // 省リソース段階 1: 内容が直前の描画と同一なら第 1・第 2 表を作り直さない
     //   （毎秒の全再構築は内容不変時にはまるごと浪費・依頼者指摘 2026-08-30）。
@@ -282,6 +334,8 @@ export async function setupDashboardDisplay({
     sheetState = null;
     lastFullResponse = null;
     lastRenderedKey = null;
+    oscTailSpecs = [];
+    oscTailTargets.clear();
 
     if (!client) {
       present({ ok: false, error: { type: 'TransportUnavailable', message: 'この環境では通信できません' } });
@@ -332,6 +386,28 @@ export async function setupDashboardDisplay({
           loadFormingBar: feed.loadFormingBar,
           datasetRef: DATASET_REF,
           getTimeframe: () => CHART_TIMEFRAME,
+          // 第 2 表のなめらか再生（依頼者指示 2026-08-31: ライブチャートと同じ更新粒度）。
+          //   ISSUE-250 Phase 1 の同梱経路そのもの: poll でセルの instance を申告し、
+          //   各 tick 時点の末尾値（サーバ計算）を tick 適用と同一同期ブロックで流す。
+          //   フロントは数値を再計算しない（値の唯一源はサーバの tails）。
+          getComputeSpecs: () => oscTailSpecs,
+          getLimit: () => OSC_TAILS_LIMIT,
+          applyFormingTails: (tails) => {
+            if (!enabled || !tails) {
+              return;
+            }
+            for (const [instanceId, seriesMap] of Object.entries(tails)) {
+              const target = oscTailTargets.get(instanceId);
+              if (!target || !seriesMap) {
+                continue;
+              }
+              const value = seriesMap[target.valueSeries];
+              if (value === undefined) {
+                continue;
+              }
+              oscillatorView.updateCellValue(target.indicatorId, target.timeframe, value);
+            }
+          },
           // タイマは**必ずラップして**渡す。player は `this._setInterval(...)` とメソッド形で
           //   呼ぶため、素の globalThis.setInterval を渡すと this が Window でなくなり
           //   "Illegal invocation" で start が黙って死ぬ（実測 2026-08-31。live 側は bootstrap が

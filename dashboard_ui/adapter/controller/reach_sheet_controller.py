@@ -565,6 +565,12 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
     return {
         "indicator_id": cell.indicator_id,
         "timeframe": cell.timeframe,
+        # なめらか再生（依頼者指示 2026-08-31: 第 2 表もライブチャート粒度）用の宣言。
+        #   instance_key はこのセルの計算 spec をフロントが `/live_ticks` の specs へ
+        #   組み直すための識別子（params_key は json.dumps＝JSON として復元できる）。
+        #   value_series は tails のどの系列をこのセルの現在値へ流すか。
+        "instance_key": None if cell.instance_key is None else list(cell.instance_key),
+        "value_series": cell.value_series,
         "value": None if cell.value is None else float(cell.value),
         "p": None if cell.p is None else float(cell.p),
         "tail_unscaled": bool(cell.tail_unscaled),

@@ -90,6 +90,9 @@ export function createOscillatorSheetView({ doc, now } = {}) {
   let root = null;
   let tbody = null;
   let message = null;
+  /** 現在値のその場書き換え先（`indicator\u0000timeframe` → span・なめらか再生用）。
+   *  表の再構築（render）で作り直す。 */
+  const valueEls = new Map();
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
@@ -142,7 +145,11 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       // 色を置かないことを**明示**する（無言で 0.5 を埋めない・§5.5.5 と同じ規約）。
       td.style.backgroundColor = colorForP(null);
       td.title = cell && cell.unavailable_reason ? String(cell.unavailable_reason) : '水準なし';
-      td.appendChild(el('span', { className: 'dash-osc-value', textContent: cell ? formatValue(cell.value) : NOT_APPLICABLE }));
+      const noLevelValue = el('span', { className: 'dash-osc-value', textContent: cell ? formatValue(cell.value) : NOT_APPLICABLE });
+      td.appendChild(noLevelValue);
+      if (cell) {
+        valueEls.set(`${indicatorId}\u0000${timeframe}`, noLevelValue);
+      }
       td.appendChild(el('span', { className: 'dash-osc-no-level', textContent: '水準なし' }));
       return td;
     }
@@ -154,7 +161,9 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     } else {
       td.style.backgroundColor = colorForP(cell.p);
     }
-    td.appendChild(el('span', { className: 'dash-osc-value', textContent: formatValue(cell.value) }));
+    const valueEl = el('span', { className: 'dash-osc-value', textContent: formatValue(cell.value) });
+    td.appendChild(valueEl);
+    valueEls.set(`${indicatorId}\u0000${timeframe}`, valueEl);
     // 分位水準に達したときの価格（依頼者指示 2026-08-30・上下 2 値は同日承認。
     //   §5.5 の閉形式逆写像＋往復検証）。逆算できない側は null＝出さない（発明しない）。
     //   どの分位かは**名前**（q95 / q5・第 1 表の水準列と同じ語彙）で示す
@@ -198,6 +207,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       return;
     }
     message.textContent = '';
+    valueEls.clear();   // 行を作り直すので書き換え先も張り直す。
 
     const cells = Array.isArray(response.cells) ? response.cells : [];
     // 行の並びは**応答での初出順**（サーバ側が単一ソース。表示側で並べ替えない）。
@@ -220,6 +230,25 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     }
   }
 
+  /**
+   * なめらか再生の 1 tick ぶんの現在値をセルへ流す（依頼者指示 2026-08-31: 第 2 表も
+   * ライブチャートと同じ更新粒度）。値は `/live_ticks` の tails（サーバ計算）そのもの＝
+   * **フロントは数値を再計算しない**（arch-spec §9）。触るのは現在値の文字だけで、
+   * 配色（p）・到達時刻・水準価格は従来どおり 1s の応答描画が持ち主。
+   * 同値・未知セル・非有限は何も触らない（作ってから捨てる仕事を生まない・絶対命令 §4.1）。
+   */
+  function updateCellValue(indicatorId, timeframe, value) {
+    const target = valueEls.get(`${indicatorId}\u0000${timeframe}`);
+    if (!target) {
+      return;
+    }
+    const text = formatValue(value);
+    if (text === NOT_APPLICABLE || target.textContent === text) {
+      return;
+    }
+    target.textContent = text;
+  }
+
   function unmount() {
     if (root && root.parentNode && typeof root.parentNode.removeChild === 'function') {
       root.parentNode.removeChild(root);
@@ -227,7 +256,8 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     root = null;
     tbody = null;
     message = null;
+    valueEls.clear();
   }
 
-  return { mount, render, unmount };
+  return { mount, render, unmount, updateCellValue };
 }

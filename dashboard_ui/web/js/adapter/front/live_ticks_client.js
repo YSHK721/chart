@@ -11,8 +11,8 @@
 //
 //   クエリと応答の契約は live フロントの参照実装
 //   （indicator_ui composition_root_front.js の fetchLiveTicks / fetchFormingBar）と同一。
-//   ダッシュボードは指標末尾値（specs / tails / limit）を使わないため、その申告は**付けない**
-//   （申告なし＝サーバ応答も従来 byte・参照実装が定める既定経路そのもの）。
+//   指標末尾値の申告（specs / limit / tailsWithinMs）も参照実装と同じクエリで付ける
+//   （第 2 表のなめらか再生・依頼者指示 2026-08-31。specs 無しの要求は従来 byte のまま）。
 //
 // 失敗は null（player は次 poll で回復する・参照実装と同じ規約）。timeoutMs は返らない要求で
 //   poll を恒久停止させないための打ち切り（ISSUE-263 と同じ理由。player が req に載せてくる）。
@@ -46,6 +46,15 @@ export function createLiveTicksFeed({ fetch: fetchFn, apiPrefix } = {}) {
       }
       if (req && req.datasetRef) {
         url += `&datasetRef=${encodeURIComponent(req.datasetRef)}`;
+      }
+      if (req && req.specs && req.specs.length) {
+        url += `&specs=${encodeURIComponent(JSON.stringify(req.specs))}`;
+        if (req.limit !== undefined && req.limit !== null) {
+          url += `&limit=${encodeURIComponent(req.limit)}`;
+        }
+        if (req.tailsWithinMs !== undefined && req.tailsWithinMs !== null) {
+          url += `&tailsWithinMs=${encodeURIComponent(req.tailsWithinMs)}`;
+        }
       }
       const resp = controller ? await fetchFn(url, { signal: controller.signal })
         : await fetchFn(url);
