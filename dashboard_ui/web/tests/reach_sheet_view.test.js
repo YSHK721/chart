@@ -559,21 +559,31 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     return flatten(row).find((el) => el.classList.contains('dash-ladder-next-cell'));
   };
 
-  test('a_mark_that_moves_to_another_row_glows_on_the_destination_cell', () => {
+  test('a_mark_move_glows_the_whole_destination_row_after_the_playback_delay', () => {
+    // 依頼者指示 2026-08-31:「移動した価格帯の行全体に色を乗せてフェードアウト」。
+    //   表示は 12 秒遅延の再生系列なので、発光も検出＋12 秒で点く（同期しないと画面上の
+    //   跨ぎより 12 秒早く点いて、跨ぐ頃には消えている——実測で体感できなかった原因）。
     let clockAt = 1000;
     const doc = fakeDoc();
     const host = fakeEl('div');
     const view = createReachSheetView({ doc, now: () => clockAt });
     view.mount(host);
     view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
-    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
-    // Act: 印が B へ移る。
+    // Act: 印が B へ移る（検出時刻 1003 → 表示時刻 1015）。
     clockAt = 1003;
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
-    const dest = nextCellOf(host, 'B');
-    assert.equal(dest.classList.contains('dash-ladder-next-moved-h2'), true);
-    assert.equal(dest.style.animationDelay, '-0s');
-    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+    const rowOfB = () => rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
+      && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'B');
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), false);   // まだ点かない。
+    // Act: 表示時刻に達した tick 適用の契機で行全体が点く（render を待たない）。
+    clockAt = 1016;
+    view.updateCurrentPrice(65756.0);   // 再生開始（externalPrice のシード）＝tick 契機。
+    const glowing = rowOfB();
+    assert.equal(glowing.classList.contains('dash-ladder-row-moved-h2'), true);
+    assert.equal(glowing.style['--row-glow-delay'], '-1s');   // 表示時刻から 1 秒経過を引き継ぐ。
+    const rowOfA = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
+      && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'A');
+    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved-h2'), false);
   });
 
   test('a_rebuild_during_the_glow_resumes_the_fade_instead_of_restarting_it', () => {
@@ -584,17 +594,18 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     view.mount(host);
     view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
     clockAt = 1003;
-    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
-    // Act: 3 秒後に別の内容変化で再構築 → 経過 3 秒を負の delay で引き継ぐ。
-    clockAt = 1006;
+    view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));   // 表示時刻 1015。
+    // Act: 表示中（1018）に別の内容変化で再構築 → 経過 3 秒を負の delay で引き継ぐ。
+    clockAt = 1018;
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2, current_price: 65801.0 }));
-    const dest = nextCellOf(host, 'B');
-    assert.equal(dest.classList.contains('dash-ladder-next-moved-h2'), true);
-    assert.equal(dest.style.animationDelay, '-3s');
-    // Act: 8 秒経過後は乗せ直さない（終わった効果の再適用＝再点滅を作らない）。
-    clockAt = 1011;
+    const rowOfB = () => rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
+      && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'B');
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), true);
+    assert.equal(rowOfB().style['--row-glow-delay'], '-3s');
+    // Act: 表示時刻＋8 秒（1023）以降は乗せ直さない（終わった効果の再適用＝再点滅を作らない）。
+    clockAt = 1024;
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
-    assert.equal(nextCellOf(host, 'B').classList.contains('dash-ladder-next-moved-h2'), false);
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), false);
   });
 
   test('the_first_response_and_a_stationary_mark_do_not_glow', () => {
@@ -605,20 +616,25 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     const view = createReachSheetView({ doc, now: () => clockAt });
     view.mount(host);
     view.render(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
-    clockAt = 1005;
+    clockAt = 1020;
     view.render(sheetResponse({ rows: markedRows('A'), current_index: 2, current_price: 65801.0 }));
-    assert.equal(nextCellOf(host, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+    const rowOfA = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
+      && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'A');
+    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved-h2'), false);
     const { host: noClock } = renderInto(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
-    assert.equal(nextCellOf(noClock, 'A').classList.contains('dash-ladder-next-moved-h2'), false);
+    const bare = rowsOf(noClock).find((r) => !r.classList.contains('dash-ladder-current'));
+    assert.equal(bare.classList.contains('dash-ladder-row-moved-h2'), false);
   });
 
-  test('the_next_move_fade_lives_in_css_as_an_eight_second_animation', async () => {
-    // 時間の唯一源は CSS（8s）。3 地平とも同じ長さで、View 側の賞味期限と一致させる。
+  test('the_row_glow_lives_in_css_as_an_eight_second_animation_without_fill', async () => {
+    // 時間の唯一源は CSS（8s）。fill を持たない（終端＝自然状態へ戻る。fill forwards だと
+    //   box-shadow が透明のまま固定され…はしないが、背景系へ流用されたときの事故防止）。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
     for (const n of [1, 2, 3]) {
-      assert.match(css, new RegExp(`animation:\\s*dash-next-fade-h${n}\\s+8s`));
+      assert.match(css, new RegExp(`animation:\\s*dash-row-glow-h${n}\\s+8s`));
+      assert.doesNotMatch(css, new RegExp(`dash-row-glow-h${n}\\s+8s[^;]*forwards`));
     }
   });
 

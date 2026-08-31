@@ -473,36 +473,46 @@
   color: var(--bg);
 }
 
-/* 次のターゲット印の移動先の残光（依頼者承認 2026-08-31: 移動が視認できない課題への対策）。
-   移動先セルへ地平のバッジ色を透過へ薄めて乗せ、8 秒でフェードアウトする（時間の唯一源は
-   ここ。View 側の同名定数 8 は「終わった効果を再適用しない」ための賞味期限で、再描画は
-   負の animation-delay で経過を引き継ぐ）。セルの地に素の文字は無く（文字はバッジの中＝
-   バッジ自身の地の上）、対比の組は増えない。 */
-.dash-ladder-next-moved-h1 {
-  animation: dash-next-fade-h1 8s ease-out forwards;
+/* 次のターゲット印の移動先の残光（依頼者承認 2026-08-31 →「移動した価格帯の**行全体**に
+   色を乗せてフェードアウトせよ」で行全体へ変更）。移動先の行の全セルへ地平のバッジ色を
+   inset の box-shadow で乗せ、8 秒でフェードアウトする（時間の唯一源はここ。View 側の
+   同名定数 8 は「終わった効果を再適用しない」ための賞味期限）。
+   - box-shadow を使う理由: 行のセルは自分の背景（ヒート帯・水準色・到達帯）を持つ。
+     background-color をアニメで奪うと fill/終端で元の色が壊れるが、inset shadow は
+     **上に乗るだけ**で、終端（transparent）＝自然状態へ戻る（fill も要らない）。
+   - 経過の引き継ぎは --row-glow-delay（View が行へ負値で置き、セルが継承する）。
+   - 発光は表示系列（12 秒遅延の再生）に同期して点く（View の NEXT_MOVE_DELAY_SECONDS）。 */
+.dash-ladder-row-moved-h1 th,
+.dash-ladder-row-moved-h1 td {
+  animation: dash-row-glow-h1 8s ease-out;
+  animation-delay: var(--row-glow-delay, 0s);
 }
 
-.dash-ladder-next-moved-h2 {
-  animation: dash-next-fade-h2 8s ease-out forwards;
+.dash-ladder-row-moved-h2 th,
+.dash-ladder-row-moved-h2 td {
+  animation: dash-row-glow-h2 8s ease-out;
+  animation-delay: var(--row-glow-delay, 0s);
 }
 
-.dash-ladder-next-moved-h3 {
-  animation: dash-next-fade-h3 8s ease-out forwards;
+.dash-ladder-row-moved-h3 th,
+.dash-ladder-row-moved-h3 td {
+  animation: dash-row-glow-h3 8s ease-out;
+  animation-delay: var(--row-glow-delay, 0s);
 }
 
-@keyframes dash-next-fade-h1 {
-  from { background-color: color-mix(in srgb, var(--muted) 45%, transparent); }
-  to { background-color: transparent; }
+@keyframes dash-row-glow-h1 {
+  from { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--muted) 55%, transparent); }
+  to { box-shadow: inset 0 0 0 999px transparent; }
 }
 
-@keyframes dash-next-fade-h2 {
-  from { background-color: color-mix(in srgb, var(--cyan) 45%, transparent); }
-  to { background-color: transparent; }
+@keyframes dash-row-glow-h2 {
+  from { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--cyan) 55%, transparent); }
+  to { box-shadow: inset 0 0 0 999px transparent; }
 }
 
-@keyframes dash-next-fade-h3 {
-  from { background-color: color-mix(in srgb, var(--ink) 45%, transparent); }
-  to { background-color: transparent; }
+@keyframes dash-row-glow-h3 {
+  from { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--amber) 55%, transparent); }
+  to { box-shadow: inset 0 0 0 999px transparent; }
 }
 
 /* 価格セル: 地平 3 段の帯（色は heat_scale.js が入れる・規約 2）の上に価格の文字を置く。 */

@@ -31,9 +31,9 @@ import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
-  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1', moved: 'dash-ladder-next-moved-h1' },
-  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2', moved: 'dash-ladder-next-moved-h2' },
-  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3', moved: 'dash-ladder-next-moved-h3' },
+  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1', moved: 'dash-ladder-row-moved-h1' },
+  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2', moved: 'dash-ladder-row-moved-h2' },
+  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3', moved: 'dash-ladder-row-moved-h3' },
 ]);
 
 /** 地平キーの集合（照合用）。 */
@@ -82,12 +82,20 @@ const COLUMNS = Object.freeze([
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
 const NAMING_CELLS = 4;
 
-/** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31: 移動が視認できない課題への対策）。
- *  印（horizon_marks）の持ち主行が前回応答から変わったとき、**移動先**のセルへ地平色を乗せ、
- *  この秒数かけてフェードアウトする。視覚のフェードの実体は CSS（dash-next-fade-h1〜h3・
- *  同じ 8s）で、本定数は「効果がもう終わった印」を再適用しないための賞味期限。再描画では
- *  負の animation-delay で経過を引き継ぐ（途切れ・再点滅を作らない）。 */
+/** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31 →「移動した価格帯の**行全体**に
+ *  色を乗せてフェードアウトせよ」で行全体へ変更）。印（horizon_marks）の持ち主行が前回
+ *  応答から変わったとき、**移動先の行全体**へ地平色を乗せ、この秒数かけてフェードアウト
+ *  する。視覚のフェードの実体は CSS（dash-row-glow-h1〜h3・同じ 8s）で、本定数は
+ *  「効果がもう終わった印」を再適用しないための賞味期限。再描画では負の animation-delay
+ *  （--row-glow-delay）で経過を引き継ぐ（途切れ・再点滅を作らない）。 */
 const NEXT_MOVE_FADE_SECONDS = 8;
+
+/** 発光の適用を遅らせる秒数。印の移動はサーバの**無遅延**価格で検出されるが、版面の表示
+ *  （現在値・水準・チャート）は LiveTickPlayer の **12 秒固定遅延**の再生系列に統一されて
+ *  いる（依頼者指示 2026-08-31）。同期させないと「画面上で価格が跨ぐ 12 秒前」に点灯して
+ *  跨ぐ頃には消えている（実測 2026-08-31: 体感できない）。値の出所は参照実装
+ *  live_tick_player.js の DELAY_MS（12000ms・非公開 const のため写す。変えるときは両方）。 */
+const NEXT_MOVE_DELAY_SECONDS = 12;
 
 /** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
  *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
@@ -201,7 +209,8 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   let builtPriceTextEl = null;
   /** 次のターゲット印の前回の持ち主（markKey `horizon:side` → rowKey）。null＝初回。 */
   let lastMarkOwners = null;
-  /** 移動した印の記録（markKey → {at: 移動時刻 unix 秒, owner: 移動先 rowKey}）。 */
+  /** 移動した印の記録（markKey → {at: 発光を**表示する**時刻 unix 秒＝検出＋12s,
+   *  owner: 移動先 rowKey, applied: 現在の版面へ適用済みか}）。 */
   const markMovedAt = new Map();
   /** 描画時点の時計（unix 秒・render の冒頭で 1 回だけ取る）。null＝時計なし。 */
   let renderNowSec = null;
@@ -431,43 +440,70 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       for (const [mark, owner] of owners) {
         const before = lastMarkOwners.get(mark);
         if (before !== undefined && before !== owner) {
-          markMovedAt.set(mark, { at: renderNowSec, owner });
+          // 表示は 12 秒遅延の再生系列なので、発光も同じだけ遅らせて予約する（同期）。
+          markMovedAt.set(mark, {
+            at: renderNowSec + NEXT_MOVE_DELAY_SECONDS, owner, applied: false,
+          });
         }
       }
     }
     lastMarkOwners = owners;
-    for (const [mark, entry] of markMovedAt) {
-      if (renderNowSec === null || renderNowSec - entry.at >= NEXT_MOVE_FADE_SECONDS) {
-        markMovedAt.delete(mark);   // 終わった効果は再適用しない（賞味期限）。
-      }
+    // 表を作り直すと発光のクラスも消えるので、表示中の予約は張り直し対象へ戻す
+    //   （負の delay で残り時間から続く＝再点滅にはならない）。
+    for (const entry of markMovedAt.values()) {
+      entry.applied = false;
+    }
+    if (renderNowSec === null) {
+      markMovedAt.clear();   // 時計が無い環境では効果ごと出さない（消えない残光を発明しない）。
     }
   }
 
-  /** 移動先セルの残光を乗せる。複数の印が同時に来た行は新しい方の地平色を採る。 */
-  function applyNextMoveGlow(cell, row) {
-    if (renderNowSec === null || markMovedAt.size === 0) {
+  /** 予約済みの行発光のうち、表示時刻に達したものを可視行へ乗せる（render 直後と
+   *  なめらか再生の tick 適用時の両方から呼ばれる＝render の合間でも点灯する）。 */
+  function applyDueRowGlows() {
+    if (markMovedAt.size === 0 || levelRowRefs.length === 0) {
       return;
     }
-    const rowKey = rowKeyOf(row);
-    const side = Number(row.distance) >= 0 ? 'up' : 'down';
-    let hit = null;
-    for (const horizon of HORIZONS) {
-      const entry = markMovedAt.get(`${horizon.key}:${side}`);
-      if (entry && entry.owner === rowKey && (hit === null || entry.at > hit.at)) {
-        hit = { horizon, at: entry.at };
+    const clockNow = typeof now === 'function' ? now() : null;
+    if (clockNow === null) {
+      return;
+    }
+    for (const [mark, entry] of markMovedAt) {
+      if (clockNow - entry.at >= NEXT_MOVE_FADE_SECONDS) {
+        markMovedAt.delete(mark);   // 終わった効果は再適用しない（賞味期限）。
+        continue;
       }
+      if (entry.applied || clockNow < entry.at) {
+        continue;   // 適用済み・またはまだ表示時刻（検出＋12s）に達していない。
+      }
+      const horizon = HORIZONS.find((h) => mark.startsWith(`${h.key}:`));
+      if (!horizon) {
+        markMovedAt.delete(mark);
+        continue;
+      }
+      const ref = levelRowRefs.find((r) => r.rowKey === entry.owner);
+      if (!ref) {
+        continue;   // 窓の外＝光らせる先が無い（記録は寿命まで保つ）。
+      }
+      startRowGlow(ref.tr, horizon, clockNow - entry.at);
+      entry.applied = true;
     }
-    if (hit === null) {
-      return;
+  }
+
+  /** 行全体の残光を（再）始動する。経過を負の delay（--row-glow-delay・セルへ継承）で
+   *  引き継ぐ＝再描画してもフェードは元の残り時間から続く。 */
+  function startRowGlow(tr, horizon, elapsed) {
+    tr.classList.remove(horizon.moved);
+    if (typeof tr.offsetWidth === 'number') {
+      void tr.offsetWidth;   // 実 DOM でアニメを再始動させる（fake DOM では最終状態のみ意味）。
     }
-    cell.classList.add(hit.horizon.moved);
-    // 経過を負の delay で引き継ぐ＝再描画してもフェードは元の残り時間から続く。
-    const elapsed = Math.max(0, renderNowSec - hit.at);
-    if (typeof cell.style.setProperty === 'function') {
-      cell.style.setProperty('animation-delay', `-${elapsed}s`);
+    const delay = `-${Math.max(0, elapsed)}s`;
+    if (typeof tr.style.setProperty === 'function') {
+      tr.style.setProperty('--row-glow-delay', delay);
     } else {
-      cell.style.animationDelay = `-${elapsed}s`;
+      tr.style['--row-glow-delay'] = delay;
     }
+    tr.classList.add(horizon.moved);
   }
 
   /** 価格セル（3 分割の背景＋価格の文字）。差は独立列（依頼者指示 2026-08-30）。 */
@@ -519,7 +555,6 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     // 次のターゲット（地平の印）→ 距離 の順（依頼者指示 2026-08-30「順番を逆に」）。
     const nextCell = el('td', { className: 'dash-ladder-next-cell' });
     nextCell.appendChild(buildMarks(row.horizon_marks, row.distance));
-    applyNextMoveGlow(nextCell, row);
     tr.appendChild(nextCell);
 
     const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
@@ -544,6 +579,8 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     if (fullIndex !== undefined) {
       levelRowRefs.push({
         fullIndex,
+        rowKey: rowKeyOf(row),
+        tr,
         priceEl: builtPriceTextEl,
         distanceEl: distanceTextEl,
         gapEl: gapCell,
@@ -741,6 +778,9 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
    * フロントが統計や並びを再計算するわけではない（並び・地平・p は 1s の応答描画が持ち主）。
    */
   function refreshSmoothNumbers() {
+    // 発光の表示時刻（検出＋12s）は render の合間に来ることが多い。tick 適用（100ms 粒度）を
+    //   契機に予約を確認する＝発光が次の内容変化を待たされない。
+    applyDueRowGlows();
     if (externalPrice === null) {
       return;
     }
@@ -871,6 +911,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     if (currentAt >= visible.length) {
       tbody.appendChild(buildCurrentRow(response.current_price));
     }
+    applyDueRowGlows();   // 予約済みの行発光を新しい版面へ乗せ直す（負 delay で継続）。
     renderWindowNote(rows.length, radius, start, rows.length - end);
     // 絞り込みで 1 本も残らないことは正当な状態だが、無言の空にはしない（掲示する）。
     if (rows.length === 0 && allRows.length > 0) {
