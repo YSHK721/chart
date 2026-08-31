@@ -162,7 +162,6 @@
    それに追随して全列が意味なく太る。width:0 で内在幅の寄与を消し、min-width:100% で
    確定した列幅いっぱいへ戻す（文言は削らない——折り返して全文表示される）。 */
 .dash-ladder .dash-sheet-message,
-.dash-ladder .dash-panel-lead,
 .dash-ladder .dash-legend {
   width: 0;
   min-width: 100%;
@@ -273,13 +272,6 @@
 }
 
 /* スタンプ行（「水準 1 本 = 1 行」等）は依頼者指示 2026-08-30 で廃止（規則ごと撤去）。 */
-
-.dash-panel-lead {
-  margin: 0;
-  max-width: 74ch;
-  font-size: 12.5px;
-  color: var(--ink2);
-}
 
 /* 走査域。sticky な表頭と現在値行はこの器を基準に貼り付く。 */
 .dash-scroll {

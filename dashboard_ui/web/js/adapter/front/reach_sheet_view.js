@@ -229,10 +229,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '価格ラダー' }));
-    head.appendChild(el('p', {
-      className: 'dash-panel-lead',
-      textContent: '水準を束ねず 1 本 1 行で価格降順に並べる。時間足は比較の軸ではなく各行の属性。',
-    }));
+    // リード文（説明の段落）は出さない（依頼者指示 2026-08-31: 削除・第 2 表と同じ）。
     // 期間と時間足は 1 行に並べる（依頼者指示 2026-08-30。境界の余白は CSS の
     //   .dash-ladder-selectors の gap が持つ＝両グループの内側の間隔より一段広い）。
     const selectors = el('div', { className: 'dash-ladder-selectors' });

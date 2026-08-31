@@ -128,10 +128,7 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     const panel = el('div', { className: 'dash-panel' });
     const head = el('div', { className: 'dash-panel-head' });
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '各時間足チャート' }));
-    head.appendChild(el('p', {
-      className: 'dash-panel-lead',
-      textContent: 'その時間足の水準（価格ラダーと同じ応答）を価格スケール上のラベルで示す。線は引かない。',
-    }));
+    // リード文（説明の段落）は出さない（依頼者指示 2026-08-31: 削除・第 2 表と同じ）。
     panel.appendChild(head);
 
     slots = new Map();
