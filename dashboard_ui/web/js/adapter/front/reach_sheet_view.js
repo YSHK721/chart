@@ -87,11 +87,11 @@ const NAMING_CELLS = 4;
  *  濃度 = clamp(|Δ価格| / TICK_FULL_POINTS, TICK_MIN_STRENGTH%, 100%)。
  *  TICK_FULL_POINTS は「これ以上で最濃」となる 1 更新あたりの動き（JP225 の 1 秒ティックの
  *  大きめの動き ≈ 20 点を基準に採った）。下限は「動いたことが見える」最小濃度。
- *  減衰は描画周期（1s）ごとに TICK_DECAY 倍で、TICK_CUTOFF 未満で 0（無色）へ戻る。 */
+ *  フェードアウトの時間は **1 秒**（依頼者指示 2026-08-31。実体は dashboard.css の
+ *  dash-tick-fade アニメーション＝滑らかな減衰）。View 側は次の描画周期で効果を落とすだけ
+ *  （多段の減衰は持たない——時間の唯一源を CSS と 2 つにしない）。 */
 const TICK_FULL_POINTS = 20;
 const TICK_MIN_STRENGTH = 25;
-const TICK_DECAY = 0.5;
-const TICK_CUTOFF = 5;
 
 /** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
  *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
@@ -164,7 +164,7 @@ function isReached(distance) {
  *   （写しを持たない）。無ければ本数だけを出す（注記の欠落で版面は壊さない）。
  * @returns {{mount: Function, render: Function, unmount: Function}}
  */
-export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
+export function createReachSheetView({ doc, periodAnnotator = null, now = null } = {}) {
   let root = null;
   let tbody = null;
   let message = null;
@@ -193,6 +193,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
    *  ＝フェードアウト（依頼者指示 2026-08-30。行は毎描画作り直されるため、CSS transition
    *  ではなく描画周期の減衰で消えていく）。0 で無色（従来の --ink 反転）へ戻る。 */
   let tickStrength = 0;
+  /** 現在値が最後に変わった時刻（unix 秒・注入時計で観測）。null＝時計なし or 未観測。 */
+  let lastUpdateAt = null;
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
@@ -564,12 +566,21 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       textContent: formatPrice(currentPrice),
     }));
     tr.appendChild(priceCell);
-    tr.appendChild(el('td', {
+    const labelCell = el('td', {
       // 差＋到達時間＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS
       //   側とここの定数 3（差・到達時間・時間足）を数え直す）。ラベル文は置かない（上記）。
       colSpan: 3 + NAMING_CELLS,
       dataset: { cell: 'label' },
-    }));
+    });
+    if (lastUpdateAt !== null) {
+      // 最終更新日時（依頼者指示 2026-08-31）。表記は到達時間と同じ唯一源（UTC）。
+      labelCell.appendChild(el('span', {
+        className: 'dash-ladder-current-update',
+        textContent: `UPDATE:${formatReachTimestamp(lastUpdateAt)}`,
+        dataset: { cell: 'update' },
+      }));
+    }
+    tr.appendChild(labelCell);
     return tr;
   }
 
@@ -603,10 +614,16 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       tickStrength = Math.min(100,
         Math.max(TICK_MIN_STRENGTH, (magnitude / TICK_FULL_POINTS) * 100));
     } else {
-      tickStrength *= TICK_DECAY;
-      if (tickStrength < TICK_CUTOFF) tickStrength = 0;
+      // 更新の無い次の描画周期で効果を落とす。1 秒の視覚的フェードは CSS が済ませている
+      //   （描画周期も 1s なので、ここで多段に減衰させると 1 秒を超えて残る）。
+      tickStrength = 0;
     }
     if (Number.isFinite(currentPrice)) {
+      if (lastCurrentPrice === null || currentPrice !== lastCurrentPrice) {
+        // 最終更新日時（依頼者指示 2026-08-31: 現在値行へ UPDATE:… を追記）。時計は注入
+        //   （View は時計を持たない規約のまま）。初回の観測も「更新」として記録する。
+        lastUpdateAt = typeof now === 'function' ? now() : null;
+      }
       lastCurrentPrice = currentPrice;
     }
     const allRows = Array.isArray(response.rows) ? response.rows : [];
@@ -719,6 +736,8 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
     fittedRadius = null;
     lastCurrentPrice = null;
     currentDirection = null;
+    tickStrength = 0;
+    lastUpdateAt = null;
   }
 
   /** まだ描き切っていない視覚効果が残っているか（ティック効果のフェード中など）。

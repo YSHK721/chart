@@ -363,6 +363,46 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     assert.equal(fullServed, 2);
   });
 
+  test('an_unchanged_reply_still_clears_a_pending_tick_effect', async () => {
+    // ティックの直後にサーバが unchanged を返し続けると、効果のクラスが凍結し、後の無関係な
+    //   内容変化で古い発光が再生される（実測 2026-08-31: up クラスが 20 秒残存）。unchanged
+    //   でも残効果があるときだけは直近の完全応答で描き直して落とす。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    let phase = 'first';
+    const fetchFn = (url, init) => {
+      const responses = {
+        first: { ...sheetResponse({ rows: [ladderRow()], current_index: 1, cells: [oscCell()], current_price: 65756.0 }), state: 's1' },
+        moved: { ...sheetResponse({ rows: [ladderRow()], current_index: 1, cells: [oscCell()], current_price: 65758.0 }), state: 's2' },
+        idle: { ok: true, unchanged: true, state: 's2' },
+      };
+      const body = responses[phase];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    };
+    let nowMs = 0;
+    const handle = await setupDashboardDisplay({
+      doc, host, templates: readOnlyTemplates(2), fetch: fetchFn, apiPrefix: '/dashboard',
+      now: () => nowMs, schedule: () => () => {}, barCloseTimeOf: () => 100,
+    });
+    await handle.enable();
+    // Act: 価格が動く → 効果が付く。
+    phase = 'moved';
+    nowMs += 1_100;
+    await handle.refresh();
+    const currentOf = () => flatten(host).find((el) => el.classList.contains('dash-ladder-current'));
+    assert.equal(currentOf().classList.contains('dash-ladder-current-up'), true);
+    // Act: 以後は unchanged。次の契機で効果は落ちる（凍結しない）。
+    phase = 'idle';
+    nowMs += 1_100;
+    await handle.refresh();
+    assert.equal(currentOf().classList.contains('dash-ladder-current-up'), false);
+    // さらに unchanged が続いても版面はもう作り直されない（段階 2 の節約は保つ）。
+    const row = currentOf();
+    nowMs += 1_100;
+    await handle.refresh();
+    assert.equal(currentOf(), row);
+  });
+
   test('no_request_is_issued_after_disable', async () => {
     // モードを出た後も dashboard core を叩き続けると、live のプールを奪う。
     const h = harness();

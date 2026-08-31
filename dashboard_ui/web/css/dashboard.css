@@ -634,22 +634,35 @@
 }
 
 /* ティック効果（依頼者指示 2026-08-30）: 更新の瞬間に上昇＝teal 系・下降＝red 系で光り、
-   描画周期ごとに減衰して消える（フェードアウト）。濃度（更新の大きさ）は View が
-   --tick-strength（0〜100）で渡し、ここで基調の --ink と混ぜる。文字は --bg のまま
-   ＝反転の読み方を変えない（端点はどちらも SURFACES 登録済みの組で、中間の混色は
-   両端の間の明度になるため対比は端点の下限を下回らない）。 */
+   **1 秒**かけて基調へ戻る（フェードアウトの時間＝依頼者指示 2026-08-31。時間の唯一源は
+   下の dash-tick-fade。View は次の描画周期で効果を落とすだけで多段の減衰を持たない）。
+   濃度（更新の大きさ）は View が --tick-strength（0〜100）で渡し、ここで基調の --ink と
+   混ぜる。文字は --bg のまま＝反転の読み方を変えない（端点はどちらも SURFACES 登録済みの
+   組で、中間の混色は両端の間の明度になるため対比は端点の下限を下回らない）。 */
 .dash-ladder-current-up th,
 .dash-ladder-current-up td {
-  background: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  background-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
   border-top-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
   border-bottom-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  animation: dash-tick-fade 1s ease-out forwards;
 }
 
 .dash-ladder-current-down th,
 .dash-ladder-current-down td {
-  background: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  background-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
   border-top-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
   border-bottom-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  animation: dash-tick-fade 1s ease-out forwards;
+}
+
+/* 開始色は各セルの宣言（上のティック混色）、終端は基調 --ink＝無色の現在値行。
+   ブラウザは 2 つの計算済み色の間を補間するので、混色の割合そのものは動かさない。 */
+@keyframes dash-tick-fade {
+  to {
+    background-color: var(--ink);
+    border-top-color: var(--ink);
+    border-bottom-color: var(--ink);
+  }
 }
 
 .dash-ladder-current-price {
@@ -657,6 +670,16 @@
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0;
+  color: var(--bg);
+}
+
+/* 最終更新日時（依頼者指示 2026-08-31: 現在値行へ UPDATE:yyyy/mm/dd hh:mm:ss）。
+   文字は行の反転帯と同じ --bg（薄さで階層を作らない・規約 4）。大きさだけ副次に。 */
+.dash-ladder-current-update {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: .04em;
+  white-space: nowrap;
   color: var(--bg);
 }
 

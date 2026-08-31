@@ -501,19 +501,50 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-down'), true);
     assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-    // Act: 更新が止まると減衰し、やがて無色（クラスなし）へ戻る＝フェードアウト。
-    const strengths = [];
-    for (let i = 0; i < 6; i += 1) {
-      view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
-      row = currentRowOf(host);
-      strengths.push(row.classList.contains('dash-ladder-current-down')
-        ? Number(row.style['--tick-strength']) : 0);
-    }
-    for (let i = 1; i < strengths.length; i += 1) {
-      assert.ok(strengths[i] <= strengths[i - 1], `減衰していません: ${strengths}`);
-    }
-    assert.equal(strengths[strengths.length - 1], 0);
+    // Act: 更新の無い次の描画周期（1s）で効果は落ちる（依頼者指示 2026-08-31:
+    //   フェードアウトの時間は 1 秒。1 秒の滑らかな減衰は CSS の dash-tick-fade が担い、
+    //   View が多段に減衰させると 1 秒を超えて残るので、次の描画で必ず無色へ戻す）。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
+    row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-down'), false);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+  });
+
+  test('the_fade_duration_lives_in_css_as_a_one_second_animation', async () => {
+    // 時間の唯一源は CSS（依頼者指示 2026-08-31: 1 秒）。View は時間を持たない。
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
+    assert.match(css, /animation:\s*dash-tick-fade\s+1s/);
+    assert.match(css, /@keyframes dash-tick-fade/);
+  });
+
+  test('the_current_row_stamps_the_last_update_time_from_the_injected_clock', () => {
+    // 依頼者指示 2026-08-31: 現在値行へ UPDATE:yyyy/mm/dd hh:mm:ss。時計は注入
+    //   （View は時計を持たない規約のまま）。表記は到達時間と同じ唯一源＝UTC。
+    //   1767229323 = 2026-01-01 01:02:03 UTC。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    let clockAt = 1767229323;
+    const view = createReachSheetView({ doc, now: () => clockAt });
+    view.mount(host);
+    // 初回の観測も「更新」として記録する（開いた直後から空欄にしない）。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    assert.match(textOf(currentRowOf(host)), /UPDATE:2026\/01\/01 01:02:03/);
+    // 価格が変わらない描画では時刻を進めない（最終「更新」の時刻であって描画の時刻ではない）。
+    clockAt = 1767229324;
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    assert.match(textOf(currentRowOf(host)), /UPDATE:2026\/01\/01 01:02:03/);
+    // 価格が変わった描画で時刻が進む。
+    clockAt = 1767229325;
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65757.0 }));
+    assert.match(textOf(currentRowOf(host)), /UPDATE:2026\/01\/01 01:02:05/);
+  });
+
+  test('a_view_without_a_clock_shows_no_update_stamp_instead_of_a_wrong_one', () => {
+    // 時計が注入されない環境では欄を出さない（発明しない）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    assert.doesNotMatch(textOf(currentRowOf(host)), /UPDATE:/);
   });
 
   test('the_flash_density_grows_with_the_size_of_the_move', () => {

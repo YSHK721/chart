@@ -56,6 +56,15 @@ describe('index.html — 配信ページが持つのは版面だけ', () => {
     const rules = styleRules(CSS);
     assert.ok(rules.length > 0, '規則が 1 つも読めていません（読み取りが壊れています）');
     for (const rule of rules) {
+      const keyframes = rule.at.find((at) => at.startsWith('@keyframes'));
+      if (keyframes) {
+        // @keyframes の内側の「選択子」は時刻（from/to/%）であり要素を選ばない。
+        //   共有ページへ漏れる面は**アニメーション名**（グローバル名前空間）なので、
+        //   そちらへ同じ接頭辞を要求する。
+        assert.match(keyframes, /^@keyframes\s+dash-/,
+          `統合ページへ漏れるアニメーション名があります: ${keyframes}`);
+        continue;
+      }
       for (const part of rule.selector.split(',')) {
         assert.match(part.trim(), /^\.dash-/,
           `統合ページへ漏れる選択子があります: ${part.trim()}`);
