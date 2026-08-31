@@ -50,10 +50,11 @@
   --cyan: #117988;
   --amber: #966417;
   --amber-bg: #fbf0dc;
-  /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す）。
-     文字は --bg のまま。対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
-  --tick-up-bg: #14695f;
-  --tick-down-bg: #b13330;
+  /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す。
+     2026-08-31: 行の地が --surface になり文字は --ink＝最濃でも --ink が読める明度で定義）。
+     対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
+  --tick-up-bg: #bfe5e0;
+  --tick-down-bg: #f6c8c6;
   --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 8px 24px -12px rgba(20, 30, 50, .18);
 }
 
@@ -79,8 +80,8 @@
     --cyan: #3fc3d4;
     --amber: #e0a552;
     --amber-bg: #33260f;
-    --tick-up-bg: #2f9d92;
-    --tick-down-bg: #e4635f;
+    --tick-up-bg: #1d4f48;
+    --tick-down-bg: #5f2422;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
   }
 }
@@ -104,8 +105,8 @@
   --cyan: #3fc3d4;
   --amber: #e0a552;
   --amber-bg: #33260f;
-  --tick-up-bg: #2f9d92;
-  --tick-down-bg: #e4635f;
+  --tick-up-bg: #1d4f48;
+  --tick-down-bg: #5f2422;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
 }
 
@@ -642,14 +643,17 @@
 
 /* 現在値の独立行（§4.1）。モックの tr.now と同じく**反転**して一目で位置が分かるようにする。
    走査中も見失わないよう、表頭のすぐ下へ貼り付ける。 */
+/* 現在値行の地は**他の行と同じ --surface**（依頼者指示 2026-08-31「バックグラウンドを
+   その他行と同じに」。モックの反転帯（地 --ink・文字 --bg）を本指示が置換。位置は上下の
+   2px の枠線（--ink）が示し続ける）。文字も他の行と同じ --ink 系へ。 */
 .dash-ladder-current th,
 .dash-ladder-current td {
   position: sticky;
   top: var(--head-h);
   z-index: 4;
   padding: 5px 16px;
-  background: var(--ink);
-  color: var(--bg);
+  background: var(--surface);
+  color: var(--ink);
   border-top: 2px solid var(--ink);
   border-bottom: 2px solid var(--ink);
 }
@@ -661,32 +665,27 @@
 }
 
 /* ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、**1 秒**で
-   フェードアウト。先の「単色・中間色なし」を本指示が置換）。濃度（更新頻度）は View が
-   --tick-strength（0〜100）で渡し、ここで基調の --ink と混ぜる。文字は --bg のまま
-   ＝反転の読み方を変えない（端点はどちらも SURFACES 登録済みの組で、中間の混色は
-   両端の間の明度になるため対比は端点の下限を下回らない）。 */
+   フェードアウト）。濃度（更新頻度）は View が --tick-strength（0〜100）で渡し、ここで
+   行の地 --surface と混ぜる（地が --surface へ変わった 2026-08-31 指示に追従）。文字は
+   --ink のまま＝--tick-*-bg は「--ink の文字が最濃でも読める」明度で定義してある
+   （dashboard_theme_contrast.test.js が両テーマで計算する）。枠線（--ink）は静的＝位置の
+   印はフェードで消えない。 */
 .dash-ladder-current-up th,
 .dash-ladder-current-up td {
-  background-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
-  border-top-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
-  border-bottom-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  background-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--surface));
   animation: dash-tick-fade 1s ease-out forwards;
 }
 
 .dash-ladder-current-down th,
 .dash-ladder-current-down td {
-  background-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
-  border-top-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
-  border-bottom-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  background-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--surface));
   animation: dash-tick-fade 1s ease-out forwards;
 }
 
-/* 開始色は各セルの宣言（上のティック混色）、終端は基調 --ink＝無色の現在値行。 */
+/* 開始色は各セルの宣言（上のティック混色）、終端は行の地 --surface＝無色の現在値行。 */
 @keyframes dash-tick-fade {
   to {
-    background-color: var(--ink);
-    border-top-color: var(--ink);
-    border-bottom-color: var(--ink);
+    background-color: var(--surface);
   }
 }
 
@@ -695,17 +694,17 @@
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0;
-  color: var(--bg);
+  color: var(--ink);
 }
 
 /* 最終更新日時（依頼者指示 2026-08-31: 現在値行へ UPDATE:yyyy/mm/dd hh:mm:ss）。
-   文字は行の反転帯と同じ --bg（薄さで階層を作らない・規約 4）。大きさだけ副次に。 */
+   文字は副次情報の --ink2（薄さで階層を作らない・規約 4）。大きさも副次に。 */
 .dash-ladder-current-update {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   letter-spacing: .04em;
   white-space: nowrap;
-  color: var(--bg);
+  color: var(--ink2);
 }
 
 /* 凡例（モックの .legend）。 */
