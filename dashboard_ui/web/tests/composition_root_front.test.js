@@ -363,10 +363,9 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     assert.equal(fullServed, 2);
   });
 
-  test('an_unchanged_reply_still_clears_a_pending_tick_effect', async () => {
-    // ティックの直後にサーバが unchanged を返し続けると、効果のクラスが凍結し、後の無関係な
-    //   内容変化で古い発光が再生される（実測 2026-08-31: up クラスが 20 秒残存）。unchanged
-    //   でも残効果があるときだけは直近の完全応答で描き直して落とす。
+  test('an_unchanged_reply_keeps_the_direction_ground_without_rebuilding', async () => {
+    // 地色は状態（依頼者指示 2026-08-31: 上＝緑・下＝赤・中間色なし）。unchanged が続いても
+    //   色は保たれ、かつ版面は作り直さない（段階 2 の節約を崩さない）。
     const doc = fakeDoc();
     const host = fakeEl('div');
     let phase = 'first';
@@ -395,12 +394,13 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     phase = 'idle';
     nowMs += 1_100;
     await handle.refresh();
-    assert.equal(currentOf().classList.contains('dash-ladder-current-up'), false);
-    // さらに unchanged が続いても版面はもう作り直されない（段階 2 の節約は保つ）。
+    assert.equal(currentOf().classList.contains('dash-ladder-current-up'), true);
+    // さらに unchanged が続いても版面は作り直されず、色も保たれる（段階 2 の節約は保つ）。
     const row = currentOf();
     nowMs += 1_100;
     await handle.refresh();
     assert.equal(currentOf(), row);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
   });
 
   test('the_live_tick_player_is_borrowed_started_and_drives_only_the_current_row', async () => {

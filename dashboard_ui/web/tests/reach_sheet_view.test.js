@@ -480,43 +480,40 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.match(textOf(currentRowOf(host)), /現在値/);
   });
 
-  test('a_price_move_flashes_the_current_row_with_its_direction_and_fades_out', () => {
-    // 更新はフェードアウト効果（依頼者指示 2026-08-30）: 動いた瞬間に向きの色相＋濃度が付き、
-    //   更新の無い描画周期で減衰して無色へ戻る（色の実体は CSS。View はクラスと濃度だけ）。
+  test('the_current_row_ground_holds_the_direction_of_the_last_move', () => {
+    // 依頼者指示 2026-08-31: 既定の反転帯ではなく上＝緑・下＝赤を地色に（中間色なし）。
+    //   向きは**状態**として残る（更新の無い描画周期でも落ちない）。初回は向き不明＝発明しない。
     const doc = fakeDoc();
     const host = fakeEl('div');
     const view = createReachSheetView({ doc });
     view.mount(host);
-    // Arrange: 初回は向きなし（まだ動きを見ていない）。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
     let row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-up'), false);
     assert.equal(row.classList.contains('dash-ladder-current-down'), false);
-    // Act: 上へ動く。
+    // Act: 上へ動く → 緑。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65758.5 }));
-    row = currentRowOf(host);
-    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
-    // Act: 下へ動くと色相が切り替わる。
+    assert.equal(currentRowOf(host).classList.contains('dash-ladder-current-up'), true);
+    // Act: 下へ動く → 赤へ切替。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
     row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-down'), true);
     assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-    // Act: 更新の無い次の描画周期（1s）で効果は落ちる（依頼者指示 2026-08-31:
-    //   フェードアウトの時間は 1 秒。1 秒の滑らかな減衰は CSS の dash-tick-fade が担い、
-    //   View が多段に減衰させると 1 秒を超えて残るので、次の描画で必ず無色へ戻す）。
+    // Act: 動きの無い描画周期でも**色は保たれる**（地色は状態・フェードしない）。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
-    row = currentRowOf(host);
-    assert.equal(row.classList.contains('dash-ladder-current-down'), false);
-    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+    assert.equal(currentRowOf(host).classList.contains('dash-ladder-current-down'), true);
   });
 
-  test('the_fade_duration_lives_in_css_as_a_one_second_animation', async () => {
-    // 時間の唯一源は CSS（依頼者指示 2026-08-31: 1 秒）。View は時間を持たない。
+  test('the_direction_grounds_are_solid_colours_with_no_intermediate_mixing', async () => {
+    // 依頼者指示 2026-08-31「中間色はなし」: 濃度混色（--tick-strength / color-mix）と
+    //   フェード（dash-tick-fade）は持たない。地色はトークンの単色。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
-    assert.match(css, /animation:\s*dash-tick-fade\s+1s/);
-    assert.match(css, /@keyframes dash-tick-fade/);
+    assert.doesNotMatch(css, /--tick-strength/);
+    assert.doesNotMatch(css, /dash-tick-fade/);
+    assert.match(css, /\.dash-ladder-current-up t[hd][\s\S]{0,80}background:\s*var\(--tick-up-bg\)/);
+    assert.match(css, /\.dash-ladder-current-down t[hd][\s\S]{0,80}background:\s*var\(--tick-down-bg\)/);
   });
 
   test('the_current_row_stamps_the_last_update_time_from_the_injected_clock', () => {
@@ -645,7 +642,6 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(rowAfter, rowBefore);
     assert.match(textOf(rowAfter), /65,761\.0/);
     assert.equal(rowAfter.classList.contains('dash-ladder-current-up'), true);
-    assert.equal(Number(rowAfter.style['--tick-strength']) > 0, true);
     assert.match(textOf(rowAfter), /UPDATE:2026\/01\/01 01:02:03/);
     rowsOf(host).filter((r) => r !== rowAfter).forEach((row, i) => {
       assert.equal(row, levelRowsBefore[i]);   // 水準行はノードごと不変。
@@ -693,53 +689,17 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     view.mount(host);
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
     view.updateCurrentPrice(65740.0);
-    view.updateCurrentPrice(65742.0);   // 発光（up）。
-    // Act: 応答の価格が動いても表示は外部価格のまま・偽の発光もない。
+    view.updateCurrentPrice(65742.0);   // 上へ動いた → 緑。
+    // Act: 応答の価格が動いても表示は外部価格のまま・向きも外部系列のまま。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65800.0 }));
     let row = currentRowOf(host);
     assert.match(textOf(row), /65,742\.0/);
     assert.doesNotMatch(textOf(row), /65,800\.0/);
-    assert.equal(row.classList.contains('dash-ladder-current-up'), true);   // tick 直後の描画は効果を保つ。
-    // Act: 外部 tick の無い次の描画周期で効果は落ちる。
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
+    // Act: 動きの無い次の描画周期でも地色は保たれる（状態・中間色なし）。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65800.0 }));
     row = currentRowOf(host);
-    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-  });
-
-  test('the_fade_effect_clears_itself_on_animationend_without_a_rerender', () => {
-    // 効果の後始末は CSS の animationend に同期する（タイマーも再描画も要らない）。
-    //   なめらか再生中は hasPendingEffects も false＝後始末のための全再構築を誘発しない。
-    const doc = fakeDoc();
-    const host = fakeEl('div');
-    const view = createReachSheetView({ doc, now: () => 1767229323 });
-    view.mount(host);
-    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
-    view.updateCurrentPrice(65740.0);
-    view.updateCurrentPrice(65745.0);
-    const row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-up'), true);
-    assert.equal(view.hasPendingEffects(), false);
-    (row._listeners.animationend || []).forEach((fn) => fn({}));
-    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-  });
-
-  test('the_flash_density_grows_with_the_size_of_the_move', () => {
-    // 更新粒度＝色の濃度（依頼者指示）。小さい動きは薄く・大きい動きは濃く（上限 100）。
-    const strengthAfterMove = (delta) => {
-      const doc = fakeDoc();
-      const host = fakeEl('div');
-      const view = createReachSheetView({ doc });
-      view.mount(host);
-      view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
-      view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 + delta }));
-      return Number(currentRowOf(host).style['--tick-strength']);
-    };
-    const small = strengthAfterMove(2);
-    const medium = strengthAfterMove(10);
-    const huge = strengthAfterMove(500);
-    assert.ok(small > 0, '小さい動きが無色です（動いたことが見えない）');
-    assert.ok(medium > small, `濃度が動きの大きさに追随していません: ${small} → ${medium}`);
-    assert.equal(huge, 100);   // 上限で飽和（100 を超える濃度は存在しない）。
   });
 
   // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・全期間） ----

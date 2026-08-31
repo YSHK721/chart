@@ -196,12 +196,6 @@ export async function setupDashboardDisplay({
         sheetState = response.state;
       }
       if (lastFullResponse) {
-        // ティック効果が残っていれば直近の完全応答で描き直して落とす。ここを素通しすると
-        //   効果のクラスが凍結し、次の無関係な内容変化で古い発光が再生される（実測 2026-08-31:
-        //   unchanged が続く間 up クラスが 20 秒残存）。
-        if (ladderView.hasPendingEffects()) {
-          ladderView.render(lastFullResponse);
-        }
         chartsView.render(lastFullResponse);
       }
       return;
@@ -215,9 +209,8 @@ export async function setupDashboardDisplay({
     // 省リソース段階 1: 内容が直前の描画と同一なら第 1・第 2 表を作り直さない
     //   （毎秒の全再構築は内容不変時にはまるごと浪費・依頼者指摘 2026-08-30）。
     //   日付印を鍵へ含める＝到達時刻の「今日/昨日」表記が日替わりで確実に描き直される。
-    //   ラダーのフェード効果が残っている間は後始末（効果落とし）のために描き続ける。
     const key = `${Math.floor(clock() / 86_400_000)}|${JSON.stringify(response)}`;
-    if (key !== lastRenderedKey || ladderView.hasPendingEffects()) {
+    if (key !== lastRenderedKey) {
       ladderView.render(response);
       oscillatorView.render(response);
       lastRenderedKey = key;
