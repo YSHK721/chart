@@ -670,8 +670,8 @@
   letter-spacing: .1em;
 }
 
-/* ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、**1 秒**で
-   フェードアウト）。濃度（更新頻度）は View が --tick-strength（0〜100）で渡し、ここで
+/* ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、**2 秒**で
+   フェードアウト。同日指示で 1 秒 → 2 秒へ変更）。濃度（更新頻度）は View が --tick-strength（0〜100）で渡し、ここで
    行の地 --surface と混ぜる（地が --surface へ変わった 2026-08-31 指示に追従）。文字は
    --ink のまま＝--tick-*-bg は「--ink の文字が最濃でも読める」明度で定義してある
    （dashboard_theme_contrast.test.js が両テーマで計算する）。枠線（--ink）は静的＝位置の
@@ -679,13 +679,13 @@
 .dash-ladder-current-up th,
 .dash-ladder-current-up td {
   background-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--surface));
-  animation: dash-tick-fade 1s ease-out forwards;
+  animation: dash-tick-fade 2s ease-out forwards;
 }
 
 .dash-ladder-current-down th,
 .dash-ladder-current-down td {
   background-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--surface));
-  animation: dash-tick-fade 1s ease-out forwards;
+  animation: dash-tick-fade 2s ease-out forwards;
 }
 
 /* 開始色は各セルの宣言（上のティック混色）、終端は行の地 --surface＝無色の現在値行。 */

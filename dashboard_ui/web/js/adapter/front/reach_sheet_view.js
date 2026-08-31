@@ -82,13 +82,13 @@ const COLUMNS = Object.freeze([
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
 const NAMING_CELLS = 4;
 
-/** ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、1 秒で
- *  フェードアウト。先の「単色・中間色なし」を本指示が置換）。
+/** ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、2 秒で
+ *  フェードアウト（同日指示で 1 秒 → 2 秒）。先の「単色・中間色なし」を本指示が置換）。
  *
  *  濃度 = clamp(直近 TICK_RATE_WINDOW_SECONDS 秒の更新回数/秒 ÷ TICK_FULL_RATE, 最小, 100)%。
  *  TICK_FULL_RATE は「これ以上で最濃」となる更新頻度。再生粒度は 100ms＝最大 10 回/秒で、
  *  その半分（5 回/秒）を最濃に採った。下限は「動いたことが見える」最小濃度。
- *  フェードの時間の唯一源は CSS（dash-tick-fade・1s）。クラスの後始末は animationend。 */
+ *  フェードの時間の唯一源は CSS（dash-tick-fade・2s）。クラスの後始末は animationend。 */
 const TICK_RATE_WINDOW_SECONDS = 2;
 const TICK_FULL_RATE = 5;
 const TICK_MIN_STRENGTH = 25;
@@ -696,7 +696,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     if (direction) {
       setTickStrengthOn(tr);
     }
-    // フェード完了（1s・CSS の dash-tick-fade）で効果のクラスを外す。タイマーを持たずに
+    // フェード完了（2s・CSS の dash-tick-fade）で効果のクラスを外す。タイマーを持たずに
     //   CSS の時間へ正確に同期する（外し損ねたクラスは次の再構築で発光を再生してしまう）。
     if (typeof tr.addEventListener === 'function') {
       tr.addEventListener('animationend', () => {
@@ -906,7 +906,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
         currentDirection = currentPrice > lastCurrentPrice ? 'up' : 'down';
         registerTickEffect();
       } else {
-        // 更新の無い描画周期では効果を落とす（1 秒の視覚フェードは CSS が済ませている）。
+        // 更新の無い描画周期では向きの状態だけ落とす（視覚フェードは CSS の 2 秒が完結させる）。
         tickStrength = 0;
       }
       if (Number.isFinite(currentPrice)) {

@@ -481,7 +481,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
   });
 
   test('a_price_update_flashes_the_direction_colour_and_clears_after_the_css_fade', () => {
-    // 依頼者指示 2026-08-31: 更新頻度を方向色の濃度で表現し、1 秒でフェードアウト。
+    // 依頼者指示 2026-08-31: 更新頻度を方向色の濃度で表現し、2 秒でフェードアウト。
     //   1 秒の視覚フェードは CSS（dash-tick-fade）が担い、クラスの後始末は animationend。
     const doc = fakeDoc();
     const host = fakeEl('div');
@@ -528,12 +528,13 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(saturated, 100);   // 上限で飽和。
   });
 
-  test('the_tick_fade_lives_in_css_as_a_one_second_animation_with_density_mixing', async () => {
-    // 時間の唯一源は CSS（1s）。濃度は --tick-strength の混色（頻度を色の濃さとして読む）。
+  test('the_tick_fade_lives_in_css_as_a_two_second_animation_with_density_mixing', async () => {
+    // 時間の唯一源は CSS（2s・依頼者指示 2026-08-31 で 1 秒 → 2 秒）。濃度は --tick-strength の
+    //   混色（頻度を色の濃さとして読む）。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
-    assert.match(css, /animation:\s*dash-tick-fade\s+1s/);
+    assert.match(css, /animation:\s*dash-tick-fade\s+2s/);
     assert.match(css, /--tick-strength/);
   });
 
