@@ -50,8 +50,9 @@
   --cyan: #117988;
   --amber: #966417;
   --amber-bg: #fbf0dc;
-  /* 行発光（次のターゲット移動の被膜）の色（依頼者指示 2026-08-31: ダークパープル）。 */
-  --violet: #4b2e83;
+  /* 行発光（次のターゲット移動の被膜）の色（依頼者指示 2026-08-31: ダークパープル・
+     同日追補で明度 −20 ポイント）。 */
+  --violet: #201338;
   /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す。
      2026-08-31: 行の地が --surface になり文字は --ink＝最濃でも --ink が読める明度で定義）。
      対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
@@ -82,7 +83,7 @@
     --cyan: #3fc3d4;
     --amber: #e0a552;
     --amber-bg: #33260f;
-    --violet: #6b4fd8;
+    --violet: #3c239e;
     --tick-up-bg: #1d4f48;
     --tick-down-bg: #5f2422;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -108,7 +109,7 @@
   --cyan: #3fc3d4;
   --amber: #e0a552;
   --amber-bg: #33260f;
-  --violet: #6b4fd8;
+  --violet: #3c239e;
   --tick-up-bg: #1d4f48;
   --tick-down-bg: #5f2422;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
@@ -648,8 +649,9 @@
 /* 現在値の独立行（§4.1）。モックの tr.now と同じく**反転**して一目で位置が分かるようにする。
    走査中も見失わないよう、表頭のすぐ下へ貼り付ける。 */
 /* 現在値行の地は**他の行と同じ --surface**（依頼者指示 2026-08-31「バックグラウンドを
-   その他行と同じに」。モックの反転帯（地 --ink・文字 --bg）を本指示が置換。位置は上下の
-   2px の枠線（--ink）が示し続ける）。文字も他の行と同じ --ink 系へ。 */
+   その他行と同じに」。モックの反転帯（地 --ink・文字 --bg）を本指示が置換）。位置は上下の
+   2px の枠線が示し、色は枠（.dash-panel）と同じ --line2（依頼者指示 2026-08-31）。
+   文字も他の行と同じ --ink 系へ。 */
 .dash-ladder-current th,
 .dash-ladder-current td {
   position: sticky;
@@ -658,8 +660,8 @@
   padding: 5px 16px;
   background: var(--surface);
   color: var(--ink);
-  border-top: 2px solid var(--ink);
-  border-bottom: 2px solid var(--ink);
+  border-top: 2px solid var(--line2);
+  border-bottom: 2px solid var(--line2);
 }
 
 .dash-ladder-current th {
