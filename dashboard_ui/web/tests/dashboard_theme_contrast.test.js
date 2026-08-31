@@ -96,8 +96,8 @@ const SURFACES = Object.freeze([
   // .dash-ladder-current（現在値行）。地は他の行と同じ --surface（依頼者指示 2026-08-31・
   //   「表の地」の組で被覆済み）。
   // .dash-ladder-current-up / -down（直近ティックの上下・依頼者指示 2026-08-30）。
-  { name: '現在値行（上昇）', ground: '--tick-up-bg', texts: ['--ink', '--ink2'] },
-  { name: '現在値行（下降）', ground: '--tick-down-bg', texts: ['--ink', '--ink2'] },
+  { name: '現在値行（上昇）', ground: '--tick-up-bg', texts: ['--ink', '--ink2', '--up'] },
+  { name: '現在値行（下降）', ground: '--tick-down-bg', texts: ['--ink', '--ink2', '--down'] },
   // 縮退の掲示（--warn 系）は依頼者指示 2026-08-30 で廃止（規則・トークンごと撤去）。
   // .dash-sheet-message（異常の掲示）。
   { name: '異常の掲示', ground: '--down-bg', texts: ['--down'] },

@@ -61,8 +61,10 @@
   /* 現在値行のティック方向の地（依頼者指示 2026-08-30: 動いたら色で上下を示す。
      2026-08-31: 行の地が --surface になり文字は --ink＝最濃でも --ink が読める明度で定義）。
      対比は dashboard_theme_contrast.test.js が両テーマで計算する。 */
-  --tick-up-bg: #bfe5e0;
-  --tick-down-bg: #f6c8c6;
+  /* 方向色の文字（--up / --down）が最濃の地の上でも 4.5:1 を満たす明度（計算値 4.55 / 4.74・
+     2026-08-31: フェード中も数値の方向色を保つための再設計）。 */
+  --tick-up-bg: #edf9f7;
+  --tick-down-bg: #fef3f2;
   --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 8px 24px -12px rgba(20, 30, 50, .18);
 }
 
@@ -91,8 +93,8 @@
     --amber: #e0a552;
     --amber-bg: #33260f;
     --violet: #3c239e;
-    --tick-up-bg: #1d4f48;
-    --tick-down-bg: #5f2422;
+    --tick-up-bg: #123230;
+    --tick-down-bg: #3d1715;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
   }
 }
@@ -119,8 +121,8 @@
   --amber: #e0a552;
   --amber-bg: #33260f;
   --violet: #3c239e;
-  --tick-up-bg: #1d4f48;
-  --tick-down-bg: #5f2422;
+  --tick-up-bg: #123230;
+  --tick-down-bg: #3d1715;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
 }
 
@@ -716,19 +718,16 @@
 }
 
 /* 現在値の文字色は直近の向きに追従（依頼者指示 2026-08-31: 上＝緑・下＝赤。向きが変わる
-   まで残る恒常表示）。発光（2s フェード）中はティック混色の地に載るため、登録済みの組
-   （--ink × --tick-*-bg）へ戻す＝読める対比を機械的検査の内側に保つ。 */
+   まで残る恒常表示）。**発光（2s フェード）中も方向色のまま**——市場が動いている間は
+   ほぼ常時フェード中のため、フェード中だけ従来色へ戻すと「常に白い」ように見える
+   （依頼者指摘 2026-08-31・実測）。そのため --tick-*-bg は「同方向の文字色が最濃の地でも
+   4.5:1 を満たす」明度で定義してある（dashboard_theme_contrast.test.js が両テーマで計算）。 */
 .dash-ladder-current-dir-up .dash-ladder-current-price {
   color: var(--up);
 }
 
 .dash-ladder-current-dir-down .dash-ladder-current-price {
   color: var(--down);
-}
-
-.dash-ladder-current-up .dash-ladder-current-price,
-.dash-ladder-current-down .dash-ladder-current-price {
-  color: var(--ink);
 }
 
 /* 最終更新日時（依頼者指示 2026-08-31: 現在値行へ UPDATE:yyyy/mm/dd hh:mm:ss）。
