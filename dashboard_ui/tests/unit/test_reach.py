@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from dashboard_ui.domain.reach import LevelSide, ReachState, is_reached, reach_state
+from dashboard_ui.domain.reach import (
+    LevelSide,
+    ReachState,
+    is_reached,
+    period_first_touch,
+    reach_state,
+)
 
 
 class TestIsReached:
@@ -147,3 +153,46 @@ class TestReachState:
     def test_mismatched_lengths_are_rejected(self) -> None:
         with pytest.raises(ValueError):
             reach_state([10, 20], [1.0], [1.0, 2.0], side=LevelSide.ABOVE)
+
+
+class TestPeriodFirstTouch:
+    """§6.2 定義 D（第 1 表・依頼者裁定 2026-08-31）: 現在バー期間内の最初の接触。"""
+
+    def test_the_first_bar_whose_range_covers_the_level_wins(self) -> None:
+        state = period_first_touch(
+            [10, 20, 30], [99.0, 101.0, 104.0], [97.0, 99.0, 102.0],
+            level=100.5, period_start=10,
+        )
+        assert state == ReachState(reached=True, since_time=20, truncated=False)
+
+    def test_a_touch_before_the_period_start_is_ignored(self) -> None:
+        """期間が変わればリセット（D なら今日・1m ならこの 1 分間）。"""
+        state = period_first_touch(
+            [10, 20, 30], [101.0, 98.0, 97.0], [99.0, 96.0, 95.0],
+            level=100.5, period_start=20,
+        )
+        assert state.reached is False
+        assert state.since_time is None
+
+    def test_a_boundary_touch_counts_on_both_edges(self) -> None:
+        """境界値: high == level / low == level はどちらも接触（§13.1 の >= / <= と同じ）。"""
+        top = period_first_touch([10], [100.5], [99.0], level=100.5, period_start=10)
+        bottom = period_first_touch([10], [102.0], [100.5], level=100.5, period_start=10)
+        assert top.reached is True and bottom.reached is True
+
+    def test_fine_history_not_covering_the_period_start_is_marked_truncated(self) -> None:
+        """細粒度の履歴が期間の始端を覆っていない（1M の月初が 1m 履歴の外など）＝
+        それ以前の接触は観測不能であることを隠さない。"""
+        state = period_first_touch(
+            [100, 110], [99.0, 99.0], [97.0, 97.0], level=200.0, period_start=50,
+        )
+        assert state.reached is False
+        assert state.truncated is True
+
+    def test_a_non_finite_level_is_undecidable(self) -> None:
+        state = period_first_touch([10], [101.0], [99.0], level=float("nan"), period_start=10)
+        assert state == ReachState(reached=None, since_time=None, truncated=False)
+
+    def test_mismatched_lengths_are_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            period_first_touch([10, 20], [1.0], [1.0, 2.0], level=1.0, period_start=10)

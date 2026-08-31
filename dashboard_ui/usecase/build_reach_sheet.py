@@ -26,7 +26,12 @@ from dashboard_ui.domain import continuous_quantile as _cq
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.domain.material_version import fingerprint_of
 from dashboard_ui.domain.price_ladder import LevelInput, build_ladder
-from dashboard_ui.domain.reach import LevelSide, ReachState, reach_state
+from dashboard_ui.domain.reach import (
+    LevelSide,
+    ReachState,
+    period_first_touch,
+    reach_state,
+)
 from dashboard_ui.usecase.sheet_models import (
     Degradation,
     ElapsedComparison,
@@ -184,7 +189,7 @@ def build_reach_sheet(
                 _build_cell(instance, spec, series, comparisons.get(instance.key),
                             tails, events)
             )
-        closes = _closes_by_time(bars_by_timeframe.get(instance.timeframe) or ())
+        own_bars = bars_by_timeframe.get(instance.timeframe) or ()
         for series_name, points in series.items():
             level = _as_level(
                 instance, series_name, tuple(points), roles, current_price
@@ -192,7 +197,13 @@ def build_reach_sheet(
             if level is None:
                 continue
             levels.append(level)
-            reach_by_row[level.row_key] = _level_reach(tuple(points), closes)
+            # 到達時間は定義 D（当該足の現在バー期間内の最初の接触・依頼者裁定 2026-08-31。
+            #   D なら今日・1m ならこの 1 分間＝期間が変わればリセット）。期間の始端は
+            #   当該足の**最新バーの time**（バー識別はサーバの足が唯一源＝暦計算を持たない）。
+            reach_by_row[level.row_key] = _level_period_touch(
+                level.price, fine_bars=chart_bars,
+                period_start=(int(own_bars[-1].time) if own_bars else None),
+            )
             instance_by_row[level.row_key] = instance.key
             series_by_row[level.row_key] = series_name
             naming_by_row[level.row_key] = roles.row_naming(
@@ -295,21 +306,19 @@ def _as_level(
     )
 
 
-def _level_reach(
-    points: "tuple[tuple[int, float], ...]", closes: "Mapping[int, float]"
+def _level_period_touch(
+    level_price: float, *, fine_bars: "Sequence[Bar]", period_start: "int | None"
 ) -> ReachState:
-    """水準系列と価格系列を時刻で突き合わせ、定義 C（最初の接点）の到達時刻を導く（§6.2 / §6.3）。"""
-    times: "list[int]" = []
-    values: "list[float]" = []
-    levels: "list[float]" = []
-    for time, level in points:
-        close = closes.get(int(time))
-        if close is None:
-            continue
-        times.append(int(time))
-        values.append(float(close))
-        levels.append(float(level))
-    return reach_state(times, values, levels, side=LevelSide.ABOVE)
+    """ラダー行の到達時間（§6.2 定義 D）。式の唯一源は domain の period_first_touch。"""
+    if period_start is None or not fine_bars:
+        return ReachState(reached=None, since_time=None, truncated=False)
+    return period_first_touch(
+        [int(bar.time) for bar in fine_bars],
+        [float(bar.high) for bar in fine_bars],
+        [float(bar.low) for bar in fine_bars],
+        level=float(level_price),
+        period_start=int(period_start),
+    )
 
 
 def _build_cell(

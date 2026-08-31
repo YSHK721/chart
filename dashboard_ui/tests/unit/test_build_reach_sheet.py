@@ -168,17 +168,39 @@ class TestLadder:
 
         assert [row.label.split()[1] for row in sheet.rows] == ["btlm_trail_mean"]
 
-    def test_every_row_carries_its_reach_state(self) -> None:
-        """§6.2 定義 C を第 1 表に適用する（クライアント側で積み上げない）。"""
-        instance = SheetInstance("moving_averages", "default", {"length": 5}, "1m")
-        series = FakeSeriesPort({instance.key: {"MA": _points([99.0, 99.0, 99.0])}})
-        bars = FakeBarPort({"1m": _bars([98.0, 100.0, 101.0])})
+    def test_a_row_reach_is_the_first_touch_within_its_own_current_bar_period(self) -> None:
+        """§6.2 定義 D（依頼者裁定 2026-08-31: D なら今日・1m ならこの 1 分間＝期間でリセット）。
+
+        5m の行の期間は現在の 5m バー（始端 _NOW）。細粒度（1m）の高安が水準を最初に
+        跨いだ 1m バーの時刻が到達時間になる。
+        """
+        instance = SheetInstance("moving_averages", "default", {"length": 5}, "5m")
+        series = FakeSeriesPort({instance.key: {"MA": _points([100.5, 100.5], step=300)}})
+        bars = FakeBarPort({
+            "5m": _bars([100.0], step=300),          # 現在バー始端 = _NOW
+            "1m": _bars([98.0, 100.0, 103.0]),       # 水準 100.5 は 2 本目 [99,101] で初接触
+        })
 
         sheet = build_reach_sheet(_request(instance), series_port=series,
                                   bar_port=bars, roles=FakeRoles())
 
         assert sheet.rows[0].reach.reached is True
         assert sheet.rows[0].reach.since_time == _NOW + 60
+        assert sheet.rows[0].reach.truncated is False
+
+    def test_a_touch_before_the_current_bar_period_does_not_count(self) -> None:
+        """期間の外（前のバー）で触れていても数えない＝期間が変わればリセット（定義 D の核心）。"""
+        instance = SheetInstance("moving_averages", "default", {"length": 5}, "1m")
+        # 1m の行の期間 = 現在の 1m バー（始端 _NOW+120・[102,104]）。水準 99.5 は
+        #   2 本目 [99,101] で触れていたが、現在バーでは触れていない。
+        series = FakeSeriesPort({instance.key: {"MA": _points([99.5, 99.5, 99.5])}})
+        bars = FakeBarPort({"1m": _bars([98.0, 100.0, 103.0])})
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=FakeRoles())
+
+        assert sheet.rows[0].reach.reached is False
+        assert sheet.rows[0].reach.since_time is None
 
     def test_a_row_whose_latest_level_is_missing_is_not_placed_on_the_ladder(self) -> None:
         """NaN の水準はラダーへ入れない（並びを壊さない・無言で最下段に沈めない）。"""
