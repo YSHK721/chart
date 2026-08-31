@@ -667,23 +667,34 @@
   letter-spacing: .1em;
 }
 
-/* ティック方向の地色（依頼者指示 2026-08-31: 既定の反転帯ではなく**上＝緑・下＝赤**を
-   現在値行の地にする。**中間色はなし**＝濃度混色・フェードは持たない）。直近に動いた向きの
-   色がそのまま次の反転まで残る。文字は --bg のまま（対比の組は --tick-*-bg × --bg で
-   dashboard_theme_contrast.test.js が両テーマとも計算する）。向きをまだ見ていない起動直後
-   だけは上の反転帯（--ink）＝発明しない。 */
+/* ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、**1 秒**で
+   フェードアウト。先の「単色・中間色なし」を本指示が置換）。濃度（更新頻度）は View が
+   --tick-strength（0〜100）で渡し、ここで基調の --ink と混ぜる。文字は --bg のまま
+   ＝反転の読み方を変えない（端点はどちらも SURFACES 登録済みの組で、中間の混色は
+   両端の間の明度になるため対比は端点の下限を下回らない）。 */
 .dash-ladder-current-up th,
 .dash-ladder-current-up td {
-  background: var(--tick-up-bg);
-  border-top-color: var(--tick-up-bg);
-  border-bottom-color: var(--tick-up-bg);
+  background-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-top-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-bottom-color: color-mix(in srgb, var(--tick-up-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  animation: dash-tick-fade 1s ease-out forwards;
 }
 
 .dash-ladder-current-down th,
 .dash-ladder-current-down td {
-  background: var(--tick-down-bg);
-  border-top-color: var(--tick-down-bg);
-  border-bottom-color: var(--tick-down-bg);
+  background-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-top-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  border-bottom-color: color-mix(in srgb, var(--tick-down-bg) calc(var(--tick-strength, 100) * 1%), var(--ink));
+  animation: dash-tick-fade 1s ease-out forwards;
+}
+
+/* 開始色は各セルの宣言（上のティック混色）、終端は基調 --ink＝無色の現在値行。 */
+@keyframes dash-tick-fade {
+  to {
+    background-color: var(--ink);
+    border-top-color: var(--ink);
+    border-bottom-color: var(--ink);
+  }
 }
 
 .dash-ladder-current-price {

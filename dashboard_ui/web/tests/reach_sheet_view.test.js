@@ -480,40 +480,61 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.match(textOf(currentRowOf(host)), /現在値/);
   });
 
-  test('the_current_row_ground_holds_the_direction_of_the_last_move', () => {
-    // 依頼者指示 2026-08-31: 既定の反転帯ではなく上＝緑・下＝赤を地色に（中間色なし）。
-    //   向きは**状態**として残る（更新の無い描画周期でも落ちない）。初回は向き不明＝発明しない。
+  test('a_price_update_flashes_the_direction_colour_and_clears_after_the_css_fade', () => {
+    // 依頼者指示 2026-08-31: 更新頻度を方向色の濃度で表現し、1 秒でフェードアウト。
+    //   1 秒の視覚フェードは CSS（dash-tick-fade）が担い、クラスの後始末は animationend。
     const doc = fakeDoc();
     const host = fakeEl('div');
-    const view = createReachSheetView({ doc });
+    const view = createReachSheetView({ doc, now: () => 1000 });
     view.mount(host);
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
     let row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-    assert.equal(row.classList.contains('dash-ladder-current-down'), false);
-    // Act: 上へ動く → 緑。
+    // Act: 上へ動く → 濃度付きで点く。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65758.5 }));
-    assert.equal(currentRowOf(host).classList.contains('dash-ladder-current-up'), true);
-    // Act: 下へ動く → 赤へ切替。
+    row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
+    assert.equal(Number(row.style['--tick-strength']) >= 25, true);
+    // Act: 下へ動くと色相が切り替わる。
     view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
     row = currentRowOf(host);
     assert.equal(row.classList.contains('dash-ladder-current-down'), true);
     assert.equal(row.classList.contains('dash-ladder-current-up'), false);
-    // Act: 動きの無い描画周期でも**色は保たれる**（地色は状態・フェードしない）。
-    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65750.0 }));
-    assert.equal(currentRowOf(host).classList.contains('dash-ladder-current-down'), true);
+    // Act: フェード完了（animationend）でクラスが外れる（タイマーも再描画も要らない）。
+    (row._listeners.animationend || []).forEach((fn) => fn({}));
+    assert.equal(row.classList.contains('dash-ladder-current-down'), false);
   });
 
-  test('the_direction_grounds_are_solid_colours_with_no_intermediate_mixing', async () => {
-    // 依頼者指示 2026-08-31「中間色はなし」: 濃度混色（--tick-strength / color-mix）と
-    //   フェード（dash-tick-fade）は持たない。地色はトークンの単色。
+  test('the_flash_density_grows_with_the_update_frequency', () => {
+    // 濃度＝更新頻度（依頼者指示 2026-08-31。動きの大きさではない）。同じ観測窓に更新が
+    //   多いほど濃い。上限 100・下限 25（動いたことが見える最小濃度）。
+    const strengthAfterUpdates = (count) => {
+      const doc = fakeDoc();
+      const host = fakeEl('div');
+      const view = createReachSheetView({ doc, now: () => 1000 });
+      view.mount(host);
+      view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+      view.updateCurrentPrice(65756.0);   // シード。
+      for (let i = 1; i <= count; i += 1) {
+        view.updateCurrentPrice(65756.0 + i);
+      }
+      return Number(currentRowOf(host).style['--tick-strength']);
+    };
+    const sparse = strengthAfterUpdates(1);
+    const busy = strengthAfterUpdates(6);
+    const saturated = strengthAfterUpdates(40);
+    assert.equal(sparse >= 25, true, '疎な更新が無色です（動いたことが見えない）');
+    assert.equal(busy > sparse, true, `濃度が頻度に追随していません: ${sparse} → ${busy}`);
+    assert.equal(saturated, 100);   // 上限で飽和。
+  });
+
+  test('the_tick_fade_lives_in_css_as_a_one_second_animation_with_density_mixing', async () => {
+    // 時間の唯一源は CSS（1s）。濃度は --tick-strength の混色（頻度を色の濃さとして読む）。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
-    assert.doesNotMatch(css, /--tick-strength/);
-    assert.doesNotMatch(css, /dash-tick-fade/);
-    assert.match(css, /\.dash-ladder-current-up t[hd][\s\S]{0,80}background:\s*var\(--tick-up-bg\)/);
-    assert.match(css, /\.dash-ladder-current-down t[hd][\s\S]{0,80}background:\s*var\(--tick-down-bg\)/);
+    assert.match(css, /animation:\s*dash-tick-fade\s+1s/);
+    assert.match(css, /--tick-strength/);
   });
 
   test('the_current_row_stamps_the_last_update_time_from_the_injected_clock', () => {

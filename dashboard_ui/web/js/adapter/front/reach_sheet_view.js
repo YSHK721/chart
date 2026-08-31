@@ -82,6 +82,17 @@ const COLUMNS = Object.freeze([
 /** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
 const NAMING_CELLS = 4;
 
+/** ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、1 秒で
+ *  フェードアウト。先の「単色・中間色なし」を本指示が置換）。
+ *
+ *  濃度 = clamp(直近 TICK_RATE_WINDOW_SECONDS 秒の更新回数/秒 ÷ TICK_FULL_RATE, 最小, 100)%。
+ *  TICK_FULL_RATE は「これ以上で最濃」となる更新頻度。再生粒度は 100ms＝最大 10 回/秒で、
+ *  その半分（5 回/秒）を最濃に採った。下限は「動いたことが見える」最小濃度。
+ *  フェードの時間の唯一源は CSS（dash-tick-fade・1s）。クラスの後始末は animationend。 */
+const TICK_RATE_WINDOW_SECONDS = 2;
+const TICK_FULL_RATE = 5;
+const TICK_MIN_STRENGTH = 25;
+
 /** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31 →「移動した価格帯の**行全体**に
  *  色を乗せてフェードアウトせよ」で行全体へ変更）。印（horizon_marks）の持ち主行が前回
  *  応答から変わったとき、**移動先の行全体**へ地平色を乗せ、この秒数かけてフェードアウト
@@ -193,6 +204,10 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   let lastCurrentPrice = null;
   /** 直近に動いた向き（'up' | 'down' | null＝まだ動きを見ていない）。 */
   let currentDirection = null;
+  /** ティック効果の濃度（0〜100・更新頻度から算出）。0＝無色（反転帯のまま）。 */
+  let tickStrength = 0;
+  /** 直近の更新時刻（unix 秒・頻度の観測窓）。 */
+  let tickTimes = [];
   /** 現在値が最後に変わった時刻（unix 秒・注入時計で観測）。null＝時計なし or 未観測。 */
   let lastUpdateAt = null;
   /** なめらか再生の外部価格（唯一の書き手・依頼者指示 2026-08-31）。null＝未供給
@@ -679,8 +694,21 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     // なめらか再生が有効なら外部価格が唯一の書き手（参照実装 LiveTickPlayer の
     //   suppressPriceUpdate と同じ規約・依頼者指示 2026-08-31）。
     const shown = externalPrice !== null ? externalPrice : currentPrice;
-    const direction = currentDirection === null ? '' : ` dash-ladder-current-${currentDirection}`;
+    const direction = currentDirection === null || tickStrength <= 0
+      ? '' : ` dash-ladder-current-${currentDirection}`;
     const tr = el('tr', { className: `dash-ladder-row dash-ladder-current${direction}` });
+    if (direction) {
+      setTickStrengthOn(tr);
+    }
+    // フェード完了（1s・CSS の dash-tick-fade）で効果のクラスを外す。タイマーを持たずに
+    //   CSS の時間へ正確に同期する（外し損ねたクラスは次の再構築で発光を再生してしまう）。
+    if (typeof tr.addEventListener === 'function') {
+      tr.addEventListener('animationend', () => {
+        tickStrength = 0;
+        tr.classList.remove('dash-ladder-current-up');
+        tr.classList.remove('dash-ladder-current-down');
+      });
+    }
     // 現在値行は距離＋次のターゲットの 2 列ぶんをまとめる（列の分離・依頼者指示 2026-08-30）。
     tr.appendChild(el('th', {
       scope: 'row', colSpan: 2, textContent: '現在値', dataset: { cell: 'distance' },
@@ -738,6 +766,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     lastUpdateAt = typeof now === 'function' ? now() : null;
     if (previous !== null) {
       currentDirection = value > previous ? 'up' : 'down';
+      registerTickEffect();
     }
     if (!currentRowEl) {
       return;   // まだ版面が無い（初回応答前）。値は次の描画が拾う。
@@ -752,14 +781,42 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       }
       currentUpdateEl.textContent = `UPDATE:${formatReachTimestamp(lastUpdateAt)}`;
     }
-    if (previous !== null && currentDirection !== null) {
-      // 地色は直近に動いた向き（上＝緑・下＝赤・中間色なし）。同じ向きが続く間は同じ色。
-      const other = currentDirection === 'up' ? 'down' : 'up';
-      currentRowEl.classList.remove(`dash-ladder-current-${other}`);
+    if (previous !== null && currentDirection !== null && tickStrength > 0) {
+      // 更新の瞬間に方向色を頻度の濃度で乗せ、CSS の 1s フェードを再始動する
+      //   （クラスを外す → reflow → 濃度 → 付け直す。fake DOM では最終状態のみ意味）。
+      currentRowEl.classList.remove('dash-ladder-current-up');
+      currentRowEl.classList.remove('dash-ladder-current-down');
+      if (typeof currentRowEl.offsetWidth === 'number') {
+        void currentRowEl.offsetWidth;
+      }
+      setTickStrengthOn(currentRowEl);
       currentRowEl.classList.add(`dash-ladder-current-${currentDirection}`);
     }
     // 現在値が動けば全行の距離も動く（距離 = 水準価格 − 現在値・依頼者指示 2026-08-31）。
     refreshSmoothNumbers();
+  }
+
+  /** 更新 1 回を頻度の観測窓へ入れ、濃度を出す（時計が無い環境は最小濃度＝発明しない）。 */
+  function registerTickEffect() {
+    const t = typeof now === 'function' ? now() : null;
+    if (t === null) {
+      tickStrength = TICK_MIN_STRENGTH;
+      return;
+    }
+    tickTimes.push(t);
+    tickTimes = tickTimes.filter((at) => t - at < TICK_RATE_WINDOW_SECONDS);
+    const perSecond = tickTimes.length / TICK_RATE_WINDOW_SECONDS;
+    tickStrength = Math.min(100,
+      Math.max(TICK_MIN_STRENGTH, (perSecond / TICK_FULL_RATE) * 100));
+  }
+
+  /** 濃度をカスタムプロパティで渡す（色の値そのものは書かない＝色の唯一源を侵さない）。 */
+  function setTickStrengthOn(row) {
+    if (typeof row.style.setProperty === 'function') {
+      row.style.setProperty('--tick-strength', String(Math.round(tickStrength)));
+    } else {
+      row.style['--tick-strength'] = String(Math.round(tickStrength));
+    }
   }
 
   /** 変わった文字だけ書く（同値は DOM に触らない＝作ってから捨てる仕事を生まない）。 */
@@ -851,6 +908,10 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       if (Number.isFinite(currentPrice) && lastCurrentPrice !== null
           && currentPrice !== lastCurrentPrice) {
         currentDirection = currentPrice > lastCurrentPrice ? 'up' : 'down';
+        registerTickEffect();
+      } else {
+        // 更新の無い描画周期では効果を落とす（1 秒の視覚フェードは CSS が済ませている）。
+        tickStrength = 0;
       }
       if (Number.isFinite(currentPrice)) {
         if (lastCurrentPrice === null || currentPrice !== lastCurrentPrice) {
@@ -985,6 +1046,8 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     fittedRadius = null;
     lastCurrentPrice = null;
     currentDirection = null;
+    tickStrength = 0;
+    tickTimes = [];
     lastUpdateAt = null;
     externalPrice = null;
     lastMarkOwners = null;
