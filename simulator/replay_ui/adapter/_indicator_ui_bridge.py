@@ -101,6 +101,7 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
     )
     from adapter.compute.mtf_causal import causal_mtf_series  # noqa: E402
     from adapter.compute.mtf_causal_memo import memo_for as causal_mtf_memo_for  # noqa: E402
+    from adapter.compute import forming_bar as forming_bar_module  # noqa: E402
 
     ns = SimpleNamespace(
         dataset=dataset,
@@ -119,6 +120,11 @@ def load_compute(api_path: Any = None, repo_root: Any = None) -> SimpleNamespace
         causal_mtf_series=causal_mtf_series,
         # ISSUE-297: バー単位の記憶もライブ core と同一実装（記憶の実体はプロセス内）。
         causal_mtf_memo_for=causal_mtf_memo_for,
+        # dashboard の時間基準統一（依頼者指示 2026-08-31）: 表示遅延時点の形成中バーを
+        #   in-process で組み直すための時点指定 fold（`forming_bar(ref, tf, now_unix)` /
+        #   `apply_forming_bar(df, ..., now_unix)`）。live 側 controller と同じ供給元を
+        #   公開するだけで、既存の属性・挙動は変えない（追加のみ）。
+        forming_bar_module=forming_bar_module,
     )
     _CACHE[key] = ns
     return ns

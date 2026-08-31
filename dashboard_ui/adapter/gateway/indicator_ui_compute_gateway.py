@@ -25,7 +25,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+import time
+from typing import Any, Callable, Mapping
 
 from marketdata.tf_meta import period_start_unix
 
@@ -33,6 +34,13 @@ from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.adapter.gateway.param_scopes import ParamScopes, scopes_of
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
+
+#: 表示系列の再生遅延（秒）。シートの素材をこの秒数だけ巻き戻し、フロントのなめらか再生
+#: （LiveTickPlayer・DELAY_MS=12000 が唯一源。非公開 const のため写す——変えるときは両方）と
+#: **同じ時点**で計算する（依頼者指示 2026-08-31「時間基準を統一しろ」）。統一しないと
+#: 「印はサーバの実勢・表示は 12 秒遅延」の 2 つの時計が混在し、画面上の跨ぎと印の更新が
+#: 最大 12 秒ずれる（実測: 発光が跨ぎの 12 秒前に出て消える）。
+DISPLAY_DELAY_SECONDS = 12
 
 #: 系列 JSON の点の形（§6.3.2: time は UNIX 秒・value は float / 欠測は None）。
 _DATA = "data"
@@ -59,8 +67,10 @@ class IndicatorUiComputeGateway:
         self, *, bridge: Any = None, bar_limits: "Mapping[str, int] | None" = None,
         store: "MaterialStore | None" = None,
         param_scopes: "ParamScopes | None" = None,
+        now: "Callable[[], float] | None" = None,
     ) -> None:
         self._bridge = bridge
+        self._clock = now if now is not None else time.time
         self._bar_limits = dict(bar_limits or {})
         self._store = store if store is not None else MaterialStore()
         self._param_scopes = (
@@ -194,9 +204,44 @@ class IndicatorUiComputeGateway:
         if not bridge.dataset.is_known_timeframe(timeframe):
             raise ValueError(f"未知の timeframe です: {timeframe!r}")
         frame = bridge.dataset.load_dataframe(dataset_ref, timeframe)
+        frame = self._as_of_display(frame, bridge, dataset_ref, timeframe)
         limit = self._bar_limits.get(timeframe)
         self._frames[key] = frame if limit is None else frame.tail(int(limit))
         return self._frames[key]
+
+    def _as_of_display(self, frame: Any, bridge: Any, ref: str, tf: str) -> Any:
+        """素材を表示時点（now − DISPLAY_DELAY_SECONDS）のスナップショットへ巻き戻す。
+
+        時間基準の統一（依頼者指示 2026-08-31）: 現在値・水準・印・到達のすべてが、
+        フロントの再生（12 秒遅延）と同じ瞬間の材料から計算されるようになる。
+
+        巻き戻しの実体は live core と同一の時点指定 fold（`forming_bar(ref, tf, cutoff)`＝
+        tick parquet から `[floor(cutoff, tf), cutoff)` を畳む）。手順:
+          1. 遅延時点の形成中バー時刻より新しい行（実時間側の形成中バー等）を落とす。
+          2. 遅延時点の形成中バーを末尾へ set/replace（`apply_forming_bar`・合成なし）。
+        材料が無い環境（テスト注入 bridge・非 tick ref）は素通し＝従来挙動のまま。
+        """
+        mod = getattr(bridge, "forming_bar_module", None)
+        if mod is None or frame is None or len(frame) == 0:
+            return frame
+        cutoff = int(self._clock()) - DISPLAY_DELAY_SECONDS
+        try:
+            forming = mod.forming_bar(ref, tf, cutoff)
+        except Exception:  # noqa: BLE001 — 巻き戻し失敗でシート全体を落とさない（素通し）。
+            return frame
+        times = frame.index.values.astype("datetime64[s]").astype("int64")
+        if forming is None:
+            # 遅延時点の周期に tick が無い（周期の頭・休場）。未来側の行だけ落とす。
+            kept = frame.iloc[times <= cutoff]
+            return kept if len(kept) else frame
+        forming_time = int(forming["time"])
+        kept = frame.iloc[times < forming_time]
+        try:
+            return mod.apply_forming_bar(
+                kept, ref, tf, cutoff, synthesize_closed_gaps=False
+            )
+        except Exception:  # noqa: BLE001 — 同上（形成中バーの注入失敗は確定分だけで続行）。
+            return kept if len(kept) else frame
 
 
 def _split_at_forming_bar(frame: Any) -> "tuple[Any | None, Any]":
