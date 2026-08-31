@@ -595,16 +595,16 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
     const rowOfB = () => rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
       && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'B');
-    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), false);   // まだ点かない。
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved'), false);   // まだ点かない。
     // Act: 表示時刻に達した tick 適用の契機で行全体が点く（render を待たない）。
     clockAt = 1016;
     view.updateCurrentPrice(65756.0);   // 再生開始（externalPrice のシード）＝tick 契機。
     const glowing = rowOfB();
-    assert.equal(glowing.classList.contains('dash-ladder-row-moved-h2'), true);
+    assert.equal(glowing.classList.contains('dash-ladder-row-moved'), true);
     assert.equal(glowing.style['--row-glow-delay'], '-1s');   // 表示時刻から 1 秒経過を引き継ぐ。
     const rowOfA = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
       && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'A');
-    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved-h2'), false);
+    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved'), false);
   });
 
   test('a_rebuild_during_the_glow_resumes_the_fade_instead_of_restarting_it', () => {
@@ -621,12 +621,12 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2, current_price: 65801.0 }));
     const rowOfB = () => rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
       && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'B');
-    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), true);
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved'), true);
     assert.equal(rowOfB().style['--row-glow-delay'], '-3s');
     // Act: 表示時刻＋8 秒（1023）以降は乗せ直さない（終わった効果の再適用＝再点滅を作らない）。
     clockAt = 1024;
     view.render(sheetResponse({ rows: markedRows('B'), current_index: 2 }));
-    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved-h2'), false);
+    assert.equal(rowOfB().classList.contains('dash-ladder-row-moved'), false);
   });
 
   test('the_first_response_and_a_stationary_mark_do_not_glow', () => {
@@ -641,22 +641,22 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     view.render(sheetResponse({ rows: markedRows('A'), current_index: 2, current_price: 65801.0 }));
     const rowOfA = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current')
       && (flatten(r).find((el) => el.dataset.cell === 'name') || {}).textContent === 'A');
-    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved-h2'), false);
+    assert.equal(rowOfA.classList.contains('dash-ladder-row-moved'), false);
     const { host: noClock } = renderInto(sheetResponse({ rows: markedRows('A'), current_index: 2 }));
     const bare = rowsOf(noClock).find((r) => !r.classList.contains('dash-ladder-current'));
-    assert.equal(bare.classList.contains('dash-ladder-row-moved-h2'), false);
+    assert.equal(bare.classList.contains('dash-ladder-row-moved'), false);
   });
 
-  test('the_row_glow_lives_in_css_as_an_eight_second_animation_without_fill', async () => {
-    // 時間の唯一源は CSS（8s）。fill を持たない（終端＝自然状態へ戻る。fill forwards だと
-    //   box-shadow が透明のまま固定され…はしないが、背景系へ流用されたときの事故防止）。
+  test('the_row_glow_blinks_three_times_over_eight_seconds_as_an_overlay', async () => {
+    // 時間の唯一源は CSS（8s）。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const css = readFileSync(fileURLToPath(new URL('../css/dashboard.css', import.meta.url)), 'utf8');
-    for (const n of [1, 2, 3]) {
-      assert.match(css, new RegExp(`animation:\\s*dash-row-glow-h${n}\\s+8s`));
-      assert.doesNotMatch(css, new RegExp(`dash-row-glow-h${n}\\s+8s[^;]*forwards`));
-    }
+    // 点滅フェードアウト（依頼者指示 2026-08-31: 点灯→フェードを 3 回）。1 周期 2.667s × 3
+    //   ＝ 全体 8 秒（View の賞味期限と一致）。
+    assert.match(css, /animation:\s*dash-row-glow\s+2\.667s\s+ease-out\s+3/);
+    // オーバーレイ（::after）方式であること（子要素の背景に隠されない・実測 2026-08-31）。
+    assert.match(css, /dash-ladder-row-moved t[hd]::after/);
   });
 
   // ---- なめらか tick 再生（依頼者指示 2026-08-31: ライブチャート仕様に合わせる） ----

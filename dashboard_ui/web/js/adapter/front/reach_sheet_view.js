@@ -31,9 +31,9 @@ import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
-  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1', moved: 'dash-ladder-row-moved-h1' },
-  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2', moved: 'dash-ladder-row-moved-h2' },
-  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3', moved: 'dash-ladder-row-moved-h3' },
+  { key: 'short', label: '短期', badge: 'dash-ladder-next-h1' },
+  { key: 'medium', label: '中期', badge: 'dash-ladder-next-h2' },
+  { key: 'long', label: '長期', badge: 'dash-ladder-next-h3' },
 ]);
 
 /** 地平キーの集合（照合用）。 */
@@ -96,7 +96,7 @@ const TICK_MIN_STRENGTH = 25;
 /** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31 →「移動した価格帯の**行全体**に
  *  色を乗せてフェードアウトせよ」で行全体へ変更）。印（horizon_marks）の持ち主行が前回
  *  応答から変わったとき、**移動先の行全体**へ地平色を乗せ、この秒数かけてフェードアウト
- *  する。視覚のフェードの実体は CSS（dash-row-glow-h1〜h3・同じ 8s）で、本定数は
+ *  する。視覚のフェードの実体は CSS（dash-row-glow・同じ 8s）で、本定数は
  *  「効果がもう終わった印」を再適用しないための賞味期限。再描画では負の animation-delay
  *  （--row-glow-delay）で経過を引き継ぐ（途切れ・再点滅を作らない）。 */
 const NEXT_MOVE_FADE_SECONDS = 8;
@@ -491,24 +491,20 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       if (entry.applied || clockNow < entry.at) {
         continue;   // 適用済み・またはまだ表示時刻（検出＋12s）に達していない。
       }
-      const horizon = HORIZONS.find((h) => mark.startsWith(`${h.key}:`));
-      if (!horizon) {
-        markMovedAt.delete(mark);
-        continue;
-      }
       const ref = levelRowRefs.find((r) => r.rowKey === entry.owner);
       if (!ref) {
         continue;   // 窓の外＝光らせる先が無い（記録は寿命まで保つ）。
       }
-      startRowGlow(ref.tr, horizon, clockNow - entry.at);
+      startRowGlow(ref.tr, clockNow - entry.at);
       entry.applied = true;
     }
   }
 
-  /** 行全体の残光を（再）始動する。経過を負の delay（--row-glow-delay・セルへ継承）で
-   *  引き継ぐ＝再描画してもフェードは元の残り時間から続く。 */
-  function startRowGlow(tr, horizon, elapsed) {
-    tr.classList.remove(horizon.moved);
+  /** 行全体の残光を（再）始動する（色は地平によらず一色・依頼者指示 2026-08-31
+   *  「グレーは分かりにくい」）。経過を負の delay（--row-glow-delay・セルの ::after へ継承）
+   *  で引き継ぐ＝再描画してもフェードは元の残り時間から続く。 */
+  function startRowGlow(tr, elapsed) {
+    tr.classList.remove('dash-ladder-row-moved');
     if (typeof tr.offsetWidth === 'number') {
       void tr.offsetWidth;   // 実 DOM でアニメを再始動させる（fake DOM では最終状態のみ意味）。
     }
@@ -518,7 +514,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     } else {
       tr.style['--row-glow-delay'] = delay;
     }
-    tr.classList.add(horizon.moved);
+    tr.classList.add('dash-ladder-row-moved');
   }
 
   /** 価格セル（3 分割の背景＋価格の文字）。差は独立列（依頼者指示 2026-08-30）。 */
