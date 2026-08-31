@@ -695,7 +695,10 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     const shown = externalPrice !== null ? externalPrice : currentPrice;
     const direction = currentDirection === null || tickStrength <= 0
       ? '' : ` dash-ladder-current-${currentDirection}`;
-    const tr = el('tr', { className: `dash-ladder-row dash-ladder-current${direction}` });
+    // 現在値の文字色は直近の向きに追従して**残る**（依頼者指示 2026-08-31。フェードで消える
+    //   発光クラスとは別の恒常クラス＝animationend では外さない）。
+    const dirClass = currentDirection === null ? '' : ` dash-ladder-current-dir-${currentDirection}`;
+    const tr = el('tr', { className: `dash-ladder-row dash-ladder-current${direction}${dirClass}` });
     if (direction) {
       setTickStrengthOn(tr);
     }
@@ -781,7 +784,11 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       currentUpdateEl.textContent = `UPDATE:${formatReachTimestamp(lastUpdateAt)}`;
     }
     if (previous !== null && currentDirection !== null && tickStrength > 0) {
-      // 更新の瞬間に方向色を頻度の濃度で乗せ、CSS の 1s フェードを再始動する
+      // 現在値の文字色の恒常クラス（向きが変わったときだけ付け替える）。
+      const otherDir = currentDirection === 'up' ? 'down' : 'up';
+      currentRowEl.classList.remove(`dash-ladder-current-dir-${otherDir}`);
+      currentRowEl.classList.add(`dash-ladder-current-dir-${currentDirection}`);
+      // 更新の瞬間に方向色を頻度の濃度で乗せ、CSS の 2s フェードを再始動する
       //   （クラスを外す → reflow → 濃度 → 付け直す。fake DOM では最終状態のみ意味）。
       currentRowEl.classList.remove('dash-ladder-current-up');
       currentRowEl.classList.remove('dash-ladder-current-down');

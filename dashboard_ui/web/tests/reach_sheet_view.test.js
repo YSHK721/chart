@@ -505,6 +505,28 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(row.classList.contains('dash-ladder-current-down'), false);
   });
 
+  test('the_current_price_keeps_its_direction_colour_after_the_flash_fades', () => {
+    // 依頼者指示 2026-08-31: 現在値の文字色も方向へ追従（上＝緑・下＝赤）。フェードで消える
+    //   発光クラスと違い、向きが変わるまで残る（animationend でも外れない）。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1000 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    view.updateCurrentPrice(65756.0);
+    view.updateCurrentPrice(65758.0);   // 上へ。
+    const row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-dir-up'), true);
+    // Act: フェード完了（animationend）で発光は消えるが、向きの文字色クラスは残る。
+    (row._listeners.animationend || []).forEach((fn) => fn({}));
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+    assert.equal(row.classList.contains('dash-ladder-current-dir-up'), true);
+    // Act: 下へ動くと文字色クラスが付け替わる。
+    view.updateCurrentPrice(65750.0);
+    assert.equal(row.classList.contains('dash-ladder-current-dir-down'), true);
+    assert.equal(row.classList.contains('dash-ladder-current-dir-up'), false);
+  });
+
   test('the_flash_density_grows_with_the_update_frequency', () => {
     // 濃度＝更新頻度（依頼者指示 2026-08-31。動きの大きさではない）。同じ観測窓に更新が
     //   多いほど濃い。上限 100・下限 25（動いたことが見える最小濃度）。

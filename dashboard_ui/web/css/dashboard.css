@@ -715,6 +715,22 @@
   color: var(--ink);
 }
 
+/* 現在値の文字色は直近の向きに追従（依頼者指示 2026-08-31: 上＝緑・下＝赤。向きが変わる
+   まで残る恒常表示）。発光（2s フェード）中はティック混色の地に載るため、登録済みの組
+   （--ink × --tick-*-bg）へ戻す＝読める対比を機械的検査の内側に保つ。 */
+.dash-ladder-current-dir-up .dash-ladder-current-price {
+  color: var(--up);
+}
+
+.dash-ladder-current-dir-down .dash-ladder-current-price {
+  color: var(--down);
+}
+
+.dash-ladder-current-up .dash-ladder-current-price,
+.dash-ladder-current-down .dash-ladder-current-price {
+  color: var(--ink);
+}
+
 /* 最終更新日時（依頼者指示 2026-08-31: 現在値行へ UPDATE:yyyy/mm/dd hh:mm:ss）。
    文字は副次情報の --ink2（薄さで階層を作らない・規約 4）。大きさも副次に。 */
 .dash-ladder-current-update {
