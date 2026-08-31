@@ -181,48 +181,75 @@ export async function setupDashboardDisplay({
   let lastFullResponse = null;
   /** 直近に描いた内容の鍵（省リソース段階 1: 同一内容なら第 1・第 2 表を作り直さない）。 */
   let lastRenderedKey = null;
-  /** 第 2 表のなめらか再生の spec 台帳（唯一源＝完全応答の cells・依頼者指示 2026-08-31）。
-   *  セルになった instance **だけ**を申告する（ラダー行の instance へ tails を計算させると
-   *  使わない計算を発行することになる・絶対命令 §4.1）。 */
-  let oscTailSpecs = [];
-  /** instanceId → 流し先（セルの行列と系列名）。specs と同時に組み直す。 */
+  /** なめらか再生の spec 台帳（唯一源＝完全応答・依頼者指示 2026-08-31）。第 2 表のセルと
+   *  第 1 表の行になった instance **だけ**を申告する（表に出ない instance へ tails を
+   *  計算させると使わない計算を発行することになる・絶対命令 §4.1）。 */
+  let tailSpecs = [];
+  /** instanceId（instance_key の合成）→ 第 2 表の流し先（行列と系列名）。 */
   const oscTailTargets = new Map();
 
-  /** 完全応答の cells から tails の申告と流し先を組み直す。 */
-  function rebuildOscTailSpecs(response) {
-    const cells = Array.isArray(response.cells) ? response.cells : [];
-    oscTailSpecs = [];
+  /** instance_key（4 要素）→ tails の申告 ID。合成の定義は**ここ 1 箇所**（specs の申告と
+   *  tails の引き当てが同じ関数を通る＝ずれない）。 */
+  function tailInstanceIdOf(key) {
+    return key.join('\u0000');
+  }
+
+  /** instance_key から /live_ticks の spec を 1 本組む（不能なら null）。 */
+  function tailSpecOf(key) {
+    if (!Array.isArray(key) || key.length !== 4) {
+      return null;
+    }
+    let params;
+    try {
+      params = JSON.parse(key[2]);   // params_key は json.dumps＝JSON として復元できる（契約）。
+    } catch {
+      return null;
+    }
+    if (!params || typeof params !== 'object') {
+      return null;
+    }
+    return {
+      instanceId: tailInstanceIdOf(key),
+      indicatorId: key[0],
+      variant: key[1],
+      // 計算足は instance の軸（ISSUE-274 の MTF override と同じ規約で params.timeframe に載せる）。
+      params: { ...params, timeframe: key[3] },
+    };
+  }
+
+  /** 完全応答（cells＋rows）から tails の申告と流し先を組み直す。 */
+  function rebuildTailSpecs(response) {
+    tailSpecs = [];
     oscTailTargets.clear();
-    for (const cell of cells) {
-      const key = cell ? cell.instance_key : null;
-      if (!Array.isArray(key) || key.length !== 4 || !cell.value_series) {
+    const declared = new Set();
+    const declare = (key) => {
+      const spec = tailSpecOf(key);
+      if (!spec || declared.has(spec.instanceId)) {
+        return spec ? spec.instanceId : null;
+      }
+      declared.add(spec.instanceId);
+      tailSpecs.push(spec);
+      return spec.instanceId;
+    };
+    for (const cell of (Array.isArray(response.cells) ? response.cells : [])) {
+      if (!cell || !cell.value_series) {
         continue;   // 宣言の無いセル（旧応答・積算セル等）は流さない＝従来の 1s 表示のまま。
       }
-      const instanceId = key.join('\u0000');
-      if (oscTailTargets.has(instanceId)) {
-        continue;
+      const instanceId = declare(cell.instance_key);
+      if (instanceId !== null && !oscTailTargets.has(instanceId)) {
+        oscTailTargets.set(instanceId, {
+          indicatorId: cell.indicator_id,
+          timeframe: cell.timeframe,
+          valueSeries: cell.value_series,
+        });
       }
-      let params;
-      try {
-        params = JSON.parse(key[2]);   // params_key は json.dumps＝JSON として復元できる（契約）。
-      } catch {
-        continue;
+    }
+    // 第 1 表（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。行の instance を
+    //   申告する。流し先の解決は View 側（instance_key × series → 行）なのでここでは申告のみ。
+    for (const row of (Array.isArray(response.rows) ? response.rows : [])) {
+      if (row && typeof row.series === 'string' && row.series) {
+        declare(row.instance_key);
       }
-      if (!params || typeof params !== 'object') {
-        continue;
-      }
-      oscTailSpecs.push({
-        instanceId,
-        indicatorId: key[0],
-        variant: key[1],
-        // 計算足はセルの列（ISSUE-274 の MTF override と同じ規約で params.timeframe に載せる）。
-        params: { ...params, timeframe: key[3] },
-      });
-      oscTailTargets.set(instanceId, {
-        indicatorId: cell.indicator_id,
-        timeframe: cell.timeframe,
-        valueSeries: cell.value_series,
-      });
     }
   }
 
@@ -255,8 +282,8 @@ export async function setupDashboardDisplay({
         sheetState = response.state;
       }
       lastFullResponse = response;
-      // 第 2 表のなめらか再生: セルの構成が変わりうるのは完全応答のときだけ。
-      rebuildOscTailSpecs(response);
+      // なめらか再生の申告: 表の構成が変わりうるのは完全応答のときだけ。
+      rebuildTailSpecs(response);
     }
     // 省リソース段階 1: 内容が直前の描画と同一なら第 1・第 2 表を作り直さない
     //   （毎秒の全再構築は内容不変時にはまるごと浪費・依頼者指摘 2026-08-30）。
@@ -334,7 +361,7 @@ export async function setupDashboardDisplay({
     sheetState = null;
     lastFullResponse = null;
     lastRenderedKey = null;
-    oscTailSpecs = [];
+    tailSpecs = [];
     oscTailTargets.clear();
 
     if (!client) {
@@ -390,7 +417,7 @@ export async function setupDashboardDisplay({
           //   ISSUE-250 Phase 1 の同梱経路そのもの: poll でセルの instance を申告し、
           //   各 tick 時点の末尾値（サーバ計算）を tick 適用と同一同期ブロックで流す。
           //   フロントは数値を再計算しない（値の唯一源はサーバの tails）。
-          getComputeSpecs: () => oscTailSpecs,
+          getComputeSpecs: () => tailSpecs,
           getLimit: () => OSC_TAILS_LIMIT,
           applyFormingTails: (tails) => {
             if (!enabled || !tails) {
@@ -407,6 +434,12 @@ export async function setupDashboardDisplay({
               }
               oscillatorView.updateCellValue(target.indicatorId, target.timeframe, value);
             }
+            // 第 1 表の水準価格（距離・価格・差）へも同じ tick の tails を流す。引き当ての
+            //   合成は tailInstanceIdOf に閉じる（申告とずれない）。
+            ladderView.updateLevelValues((instanceKey, series) => {
+              const seriesMap = tails[tailInstanceIdOf(instanceKey)];
+              return seriesMap ? seriesMap[series] : undefined;
+            });
           },
           // タイマは**必ずラップして**渡す。player は `this._setInterval(...)` とメソッド形で
           //   呼ぶため、素の globalThis.setInterval を渡すと this が Window でなくなり

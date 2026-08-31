@@ -444,24 +444,35 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     const current = flatten(host).find((el) => el.classList.contains('dash-ladder-current'));
     assert.match(current.textContent, /65,049\.0/);   // 最後の tick が現在値表示へ。
 
-    // ---- 第 2 表のなめらか再生（依頼者指示 2026-08-31: ライブチャートと同じ更新粒度） ----
-    // 申告（specs）は**セルになった instance だけ**（PAYLOAD の oscCell 1 件）で、
+    // ---- 両表のなめらか再生（依頼者指示 2026-08-31: ライブチャートと同じ更新粒度） ----
+    // 申告（specs）は**表になった instance だけ**（PAYLOAD の oscCell 1 件＋ladderRow 1 件）。
     //   instance_key から組み直される（params_key は JSON 復元・計算足は params.timeframe）。
     const specs = player.opts.getComputeSpecs();
-    assert.equal(specs.length, 1);
-    assert.equal(specs[0].indicatorId, 'ma_marod');
-    assert.equal(specs[0].variant, 'default');
-    assert.deepEqual(specs[0].params, { length: 50, timeframe: '1m' });
+    assert.equal(specs.length, 2);
+    const oscSpec = specs.find((s) => s.indicatorId === 'ma_marod');
+    const rowSpec = specs.find((s) => s.indicatorId === 'cvfe');
+    assert.ok(oscSpec && rowSpec);
+    assert.equal(oscSpec.variant, 'default');
+    assert.deepEqual(oscSpec.params, { length: 50, timeframe: '1m' });
+    assert.deepEqual(rowSpec.params, { timeframe: '5m' });
     assert.equal(typeof player.opts.getLimit(), 'number');
-    // tails（サーバ計算の末尾値）が該当セルの現在値だけへ流れる。発行は 1 本も増えない。
+    // tails（サーバ計算の末尾値）が第 2 表の現在値と第 1 表の価格・距離・差へ流れる。
+    //   発行は 1 本も増えない。
     const beforeTails = spy.calls.length;
-    player.opts.applyFormingTails({ [specs[0].instanceId]: { ma_marod: 2.57 } }, 60);
+    player.opts.applyFormingTails({
+      [oscSpec.instanceId]: { ma_marod: 2.57 },
+      [rowSpec.instanceId]: { cvfe_u2: 65900.5 },
+    }, 60);
     assert.equal(spy.calls.length, beforeTails);
     const oscCellEl = flatten(host).find(
       (el) => el.dataset.indicator === 'ma_marod' && el.dataset.timeframe === '1m'
         && el.classList.contains('dash-osc-cell'),
     );
     assert.match(oscCellEl.textContent, /2\.57/);
+    const ladderRowEl = flatten(host).find(
+      (el) => el.classList.contains('dash-ladder-row') && !el.classList.contains('dash-ladder-current'),
+    );
+    assert.match(ladderRowEl.textContent, /65,900\.5/);   // 水準価格が tick 粒度で追随。
 
     // Act: disable で止まる。
     await handle.disable();

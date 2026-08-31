@@ -141,6 +141,10 @@ class LadderRow:
     #: 表示 3 分割 {name, period, source, extra}（依頼者指示 2026-08-30）。識別は従来どおり
     #: `label` が担い、こちらは版面の読みやすさのためだけに使う。
     naming: "Mapping[str, object] | None" = None
+    #: この行の水準を出した**系列の名前**（instance の中の 1 本）。フロントのなめらか再生
+    #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこの行の
+    #: 価格へ流すか」を選ぶための宣言。表示専用（None＝流さない）。
+    series: "str | None" = None
 
 
 @dataclass(frozen=True)

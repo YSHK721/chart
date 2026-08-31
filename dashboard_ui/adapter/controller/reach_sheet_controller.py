@@ -514,6 +514,9 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
         "instance_key": (
             None if row.instance_key is None else list(row.instance_key)
         ),
+        # なめらか再生（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）用の宣言。
+        #   tails のどの系列の末尾値をこの行の水準価格へ流すか。
+        "series": row.series,
         # 表示 3 分割（依頼者指示 2026-08-30: 指標名 / 期間 / ソース）。識別は label が担う。
         "naming": (None if row.naming is None else dict(row.naming)),
     }

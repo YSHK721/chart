@@ -140,6 +140,7 @@ def build_reach_sheet(
     reach_by_row: "dict[tuple[str, str], ReachState]" = {}
     instance_by_row: "dict[tuple[str, str], tuple[str, str, str, str]]" = {}
     naming_by_row: "dict[tuple[str, str], dict[str, object]]" = {}
+    series_by_row: "dict[tuple[str, str], str]" = {}
     cells: "list[OscCell]" = []
     degradations: "list[Degradation]" = []
 
@@ -191,6 +192,7 @@ def build_reach_sheet(
             levels.append(level)
             reach_by_row[level.row_key] = _level_reach(tuple(points), closes)
             instance_by_row[level.row_key] = instance.key
+            series_by_row[level.row_key] = series_name
             naming_by_row[level.row_key] = roles.row_naming(
                 instance=instance, series_name=series_name
             )
@@ -207,6 +209,7 @@ def build_reach_sheet(
             reach=reach_by_row[(row.label, row.timeframe)],
             instance_key=instance_by_row[(row.label, row.timeframe)],
             naming=naming_by_row[(row.label, row.timeframe)],
+            series=series_by_row[(row.label, row.timeframe)],
         )
         for row in ladder.rows
     )

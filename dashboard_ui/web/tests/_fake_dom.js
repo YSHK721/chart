@@ -134,6 +134,9 @@ export function ladderRow(overrides = {}) {
     horizon_marks: [],
     reach: { reached: false, since_time: null, truncated: false },
     horizon_p: { short: 0.058, medium: 0.077, long: 0.128 },
+    // なめらか再生の宣言（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
+    instance_key: ['cvfe', 'default', '{}', '5m'],
+    series: 'cvfe_u2',
     ...overrides,
   };
 }

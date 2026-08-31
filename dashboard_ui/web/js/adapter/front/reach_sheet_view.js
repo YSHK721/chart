@@ -190,6 +190,15 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   /** なめらか再生の外部価格（唯一の書き手・依頼者指示 2026-08-31）。null＝未供給
    *  ＝従来どおり応答の current_price を表示。 */
   let externalPrice = null;
+  /** なめらか再生の水準価格（全行・サーバ並び順。差の計算は可視外の隣接行も要る）。
+   *  各要素 {key, instanceKey, series, smooth}。smooth はサーバ価格を種に tails で上書き。 */
+  let smoothRowsAll = [];
+  /** rowKey → smoothRowsAll の添字。 */
+  const fullIndexByKey = new Map();
+  /** 可視行の書き換え先 {fullIndex, priceEl, distanceEl, gapEl}（render で張り直す）。 */
+  let levelRowRefs = [];
+  /** buildPriceCell が直近に作った価格の文字（buildLevelRow が参照を拾う）。 */
+  let builtPriceTextEl = null;
   /** 次のターゲット印の前回の持ち主（markKey `horizon:side` → rowKey）。null＝初回。 */
   let lastMarkOwners = null;
   /** 移動した印の記録（markKey → {at: 移動時刻 unix 秒, owner: 移動先 rowKey}）。 */
@@ -483,11 +492,12 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     cell.appendChild(bands);
     // 価格の文字は**子要素**として足す。`cell.textContent = ...` と書くと実 DOM では
     //   直前に足した 3 分割の背景が丸ごと消える（textContent の代入は子を捨てる）。
-    cell.appendChild(el('span', {
+    builtPriceTextEl = el('span', {
       className: 'dash-ladder-price-text',
       textContent: formatPrice(row.price),
       dataset: { cell: 'price' },
-    }));
+    });
+    cell.appendChild(builtPriceTextEl);
     return cell;
   }
 
@@ -516,19 +526,32 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     tr.appendChild(nextCell);
 
     const distanceCell = el('th', { className: 'dash-ladder-distance-cell', scope: 'row' });
-    distanceCell.appendChild(el('span', {
+    const distanceTextEl = el('span', {
       className: 'dash-ladder-distance',
       textContent: formatDistance(row.distance),
       dataset: { cell: 'distance' },
-    }));
+    });
+    distanceCell.appendChild(distanceTextEl);
     tr.appendChild(distanceCell);
 
     tr.appendChild(buildPriceCell(row));
-    tr.appendChild(el('td', {
+    const gapCell = el('td', {
       className: 'dash-ladder-gap',
       textContent: formatGap(row.gap_to_previous),
       dataset: { cell: 'gap' },
-    }));
+    });
+    tr.appendChild(gapCell);
+    // なめらか再生の書き換え先（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
+    //   distance の文字は下の distanceCell 内 span（既に作成済み）を使う。
+    const fullIndex = fullIndexByKey.get(rowKeyOf(row));
+    if (fullIndex !== undefined) {
+      levelRowRefs.push({
+        fullIndex,
+        priceEl: builtPriceTextEl,
+        distanceEl: distanceTextEl,
+        gapEl: gapCell,
+      });
+    }
     // 到達時間（定義 C＝最初の接点の時刻・§6.2）。未到達は空欄。履歴の先頭で
     //   切れているとき（truncated）は断定を避ける限定を title へ持つ（§9-5 の規約を保つ）。
     const reach = row.reach ?? null;
@@ -701,6 +724,64 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       currentRowEl.classList.remove(`dash-ladder-current-${other}`);
       currentRowEl.classList.add(`dash-ladder-current-${currentDirection}`);
     }
+    // 現在値が動けば全行の距離も動く（距離 = 水準価格 − 現在値・依頼者指示 2026-08-31）。
+    refreshSmoothNumbers();
+  }
+
+  /** 変わった文字だけ書く（同値は DOM に触らない＝作ってから捨てる仕事を生まない）。 */
+  function setTextIfChanged(target, text) {
+    if (target && target.textContent !== text) {
+      target.textContent = text;
+    }
+  }
+
+  /**
+   * なめらか再生の数値（価格・距離・差）を可視行へ書き直す（依頼者指示 2026-08-31）。
+   *
+   * 式はサーバの参照定義（domain/price_ladder.py）そのもの:
+   *   距離 = 水準価格 − 現在値 / 差 = 直前行（サーバ全行順）の水準価格 − 自行の水準価格。
+   * ここで使う材料（水準価格＝tails・現在値＝再生価格）はどちらもサーバ計算の値であり、
+   * フロントが統計や並びを再計算するわけではない（並び・地平・p は 1s の応答描画が持ち主）。
+   */
+  function refreshSmoothNumbers() {
+    if (externalPrice === null) {
+      return;
+    }
+    for (const ref of levelRowRefs) {
+      const entry = smoothRowsAll[ref.fullIndex];
+      if (!entry || !Number.isFinite(entry.smooth)) {
+        continue;
+      }
+      const prev = ref.fullIndex === 0 ? null : smoothRowsAll[ref.fullIndex - 1];
+      setTextIfChanged(ref.priceEl, formatPrice(entry.smooth));
+      setTextIfChanged(ref.distanceEl, formatDistance(entry.smooth - externalPrice));
+      setTextIfChanged(ref.gapEl, prev === null || !Number.isFinite(prev.smooth)
+        ? '' : formatGap(prev.smooth - entry.smooth));
+    }
+  }
+
+  /**
+   * なめらか再生の 1 tick ぶんの水準価格を流す（依頼者指示 2026-08-31: 距離・価格・差も
+   * ライブチャートと同じ更新粒度）。
+   *
+   * @param {Function} lookup (instance_key 配列, series 名) => 末尾値 | undefined。
+   *   値の実体は `/live_ticks` の tails（サーバ計算）で、合成根が閉じ込めて渡す
+   *   （View は tails のキー構造を知らない）。
+   */
+  function updateLevelValues(lookup) {
+    if (externalPrice === null || typeof lookup !== 'function' || smoothRowsAll.length === 0) {
+      return;
+    }
+    for (const entry of smoothRowsAll) {
+      if (!entry.instanceKey || !entry.series) {
+        continue;
+      }
+      const value = lookup(entry.instanceKey, entry.series);
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        entry.smooth = value;
+      }
+    }
+    refreshSmoothNumbers();
   }
 
   /**
@@ -746,6 +827,17 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     const allRows = Array.isArray(response.rows) ? response.rows : [];
     // 次のターゲット印の移動検出（依頼者承認 2026-08-31）。突合は表の構築前に 1 回。
     trackNextTargetMoves(allRows);
+    // なめらか再生の水準台帳（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
+    //   種はサーバ価格。並びはサーバの全行順（差の隣接はこの順で決まる・絞り込みと無関係）。
+    smoothRowsAll = allRows.map((row) => ({
+      key: rowKeyOf(row),
+      instanceKey: Array.isArray(row.instance_key) ? row.instance_key : null,
+      series: typeof row.series === 'string' && row.series ? row.series : null,
+      smooth: Number(row.price),
+    }));
+    fullIndexByKey.clear();
+    smoothRowsAll.forEach((entry, index) => fullIndexByKey.set(entry.key, index));
+    levelRowRefs = [];
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
     const unknown = unknownHorizonKeys(allRows);
     message.textContent = unknown.length === 0
@@ -860,11 +952,15 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     lastMarkOwners = null;
     markMovedAt.clear();
     renderNowSec = null;
+    smoothRowsAll = [];
+    fullIndexByKey.clear();
+    levelRowRefs = [];
+    builtPriceTextEl = null;
     currentRowEl = null;
     currentPriceEl = null;
     currentLabelCell = null;
     currentUpdateEl = null;
   }
 
-  return { mount, render, unmount, updateCurrentPrice };
+  return { mount, render, unmount, updateCurrentPrice, updateLevelValues };
 }

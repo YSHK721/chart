@@ -702,6 +702,46 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.equal(row.classList.contains('dash-ladder-current-up'), true);
   });
 
+  test('smooth_level_values_rewrite_price_distance_and_gap_in_place', () => {
+    // 依頼者指示 2026-08-31: 距離・価格・差もライブチャートと同じ更新粒度。
+    //   式はサーバの参照定義（domain/price_ladder.py）: 距離 = 水準 − 現在値 /
+    //   差 = 直前行の水準 − 自行の水準。材料（水準＝tails・現在値＝再生価格）はサーバ計算。
+    const rows = [
+      ladderRow({ price: 66000.0, timeframe: '1h', label: 'A', distance: 244.0, gap_to_previous: null, horizon_marks: [], horizon_p: {}, instance_key: ['ma', 'default', '{}', '1h'], series: 'MA' }),
+      ladderRow({ price: 65900.0, timeframe: '1h', label: 'B', distance: 144.0, gap_to_previous: 100.0, horizon_marks: [], horizon_p: {}, instance_key: ['ma9', 'default', '{}', '1h'], series: 'MA' }),
+    ];
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows, current_index: 2, current_price: 65756.0 }));
+    const rowNodes = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    // Act 1: 現在値だけ動く → 全行の距離が追随（行の作り直しなし）。
+    view.updateCurrentPrice(65756.0);
+    view.updateCurrentPrice(65746.0);
+    assert.equal(cellText(rowNodes[0], 'distance'), '+254.0');
+    assert.equal(cellText(rowNodes[1], 'distance'), '+154.0');
+    assert.deepEqual(rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current')), rowNodes);
+    // Act 2: 水準（tails）が動く → 価格・距離・差が追随。
+    view.updateLevelValues((instanceKey, series) => (
+      instanceKey[0] === 'ma' && series === 'MA' ? 66010.0 : undefined
+    ));
+    assert.equal(cellText(rowNodes[0], 'price'), '66,010.0');
+    assert.equal(cellText(rowNodes[0], 'distance'), '+264.0');
+    assert.equal(cellText(rowNodes[1], 'gap'), '110.0');   // 直前行の水準が動いた＝差も動く。
+    // 動かなかった行の水準はそのまま。
+    assert.equal(cellText(rowNodes[1], 'price'), '65,900.0');
+  });
+
+  test('smooth_level_values_do_nothing_before_playback_starts', () => {
+    // 外部価格（再生系列）が無い間は流さない（応答の 1s 表示のまま・値の系列を混ぜない）。
+    const { host, view } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    view.updateLevelValues(() => 99999.0);
+    assert.equal(cellText(first, 'price'), '66,099.7');
+    assert.equal(cellText(first, 'distance'), '+343.7');
+  });
+
   // ---- 表示範囲の切替（依頼者指示 2026-08-30: 短期・中期・長期・全期間） ----
   const scopeButton = (host, key) => flatten(host)
     .find((node) => node.dataset && node.dataset.scope === key);
