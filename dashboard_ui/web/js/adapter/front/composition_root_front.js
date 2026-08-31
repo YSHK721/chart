@@ -28,6 +28,7 @@ import { createOscillatorSheetView } from './oscillator_sheet_view.js';
 import { createTimeframeChartsView, chartsLibUsable } from './timeframe_charts_view.js';
 import { createReachSheetClient, deriveApiPrefix } from './reach_sheet_client.js';
 import { createCandlesClient } from './candles_client.js';
+import { createLiveTicksFeed } from './live_ticks_client.js';
 import { readInstanceBundle, DASHBOARD_TIMEFRAMES } from './template_binding_reader.js';
 import { TIMEFRAME_REFRESH_MS } from './timeframes.js';
 import { createSheetPoller } from '../../usecase/sheet_poller.js';
@@ -58,6 +59,13 @@ const CANDLES_API_PREFIX = '/live';
 /** チャート一覧のローソク本数（末尾から）。水準の照合ではなく文脈の表示が目的なので、
  *  タイル幅で読める程度に留める（増やすほど live core の I/O を 8 面ぶん引く）。 */
 const CANDLE_LIMIT = 180;
+
+/** なめらか tick 再生の唯一の実装（live フロントの LiveTickPlayer・依頼者指示 2026-08-31
+ *  「ライブチャート仕様に合わせて滑らかに再生」）。再生機構（12 秒固定遅延・100ms 粒度・
+ *  カーソル増分・clockOffset）はこの参照実装が正であり、写しを持たず実行時 import で借りる
+ *  （period_presets / candles と同じ規約）。取得できない環境（単体テスト・live 停止）では
+ *  従来どおり 1s 応答の価格表示に縮退する（失敗容認・現在値が消えることはない）。 */
+const LIVE_TICK_PLAYER_PATH = '/live/js/adapter/front/live_tick_player.js';
 
 /**
  * 統合ページ側の入口。器と 2 つの表を出し、`/reach_sheet` の発行を回す。
@@ -90,6 +98,7 @@ export async function setupDashboardDisplay({
   schedule,
   barCloseTimeOf,
   loadPeriodPresets = () => import(PERIOD_PRESETS_PATH),
+  loadLiveTickPlayer = () => import(LIVE_TICK_PLAYER_PATH),
   lwc,
   candlesApiPrefix = CANDLES_API_PREFIX,
 } = {}) {
@@ -155,6 +164,10 @@ export async function setupDashboardDisplay({
   let poller = null;
   let candlePoller = null;
   let stopTimer = null;
+  /** なめらか tick 再生（live の LiveTickPlayer を借りる）。null＝未稼働（縮退表示）。 */
+  let tickPlayer = null;
+  /** enable 中フラグ（player の非同期 import が disable 後に着弾したら捨てるための札）。 */
+  let tickPlayerWanted = false;
   /** サーバの状態トークン（省リソース段階 2・依頼者承認 2026-08-30）。次要求の known_state に
    *  載せ、素材が不変ならサーバは unchanged の極小応答を返す（シート計算ごと省かれる）。 */
   let sheetState = null;
@@ -300,6 +313,42 @@ export async function setupDashboardDisplay({
       : null;
     await refresh();
     stopTimer = startTimer(() => { refresh(); }, TICK_INTERVAL_MS);
+
+    // なめらか tick 再生（依頼者指示 2026-08-31: ライブチャート仕様＝12 秒固定遅延・100ms
+    //   粒度・全ティック適用）。実装は live の LiveTickPlayer そのもの（再生の規約は写さない）。
+    //   renderer には「現在値行のその場書き換え」だけを結線する＝表の構成（並び・距離）は
+    //   従来どおり 1s の応答描画が持つ（フロントは数値を再計算しない・arch-spec §9）。
+    //   import 失敗（単体テスト・live 停止）は握りつぶし＝従来表示のまま。
+    tickPlayerWanted = true;
+    if (transport) {
+      loadLiveTickPlayer().then((mod) => {
+        if (!tickPlayerWanted || tickPlayer !== null
+            || !mod || typeof mod.LiveTickPlayer !== 'function') {
+          return;
+        }
+        const feed = createLiveTicksFeed({ fetch: transport, apiPrefix: candlesApiPrefix });
+        tickPlayer = new mod.LiveTickPlayer({
+          renderer: {
+            updateLastCandle: (bar) => {
+              if (enabled && bar) {
+                ladderView.updateCurrentPrice(bar.close);
+              }
+            },
+          },
+          fetchLiveTicks: feed.fetchLiveTicks,
+          loadFormingBar: feed.loadFormingBar,
+          datasetRef: DATASET_REF,
+          getTimeframe: () => CHART_TIMEFRAME,
+          // タイマは**必ずラップして**渡す。player は `this._setInterval(...)` とメソッド形で
+          //   呼ぶため、素の globalThis.setInterval を渡すと this が Window でなくなり
+          //   "Illegal invocation" で start が黙って死ぬ（実測 2026-08-31。live 側は bootstrap が
+          //   バインド済みを注入しているため無症状＝既定に頼れない）。
+          setInterval: (...args) => globalThis.setInterval(...args),
+          clearInterval: (...args) => globalThis.clearInterval(...args),
+        });
+        tickPlayer.start();
+      }).catch(() => {});
+    }
   }
 
   /** dashboard モードから出るときに呼ばれる。器ごと畳み、発行を止める。 */
@@ -319,6 +368,11 @@ export async function setupDashboardDisplay({
     if (typeof stopTimer === 'function') {
       stopTimer();
       stopTimer = null;
+    }
+    tickPlayerWanted = false;
+    if (tickPlayer) {
+      tickPlayer.stop();
+      tickPlayer = null;
     }
     ladderView.unmount();
     oscillatorView.unmount();

@@ -547,6 +547,104 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     assert.doesNotMatch(textOf(currentRowOf(host)), /UPDATE:/);
   });
 
+  // ---- なめらか tick 再生（依頼者指示 2026-08-31: ライブチャート仕様に合わせる） ----
+
+  test('a_smooth_tick_rewrites_the_current_row_in_place_without_rebuilding_the_table', () => {
+    // 100ms 粒度の tick 適用で表全体を作り直すと 1 秒あたり最大 10 回の全再構築になる。
+    //   触ってよいのは現在値行の文字と効果クラスだけ（作ってから捨てる仕事を生まない）。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    const rowBefore = currentRowOf(host);
+    const levelRowsBefore = rowsOf(host).filter((r) => r !== rowBefore);
+    // Act: シード（初回・変化なし扱い）→ 変化。
+    view.updateCurrentPrice(65756.0);
+    view.updateCurrentPrice(65761.0);
+    // Assert: 現在値行は**同じ要素のまま**中身が変わる（行の置換も表の再構築もしない）。
+    const rowAfter = currentRowOf(host);
+    assert.equal(rowAfter, rowBefore);
+    assert.match(textOf(rowAfter), /65,761\.0/);
+    assert.equal(rowAfter.classList.contains('dash-ladder-current-up'), true);
+    assert.equal(Number(rowAfter.style['--tick-strength']) > 0, true);
+    assert.match(textOf(rowAfter), /UPDATE:2026\/01\/01 01:02:03/);
+    rowsOf(host).filter((r) => r !== rowAfter).forEach((row, i) => {
+      assert.equal(row, levelRowsBefore[i]);   // 水準行はノードごと不変。
+    });
+  });
+
+  test('a_tick_with_the_same_price_touches_no_dom_at_all', () => {
+    // 同値 tick は何も作らない（発行した仕事 − 使った仕事 = 0・絶対命令 §4.1）。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    view.updateCurrentPrice(65761.0);
+    const sizeBefore = flatten(host).length;
+    const classBefore = currentRowOf(host).className;
+    view.updateCurrentPrice(65761.0);
+    view.updateCurrentPrice(65761.0);
+    assert.equal(flatten(host).length, sizeBefore);
+    assert.equal(currentRowOf(host).className, classBefore);
+  });
+
+  test('the_first_smooth_price_stamps_the_time_but_does_not_flash', () => {
+    // 初回の外部価格はシード（12 秒遅延の系列の起点）。応答の価格と比べて偽の発光を作らない。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    view.updateCurrentPrice(65740.0);   // 応答の価格より 16 点下（遅延系列の初回）。
+    const row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-down'), false);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+    assert.match(textOf(row), /65,740\.0/);
+    assert.match(textOf(row), /UPDATE:/);
+  });
+
+  test('once_smooth_playback_starts_the_response_price_no_longer_writes_the_display', () => {
+    // 外部価格が唯一の書き手（参照実装 LiveTickPlayer の suppressPriceUpdate と同じ規約）。
+    //   応答（遅延なし）と再生（12 秒遅延）を比較すると毎描画が偽の更新になるため、
+    //   応答描画は行の構成だけを更新し、価格の表示と効果には触らない。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    view.updateCurrentPrice(65740.0);
+    view.updateCurrentPrice(65742.0);   // 発光（up）。
+    // Act: 応答の価格が動いても表示は外部価格のまま・偽の発光もない。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65800.0 }));
+    let row = currentRowOf(host);
+    assert.match(textOf(row), /65,742\.0/);
+    assert.doesNotMatch(textOf(row), /65,800\.0/);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);   // tick 直後の描画は効果を保つ。
+    // Act: 外部 tick の無い次の描画周期で効果は落ちる。
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65800.0 }));
+    row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+  });
+
+  test('the_fade_effect_clears_itself_on_animationend_without_a_rerender', () => {
+    // 効果の後始末は CSS の animationend に同期する（タイマーも再描画も要らない）。
+    //   なめらか再生中は hasPendingEffects も false＝後始末のための全再構築を誘発しない。
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const view = createReachSheetView({ doc, now: () => 1767229323 });
+    view.mount(host);
+    view.render(sheetResponse({ rows: THREE_ROWS, current_index: 2, current_price: 65756.0 }));
+    view.updateCurrentPrice(65740.0);
+    view.updateCurrentPrice(65745.0);
+    const row = currentRowOf(host);
+    assert.equal(row.classList.contains('dash-ladder-current-up'), true);
+    assert.equal(view.hasPendingEffects(), false);
+    (row._listeners.animationend || []).forEach((fn) => fn({}));
+    assert.equal(row.classList.contains('dash-ladder-current-up'), false);
+  });
+
   test('the_flash_density_grows_with_the_size_of_the_move', () => {
     // 更新粒度＝色の濃度（依頼者指示）。小さい動きは薄く・大きい動きは濃く（上限 100）。
     const strengthAfterMove = (delta) => {

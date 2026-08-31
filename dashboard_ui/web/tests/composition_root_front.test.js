@@ -403,6 +403,51 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     assert.equal(currentOf(), row);
   });
 
+  test('the_live_tick_player_is_borrowed_started_and_drives_only_the_current_row', async () => {
+    // なめらか tick 再生（依頼者指示 2026-08-31: ライブチャート仕様）。再生機構は live の
+    //   LiveTickPlayer を実行時 import で借り、renderer には現在値行のその場書き換えだけを
+    //   結線する。tick の適用は /reach_sheet の発行を 1 本も生まない（発行 − 使用 = 0）。
+    class FakePlayer {
+      constructor(opts) {
+        FakePlayer.last = this;
+        this.opts = opts;
+        this.started = 0;
+        this.stopped = 0;
+      }
+
+      start() { this.started += 1; }
+
+      stop() { this.stopped += 1; }
+    }
+    const doc = fakeDoc();
+    const host = fakeEl('div');
+    const spy = spyFetch();
+    const handle = await setupDashboardDisplay({
+      doc, host, templates: readOnlyTemplates(2), fetch: spy.fetchFn, apiPrefix: '/dashboard',
+      now: () => 0, schedule: () => () => {}, barCloseTimeOf: () => 100,
+      loadLiveTickPlayer: () => Promise.resolve({ LiveTickPlayer: FakePlayer }),
+    });
+    await handle.enable();
+    await Promise.resolve();   // import の then を流す。
+    const player = FakePlayer.last;
+    assert.ok(player, 'player が組み立てられていません');
+    assert.equal(player.started, 1);
+    assert.equal(player.opts.datasetRef, 'jp225_tick');
+    assert.equal(typeof player.opts.fetchLiveTicks, 'function');
+    assert.equal(typeof player.opts.loadFormingBar, 'function');
+    // Act: tick を大量に適用しても /reach_sheet の発行は増えない（計算量の表明）。
+    const issuedBefore = spy.calls.length;
+    for (let i = 0; i < 50; i += 1) {
+      player.opts.renderer.updateLastCandle({ time: 60, open: 1, high: 2, low: 0.5, close: 65000 + i });
+    }
+    assert.equal(spy.calls.length, issuedBefore);
+    const current = flatten(host).find((el) => el.classList.contains('dash-ladder-current'));
+    assert.match(current.textContent, /65,049\.0/);   // 最後の tick が現在値表示へ。
+    // Act: disable で止まる。
+    await handle.disable();
+    assert.equal(player.stopped, 1);
+  });
+
   test('no_request_is_issued_after_disable', async () => {
     // モードを出た後も dashboard core を叩き続けると、live のプールを奪う。
     const h = harness();
