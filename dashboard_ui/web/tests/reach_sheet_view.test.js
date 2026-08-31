@@ -174,7 +174,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
 
   test('a_reached_row_shows_its_reach_time_between_gap_and_timeframe', () => {
     // 依頼者指示 2026-08-30:「差」と「時間足」の間に「到達時間」。表記 YYYY/MM/DD HH:MM:SS（UTC）。
-    //   1767229323 = 2026-01-01 01:02:03 UTC（時刻系は marketdata と同じ UTC・§6.2 定義 A）。
+    //   1767229323 = 2026-01-01 01:02:03 UTC（時刻系は marketdata と同じ UTC・§6.2 定義 C）。
     const rows = [ladderRow({ price: 65754.5, timeframe: '1m', label: 'a', distance: -1.5, gap_to_previous: null, horizon_marks: [], horizon_p: {}, reach: { reached: true, since_time: 1767229323, truncated: false } })];
     const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));

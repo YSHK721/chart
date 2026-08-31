@@ -169,7 +169,7 @@ class TestLadder:
         assert [row.label.split()[1] for row in sheet.rows] == ["btlm_trail_mean"]
 
     def test_every_row_carries_its_reach_state(self) -> None:
-        """§6.2 定義 A を第 1 表に適用する（クライアント側で積み上げない）。"""
+        """§6.2 定義 C を第 1 表に適用する（クライアント側で積み上げない）。"""
         instance = SheetInstance("moving_averages", "default", {"length": 5}, "1m")
         series = FakeSeriesPort({instance.key: {"MA": _points([99.0, 99.0, 99.0])}})
         bars = FakeBarPort({"1m": _bars([98.0, 100.0, 101.0])})
@@ -284,15 +284,16 @@ class TestOscillatorCells:
         assert sheet.cells[0].p is None
         assert sheet.cells[0].unavailable_reason is not None
 
-    def test_the_reach_time_of_a_cell_uses_definition_a(self) -> None:
+    def test_the_reach_time_of_a_cell_is_the_first_contact(self) -> None:
+        """定義 C（依頼者指示 2026-08-31）。定義 A（連続区間の始端）なら _NOW+180 に若返る。"""
         instance, series, bars, roles = self._rsi_setup(
-            [95.0, 10.0, 95.0, 96.0], [90.0] * 4)
+            [10.0, 95.0, 10.0, 95.0], [90.0] * 4)
 
         sheet = build_reach_sheet(_request(instance), series_port=series,
                                   bar_port=bars, roles=roles)
 
         assert sheet.cells[0].reach.reached is True
-        assert sheet.cells[0].reach.since_time == _NOW + 120
+        assert sheet.cells[0].reach.since_time == _NOW + 60
 
 
 class TestCumulativeCells:

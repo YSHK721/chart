@@ -453,7 +453,7 @@ export function createReachSheetView({ doc, periodAnnotator = null } = {}) {
       textContent: formatGap(row.gap_to_previous),
       dataset: { cell: 'gap' },
     }));
-    // 到達時間（定義 A＝現在の到達が始まった時刻・§6.2）。未到達は空欄。履歴の先頭で
+    // 到達時間（定義 C＝最初の接点の時刻・§6.2）。未到達は空欄。履歴の先頭で
     //   切れているとき（truncated）は断定を避ける限定を title へ持つ（§9-5 の規約を保つ）。
     const reach = row.reach ?? null;
     const reached = !!(reach && reach.reached === true

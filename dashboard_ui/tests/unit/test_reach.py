@@ -1,8 +1,8 @@
-"""§6.1 到達判定（交差）と §6.2 到達時刻（定義 A）の唯一定義を固定する。
+"""§6.1 到達判定（交差）と §6.2 到達時刻（定義 C＝最初の接点）の唯一定義を固定する。
 
-定義 A: 到達時刻 = **現在の到達状態が始まった時刻**（`reached` が現在と同値である連続区間の
-始端）。窓内の最古の到達（定義 B）ではない。観測値が水準を離れて戻ると、戻った時点が
-新しい始端になる。
+定義 C: 到達時刻 = **現在の状態が履歴で最初に現れた時刻**（依頼者指示 2026-08-31）。
+途中で観測値が水準を離れて戻っても起点は動かない（定義 A「連続区間の始端」は反転のたびに
+若返るため置換された）。
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class TestIsReached:
 
 
 class TestReachState:
-    def test_the_reach_time_is_the_start_of_the_current_run(self) -> None:
+    def test_the_reach_time_is_the_first_contact(self) -> None:
         # Arrange: 到達は t=30 で始まり、以後継続している。
         times = [10, 20, 30, 40]
         values = [90.0, 95.0, 105.0, 107.0]
@@ -50,8 +50,8 @@ class TestReachState:
 
         assert state == ReachState(reached=True, since_time=30, truncated=False)
 
-    def test_leaving_and_returning_restarts_the_reach_time(self) -> None:
-        """定義 A の核心。定義 B（窓内最古）なら 20 になる。"""
+    def test_leaving_and_returning_keeps_the_first_contact(self) -> None:
+        """定義 C の核心。定義 A（連続区間の始端）なら 40 に若返る。"""
         times = [10, 20, 30, 40, 50]
         values = [90.0, 105.0, 95.0, 105.0, 106.0]
         levels = [100.0] * 5
@@ -59,10 +59,11 @@ class TestReachState:
         state = reach_state(times, values, levels, side=LevelSide.ABOVE)
 
         assert state.reached is True
-        assert state.since_time == 40
+        assert state.since_time == 20
+        assert state.truncated is False
 
-    def test_a_not_reached_state_also_carries_the_start_of_its_run(self) -> None:
-        """`reached_now` が False の連続区間にも始端がある（§6.2 の式は両値に適用される）。"""
+    def test_a_not_reached_state_also_carries_its_first_occurrence(self) -> None:
+        """`reached_now` が False にも最初の時刻がある（§6.2 の式は両値に適用される）。"""
         times = [10, 20, 30]
         values = [105.0, 95.0, 96.0]
         levels = [100.0] * 3
@@ -92,8 +93,8 @@ class TestReachState:
 
         assert state == ReachState(reached=True, since_time=20, truncated=False)
 
-    def test_a_run_that_extends_to_the_first_sample_is_marked_truncated(self) -> None:
-        """始端が履歴の先頭なら「その時刻に始まった」と断定できない（無言の縮退を作らない）。"""
+    def test_a_first_contact_at_the_first_sample_is_marked_truncated(self) -> None:
+        """最初の接点が履歴の先頭なら「その時刻に始まった」と断定できない（無言の縮退を作らない）。"""
         times = [10, 20, 30]
         values = [105.0, 106.0, 107.0]
         levels = [100.0] * 3
@@ -104,8 +105,8 @@ class TestReachState:
         assert state.since_time == 10
         assert state.truncated is True
 
-    def test_an_undecidable_sample_breaks_the_run(self) -> None:
-        """境界値: 途中の NaH（水準なし）は連続区間を切る。"""
+    def test_an_undecidable_gap_does_not_erase_an_earlier_first_contact(self) -> None:
+        """境界値: 途中の NaN（水準なし）を挟んでも最初の接点は動かない（定義 C）。"""
         times = [10, 20, 30, 40]
         values = [105.0, float("nan"), 105.0, 106.0]
         levels = [100.0] * 4
@@ -113,7 +114,19 @@ class TestReachState:
         state = reach_state(times, values, levels, side=LevelSide.ABOVE)
 
         assert state.reached is True
-        assert state.since_time == 30
+        assert state.since_time == 10
+        assert state.truncated is True
+
+    def test_an_opposite_state_before_the_first_contact_certifies_it(self) -> None:
+        """最初の接点より前に反対の状態を見届けていれば truncated ではない。"""
+        times = [10, 20, 30, 40]
+        values = [95.0, 105.0, 95.0, 105.0]
+        levels = [100.0] * 4
+
+        state = reach_state(times, values, levels, side=LevelSide.ABOVE)
+
+        assert state.reached is True
+        assert state.since_time == 20
         assert state.truncated is False
 
     def test_an_undecidable_latest_sample_yields_an_unknown_state(self) -> None:
