@@ -33,6 +33,7 @@ from dashboard_ui.usecase.sheet_models import (
     LadderRow,
     OscCell,
     OscillatorSpec,
+    ProjectedLevel,
     ReachSheetRequest,
     ReachSheetResponse,
     SeriesRole,
@@ -117,6 +118,7 @@ def build_reach_sheet(
     elapsed_comparisons: "Mapping[tuple[str, str, str, str], ElapsedComparison] | None" = None,
     tail_fit_cache: "TailFitCache | None" = None,
     event_cache: "ExcessEventCache | None" = None,
+    projected_levels: "Sequence[ProjectedLevel]" = (),
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
 
@@ -140,7 +142,7 @@ def build_reach_sheet(
     reach_by_row: "dict[tuple[str, str], ReachState]" = {}
     instance_by_row: "dict[tuple[str, str], tuple[str, str, str, str]]" = {}
     naming_by_row: "dict[tuple[str, str], dict[str, object]]" = {}
-    series_by_row: "dict[tuple[str, str], str]" = {}
+    series_by_row: "dict[tuple[str, str], str | None]" = {}
     cells: "list[OscCell]" = []
     degradations: "list[Degradation]" = []
 
@@ -196,6 +198,29 @@ def build_reach_sheet(
             naming_by_row[level.row_key] = roles.row_naming(
                 instance=instance, series_name=series_name
             )
+
+    # 分位水準に達する価格の射影行（依頼者指示 2026-08-31）。価格は adapter が §5.5 の
+    #   閉形式逆写像で算出済み。並び・距離・差・地平の印は既存の ladder 構築へ**合流**させる
+    #   だけ（第 2 の並び規則を作らない）。reach は持たない（系列が無い＝発明しない）。
+    #   series も None＝なめらか tails の申告対象にならない（tick 再計算は射影では不能）。
+    for extra in projected_levels:
+        label = (f"{extra.indicator_id} {extra.level} 射影 "
+                 f"{extra.instance_key[1]} {extra.instance_key[2]}")
+        level = LevelInput(
+            price=float(extra.price), timeframe=extra.timeframe, label=label,
+        )
+        levels.append(level)
+        reach_by_row[level.row_key] = ReachState(
+            reached=None, since_time=None, truncated=False,
+        )
+        instance_by_row[level.row_key] = extra.instance_key
+        series_by_row[level.row_key] = None
+        naming_by_row[level.row_key] = (
+            dict(extra.naming) if extra.naming is not None else {
+                "name": extra.indicator_id, "level": extra.level,
+                "level_p": extra.level_p, "period": None, "source": None, "extra": "",
+            }
+        )
 
     ladder = build_ladder(levels, current_price=current_price)
     rows = tuple(

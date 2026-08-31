@@ -35,6 +35,7 @@ from dashboard_ui.usecase.project_quantiles_to_price import (
 from dashboard_ui.usecase.sheet_models import (
     Degradation,
     OscillatorSpec,
+    ProjectedLevel,
     ReachSheetRequest,
     SheetInstance,
     UpdateGranularity,
@@ -250,6 +251,13 @@ class ReachSheetController:
             ],
             now_unix=now_unix,
         )
+        # 投影（§5.5 の係数と分位水準の価格）はシートの出力に依存しない——先に計算し、
+        #   分位水準に達する価格を**第 1 表の行**として合流させる（依頼者指示 2026-08-31
+        #   「ma_marod, btlm_trail_marod, profit_rsi の分位水準の価格を価格ラダーに反映」。
+        #   機構は指標名に依存せず、投影できる全オシレータに効く）。
+        projections, unprojectable, level_prices = self._projections_of(
+            parsed, instances, series_by_key, specs, now_unix
+        )
         sheet = build_reach_sheet(
             request,
             series_port=self._series_port,
@@ -258,9 +266,7 @@ class ReachSheetController:
             elapsed_comparisons=comparisons,
             tail_fit_cache=self._state.tails,
             event_cache=self._state.events,
-        )
-        projections, unprojectable, level_prices = self._projections_of(
-            parsed, instances, series_by_key, specs, now_unix
+            projected_levels=self._projected_levels(instances, specs, level_prices),
         )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
         degradations = [*sheet.degradations, *_unprojectable_degradations(unprojectable)]
@@ -283,6 +289,47 @@ class ReachSheetController:
         }
 
     # -------------------------------------------------------------- 価格投影
+    def _projected_levels(
+        self,
+        instances: "Sequence[SheetInstance]",
+        specs: "Mapping[tuple, OscillatorSpec | None]",
+        level_prices: "Mapping[tuple, dict]",
+    ) -> "list[ProjectedLevel]":
+        """分位水準に達する価格を第 1 表の行の宣言へ組む（第 2 表セルと同じ値・同じ唯一源）。
+
+        naming は当該 instance の値系列の row_naming を土台に、水準名（q95 / q5）と定義分位
+        （水準セルのヒート用）だけ差し替える＝表示語彙を第 1 表の既存行と揃える。
+        """
+        out: "list[ProjectedLevel]" = []
+        for instance in instances:
+            sides = level_prices.get(instance.key)
+            spec = specs.get(instance.key)
+            if not sides or spec is None:
+                continue
+            base = self._roles.row_naming(
+                instance=instance, series_name=spec.value_series
+            )
+            for side_key, quantile in (("q_high", spec.q_high), ("q_low", spec.q_low)):
+                entry = sides.get(side_key)
+                if not entry:
+                    continue
+                naming = dict(base or {})
+                naming["level"] = str(entry["level"])
+                naming["level_p"] = None if quantile is None else float(quantile)
+                naming["level_note"] = (
+                    "オシレータがこの分位水準に達するときの価格（§5.5 の閉形式逆写像）"
+                )
+                out.append(ProjectedLevel(
+                    instance_key=instance.key,
+                    indicator_id=instance.indicator_id,
+                    timeframe=instance.timeframe,
+                    price=float(entry["price"]),
+                    level=str(entry["level"]),
+                    level_p=None if quantile is None else float(quantile),
+                    naming=naming,
+                ))
+        return out
+
     def _projections_of(
         self,
         parsed: _Parsed,

@@ -148,6 +148,29 @@ class LadderRow:
 
 
 @dataclass(frozen=True)
+class ProjectedLevel:
+    """オシレータの**分位水準に達する価格**を第 1 表の行として載せる宣言
+    （依頼者指示 2026-08-31「ma_marod, btlm_trail_marod, profit_rsi の分位水準の価格を
+    価格ラダーに反映せよ」。機構は指標名に依存しない——投影できる全オシレータに効く）。
+
+    価格の算出（§5.5 の閉形式逆写像＋往復検証）は adapter（controller）が持ち主で、
+    ここは「その価格を行としてどう並べるか」だけを受け取る。到達時刻は持たない
+    （行の reach は水準系列との突合で導くが、射影行には系列が無い＝発明しない）。
+    """
+
+    instance_key: "tuple[str, str, str, str]"
+    indicator_id: str
+    timeframe: str
+    price: float
+    #: 分位の名前（例 'q95'・第 1 表の水準列と同じ語彙）。
+    level: str
+    #: 定義分位（水準セルのヒート・§5.5.6 と同じ目盛り）。None＝塗らない。
+    level_p: "float | None" = None
+    #: 表示 3 分割（LadderRow.naming と同じ形）。
+    naming: "Mapping[str, object] | None" = None
+
+
+@dataclass(frozen=True)
 class ElapsedComparison:
     """§5.3.3 の比較集合（形成中の積み上がる量を同経過の過去へ当てるための材料）。
 

@@ -310,6 +310,36 @@ def test_a_band_beyond_the_probe_range_is_shown_after_a_round_trip_verification(
     assert abs(float(marod["level_prices"]["q_high"]["price"]) - 99800.0) < 0.01
 
 
+def test_the_projected_quantile_price_joins_the_ladder_as_a_row() -> None:
+    """依頼者指示 2026-08-31: 分位水準に達する価格を**価格ラダーへ反映**する。
+
+    第 2 表セルの level_prices と**同じ値・同じ唯一源**が行として合流すること（第 2 の
+    算出経路を作らない）。射影行は系列を持たない＝series は None・reach は判定不能・
+    naming の水準は分位名（q95）。並びは既存の ladder 構築（価格降順）に従う。
+    """
+    forward = ForwardSpy()
+    material = series_material()
+    material[("ma_marod", "1m")]["ma_marod_q95"] = points(60, lambda i: 1.999, step=60)
+    response = handle(controller_of(forward, SeriesPortFake(material)), body())
+
+    marod = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"][0]
+    price = float(marod["level_prices"]["q_high"]["price"])
+    projected = [
+        row for row in response["rows"]
+        if row["naming"] and row["naming"].get("level") == "q95"
+        and row["series"] is None
+    ]
+
+    assert len(projected) == 1
+    row = projected[0]
+    assert abs(float(row["price"]) - price) < 1e-9   # セルと同じ値（唯一源の共有）。
+    assert row["naming"]["name"]                      # 指標の表示名を持つ。
+    assert row["reach"]["reached"] is None            # 系列が無い＝到達は発明しない。
+    # 並びは価格降順の中の正しい位置（99,800 は現在値より遥か上＝先頭側）。
+    prices = [float(r["price"]) for r in response["rows"]]
+    assert prices == sorted(prices, reverse=True)
+
+
 def test_a_band_whose_solution_is_not_a_positive_price_stays_hidden() -> None:
     """帯 3.0 の名目解は C=-300（Spy の値域 v<2 の外）。価格の定義域（正）に無い解は
     表示しない（検証が通る負価格でも「この価格域では到達しない」が正しい読み）。"""
