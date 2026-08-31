@@ -86,6 +86,13 @@ const SURFACES = Object.freeze([
     texts: ['--ink', '--ink2', '--muted', '--up'],
     heatTexts: ['--ink', '--ink2'],
   },
+  // .dash-ladder-pending（抵抗側の帯・依頼者指示 2026-08-31: 支持側と対称）。
+  {
+    name: '抵抗行の帯',
+    ground: '--down-band',
+    texts: ['--ink', '--ink2', '--muted', '--down'],
+    heatTexts: ['--ink', '--ink2'],
+  },
   // .dash-ladder-current（現在値行）。地は他の行と同じ --surface（依頼者指示 2026-08-31・
   //   「表の地」の組で被覆済み）。--ink の地は次のターゲットの長期バッジが使い続ける。
   { name: '長期バッジ', ground: '--ink', texts: ['--bg'] },
@@ -369,14 +376,16 @@ describe('dashboard の版面 — 読めることを計算で固定する', () =
     //   合成済みにすると「元の色との関係」が CSS から読めなくなるので、その関係をここで固定する。
     const DILUTION = 0.55;
     for (const [themeName, palette] of THEMES) {
-      const expected = composite([...colorOf(palette, '--up-bg'), DILUTION], colorOf(palette, '--surface'));
-      const actual = colorOf(palette, '--up-band');
-      for (const i of [0, 1, 2]) {
-        assert.ok(
-          Math.abs(actual[i] - expected[i]) <= 0.5,
-          `${themeName}: --up-band が --up-bg の ${DILUTION * 100}% ではありません`
-          + `（期待 ${expected.map((v) => Math.round(v)).join(',')} / 実際 ${actual.join(',')}）`,
-        );
+      for (const [band, source] of [['--up-band', '--up-bg'], ['--down-band', '--down-bg']]) {
+        const expected = composite([...colorOf(palette, source), DILUTION], colorOf(palette, '--surface'));
+        const actual = colorOf(palette, band);
+        for (const i of [0, 1, 2]) {
+          assert.ok(
+            Math.abs(actual[i] - expected[i]) <= 0.5,
+            `${themeName}: ${band} が ${source} の ${DILUTION * 100}% ではありません`
+            + `（期待 ${expected.map((v) => Math.round(v)).join(',')} / 実際 ${actual.join(',')}）`,
+          );
+        }
       }
     }
   });

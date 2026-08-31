@@ -403,7 +403,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       return span;
     };
     legend.appendChild(item('dash-legend-swatch-hit', '現在値より下（到達済み＝支持側）'));
-    legend.appendChild(item('', '現在値より上（未到達＝抵抗側）'));
+    legend.appendChild(item('dash-legend-swatch-pending', '現在値より上（未到達＝抵抗側）'));
     // 差は独立列になり見出し（差・直前行と）が意味を持つため、凡例からは外した
     //   （依頼者指示 2026-08-30・同じ説明を 2 か所に置かない）。
     return legend;

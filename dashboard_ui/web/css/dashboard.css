@@ -47,6 +47,11 @@
   --up-bar: #26a69a;
   --down: #c33e3b;
   --down-bg: #fdecec;
+  /* 抵抗側（未到達）の帯（依頼者指示 2026-08-31: 上側の行にも支持側と同じく色を）。
+     --down-band は --down-bg を 55% まで薄めた合成済み実色（--up-band と同じ規約・
+     関係は dashboard_theme_contrast.test.js が計算で固定）。 */
+  --down-band: #fef5f5;
+  --down-bar: #ef5350;
   --cyan: #117988;
   --amber: #966417;
   --amber-bg: #fbf0dc;
@@ -80,6 +85,8 @@
     --up-bar: #26a69a;
     --down: #f0736f;
     --down-bg: #3a1e1e;
+    --down-band: #2a1d20;
+    --down-bar: #ef5350;
     --cyan: #3fc3d4;
     --amber: #e0a552;
     --amber-bg: #33260f;
@@ -106,6 +113,8 @@
   --up-bar: #26a69a;
   --down: #f0736f;
   --down-bg: #3a1e1e;
+  --down-band: #2a1d20;
+  --down-bar: #ef5350;
   --cyan: #3fc3d4;
   --amber: #e0a552;
   --amber-bg: #33260f;
@@ -364,6 +373,15 @@
      2. 検定が地の実色を読むとき、合成規則を検定側へ写す必要がなくなる（写しを持たない）。 */
 .dash-ladder-hit {
   background: var(--up-band);
+}
+
+/* 未到達側（現在値より上＝抵抗側）にも帯＋左 3px（依頼者指示 2026-08-31: 支持側と対称）。 */
+.dash-ladder-pending {
+  background: var(--down-band);
+}
+
+.dash-ladder-pending .dash-ladder-next-cell {
+  box-shadow: inset 3px 0 0 var(--down-bar);
 }
 
 /* 左の 3px は**セル**へ置く。`tr` への box-shadow は描かれない実装があり、そこでは
@@ -741,6 +759,11 @@
 .dash-legend-swatch-hit {
   background: var(--up-band);
   box-shadow: inset 3px 0 0 var(--up-bar);
+}
+
+.dash-legend-swatch-pending {
+  background: var(--down-band);
+  box-shadow: inset 3px 0 0 var(--down-bar);
 }
 
 .dash-legend-swatch-gap {
