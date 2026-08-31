@@ -170,8 +170,11 @@ export async function setupDashboardDisplay({
   let poller = null;
   let candlePoller = null;
   let stopTimer = null;
-  /** なめらか tick 再生（live の LiveTickPlayer を借りる）。null＝未稼働（縮退表示）。 */
-  let tickPlayer = null;
+  /** なめらか tick 再生（live の LiveTickPlayer を借りる）。時間足ごとに 1 台
+   *  （主＝チャート足がラダー・第 2 表・1m タイルを、他の 7 台が各タイルを駆動する・
+   *  依頼者指示 2026-08-31「各時間足のチャートもライブモードと同じティック粒度」）。
+   *  空＝未稼働（縮退表示）。 */
+  let tickPlayers = [];
   /** enable 中フラグ（player の非同期 import が disable 後に着弾したら捨てるための札）。 */
   let tickPlayerWanted = false;
   /** サーバの状態トークン（省リソース段階 2・依頼者承認 2026-08-30）。次要求の known_state に
@@ -396,16 +399,24 @@ export async function setupDashboardDisplay({
     tickPlayerWanted = true;
     if (transport) {
       loadLiveTickPlayer().then((mod) => {
-        if (!tickPlayerWanted || tickPlayer !== null
+        if (!tickPlayerWanted || tickPlayers.length > 0
             || !mod || typeof mod.LiveTickPlayer !== 'function') {
           return;
         }
         const feed = createLiveTicksFeed({ fetch: transport, apiPrefix: candlesApiPrefix });
-        tickPlayer = new mod.LiveTickPlayer({
+        // タイマは**必ずラップして**渡す（下の主 player のコメント参照）。
+        const timers = {
+          setInterval: (...args) => globalThis.setInterval(...args),
+          clearInterval: (...args) => globalThis.clearInterval(...args),
+        };
+        tickPlayers.push(new mod.LiveTickPlayer({
           renderer: {
             updateLastCandle: (bar) => {
               if (enabled && bar) {
                 ladderView.updateCurrentPrice(bar.close);
+                // チャート足のタイルも同じ形成中バーで描く（依頼者指示 2026-08-31。
+                //   同じ足の再生を 2 台立てると同一ストリームの二重取得になる）。
+                chartsView.updateLastCandle(CHART_TIMEFRAME, bar);
               }
             },
           },
@@ -441,14 +452,35 @@ export async function setupDashboardDisplay({
               return seriesMap ? seriesMap[series] : undefined;
             });
           },
-          // タイマは**必ずラップして**渡す。player は `this._setInterval(...)` とメソッド形で
-          //   呼ぶため、素の globalThis.setInterval を渡すと this が Window でなくなり
-          //   "Illegal invocation" で start が黙って死ぬ（実測 2026-08-31。live 側は bootstrap が
-          //   バインド済みを注入しているため無症状＝既定に頼れない）。
-          setInterval: (...args) => globalThis.setInterval(...args),
-          clearInterval: (...args) => globalThis.clearInterval(...args),
-        });
-        tickPlayer.start();
+          // タイマのラップ必須の理由: player は `this._setInterval(...)` とメソッド形で呼ぶため、
+          //   素の globalThis.setInterval を渡すと this が Window でなくなり "Illegal invocation"
+          //   で start が黙って死ぬ（実測 2026-08-31。live 側は bootstrap がバインド済みを注入）。
+          ...timers,
+        }));
+        // 残りの 7 足へタイル駆動の player を 1 台ずつ（依頼者指示 2026-08-31）。ライブモードの
+        //   その足のチャートと**同一の経路**（/live_ticks の barTimes・/forming_bar シード・
+        //   12 秒遅延・100ms 適用）。tails の申告は主 player だけ（同じ末尾値を 8 回計算させる
+        //   のは使わない計算の発行・絶対命令 §4.1）。
+        for (const timeframe of DASHBOARD_TIMEFRAMES) {
+          if (timeframe === CHART_TIMEFRAME) {
+            continue;
+          }
+          tickPlayers.push(new mod.LiveTickPlayer({
+            renderer: {
+              updateLastCandle: (bar) => {
+                if (enabled && bar) {
+                  chartsView.updateLastCandle(timeframe, bar);
+                }
+              },
+            },
+            fetchLiveTicks: feed.fetchLiveTicks,
+            loadFormingBar: feed.loadFormingBar,
+            datasetRef: DATASET_REF,
+            getTimeframe: () => timeframe,
+            ...timers,
+          }));
+        }
+        tickPlayers.forEach((player) => player.start());
       }).catch(() => {});
     }
   }
@@ -472,10 +504,8 @@ export async function setupDashboardDisplay({
       stopTimer = null;
     }
     tickPlayerWanted = false;
-    if (tickPlayer) {
-      tickPlayer.stop();
-      tickPlayer = null;
-    }
+    tickPlayers.forEach((player) => player.stop());
+    tickPlayers = [];
     ladderView.unmount();
     oscillatorView.unmount();
     chartsView.unmount();

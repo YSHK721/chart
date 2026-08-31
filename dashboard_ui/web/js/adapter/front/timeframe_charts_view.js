@@ -199,6 +199,7 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     });
     slots.set(timeframe, {
       chart, series, status, levelLines: new Map(), pendingAnchor: false, anchorTries: 0,
+      lastCandleTime: null,
     });
     return tile;
   }
@@ -328,6 +329,8 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     }
     const cleaned = toStrictlyIncreasing(candles);
     slot.series.setData(cleaned);
+    // なめらか再生（updateLastCandle）の後退ガード用に、データの末尾 time を控える。
+    slot.lastCandleTime = cleaned.length > 0 ? Number(cleaned[cleaned.length - 1].time) : null;
     // 右端の余白を設定値へ再アンカーする（RIGHT_OFFSET_BARS の定義コメント参照）。
     //   まだ効かない場合は保留になり、描画周期（render → tryAnchor）で収束するまで再試行。
     slot.pendingAnchor = true;
@@ -335,6 +338,34 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     tryAnchor(slot);
     slot.status.textContent = `${cleaned.length} 本`;
     slot.status.className = 'dash-chart-status';
+  }
+
+  /**
+   * なめらか再生の形成中ローソクを 1 タイルへ適用する（依頼者指示 2026-08-31: 各時間足の
+   * チャートもライブモードと同じティック粒度）。
+   *
+   * bar は LiveTickPlayer が畳んだ形成中バー（参照実装 chart_renderer.updateLastCandle と
+   * 同じく series.update を 1 回呼ぶだけ）。バー識別・畳み方は player（サーバの barTimes）が
+   * 唯一源で、ここでは計算しない。既存データより古い time は適用しない（lightweight-charts は
+   * 末尾より古い update で throw する——履歴を後退させない・live 側の後退ガードと同じ意図）。
+   */
+  function updateLastCandle(timeframe, bar) {
+    if (!slots || !bar || !Number.isFinite(Number(bar.time))) {
+      return;
+    }
+    const slot = slots.get(String(timeframe));
+    if (!slot || !slot.series || typeof slot.series.update !== 'function') {
+      return;   // チャート無し環境・未知の足は掲示側が担う（ここで throw すると tick 路が死ぬ）。
+    }
+    const time = Number(bar.time);
+    if (slot.lastCandleTime !== null && slot.lastCandleTime !== undefined
+        && time < slot.lastCandleTime) {
+      return;
+    }
+    slot.series.update({
+      time, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+    });
+    slot.lastCandleTime = time;
   }
 
   /** ローソク取得の失敗をタイルへ掲示する（無言の空チャートにしない）。 */
@@ -364,5 +395,5 @@ export function createTimeframeChartsView({ doc, lwc = null } = {}) {
     message = null;
   }
 
-  return { mount, render, setCandles, setCandleError, unmount };
+  return { mount, render, setCandles, setCandleError, updateLastCandle, unmount };
 }

@@ -14,6 +14,7 @@ export function fakeLwc() {
     createChart: 0,
     addSeries: 0,
     setData: 0,
+    update: 0,
     createPriceLine: 0,
     removePriceLine: 0,
     applyOptions: 0,
@@ -30,6 +31,15 @@ export function fakeLwc() {
       setData(rows) {
         stats.setData += 1;
         series.data = rows;
+      },
+      update(candle) {
+        stats.update += 1;
+        const last = series.data[series.data.length - 1];
+        if (last && Number(last.time) === Number(candle.time)) {
+          series.data[series.data.length - 1] = candle;
+        } else {
+          series.data.push(candle);
+        }
       },
       createPriceLine(lineOptions) {
         stats.createPriceLine += 1;

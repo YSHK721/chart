@@ -409,7 +409,7 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     //   結線する。tick の適用は /reach_sheet の発行を 1 本も生まない（発行 − 使用 = 0）。
     class FakePlayer {
       constructor(opts) {
-        FakePlayer.last = this;
+        FakePlayer.all.push(this);
         this.opts = opts;
         this.started = 0;
         this.stopped = 0;
@@ -419,6 +419,8 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
 
       stop() { this.stopped += 1; }
     }
+    FakePlayer.all = [];
+    const fake = fakeLwc();
     const doc = fakeDoc();
     const host = fakeEl('div');
     const spy = spyFetch();
@@ -426,15 +428,27 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
       doc, host, templates: readOnlyTemplates(2), fetch: spy.fetchFn, apiPrefix: '/dashboard',
       now: () => 0, schedule: () => () => {}, barCloseTimeOf: () => 100,
       loadLiveTickPlayer: () => Promise.resolve({ LiveTickPlayer: FakePlayer }),
+      lwc: fake.lwc,
     });
     await handle.enable();
     await Promise.resolve();   // import の then を流す。
-    const player = FakePlayer.last;
-    assert.ok(player, 'player が組み立てられていません');
-    assert.equal(player.started, 1);
+    // 時間足ごとに 1 台（依頼者指示 2026-08-31: 各時間足のチャートもティック粒度）。
+    assert.equal(FakePlayer.all.length, 8);
+    assert.deepEqual(
+      FakePlayer.all.map((pl) => pl.opts.getTimeframe()),
+      ['1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M'],
+    );
+    assert.ok(FakePlayer.all.every((pl) => pl.started === 1));
+    // tails の申告を持つのは主（チャート足）だけ（同じ末尾値を 8 回計算させない）。
+    assert.ok(FakePlayer.all.slice(1).every((pl) => pl.opts.getComputeSpecs === undefined));
+    const player = FakePlayer.all[0];
     assert.equal(player.opts.datasetRef, 'jp225_tick');
     assert.equal(typeof player.opts.fetchLiveTicks, 'function');
     assert.equal(typeof player.opts.loadFormingBar, 'function');
+    // タイル駆動: 5m の player の形成中バーが 5m タイルの series.update へ流れる。
+    const fiveMin = FakePlayer.all[1];
+    fiveMin.opts.renderer.updateLastCandle({ time: 300, open: 1, high: 2, low: 0.5, close: 1.5 });
+    assert.equal(fake.stats.update, 1);
     // Act: tick を大量に適用しても /reach_sheet の発行は増えない（計算量の表明）。
     const issuedBefore = spy.calls.length;
     for (let i = 0; i < 50; i += 1) {
@@ -474,9 +488,9 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     );
     assert.match(ladderRowEl.textContent, /65,900\.5/);   // 水準価格が tick 粒度で追随。
 
-    // Act: disable で止まる。
+    // Act: disable で全台止まる。
     await handle.disable();
-    assert.equal(player.stopped, 1);
+    assert.ok(FakePlayer.all.every((pl) => pl.stopped === 1));
   });
 
   test('no_request_is_issued_after_disable', async () => {

@@ -162,6 +162,44 @@ describe('timeframe_charts_view — 版面と水準線', () => {
     assert.match(textOf(tile), /2 本/);
   });
 
+  test('a_tick_bar_updates_the_forming_candle_of_its_own_tile_only', () => {
+    // 依頼者指示 2026-08-31: 各時間足のチャートもライブモードと同じティック粒度。
+    //   形成中バー（player が畳んだもの）は series.update 1 回で流す（参照実装
+    //   chart_renderer.updateLastCandle と同じ面）。他のタイルへは触らない。
+    const h = harness();
+    h.view.setCandles('5m', [{ time: 300, open: 1, high: 2, low: 0.5, close: 1.5 }]);
+    // Act: 同じバーの tick 更新 → 末尾が置き換わる。
+    h.view.updateLastCandle('5m', { time: 300, open: 1, high: 2.5, low: 0.5, close: 2.2 });
+    const drawn = h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf('5m')].series[0].data;
+    assert.equal(drawn.length, 1);
+    assert.equal(drawn[0].close, 2.2);
+    // Act: 新しいバー → 追記。
+    h.view.updateLastCandle('5m', { time: 600, open: 2.2, high: 2.3, low: 2.1, close: 2.3 });
+    assert.equal(h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf('5m')].series[0].data.length, 2);
+    // 他のタイルは無傷。
+    assert.equal(h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf('1m')].series[0].data.length, 0);
+  });
+
+  test('a_tick_bar_older_than_the_drawn_history_is_not_applied', () => {
+    // lightweight-charts は末尾より古い update で throw する。履歴を後退させない
+    //   （live 側の後退ガードと同じ意図。シード遅れの古い形成中バーが来る場合がある）。
+    const h = harness();
+    h.view.setCandles('5m', [{ time: 600, open: 1, high: 2, low: 0.5, close: 1.5 }]);
+    h.view.updateLastCandle('5m', { time: 300, open: 9, high: 9, low: 9, close: 9 });
+    const drawn = h.spy.charts[DASHBOARD_TIMEFRAMES.indexOf('5m')].series[0].data;
+    assert.deepEqual(drawn.map((candle) => candle.time), [600]);
+    assert.equal(drawn[0].close, 1.5);
+  });
+
+  test('a_tick_bar_for_an_unknown_timeframe_or_bare_view_is_ignored', () => {
+    // tick 路は 100ms 周期で走る——ここで throw すると再生全体が死ぬ（掲示は表示系が担う）。
+    const h = harness();
+    assert.doesNotThrow(() => h.view.updateLastCandle('9x', { time: 60, open: 1, high: 1, low: 1, close: 1 }));
+    const bare = createTimeframeChartsView({ doc: fakeDoc(), lwc: null });
+    bare.mount(fakeEl('div'));
+    assert.doesNotThrow(() => bare.updateLastCandle('1m', { time: 60, open: 1, high: 1, low: 1, close: 1 }));
+  });
+
   test('set_candles_for_an_unknown_timeframe_fails_closed', () => {
     // 結線の取り違え（poller と表示の時間足集合のズレ）を無言で握り潰さない。
     const h = harness();
