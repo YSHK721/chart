@@ -63,6 +63,10 @@ DEFAULT_PORT = 8771
 #: 1 応答の上限。際限のない要求で端末を詰まらせない。
 MAX_ROWS_LIMIT = 200_000
 
+#: 端末 API の粒度が秒であることに対する上端の補償量（V-1b/V-1c 実測・:func:`read_tick_window`）。
+#: 窓幅にも件数にも依存しない定数である＝境界秒ぶんだけ広く取って切り出す。
+BOUNDARY_SECOND_MS = 1000
+
 
 class FeedError(RuntimeError):
     """要求を満たせないことを表す。``status`` がそのまま HTTP 応答になる。"""
@@ -221,17 +225,71 @@ def validate_bind(host: str) -> str:
 # 端末の読み取り（epoch → datetime の変換を知る唯一の関数）
 # ---------------------------------------------------------------------
 
+class TickWindow(NamedTuple):
+    """``read_tick_window`` の返却。
+
+    ``truncated`` を行と一緒に返すのは、**切り詰めの有無が返却行からは復元できない**から
+    である。境界秒の切り出しで行が減った後の件数を見ても、端末のキャップに当たったのか
+    単に窓が短かったのかを区別できない（区別を諦めると取りこぼしが静かに確定する）。
+    """
+
+    rows: Any
+    truncated: bool
+
+
 def read_tick_window(
     mt5: Any, *, symbol: str, from_msc: int, to_msc: "Optional[int]", max_rows: int
-) -> Any:
-    """端末から生ティックを読む。**読み取りのみ**。
+) -> "TickWindow":
+    """端末から生ティックを読み、契約窓 ``[from_msc, to_msc]`` へ切り出す。**読み取りのみ**。
 
-    epoch(ms) → 端末が要求する datetime への変換を知るのは本関数だけである（12h ずれ罠の
-    閉じ込め）。変換の意味論は **V-1 で確定するまで仮説**であり、候補は 3 通りある:
-    (1) naive datetime を端末がサーバ時刻として解釈する、(2) ローカル時刻として解釈する、
-    (3) tz-aware を UTC へ正規化する。ここでは (1) を採り、**naive** な datetime を渡す
-    （tz-aware を渡すとライブラリ側でローカル時刻換算が入り、環境依存の 12 時間ずれを生む）。
-    V-1 で確定したら**この関数 1 つだけ**を直す。
+    epoch(ms) → 端末が要求する datetime への変換を知るのは本関数だけである（時刻ずれ罠の
+    閉じ込め）。変換の意味論は **V-1（2026-09-01・実 VM 端末への橋渡し実測）で確定済み**で
+    あり、もはや仮説ではない:
+
+    - 旧実装が採っていた仮説 (1)「naive datetime を端末がサーバ時刻として解釈する」は
+      **棄却**された。要求ラベル窓 [L_from, L_to] に対して返却された time_msc は
+      [L_from−9h, L_to−9h] であり、ずれは **−9.000 時間ちょうど**であった（VM は JST）。
+    - 実測された挙動は 2 段変換である: MetaTrader5 パッケージが naive datetime を
+      **VM ローカル時刻**として epoch 化し、端末はその epoch をサーバラベルとして解釈する。
+
+    よって本関数は**ローカル naive の往復**で書く。:meth:`datetime.fromtimestamp` は
+    epoch をローカルの壁時計（naive）へ写し、パッケージが同じローカル規則で epoch へ戻す。
+    往路と復路が同一の規則なので、端末に届く epoch は指定した ``from_msc / 1000`` に
+    正確に一致する（VM のローカル tz が何であっても成り立つ＝環境非依存）。
+
+    秒未満は ``fromtimestamp`` に float 秒を渡す形では丸め経路を通るため、整数秒で写して
+    から ms 剰余を足す。ms 精度が落ちないことは、VM 側検定の V-1 節が剰余 0/1/500/999 の
+    4 境界で固定する。
+
+    既知の限界: VM のローカル tz が夏時間を持つ場合、秋の巻き戻しで同じ壁時計が 2 回現れる
+    区間だけは往復が一意にならない（実測: America/New_York の該当時刻で 2 回目の側が
+    −3,600,000 ms ずれる）。本番 VM は JST であり夏時間を持たないため影響しない。
+
+    **端末 API の粒度は秒である**（V-1b/V-1c・2026-09-01・実端末で確定）:
+
+    - ``copy_ticks_from(t + 1ms)`` が ``msc == t``（1 つ前の ms）の行を返した
+      ＝ 引数の datetime は**秒へ切り捨てて**解釈される（下端に 1 行前方混入するのを実測）。
+    - ``copy_ticks_range`` は上端引数の ms 成分を落とす。上端に既知ティックの msc を
+      指定してもその行が返らなかった（上端が落ちるのを実測）。
+    - 一方、返却行そのものの ``time_msc`` は ms 精度である（V-1a で窓内一致・+0.0000h）。
+
+    転送契約は ``[from_msc, to_msc]`` の**両端包含**であり、ms の厳密さを保証する責任は
+    ここにある。コンテナ側は既にこれを前提に組まれており、``marketdata/mt5_ticks/ingest.py``
+    は窓外の行を Fail-Stop で弾き、``marketdata/mt5_ticks/cursor.py`` は応答の先頭がカーソル
+    以降であることを前提にする。下端の前方混入は供給ループを止め、上端の欠落は静かな
+    ティックの取りこぼしになる。
+
+    よって次の 2 つを行う。**どちらも API の粒度に起因する「正しさに必要な入力」であって、
+    余分な仕事ではない**: 秒より細かい端では、要求した窓そのものを端末へ渡せない。
+
+    1. 上端を :data:`BOUNDARY_SECOND_MS` だけ広げて要求する（秒切り捨てを受けても
+       ``to_msc`` の属する秒が丸ごと入る）。広げる量は窓幅にも ``max_rows`` にも依存しない
+       定数であり、下端は広げない（端末の切り捨てが既に下端を前へ倒すため）。
+    2. 返却から ``time_msc < from_msc`` と（上端指定時）``time_msc > to_msc`` を落とす。
+
+    切り出しで捨てる行は境界 2 秒ぶんが上界であり、入力の大きさで増えない。これは
+    ``tools/tests/test_mt5_tick_feed.py`` の計算量検定が「取りこぼし無し」と同時に固定する
+    （片方だけなら全部取る／何も取らないで自明に満たせるので、締め付けにならない）。
     """
     if not mt5.symbol_select(symbol, True):
         raise FeedError(
@@ -239,19 +297,38 @@ def read_tick_window(
             mt5.last_error(),
         )
 
-    start = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=int(from_msc))
+    start = (
+        dt.datetime.fromtimestamp(int(from_msc) // 1000)
+        + dt.timedelta(milliseconds=int(from_msc) % 1000)
+    )
     if to_msc is None:
         # 上端なし: 件数指定で読む。切り詰め検出のため 1 件多く要求する。
         rows = mt5.copy_ticks_from(symbol, start, max_rows + 1, mt5.COPY_TICKS_INFO)
     else:
-        end = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=int(to_msc))
+        end = (
+            dt.datetime.fromtimestamp(int(to_msc) // 1000)
+            + dt.timedelta(milliseconds=int(to_msc) % 1000 + BOUNDARY_SECOND_MS)
+        )
         rows = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_INFO)
 
     if rows is None:
         raise FeedError(
             502, "terminal", "端末がティックを返しませんでした。", mt5.last_error()
         )
-    return rows
+    # 境界秒の切り出し。numpy のブールマスクで一括に落とす（行ループを書くと、要求のたびに
+    # 最大 20 万行を Python 側で回すことになる）。比較は端末が返した構造化配列の上で行うので、
+    # 列の意味づけ（列名の権威）はコンテナ側のままである。
+    msc = rows["time_msc"]
+    inside = msc >= int(from_msc)
+    if to_msc is not None:
+        inside = inside & (msc <= int(to_msc))
+    kept = rows[inside]
+
+    # 切り詰めの申告は**キャップ到達**で決める。``copy_ticks_from`` は max_rows + 1 件を
+    # 要求しており、境界秒の余剰が head に混じるぶん切り出し後は max_rows 以下になりうる。
+    # 切り出し後の件数だけで判定すると、続きがあるのに「無い」と申告してしまう。
+    capped = to_msc is None and len(rows) == max_rows + 1
+    return TickWindow(kept, capped or len(kept) > max_rows)
 
 
 def resolve_server_name(mt5: Any) -> str:
@@ -314,12 +391,12 @@ def _ticks_response(mt5: Any, query: "Dict[str, str]", *, server: str) -> Respon
     asked = _tick_query(query)
     max_rows = asked.max_rows
 
-    rows = read_tick_window(
+    window = read_tick_window(
         mt5, symbol=asked.symbol, from_msc=asked.from_msc, to_msc=asked.to_msc,
         max_rows=max_rows,
     )
-    truncated = len(rows) > max_rows
-    rows = rows[:max_rows]
+    truncated = window.truncated
+    rows = window.rows[:max_rows]
 
     latest = int(rows["time_msc"][-1]) if len(rows) else int(asked.from_msc)
     headers = {
