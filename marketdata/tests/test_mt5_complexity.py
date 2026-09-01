@@ -357,7 +357,9 @@ def test_only_closed_minute_ticks_reach_the_m1_fold(tmp_path, monkeypatch, close
             rows.append((_label_ms(when), 66000.0 + i, 66010.0 + i))
     until_utc = start + dt.timedelta(minutes=closed_minutes)
 
-    fold = CallSpy(tick_m1.ticks_to_m1, measure=lambda frame: len(frame))
+    # ``**_`` は価格基準（``price_basis``）などの付随引数を受け流すためだけに在る。
+    #   測るのは畳みへ渡った**行数**であり、引数の個数ではない（主張は不変）。
+    fold = CallSpy(tick_m1.ticks_to_m1, measure=lambda frame, **_: len(frame))
     monkeypatch.setattr(tick_m1, "ticks_to_m1", fold)
 
     # Act

@@ -107,7 +107,11 @@ def test_the_intraday_fold_equals_the_m1_derived_from_the_finalized_parquet(tmp_
         tick_m1.day_parquet_path(_DAY, symbol=_TOKEN, data_dir=tmp_path),
         columns=tick_m1._TICK_COLUMNS,
     )
-    whole = tick_m1._format_m1_for_csv(tick_m1.ticks_to_m1(parquet)).reset_index()
+    # 突合相手も **同じ価格基準**で回す（依頼者裁定 2026-09-02 で MT5 系列は bid）。基準を
+    #   揃えずに比べると、測っているのは「経路の一致」ではなく「基準の食い違い」になる。
+    whole = tick_m1._format_m1_for_csv(
+        tick_m1.ticks_to_m1(parquet, price_basis=ingest.PRICE_BASIS)
+    ).reset_index()
 
     # Assert
     pd.testing.assert_frame_equal(incremental, whole, check_dtype=False)
@@ -128,7 +132,8 @@ def test_the_intraday_csv_is_byte_identical_to_the_whole_day_builder(tmp_path):
         rows, ref="incremental", data_dir=tmp_path, until=until.replace(tzinfo=dt.timezone.utc)
     )
     tick_m1.build_m1_from_ticks(
-        _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until
+        _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until,
+        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
     )
 
     # Assert
@@ -168,7 +173,8 @@ def test_the_intraday_fold_alone_still_carries_the_phantom_bars(tmp_path):
         rows, ref="incremental", data_dir=tmp_path, until=until.replace(tzinfo=dt.timezone.utc)
     )
     tick_m1.build_m1_from_ticks(
-        _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until
+        _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until,
+        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
     )
     incremental = pd.read_csv(tick_m1.m1_csv_path(ref="incremental", data_dir=tmp_path))
     whole = pd.read_csv(tick_m1.m1_csv_path(ref="whole", data_dir=tmp_path))
@@ -201,7 +207,10 @@ def test_the_finalized_record_matches_the_authority_even_on_an_outlier_day(tmp_p
     )
 
     # Assert
-    tick_m1.build_m1_from_ticks(_DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path)
+    tick_m1.build_m1_from_ticks(
+        _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path,
+        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
+    )
     incremental = tick_m1.m1_csv_path(ref="incremental", data_dir=tmp_path).read_bytes()
     whole = tick_m1.m1_csv_path(ref="whole", data_dir=tmp_path).read_bytes()
     assert outcome == rebuild.REPLACED

@@ -36,6 +36,25 @@ Row = Tuple[int, float, float]
 #: 銘柄とサーバを繋ぐ区切り（``JP225@OANDA-Japan-MT5-Live``）。
 TOKEN_SEPARATOR = "@"
 
+#: MT5 系列の**価格基準**（``marketdata.tick_m1.ticks_to_m1`` の ``price_basis`` へ渡す値）。
+#:
+#: MT5 端末のチャートは **bid** を描いている（``chart_mode=0``・依頼者裁定 2026-09-02）。
+#: ISSUE.md 段階 0 実測 T5 は、同日の Dukascopy M1（mid）と MT5 M1 を突き合わせて中央値
+#: ``duka(mid) - mt5(bid) = +6.97`` を得ており、MT5 のスプレッド平均 11.41（T7）のちょうど
+#: 半分に相当する。同じティックから mid で M1 を作れば、端末表示に対して半スプレッドぶん
+#: 系統的にずれる。
+#:
+#: 宣言をここ 1 箇所に置く理由: 日中増分（:mod:`~marketdata.mt5_ticks.m1_chain`）と日次権威
+#: 再構築（:mod:`~marketdata.mt5_ticks.rebuild`）は別の経路だが、**同じ系列**を作らねば
+#: ならない。片方だけが mid のままなら、日次再構築が表示中の系列を静かに mid へ書き戻す。
+#: 出力はどちらも「それらしい」ので、値を見ているだけでは気付けない。よって基準は綴りを
+#: 書き写すのではなく、この 1 定数を参照で渡す
+#: （``marketdata/tests/test_mt5_price_basis.py`` が AST で複製と未参照を禁じる）。
+#:
+#: 台帳（ティック parquet・ジャーナル）は bid と ask の**両方**を持ち続ける。基準は
+#: 「保存するもの」ではなく「M1 の価格として何を採るか」の選択である。
+PRICE_BASIS = tick_m1.PRICE_BASIS_BID
+
 
 def token_for(symbol: str, server: str) -> str:
     """銘柄 × サーバの識別トークンを作る（tick 木の ``symbol`` 引数に渡す値）。

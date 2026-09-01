@@ -40,7 +40,7 @@ from typing import Any, Iterable, Optional
 import pandas as pd
 
 from marketdata import outlier_policy, tick_m1
-from marketdata.mt5_ticks import m1_chain
+from marketdata.mt5_ticks import ingest, m1_chain
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
 #: 差が無かった（1 バイトも書いていない）。
@@ -66,9 +66,15 @@ def authoritative_day_m1(day: Any, *, symbol: str, data_dir: Any) -> pd.DataFram
     日別結果の重複畳み（同一分の keep-last）は不要である。それは全量経路が**複数日の M1 を
     連結する**ときに境界分が二重になるための処置であり、ここは 1 日 1 parquet しか読まない
     （単一 parquet 内の分は :func:`marketdata.tick_m1.ticks_to_m1` の groupby で一意になる）。
+
+    価格基準は増分経路と同じ :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` を渡す。ここが
+    既定（mid）のままだと、日次確定のたびに再構築が「差がある」と判定して当日区間を mid へ
+    書き戻す。値はどちらも「それらしい」ので、置換されたことにも気付けない。
     """
     parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
-    return clean_day_m1(tick_m1.ticks_to_m1(pd.read_parquet(parquet)))
+    return clean_day_m1(
+        tick_m1.ticks_to_m1(pd.read_parquet(parquet), price_basis=ingest.PRICE_BASIS)
+    )
 
 
 def _read_m1_csv(path: Path) -> pd.DataFrame:
