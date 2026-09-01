@@ -46,6 +46,10 @@ const SIM_PANE_CONTENT_MARGIN_PX = 4;
 
 // 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
 const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
+// 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
+//   それを参照する（手書き複製の禁止）。symlink ではなく `/live/` プロキシ経由にするのは、
+//   router.py:326-331 が realpath 解決後に web_root 外を 404 にするためである（実測 2026-09-01）。
+const DATASET_REF_QUERY = '/live/js/adapter/front/dataset_ref_query.js';
 const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
 const REPLAY_DRIVER = '/replay/js/replay.js';
 const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
@@ -280,8 +284,10 @@ async function main() {
   let installReplayBar;
   let setupSimDisplay;
   let setupDashboardDisplay;
+  let resolveDatasetRef;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
+    ({ resolveDatasetRef } = await import(DATASET_REF_QUERY));
     ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
     ({ setupReplay } = await import(REPLAY_DRIVER));
     ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
@@ -316,7 +322,9 @@ async function main() {
       // ISSUE-362: 配下の全 API クライアントはこの 1 つの fetch を使う（this._fetch）。
       //   ここで prefix 付与を担保するので、ルーティングが SW の可用性に依存しない。
       fetch: routedFetch,
-      datasetRef: DATASET_REF,
+      // `?dataset=<ref>` を付けたときだけ上書きする（ISSUE-447 A-3 案 U1・承認済み）。
+      //   クエリ無し＝従来どおり DATASET_REF（既定表示は不変）。解決は起動時のこの 1 回だけ。
+      datasetRef: resolveDatasetRef(location.search, DATASET_REF),
       setInterval: registry.setInterval,
       clearInterval: registry.clearInterval,
       // ツールバー構成の注入（§11.1 裁定 3 = L-1）。モードの集合を知っているのは統合層だけなので、

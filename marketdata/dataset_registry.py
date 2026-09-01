@@ -85,6 +85,16 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         rollup=True,
         tick=True,
     ),
+    # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
+    # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /
+    # tf-period 供給）の MT5 対応は A-6＝未裁定の別段階であり、本段階はその経路に触れない。
+    # 実体は設計 §5: <DATA_DIR>/jp225_mt5_m1.csv と rollups/jp225_mt5/。本行 1 つの削除で可逆。
+    "jp225_mt5": DatasetDescriptor(
+        path=DATA_DIR / "jp225_mt5_m1.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+    ),
 }
 
 

@@ -17,6 +17,7 @@ export const DATASET_SYMBOLS = Object.freeze({
   'jp225': 'JP225',
   'jp225_m1': 'JP225',
   'jp225_tick': 'JP225',
+  'jp225_mt5': 'JP225',
 });
 
 export const SYMBOL_SPECS = Object.freeze({
