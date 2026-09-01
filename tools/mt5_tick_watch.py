@@ -251,16 +251,24 @@ def build_cycle(settings: WatchSettings, *, source: Any, token: str, clock: Any)
     )
 
 
+def lookback_days(clock: Any) -> "List[dt.date]":
+    """起動時に見にいく日（**再開点の復元と未確定日の種付けで同じ窓を使う**）。
+
+    2 つが別の窓を持つと、片方だけが遡れる日ができる（再開はできるのに確定は落ちる、
+    あるいはその逆）。窓は 1 箇所で決める。
+    """
+    today = clock.now().date()
+    return [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
+
+
 def restore_or_start(
-    settings: WatchSettings, *, token: str, clock: Any
+    settings: WatchSettings, *, token: str, days: "Sequence[dt.date]"
 ) -> "Optional[Cursor]":
     """再開点を決める。ジャーナル優先・無ければ ``--from``・どちらも無ければ ``None``。
 
     ジャーナルが在るときは ``--from`` より優先する（受信の一次記録が正であり、指定で巻き戻すと
     カーソルの単調性が壊れる）。指定が無視されたことは黙らずに知らせる。
     """
-    today = clock.now().date()
-    days = [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
     restored = usecases.RestoreCursor(token=token, data_dir=settings.data_dir)(days=days)
     if restored is not None:
         if settings.from_label is not None:
@@ -301,7 +309,8 @@ def run(
         _stderr(f"供給元の応答が契約を満たしません: {exc}")
         return EXIT_FAIL_STOP
 
-    start = restore_or_start(settings, token=token, clock=clock)
+    window = lookback_days(clock)
+    start = restore_or_start(settings, token=token, days=window)
     if start is None:
         _stderr(
             "コールドスタートには --from が要ります（再開点を推測しません）。"
@@ -309,8 +318,14 @@ def run(
         )
         return EXIT_USAGE
 
+    # 前回の停止で確定に至らなかった日を引き継ぐ。当プロセスが観測した日だけを候補にすると、
+    #   日 D の途中で止まって D+1 に再起動したとき D の確定が二度と呼ばれない。
+    seeded = usecases.UnfinalizedDays(token=token, data_dir=settings.data_dir)(days=window)
+    if seeded:
+        _stderr(f"未確定の日を引き継ぎます: {[str(d) for d in seeded]}")
+
     cycle = build_cycle(settings, source=source, token=token, clock=clock)
-    state = WatchState(cursor=start, pending=[], days=set(), latest_day=None)
+    state = WatchState(cursor=start, pending=[], days=set(seeded), latest_day=None)
     done = 0
     failures = 0
 
@@ -319,11 +334,23 @@ def run(
             state, result = cycle(state)
         except SupplyUnavailable as exc:
             failures += 1
+            # 周期の予算がある実行（``--once`` など）は、ブレーカが開く連続失敗回数で打ち切る。
+            #   成功した周期しか数えないため、待てば直る障害が続くと 1 周期も消化されないまま
+            #   永久に回り続ける（--help の「1 周期だけ実行して終わる」と食い違う）。
+            #   常駐（予算なし）は変えない — そちらは直るまで待ち続けることが仕事である。
+            if cycles is not None and failures >= BREAKER_AFTER_FAILURES:
+                _stderr(
+                    f"供給が {failures} 回続けて失敗したため打ち切ります（周期の予算あり）: {exc}"
+                )
+                return EXIT_FAIL_STOP
             delay = next_delay(failures, interval=settings.interval)
             _stderr(f"供給が一時的に失敗しました（{failures} 回目・{delay} 秒待ちます）: {exc}")
             sleep(delay)
             continue
-        except (Mt5SupplyError, wire.WireError) as exc:
+        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError) as exc:
+            # カーソル規約の破れも「待っても直らない」側である。型集合から漏れると、
+            #   常駐はトレースバックを吐いて exit 1 で落ち、運用者には未知のクラッシュに見える。
+            #   `cursor.py` は依存ゼロを保つため、繋ぐのは合成点であるここの責務。
             _stderr(f"供給の前提が崩れました（再試行しません）: {exc}")
             return EXIT_FAIL_STOP
 

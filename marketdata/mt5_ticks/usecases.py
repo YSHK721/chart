@@ -178,3 +178,28 @@ class RestoreCursor:
             if tail:
                 return cursor_rules.from_journal_tail(tail)
         return None
+
+
+@dataclass
+class UnfinalizedDays:
+    """UC-05: 受信はしたが確定していない日を数え上げる（**起動時の種付け**）。
+
+    確定候補の日を「当プロセスが観測した日」だけにすると、日 D の途中で停止して D+1 に再起動
+    した場合に :func:`marketdata.mt5_ticks.journal.finalize` が D に対して二度と呼ばれない。
+    受信の一次記録はジャーナルであり、そこに在って parquet も ``.empty`` も無い日が
+    「確定し損ねた日」である（再開点の復元と同じく、判断の根拠はジャーナルが正）。
+
+    探す範囲は呼び出し側が渡す ``days`` に限る。ここで台帳全体を舐めないのは 2 つの理由がある:
+    起動費が保存済み日数に比例して伸びること、そして何日でも黙って遡ると「欠測を埋めたのか
+    飛ばしたのか」が運用者に見えなくなることである（``--from`` を要求するのと同じ規律）。
+    """
+
+    token: str
+    data_dir: Any
+
+    def __call__(self, *, days: "Iterable[dt.date]") -> "List[dt.date]":
+        return [
+            day for day in sorted(set(days))
+            if journal.has_journal(day, symbol=self.token, data_dir=self.data_dir)
+            and not journal.is_finalized(day, symbol=self.token, data_dir=self.data_dir)
+        ]

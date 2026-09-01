@@ -12,10 +12,15 @@
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import re
+import socket
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
+from http.server import HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,7 +62,8 @@ class FakeMt5:
         self._ticks = ticks
         self._select_ok = select_ok
         self._error = error
-        self._server = server
+        #: 端末セッション中は不変（本番は `make_handler` が起動時 1 回だけ読む）。
+        self.server = server
         self.calls: "list[str]" = []
 
     def symbol_select(self, symbol, enable=True):
@@ -76,7 +82,86 @@ class FakeMt5:
         return self._error
 
     def account_info(self):
-        return SimpleNamespace(server=self._server)
+        self.calls.append("account_info")
+        return SimpleNamespace(server=self.server)
+
+
+class _ExplodingMt5(FakeMt5):
+    """端末ライブラリが予期しない例外を投げる場合（``FeedError`` ではない）。"""
+
+    def __init__(self):
+        super().__init__(_ticks((1000, 1.0, 2.0)))
+
+    def copy_ticks_from(self, symbol, frm, count, flags):
+        self.calls.append("copy_ticks_from")
+        raise RuntimeError("terminal library exploded")
+
+
+def _authorization_header(**fields) -> str:
+    """認証ヘッダを**そのまま**組み立てる（攻撃者が送れる形を検定側で作る）。"""
+    return feed.AUTH_SCHEME + " " + ",".join(f"{k}={v}" for k, v in fields.items())
+
+
+def _fresh_ts() -> int:
+    """待ち受けているサーバの鮮度窓を通る ts（配管を通す検定は実時刻で署名する）。"""
+    import time as _time
+
+    return int(_time.time())
+
+
+_NONCES = itertools.count()
+
+
+def _signed_authorization(path: str, query: "dict") -> str:
+    """正当な署名付きヘッダ（鮮度窓を通り、nonce は毎回異なる）。"""
+    ts = _fresh_ts()
+    nonce = f"socket-{ts}-{next(_NONCES)}"
+    sig = wire.sign(_SECRET, method="GET", path=path, query=query, ts=ts, nonce=nonce)
+    return wire.authorization_header(key_id=_KEY_ID, ts=ts, nonce=nonce, sig=sig)
+
+
+def _fresh_credential(**overrides) -> str:
+    """鮮度窓は通るが資格情報だけが不正なヘッダ。
+
+    ts を古いまま送ると ts の検査で 401 になり、**鍵 ID と署名の比較まで到達しない**。
+    それでは「非 ASCII の資格情報で落ちる」欠陥を通り過ぎたまま緑になる。
+    """
+    ts = _fresh_ts()
+    fields = {"key": _KEY_ID, "ts": str(ts), "nonce": "socket-" + str(ts), "sig": "00"}
+    fields.update(overrides)
+    return _authorization_header(**fields)
+
+
+@contextmanager
+def _serving(mt5):
+    """本物のソケットで feed を待ち受ける（127.0.0.1・任意ポート・1 リクエスト分）。"""
+    server = HTTPServer(
+        ("127.0.0.1", 0),
+        feed.make_handler(mt5=mt5, secret=_SECRET, key_id=_KEY_ID, nonces=feed.NonceCache()),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _raw_get(address, target: str, authorization: str) -> bytes:
+    """生バイトで GET を送り、応答の先頭 1KB を返す（切断なら空になる）。
+
+    ``urllib`` は非 ASCII のヘッダを送れない。攻撃者はソケットに何でも書けるので、検定も
+    ソケットに直接書く。
+    """
+    host, port = address
+    with socket.create_connection((host, port), timeout=5) as sock:
+        sock.sendall(
+            f"GET {target} HTTP/1.1\r\nHost: {host}\r\n"
+            f"Authorization: {authorization}\r\nConnection: close\r\n\r\n".encode("utf-8")
+        )
+        return sock.recv(1024)
 
 
 def _request(path="/ticks", *, query=None, mt5=None, now=1_700_000_000, nonce="n1",
@@ -92,9 +177,12 @@ def _request(path="/ticks", *, query=None, mt5=None, now=1_700_000_000, nonce="n
         key_id=key_id, ts=ts, nonce=nonce, sig=sig
     )}
     target = path + ("?" + wire.sorted_query(query) if query else "")
+    terminal = mt5 if mt5 is not None else FakeMt5(_ticks((1000, 66020.1, 66035.1)))
     return feed.handle_request(
         target, headers,
-        mt5=mt5 if mt5 is not None else FakeMt5(_ticks((1000, 66020.1, 66035.1))),
+        mt5=terminal,
+        # 本番と同じ形: サーバ名は起動時に解決済みの値を渡す（要求のたびに端末へ聞かない）。
+        server=terminal.server,
         secret=secret, key_id=_KEY_ID,
         nonces=feed.NonceCache() if nonces is None else nonces,
         now=now,
@@ -182,7 +270,7 @@ def test_a_replayed_nonce_is_rejected():
 
 def test_a_missing_authorization_header_is_rejected():
     got = feed.handle_request(
-        "/ticks?symbol=JP225", {}, mt5=FakeMt5(_ticks()),
+        "/ticks?symbol=JP225", {}, mt5=FakeMt5(_ticks()), server="",
         secret=_SECRET, key_id=_KEY_ID, nonces=feed.NonceCache(), now=1,
     )
     assert got.status == 401
@@ -196,7 +284,7 @@ def test_an_unknown_key_id_is_rejected():
 def test_authentication_is_required_on_every_endpoint():
     """``/health`` も認証必須（無認証の入口を 1 つも作らない）。"""
     got = feed.handle_request(
-        "/health", {}, mt5=FakeMt5(_ticks()), secret=_SECRET, key_id=_KEY_ID,
+        "/health", {}, mt5=FakeMt5(_ticks()), server="", secret=_SECRET, key_id=_KEY_ID,
         nonces=feed.NonceCache(), now=1,
     )
     assert got.status == 401
@@ -207,6 +295,65 @@ def test_failed_authentication_never_reaches_the_terminal():
     mt5 = FakeMt5(_ticks())
     _request(sign_with=b"wrong", mt5=mt5)
     assert mt5.calls == []
+
+
+@pytest.mark.parametrize(
+    "fields,what",
+    [
+        ({"key": "ké1", "ts": "1700000000", "nonce": "n1", "sig": "00"}, "鍵 ID"),
+        ({"key": _KEY_ID, "ts": "1700000000", "nonce": "n1", "sig": "déadbeef"}, "署名"),
+    ],
+    ids=["non_ascii_key", "non_ascii_sig"],
+)
+def test_a_non_ascii_credential_is_rejected_with_401(fields, what):
+    """E-7: 認証前の攻撃者入力（非 ASCII）でも **401 を返す**。
+
+    ``hmac.compare_digest`` は非 ASCII の str を渡されると :class:`TypeError` を送出する。
+    認証は攻撃者が中身を決められる最初の関門であり、そこで例外が抜けると 401 の代わりに
+    「応答ゼロ」が返る。拒む相手に与えてよいのは拒否の応答だけである（{what} 経路）。
+    """
+    got = feed.handle_request(
+        "/ticks?symbol=JP225&from_msc=1000&max_rows=10",
+        {"Authorization": _authorization_header(**fields)},
+        mt5=FakeMt5(_ticks()), server="", secret=_SECRET, key_id=_KEY_ID,
+        nonces=feed.NonceCache(), now=1_700_000_000,
+    )
+    assert got.status == 401
+
+
+def test_an_unexpected_terminal_exception_becomes_a_500_instead_of_a_dropped_connection():
+    """最終境界: :class:`feed.FeedError` 以外の例外も応答（500）に落ちる。
+
+    端末ライブラリが投げる例外を予期し切ることはできない。予期しない例外で接続を無言で切ると、
+    攻撃者には「その入力で何かが起きた」ことだけが伝わり、運用者には何も残らない。
+    """
+    query = {"symbol": "JP225", "from_msc": "1000", "to_msc": "", "max_rows": "10"}
+
+    with _serving(_ExplodingMt5()) as address:
+        head = _raw_get(
+            address, "/ticks?" + wire.sorted_query(query),
+            _signed_authorization("/ticks", query),
+        )
+
+    assert b"500" in head.split(b"\r\n")[0]
+
+
+@pytest.mark.parametrize(
+    "credential", [{"key": "kée"}, {"sig": "déadbeef"}], ids=["non_ascii_key", "non_ascii_sig"]
+)
+def test_the_socket_answers_instead_of_dropping_the_connection(credential):
+    """本物のソケット越しに **401 の応答が返る**（切断ではない）。
+
+    「401 を返さず応答ゼロで切れる」は配管まで通してしか観測できない症状である。
+    :func:`feed.handle_request` だけを検定すると、境界を do_GET に入れ忘れても緑のままになる。
+    """
+    with _serving(FakeMt5(_ticks())) as address:
+        head = _raw_get(
+            address, "/ticks?symbol=JP225&from_msc=1000&max_rows=10",
+            _fresh_credential(**credential),
+        )
+
+    assert b"401" in head.split(b"\r\n")[0]
 
 
 # =====================================================================
@@ -253,6 +400,83 @@ def test_an_unreasonably_large_max_rows_is_rejected():
 
 def test_an_unknown_path_is_404():
     assert _request("/admin", query={}).status == 404
+
+
+# =====================================================================
+# 計算量（発行 − 使用 = 0）— ISSUE-450 類型を VM 側にも作らない
+# =====================================================================
+
+def _terminal_reads(*, max_rows: str, to_msc: str) -> int:
+    """1 要求が端末へ発行した読み取りの回数（``copy_ticks_*``）。"""
+    mt5 = FakeMt5(_ticks(*[(1000 + i, 1.0, 2.0) for i in range(30)]))
+    _request(query={
+        "symbol": "JP225", "from_msc": "1000", "to_msc": to_msc, "max_rows": max_rows,
+    }, mt5=mt5)
+    return len([c for c in mt5.calls if c.startswith("copy_ticks")])
+
+
+def _account_info_calls_while_serving(requests: int) -> "tuple[int, str]":
+    """``requests`` 回の ``/ticks`` を捌くあいだの ``account_info`` 発行回数と応答のサーバ名。"""
+    mt5 = FakeMt5(_ticks((1000, 66020.1, 66035.1)))
+    query = {"symbol": "JP225", "from_msc": "1000", "to_msc": "", "max_rows": "10"}
+    target = "/ticks?" + wire.sorted_query(query)
+    with _serving(mt5) as address:
+        mt5.calls.clear()   # 端末セッションの確立（起動時 1 回）は測る対象ではない
+        heads = [
+            _raw_get(address, target, _signed_authorization("/ticks", query))
+            for _ in range(requests)
+        ]
+    served = [h for h in heads if b"X-MT5-Server: OANDA-Japan MT5 Live" in h]
+    return len([c for c in mt5.calls if c == "account_info"]), len(served)
+
+
+def test_the_server_name_is_not_resolved_once_per_request():
+    """CX: ``/ticks`` を何回捌いても ``account_info`` の発行が増えない（2 点で固定）。
+
+    サーバ名は端末セッションのあいだ不変であり、出力（``X-MT5-Server``）に使われるのは
+    プロセス中 1 回ぶんの値だけである。要求のたびに発行すれば、それは「作ってから捨てる」
+    呼び出し＝ ISSUE-450 と同型の浪費であり、しかも相手はライブ口座の端末である。
+    固定するのは回数ではなく **要求数に対して増えないこと**（無駄の不在）。
+    """
+    few, few_served = _account_info_calls_while_serving(2)
+    many, many_served = _account_info_calls_while_serving(10)
+
+    assert (few, many) == (0, 0)
+    assert (few_served, many_served) == (2, 10)
+
+
+def test_one_request_issues_one_terminal_read_regardless_of_max_rows_and_window():
+    """CX: 1 要求あたりの端末読み取りが ``max_rows``・窓幅に依存しない（2×2 点）。
+
+    出力に使うのは 1 回ぶんの結果だけである。分割取得・先読み・取り直しを足すと、
+    出力量ではなく引数の大きさで端末への発行が増える（オーダーの表明）。
+    """
+    reads = {
+        (max_rows, to_msc): _terminal_reads(max_rows=max_rows, to_msc=to_msc)
+        for max_rows in ("10", "50000")
+        for to_msc in ("", "9999999")
+    }
+
+    assert sorted(set(reads.values())) == [1], reads
+
+
+@pytest.mark.parametrize("query", [
+    {"symbol": "JP225", "from_msc": "1000", "to_msc": "", "max_rows": "0"},
+    {"symbol": "", "from_msc": "1000", "to_msc": "", "max_rows": "10"},
+    {"symbol": "JP225", "from_msc": "abc", "to_msc": "", "max_rows": "10"},
+    {"symbol": "JP225", "from_msc": "2000", "to_msc": "1000", "max_rows": "10"},
+])
+def test_a_request_that_ends_in_400_issues_no_terminal_call_at_all(query):
+    """CX: 400 で終わる要求は端末 API を 1 つも発行しない。
+
+    拒むはずの要求でライブ口座を叩き始めたら、拒否の判断そのものが端末の負荷になる。
+    """
+    mt5 = FakeMt5(_ticks((1000, 1.0, 2.0)))
+
+    got = _request(query=query, mt5=mt5)
+
+    assert got.status == 400
+    assert mt5.calls == []
 
 
 # =====================================================================
@@ -483,9 +707,14 @@ def test_the_default_bind_is_the_specific_interface():
     assert feed.DEFAULT_PORT == 8771
 
 
-@pytest.mark.parametrize("bad", ["0.0.0.0", "::", ""])
+@pytest.mark.parametrize("bad", ["0.0.0.0", "::", "", "0", "0x0", "00000000", "::0"])
 def test_binding_to_every_interface_is_refused(bad):
-    """特定 IF bind のみ（``0.0.0.0`` 禁止）。"""
+    """特定 IF bind のみ（全 IF へ開くアドレスは**表記に関わらず**禁止）。
+
+    ``"0"`` / ``"0x0"`` / ``"00000000"`` はいずれも ``0.0.0.0`` へ解決される（実測）。
+    表記を列挙して拒む形にすると、書き方の数だけ穴が空く。禁止したいのは表記ではなく
+    「全 IF へ開くアドレス」であるから、**解決した結果**で判断する。
+    """
     with pytest.raises(feed.FeedError):
         feed.validate_bind(bad)
 

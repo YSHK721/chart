@@ -111,6 +111,23 @@ def tail_rows(day: Any, *, symbol: str, data_dir: Any) -> "List[Row]":
     return read_rows(day, symbol=symbol, data_dir=data_dir)
 
 
+def has_journal(day: Any, *, symbol: str, data_dir: Any) -> bool:
+    """``day`` の受信ジャーナルが在るか（**中身は読まない**）。"""
+    return journal_path(day, symbol=symbol, data_dir=data_dir).is_file()
+
+
+def is_finalized(day: Any, *, symbol: str, data_dir: Any) -> bool:
+    """``day`` が確定済みか（日別 parquet か ``.empty`` マーカーが在る）。
+
+    確定の結果は 2 通りある（:func:`finalize` の戻り値 ``"written"`` / ``"empty"``）。片方だけを
+    見ると、行が 1 つも無い日を毎起動で確定し直すことになる。
+    """
+    return (
+        tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir).is_file()
+        or tick_m1.day_empty_marker_path(day, symbol=symbol, data_dir=data_dir).is_file()
+    )
+
+
 def _write_parquet_atomically(frame: pd.DataFrame, path: Path) -> None:
     """tmp→``os.replace`` で確定パスを「完全な新ファイル」か「旧ファイル」に限定する。"""
     path.parent.mkdir(parents=True, exist_ok=True)

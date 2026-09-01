@@ -17,6 +17,7 @@ import datetime as dt
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 import pytest
@@ -57,6 +58,48 @@ def _argv(tmp_path, *extra):
 
 def _wrote_anything(tmp_path: Path) -> bool:
     return any(p.is_file() for p in tmp_path.rglob("*"))
+
+
+class _Restart(NamedTuple):
+    """再起動 1 回の観測（確定された日・ジャーナル探索の発行回数）。"""
+
+    finalized: "list[dt.date]"
+    journal_probes: int
+
+
+def _restart_on_the_next_day(root: Path, *, stored_days: int, monkeypatch) -> _Restart:
+    """``stored_days`` 日ぶんの受信済みジャーナルを置き、翌日に 1 周期だけ再起動する。
+
+    測るのは「確定された日」と「ジャーナルのパス探索を何回発行したか」の 2 つである。後者は
+    起動時の種付けが台帳の大きさに比例していないことを表す（回数そのものは期待値に焼き込まず、
+    蓄積 2 点で**増えないこと**だけを固定する）。
+    """
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    root.mkdir(parents=True, exist_ok=True)
+    days = [dt.date(2026, 8, 25) - dt.timedelta(days=offset) for offset in range(stored_days)]
+    for day in days:
+        journal.append(
+            day, _tape(dt.datetime(day.year, day.month, day.day, 9, 0), minutes=1),
+            symbol=token, data_dir=root,
+        )
+    tape = (
+        _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=1)
+        + _tape(dt.datetime(2026, 8, 26, 9, 0), minutes=2)
+    )
+    probes = fakes.CallSpy(journal.journal_path)
+    monkeypatch.setattr(journal, "journal_path", probes)
+
+    watch.main(
+        ["--data-dir", str(root), "--once", "--no-publish"],
+        source=fakes.FakeTickSource(tape),
+        clock=fakes.FixedClock(dt.datetime(2026, 8, 26, 9, 2, tzinfo=dt.timezone.utc)),
+    )
+
+    finalized = [
+        day for day in sorted(days)
+        if tick_m1.day_parquet_path(day, symbol=token, data_dir=root).is_file()
+    ]
+    return _Restart(finalized=finalized, journal_probes=probes.count)
 
 
 # =====================================================================
@@ -150,6 +193,45 @@ def test_a_warm_start_resumes_from_the_journal_without_from(tmp_path, secret):
 
     assert code == 0
     assert len(journal.read_rows(dt.date(2026, 8, 25), symbol=token, data_dir=tmp_path)) == 8
+
+
+def test_a_restart_after_midnight_still_finalizes_the_previous_day(tmp_path, secret):
+    """日 D の途中で止め D+1 に再起動しても、D の確定（parquet）が落ちない。
+
+    確定候補の日は「当プロセスが観測した日」だけではない。前回の停止で確定に至らなかった日は
+    ジャーナルにだけ残っており、それを起動時に拾わないと ``journal.finalize(D)`` が
+    **二度と呼ばれない**（ジャーナル在・parquet 無の日が黙って残り続ける）。
+    """
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    previous = _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=2)
+    journal.append(dt.date(2026, 8, 25), previous, symbol=token, data_dir=tmp_path)
+    tape = previous + _tape(dt.datetime(2026, 8, 26, 9, 0), minutes=2)
+    clock = fakes.FixedClock(dt.datetime(2026, 8, 26, 9, 2, tzinfo=dt.timezone.utc))
+
+    code = watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
+
+    assert code == 0
+    assert tick_m1.day_parquet_path(
+        dt.date(2026, 8, 25), symbol=token, data_dir=tmp_path
+    ).is_file()
+
+
+def test_seeding_the_unfinalized_days_is_bounded_by_the_lookback_window(
+    tmp_path, secret, monkeypatch
+):
+    """CX: 起動時の種付けが**保存済み日数に比例しない**（蓄積 2 点で固定）。
+
+    未確定日を拾うのに台帳全体を舐めると、常駐の起動費が保存日数に比例して伸びる。探索窓は
+    再開点の復元と同じ :data:`watch.RESTORE_LOOKBACK_DAYS` 日であり、窓の外の日は
+    （ジャーナルが在っても）確定しない — 何日でも黙って遡ると、欠測を埋めたのか飛ばしたのかが
+    運用者に見えなくなる。
+    """
+    small = _restart_on_the_next_day(tmp_path / "stored5", stored_days=5, monkeypatch=monkeypatch)
+    large = _restart_on_the_next_day(tmp_path / "stored50", stored_days=50, monkeypatch=monkeypatch)
+
+    assert small.finalized == [dt.date(2026, 8, 25)]
+    assert large.finalized == small.finalized
+    assert large.journal_probes == small.journal_probes
 
 
 @pytest.mark.parametrize(
@@ -315,6 +397,46 @@ def test_a_fail_stop_failure_ends_the_run_without_retrying(tmp_path, secret):
     assert not _wrote_anything(tmp_path)
 
 
+def test_a_run_with_a_cycle_budget_gives_up_instead_of_retrying_forever(tmp_path, secret):
+    """``--once`` は「1 周期だけ実行して終わる」（``--help`` の文言）。
+
+    周期は**成功した**ものだけを数えるので、待てば直る障害（429 等）が続くかぎり 1 周期も
+    消化されず、``--once`` が終わらない（実測: 51 回継続）。周期の予算を渡された実行は、
+    ブレーカが開く連続失敗回数に達した時点で打ち切る。常駐（予算なし）の側は変えない
+    — そちらは「直るまで待ち続ける」ことが仕事だからである。
+    """
+    source = _FlakySource(_tape(dt.datetime(2026, 8, 25, 9, 0), minutes=2), fail_times=10_000)
+    slept = _BoundedSleep(limit=50)
+
+    code = watch.main(
+        _argv(tmp_path, "--from", "2026-08-25 12:00:00"), source=source, sleep=slept
+    )
+
+    assert code == watch.EXIT_FAIL_STOP
+    assert len(slept.delays) == watch.BREAKER_AFTER_FAILURES - 1
+
+
+def test_a_broken_cursor_contract_is_a_fail_stop_without_a_traceback(tmp_path, secret, capsys):
+    """カーソル規約の破れ（境界 ms の不一致）も**運用者に読める形で**止まる。
+
+    カーソル規約の破れは「待っても直らない」側の障害であり、扱いは供給契約の破れ
+    （:class:`Mt5SupplyError`）と同じである。Fail-Stop ハンドラの型集合から漏れると、常駐は
+    Python のトレースバックを吐いて exit 1 で落ちる。終了コードは「何が起きたか」を運用者へ
+    伝える唯一の手段であり、規約の破れが「未知のクラッシュ」に化ける。
+    """
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    tape = _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=2)
+    journal.append(dt.date(2026, 8, 25), tape[:4], symbol=token, data_dir=tmp_path)
+    drifted = list(tape)
+    drifted[3] = (tape[3][0], tape[3][1] + 5.0, tape[3][2] + 5.0)
+    clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc))
+
+    code = watch.main(_argv(tmp_path), source=fakes.FakeTickSource(drifted), clock=clock)
+
+    assert code == watch.EXIT_FAIL_STOP
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_a_fail_stop_failure_writes_nothing_at_all(tmp_path, secret):
     """CX-e: Fail-Stop 経路で全 writer 呼出 0（部分的な台帳を残さない）。"""
     source = fakes.FailingTickSource(Mt5SupplyError("契約違反"))
@@ -396,16 +518,27 @@ def test_cli_help_succeeds_in_the_container():
 # 検定用の供給元（fakes の上に「数える」「たまに失敗する」を足すだけ）
 # ---------------------------------------------------------------------
 
-class _CountingSource(fakes.FakeTickSource):
-    """トークン解決の探り（1 行窓）と周期の取得を数え分ける。"""
+#: 数える供給元は fakes が唯一の実装を持つ（数え方の定義を検定ごとに書き写さない）。
+_CountingSource = fakes.CountingTickSource
 
-    @property
-    def token_probes(self) -> int:
-        return len([c for c in self.calls if c["max_rows"] == 1])
 
-    @property
-    def cycle_fetches(self) -> int:
-        return len([c for c in self.calls if c["max_rows"] != 1])
+class _BoundedSleep:
+    """待ちを数え、上限を超えたら止める。
+
+    「終わらない」ことを検定するのに、本当に終わらないまま待つわけにはいかない。上限は
+    検定が固まらないための安全弁であり、期待値ではない（期待値は本体の assert が持つ）。
+    """
+
+    def __init__(self, *, limit: int):
+        self.delays: "list[float]" = []
+        self._limit = limit
+
+    def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        if len(self.delays) > self._limit:
+            raise AssertionError(
+                f"周期の予算を渡した実行が {self._limit} 回の待ちを超えても終わりません。"
+            )
 
 
 class _FlakySource(fakes.FakeTickSource):

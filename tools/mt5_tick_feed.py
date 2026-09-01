@@ -28,8 +28,10 @@ import argparse
 import datetime as dt
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, NamedTuple, Optional
@@ -57,7 +59,6 @@ MIN_SECRET_LENGTH = 16
 #: 既定の待ち受け（ISSUE-446 実測のコンテナ→VM 経路）。全 IF への bind は禁止する。
 DEFAULT_BIND = "172.16.162.129"
 DEFAULT_PORT = 8771
-_FORBIDDEN_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
 
 #: 1 応答の上限。際限のない要求で端末を詰まらせない。
 MAX_ROWS_LIMIT = 200_000
@@ -111,6 +112,19 @@ class NonceCache:
         return True
 
 
+def _ct_equal(left: str, right: str) -> bool:
+    """資格情報を**定数時間**で比較する（非 ASCII でも例外にしない）。
+
+    ``hmac.compare_digest`` は str 同士だと非 ASCII で :class:`TypeError` を送出する。
+    ここは認証前であり、左辺は攻撃者が中身を決められる。例外が抜けると 401 の代わりに
+    「応答ゼロの切断」が返り、拒否そのものが失敗する。バイト列へ正規化してから比べる
+    （``surrogateescape`` は latin-1 で読まれたヘッダの不正バイトも落とさずに運ぶ）。
+    """
+    return hmac.compare_digest(
+        left.encode("utf-8", "surrogateescape"), right.encode("utf-8", "surrogateescape")
+    )
+
+
 def canonical_string(method: str, path: str, query: "Dict[str, str]", *, ts: int, nonce: str) -> str:
     """署名対象 ``METHOD\\n/path\\n<sorted-query>\\n<ts>\\n<nonce>``。"""
     sorted_query = urlencode(sorted((str(k), str(v)) for k, v in query.items()))
@@ -141,7 +155,7 @@ def authenticate(
     lookup = {str(k).lower(): v for k, v in headers.items()}
     fields = _parse_authorization(lookup.get("authorization", ""))
 
-    if not hmac.compare_digest(fields["key"], key_id):
+    if not _ct_equal(fields["key"], key_id):
         raise FeedError(401, "auth", "鍵 ID が一致しません。")
     try:
         ts = int(fields["ts"])
@@ -155,7 +169,7 @@ def authenticate(
         canonical_string(method, path, query, ts=ts, nonce=fields["nonce"]).encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    if not hmac.compare_digest(expected, fields["sig"]):
+    if not _ct_equal(expected, fields["sig"]):
         raise FeedError(401, "auth", "署名が一致しません。")
 
     if not nonces.claim(fields["nonce"], now=int(now)):
@@ -174,11 +188,31 @@ def load_secret(env: str = SECRET_ENV) -> bytes:
 
 
 def validate_bind(host: str) -> str:
-    """待ち受けアドレスを特定 IF に限定する（全 IF への公開を拒む）。"""
-    if host in _FORBIDDEN_BINDS:
+    """待ち受けアドレスを特定 IF に限定する（**解決した結果**で判断する）。
+
+    禁止表記を並べる形は取らない。``"0"`` / ``"0x0"`` / ``"00000000"`` はいずれも
+    ``0.0.0.0`` へ解決される（実測）ため、表記の列挙は書き方の数だけ穴が空く。禁止したいのは
+    表記ではなく「全 IF へ開くアドレス」そのものなので、名前解決してから
+    :attr:`ipaddress.IPv4Address.is_unspecified` で判定する。解決できない指定も拒む
+    （何に bind されるか分からないまま待ち受けを開かない）。
+    """
+    try:
+        resolved = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, ValueError):
         raise FeedError(
             500, "config",
-            f"全インタフェースへの bind は禁止です: {host!r}。特定 IF を指定してください。",
+            f"待ち受けアドレスを解決できません: {host!r}。特定 IF を指定してください。",
+        ) from None
+
+    unspecified = sorted({
+        info[4][0] for info in resolved
+        if ipaddress.ip_address(info[4][0]).is_unspecified
+    })
+    if unspecified:
+        raise FeedError(
+            500, "config",
+            f"全インタフェースへの bind は禁止です: {host!r} → {unspecified}。"
+            " 特定 IF を指定してください。",
         )
     return host
 
@@ -220,7 +254,14 @@ def read_tick_window(
     return rows
 
 
-def _server_name(mt5: Any) -> str:
+def resolve_server_name(mt5: Any) -> str:
+    """接続中の端末のサーバ名を読む（**プロセス中 1 回だけ**呼ぶ）。
+
+    サーバ名は端末セッションのあいだ不変であり、変わるのは端末に別口座で入り直したときだけ
+    ＝そのときは本プロセスも上げ直す。要求のたびに問い合わせても答えは同じで、出力に使うのは
+    1 回ぶんの値だけである。同じ答えを毎回作り直すのは「作ってから捨てる」計算そのもので、
+    しかも相手はライブ口座の端末である（ISSUE-450 と同型）。
+    """
     info = mt5.account_info()
     return "" if info is None else str(getattr(info, "server", ""))
 
@@ -269,7 +310,7 @@ def _tick_query(query: "Dict[str, str]") -> _TickQuery:
     return _TickQuery(symbol, from_msc, to_msc, max_rows)
 
 
-def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
+def _ticks_response(mt5: Any, query: "Dict[str, str]", *, server: str) -> Response:
     asked = _tick_query(query)
     max_rows = asked.max_rows
 
@@ -287,19 +328,23 @@ def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
         "X-MT5-Dtype": json.dumps(rows.dtype.descr),
         "X-MT5-Latest-Msc": str(latest),
         "X-MT5-Truncated": "1" if truncated else "0",
-        "X-MT5-Server": _server_name(mt5),
+        # 転送契約なのでヘッダは残す。値は起動時に 1 回決めたものをそのまま載せる。
+        "X-MT5-Server": server,
     }
     return Response(status=200, headers=headers, body=rows.tobytes())
 
 
 def handle_request(
-    target: str, headers: "Dict[str, str]", *, mt5: Any, secret: bytes, key_id: str,
-    nonces: NonceCache, now: int,
+    target: str, headers: "Dict[str, str]", *, mt5: Any, server: str, secret: bytes,
+    key_id: str, nonces: NonceCache, now: int,
 ) -> Response:
     """1 要求を処理して応答を返す（HTTP の配管を含まない＝そのまま検定できる）。
 
     順序に意味がある: **認証は端末に触れるより先**である。認証前に端末を触ると、
     未認証の相手にライブ口座の状態を触らせる経路ができる。
+
+    ``server`` を引数で受けるのは、サーバ名の解決を要求の処理から追い出すためである
+    （:func:`resolve_server_name` を呼ぶのは :func:`make_handler` の 1 箇所だけ）。
     """
     parsed = urlparse(target)
     path = parsed.path
@@ -316,10 +361,29 @@ def handle_request(
             # 端末に触れない。生存確認で発注口座を触らないため。
             body = json.dumps({"ok": True}).encode("utf-8")
             return Response(200, {"Content-Type": "application/json"}, body)
-        return _ticks_response(mt5, query)
+        return _ticks_response(mt5, query, server=server)
     except FeedError as exc:
         return Response(
             exc.status, {"Content-Type": "application/json"}, exc.payload()
+        )
+
+
+def respond(target: str, headers: "Dict[str, str]", **context: Any) -> Response:
+    """1 要求に対して**必ず 1 つの応答**を返す最終境界。
+
+    :class:`FeedError` は :func:`handle_request` が応答へ落とす。ここが受け持つのは
+    それ以外（端末ライブラリが投げる例外・想定外の入力で起きる TypeError 等）である。
+    予期しない例外で接続を無言で切ると、攻撃者には「その入力で何かが起きた」ことだけが伝わり、
+    運用者には何も残らない。detail を載せないのは、内部の事情を未認証の相手へ渡さないためで、
+    診断に要る全文は stderr（運用者の側）へ書く。
+    """
+    try:
+        return handle_request(target, headers, **context)
+    except Exception as exc:  # noqa: BLE001 — 最終境界。ここで止めないと応答ゼロになる。
+        sys.stderr.write(f"unhandled error while serving {target!r}: {exc!r}\n")
+        return Response(
+            500, {"Content-Type": "application/json"},
+            json.dumps({"error": "internal"}).encode("utf-8"),
         )
 
 
@@ -328,7 +392,12 @@ def handle_request(
 # ---------------------------------------------------------------------
 
 def make_handler(*, mt5: Any, secret: bytes, key_id: str, nonces: NonceCache):
-    """要求処理を ``BaseHTTPRequestHandler`` へ結線する（配管だけを持つ）。"""
+    """要求処理を ``BaseHTTPRequestHandler`` へ結線する（配管だけを持つ）。
+
+    サーバ名はここで **1 回だけ**解決してハンドラへ束縛する。束縛の寿命がプロセスと同じで
+    あることを、変数の置き場所（生成時のクロージャ）で示す。
+    """
+    server_name = resolve_server_name(mt5)
 
     class _Handler(BaseHTTPRequestHandler):
         server_version = "mt5-tick-feed"
@@ -337,8 +406,8 @@ def make_handler(*, mt5: Any, secret: bytes, key_id: str, nonces: NonceCache):
         def do_GET(self):  # noqa: N802  （BaseHTTPRequestHandler の規約）
             import time
 
-            response = handle_request(
-                self.path, dict(self.headers), mt5=mt5, secret=secret,
+            response = respond(
+                self.path, dict(self.headers), mt5=mt5, server=server_name, secret=secret,
                 key_id=key_id, nonces=nonces, now=int(time.time()),
             )
             self.send_response(response.status)
