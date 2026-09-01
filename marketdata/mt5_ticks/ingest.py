@@ -40,7 +40,7 @@ TOKEN_SEPARATOR = "@"
 def token_for(symbol: str, server: str) -> str:
     """銘柄 × サーバの識別トークンを作る（tick 木の ``symbol`` 引数に渡す値）。
 
-    Dukascopy 木（``JP225``）と衝突しない別トークンになるため、既存木へ 1 バイトも
+    Dukascopy 木（symbol="JP225"）と衝突しない別トークンになるため、既存木へ 1 バイトも
     波及しない。VM 側はトークンを作らない（コンテナ側だけが知る）。
     """
     return (
@@ -116,7 +116,7 @@ def rows_to_frame(rows: "Sequence[Row]") -> pd.DataFrame:
     """行を日別 parquet と同じ列・dtype の DataFrame へ整形する。
 
     列は :data:`marketdata.tick_m1._TICK_COLUMNS` を import する（第 2 定義を作らない）。
-    ``timestamp`` は **UTC へ変換済み**（``datetime64[ms, UTC]``）、価格は ``float64``。
+    時刻列は **UTC へ変換済み**（``datetime64[ms, UTC]``）、価格は ``float64``。
     MT5 に対応物のない ``bidVolume`` / ``askVolume`` は **0 で埋めない**
     （ISSUE-447 承認済み方針 3・捏造しない）。
     """

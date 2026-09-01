@@ -3,7 +3,7 @@
 方式は ``marketdata/tests/test_module_dependency_declarations.py``（ISSUE-262）と同じである。
 宣言は施行されているように読めるが、施行する仕組みが無ければ次の編集で静かに破れる。
 
-この規則を ``tools`` 側の検定に置かない理由（設計 §3）:
+この規則を tools 側の検定に置かない理由（設計 §3）:
     ``tools/tests/test_tools_composition_declaration.py`` は ``tools/*.py`` を**非再帰**で走査
     する。パッケージ配下へ潜れば検査を免れる穴があるため、本パッケージの依存規則は
     本パッケージ側で施行する（穴を突かない）。
@@ -33,12 +33,19 @@ _ALLOWED: "dict[str, set[str]]" = {
     "port.py": set(),
     # adapter: 台帳の権威へ委譲する。
     "journal.py": {"pandas", "marketdata.tick_m1", _SELF},
-    # ``tools.capture_mt5_symbol_spec`` はパス成分変換の**唯一の実装**であり、
+    # `tools/capture_mt5_symbol_spec.py` はパス成分変換の**唯一の実装**であり、
     # 複製を作らないために層の向きを曲げて import する（設計 §4・検定 M-1）。
     "ingest.py": {"pandas", "marketdata.tick_m1", "tools.capture_mt5_symbol_spec", _SELF},
     "m1_chain.py": {"pandas", "marketdata.tick_m1", "marketdata.rollup", _SELF},
+    # 日次確定後の再構築。日次クリーニングの唯一の実装（outlier_policy）を権威と共有する。
+    "rebuild.py": {
+        "pandas", "marketdata.tick_m1", "marketdata.outlier_policy",
+        "marketdata.rollup", _SELF,
+    },
     # usecase: 同パッケージのみ。
     "usecases.py": {_SELF},
+    # framework: 実 HTTP。契約（wire）と失敗分類（port）へ委譲し、配管だけを持つ。
+    "http_source.py": {_SELF},
     # test 支援: 同パッケージのみ（本番経路から import されない）。
     "fakes.py": {_SELF},
 }
@@ -116,7 +123,7 @@ def test_the_pure_layer_never_reaches_for_pandas_or_numpy(filename):
 
 
 def test_only_ingest_reaches_into_tools():
-    """``tools`` への逆向き依存は sanitize 1 点に閉じる（無制限に広げない）。"""
+    """tools パッケージへの逆向き依存は sanitize 1 点に閉じる（無制限に広げない）。"""
     offenders = {
         name for name in _ALLOWED
         if any(dep.startswith("tools") for dep in _external_imports(_PKG / name))

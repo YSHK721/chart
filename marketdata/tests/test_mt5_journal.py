@@ -34,7 +34,7 @@ def _rows(*specs):
 
 @pytest.fixture()
 def store(tmp_path):
-    """``data_dir`` を tmp_path に閉じた保存先。"""
+    """保存先を tmp_path に閉じた引数一式（実データへ 1 バイトも書かない）。"""
     return dict(symbol=_TOKEN, data_dir=tmp_path)
 
 
@@ -58,7 +58,7 @@ def test_journal_path_follows_the_authority_when_it_is_monkeypatched(monkeypatch
 
 
 def test_the_journal_never_lands_in_the_dukascopy_symbol_tree(store, tmp_path):
-    """既存 Dukascopy 木（``JP225``）と別のディレクトリに置かれる。"""
+    """既存 Dukascopy 木（symbol="JP225"）と別のディレクトリに置かれる。"""
     mt5_path = journal.journal_path(_DAY, **store)
     duka_path = tick_m1.day_parquet_path(_DAY, symbol="JP225", data_dir=tmp_path)
     assert mt5_path.name != duka_path.name
@@ -72,6 +72,7 @@ def test_append_writes_one_line_per_row_and_returns_the_count(store):
     n = journal.append(_DAY, _rows((_ms(12), 1.0, 2.0), (_ms(12, 0, 1), 1.1, 2.1)), **store)
     assert n == 2
     text = journal.journal_path(_DAY, **store).read_text(encoding="utf-8")
+    # di-ok(C2): これは被検査ソースではなく、書き出したジャーナル（データ）そのものの検査
     assert text.count("\n") == 2
 
 

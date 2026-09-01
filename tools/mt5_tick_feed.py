@@ -9,7 +9,7 @@
 確定原則（変更不可）— **VM 側は定義を持たない**:
     tick 木のレイアウト・marketdata の列名・DST/UTC 変換・配信ディレクトリを本ファイルに
     置かない。端末から読んだ構造化配列を ``tobytes()`` のまま返し、意味づけは全部コンテナ側
-    （``marketdata.mt5_ticks``）が既存権威を import して行う。定義が 2 箇所にあると、
+    （marketdata/mt5_ticks/ 配下）が既存権威を import して行う。定義が 2 箇所にあると、
     片方だけ直った瞬間に静かにズレた値が台帳へ入る。
     この宣言は ``tools/tests/test_mt5_tick_feed.py`` が **AST/文字列走査で強制**する（A-1〜A-8）。
 
@@ -45,7 +45,7 @@ ALLOWED_TERMINAL_APIS = frozenset({
 #: 公開するエンドポイント（2 本のみ）。
 ENDPOINTS = ("/health", "/ticks")
 
-#: 認証スキームと鮮度窓。コンテナ側 ``marketdata.mt5_ticks.wire`` と同じ値でなければならず、
+#: 認証スキームと鮮度窓。コンテナ側 `marketdata/mt5_ticks/wire.py` と同じ値でなければならず、
 #: その一致は検定 N-6（署名往復）が固定する。
 AUTH_SCHEME = "MT5B1"
 MAX_TIMESTAMP_SKEW_SECONDS = 120
@@ -187,7 +187,7 @@ def validate_bind(host: str) -> str:
 # 端末の読み取り（epoch → datetime の変換を知る唯一の関数）
 # ---------------------------------------------------------------------
 
-def read_ticks(
+def read_tick_window(
     mt5: Any, *, symbol: str, from_msc: int, to_msc: "Optional[int]", max_rows: int
 ) -> Any:
     """端末から生ティックを読む。**読み取りのみ**。
@@ -252,7 +252,7 @@ def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
     if to_msc is not None and to_msc < from_msc:
         raise FeedError(400, "argument", "to_msc が from_msc より前です。")
 
-    rows = read_ticks(
+    rows = read_tick_window(
         mt5, symbol=symbol, from_msc=from_msc, to_msc=to_msc, max_rows=max_rows
     )
     truncated = len(rows) > max_rows

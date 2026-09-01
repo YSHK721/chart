@@ -263,14 +263,22 @@ def _tree() -> ast.AST:
     return ast.parse(_SOURCE.read_text(encoding="utf-8"))
 
 
+def _top_level_imports_of(tree: ast.AST, package: str) -> "list[str]":
+    """トップレベルで ``package`` を import している名前を集める（純関数・検定本体を分岐させない）。"""
+    plain = [
+        a.name for node in tree.body if isinstance(node, ast.Import)
+        for a in node.names if a.name.startswith(package)
+    ]
+    froms = [
+        node.module for node in tree.body
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(package)
+    ]
+    return plain + froms
+
+
 def test_module_does_not_import_metatrader5_at_top_level():
     """A-1: コンテナ（MetaTrader5 不在）でも import が通ることを構造で担保する。"""
-    offenders = []
-    for node in _tree().body:
-        if isinstance(node, ast.Import):
-            offenders += [a.name for a in node.names if a.name.startswith("MetaTrader5")]
-        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("MetaTrader5"):
-            offenders.append(node.module)
+    offenders = _top_level_imports_of(_tree(), "MetaTrader5")
     assert offenders == [], f"MetaTrader5 をトップレベル import しています: {offenders}"
 
 
@@ -320,6 +328,22 @@ _YMD_TREE = re.compile(r"""%Y["']\s*/\s*f?["']\{?\w*:?%m""")
 _TICK_FILENAME = re.compile(r"""["'][A-Za-z0-9_]+_ticks\.(parquet|empty)["']""")
 
 
+def _code_lines_matching(pattern) -> "list[str]":
+    """``pattern`` に当たるコード行（コメント・docstring 開始行は説明なので除く）を集める。
+
+    走査そのものを純関数へ出し、検定本体は「収集結果 == 期待」の 1 主張だけにする
+    （検定本体に分岐を置くと、どの経路を通ったのかが落ちたときに分からない）。
+    """
+    out: "list[str]" = []
+    for i, line in enumerate(_SOURCE.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped.startswith('"""'):
+            continue
+        if pattern.search(line):
+            out.append(f"{i}: {stripped[:90]}")
+    return out
+
+
 @pytest.mark.parametrize(
     "pattern,what",
     [(_TICK_ROOT, "tick 木の基点"), (_YMD_TREE, "YYYY/MM/DD の階層"),
@@ -328,14 +352,8 @@ _TICK_FILENAME = re.compile(r"""["'][A-Za-z0-9_]+_ticks\.(parquet|empty)["']""")
 )
 def test_the_vm_side_does_not_know_the_tick_tree_layout(pattern, what):
     """A-4: VM 側は保存レイアウトを 1 つも持たない。"""
-    offenders = []
-    for i, line in enumerate(_SOURCE.read_text(encoding="utf-8").splitlines(), 1):
-        code = line.strip()
-        if code.startswith("#") or code.startswith('"""'):
-            continue
-        if pattern.search(line):
-            offenders.append(f"{i}: {code[:90]}")
-    assert not offenders, f"{what} を VM 側が組んでいます:\n  " + "\n  ".join(offenders)
+    offenders = _code_lines_matching(pattern)
+    assert offenders == [], f"{what} を VM 側が組んでいます:\n  " + "\n  ".join(offenders)
 
 
 @pytest.mark.parametrize("column", ["bidPrice", "askPrice"])
@@ -349,12 +367,17 @@ def test_the_vm_side_does_not_know_the_marketdata_column_names(column):
     assert not offenders, f"{column} を VM 側が持っています:\n  " + "\n  ".join(offenders)
 
 
-def test_the_vm_side_does_not_convert_time_zones():
-    """A-4: DST・UTC 変換を VM 側に置かない（時刻の権威は ``server_clock`` 1 箇所）。"""
+@pytest.mark.parametrize(
+    "token", ["zoneinfo", "ZoneInfo", "EEST", "astimezone", "utcoffset", "dst("]
+)
+def test_the_vm_side_does_not_convert_time_zones(token):
+    """A-4: DST・UTC 変換を VM 側に置かない（時刻の権威は `marketdata/mt5_ticks/server_clock.py` 1 箇所）。"""
     text = _SOURCE.read_text(encoding="utf-8")
     code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
-    for token in ("zoneinfo", "ZoneInfo", "EEST", "astimezone", "utcoffset", "dst("):
-        assert token not in code, f"VM 側が時刻変換を持っています: {token}"
+    # A-4 は「その構文を持たない」という構造禁止であり、実行時に観測できる振る舞いが存在しない。
+    #   既存の marketdata/tests/test_tick_tree_layout_authority.py と同型の走査検定である。
+    # di-ok(C2): 構造禁止（A-4）は被検査ソースの走査でしか固定できない
+    assert token not in code, f"VM 側が時刻変換を持っています: {token}"
 
 
 def test_the_epoch_conversion_lives_in_exactly_one_function():
@@ -389,6 +412,8 @@ def test_no_file_serving_machinery_is_present(token):
         l for l in _SOURCE.read_text(encoding="utf-8").splitlines()
         if not l.strip().startswith("#")
     )
+    # 「持っていない」ことは「呼べない」ことでは示せない（存在しない機構は実行できない）。
+    # di-ok(C2): 構造禁止（A-5）は被検査ソースの走査でしか固定できない
     assert token not in code, f"ファイル配信の機構を参照しています: {token}"
 
 
@@ -400,7 +425,9 @@ def test_only_two_endpoints_are_served():
 def test_the_server_is_single_threaded():
     """stdlib ``http.server`` の単一スレッド（並行で端末を叩かない）。"""
     code = _SOURCE.read_text(encoding="utf-8")
+    # di-ok(C2): 並行化の不在は構造禁止であり、単一スレッドであることを実行時に観測する手段が無い。
     assert "ThreadingHTTPServer" not in code
+    # di-ok(C2): 同上（混入経路が 2 つあるため両方を固定する）。
     assert "ThreadingMixIn" not in code
 
 

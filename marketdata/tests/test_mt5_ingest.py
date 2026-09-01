@@ -40,7 +40,7 @@ def test_token_sanitizes_path_hostile_components():
 
 
 def test_token_uses_the_existing_sanitizer_rather_than_a_private_copy():
-    """M-1: 変換規則の第 2 実装を持たない（``_SAFE_CHARS`` 相当を自前で持たない）。"""
+    """M-1: 変換規則の第 2 実装を持たない（許可文字集合を自前で持たない）。"""
     from tools.capture_mt5_symbol_spec import sanitize_path_component
 
     assert ingest.sanitize_path_component is sanitize_path_component
@@ -51,7 +51,10 @@ def test_token_uses_the_existing_sanitizer_rather_than_a_private_copy():
 # =====================================================================
 
 def test_ascending_rows_inside_the_window_pass_validation():
-    ingest.validate_rows(_rows((1000, 1.0, 2.0), (1001, 1.0, 2.0)), from_msc=1000)
+    """検証を通った行は何も返さない（通過は「例外を出さない」ではなく戻り値 None で表明する）。"""
+    assert ingest.validate_rows(
+        _rows((1000, 1.0, 2.0), (1001, 1.0, 2.0)), from_msc=1000
+    ) is None
 
 
 def test_non_monotonic_time_msc_is_fail_stop():
@@ -62,7 +65,9 @@ def test_non_monotonic_time_msc_is_fail_stop():
 
 def test_equal_time_msc_is_allowed_because_ticks_share_milliseconds():
     """同一 ms は正常（非単調ではない）。ここを弾くと実データが通らない。"""
-    ingest.validate_rows(_rows((1000, 1.0, 2.0), (1000, 1.1, 2.1)), from_msc=1000)
+    assert ingest.validate_rows(
+        _rows((1000, 1.0, 2.0), (1000, 1.1, 2.1)), from_msc=1000
+    ) is None
 
 
 def test_rows_before_the_requested_window_are_fail_stop():
@@ -96,7 +101,7 @@ def test_impossible_quotes_are_fail_stop(bad, why):
 
 def test_ask_equal_to_bid_is_allowed():
     """スプレッド 0 は異常ではない（実在しうる）。過剰に弾かない。"""
-    ingest.validate_rows(_rows((1000, 1.0, 1.0)), from_msc=1000)
+    assert ingest.validate_rows(_rows((1000, 1.0, 1.0)), from_msc=1000) is None
 
 
 @pytest.mark.parametrize("bad", [("1000", 1.0, 2.0), (1000, "1.0", 2.0), (1000, 1.0, None)])
@@ -151,9 +156,8 @@ def test_splitting_an_empty_response_yields_nothing():
 def test_rows_to_frame_matches_the_day_parquet_schema():
     """N-3 の骨: 列は ``tick_m1._TICK_COLUMNS``・dtype は既存 tick 木と同一主張。
 
-    dtype の期待値は ``tools/tests/test_live_tick_watch.py`` の
-    ``test_rows_to_frame_matches_day_parquet_schema`` と同じである（同一の台帳へ
-    書く以上、主張も同じでなければならない）。
+    dtype の期待値は `tools/tests/test_live_tick_watch.py` の同名検定と同じである
+    （同一の台帳へ書く以上、主張も同じでなければならない）。
     """
     df = ingest.rows_to_frame(_rows((_ms(2026, 8, 25, 12), 66020.1, 66035.1)))
     assert list(df.columns) == tick_m1._TICK_COLUMNS

@@ -68,9 +68,13 @@ def test_offset_seconds_is_always_one_of_the_two_broker_offsets():
 
 
 def test_to_utc_ms_is_the_label_minus_the_offset():
-    """N-1: 変換式が ``label - offset*1000`` であること（別式を持ち込まない）。"""
+    """N-1: 変換式が「ラベル − オフセット」であること（別式を持ち込まない）。
+
+    期待値は被検査モジュールで計算しない。2026-08-25 は夏（+3h）であり、その 1 点を
+    **リテラルの秒数**で固定する（実装と同じ式を右辺に書くと恒真になる）。
+    """
     label = _ms(2026, 8, 25, 12)
-    assert server_clock.to_utc_ms(label) == label - server_clock.offset_seconds(label) * 1000
+    assert server_clock.to_utc_ms(label) == label - 3 * 3600 * 1000
 
 
 def test_the_inverse_conversion_is_not_implemented():

@@ -88,7 +88,7 @@ def authorization_header(*, key_id: str, ts: int, nonce: str, sig: str) -> str:
 
 
 def parse_authorization(header: str) -> "Dict[str, str]":
-    """``Authorization`` ヘッダを ``key`` / ``ts`` / ``nonce`` / ``sig`` へ分解する。"""
+    """``Authorization`` ヘッダを 4 要素（key・ts・nonce・sig）へ分解する。"""
     text = (header or "").strip()
     prefix = AUTH_SCHEME + " "
     if not text.startswith(prefix):
@@ -167,7 +167,7 @@ def parse_response(status: int, headers: "Mapping[str, str]", body: bytes) -> Ti
     """成功応答を解析する。整合が取れない場合は必ず :class:`WireError`。
 
     検査するのは 3 点だけである（設計 §4）: ``Count`` × itemsize と body 長の一致、
-    ``time_msc`` / ``bid`` / ``ask`` の存在、``Latest-Msc`` の存在。どれも欠けると
+    :data:`REQUIRED_FIELDS`（time_msc・bid・ask）の存在、``Latest-Msc`` の存在。どれも欠けると
     「ズレた値が静かに台帳へ入る」経路になる。
     """
     if int(status) != 200:

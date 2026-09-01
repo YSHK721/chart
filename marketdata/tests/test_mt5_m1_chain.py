@@ -1,7 +1,7 @@
 """閉じた分だけの M1 追記と rollup 差分更新の検定（ISSUE-447 段階 1 / 検定 M-3）。
 
 なぜ ``tick_m1.append_m1_from_ticks`` を使わないのか（P5 棄却の根拠）:
-    ``append_m1_from_ticks``（``tick_m1.py:443-465``）は最終バー日の**日別 parquet を丸ごと
+    ``tick_m1.append_m1_from_ticks``（`marketdata/tick_m1.py`）は最終バー日の**日別 parquet を丸ごと
     読み直して**再集計する。当日はその parquet がまだ存在せず、存在させると 1 周期ごとに
     当日全量を再計算することになる（当日累積に比例＝CX-d 違反）。当日の M1 化は
     「閉じた分の新着ティックだけを畳む」本モジュールが担う。
@@ -159,6 +159,7 @@ def test_the_header_is_written_once_and_only_once(store):
         more, until=pd.Timestamp("2026-08-25 09:02", tz="UTC"), **store
     )
     text = tick_m1.m1_csv_path(ref=_REF, data_dir=store["data_dir"]).read_text(encoding="utf-8")
+    # di-ok(C2): これは被検査ソースではなく、書き出した M1 CSV（データ）そのものの検査
     assert text.count("date,") == 1
 
 

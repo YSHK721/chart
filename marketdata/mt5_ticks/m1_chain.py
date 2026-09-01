@@ -11,16 +11,18 @@
     ``floor(now, "min")``）以降の行は確定させず :attr:`AppendResult.pending_rows` で呼び出し側へ
     返し、次の周期の入力に混ぜる。畳みへ渡る行数は常に「閉じた分のティック数」に等しい（CX-f）。
 
-日次クリーニングとの非対称（既知・本スライスの射程外）:
-    :func:`marketdata.tick_m1.build_m1_from_ticks` は日別 M1 へ ``_clean_m1_day``
-    （日内 close 中央値からの ±30% 乖離バー除去・ISSUE-107）を適用する。これは**日単位の統計**を
-    要するため、分単位の増分では同じ判断ができない（数本のバーの中央値は日の中央値ではない）。
-    本モジュールは日次クリーニングを**適用しない**。確定 parquet からの再構築時に日単位で
-    適用される。この非対称を隠さないために明記する。
+日次クリーニングとの非対称（裁定済み・設計 §10）:
+    :func:`marketdata.tick_m1.build_m1_from_ticks` は日別 M1 へ日内 close 中央値からの ±30%
+    乖離バー除去（ISSUE-107）を適用する。これは**日単位の統計**を要するため、分単位の増分では
+    同じ判断ができない（数本のバーの中央値は日の中央値ではない）。本モジュールは日次
+    クリーニングを**適用しない**＝日中の M1 は暫定値である。UTC 日が閉じた時点で
+    ``marketdata/mt5_ticks/rebuild.py`` が権威経路で当日を再計算し、差分がある日だけ
+    該当日区間を原子置換する（案 b・2026-09-01 裁定）。この非対称を隠さないために明記する。
 
 書式の権威:
-    ``_format_m1_for_csv`` を import する（第 2 定義を作らない・検定 M-3）。private への依存は
-    承認事項 A-5（``tick_m1`` へ公開 API を追加）まで M-3 が防波堤になる。
+    追記は ``tick_m1.append_m1_rows``（公開 API）へ委譲する（第 2 定義を作らない・検定 M-3）。
+    かつては private の整形関数を直接 import していたが、承認事項 A-5 によりその依存は
+    恒久解消した（``marketdata/tests/test_mt5_m1_append_api.py`` が AST で再発を禁じる）。
 
 依存宣言: pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.rollup` /
 :mod:`marketdata.mt5_ticks` 下位。
@@ -77,20 +79,8 @@ def append_m1_for_closed_minutes(
         return AppendResult(bars=0, pending_rows=pending)
 
     m1 = tick_m1.ticks_to_m1(ingest.rows_to_frame(closed))
-    if m1.empty:
-        return AppendResult(bars=0, pending_rows=pending)
-
-    path = tick_m1.m1_csv_path(ref=ref, data_dir=data_dir)
-    formatted = tick_m1._format_m1_for_csv(m1)
-    body = formatted.to_csv(header=False, index_label=list(formatted.index.names)[0] or "date")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    exists = path.is_file()
-    with open(path, "a", newline="", encoding="utf-8") as fh:
-        if not exists:
-            fh.write(",".join([formatted.index.name, *formatted.columns]) + "\n")
-        fh.write(body)
-        fh.flush()
-    return AppendResult(bars=len(formatted), pending_rows=pending)
+    bars = tick_m1.append_m1_rows(m1, tick_m1.m1_csv_path(ref=ref, data_dir=data_dir))
+    return AppendResult(bars=bars, pending_rows=pending)
 
 
 def update_rollups(*, ref: str, data_dir: Any, timeframes: "Optional[Sequence[str]]" = None):

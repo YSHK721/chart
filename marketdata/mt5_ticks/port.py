@@ -38,7 +38,7 @@ _FAIL_STOP_STATUSES = frozenset({400})
 
 
 def _detail(body: bytes) -> str:
-    """応答 body から人が読める手掛かりを取り出す（``last_error`` を失わない）。"""
+    """応答 body から人が読める手掛かりを取り出す（端末の last_error を失わない）。"""
     text = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
     try:
         parsed = json.loads(text)
@@ -74,7 +74,7 @@ class IncrementalTickSource(Protocol):
     def fetch(
         self, *, symbol: str, from_msc: int, to_msc: "Optional[int]", max_rows: int
     ) -> Any:
-        """``[from_msc, to_msc]`` のティックを取る。戻りは ``wire.TickResponse``。
+        """``[from_msc, to_msc]`` のティックを取る。戻りは `marketdata.mt5_ticks.wire.TickResponse`。
 
         失敗は :class:`SupplyUnavailable`（再試行可）か :class:`Mt5SupplyError`
         （Fail-Stop）を送出する。**戻り値で失敗を表さない**（黙って 0 行にしない）。

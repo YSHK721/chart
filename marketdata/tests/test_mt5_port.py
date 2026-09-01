@@ -32,7 +32,7 @@ def test_argument_errors_are_fail_stop_and_never_retried():
 
 
 def test_terminal_failures_carry_the_last_error_detail():
-    """E-8: 端末側の ``last_error`` が失われない（原因の特定を諦めない）。"""
+    """E-8: 端末側の診断情報（last_error）が失われない（原因の特定を諦めない）。"""
     err = port.error_for_status(502, {}, b'{"error":"terminal","last_error":[-10005,"boom"]}')
     assert "boom" in str(err)
 

@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from marketdata import tick_m1
-from marketdata.mt5_ticks import ingest, journal, m1_chain
+from marketdata.mt5_ticks import ingest, journal, m1_chain, rebuild
 
 _PKG = Path(tick_m1.__file__).resolve().parent / "mt5_ticks"
 _TOKEN = "JP225@OANDA-Japan-MT5-Live"
@@ -51,17 +51,23 @@ def test_the_package_declares_the_sanitizer_as_an_import_not_a_definition():
     assert "sanitize_path_component" not in defined
 
 
-def test_no_module_in_the_package_redefines_the_safe_character_set():
-    """M-1: ``_SAFE_CHARS`` 相当の文字集合を本パッケージが持たない（ミラー実装禁止）。"""
-    offenders = []
-    for path in _PKG.glob("*.py"):
+def _lines_defining_a_character_set() -> "list[str]":
+    """許可文字集合を書き下しているコード行を集める（走査は純関数・検定本体は 1 主張）。"""
+    out: "list[str]" = []
+    for path in sorted(_PKG.glob("*.py")):
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             code = line.strip()
             if code.startswith("#"):
                 continue
             if "abcdefghijklmnopqrstuvwxyz" in code or "SAFE_CHARS" in code:
-                offenders.append(f"{path.name}:{i}")
-    assert not offenders, (
+                out.append(f"{path.name}:{i}")
+    return out
+
+
+def test_no_module_in_the_package_redefines_the_safe_character_set():
+    """M-1: 許可文字集合の相当物を本パッケージが持たない（ミラー実装禁止）。"""
+    offenders = _lines_defining_a_character_set()
+    assert offenders == [], (
         f"パス成分の文字集合を再定義しています: {offenders}。"
         " tools.capture_mt5_symbol_spec.sanitize_path_component を import してください。"
     )
@@ -131,30 +137,29 @@ def test_the_intraday_csv_is_byte_identical_to_the_whole_day_builder(tmp_path):
     assert a == b
 
 
-def test_the_equivalence_is_limited_to_days_without_outliers(tmp_path):
-    """M-4 の**射程**を固定する: 同値が成り立つのは外れ値の無い日に限る（既知の非対称）。
-
-    全量経路（:func:`tick_m1.build_m1_from_ticks`）は日別 M1 へ ``_clean_m1_day``
-    （日内 close 中央値から ±30% 乖離するバーの除去・ISSUE-107）を適用する。これは**日単位の
-    統計**を要するため、分単位の増分では同じ判断ができない（数本のバーの中央値は日の中央値では
-    ない）。よって外れ値を含む日では 2 経路が食い違う。
-
-    本検定はその食い違いを**仕様として固定するものではない**。隠さずに機械検査へ落とし、
-    裁定（増分側でも日次クリーニングを掛けるのか、確定 parquet からの再構築に委ねるのか）が
-    済んだ時点で必ずここが赤くなるようにしておくための特性検定である。
-    裁定前にこの非対称を「無いこと」にすると、ISSUE-107 と同型のファントム run が
-    表示系列へ素通りする。
-    """
-    # Arrange: 分 4〜5 を ~15,100 帯のファントム run にする（ISSUE-107 と同型）。
+def _phantom_day_rows(minutes: int = 10, phantom=(4, 5)):
+    """分 ``phantom`` を ~15,100 帯のファントム run にした 1 日（ISSUE-107 と同型）。"""
     start = dt.datetime(2026, 8, 25, 9, 0)
-    rows = []
-    for m in range(10):
-        for i in range(20):
-            when = start + dt.timedelta(minutes=m, seconds=i * 3)
-            price = 15100.0 if m in (4, 5) else 66000.0 + m * 2.0 + i * 0.1
-            rows.append((_label_ms(when), price, price + 10.0))
-    until = start + dt.timedelta(minutes=10)
+    rows = [
+        (_label_ms(start + dt.timedelta(minutes=m, seconds=i * 3)),
+         15100.0 if m in phantom else 66000.0 + m * 2.0 + i * 0.1,
+         (15100.0 if m in phantom else 66000.0 + m * 2.0 + i * 0.1) + 10.0)
+        for m in range(minutes) for i in range(20)
+    ]
+    return rows, start + dt.timedelta(minutes=minutes)
 
+
+def test_the_intraday_fold_alone_still_carries_the_phantom_bars(tmp_path):
+    """M-4 の**射程**: 畳みだけでは外れ分バーは落ちない（日次統計を持てないため）。
+
+    全量経路（:func:`tick_m1.build_m1_from_ticks`）は日別 M1 へ日次クリーニング（日内 close
+    中央値から ±30% 乖離するバーの除去・ISSUE-107）を適用する。これは**日単位の統計**を要する
+    ため、分単位の増分では同じ判断ができない。この非対称は消えたのではなく、
+    「日中は暫定値・日次確定後に再構築で解消する」（設計 §10 の裁定＝案 b）という形で
+    引き受けている。ここは裁定の**前半**（日中は食い違う）を固定する。
+    """
+    # Arrange
+    rows, until = _phantom_day_rows()
     journal.append(_DAY, rows, symbol=_TOKEN, data_dir=tmp_path)
     journal.finalize(_DAY, symbol=_TOKEN, data_dir=tmp_path)
 
@@ -173,6 +178,34 @@ def test_the_equivalence_is_limited_to_days_without_outliers(tmp_path):
     assert only_in_incremental == {"2026-08-25 09:04:00", "2026-08-25 09:05:00"}, (
         "増分経路と全量経路の差が、日次クリーニングが除去した外れ分バー以外に広がっています。"
     )
+
+
+def test_the_finalized_record_matches_the_authority_even_on_an_outlier_day(tmp_path):
+    """裁定の**後半**: 日次確定後の再構築で、外れ値日も権威と完全一致する（設計 §10）。
+
+    裁定前はここが「食い違ったままである」ことを特性検定として固定していた。裁定
+    （日次確定時に再構築・案 b）が済んだので、固定すべき仕様は
+    「**確定記録は既存権威と完全一致する**」へ変わる。
+    """
+    # Arrange
+    rows, until = _phantom_day_rows()
+    journal.append(_DAY, rows, symbol=_TOKEN, data_dir=tmp_path)
+    journal.finalize(_DAY, symbol=_TOKEN, data_dir=tmp_path)
+    m1_chain.append_m1_for_closed_minutes(
+        rows, ref="incremental", data_dir=tmp_path, until=until.replace(tzinfo=dt.timezone.utc)
+    )
+
+    # Act: UTC 日が閉じた後の再構築。
+    outcome = rebuild.rebuild_day(
+        _DAY, symbol=_TOKEN, ref="incremental", data_dir=tmp_path, update_rollups=False
+    )
+
+    # Assert
+    tick_m1.build_m1_from_ticks(_DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path)
+    incremental = tick_m1.m1_csv_path(ref="incremental", data_dir=tmp_path).read_bytes()
+    whole = tick_m1.m1_csv_path(ref="whole", data_dir=tmp_path).read_bytes()
+    assert outcome == rebuild.REPLACED
+    assert incremental == whole
 
 
 def test_folding_in_several_cycles_equals_folding_in_one(tmp_path):
@@ -202,7 +235,6 @@ def test_folding_in_several_cycles_equals_folding_in_one(tmp_path):
         until=until.replace(tzinfo=dt.timezone.utc),
     )
 
-    assert (
-        tick_m1.m1_csv_path(ref="onego", data_dir=tmp_path).read_bytes()
-        == tick_m1.m1_csv_path(ref="stepwise", data_dir=tmp_path).read_bytes()
-    )
+    onego = tick_m1.m1_csv_path(ref="onego", data_dir=tmp_path).read_bytes()
+    stepwise = tick_m1.m1_csv_path(ref="stepwise", data_dir=tmp_path).read_bytes()
+    assert onego == stepwise

@@ -18,7 +18,7 @@ import pytest
 from marketdata.mt5_ticks import wire
 from marketdata.mt5_ticks.wire import WireError
 
-#: MT5 ``copy_ticks_*`` が返す構造化配列と同じ形（``COPY_TICKS_INFO``）。
+#: MT5 ``copy_ticks_*`` が返す構造化配列と同じ形（情報ティック）。
 _MT5_TICK_DTYPE = np.dtype([
     ("time", "<i8"), ("bid", "<f8"), ("ask", "<f8"), ("last", "<f8"),
     ("volume", "<u8"), ("time_msc", "<i8"), ("flags", "<u4"), ("volume_real", "<f8"),
@@ -155,7 +155,7 @@ def test_a_truncated_response_is_flagged_so_the_caller_can_keep_pulling():
 
 
 def test_a_response_of_exactly_max_rows_is_parsed_without_special_casing():
-    """B-4(3): ``max_rows`` ちょうどでも解析は同じ（境界で分岐を作らない）。"""
+    """B-4(3): 要求上限ちょうどでも解析は同じ（境界で分岐を作らない）。"""
     arr = _ticks(*[(1000 + i, 1.0, 2.0) for i in range(64)])
     got = wire.parse_response(200, _headers(arr, truncated=1), arr.tobytes())
     assert got.count == 64 and len(got.rows) == 64
