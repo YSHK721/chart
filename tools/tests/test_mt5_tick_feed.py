@@ -12,13 +12,16 @@
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import itertools
 import json
+import os
 import re
 import socket
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
@@ -65,6 +68,8 @@ class FakeMt5:
         #: 端末セッション中は不変（本番は `make_handler` が起動時 1 回だけ読む）。
         self.server = server
         self.calls: "list[str]" = []
+        #: 端末へ渡された datetime（V-1 検定が epoch へ戻して突合する）。
+        self.requested: "list[dt.datetime]" = []
 
     def symbol_select(self, symbol, enable=True):
         self.calls.append("symbol_select")
@@ -72,10 +77,12 @@ class FakeMt5:
 
     def copy_ticks_from(self, symbol, frm, count, flags):
         self.calls.append("copy_ticks_from")
+        self.requested.append(frm)
         return None if self._ticks is None else self._ticks[:count]
 
     def copy_ticks_range(self, symbol, frm, to, flags):
         self.calls.append("copy_ticks_range")
+        self.requested.extend([frm, to])
         return self._ticks
 
     def last_error(self):
@@ -622,6 +629,154 @@ def test_the_epoch_conversion_lives_in_exactly_one_function():
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and _converts(n)
     ]
     assert len(converters) == 1, f"epoch 変換が複数箇所にあります: {converters}"
+
+
+# =====================================================================
+# V-1（2026-09-01 実測確定）— 端末に届く epoch が要求した epoch に一致する
+# =====================================================================
+#
+# 実測（実 VM 端末への橋渡し）で確定した端末側の挙動:
+#   MetaTrader5 パッケージは naive datetime を **VM ローカル時刻**として epoch 化し、
+#   端末はその epoch をサーバラベルとして解釈する。よって旧実装（1970-01-01 + timedelta で
+#   UTC 壁時計のラベルを組む形＝仮説 (1)）では、届く epoch がローカル UTC オフセットぶん
+#   ずれる。JST(UTC+9) の VM に対する実測値は **−9.000 時間ちょうど**であった。
+#
+# 本節の検定は**実行環境の TZ に依存しない**：判定に使う期待値を固定値で書かず、
+# 検定の内側で TZ を明示的に据えたうえで、パッケージと同じローカル規則
+# （:func:`time.mktime`）で epoch へ戻して突合する。よって TZ=UTC の環境でも
+# TZ=Asia/Tokyo の環境でも、同じ検定が同じ判定を下す。
+
+#: 判定に使うローカル tz。UTC は「ずれない環境」の対照であり、他の 2 つが本題である
+#: （America/New_York は DST を持つ地域でも往復が成り立つことを固定する）。
+_ROUNDTRIP_TIMEZONES = ("UTC", "Asia/Tokyo", "America/New_York")
+
+#: 2025-09-01T00:00:00Z。DST の折り返し（秋の 1 時間重複）に掛からない時刻を選ぶ。
+_BASE_EPOCH_SEC = 1_756_684_800
+
+
+@contextmanager
+def _local_timezone(name: str):
+    """プロセスのローカル tz を据える（環境の TZ に判定を依存させないため）。"""
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+def _local_epoch_ms(naive: dt.datetime) -> int:
+    """MetaTrader5 パッケージと**同じ規則**で naive datetime を epoch(ms) へ戻す。
+
+    パッケージは naive をローカル時刻として epoch 化する（V-1 実測）。その逆写像は
+    :func:`time.mktime` であり、これは実行環境の tz 設定をそのまま使う。期待値を
+    「UTC で見た値」等の固定式で書かないのは、それが環境の tz を検定へ焼き込むからである。
+    """
+    return int(time.mktime(naive.timetuple())) * 1000 + naive.microsecond // 1000
+
+
+@pytest.mark.parametrize("tz", _ROUNDTRIP_TIMEZONES)
+@pytest.mark.parametrize("remainder_ms", (0, 1, 500, 999))
+def test_the_epoch_reaching_the_terminal_equals_the_requested_from_msc(tz, remainder_ms):
+    """V-1: 上端なしの読み取りで、端末に届く epoch が ``from_msc`` に一致する（ms まで）。
+
+    ``remainder_ms`` を振るのは、秒未満が変換で落ちないことを同じ検定で固定するためである
+    （ms を捨てる実装は境界 1・999 で必ず落ちる）。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + remainder_ms
+    mt5 = FakeMt5(_ticks((from_msc, 66020.1, 66035.1)))
+
+    with _local_timezone(tz):
+        feed.read_tick_window(
+            mt5, symbol="JP225", from_msc=from_msc, to_msc=None, max_rows=10
+        )
+        delivered = [_local_epoch_ms(d) for d in mt5.requested]
+
+    assert delivered == [from_msc]
+
+
+@pytest.mark.parametrize("tz", _ROUNDTRIP_TIMEZONES)
+@pytest.mark.parametrize("remainder_ms", (0, 1, 500, 999))
+def test_the_epochs_reaching_the_terminal_equal_the_requested_window(tz, remainder_ms):
+    """V-1: 範囲読み取りで、**両端**の epoch が要求した窓に一致する（ms まで）。
+
+    上端は下端と別の式で組み立てられる。片端だけ直した実装は下端の検定では緑になるので、
+    上端を独立に固定する。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + remainder_ms
+    to_msc = from_msc + 60_000
+    mt5 = FakeMt5(_ticks((from_msc, 66020.1, 66035.1)))
+
+    with _local_timezone(tz):
+        feed.read_tick_window(
+            mt5, symbol="JP225", from_msc=from_msc, to_msc=to_msc, max_rows=10
+        )
+        delivered = [_local_epoch_ms(d) for d in mt5.requested]
+
+    assert delivered == [from_msc, to_msc]
+
+
+class _ConversionSpy:
+    """``dt.datetime`` の代役（Test Spy）。epoch → datetime 変換の**発行回数**を数える。
+
+    直接構築（``dt.datetime(...)``）と ``fromtimestamp`` の両方を数える。どちらの書き方でも
+    「端末へ渡す時刻を 1 つ作る」ことに変わりはなく、片方だけ数えると書き方を変えるだけで
+    浪費が検査を抜ける。``timedelta``（秒未満の足し込み）は時刻の生成ではないので数えない。
+    """
+
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, *args, **kwargs):
+        self.issued += 1
+        return dt.datetime(*args, **kwargs)
+
+    def fromtimestamp(self, *args, **kwargs):
+        self.issued += 1
+        return dt.datetime.fromtimestamp(*args, **kwargs)
+
+
+def _conversions_issued_and_used(monkeypatch, *, window_ms, max_rows) -> "tuple[int, int]":
+    """1 回の :func:`read_tick_window` が発行した変換数と、端末へ渡した時刻の数。"""
+    spy = _ConversionSpy()
+    monkeypatch.setattr(feed, "dt", SimpleNamespace(datetime=spy, timedelta=dt.timedelta))
+    from_msc = _BASE_EPOCH_SEC * 1000
+    mt5 = FakeMt5(_ticks((from_msc, 66020.1, 66035.1)))
+
+    feed.read_tick_window(
+        mt5, symbol="JP225", from_msc=from_msc,
+        to_msc=None if window_ms is None else from_msc + window_ms,
+        max_rows=max_rows,
+    )
+    return spy.issued, len(mt5.requested)
+
+
+def test_the_window_conversion_issues_no_time_it_does_not_hand_to_the_terminal(monkeypatch):
+    """CX: 変換の発行数 − 端末へ渡した時刻の数 = 0（作ってから捨てる変換が無い）。
+
+    固定するのは回数そのものではなく**無駄の不在**である。加えて窓幅・``max_rows`` を
+    それぞれ 2 点振り、発行が入力の大きさではなく**端末へ渡す時刻の数だけ**で決まること
+    （オーダーの表明）を固定する。上端の有無で渡す時刻の数が 1 と 2 に変わるので、
+    期待値は「渡した数と一致すること」で書く。
+    """
+    points = {
+        (window_ms, max_rows): _conversions_issued_and_used(
+            monkeypatch, window_ms=window_ms, max_rows=max_rows
+        )
+        # 窓幅は 1 分と 30 日（×43,200）・max_rows は 10 と 50,000（×5,000）
+        for window_ms in (None, 60_000, 30 * 24 * 3_600_000)
+        for max_rows in (10, 50_000)
+    }
+
+    assert {issued - used for issued, used in points.values()} == {0}, points
+    # 窓幅・max_rows を変えても発行数が変わらない（変わるのは上端の有無だけ）。
+    assert len({issued for (window_ms, _), (issued, _) in points.items()
+                if window_ms is not None}) == 1, points
 
 
 # =====================================================================

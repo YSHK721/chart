@@ -226,12 +226,28 @@ def read_tick_window(
 ) -> Any:
     """端末から生ティックを読む。**読み取りのみ**。
 
-    epoch(ms) → 端末が要求する datetime への変換を知るのは本関数だけである（12h ずれ罠の
-    閉じ込め）。変換の意味論は **V-1 で確定するまで仮説**であり、候補は 3 通りある:
-    (1) naive datetime を端末がサーバ時刻として解釈する、(2) ローカル時刻として解釈する、
-    (3) tz-aware を UTC へ正規化する。ここでは (1) を採り、**naive** な datetime を渡す
-    （tz-aware を渡すとライブラリ側でローカル時刻換算が入り、環境依存の 12 時間ずれを生む）。
-    V-1 で確定したら**この関数 1 つだけ**を直す。
+    epoch(ms) → 端末が要求する datetime への変換を知るのは本関数だけである（時刻ずれ罠の
+    閉じ込め）。変換の意味論は **V-1（2026-09-01・実 VM 端末への橋渡し実測）で確定済み**で
+    あり、もはや仮説ではない:
+
+    - 旧実装が採っていた仮説 (1)「naive datetime を端末がサーバ時刻として解釈する」は
+      **棄却**された。要求ラベル窓 [L_from, L_to] に対して返却された time_msc は
+      [L_from−9h, L_to−9h] であり、ずれは **−9.000 時間ちょうど**であった（VM は JST）。
+    - 実測された挙動は 2 段変換である: MetaTrader5 パッケージが naive datetime を
+      **VM ローカル時刻**として epoch 化し、端末はその epoch をサーバラベルとして解釈する。
+
+    よって本関数は**ローカル naive の往復**で書く。:meth:`datetime.fromtimestamp` は
+    epoch をローカルの壁時計（naive）へ写し、パッケージが同じローカル規則で epoch へ戻す。
+    往路と復路が同一の規則なので、端末に届く epoch は指定した ``from_msc / 1000`` に
+    正確に一致する（VM のローカル tz が何であっても成り立つ＝環境非依存）。
+
+    秒未満は ``fromtimestamp`` に float 秒を渡す形では丸め経路を通るため、整数秒で写して
+    から ms 剰余を足す。ms 精度が落ちないことは、VM 側検定の V-1 節が剰余 0/1/500/999 の
+    4 境界で固定する。
+
+    既知の限界: VM のローカル tz が夏時間を持つ場合、秋の巻き戻しで同じ壁時計が 2 回現れる
+    区間だけは往復が一意にならない（実測: America/New_York の該当時刻で 2 回目の側が
+    −3,600,000 ms ずれる）。本番 VM は JST であり夏時間を持たないため影響しない。
     """
     if not mt5.symbol_select(symbol, True):
         raise FeedError(
@@ -239,12 +255,18 @@ def read_tick_window(
             mt5.last_error(),
         )
 
-    start = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=int(from_msc))
+    start = (
+        dt.datetime.fromtimestamp(int(from_msc) // 1000)
+        + dt.timedelta(milliseconds=int(from_msc) % 1000)
+    )
     if to_msc is None:
         # 上端なし: 件数指定で読む。切り詰め検出のため 1 件多く要求する。
         rows = mt5.copy_ticks_from(symbol, start, max_rows + 1, mt5.COPY_TICKS_INFO)
     else:
-        end = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=int(to_msc))
+        end = (
+            dt.datetime.fromtimestamp(int(to_msc) // 1000)
+            + dt.timedelta(milliseconds=int(to_msc) % 1000)
+        )
         rows = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_INFO)
 
     if rows is None:
