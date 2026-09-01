@@ -72,7 +72,8 @@ DIP 適用点: `IncrementalTickSource`（http/fake/spy の 3 実装）と `Clock
 ### mt5_tick_feed（C・VM 単体配布）
 - API 許可集合（AST 施行）: initialize/shutdown/last_error/version/terminal_info/symbol_select/symbol_info/symbol_info_tick/account_info/copy_ticks_range/copy_ticks_from/COPY_TICKS_INFO。`order_*` 参照 0。トップレベル `import MetaTrader5` 0。
 - エンドポイントは `/ticks` と `/health` の 2 本のみ。stdlib `http.server` 単一スレッド。特定 IF bind（既定 `172.16.162.129:8771`・`0.0.0.0` 禁止）。秘密は環境変数のみ。ファイル配信機構を使わない。
-- epoch(server label int)→MT5 が要求する datetime への変換は `read_ticks` 1 関数のみが知る（12h ずれ罠の閉じ込め・V-1 で確定）。
+- epoch(server label int)→MT5 が要求する datetime への変換は `read_tick_window` 1 関数のみが知る（12h ずれ罠の閉じ込め・V-1 で確定）。
+  ※当初案の関数名 `read_ticks` は market_profile 既存宣言との全域名衝突で C1 を誘発したため改名（2026-09-01 実測）。
 - 持たないもの（機械検査）: `"ticks"`/`YYYY/MM/DD`/`_ticks.parquet`/`bidPrice`/`askPrice`/`timestamp` 列名/DST・UTC 変換/配信ディレクトリ。
 - 直列化は `tobytes()`+`dtype.descr`（`.npy` は決定性未検証のため使わない）。
 
@@ -185,3 +186,19 @@ H1 MT5→VM feed（V-1〜V-4・/health）／H2 VM→コンテナ（署名 curl 2
 | A-6 | 足内更新（forming_bar）の MT5 対応 | 別段階（本段階は tick=False で回避） | 未裁定（別段階） |
 
 ref 名 `jp225_mt5` は仮（A-1 と同時確定）。ISSUE-448 の裁定（置換/併存）は本設計に影響しない（別 ref・別トークンで完全同居）。
+
+## 10. M1 浄化の裁定（2026-09-01・依頼者 y/n）
+
+日内増分 M1 には日次統計を要する外れ値除去 `_clean_m1_day`（ISSUE-107）が原理的に適用できない
+（TDD 工程で実測: 外れ値日で増分 10 バー対 全量 8 バー。清浄日はバイト一致＝M-4）。
+
+**裁定: 日次確定時に再構築（案 b）**。日中は暫定値として表示し、UTC 日が閉じた時点
+（FinalizeDay 後）に権威経路（`_clean_m1_day` あり）で当日分の M1 を再計算し、
+既存追記分と**差分がある日だけ**是正する。清浄日は書込 0（CX-b 整合・Spy で固定）。
+確定記録は既存権威（全量経路）と完全一致する。
+
+**実装形（2026-09-01・TDD 工程の実測による条件付き採用）**: ロールアップの是正は
+`rollup.incremental_update` では不可能（合流が high=max/volume=sum の合算で、除去された
+分バーを消せない＝rollup.py:596-599 実測。区間置換の公開 API も無い）。よって是正が要る日だけ
+権威 `stream_build` で当該 ref 配下（M1＋rollups）を再生成する（`marketdata/mt5_ticks/rebuild.py`）。
+代償は外れ値日のみ O(M1 全体)。清浄日（大多数）は書込 0。

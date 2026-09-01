@@ -11131,6 +11131,13 @@ JST 2020-05-01 00:00 で **夏時間の UTC+3**。一方ページ表記は「MT5
   別段階のまま未裁定。
 - **ブランチ**: `feature/issue-447-mt5-realtime-tick-supply`（develop 起点）。
   旧 `feature/issue-447-stage1-mt5-tick-capture` は空のまま残置（無害）。
+- **M1 浄化の裁定（2026-09-01・依頼者 y/n）**: 日内増分 M1 に日次外れ値除去（ISSUE-107
+  `_clean_m1_day`）は原理的に適用不能（TDD 実測: 外れ値日で増分 10 対 全量 8 バー）。
+  **日次確定時の再構築**で解消する: 日中は暫定表示・日が閉じたら権威経路で当日分を再計算し、
+  差分がある日のみ該当区間を原子置換（清浄日は書込 0）。設計書 §10。
+- **TDD 工程完了（2026-09-01）**: 新規 14 実装＋12 検定ファイル・252 検定緑・既存改変 0・
+  計算量検定 CX-a〜f を変異で実証（当日全量再直列化の注入を CX-d が検出）。
+  Dukascopy 木非干渉を実測（4,202 日の列挙が前後で完全一致）。コミット d6d1dd3〜516ddb0。
 
 ## ISSUE-448: [設計] 2 つのティック権威（Dukascopy / OANDA）の期間分割か統計調整かを裁定する
 
@@ -13013,3 +13020,55 @@ instance を同一キーへ畳む。カタログに無い指標（market_profile
 
 ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実装」の記録）・ISSUE-463（版面の
 パレット）・ISSUE-348 / ISSUE-167（借用と time 厳密増加の予防）。設計書 §14 に仕様を追補。
+
+## ISSUE-471: [検定] declaration_integrity の索引が 7 拡張子を取りこぼし、実在ファイルを「存在しない」と誤検出する
+
+- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 追補スライス B の gate 是正中に実測で発見）
+- **重大度**: 中（誤検出のたびに baseline が膨らむ。gate 自体は稼働）
+- **実測**: `.claude/scripts/declaration_integrity.py` の `PATHLIKE`（:52）は
+  `py js mjs sh md json csv yml yaml` の 9 拡張子を検査対象とするが、`index_repo`（:104-124）が
+  索引に載せるのは `.py` と `.js` のみ。**残り 7 拡張子は実在しても必ず「名指されたファイルが
+  存在しない」判定**になる。既存の同型記述が緑なのは正しいからではなく `di_baseline.json`
+  （1,859 件）に温存されているため。
+- **抜本的解決**: 判定器側の裁定が要る — (a) 索引に 7 拡張子も載せる、または
+  (b) 索引外の拡張子は判定対象から外す。どちらも `.claude/scripts/` の変更（検査の検査
+  `test_declaration_integrity.py` の更新を伴う）。
+- **関連**: ISSUE-467（違反 ID の行番号包含）・ISSUE-447（発見経路）。
+
+## ISSUE-472: [設計] front の datasetRef 既定値が 4 箇所に重複定義され、統合ページ内でモード間の不一致を生む
+
+- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 表示結線（A-3 案 U1）の実装中に実測で発見）
+- **重大度**: 中（`?dataset=` 指定時のみ顕在。既定表示は不一致なし）
+- **実測**: `const DATASET_REF`（または同値のハードコード）が 4 箇所 —
+  (1) indigators/indicator_ui/web/index.html（U1 対応済み・上書き可）
+  (2) unified_ui/web/js/unified_root.js:40（U1 対応済み・上書き可）
+  (3) dashboard_ui 系 composition_root_front.js:38（未対応。`setupDashboardDisplay()` は
+  datasetRef を受け取らない＝unified_root.js:406-410 実測）
+  (4) simulator/replay_ui/web/index.html:57,66（別ページ・未対応）
+- **症状**: :8000 で `?dataset=jp225_mt5` を付けるとチャートは MT5・同一ページのダッシュボード
+  モードは jp225_tick のままという**ページ内不一致**（(3) が原因）。
+- **抜本的解決**: 既定 ref の単一ソース化（`dataset_ref_query.js` を全消費点へ結線し、
+  ハードコード既定値を 1 箇所へ集約）。(3)(4) の結線は UI 影響があるため要承認。
+- **関連**: ISSUE-447（発見経路）・memory no-hand-duplication-single-source。
+
+## ISSUE-473: [設計] live core の静的配信が /tests/*.test.js を 200 で露出する（最小権限化の未適用）
+
+- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 表示結線の配信経路実測で発見）
+- **重大度**: 低（ローカル配信のみ。ただし記述と実装の不一致）
+- **実測**: live core の `_handle_static` は `_resolve_static` 以外の絞り込みを持たず、
+  `/tests/*.test.js` が 200 で配信される。同ファイル :243 の「tests 等は露出しない」記述と不一致。
+  ISSUE-278 #9 の最小権限化は統合ルータのみに適用され live core 側に入っていない。
+- **抜本的解決**: 統合ルータと同じ許可規則を live core の静的配信へ適用（または記述の訂正）。
+- **関連**: ISSUE-278 #9。
+
+## ISSUE-474: [不具合] /candles が M1 未配備を「internal」500 で返し、構成状態と障害を区別できない
+
+- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 A-1 の不在時挙動調査で発見）
+- **重大度**: 低（fail-close は機能。プロセス死・キャッシュ汚染・古い断面の配信は無しを実測済み）
+- **実測**: 登録済み ref の M1 CSV が未配備のとき `FileNotFoundError` が
+  `serve_candles.py:109` の包括 except で `internal` に潰れ 500 になる。また `5m` 等では
+  ロールアップ CSV を先に開くため、エラーメッセージが実際の subdir 経路でなく flat 経路名を
+  出す（診断性の罠）。
+- **抜本的解決**: FileNotFoundError を「未配備（not_provisioned 等）」として分類し、
+  実際に開こうとした経路をメッセージへ載せる。
+- **関連**: ISSUE-447（jp225_mt5 は実データ配備まで本症状の対象）。
