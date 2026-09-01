@@ -16,7 +16,7 @@ from marketdata.paths import DATA_DIR
 # --- 従来値の byte 不変（回帰の壁） --------------------------------------- #
 def test_whitelist_values_unchanged():
     wl = dataset.DATASET_WHITELIST
-    assert set(wl) == {"sample", "jp225", "jp225_m1", "jp225_tick"}
+    assert set(wl) == {"sample", "jp225", "jp225_m1", "jp225_tick", "jp225_mt5"}
     assert wl["jp225"] == DATA_DIR / "jp225_daily.csv"
     assert wl["jp225_m1"] == DATA_DIR / "jp225_m1.csv"
     assert wl["jp225_tick"] == DATA_DIR / "jp225_tick_m1.csv"
@@ -24,11 +24,13 @@ def test_whitelist_values_unchanged():
 
 
 def test_clamp_refs_unchanged():
-    assert dataset._OUTLIER_CLAMP_REFS_SET == {"jp225": True, "jp225_m1": True, "jp225_tick": True}
+    assert dataset._OUTLIER_CLAMP_REFS_SET == {
+        "jp225": True, "jp225_m1": True, "jp225_tick": True, "jp225_mt5": True,
+    }
 
 
 def test_rollup_refs_unchanged():
-    assert dataset._ROLLUP_REFS == ("jp225_m1", "jp225_tick")
+    assert dataset._ROLLUP_REFS == ("jp225_m1", "jp225_tick", "jp225_mt5")
 
 
 def test_tick_refs_unchanged():

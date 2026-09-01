@@ -406,6 +406,44 @@ def _append_m1_csv(m1_new: pd.DataFrame, path: Path) -> None:
         fh.flush()
 
 
+def append_m1_rows(m1: pd.DataFrame, path: Any) -> int:
+    """date-index の M1 バーを loader 互換 CSV の末尾へ**追記**し、書いた行数を返す（ISSUE-447 A-5）。
+
+    :func:`_format_m1_for_csv` を包む**公開の入り口**である。増分供給側
+    （``marketdata/mt5_ticks/m1_chain.py``）は当日の M1 を自前で畳んで追記するが、書式
+    （列射影・date 書式・昇順）は本モジュールが単一の規則源でなければならない。かつて増分側は
+    private の :func:`_format_m1_for_csv` を直接 import していた。private への依存は「呼んで
+    よい」と宣言されていない実装詳細への依存であり、権威側が内部を変えた瞬間に黙って壊れる。
+    本 API はその依存を恒久的に解消するために足した（A-5 の承認範囲＝**追加 1 個のみ**）。
+
+    :func:`_append_m1_csv` との違い（両者は用途が異なる・重複ではない）:
+        あちらは :func:`append_m1_from_ticks` の内部段であり、既存 CSV が実在し末尾が健全で
+        あることを呼び出し側が保証した状態でのみ呼ばれる（ヘッダは常に書かない）。本 API は
+        供給ループの入り口として**ファイル不在から**呼ばれるため、不在時はヘッダ 1 行を先に
+        書く。書式そのものは双方とも :func:`_format_m1_for_csv` に委ねるため、出力は
+        :func:`_write_m1_csv`（全構築）と 1 バイト一致する。
+
+    書込は **1 回の ``write``** に閉じる（ISSUE-186）。``to_csv`` にファイルを直接渡すと行が
+    複数回の write に分かれ、常駐 watch が追記している最中の読み手が行の途中を掴む。
+
+    空フレームでは**ファイルに触れない**（0 を返す）。新着 0 の周期で書込 0 という不変条件
+    （計算量検定 CX-b）を、呼び出し側の分岐ではなく本 API の側で保証する。
+    """
+    formatted = _format_m1_for_csv(m1)
+    if formatted.empty:
+        return 0
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    started = out_path.is_file() and out_path.stat().st_size > 0
+    text = formatted.to_csv(
+        header=False if started else list(formatted.columns), index_label=_HEADER[0]
+    )
+    with open(out_path, "a", newline="", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+    return len(formatted)
+
+
 def append_m1_from_ticks(
     start: Any,
     end: Any,

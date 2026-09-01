@@ -37,6 +37,8 @@
     //   ISSUE-278 #11: 手順を各ページへ inline で書いていたため、実際に配信される統合ページ
     //   （:8000）にだけ入っておらず、承認済みの防御が本番から抜けていた。
     import { ensureLightweightCharts } from './js/adapter/front/vendor_loader.js';
+    // 表示対象 ref の上書き口（ISSUE-447・A-3 案 U1）。既定はクエリ無し時の値で不変。
+    import { resolveDatasetRef } from './js/adapter/front/dataset_ref_query.js';
     const lwc = await ensureLightweightCharts();
     if (!lwc) {
       console.error('ISSUE-166: lightweight-charts.js の読込に 3 回失敗しました。ページを再読込してください。');
@@ -51,7 +53,9 @@
       // B方式の対象データセット。JP225 ティック由来 1分足原子（dataset.py の whitelist
       // 'jp225_tick'＝mid・UTC 集計）をライブ計算し、時間足セレクタで resample 表示する
       // （上位足は rollups/jp225_tick/ を読む・既定 1D・直近 RECENT_BARS 本）。
-      datasetRef: 'jp225_tick',
+      // `?dataset=<ref>` を付けたときだけ上書きする（ISSUE-447 A-3 案 U1・承認済み）。
+      // クエリ無し＝従来どおり 'jp225_tick'（既定挙動・既定表示は不変）。
+      datasetRef: resolveDatasetRef(location.search, 'jp225_tick'),
     }).then(({ controller, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile }) => {
       controller.bind();
       // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
