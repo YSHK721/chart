@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 
 from marketdata import tick_m1
-from marketdata.mt5_ticks import fakes, ingest, journal, rebuild
+from marketdata.mt5_ticks import fakes, ingest, journal, rebuild, server_clock
 from marketdata.mt5_ticks.port import Mt5SupplyError, SupplyUnavailable
 from tools import mt5_tick_watch as watch
 
@@ -193,6 +193,40 @@ def test_a_warm_start_resumes_from_the_journal_without_from(tmp_path, secret):
 
     assert code == 0
     assert len(journal.read_rows(dt.date(2026, 8, 25), symbol=token, data_dir=tmp_path)) == 8
+
+
+def test_a_warm_start_probes_near_now_instead_of_the_epoch(tmp_path, secret):
+    """``--from`` 無しの起動で、トークン解決の探りを 1970 年へ撃たない（ISSUE-447 実測）。
+
+    実端末では ``from_msc=0`` の探りが VM 側の epoch→datetime 変換で 500 になり、常駐が
+    起動できなかった（``--once`` ＋ ``--from`` の経路では顕在化せず、既存検定が緑のまま通した）。
+
+    探りの位置は「これから読む場所」であるべきだが、再開点はジャーナルにあり、ジャーナルの
+    パスはトークンから決まり、トークンは探りの応答ヘッダからしか得られない（循環）。よって
+    ``--from`` が無いときは**現在時刻のラベル近似**を撃つ。近似で足りるのは、探りが 1 行窓で
+    あり目的がサーバ名ヘッダだけだからである（位置の厳密さは要らない）。
+
+    固定するのは 3 つ:
+        1. 1970 年を撃たない（VM 側の変換が落ちる位置を選ばない）
+        2. 近似が「今」の実在しうるラベル帯（now＋冬/夏オフセット）に収まる
+        3. 保守側であること（夏は真のラベルより過去へ落ち、未来へは出ない）
+    """
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    tape = _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=2)
+    journal.append(dt.date(2026, 8, 25), tape[:4], symbol=token, data_dir=tmp_path)
+    now = dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc)
+    source = fakes.CountingTickSource(tape)
+
+    code = watch.main(_argv(tmp_path), source=source, clock=fakes.FixedClock(now))
+
+    now_ms = int(now.timestamp()) * 1000
+    probe = source.calls[0]["from_msc"]
+    assert code == 0
+    assert probe != 0, "探りが 1970 年（epoch）を指しています。実端末では 500 になります。"
+    assert now_ms <= probe <= now_ms + server_clock.SUMMER_OFFSET_SECONDS * 1000
+    assert probe <= now_ms + server_clock.WINTER_OFFSET_SECONDS * 1000
+    # 探りの位置を選び直しても、発行回数は 1 起動あたり 1 回のまま（往復を増やさない）。
+    assert source.token_probes == 1
 
 
 def test_a_restart_after_midnight_still_finalizes_the_previous_day(tmp_path, secret):

@@ -46,6 +46,7 @@ if str(_ROOT) not in sys.path:
 
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
 from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
+from marketdata.mt5_ticks import server_clock  # noqa: E402
 from marketdata.mt5_ticks.cursor import Cursor  # noqa: E402
 from marketdata.mt5_ticks.port import Mt5SupplyError, SupplyUnavailable  # noqa: E402
 
@@ -191,6 +192,44 @@ def resolve_token(source: Any, *, symbol: str, at_msc: int) -> str:
     return ingest.token_for(symbol, response.server)
 
 
+def probe_label_ms(settings: WatchSettings, clock: Any) -> int:
+    """トークン解決の探りを撃つ位置（サーバラベル ms）を決める。
+
+    探り位置は「これから読む場所」であるべきだが、再開点をそのまま使うことはできない。
+    依存が循環しているからである: 再開点はジャーナルにあり、ジャーナルのパスはトークン
+    （``<銘柄>@<サーバ>``）から決まり、そのサーバ名は探りの応答ヘッダからしか得られない。
+    よって ``--from`` が無いとき（ジャーナル復元での常駐起動）は現在時刻から**ラベルを近似**する。
+
+    近似で足りる理由:
+        探りは 1 ms・1 行の窓であり、目的は応答ヘッダのサーバ名だけである（行は使わない）。
+        位置に要る性質は「端末が変換できる実在しうる時刻であること」だけで、厳密さではない。
+
+    冬オフセットを使う理由（保守側）:
+        UTC→ラベルの逆変換は 10 月切替日で多価になるため
+        `marketdata/mt5_ticks/server_clock.py` は逆変換を**実装しない**（設計 §4）。ここでも
+        逆変換は作らず、2 つのオフセットのうち小さい方（冬）を足すだけにする。こうすると
+        冬は真のラベルに一致し、夏は 1 時間だけ過去へ落ちる。**未来側へは決して出ない**ので、
+        端末は必ず実在する時刻を受け取る。オフセットの値そのものは server_clock が唯一の
+        権威であり、ここは足すだけである（tools は規則を持たない）。
+
+    直した欠陥（ISSUE-447）:
+        以前はここが ``0``（1970 年）だった。``--from`` 付きの起動では ``--from`` が使われる
+        ため顕在化せず、``--from`` 無しの常駐起動（ジャーナル復元）でだけ 1970 年へ探りを
+        撃っていた。実端末では当該起動が 500 応答により exit 3 で起動不能になることが
+        報告されている（2026-09-02 実測報告）。**500 を返す内部機構そのものはコンテナ側から
+        再現できておらず未検証**である — ここで直すのは機構ではなく、「これから読む場所」と
+        無関係な位置を探りに選んでいたという構造の誤りである。
+    """
+    if settings.from_label is not None:
+        return settings.from_label
+    now = clock.now()
+    # Clock の契約は「UTC の現在時刻」であり、naive を返す実装もそれを意味する
+    #   （naive のまま timestamp() を呼ぶとローカル時刻として解釈され、TZ 次第でずれる）。
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.timezone.utc)
+    return (int(now.timestamp()) + server_clock.WINTER_OFFSET_SECONDS) * 1000
+
+
 # ---------------------------------------------------------------------
 # 1 周期の合成
 # ---------------------------------------------------------------------
@@ -299,7 +338,7 @@ def run(
     clock = SystemClock() if clock is None else clock
     say = log if log is not None else (lambda line: None if settings.quiet else _stderr(line))
 
-    probe_at = settings.from_label if settings.from_label is not None else 0
+    probe_at = probe_label_ms(settings, clock)
     try:
         token = resolve_token(source, symbol=settings.symbol, at_msc=probe_at)
     except SupplyUnavailable as exc:
