@@ -63,6 +63,10 @@ DEFAULT_PORT = 8771
 #: 1 応答の上限。際限のない要求で端末を詰まらせない。
 MAX_ROWS_LIMIT = 200_000
 
+#: 端末 API の粒度が秒であることに対する上端の補償量（V-1b/V-1c 実測・:func:`read_tick_window`）。
+#: 窓幅にも件数にも依存しない定数である＝境界秒ぶんだけ広く取って切り出す。
+BOUNDARY_SECOND_MS = 1000
+
 
 class FeedError(RuntimeError):
     """要求を満たせないことを表す。``status`` がそのまま HTTP 応答になる。"""
@@ -221,10 +225,22 @@ def validate_bind(host: str) -> str:
 # 端末の読み取り（epoch → datetime の変換を知る唯一の関数）
 # ---------------------------------------------------------------------
 
+class TickWindow(NamedTuple):
+    """``read_tick_window`` の返却。
+
+    ``truncated`` を行と一緒に返すのは、**切り詰めの有無が返却行からは復元できない**から
+    である。境界秒の切り出しで行が減った後の件数を見ても、端末のキャップに当たったのか
+    単に窓が短かったのかを区別できない（区別を諦めると取りこぼしが静かに確定する）。
+    """
+
+    rows: Any
+    truncated: bool
+
+
 def read_tick_window(
     mt5: Any, *, symbol: str, from_msc: int, to_msc: "Optional[int]", max_rows: int
-) -> Any:
-    """端末から生ティックを読む。**読み取りのみ**。
+) -> "TickWindow":
+    """端末から生ティックを読み、契約窓 ``[from_msc, to_msc]`` へ切り出す。**読み取りのみ**。
 
     epoch(ms) → 端末が要求する datetime への変換を知るのは本関数だけである（時刻ずれ罠の
     閉じ込め）。変換の意味論は **V-1（2026-09-01・実 VM 端末への橋渡し実測）で確定済み**で
@@ -248,6 +264,32 @@ def read_tick_window(
     既知の限界: VM のローカル tz が夏時間を持つ場合、秋の巻き戻しで同じ壁時計が 2 回現れる
     区間だけは往復が一意にならない（実測: America/New_York の該当時刻で 2 回目の側が
     −3,600,000 ms ずれる）。本番 VM は JST であり夏時間を持たないため影響しない。
+
+    **端末 API の粒度は秒である**（V-1b/V-1c・2026-09-01・実端末で確定）:
+
+    - ``copy_ticks_from(t + 1ms)`` が ``msc == t``（1 つ前の ms）の行を返した
+      ＝ 引数の datetime は**秒へ切り捨てて**解釈される（下端に 1 行前方混入するのを実測）。
+    - ``copy_ticks_range`` は上端引数の ms 成分を落とす。上端に既知ティックの msc を
+      指定してもその行が返らなかった（上端が落ちるのを実測）。
+    - 一方、返却行そのものの ``time_msc`` は ms 精度である（V-1a で窓内一致・+0.0000h）。
+
+    転送契約は ``[from_msc, to_msc]`` の**両端包含**であり、ms の厳密さを保証する責任は
+    ここにある。コンテナ側は既にこれを前提に組まれており、``marketdata/mt5_ticks/ingest.py``
+    は窓外の行を Fail-Stop で弾き、``marketdata/mt5_ticks/cursor.py`` は応答の先頭がカーソル
+    以降であることを前提にする。下端の前方混入は供給ループを止め、上端の欠落は静かな
+    ティックの取りこぼしになる。
+
+    よって次の 2 つを行う。**どちらも API の粒度に起因する「正しさに必要な入力」であって、
+    余分な仕事ではない**: 秒より細かい端では、要求した窓そのものを端末へ渡せない。
+
+    1. 上端を :data:`BOUNDARY_SECOND_MS` だけ広げて要求する（秒切り捨てを受けても
+       ``to_msc`` の属する秒が丸ごと入る）。広げる量は窓幅にも ``max_rows`` にも依存しない
+       定数であり、下端は広げない（端末の切り捨てが既に下端を前へ倒すため）。
+    2. 返却から ``time_msc < from_msc`` と（上端指定時）``time_msc > to_msc`` を落とす。
+
+    切り出しで捨てる行は境界 2 秒ぶんが上界であり、入力の大きさで増えない。これは
+    ``tools/tests/test_mt5_tick_feed.py`` の計算量検定が「取りこぼし無し」と同時に固定する
+    （片方だけなら全部取る／何も取らないで自明に満たせるので、締め付けにならない）。
     """
     if not mt5.symbol_select(symbol, True):
         raise FeedError(
@@ -265,7 +307,7 @@ def read_tick_window(
     else:
         end = (
             dt.datetime.fromtimestamp(int(to_msc) // 1000)
-            + dt.timedelta(milliseconds=int(to_msc) % 1000)
+            + dt.timedelta(milliseconds=int(to_msc) % 1000 + BOUNDARY_SECOND_MS)
         )
         rows = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_INFO)
 
@@ -273,7 +315,20 @@ def read_tick_window(
         raise FeedError(
             502, "terminal", "端末がティックを返しませんでした。", mt5.last_error()
         )
-    return rows
+    # 境界秒の切り出し。numpy のブールマスクで一括に落とす（行ループを書くと、要求のたびに
+    # 最大 20 万行を Python 側で回すことになる）。比較は端末が返した構造化配列の上で行うので、
+    # 列の意味づけ（列名の権威）はコンテナ側のままである。
+    msc = rows["time_msc"]
+    inside = msc >= int(from_msc)
+    if to_msc is not None:
+        inside = inside & (msc <= int(to_msc))
+    kept = rows[inside]
+
+    # 切り詰めの申告は**キャップ到達**で決める。``copy_ticks_from`` は max_rows + 1 件を
+    # 要求しており、境界秒の余剰が head に混じるぶん切り出し後は max_rows 以下になりうる。
+    # 切り出し後の件数だけで判定すると、続きがあるのに「無い」と申告してしまう。
+    capped = to_msc is None and len(rows) == max_rows + 1
+    return TickWindow(kept, capped or len(kept) > max_rows)
 
 
 def resolve_server_name(mt5: Any) -> str:
@@ -336,12 +391,12 @@ def _ticks_response(mt5: Any, query: "Dict[str, str]", *, server: str) -> Respon
     asked = _tick_query(query)
     max_rows = asked.max_rows
 
-    rows = read_tick_window(
+    window = read_tick_window(
         mt5, symbol=asked.symbol, from_msc=asked.from_msc, to_msc=asked.to_msc,
         max_rows=max_rows,
     )
-    truncated = len(rows) > max_rows
-    rows = rows[:max_rows]
+    truncated = window.truncated
+    rows = window.rows[:max_rows]
 
     latest = int(rows["time_msc"][-1]) if len(rows) else int(asked.from_msc)
     headers = {

@@ -56,34 +56,72 @@ def _ticks(*specs) -> np.ndarray:
     return arr
 
 
+def _floor_second_ms(naive: dt.datetime) -> int:
+    """端末が naive datetime を解釈する規則（V-1b/V-1c・2026-09-01 実測）。
+
+    MetaTrader5 パッケージは naive をローカル時刻として epoch 化し（V-1）、端末はそれを
+    **秒へ切り捨てて**解釈する（V-1b/V-1c）。:meth:`datetime.timetuple` は microsecond を
+    落とすので、:func:`time.mktime` との合成がそのまま「ローカル規則での秒切り捨て」になる。
+    """
+    return int(time.mktime(naive.timetuple())) * 1000
+
+
 class FakeMt5:
-    """MetaTrader5 モジュールの代役（読み取りのみ・端末に触れない）。"""
+    """MetaTrader5 モジュールの代役（読み取りのみ・端末に触れない）。
+
+    **秒粒度**（V-1b/V-1c・2026-09-01 実測）を模す。受け取った datetime を秒へ切り捨てて
+    から窓を作るので、``from`` に ms を指定しても境界秒の先頭から返る（実測: t+1ms を要求して
+    msc==t の行が返った）。上端は ``to`` の ms 成分が落ちる（実測: to に既知ティックの msc を
+    指定してもその行が返らない）。
+
+    上端の丸め方は実測では 2 通りを区別できていない（floor した秒の行を含むか・含まないか）。
+    どちらでも feed の補償が成り立つことを固定するため、``range_upper_inclusive`` で
+    両方を回せるようにしてある（未検証の 1 通りへ判定を賭けない）。
+    """
 
     COPY_TICKS_INFO = 1
 
-    def __init__(self, ticks=None, *, select_ok=True, error=(-10005, "boom"), server="OANDA-Japan MT5 Live"):
+    def __init__(self, ticks=None, *, select_ok=True, error=(-10005, "boom"),
+                 server="OANDA-Japan MT5 Live", range_upper_inclusive=True):
         self._ticks = ticks
         self._select_ok = select_ok
         self._error = error
+        self._range_upper_inclusive = range_upper_inclusive
         #: 端末セッション中は不変（本番は `make_handler` が起動時 1 回だけ読む）。
         self.server = server
         self.calls: "list[str]" = []
         #: 端末へ渡された datetime（V-1 検定が epoch へ戻して突合する）。
         self.requested: "list[dt.datetime]" = []
+        #: 端末が返した行数（CX 検定が「取ったが出力に使わなかった行」を数えるのに使う）。
+        self.served: "list[int]" = []
 
     def symbol_select(self, symbol, enable=True):
         self.calls.append("symbol_select")
         return self._select_ok
 
+    def _serve(self, rows):
+        self.served.append(len(rows))
+        return rows
+
     def copy_ticks_from(self, symbol, frm, count, flags):
         self.calls.append("copy_ticks_from")
         self.requested.append(frm)
-        return None if self._ticks is None else self._ticks[:count]
+        if self._ticks is None:
+            return None
+        msc = self._ticks["time_msc"]
+        return self._serve(self._ticks[msc >= _floor_second_ms(frm)][:count])
 
     def copy_ticks_range(self, symbol, frm, to, flags):
         self.calls.append("copy_ticks_range")
         self.requested.extend([frm, to])
-        return self._ticks
+        if self._ticks is None:
+            return None
+        msc = self._ticks["time_msc"]
+        upper = _floor_second_ms(to)
+        inside = (msc >= _floor_second_ms(frm)) & (
+            msc <= upper if self._range_upper_inclusive else msc < upper
+        )
+        return self._serve(self._ticks[inside])
 
     def last_error(self):
         return self._error
@@ -703,10 +741,18 @@ def test_the_epoch_reaching_the_terminal_equals_the_requested_from_msc(tz, remai
 @pytest.mark.parametrize("tz", _ROUNDTRIP_TIMEZONES)
 @pytest.mark.parametrize("remainder_ms", (0, 1, 500, 999))
 def test_the_epochs_reaching_the_terminal_equal_the_requested_window(tz, remainder_ms):
-    """V-1: 範囲読み取りで、**両端**の epoch が要求した窓に一致する（ms まで）。
+    """V-1 + V-1c: 範囲読み取りで、下端は要求どおり・上端は**境界秒ぶんだけ**先である。
 
-    上端は下端と別の式で組み立てられる。片端だけ直した実装は下端の検定では緑になるので、
-    上端を独立に固定する。
+    期待値が ``to_msc`` そのものだった旧版は、**V-1c（2026-09-01・実端末）で棄却された前提**
+    「端末が ``to`` の ms を尊重する」を焼き込んでいた。実測では ``to`` に既知ティックの msc を
+    指定してもその行が返らず、端末は ``to`` を秒へ切り捨てて解釈していた。よって上端は
+    :data:`feed.BOUNDARY_SECOND_MS` ぶん広げて要求し、返却から切り出す（切り出しの側は
+    V-1b/V-1c 節が固定する）。
+
+    広げる量が**ちょうど 1 秒**であることをここで固定するのが要点である。これより短ければ
+    上端の行を取りこぼし、長ければ端末から取って捨てる行が窓幅と無関係に増える。
+    下端を広げないことも同時に固定する（端末の切り捨ては下端を勝手に前へ倒すので、
+    要求側で広げる理由が無い）。
     """
     from_msc = _BASE_EPOCH_SEC * 1000 + remainder_ms
     to_msc = from_msc + 60_000
@@ -718,7 +764,7 @@ def test_the_epochs_reaching_the_terminal_equal_the_requested_window(tz, remaind
         )
         delivered = [_local_epoch_ms(d) for d in mt5.requested]
 
-    assert delivered == [from_msc, to_msc]
+    assert delivered == [from_msc, to_msc + feed.BOUNDARY_SECOND_MS]
 
 
 class _ConversionSpy:
@@ -777,6 +823,192 @@ def test_the_window_conversion_issues_no_time_it_does_not_hand_to_the_terminal(m
     # 窓幅・max_rows を変えても発行数が変わらない（変わるのは上端の有無だけ）。
     assert len({issued for (window_ms, _), (issued, _) in points.items()
                 if window_ms is not None}) == 1, points
+
+
+# =====================================================================
+# V-1b/V-1c（2026-09-01 実測確定）— 端末 API の秒粒度を feed が補償する
+# =====================================================================
+#
+# 実測（実 VM 端末・2026-09-01）:
+#   - ``copy_ticks_from(t+1ms)`` が ``msc == t``（1 つ前の ms）の行を返した
+#     ＝ 端末は datetime を**秒へ切り捨てて**解釈する（下端に前方混入が起きる）。
+#   - ``copy_ticks_range(from, to)`` は ``to`` の ms 成分を落とす。``to`` に既知ティックの
+#     msc を指定してもその行が返らなかった（上端が落ちる）。
+#   - 返却行そのものの ``time_msc`` は ms 精度である（V-1a で窓内一致・+0.0000h を実測）。
+#
+# 転送契約は ``[from_msc, to_msc]`` の**両端包含**であり、ms の厳密さを保証する責任は
+# feed 側にある。コンテナ側は既にこれを前提に組まれている:
+#   - ``marketdata/mt5_ticks/ingest.py`` は窓外の行を Fail-Stop で弾く
+#   - ``marketdata/mt5_ticks/cursor.py`` は応答の先頭がカーソル以降であることを前提にする
+# よって下端の前方混入は供給ループを止め、上端の欠落はティックの取りこぼしになる。
+#
+# 端末側の上端の丸め方は実測で 2 通りを区別できていないため、検定は両方を回す
+# （未検証の 1 通りへ判定を賭けない）。
+
+#: 端末経路 × 上端の丸め方。上端なし（``copy_ticks_from``）では丸め方は効かない。
+_TERMINAL_PATHS = [(None, True), (2_000, True), (2_000, False)]
+_TERMINAL_PATH_IDS = ["copy_ticks_from", "range_to_second_inclusive", "range_to_second_exclusive"]
+
+
+def _ticks_every(start_msc: int, step_ms: int, count: int) -> np.ndarray:
+    """``start_msc`` から ``step_ms`` 間隔で ``count`` 本のティック。"""
+    return _ticks(*[(start_msc + i * step_ms, 66020.1, 66035.1) for i in range(count)])
+
+
+def _served_window(mt5, *, from_msc, to_msc, max_rows, tz="Asia/Tokyo"):
+    """``/ticks`` を 1 回捌いて、コンテナ側の解析器で読んだ応答を返す。
+
+    :func:`feed.read_tick_window` を直に呼ばずに応答まで通すのは、固定したいのが
+    **コンテナが受け取る行**（転送契約）であって関数の内部形ではないからである。
+    """
+    query = {
+        "symbol": "JP225", "from_msc": str(from_msc),
+        "to_msc": "" if to_msc is None else str(to_msc), "max_rows": str(max_rows),
+    }
+    with _local_timezone(tz):
+        got = _request(query=query, mt5=mt5)
+    return wire.parse_response(got.status, got.headers, got.body)
+
+
+@pytest.mark.parametrize("to_offset,upper_inclusive", _TERMINAL_PATHS, ids=_TERMINAL_PATH_IDS)
+def test_rows_before_from_msc_do_not_leak_when_the_terminal_floors_to_the_second(
+    to_offset, upper_inclusive
+):
+    """V-1b: 端末が境界秒の先頭から返しても、応答に ``from_msc`` より前の行を混ぜない。
+
+    ``from_msc`` の ms 成分を非 0 にするのが要点である。0 なら端末の秒切り捨てが観測できず、
+    欠陥を通り過ぎたまま緑になる（既存 98 検定がそうであった）。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + 500
+    mt5 = FakeMt5(
+        _ticks_every(_BASE_EPOCH_SEC * 1000, 100, 30), range_upper_inclusive=upper_inclusive
+    )
+
+    parsed = _served_window(
+        mt5, from_msc=from_msc,
+        to_msc=None if to_offset is None else from_msc + to_offset, max_rows=100,
+    )
+
+    assert [ms for ms, _, _ in parsed.rows if ms < from_msc] == []
+
+
+@pytest.mark.parametrize("upper_inclusive", (True, False),
+                         ids=["to_second_inclusive", "to_second_exclusive"])
+def test_the_row_sitting_exactly_on_to_msc_is_delivered(upper_inclusive):
+    """V-1c: 上端は**包含**である。``to_msc`` と同じ msc の行が応答に入る。
+
+    端末は ``to`` の ms 成分を落とすので、補償しない限りこの行は落ちる（実測: to に既知
+    ティックの msc を指定してその行が返らなかった）。落ちた行は次の要求でも取れない
+    （カーソルが先へ進むため）＝ 静かなティックの取りこぼしになる。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + 500
+    to_msc = from_msc + 2_000
+    mt5 = FakeMt5(
+        _ticks_every(_BASE_EPOCH_SEC * 1000, 100, 60), range_upper_inclusive=upper_inclusive
+    )
+
+    parsed = _served_window(mt5, from_msc=from_msc, to_msc=to_msc, max_rows=100)
+
+    assert to_msc in [ms for ms, _, _ in parsed.rows]
+
+
+@pytest.mark.parametrize("upper_inclusive", (True, False),
+                         ids=["to_second_inclusive", "to_second_exclusive"])
+def test_rows_after_to_msc_do_not_leak_from_the_compensated_boundary_second(upper_inclusive):
+    """V-1c: 上端の補償で余分に届いた行を応答へ通さない。
+
+    補償は端末の秒粒度を埋めるための**要求側の広げ**であって、契約窓を広げたのではない。
+    窓外の行はコンテナ側 ``marketdata/mt5_ticks/ingest.py`` が Fail-Stop で弾く
+    ＝供給ループが止まる。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + 500
+    to_msc = from_msc + 2_000
+    mt5 = FakeMt5(
+        _ticks_every(_BASE_EPOCH_SEC * 1000, 100, 60), range_upper_inclusive=upper_inclusive
+    )
+
+    parsed = _served_window(mt5, from_msc=from_msc, to_msc=to_msc, max_rows=100)
+
+    assert [ms for ms, _, _ in parsed.rows if ms > to_msc] == []
+
+
+@pytest.mark.parametrize("max_rows,expected_truncated", [(5, True), (100, False)],
+                         ids=["cap_reached", "cap_not_reached"])
+def test_truncation_is_reported_from_the_cap_not_from_the_rows_that_survived_the_cut(
+    max_rows, expected_truncated
+):
+    """V-1b: 切り詰めの申告は**端末のキャップ到達**で決める（切り出し後の件数では決めない）。
+
+    ``copy_ticks_from`` は ``max_rows + 1`` 件を要求するが、境界秒の余剰が head に混じるので、
+    キャップに当たっていても切り出し後は ``max_rows`` 以下になりうる。そのとき
+    「切り出し後 > max_rows」で判定すると ``truncated=0`` を返し、コンテナ側は続きが無いと
+    信じてカーソルを進める＝**取りこぼしが静かに確定する**。
+
+    偽の申告（常に 1）も同じだけ有害（無限に取り直す）なので、到達しない側も同じ検定で固定する。
+    """
+    from_msc = _BASE_EPOCH_SEC * 1000 + 500
+    mt5 = FakeMt5(_ticks_every(_BASE_EPOCH_SEC * 1000, 100, 30))
+
+    parsed = _served_window(mt5, from_msc=from_msc, to_msc=None, max_rows=max_rows)
+
+    assert (parsed.truncated, parsed.count <= max_rows) == (expected_truncated, True)
+
+
+def _rows_inside_second_of(ticks: np.ndarray, ms: int) -> int:
+    """``ms`` が属する秒に実在する行数（境界秒の補償で不可避に触れる量）。"""
+    floor = (int(ms) // 1000) * 1000
+    return int(((ticks["time_msc"] >= floor) & (ticks["time_msc"] < floor + 1000)).sum())
+
+
+def _fetch_and_delivery(*, window_ms, max_rows, upper_inclusive) -> "tuple[int, int, int, int]":
+    """1 要求の（端末が返した行数・応答行数・窓内に実在する行数・境界秒の上界）。"""
+    ticks = _ticks_every(_BASE_EPOCH_SEC * 1000, 100, 700)
+    from_msc = _BASE_EPOCH_SEC * 1000 + 500
+    to_msc = from_msc + window_ms
+    msc = ticks["time_msc"]
+    inside = int(((msc >= from_msc) & (msc <= to_msc)).sum())
+    # 境界秒の上界: 下端の秒に実在する行 + 上端の秒に実在する行 + 補償先の秒頭 1 行。
+    bound = _rows_inside_second_of(ticks, from_msc) + _rows_inside_second_of(ticks, to_msc) + 1
+
+    mt5 = FakeMt5(ticks, range_upper_inclusive=upper_inclusive)
+    parsed = _served_window(mt5, from_msc=from_msc, to_msc=to_msc, max_rows=max_rows)
+    return sum(mt5.served), len(parsed.rows), inside, bound
+
+
+def test_the_boundary_second_compensation_fetches_no_more_than_the_boundary_seconds():
+    """CX: 窓を**取りこぼさず**に配ることを、境界 2 秒を超える過剰取得なしで達成する。
+
+    片方だけなら自明に満たせる（全部取れば完全・何も取らなければ廃棄 0）。両方を同時に
+    固定するから、これは実装の締め付けになる。端末 API が秒粒度である以上、境界秒ぶんの
+    余剰取得は**正しさに必要な入力**であって浪費ではない。浪費になるのはそれを超えた分だけ
+    である。よって固定するのは回数ではなく **超過廃棄の不在**（ISSUE-450 と同じ規律）。
+
+    窓幅・``max_rows`` をそれぞれ 2 点振り、廃棄が入力の大きさに比例して増えないこと
+    （オーダーの表明）も同時に固定する。
+    """
+    points = {
+        (window_ms, max_rows, upper_inclusive): _fetch_and_delivery(
+            window_ms=window_ms, max_rows=max_rows, upper_inclusive=upper_inclusive
+        )
+        # 窓幅は 2 秒と 60 秒（×30）・max_rows は 1,000 と 50,000（×50）
+        for window_ms in (2_000, 60_000)
+        for max_rows in (1_000, 50_000)
+        for upper_inclusive in (True, False)
+    }
+
+    incomplete = {k: v for k, v in points.items() if v[1] != v[2]}
+    assert incomplete == {}, f"窓内の行を取りこぼしています（応答, 実在）: {incomplete}"
+
+    over = {k: v for k, v in points.items() if v[0] - v[1] > v[3]}
+    assert over == {}, f"境界 2 秒を超えて取って捨てています（取得, 応答, 実在, 上界）: {over}"
+
+    # 廃棄量は端末の上端の丸め方（環境）では 1 行変わりうるので、比べるのは同じ端末どうしで
+    # ある。ここで固定したいのは「窓幅・max_rows を増やしても廃棄が増えない」ことだけである。
+    by_terminal: "dict[bool, set[int]]" = {}
+    for (_, _, upper_inclusive), value in points.items():
+        by_terminal.setdefault(upper_inclusive, set()).add(value[0] - value[1])
+    grown = {k: v for k, v in by_terminal.items() if len(v) != 1}
+    assert grown == {}, f"廃棄が入力の大きさで増えています: {grown}"
 
 
 # =====================================================================
