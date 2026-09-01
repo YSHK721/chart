@@ -12,8 +12,12 @@ Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC �
     :mod:`marketdata.rollup` の責務であり本モジュールは行わない（rollup を逆 import しない）。
 
 価格・volume の意味:
-    - price は mid=(bid+ask)/2（約定値を持たない quote feed のため・``ingest_ticks`` の
+    - price の既定は mid=(bid+ask)/2（約定値を持たない quote feed のため・``ingest_ticks`` の
       last=mid 規約と整合する mid 採用）。
+    - 価格基準は :func:`ticks_to_m1` の ``price_basis`` で選べる（:data:`PRICE_BASIS_MID` /
+      :data:`PRICE_BASIS_BID`）。既定は mid であり、既存の全呼出は 1 バイトも挙動が変わらない。
+      bid は MT5 端末チャートが描いている系列である（依頼者裁定 2026-09-02）。**どの ref が
+      どちらを使うかは本モジュールが決めない**（供給側が渡す・OCP）。
     - volume はその 1 分の **ティック数**（``size``・float）。出来高ではなく更新密度を表す。
 
 データ保全（重要）:
@@ -55,6 +59,14 @@ _OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた�
 _DATE_FMT = _csv_schema.DATE_FMT
 # 集計に要する生ティックの必須列（ingest.RAW_COLUMNS の price 部分集合）。
 _TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
+# 価格基準（price basis）— 生ティックのどの気配を「価格」とするか。
+#   既定は mid（従来の唯一の規則）。bid は MT5 端末チャートが描いている系列であり、
+#   同じティックから mid で M1 を作ると端末表示と系統的にずれる（ISSUE.md 段階 0 実測 T5:
+#   中央値 duka(mid) - mt5(bid) = +6.97・chart_mode=0 と整合／依頼者裁定 2026-09-02）。
+#   **どの ref がどちらを使うかは本モジュールが決めない**（供給側が渡す・OCP）。
+PRICE_BASIS_MID = "mid"
+PRICE_BASIS_BID = "bid"
+_PRICE_BASES = (PRICE_BASIS_MID, PRICE_BASIS_BID)
 # 既定の銘柄・出力 ref（試作 prep_tick_rollup と一致: <ref>_m1.csv = jp225_tick_m1.csv）。
 _DEFAULT_SYMBOL = "JP225"
 _DEFAULT_REF = "jp225_tick"
@@ -83,25 +95,67 @@ def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
     return _ts_and_mid(ticks)
 
 
-def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
-    """生ティック frame から ``(timestamp(naive UTC), mid)`` を返す共通前処理（mid/tz の単一規則源）。
+def _validate_price_basis(price_basis: str) -> str:
+    """価格基準を既知の値に限定して返す（fail-fast・黙って既定へ落ちない）。
+
+    未知の綴りを既定（mid）へ縮退させると、bid のつもりで mid の系列を作り続けても誰も
+    気付かない。出力は正しく見えるので状態検証でも落ちない。ここで止める。
+    """
+    if price_basis not in _PRICE_BASES:
+        raise ValueError(
+            f"price_basis は {_PRICE_BASES} のいずれかです: {price_basis!r}（既定は"
+            f" {PRICE_BASIS_MID!r}）。"
+        )
+    return price_basis
+
+
+def _price_series(ticks: pd.DataFrame, price_basis: str) -> pd.Series:
+    """生ティック frame から**価格系列**を作る（価格の定義の単一規則源）。
+
+    bid 基準では ask 列を**読まない**。読んで捨てれば「作ってから捨てる計算」になり、
+    出力は正しいままなので状態検証では原理的に落ちない（絶対命令 2026-08-28・ISSUE-450 と同型）。
+    その不在は ``marketdata/tests/test_tick_m1_price_basis.py`` の列アクセス Spy が固定する。
+    """
+    if _validate_price_basis(price_basis) == PRICE_BASIS_BID:
+        return ticks["bidPrice"].astype("float64")
+    return (ticks["bidPrice"].astype("float64") + ticks["askPrice"].astype("float64")) / 2.0
+
+
+def _ts_and_price(
+    ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID
+) -> "tuple[pd.Series, pd.Series]":
+    """生ティック frame から ``(timestamp(naive UTC), price)`` を返す共通前処理（tz/価格の単一規則源）。
 
     timestamp は tz-aware なら UTC 揃え後に tz を剥がし naive datetime64 へ（全 UTC＝値不変）。
-    mid=(bidPrice+askPrice)/2。:func:`ticks_to_m1`（M1 集計）と :func:`forming_bar_from_ticks`
-    （形成中バー）が共有し、「同一ソース＝書き変わり無し」を構造で保証する（規則の二重定義を避ける）。
+    価格は :func:`_price_series`（``price_basis`` 既定 mid）。:func:`ticks_to_m1`（M1 集計）と
+    :func:`forming_bar_from_ticks`（形成中バー）が共有し、「同一ソース＝書き変わり無し」を
+    構造で保証する（規則の二重定義を避ける）。
     """
     ts = pd.to_datetime(ticks["timestamp"])
     if getattr(ts.dt, "tz", None) is not None:
         ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
-    mid = (ticks["bidPrice"].astype("float64") + ticks["askPrice"].astype("float64")) / 2.0
-    return ts, mid
+    return ts, _price_series(ticks, price_basis)
 
 
-def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
-    """生ティック DataFrame を M1 OHLC（mid 基準・UTC 分床）へ集計する純粋関数。
+def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
+    """生ティック frame から ``(timestamp(naive UTC), mid)`` を返す（mid 固定の既存面）。
+
+    実体は :func:`_ts_and_price`（既定 mid）。mid 以外の基準を足しても本関数の意味は
+    変わらない（既存呼出は 1 バイトも挙動が変わらない）。
+    """
+    return _ts_and_price(ticks)
+
+
+def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> pd.DataFrame:
+    """生ティック DataFrame を M1 OHLC（``price_basis`` 基準・UTC 分床）へ集計する純粋関数。
+
+    ``price_basis``（既定 :data:`PRICE_BASIS_MID`）が価格の定義を選ぶ**唯一の拡張点**である。
+    既定のままなら従来と 1 バイトも変わらない（既存 ref は無改変）。:data:`PRICE_BASIS_BID` は
+    MT5 端末チャートと同じ bid 系列を使う（依頼者裁定 2026-09-02）。どの ref がどちらを使うかは
+    本関数が決めない（供給側が渡す・OCP）。
 
     入力は ``timestamp``（tz-aware/naive いずれも可・tz-aware は UTC へ揃える）, ``bidPrice``,
-    ``askPrice`` 列を持つ。mid=(bid+ask)/2 を price とし、UTC naive の分床（``floor("min")``）で
+    ``askPrice`` 列を持つ。選ばれた基準の価格を price とし、UTC naive の分床（``floor("min")``）で
     groupby して open=最初/high=最大/low=最小/close=最終、volume=その分のティック数（float）を
     返す。open/close を時刻順に確定させるため、集計前に ``timestamp`` 昇順へ安定ソートする。
 
@@ -115,6 +169,7 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(
             f"tick frame に必須列がありません: {missing}（必須 {_TICK_COLUMNS}）。"
         )
+    _validate_price_basis(price_basis)  # 空入力でも未知の基準は通さない（fail-fast）。
     if ticks.empty:
         empty_idx = pd.DatetimeIndex([], name="date")
         return pd.DataFrame(
@@ -123,22 +178,24 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
             index=empty_idx,
         )
 
-    ts, mid = _ts_and_mid(ticks)
+    ts, price = _ts_and_price(ticks, price_basis=price_basis)
 
     # 時刻順を保証してから分床で groupby（open=最初/close=最終を時刻基準で確定）。
-    work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
+    work = pd.DataFrame({"ts": ts.to_numpy(), "price": price.to_numpy()})
     work = work.sort_values("ts", kind="stable", ignore_index=True)
     work["date"] = work["ts"].dt.floor("min")
-    # 方向内訳（up/dn）: 直前ティックとの mid 差の符号を **その分バーの中で** 取る。
+    # 方向内訳（up/dn）: 直前ティックとの価格差の符号を **その分バーの中で** 取る。
+    #   価格は ``price_basis`` が選んだ系列そのものである（表示される足が bid なのに方向内訳
+    #   だけ mid 由来、という食い違いを作らない）。
     #   分をまたいで比べない理由は チャンク独立性の契約: 本関数は日 parquet ごとに呼ばれ、結果を
     #   concat して全体とする（tests/test_tick_m1 の per-day concat == whole）。前の分／前の日の
     #   最終ティックを参照すると、どこで切って処理したかで値が変わり、この契約が壊れる。
     #   その代償として各分の先頭ティックは方向を持たず、up+dn は volume より「分数」だけ小さい。
     #   実測（jp225_tick）で等値ティックは 0.0%。等値は up/dn のどちらにも数えない。
-    diff = work.groupby("date", sort=False)["mid"].diff()
+    diff = work.groupby("date", sort=False)["price"].diff()
     work["up"] = (diff > 0).astype("float64")
     work["dn"] = (diff < 0).astype("float64")
-    g = work.groupby("date", sort=True)["mid"]
+    g = work.groupby("date", sort=True)["price"]
     gd = work.groupby("date", sort=True)
     m1 = pd.DataFrame(
         {
@@ -147,8 +204,8 @@ def ticks_to_m1(ticks: pd.DataFrame) -> pd.DataFrame:
             "low": g.min(),
             "close": g.last(),
             "volume": g.size().astype("float64"),  # その 1 分のティック数。
-            "up": gd["up"].sum(),                  # うち mid が上がったティック数。
-            "dn": gd["dn"].sum(),                  # うち mid が下がったティック数。
+            "up": gd["up"].sum(),                  # うち価格が上がったティック数。
+            "dn": gd["dn"].sum(),                  # うち価格が下がったティック数。
         }
     )
     m1.index.name = "date"
@@ -307,6 +364,7 @@ def build_m1_from_ticks(
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
     until: Any = None,
+    price_basis: str = PRICE_BASIS_MID,
 ) -> Path:
     """``[start, end]`` の日別ティック parquet を読み、M1 CSV を生成して出力パスを返す。
 
@@ -321,6 +379,10 @@ def build_m1_from_ticks(
     ``until``（省略可・:class:`pd.Timestamp` 互換）を指定すると、生成する M1 バーのうち
     ``index >= until`` の行を除外する（用途: 形成中の分バー＝``floor(now, "min")`` 以降を確定値
     として書き込まない）。``until=None``（既定）は従来出力と完全一致（byte 不変）。
+
+    ``price_basis``（既定 :data:`PRICE_BASIS_MID`）は :func:`ticks_to_m1` へそのまま渡す。
+    権威（全量）経路も増分経路と同じ基準で回せるようにするためである（片方だけが mid のまま
+    だと、日次再構築が表示中の系列を静かに mid へ戻す）。
     """
     _validate_ref(ref)
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
@@ -331,14 +393,18 @@ def build_m1_from_ticks(
         )
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS)))
+        m1_day = _clean_m1_day(
+            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        )
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if daily_m1:
         m1 = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     else:
         # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
-        m1 = ticks_to_m1(pd.DataFrame({c: [] for c in _TICK_COLUMNS}))
+        m1 = ticks_to_m1(
+            pd.DataFrame({c: [] for c in _TICK_COLUMNS}), price_basis=price_basis
+        )
     m1 = _drop_forming_bars(m1, until)  # 形成中分バー（>= until）を確定値として書かない。
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     _write_m1_csv(m1, out_path)
@@ -452,6 +518,7 @@ def append_m1_from_ticks(
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
     until: Any = None,
+    price_basis: str = PRICE_BASIS_MID,
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
@@ -475,7 +542,8 @@ def append_m1_from_ticks(
     if tail is None or not _is_healthy_m1_row(tail):
         # 初回（M1 不在/空）or 末尾 torn 行 → 原子的全構築で（再）生成し自己修復。
         return build_m1_from_ticks(
-            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until
+            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
+            price_basis=price_basis,
         )
 
     last_date = pd.Timestamp(tail.index[-1])
@@ -489,7 +557,9 @@ def append_m1_from_ticks(
 
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS)))
+        m1_day = _clean_m1_day(
+            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        )
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if not daily_m1:
