@@ -263,7 +263,8 @@ def test_the_rollups_stop_carrying_the_phantom_after_the_rebuild(tmp_path, store
     rows, until = _rows_for(_DAY, minutes=10, phantom_minutes=(4, 5))
     _publish(_DAY, rows, until, tmp_path, update_rollups=True)
     path = rollup._rollup_path(m1_chain.rollup_dir(ref=_REF, data_dir=tmp_path), "5m", _REF)
-    assert pd.read_csv(path)["low"].min() == pytest.approx(15105.0)
+    # ファントムの水準は bid そのもの（mid 時代の期待値は 15105.0＝bid + 半スプレッド 5.0）。
+    assert pd.read_csv(path)["low"].min() == pytest.approx(15100.0)
 
     rebuild.rebuild_day(_DAY, **store)
 

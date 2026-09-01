@@ -78,7 +78,11 @@ def append_m1_for_closed_minutes(
     if not closed:
         return AppendResult(bars=0, pending_rows=pending)
 
-    m1 = tick_m1.ticks_to_m1(ingest.rows_to_frame(closed))
+    # 価格基準は :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` が唯一の宣言である
+    #   （綴りを書き写さない・権威経路 rebuild と必ず同じ値を使う）。
+    m1 = tick_m1.ticks_to_m1(
+        ingest.rows_to_frame(closed), price_basis=ingest.PRICE_BASIS
+    )
     bars = tick_m1.append_m1_rows(m1, tick_m1.m1_csv_path(ref=ref, data_dir=data_dir))
     return AppendResult(bars=bars, pending_rows=pending)
 

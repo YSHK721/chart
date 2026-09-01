@@ -89,8 +89,10 @@ def test_carrying_the_pending_rows_forward_produces_a_complete_bar(store):
     assert r2.bars == 1
     csv = pd.read_csv(tick_m1.m1_csv_path(ref=_REF, data_dir=store["data_dir"]))
     assert list(csv["volume"]) == [6.0]
-    assert csv["open"].iloc[0] == pytest.approx(66005.0)
-    assert csv["close"].iloc[0] == pytest.approx(66105.0)
+    # 価格は bid（MT5 端末チャートと同じ系列・依頼者裁定 2026-09-02）。
+    #   mid 時代の期待値は 66005.0 / 66105.0 だった（bid + 半スプレッド 5.0）。
+    assert csv["open"].iloc[0] == pytest.approx(66000.0)
+    assert csv["close"].iloc[0] == pytest.approx(66100.0)
 
 
 def test_no_rows_writes_nothing(store):
@@ -140,9 +142,9 @@ def test_appended_bytes_match_the_existing_csv_formatter(store):
     from marketdata.mt5_ticks import ingest
 
     frame = ingest.rows_to_frame([r for r in rows if r[0] < _label_ms(_START + dt.timedelta(minutes=1))])
-    expected_body = tick_m1._format_m1_for_csv(tick_m1.ticks_to_m1(frame)).to_csv(
-        header=False, index_label="date"
-    )
+    expected_body = tick_m1._format_m1_for_csv(
+        tick_m1.ticks_to_m1(frame, price_basis=ingest.PRICE_BASIS)
+    ).to_csv(header=False, index_label="date")
     assert written.endswith(expected_body)
 
 
