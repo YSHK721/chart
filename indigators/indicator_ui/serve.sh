@@ -50,8 +50,11 @@ M1_TOOL="$REPO_ROOT/indigators/indicator_ui/tools/export_jp225_m1.py"
 TICK_WATCH_TOOL="$REPO_ROOT/tools/live_tick_watch.py"
 WATCH_LOG="$REPO_ROOT/data/marketdata/live_watch.log"
 TICK_WATCH_LOG="$REPO_ROOT/data/marketdata/live_tick_watch.log"
+MT5_WATCH_TOOL="$REPO_ROOT/tools/mt5_tick_watch.py"
+MT5_WATCH_LOG="$REPO_ROOT/data/marketdata/mt5_tick_watch.log"
 WATCH_PID=""
 TICK_WATCH_PID=""
+MT5_WATCH_PID=""
 if [ "$NO_UPDATE" -eq 0 ]; then
   echo "▶ 最新データを増分取得中（足/ロールアップ/日足）..."
   if ! "$VENV_PY" "$REPO_ROOT/tools/acquire_marketdata.py" --skip ticks --skip ingest; then
@@ -68,12 +71,28 @@ if [ "$NO_UPDATE" -eq 0 ]; then
   echo "▶ tick ライブ更新を開始（毎分 当日tick全量再取得・ログ: $TICK_WATCH_LOG）"
   "$VENV_PY" "$TICK_WATCH_TOOL" --stream >"$TICK_WATCH_LOG" 2>&1 &
   TICK_WATCH_PID=$!
+  # MT5 増分ティックの供給（ISSUE-447 段階 1・承認事項 A-4）。VM 側 feed から
+  #   「最後に保存したティック以降」を引き続け、jp225_mt5 系列（M1 + rollups）へ供給する。
+  #   秘密（MT5_BRIDGE_SECRET）が無い環境では供給そのものが成立しないため起動しない
+  #   ＝橋渡しを設定していない環境の既定の起動は 1 バイトも変わらない。
+  #   初回（ジャーナル不在）は再開点を推測しないため MT5_TICK_WATCH_FROM で開始点を渡す
+  #   （端末の壁時計・例 "2026-09-01 12:00:00"）。2 回目以降はジャーナルから再開する。
+  if [ -n "${MT5_BRIDGE_SECRET:-}" ]; then
+    echo "▶ MT5 ティック供給を開始（増分・ログ: $MT5_WATCH_LOG）"
+    if [ -n "${MT5_TICK_WATCH_FROM:-}" ]; then
+      "$VENV_PY" "$MT5_WATCH_TOOL" --from "$MT5_TICK_WATCH_FROM" >"$MT5_WATCH_LOG" 2>&1 &
+    else
+      "$VENV_PY" "$MT5_WATCH_TOOL" >"$MT5_WATCH_LOG" 2>&1 &
+    fi
+    MT5_WATCH_PID=$!
+  fi
 fi
 
 # サーバ停止時（Ctrl-C 等）にバックグラウンド watch も確実に止める。
 cleanup() {
   [ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null || true
   [ -n "$TICK_WATCH_PID" ] && kill "$TICK_WATCH_PID" 2>/dev/null || true
+  [ -n "$MT5_WATCH_PID" ] && kill "$MT5_WATCH_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
