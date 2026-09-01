@@ -35,7 +35,7 @@ from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 import pandas as pd
 
 from marketdata import tick_m1
-from marketdata.mt5_ticks import ingest
+from marketdata.mt5_ticks import ingest, server_clock
 
 Row = Tuple[int, float, float]
 
@@ -71,7 +71,7 @@ def append_m1_for_closed_minutes(
     closed: "List[Row]" = []
     pending: "List[Row]" = []
     for row in rows:
-        utc_ms = ingest.server_clock.to_utc_ms(row[0])
+        utc_ms = server_clock.to_utc_ms(row[0])
         minute = pd.Timestamp(utc_ms, unit="ms", tz="UTC").floor("min")
         (closed if minute < boundary else pending).append(row)
 

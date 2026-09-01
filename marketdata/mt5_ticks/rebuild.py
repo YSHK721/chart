@@ -35,7 +35,7 @@ import datetime as dt
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import pandas as pd
 
@@ -167,7 +167,7 @@ def rebuild_day(
 
 
 def rebuild_days(
-    days: "Optional[Any]" = (), *, symbol: str, ref: str, data_dir: Any,
+    days: "Optional[Iterable[Any]]" = (), *, symbol: str, ref: str, data_dir: Any,
     update_rollups: bool = True
 ) -> "dict[Any, str]":
     """複数日を昇順に再構築する（常駐ループが確定した日をそのまま渡せる形）。"""

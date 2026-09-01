@@ -163,6 +163,18 @@ def dtype_itemsize(descr: "List[Any]") -> int:
     return reader.size
 
 
+def _required_header(lookup: "Mapping[str, str]", name: str, *, why: str = "") -> str:
+    """必須ヘッダを取り出す。欠けていたら :class:`WireError`。
+
+    「無ければ既定値」を 1 箇所でも許すと、ヘッダが落ちた応答が既定値の姿で通ってしまう。
+    必須ヘッダの不在は解析の失敗であるという判断を、必須ヘッダごとに書き写さず 1 箇所に置く。
+    """
+    value = lookup.get(name.lower())
+    if value is None:
+        raise WireError(f"{name} がありません{why}。")
+    return value
+
+
 def parse_response(status: int, headers: "Mapping[str, str]", body: bytes) -> TickResponse:
     """成功応答を解析する。整合が取れない場合は必ず :class:`WireError`。
 
@@ -175,9 +187,7 @@ def parse_response(status: int, headers: "Mapping[str, str]", body: bytes) -> Ti
 
     lookup = {str(k).lower(): v for k, v in headers.items()}
 
-    raw_dtype = lookup.get(HEADER_DTYPE.lower())
-    if raw_dtype is None:
-        raise WireError(f"{HEADER_DTYPE} がありません。")
+    raw_dtype = _required_header(lookup, HEADER_DTYPE)
     try:
         descr = json.loads(raw_dtype)
     except ValueError as exc:
@@ -190,13 +200,10 @@ def parse_response(status: int, headers: "Mapping[str, str]", body: bytes) -> Ti
             f"応答 dtype に必須列がありません: {missing}（必須 {list(REQUIRED_FIELDS)}）。"
         )
 
-    raw_latest = lookup.get(HEADER_LATEST_MSC.lower())
-    if raw_latest is None:
-        raise WireError(f"{HEADER_LATEST_MSC} がありません（供給の連続性を判断できない）。")
-
-    raw_count = lookup.get(HEADER_COUNT.lower())
-    if raw_count is None:
-        raise WireError(f"{HEADER_COUNT} がありません。")
+    raw_latest = _required_header(
+        lookup, HEADER_LATEST_MSC, why="（供給の連続性を判断できない）"
+    )
+    raw_count = _required_header(lookup, HEADER_COUNT)
     try:
         count = int(raw_count)
         latest_msc = int(raw_latest)

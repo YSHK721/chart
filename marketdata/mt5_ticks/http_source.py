@@ -81,7 +81,7 @@ class HttpTickSource:
         self.timeout = float(timeout)
         self._secret = secret if isinstance(secret, bytes) else str(secret).encode("utf-8")
         self._now = now
-        self._nonce = nonce_factory
+        self._nonce_factory = nonce_factory
         self._opener = request.build_opener(_RefuseRedirects)
 
     # -----------------------------------------------------------------
@@ -126,7 +126,7 @@ class HttpTickSource:
     def _authorization(self, query: "Dict[str, str]") -> str:
         """要求ごとに新しい ts と nonce で署名する（秘密はここから外へ出ない）。"""
         ts = int(self._now())
-        nonce = self._nonce()
+        nonce = self._nonce_factory()
         sig = wire.sign(
             self._secret, method="GET", path=TICKS_PATH, query=query, ts=ts, nonce=nonce
         )

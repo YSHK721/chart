@@ -147,7 +147,10 @@ def finalize(day: Any, *, symbol: str, data_dir: Any) -> str:
 
     frame = ingest.rows_to_frame(rows)
     if parquet.is_file():
-        existing = pd.read_parquet(parquet, columns=tick_m1._TICK_COLUMNS)
+        # 比較する列は「これから書く姿」＝ ``ingest.rows_to_frame`` の出力が決める。
+        #   列の定義は tick_m1（権威）が持ち、ingest がその唯一の適用点である。ここで
+        #   列名を（私的定数からであっても）もう一度名指しすると、権威の写しが 2 つになる。
+        existing = pd.read_parquet(parquet, columns=list(frame.columns))
         if existing.reset_index(drop=True).equals(frame.reset_index(drop=True)):
             return "unchanged"
     _write_parquet_atomically(frame, parquet)

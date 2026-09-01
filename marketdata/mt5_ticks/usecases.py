@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 from marketdata.mt5_ticks import cursor as cursor_rules
@@ -30,6 +30,17 @@ Row = Tuple[int, float, float]
 DEFAULT_MAX_ROWS = 100_000
 #: 日 D を確定してよくなるまでの猶予（D+1 00:00 UTC からの秒数）。
 DEFAULT_GRACE_SECONDS = 300
+
+
+def _utc_now(clock: Clock) -> dt.datetime:
+    """時計の現在時刻を **tz-aware な UTC** で受け取る。
+
+    :class:`~marketdata.mt5_ticks.port.Clock` の契約は「UTC の現在時刻」であり、naive な
+    ``datetime`` を返す実装（検定の固定時計など）も UTC を意味している。その読み替えを
+    使う側それぞれに書くと、片方だけ直った瞬間に確定条件と公開条件が別の時刻で判断し始める。
+    """
+    now = clock.now()
+    return now if now.tzinfo is not None else now.replace(tzinfo=dt.timezone.utc)
 
 
 class PollResult(NamedTuple):
@@ -113,10 +124,7 @@ class FinalizeDay:
         boundary = dt.datetime.combine(
             day + dt.timedelta(days=1), dt.time(0, 0), tzinfo=dt.timezone.utc
         ) + dt.timedelta(seconds=self.grace_seconds)
-        now = self.clock.now()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=dt.timezone.utc)
-        return now >= boundary
+        return _utc_now(self.clock) >= boundary
 
     def __call__(
         self,
@@ -142,10 +150,7 @@ class PublishDataset:
     update_rollups: bool = True
 
     def __call__(self, rows: "Sequence[Row]") -> PublishResult:
-        now = self.clock.now()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=dt.timezone.utc)
-        until = now.replace(second=0, microsecond=0)
+        until = _utc_now(self.clock).replace(second=0, microsecond=0)
 
         appended = m1_chain.append_m1_for_closed_minutes(
             rows, ref=self.ref, data_dir=self.data_dir, until=until

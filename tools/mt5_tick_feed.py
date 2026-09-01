@@ -32,7 +32,7 @@ import json
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, NamedTuple, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 #: 触ってよい端末 API（発注系はここに無い）。広げるときは設計 §4 と検定を同時に変える。
@@ -236,7 +236,22 @@ def _int_arg(query: "Dict[str, str]", name: str) -> int:
         raise FeedError(400, "argument", f"{name} が整数ではありません。") from None
 
 
-def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
+class _TickQuery(NamedTuple):
+    """検証済みの ``/ticks`` 引数。"""
+
+    symbol: str
+    from_msc: int
+    to_msc: "Optional[int]"
+    max_rows: int
+
+
+def _tick_query(query: "Dict[str, str]") -> _TickQuery:
+    """``/ticks`` の引数を検証して取り出す（不正はすべて 400）。
+
+    引数の検証を独立させてあるのは、**端末に触れる前に 400 が確定する**ことを順序ではなく
+    構造で示すためである（認証を端末より先に置いたのと同じ理由）。不正な要求で端末を
+    叩き始めると、拒むはずの要求がライブ口座に負荷を掛ける。
+    """
     symbol = query.get("symbol", "")
     if not symbol:
         raise FeedError(400, "argument", "symbol がありません。")
@@ -251,14 +266,21 @@ def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
         )
     if to_msc is not None and to_msc < from_msc:
         raise FeedError(400, "argument", "to_msc が from_msc より前です。")
+    return _TickQuery(symbol, from_msc, to_msc, max_rows)
+
+
+def _ticks_response(mt5: Any, query: "Dict[str, str]") -> Response:
+    asked = _tick_query(query)
+    max_rows = asked.max_rows
 
     rows = read_tick_window(
-        mt5, symbol=symbol, from_msc=from_msc, to_msc=to_msc, max_rows=max_rows
+        mt5, symbol=asked.symbol, from_msc=asked.from_msc, to_msc=asked.to_msc,
+        max_rows=max_rows,
     )
     truncated = len(rows) > max_rows
     rows = rows[:max_rows]
 
-    latest = int(rows["time_msc"][-1]) if len(rows) else int(from_msc)
+    latest = int(rows["time_msc"][-1]) if len(rows) else int(asked.from_msc)
     headers = {
         "Content-Type": "application/octet-stream",
         "X-MT5-Count": str(len(rows)),
