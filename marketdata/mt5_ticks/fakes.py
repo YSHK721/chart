@@ -86,6 +86,24 @@ class FakeTickSource:
         )
 
 
+class CountingTickSource(FakeTickSource):
+    """要求を種類ごとに数える Spy（供給ポートの 3 つ目の実装＝実 HTTP・Fake に続く）。
+
+    トークン解決の探り（1 行窓）と周期の取得を数え分ける。数え方を検定ファイルごとに書くと、
+    「探りとは何か」の定義が散って片方だけ直る。
+    """
+
+    @property
+    def token_probes(self) -> int:
+        """起動時のトークン解決（1 行窓）の発行回数。"""
+        return len([c for c in self.calls if c["max_rows"] == 1])
+
+    @property
+    def cycle_fetches(self) -> int:
+        """周期ごとの取得の発行回数。"""
+        return len([c for c in self.calls if c["max_rows"] != 1])
+
+
 class FailingTickSource:
     """常に失敗する供給元（Fail-Stop 経路で書込 0 を確かめる・CX-e）。"""
 

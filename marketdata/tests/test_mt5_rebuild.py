@@ -224,6 +224,36 @@ def test_the_number_of_parquet_reads_does_not_grow_with_the_stored_days(
     assert reads.count == 1
 
 
+@pytest.mark.parametrize("stored_days", [5, 50])
+def test_the_m1_read_is_zero_per_cycle_and_at_most_one_per_closed_day(
+    tmp_path, store, monkeypatch, stored_days
+):
+    """CX: M1 全体の読みは**日 1 回まで**であり、周期あたりでは 0（蓄積 2 点で固定）。
+
+    設計 §10 は「清浄日でも当日区間の比較のために M1 を読んでよい（1 日 1 回まで）」で確定して
+    いる。よってここで固定するのは読み自体の禁止ではなく**上限**である:
+
+    1. 日が閉じない周期は再構築を 1 回も発行しない（``rebuild_days(())`` = 常駐の通常運転）
+    2. 日が閉じたときの読みは 1 日 1 回まで
+
+    どちらも蓄積（5 日 / 50 日）で変わらない。周期あたりに 1 回でも読めば、それは常駐の
+    固定費が M1 の大きさに比例して伸びるということであり、ISSUE-450 と同型になる。
+    """
+    for offset in range(stored_days):
+        day = _DAY - dt.timedelta(days=stored_days - 1 - offset)
+        rows, until = _rows_for(day, minutes=2)
+        _publish(day, rows, until, tmp_path)
+    reads = fakes.CallSpy(pd.read_csv)
+    monkeypatch.setattr(pd, "read_csv", reads)
+
+    rebuild.rebuild_days((), **store)
+    per_cycle = reads.count
+    rebuild.rebuild_day(_DAY, **store)
+
+    assert per_cycle == 0
+    assert reads.count - per_cycle == 1
+
+
 # =====================================================================
 # 派生ロールアップの是正
 # =====================================================================
