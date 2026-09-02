@@ -138,10 +138,10 @@ def test_a_poll_with_no_new_rows_issues_no_write_at_all(tmp_path, monkeypatch):
     first = poll(Cursor(cursor_ms=_BASE, boundary_rows=()))
 
     serialize = CallSpy(journal.serialize_rows, measure=lambda rows: len(rows))
-    write_parquet = CallSpy(journal._write_parquet_atomically)
+    write_parquet = CallSpy(journal.write_parquet_atomically)
     fold = CallSpy(tick_m1.ticks_to_m1)
     monkeypatch.setattr(journal, "serialize_rows", serialize)
-    monkeypatch.setattr(journal, "_write_parquet_atomically", write_parquet)
+    monkeypatch.setattr(journal, "write_parquet_atomically", write_parquet)
     monkeypatch.setattr(tick_m1, "ticks_to_m1", fold)
 
     clock = FixedClock(dt.datetime(2026, 8, 25, 9, 0, 30, tzinfo=dt.timezone.utc))
@@ -168,8 +168,8 @@ def test_finalizing_unchanged_content_issues_no_parquet_write(tmp_path, monkeypa
     finalize = usecases.FinalizeDay(token=_TOKEN, data_dir=tmp_path, clock=clock)
     finalize(days=[_DAY])
 
-    write_parquet = CallSpy(journal._write_parquet_atomically)
-    monkeypatch.setattr(journal, "_write_parquet_atomically", write_parquet)
+    write_parquet = CallSpy(journal.write_parquet_atomically)
+    monkeypatch.setattr(journal, "write_parquet_atomically", write_parquet)
     assert finalize(days=[_DAY]) == {_DAY: "unchanged"}
     assert write_parquet.count == 0
 
@@ -312,10 +312,10 @@ def _fail_stop_cases():
 def test_fail_stop_paths_issue_no_write(tmp_path, monkeypatch, label, source, expected):
     """CX-e: 異常系のどの経路でも全 writer 呼出が 0（部分的な台帳を残さない）。"""
     serialize = CallSpy(journal.serialize_rows, measure=lambda rows: len(rows))
-    write_parquet = CallSpy(journal._write_parquet_atomically)
+    write_parquet = CallSpy(journal.write_parquet_atomically)
     fold = CallSpy(tick_m1.ticks_to_m1)
     monkeypatch.setattr(journal, "serialize_rows", serialize)
-    monkeypatch.setattr(journal, "_write_parquet_atomically", write_parquet)
+    monkeypatch.setattr(journal, "write_parquet_atomically", write_parquet)
     monkeypatch.setattr(tick_m1, "ticks_to_m1", fold)
 
     with pytest.raises(expected):

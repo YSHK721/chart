@@ -36,6 +36,9 @@ _ALLOWED: "dict[str, set[str]]" = {
     # `tools/capture_mt5_symbol_spec.py` はパス成分変換の**唯一の実装**であり、
     # 複製を作らないために層の向きを曲げて import する（設計 §4・検定 M-1）。
     "ingest.py": {"pandas", "marketdata.tick_m1", "tools.capture_mt5_symbol_spec", _SELF},
+    # 月別アーカイブ（zip）の取り込み。pandas を**持たない**のが要点で、行 → DataFrame は
+    # ingest（権威）に、原子置換は journal に委譲する（ISSUE-447 段階 2）。
+    "archive_ingest.py": {"marketdata.tick_m1", _SELF},
     "m1_chain.py": {"pandas", "marketdata.tick_m1", "marketdata.rollup", _SELF},
     # 日次確定後の再構築。日次クリーニングの唯一の実装（outlier_policy）を権威と共有する。
     "rebuild.py": {
@@ -55,7 +58,7 @@ _STDLIB_PREFIXES = {
     "time", "math", "logging", "tempfile", "collections", "dataclasses", "functools",
     "itertools", "hashlib", "hmac", "struct", "secrets", "base64", "binascii",
     "urllib", "http", "socketserver", "socket", "argparse", "contextlib", "abc",
-    "enum", "threading", "queue", "shutil", "glob", "zlib", "traceback", "uuid",
+    "enum", "threading", "queue", "shutil", "glob", "zlib", "zipfile", "traceback", "uuid",
 }
 
 
