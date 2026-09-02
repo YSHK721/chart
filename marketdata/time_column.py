@@ -10,7 +10,7 @@
 
 ``DataFrame`` から「その行の時刻」を取り出す規則は 1 つしかない:
 
-    明示指定の列 > ``time`` 列 > ``date`` 列 > ``DatetimeIndex``
+    明示指定の列 > time 列 > date 列 > ``DatetimeIndex``
 
 この規則を各指標スライスの ``src/lwc_chart.py`` が個別に実装しており、うち 5 スライスは
 1 文字も違わない複製だった（codescan 実測）。規則が変わったとき複製の一部だけが直る事故を
@@ -51,7 +51,7 @@ def extract_columns(
 
 
 def resolve_times(df: pd.DataFrame, time_column: "str | None") -> pd.Series:
-    """時刻系列を解決する（明示指定 > ``time`` 列 > ``date`` 列 > ``DatetimeIndex`` の順）。
+    """時刻系列を解決する（明示指定 > time 列 > date 列 > ``DatetimeIndex`` の順）。
 
     Args:
         df: 対象の DataFrame。

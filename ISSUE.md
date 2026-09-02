@@ -12442,7 +12442,8 @@ ISSUE-455（1m 実体 CSV の 8 重連結。M6 の初回測定を狂わせた）
 
 ## ISSUE-455: [不具合] `jp225_tick_m1.csv` に同一履歴が 8 回連結されている
 
-- **ステータス**: OPEN（2026-08-29 起票・**原因未特定／是正案未提示**）
+- **ステータス**: IN_PROGRESS（2026-09-02 原因確定・再発防止コード＋修復スクリプトを
+  `fix/issue-455-dedupe-tick-m1` に実装。データ修復の実適用は稼働中 watch の停止＋修正版デプロイ待ちで保留＝下記「進捗 2026-09-02」）
 - **重大度**: 低（serving は重複を除去して渡すため**表示・計算の値は正しい**。害は容量と読取り費用）
 - **発見経路**: ISSUE-454 の M6（`4h` 以上の形成中バーのバイアス）を測るため 1m 実体 CSV を
   直接読んだところ、`4h` の足数が 140,058 本（14 年ぶんなら約 2 万本のはず）と過大で判明した。
@@ -12492,6 +12493,42 @@ ISSUE-455（1m 実体 CSV の 8 重連結。M6 の初回測定を狂わせた）
   是正するとしても、原因特定と再発防止が先で、実体の整理はその後に別途承認を得る。
 - serving 側の重複除去（`dataset.py:83`）を**外さない**。これは ISSUE-167 の機構であり、
   本件とは別の理由（日境界の二重分バー）でも必要。
+
+### 進捗 2026-09-02（原因確定・再発防止＋修復スクリプト実装）
+
+**確定した根本原因**: `marketdata/tail_reader.py` の `read_tail` がヘッダ列数とデータ行の
+フィールド数の不一致（up/dn が追記経路でヘッダ未更新のまま本体だけ 8 列化＝列数超過）を検査せず
+`pd.read_csv` するため、余剰フィールドが index へ回り `date` 列へ価格値（high）が入り、
+`pd.to_datetime(価格)` が数値をナノ秒と解釈して **1970-01-01** を返す。→ `append_m1_from_ticks` の
+resume ガード `index > last_date(=1970)` が全履歴を選択して毎分再追記 → 8 重連結。
+
+**A. 再発防止（コミット `87f95bb`・TDD Red→Green）**:
+- `read_tail`: データ行のフィールド数がヘッダを**超える**場合に Fail-Stop（ValueError）。
+  価格を黙って日付へ誤変換させない。不足側（torn 行・旧 6 列）は NaN 補完で安全ゆえ従来の
+  自己修復経路に委ねる（過剰な Fail-Stop で正常な旧行を拒否しない）。
+- `tick_m1._is_healthy_m1_row`: date の実装可能性下界（`_M1_MIN_PLAUSIBLE_DATE=2000-01-01`）を追加。
+  エポック近傍/データ開始前を不健全と判定し resume ガード前段で弾く（意味的破損の多重防御）。
+- `append_m1_from_ticks`: 構造破損 tail の Fail-Stop を捕捉し原子的全構築へフォールバック（自己修復）。
+- 追記ヘッダ整合契約 `_assert_append_header_matches` を `_append_m1_csv`/`append_m1_rows` に導入。
+  既存ヘッダと追記行の列が食い違えば拒否し、append 経路は全再構築でヘッダごと是正（ラガー遮断）。
+
+**B. 修復スクリプト（コミット `abfdfe1`・TDD Red→Green）**: `marketdata/tools/dedupe_tick_m1.py`。
+date で重複除去（keep="last"＝up/dn 有りブロック・dataset.py:83 と同規則）、date 昇順・一様 8 列で
+`.dup8x.bak` 退避（既存 .bak 不上書き）→ tmp→os.replace 原子置換。冪等・メモリ有界・--dry-run 対応。
+
+**保留（未適用）**: 稼働中 watch `tools/live_tick_watch.py --stream`（PID 78812・ref=jp225_tick）が
+`jp225_tick_m1.csv` を**毎分追記**しており（本セッション中に mtime が 12:05→12:23 へ前進を実測）、
+かつ当該プロセスは**修正前コード**で動作している。この状態で B を適用しても数分で再連結される。
+実データ修復（B 実行）とロールアップ再生成（C）は次の順序で実施する必要があり、本セッションでは
+**触らず報告して停止**した:
+1. `live_tick_watch`（PID 78812）を停止。
+2. Part A の修正をデプロイ（watch を修正版コードで再起動可能な状態に）。
+3. `python -m marketdata.tools.dedupe_tick_m1 data/marketdata/jp225_tick_m1.csv --dry-run` → 本実行。
+4. `rollups/jp225_tick/*.csv` を `marketdata.rollup.stream_build` で全再生成。
+5. watch を再起動（修正版は 8 列ヘッダで書き、構造破損は自己修復する）。
+
+現況スナップショット（読取りのみ・2026-09-02 12:23）: 32,291,677 行・早期 date は 8 回出現（8x 確定）・
+ヘッダ 8 列。予想一意 ≒ 32,291,677÷8 ≒ 4.04M・除去 ≒ 28.25M（正確値は停止後の dry-run で確定）。
 
 ### 関連
 
@@ -13161,3 +13198,18 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 - **未充足の日（申し送り）**: 2026-08-26 の 15:00 UTC 以降〜08-31 はアーカイブ末尾の切れ目と
   端末由来開始（09-01）の間隙。端末履歴（2026-01-02〜）から追補可能＝別作業。
   T9（NY 配信区間 299,417 行）はフラグ無しで取り込み済み（行単位フラグは別途裁定）。
+
+## ISSUE-478: [検定] declaration_integrity の BACKTICK 検出が列名 `date` を未定義シンボルと誤検出
+
+- **ステータス**: RESOLVED（2026-09-02・当面の docstring 修正で解消。根治は要検討）
+- **重大度**: 低（機能無関係・docstring 内の列名参照。gate をブロックするのが害）
+- **実測**: `.claude/scripts/declaration_integrity.py:51` の `BACKTICK` 正規表現が docstring 内の
+  ``date`` を拾い C1 が「date が未定義（到達不能）」と誤判定。列名・index 名 date を backtick 表記した
+  既存 docstring 6 箇所（marketdata/tick_m1.py・rollup_store.py・time_column.py×2・
+  simulator/tools/export_trade_markers.py・同 tests・indicator_ui の増分テスト）。大半は develop 既存で
+  fix/issue-455 の差分外。行番号込み違反 ID（ISSUE-467）のため無関係な行挿入・baseline 未整備で
+  「新規」判定になり Stop フックが無限再起動した。
+- **当面の解消**: 該当 docstring の `` `date` `` を backtick なし表記へ（挙動・API 完全不変）。gate exit 0 を実測。
+- **抜本策（未実施・要検討）**: (a) `PATHLIKE` と同様に一般的な列名語を BACKTICK 検出の対象外にする
+  ホワイトリスト、または (b) 違反 ID から行番号を外す（ISSUE-467 の恒久策と統合）。
+- **関連**: ISSUE-467（行番号込み ID で Stop 無限再起動）・ISSUE-455（表面化の経路）。

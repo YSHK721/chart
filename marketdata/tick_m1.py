@@ -70,6 +70,13 @@ _PRICE_BASES = (PRICE_BASIS_MID, PRICE_BASIS_BID)
 # 既定の銘柄・出力 ref（試作 prep_tick_rollup と一致: <ref>_m1.csv = jp225_tick_m1.csv）。
 _DEFAULT_SYMBOL = "JP225"
 _DEFAULT_REF = "jp225_tick"
+
+# M1 バー date の実装可能下限（ISSUE-455 再発防止・意味的健全性の下界）。
+#   これより前の date は「価格をナノ秒と誤解釈した 1970-01-01」や破損値であり実データたり得ない
+#   （実測の最古 JP225 tick は 2012-06-14）。tools 層の _DEFAULT_FULL_START(2012-06-14) を直接
+#   import すると marketdata → tools の逆依存になる（依存方向厳守・循環禁止）ため、marketdata 内に
+#   十分な余裕を持つ下界を定義する（エポック近傍を弾き、正規データは 1 件も落とさない）。
+_M1_MIN_PLAUSIBLE_DATE = pd.Timestamp("2000-01-01")
 # ref の許容文字（パス区切り・".." を排除し DATA_DIR 外書込／既存データ破壊を防ぐ）。
 _REF_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -159,7 +166,7 @@ def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> p
     groupby して open=最初/high=最大/low=最小/close=最終、volume=その分のティック数（float）を
     返す。open/close を時刻順に確定させるため、集計前に ``timestamp`` 昇順へ安定ソートする。
 
-    戻り値は ``date`` を index（名前 ``"date"``・``DatetimeIndex`` 昇順）に持つ OHLCV DataFrame。
+    戻り値は date を index（名前は "date"・``DatetimeIndex`` 昇順）に持つ OHLCV DataFrame。
     入力が空なら空（列のみ）を返す。必須列を欠く場合は :class:`ValueError`（fail-fast）。
     本関数は**純粋な集計のみ**を担う（外れ分バーの除去は :func:`_clean_m1_day` ＝ CSV 素材化
     経路の責務・本関数は行除去しない）。
@@ -426,7 +433,7 @@ def _read_last_m1_row(out_path: Any) -> "pd.DataFrame | None":
 
 
 def last_m1_date(out_path: Any) -> "pd.Timestamp | None":
-    """既存 M1 CSV の最終バー ``date``（末尾行）。不在/空（ヘッダのみ）は ``None``。メモリ有界。"""
+    """既存 M1 CSV の最終バーの日時（末尾行）。不在/空（ヘッダのみ）は ``None``。メモリ有界。"""
     tail = _read_last_m1_row(out_path)
     return None if tail is None else pd.Timestamp(tail.index[-1])
 
@@ -437,11 +444,52 @@ def _is_healthy_m1_row(tail: pd.DataFrame) -> bool:
     非原子追記がクラッシュ/ディスクフルで途中失敗すると末尾に torn/部分行（列欠落・NaN）が残りうる。
     これを検出して全構築フォールバック（原子的）で自己修復するための健全性判定。
     """
-    if pd.isna(tail.index[-1]):
+    last = tail.index[-1]
+    if pd.isna(last):
+        return False
+    # date の実装可能性（ISSUE-455）: エポック近傍（価格をナノ秒解釈した 1970 誤変換）や
+    # データ開始前の日は不健全とし、resume ガードが全履歴を再選択する連鎖を断つ。read_tail の
+    # 構造検査（列数超過）を潜り抜けた意味的破損に対する多重防御（列数一致でも date だけ壊れる
+    # 経路を塞ぐ）。
+    if pd.Timestamp(last) < _M1_MIN_PLAUSIBLE_DATE:
         return False
     if any(c not in tail.columns for c in _OHLCV_COLUMNS):
         return False
     return not bool(tail.iloc[-1][_OHLCV_COLUMNS].isna().any())
+
+
+def _existing_csv_header(path: Path) -> "list[str] | None":
+    """既存 CSV の先頭行（ヘッダ）を列名リストで返す。不在/空は ``None``（追記は新規扱い）。
+
+    追記のヘッダ整合契約の照合面。全読みせず先頭 1 行だけ読む（メモリ有界）。
+    """
+    p = Path(path)
+    if not p.is_file() or p.stat().st_size == 0:
+        return None
+    with open(p, "r", encoding="utf-8") as fh:
+        first = fh.readline()
+    first = first.strip()
+    return first.split(",") if first else None
+
+
+def _assert_append_header_matches(path: Path, new_value_columns: "list[str]") -> None:
+    """追記行の列（date + 値列）が既存ヘッダと一致することを保証する（ISSUE-455・ラガー遮断）。
+
+    up/dn の任意列が「本体だけ増えてヘッダは据え置き」になると、6 列ヘッダの下に 8 フィールド行が
+    積まれ、後続の read_tail が列をずらして date へ価格を入れ 1970 誤読→全再追記を招く。追記の
+    入口で列の食い違いを検出したら **拒否（ValueError）** し、呼び出し側の全再構築（原子的・
+    ヘッダごと書き直し）へ回すことで、黙って乖離した CSV を育てない。既存ヘッダが無い（新規）
+    場合は照合しない。
+    """
+    existing = _existing_csv_header(path)
+    if existing is None:
+        return
+    expected = [_HEADER[0], *new_value_columns]
+    if existing != expected:
+        raise ValueError(
+            f"CSV ヘッダ不一致（{path}）: 既存ヘッダ {existing} に対し追記行の列は {expected}。"
+            "黙って列数の乖離した CSV を育てないため追記を拒否し全再構築へ回す（ISSUE-455）。"
+        )
 
 
 def _append_m1_csv(m1_new: pd.DataFrame, path: Path) -> None:
@@ -466,6 +514,7 @@ def _append_m1_csv(m1_new: pd.DataFrame, path: Path) -> None:
       - 読み手だけ: torn 行が末尾以外に現れる経路（複数追記の交錯）を救えない
     """
     out = _format_m1_for_csv(m1_new)
+    _assert_append_header_matches(Path(path), list(out.columns))  # ラガー遮断（ISSUE-455）。
     text = out.to_csv(header=False, index_label=_HEADER[0])
     with open(Path(path), "a", newline="", encoding="utf-8") as fh:
         fh.write(text)
@@ -501,6 +550,8 @@ def append_m1_rows(m1: pd.DataFrame, path: Any) -> int:
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     started = out_path.is_file() and out_path.stat().st_size > 0
+    if started:
+        _assert_append_header_matches(out_path, list(formatted.columns))  # ラガー遮断（ISSUE-455）。
     text = formatted.to_csv(
         header=False if started else list(formatted.columns), index_label=_HEADER[0]
     )
@@ -538,9 +589,15 @@ def append_m1_from_ticks(
     """
     _validate_ref(ref)
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
-    tail = _read_last_m1_row(out_path)
+    try:
+        tail = _read_last_m1_row(out_path)
+    except ValueError:
+        # 既存 CSV の tail が構造破損（列数超過＝ISSUE-455 の 8 列化 tail 等）で read_tail が
+        # Fail-Stop した。watch をクラッシュさせず、原子的全構築へフォールバックして自己修復する
+        # （症状回避ではなく、壊れた素材を正しい素材で置き換える根本修復）。
+        tail = None
     if tail is None or not _is_healthy_m1_row(tail):
-        # 初回（M1 不在/空）or 末尾 torn 行 → 原子的全構築で（再）生成し自己修復。
+        # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
         return build_m1_from_ticks(
             start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
             price_basis=price_basis,
@@ -569,7 +626,15 @@ def append_m1_from_ticks(
     m1_new = _drop_forming_bars(m1_new, until)  # 形成中分バー（>= until）を確定値として書かない。
     if m1_new.empty:
         return out_path
-    _append_m1_csv(m1_new, out_path)
+    try:
+        _append_m1_csv(m1_new, out_path)
+    except ValueError:
+        # 既存ヘッダと追記行の列が食い違う（旧 6 列 CSV に up/dn 付き 8 列を積もうとした等）。
+        # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
+        return build_m1_from_ticks(
+            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
+            price_basis=price_basis,
+        )
     return out_path
 
 

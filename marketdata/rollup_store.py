@@ -107,7 +107,7 @@ def read(ref: str, tf: str) -> pd.DataFrame:
 def _read_tail_df(csv_path: Path) -> pd.DataFrame:
     """ロールアップ CSV の末尾 ``_ROLLUP_TAIL_ROWS`` 行だけを逆シークで読む（全件読みしない）。
 
-    ``tail_reader.read_tail`` は ``date`` を datetime index へ解決し loader 互換の
+    ``tail_reader.read_tail`` は date 列を datetime index へ解決し loader 互換の
     ``open/high/low/close/volume`` 列を返す（全件 loader 読みと末尾域で index/値一致）。
     """
     return tail_reader.read_tail(csv_path, _ROLLUP_TAIL_ROWS)
