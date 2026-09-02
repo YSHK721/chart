@@ -1,7 +1,7 @@
 """A-SettingsIniValidator: Tester Settings の受付検証（:class:`SettingsValidationPort` 実装）。
 
 責務（SRP）: **翻訳だけ**。設定規則（B〜Q）は 1 つも持たない。検証の実体は
-`framework/tester_settings/loader.tester_settings_from_mapping`（規則全通の単一ソース）で
+framework/tester_settings/loader.py の tester_settings_from_mapping（規則全通の単一ソース）で
 あり、本クラスはその `SettingsError` を受付拒否の語彙（`JobSubmissionInvalidError`＝
 adapter が 400 へ翻訳する例外）へ写すだけである。
 
@@ -12,7 +12,7 @@ adapter が 400 へ翻訳する例外）へ写すだけである。
 `sim_ui/tests/unit/test_settings_ini_validator_injection.py` が AST で強制する。
 
 なぜ委譲か（複製禁止・設計 §18.3）: 受付側に条件表を書くと検証が 2 実装になり、規則の
-改訂に片方だけが追随する。実行段（`run_job` → `tester_settings_from_mapping`）と受付段が
+改訂に片方だけが追随する。実行段（run_job → tester_settings_from_mapping）と受付段が
 **同じ実体**を通ることで、「受付は通ったのに実行だけ落ちる」という遅い失敗も同時に消える。
 
 なぜ生トークンを受けるか: `.ini` ファイルや型付き JSON DTO を境界に置くと、BOM / CRLF の
@@ -48,7 +48,7 @@ class SettingsIniValidator(SettingsValidationPort):
 
     `validate_mapping` は `(tester: dict, inputs: list) -> Any` で、規則違反を
     :class:`SettingsError` で送出する関数である（本番の束縛は
-    `framework/tester_settings.tester_settings_from_mapping`）。
+    framework/tester_settings の tester_settings_from_mapping）。
 
     **既定値を置かない理由**（ISSUE-479 F-5）: 具象を既定値で持つと adapter が
     framework を module-level import することになり、simulator 本番で唯一の

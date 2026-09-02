@@ -145,7 +145,7 @@ def test_tools_declaration_matches_this_test_suite():
 def test_keep_last_rule_is_not_reimplemented_in_tools():
     """「同一キーの最終出現を採る」規則が tools に第 2 定義として存在しない。
 
-    唯一源は ``marketdata.keep_last``（依存ゼロの中立核）。tools 側は委譲だけを持つ。
+    唯一源は marketdata/keep_last.py（依存ゼロの中立核）。tools 側は委譲だけを持つ。
     かつては ``tools/measure/issue449/probe_forming_long.py`` が
     ``drop_duplicates(subset=["date"], keep="last")`` を自前で書いており、
     走査が ``tools`` 直下**非再帰**だったため永久に検出されなかった（ISSUE-479 F-7c）。

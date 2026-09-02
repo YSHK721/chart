@@ -12,7 +12,7 @@
     既定値を置くと「注入し忘れても動く」ため、逆流が黙って復活する。
 
 翻訳規律は 1 文字も変えない:
-    ``SettingsError`` **だけ**を ``JobSubmissionInvalidError`` へ写し、診断値は
+    SettingsError **だけ**を JobSubmissionInvalidError へ写し、診断値は
     ``rule_id → error_id → key → value`` の順で ``k=v`` を ``・`` 連結する。
 
 計算量検定（絶対命令 2026-08-28）: ``validate()`` 1 回あたりの検証発行は 1 回

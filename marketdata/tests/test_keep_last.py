@@ -87,15 +87,21 @@ def test_keep_last_module_has_no_imports() -> None:
     )
 
 
-def test_keep_last_rule_has_no_second_implementation_in_production_code() -> None:
-    """keep-last 規則の実体が権威モジュール以外に存在しない（複製の再発を遮断）。"""
-    # Arrange / Act
+def _production_offenders() -> "list[str]":
+    """権威モジュール以外で keep-last 規則を再実装している箇所を列挙する。"""
     offenders: "list[str]" = []
     for path in _iter_sources():
         if path == _AUTHORITY:
             continue
         for hit in _keep_last_calls(path.read_text(encoding="utf-8")):
             offenders.append(f"{path.relative_to(_ROOT)}:{hit}")
+    return offenders
+
+
+def test_keep_last_rule_has_no_second_implementation_in_production_code() -> None:
+    """keep-last 規則の実体が権威モジュール以外に存在しない（複製の再発を遮断）。"""
+    # Arrange / Act
+    offenders = _production_offenders()
     # Assert
     assert offenders == [], (
         "keep-last 規則が権威モジュール外で再実装されています:\n  " + "\n  ".join(offenders)

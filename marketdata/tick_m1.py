@@ -244,7 +244,7 @@ def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
     「厳密増加 time」不変条件違反で candlestick 描画を毎フレーム "Value is null" で落とす
     （実測: 1m 切替で 31 秒フリーズ）。5m 以上は resample が融合するため露見せず 1m のみ発症する。
     本 dedupe を build/append の concat 直後（sort 済み）に適用し、素材段で分一意を保証する
-    （後勝ち＝最新集計を採用）。正常データは ``has_duplicates`` が偽で同一オブジェクトを返す＝no-op。
+    （後勝ち＝最新集計を採用）。正常データは has_duplicates が偽で同一オブジェクトを返す＝no-op。
 
     keep-last の規則そのものは :mod:`marketdata.keep_last`（唯一の実体）へ委譲する。かつては
     同じ式が repo 内 5 箇所へ手書き複製されていた（ISSUE-479 F-6）。
