@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""dedupe_tick_m1 — 8 重連結した ``jp225_tick_m1.csv`` を date で重複除去する修復スクリプト（ISSUE-455）。
+"""dedupe_tick_m1 — 8 重連結した jp225_tick_m1.csv を date で重複除去する修復スクリプト（ISSUE-455）。
 
-ISSUE-455 で ``jp225_tick_m1.csv`` は resume ガードの 1970 誤読により全履歴が毎分再追記され、
+ISSUE-455 で jp225_tick_m1.csv は resume ガードの 1970 誤読により全履歴が毎分再追記され、
 同一 date が最大 8 回連結した（3229 万行）。本スクリプトは date で重複除去（``keep="last"``＝
 最終出現＝up/dn 有りブロックを採る・``marketdata/dataset.py`` の重複畳み規則と同一）し、date 昇順・
 一様 8 列ヘッダ（``date,open,high,low,close,volume,up,dn``）で書き直す。

@@ -1,6 +1,6 @@
 """marketdata.tools.dedupe_tick_m1 の検証（ISSUE-455 データ修復・TDD Red→Green）。
 
-対象: 8 重連結した ``jp225_tick_m1.csv`` を date で重複除去（keep="last"＝up/dn 有りブロックを
+対象: 8 重連結した jp225_tick_m1.csv を date で重複除去（keep="last"＝up/dn 有りブロックを
 採る・dataset.py:83 と同規則）し、date 昇順・一様 8 列ヘッダで原子的に書き直す単体スクリプト。
 
 不変条件（合成データで固定）:
