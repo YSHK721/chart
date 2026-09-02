@@ -5,6 +5,12 @@
 あり、本クラスはその `SettingsError` を受付拒否の語彙（`JobSubmissionInvalidError`＝
 adapter が 400 へ翻訳する例外）へ写すだけである。
 
+依存の向き（ISSUE-479 F-5）: その実体を **import せず注入で受ける**。adapter が
+`simulator.framework` を import すると simulator 本番で唯一の inner → framework 辺になる。
+束縛は Composition Root（`sim_ui/main/composition_root_jobs.build_settings_validation_port`）
+の 1 箇所で行う。この向きは
+`sim_ui/tests/unit/test_settings_ini_validator_injection.py` が AST で強制する。
+
 なぜ委譲か（複製禁止・設計 §18.3）: 受付側に条件表を書くと検証が 2 実装になり、規則の
 改訂に片方だけが追随する。実行段（`run_job` → `tester_settings_from_mapping`）と受付段が
 **同じ実体**を通ることで、「受付は通ったのに実行だけ落ちる」という遅い失敗も同時に消える。
@@ -19,10 +25,9 @@ adapter が 400 へ翻訳する例外）へ写すだけである。
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from simulator.domain.tester_settings_exceptions import SettingsError
-from simulator.framework.tester_settings import tester_settings_from_mapping
 from simulator.sim_ui.usecase.job_models import JobSubmissionInvalidError
 from simulator.sim_ui.usecase.job_ports import SettingsValidationPort
 
@@ -39,11 +44,24 @@ def _diagnostics(error: SettingsError) -> str:
 
 
 class SettingsIniValidator(SettingsValidationPort):
-    """`tester_settings_from_mapping` へ委譲する :class:`SettingsValidationPort` 実装。"""
+    """注入された検証関数へ委譲する :class:`SettingsValidationPort` 実装。
+
+    `validate_mapping` は `(tester: dict, inputs: list) -> Any` で、規則違反を
+    :class:`SettingsError` で送出する関数である（本番の束縛は
+    `framework/tester_settings.tester_settings_from_mapping`）。
+
+    **既定値を置かない理由**（ISSUE-479 F-5）: 具象を既定値で持つと adapter が
+    framework を module-level import することになり、simulator 本番で唯一の
+    inner → framework 辺が復活する。既定値が無ければ「注入し忘れても動く」経路が存在せず、
+    束縛点は Composition Root 1 箇所に固定される（DIP）。
+    """
+
+    def __init__(self, validate_mapping: "Callable[[dict, list], Any]") -> None:
+        self._validate_mapping = validate_mapping
 
     def validate(self, tester: "Mapping[str, str]", inputs: "Sequence[str]") -> None:
         try:
-            tester_settings_from_mapping(dict(tester), list(inputs))
+            self._validate_mapping(dict(tester), list(inputs))
         except SettingsError as error:
             # `SettingsError` **だけ**を翻訳する。想定外の例外まで 400 に化けさせると、
             # 実装の壊れ（AttributeError 等）が「利用者の設定が悪い」に見えてしまう。
