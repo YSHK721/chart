@@ -43,7 +43,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from marketdata import outlier_policy
+from marketdata import keep_last, outlier_policy
 from marketdata.resample import (
     SESSION_TFS,
     TIMEFRAME_RULES,
@@ -152,9 +152,8 @@ def build_m1(lo: str, hi: str, symbol: str, *, with_dwell: bool = True) -> pd.Da
     frames = [_m1_with_pv(p, table) for p in paths]
     frames = [f for f in frames if len(f)]
     m1 = pd.concat(frames).sort_index(kind="stable")
-    if m1.index.has_duplicates:
-        m1 = m1[~m1.index.duplicated(keep="last")]
-    return m1
+    # keep-last の規則は marketdata.keep_last（唯一の実体・ISSUE-479 F-6）へ委譲する。
+    return keep_last.dedupe_index_keep_last(m1)
 
 
 def resample_with_pv(m1: pd.DataFrame, tf: str) -> pd.DataFrame:

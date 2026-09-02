@@ -16,6 +16,10 @@ import numpy as np
 import pandas as pd
 
 ROOT = os.environ.get("ISSUE449_ROOT", "/workspaces/app")
+sys.path.insert(0, ROOT)  # repo 根を解決（同ディレクトリの他 probe と同一様式）。
+
+from marketdata import keep_last  # noqa: E402  (sys.path 設定後に解決する)
+
 CSV = os.path.join(ROOT, "data/marketdata/jp225_tick_m1.csv")
 WINDOW = 500
 FRACS = [0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0]
@@ -34,7 +38,8 @@ def load():
     # 実体 CSV は同一履歴が 8 回連結されている（ISSUE-455）。時刻で一意化し、
     # 最後の出現（最新の取り込み）を採る。読むだけで CSV は変更しない。
     before = len(df)
-    df = df.drop_duplicates(subset=["date"], keep="last").sort_values("date")
+    # keep-last の規則は marketdata.keep_last（唯一の実体・ISSUE-479 F-6）へ委譲する。
+    df = keep_last.dedupe_column_keep_last(df, "date").sort_values("date")
     df = df.reset_index(drop=True)
     print(f"重複除去: {before:,} -> {len(df):,} 本")
     return df

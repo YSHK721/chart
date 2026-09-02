@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 # 出力の一様スキーマ（marketdata.csv_schema と同一列順の単一定義を参照）。
-from marketdata import csv_schema
+# keep-last（最終出現を採る）規則は marketdata.keep_last が唯一の実体（ISSUE-479 F-6）。
+from marketdata import csv_schema, keep_last
 
 HEADER_COLUMNS = [csv_schema.HEADER[0], *csv_schema.OHLCV_COLUMNS, *csv_schema.UPDOWN_COLUMNS]
 HEADER_LINE = ",".join(HEADER_COLUMNS)  # "date,open,high,low,close,volume,up,dn"
@@ -66,18 +67,34 @@ def _normalize(raw: str) -> Tuple[str, str]:
     return date, ",".join(fields)
 
 
-def _collect_last(path: Path) -> Tuple[Dict[str, str], int]:
-    """全データ行を走査し、date ごとの最終出現行（正規化済み）と総データ行数を返す。"""
-    last: Dict[str, str] = {}
-    total = 0
+def _data_rows(path: Path):
+    """データ行（ヘッダ・空行を除く）を ``(date_key, 正規化済み行)`` として **逐次**生成する。
+
+    全行を一旦配列へ載せない（3229 万行をメモリに置かない）。
+    """
     with open(path, "r", encoding="utf-8") as fh:
         fh.readline()  # ヘッダを読み飛ばす。
         for line in fh:
             if not line.strip():
                 continue
+            yield _normalize(line)
+
+
+def _collect_last(path: Path) -> Tuple[Dict[str, str], int]:
+    """全データ行を走査し、date ごとの最終出現行（正規化済み）と総データ行数を返す。
+
+    後勝ち（最終出現を採る）規則そのものは :mod:`marketdata.keep_last`（唯一の実体・
+    ISSUE-479 F-6）へ委譲する。走査は 1 パスのままで、保持量は一意 date 数に留まる。
+    """
+    total = 0
+
+    def _counted():
+        nonlocal total
+        for pair in _data_rows(path):
             total += 1
-            date, norm = _normalize(line)
-            last[date] = norm  # 後勝ち＝最終出現（keep="last"）。
+            yield pair
+
+    last: Dict[str, str] = keep_last.keep_last_by_key(_counted())
     return last, total
 
 
