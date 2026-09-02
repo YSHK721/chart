@@ -489,6 +489,42 @@ def test_an_existing_day_with_different_endpoints_stops_the_ingest(tmp_path):
     assert "2020-05-29" in str(excinfo.value)
 
 
+def test_an_unreadable_existing_day_is_reported_as_a_supply_error(tmp_path):
+    """TC-038 異常系: 既存日が parquet として読めない場合も Fail-Stop の型で止まる。
+
+    型が揃っていないと、壊れた台帳が別種の例外として上位へ抜け、Fail-Stop の扱い
+    （書込 0・報告）から外れる（TC-021 と同じ理由）。
+    """
+    # Arrange: 既存日を parquet でないバイト列に置き換える。
+    _first, data_dir = _ingest_may_and_june(tmp_path)
+    _existing_day_path(data_dir).write_bytes(b"not a parquet")
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError):
+        _reingest_may_and_june(tmp_path, data_dir)
+
+
+def test_dry_run_also_stops_on_a_mismatching_existing_day(tmp_path):
+    """TC-039 境界: ``--dry-run`` も食い違う既存日で止まる（事前確認として使えること）。
+
+    dry-run が「書かないから照合もしない」だと、本番実行で初めて中止することになる。
+    1 バイトも書かずに台帳の食い違いを見つけられることが、事前確認の値打ちである。
+    """
+    # Arrange
+    _first, data_dir = _ingest_may_and_june(tmp_path)
+    _overwrite_day_with([(_label_ms("2020.05.29 11:00:00.000"), 20000.0, 20009.0)], data_dir)
+    src = tmp_path / "src"
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError):
+        archive_ingest.ingest_months(
+            [src / "ticks_JP225_2020-05.zip", src / "ticks_JP225_2020-06.zip"],
+            symbol_token=_TOKEN,
+            data_dir=data_dir,
+            writer=archive_ingest.DryRunWriter(),
+        )
+
+
 # =====================================================================
 # D. 異常系 — Fail-Stop（部分的に書かれた台帳を残さない）
 # =====================================================================
