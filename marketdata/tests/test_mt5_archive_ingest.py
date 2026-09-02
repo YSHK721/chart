@@ -493,3 +493,27 @@ def test_the_real_may_2020_archive_ingests_to_the_measured_row_count(tmp_path):
     for column in ("bidPrice", "askPrice"):
         scaled = frame[column] * 10.0
         assert ((scaled - scaled.round()).abs() < 1e-6).all()
+
+
+def test_a_non_ascii_byte_is_reported_as_a_supply_error(tmp_path):
+    """TC-021 異常系: ASCII でないバイトも Fail-Stop の型（``Mt5SupplyError``）で止まる。
+
+    実測では全 76 か月が ASCII だが、型が揃っていないと「壊れた入力」が
+    別種の例外として上位へ抜け、Fail-Stop の扱い（書込 0・報告）から外れる。
+    """
+    # Arrange: 中身のバイト列を直接壊す（テキストでは表せない入力）。
+    src = tmp_path / "src"
+    src.mkdir()
+    path = src / "ticks_JP225_2020-05.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "ticks_JP225_2020-05.csv",
+            _HEADER.encode("ascii") + b"\n2020.05.29\t10:00:00.000\t2\xff0.0\t20009.0\t\t\n",
+        )
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError):
+        archive_ingest.ingest_months(
+            [path], symbol_token=_TOKEN, data_dir=tmp_path / "data"
+        )
+    assert _written_files(tmp_path) == []

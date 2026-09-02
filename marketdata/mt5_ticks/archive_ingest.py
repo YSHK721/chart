@@ -21,7 +21,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, Iterator, List, Optional, Protocol, Sequence, Tuple
 
 from marketdata import tick_m1
 from marketdata.mt5_ticks import ingest, journal, server_clock
@@ -125,7 +125,22 @@ def open_month_zip(zip_path: Any) -> "Iterator[Iterator[str]]":
                 f"月別アーカイブの中身が 1 ファイルではありません: {names!r}（{zip_path}）"
             )
         with archive.open(names[0]) as stream:
-            yield (line.decode("ascii") for line in stream)
+            yield _decoded(stream, source=str(zip_path))
+
+
+def _decoded(stream: "Iterable[bytes]", *, source: str) -> "Iterator[str]":
+    """バイト行を ASCII で読む。読めないバイトも Fail-Stop の型で報せる。
+
+    実測では全 76 か月が ASCII である。厳格に読むのは、文字集合が変わったことを
+    「置換文字で静かに通す」のではなく供給の変化として止めるためである。
+    """
+    for number, line in enumerate(stream, 1):
+        try:
+            yield line.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise Mt5SupplyError(
+                f"アーカイブの {number} 行目が ASCII ではありません（{source}）: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -148,6 +163,18 @@ class IngestReport:
     def rows_unaccounted(self) -> int:
         """行方の説明がつかない行数（0 でなければ捨てている）。"""
         return self.rows_read - self.rows_written - self.rows_skipped_existing
+
+
+class Writer(Protocol):
+    """日別 parquet と ``.empty`` の書き手（:func:`ingest_months` が依存する抽象）。
+
+    取り込みの側は「書いた / 書かなかった」を数えるだけで、**どう書くか**を知らない。
+    dry-run が「本番と同じだけ計算して捨てる」実装に化けないための境界である。
+    """
+
+    def write_day(self, rows: "Sequence[Row]", path: Path) -> None: ...
+
+    def write_marker(self, path: Path) -> None: ...
 
 
 class DayWriter:
@@ -189,7 +216,7 @@ def ingest_months(
     *,
     symbol_token: str,
     data_dir: Any,
-    writer: "Optional[DayWriter]" = None,
+    writer: "Optional[Writer]" = None,
 ) -> IngestReport:
     """月 zip を年月順に **1 パス**で読み、UTC 日別 parquet を書く。
 
