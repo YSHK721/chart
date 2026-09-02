@@ -77,6 +77,27 @@ def read_tail(csv_path: Path, n_rows: int) -> pd.DataFrame:
             empty = empty.set_index("date")
         return empty
 
+    # 列数整合の検査（ISSUE-455 再発防止・Fail-Stop）。データ行のフィールド数がヘッダ列数を
+    # **超える**と、pd.read_csv は余剰フィールドを index へ回して列を丸ごとずらし、date 列に
+    # 価格値（high）が入る。pd.to_datetime(価格) は数値をナノ秒と解釈して 1970-01-01 を返し、
+    # 下流の resume ガード（index > last_date）が全履歴を再選択して毎分 8 重連結を生む。
+    # 価格を黙って日付へ誤変換させないため、超過を検出したらここで止める（原因の除去）。
+    #
+    # 不足側（フィールド数 < ヘッダ列数）は raise しない: pandas は欠落する末尾列を NaN で
+    # 埋めるため date/OHLC はずれず、非原子追記の torn 行（クラッシュ途中）も末尾に up/dn を
+    # 持たない旧 6 列行も安全に読める。これらは NaN 検出（_is_healthy_m1_row）や loader 側の
+    # 末尾不完全行破棄で従来どおり自己修復する経路に委ねる（過剰な Fail-Stop で正常な旧行を
+    # 拒否しない）。危険なのは列がずれる超過側だけである。
+    n_header = header.count(b",") + 1
+    for ln in data_lines:
+        n_fields = ln.count(b",") + 1
+        if n_fields > n_header:
+            raise ValueError(
+                f"CSV 列数不整合（{csv_path}）: ヘッダ {n_header} 列に対しデータ行が "
+                f"{n_fields} フィールド（例: {ln.decode('utf-8', 'replace')!r}）。"
+                "価格を日付へ黙って誤変換させないため Fail-Stop する（ISSUE-455）。"
+            )
+
     csv_bytes = header + b"\n" + b"\n".join(data_lines) + b"\n"
     df = pd.read_csv(io.BytesIO(csv_bytes), nrows=n_rows)
     df["date"] = pd.to_datetime(df["date"])
