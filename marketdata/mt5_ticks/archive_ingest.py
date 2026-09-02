@@ -426,10 +426,17 @@ def ingest_months(
             days_written=days_written - month_days,
             rows_carried=len(day_rows),
         ))
+    # 観測が完結した区間は「切り落とした先頭日 と 最後に見た日 の間」である。
+    # 端の 2 日は書かないので、``.empty`` も置かない（観測が完結していないため）。
+    tail_day = day
     close_day(final=True)
 
     days_empty = _mark_empty_days(
-        seen_days, symbol_token=symbol_token, data_dir=data_dir, writer=writer
+        seen_days,
+        bounds=(head_day, tail_day),
+        symbol_token=symbol_token,
+        data_dir=data_dir,
+        writer=writer,
     )
 
     return IngestReport(
@@ -449,20 +456,30 @@ def ingest_months(
 
 
 def _mark_empty_days(
-    seen_days: "Sequence[dt.date]", *, symbol_token: str, data_dir: Any, writer: Any
+    seen_days: "Sequence[dt.date]",
+    *,
+    bounds: "Tuple[Optional[dt.date], Optional[dt.date]]",
+    symbol_token: str,
+    data_dir: Any,
+    writer: Any,
 ) -> int:
-    """走査した範囲の中で行が 1 つも無かった暦日に ``.empty`` を置き、その日数を返す。
+    """**観測が完結した区間**の中で行が 1 つも無かった暦日に ``.empty`` を置き、日数を返す。
 
-    範囲を「走査した最初の UTC 日 〜 最後の UTC 日」に限るのは、走査していない日に
-    ``.empty`` を置くと「取れていない」と「行が無い」が区別できなくなるためである
-    （段階 1 :func:`journal.finalize` と同じ判断）。
+    区間は ``bounds``（切り落とした先頭日, 持ち越した末尾日）の**両端を除く内側**である。
+    走査していない日に ``.empty`` を置くと「取れていない」と「行が無い」が区別できなくなる
+    （段階 1 :func:`journal.finalize` と同じ判断）ため、端の 2 日には何も置かない。
+
+    区間を「書いた日の最初〜最後」に狭めてはならない: 月 zip の先頭ラベルは前月末日
+    （例 ``2020.07.31`` 金）であり、月初が土日なら 8/1・8/2 は**書かれないが観測済み**の
+    0 行日である。狭めるとこの 2 日が「取れていない」側へ落ちる。
     """
-    if not seen_days:
+    head, tail = bounds
+    if head is None or tail is None:
         return 0
     present = set(seen_days)
     empty = 0
-    day = seen_days[0]
-    while day <= seen_days[-1]:
+    day = head + dt.timedelta(days=1)
+    while day < tail:
         if day not in present:
             empty += 1
             marker = tick_m1.day_empty_marker_path(

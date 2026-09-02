@@ -356,6 +356,44 @@ def test_a_calendar_day_without_rows_inside_the_range_gets_an_empty_marker(tmp_p
     assert report.days_empty == 1
 
 
+def test_days_between_the_dropped_head_and_the_first_written_day_are_marked_empty(tmp_path):
+    """TC-037 境界: 切り落とし日〜持ち越し日の**内側**は、書かれない日も含めて観測済み。
+
+    実コーパスで起きる形: 月 zip の先頭ラベルは前月末日（例 ``2020.07.31`` 金）であり、
+    月初が土日なら 8/1・8/2 は「走査したが行が 0」である。ここに ``.empty`` を置かないと、
+    その日は「取れていない」と見分けがつかなくなる。
+
+    範囲を「書いた日の最初〜最後」に狭めると、この 2 日が範囲から落ちる。正しい範囲は
+    **切り落とした先頭日と持ち越した末尾日の間（両端は除く）**である。両端は観測が
+    完結していないので、その 2 日には何も置かない。
+    """
+    # Arrange: 5/8（先頭）・5/11・5/12（書く）・5/13（持ち越し）。5/9・5/10 は 0 行。
+    src = tmp_path / "src"
+    src.mkdir()
+    path = _write_month(src, "2020-05", [
+        ("2020.05.08 10:00:00.000", 20000.0, 20009.0),
+        ("2020.05.11 10:00:00.000", 20010.0, 20019.0),
+        ("2020.05.12 10:00:00.000", 20020.0, 20029.0),
+        ("2020.05.13 10:00:00.000", 20030.0, 20039.0),
+    ])
+
+    # Act
+    report = archive_ingest.ingest_months(
+        [path], symbol_token=_TOKEN, data_dir=tmp_path / "data"
+    )
+
+    # Assert
+    def marker(day):
+        return tick_m1.day_empty_marker_path(day, symbol=_TOKEN, data_dir=tmp_path / "data")
+
+    assert marker(dt.date(2020, 5, 9)).is_file()
+    assert marker(dt.date(2020, 5, 10)).is_file()
+    assert report.days_empty == 2
+    # 端は観測が完結していない。何も置かない（「行が無い」と言い切らない）。
+    assert not marker(dt.date(2020, 5, 8)).exists()
+    assert not marker(dt.date(2020, 5, 13)).exists()
+
+
 def test_a_day_that_already_has_a_parquet_is_skipped_byte_for_byte(tmp_path):
     """TC-009 境界: 既存 parquet の日は**上書きしない**（内容・mtime とも不変）。"""
     # Arrange: 1 回目の取り込みで木を作る。
