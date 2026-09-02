@@ -13213,3 +13213,45 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 - **抜本策（未実施・要検討）**: (a) `PATHLIKE` と同様に一般的な列名語を BACKTICK 検出の対象外にする
   ホワイトリスト、または (b) 違反 ID から行番号を外す（ISSUE-467 の恒久策と統合）。
 - **関連**: ISSUE-467（行番号込み ID で Stop 無限再起動）・ISSUE-455（表面化の経路）。
+
+## ISSUE-479: [監査] リポジトリ全体 SOLID 実測監査 — 違反 57 件（重複統合後）で総合不合格
+
+- **ステータス**: OPEN（2026-09-02 起票。architecture-executor 7 並列による全域実測・全指摘 file:line＋実コード引用付き）
+- **重大度**: 高（依存循環 2 件・DIP 逆流・単一ソース破れを含む。LSP は全域 0 件）
+- **違反件数（領域別・延べ 61 → 領域間重複 4 件統合後 57）**:
+  - simulator 14（DIP 3・SRP 3・OCP 7・ISP 1）／indigators 12（DIP 2・OCP 6・SRP 4）
+  - marketdata＋tools 9 系統／dashboard_ui＋unified_ui 7／common 系 12／サブシステム間 7（循環 2 含む）
+  - prototype 群は別枠：隔離破れ 5 点（本体データ・fixture への書き込み 2、本体 shim の試作向け契約 1、
+    private API 依存 2）＋参照実装 `prototype_260626-01/contact_scan/` 不在。
+- **最重要の実測事実**:
+  1. 本番コードのみで閉じる循環 2 件 — `marketdata/mt5_ticks/ingest.py:31`→tools（外側例外
+     CaptureError が内側 API から漏出）／`tools/acquire_marketdata.py:85,91`↔
+     `indigators/indicator_ui/tools/export_jp225_m1.py:423`（後方互換 re-export が循環辺）。
+  2. DIP 逆流 — MP `compute→gateway` shim 2 本（`test_store_gateway_layering.py:90` の
+     `_REEXPORT_SHIMS` が自己免除・本番参照 0＝削除候補）／
+     `sim_ui/adapter/settings_ini_validator.py:25`→framework（禁止検査が存在しない）。
+  3. `common/__init__.py:28` の eager import で numpy が「stdlib のみ」宣言の
+     `replay_ui/domain/forming_bar.py` へ推移汚染（datawindow が同機構を理由に common を棄却済み）。
+  4. 単一ソース破れ — keep="last" 畳み規則が本番 4 実装／形成中バー差し替え規則が 3 実装
+     （`common/forming_window.py:8` の「両アプリ単一実体」宣言が実測で不成立）。
+  5. SRP 大物 — `run_backtest.py` に bar/tick 2 エンジン計 798 行並存・
+     `reach_sheet_controller.py` 5 責務 660 行・`chart_renderer.js` 6 アクター 1799 行。
+  6. OCP — 時間足派生が台帳外リテラル 5 箇所（`tf_ledger.py:19` の宣言と矛盾）・
+     `unified_root.js` 第 5 モード追加に 4 箇所同時改変・fitter 列挙 factory ほか。
+  7. sys.path 越境 本番 10 箇所＋dashboard_ui→simulator 私有 `_indicator_ui_bridge` 経由の
+     indigators 依存（bridge 所有者の移転は要承認）。
+  8. symlink 実測確定 — 追跡 146 本・simulator JS 242 中 113 本は symlink（複製指摘は不成立）・
+     prototype_260626-01/web/js 22 本のみ実複製。
+- **根本原因（違反の共通因子）**: 機械的検査の非対称。JS の import 方向検定 0 件／
+  `test_layer_dependency_direction.py:68` は `simulator.main` のみ禁止（adapter→framework 未禁止）／
+  `test_replay_purity.py` は AST のみで推移依存を不検出（contact_scan 側には subprocess 実行段あり）／
+  `_REEXPORT_SHIMS` 免除行／`test_tools_composition_declaration.py:25` の非再帰 glob で 23 ファイル対象外。
+- **抜本的解決（着手順・各段階可逆）**:
+  1. 検査の対称化（既存改変ゼロの加法のみ）: replay purity へ実行段追加・層順序表の一般化・
+     JS 方向検定新設・shim 免除撤去・rglob 化・common/common_view へ依存純度検査新設。
+  2. `sanitize_path_component` を marketdata へ移設（関数 1 本で循環 C-1＋派生 3 ノード循環 2 本が消える）。
+  3. `common/__init__.py` の PEP 562 遅延化（`marketdata/__init__.py:53` に同型先例）。
+  4. re-export 撤去＋素材化ロジックの marketdata 移設で循環 C-2 解消（`dataset.py` byte 一致移設の前例あり）。
+  5. SRP/ISP 大物（EvaluationSchedule 抽出・CausalComputePort 3 分割等）と bridge 所有者移転は
+     個別承認のうえ別 Issue 化。
+- **関連**: ISSUE-091（側方依存を common 抽出で解消した前例）・ISSUE-286・ISSUE-405（文字列検査の取り逃し実績）・ISSUE-455。
