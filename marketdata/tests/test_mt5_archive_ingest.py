@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import zipfile
 from pathlib import Path
@@ -22,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from marketdata import tick_m1
-from marketdata.mt5_ticks import archive_ingest, ingest
+from marketdata.mt5_ticks import archive_ingest, ingest, journal
 from marketdata.mt5_ticks.fakes import CallSpy
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
@@ -113,13 +114,19 @@ def test_parse_lines_fails_stop_on_an_unparsable_line_with_its_number():
 
 #: 月末ラベル 17:59/18:00 で切れる実ファイルの並びを最小化した 2 か月分。
 #: UTC 日 ``2020-05-31`` が **2 ファイルに跨る**（実測 T8: 53/75 境界で起きる）。
+#:
+#: 両端に「捨て日」を 1 日ずつ置いてあるのは、検査したい日（5/29・5/31・6/1）を走査範囲の
+#: **内側**へ入れるためである。範囲の端の日は不完全でありうるので書かれない（TC-022/023）。
+#: 端に置いたままだと、検定が「書かれない日」を読もうとして題意を失う。
 _MAY = [
+    ("2020.05.28 10:00:00.000", 19990.0, 19999.0),   # 走査の先頭 UTC 日＝切り落とし
     ("2020.05.29 10:00:00.000", 20000.0, 20009.0),
     ("2020.05.31 17:59:59.900", 20010.0, 20019.0),
 ]
 _JUNE = [
     ("2020.05.31 18:00:00.100", 20020.0, 20029.0),
     ("2020.06.01 09:00:00.000", 20030.0, 20039.0),
+    ("2020.06.02 09:00:00.000", 20040.0, 20049.0),   # 走査の末尾 UTC 日＝持ち越し
 ]
 
 
@@ -172,7 +179,11 @@ def test_winter_labels_convert_with_plus_two_hours(tmp_path):
     # Arrange
     src = tmp_path / "src"
     src.mkdir()
-    path = _write_month(src, "2021-01", [("2020.12.31 17:00:00.000", 27000.0, 27010.0)])
+    path = _write_month(src, "2021-01", [
+        ("2020.12.30 17:00:00.000", 26900.0, 26910.0),   # 先頭＝切り落とし
+        ("2020.12.31 17:00:00.000", 27000.0, 27010.0),   # 内側＝書かれる日
+        ("2021.01.04 17:00:00.000", 27100.0, 27110.0),   # 末尾＝持ち越し
+    ])
 
     # Act
     archive_ingest.ingest_months(
@@ -189,12 +200,135 @@ def test_report_accounts_for_every_row_that_was_read(tmp_path):
     # Arrange / Act
     report, _data_dir = _ingest_may_and_june(tmp_path)
 
-    # Assert
+    # Assert: 書いた 4 行 + 切り落とし 1 行 + 持ち越し 1 行 = 読んだ 6 行。
     assert report.months == ("2020-05", "2020-06")
-    assert report.rows_read == 4
+    assert report.rows_read == 6
     assert report.rows_written == 4
     assert report.rows_skipped_existing == 0
     assert report.days_written == 3
+    assert report.rows_head_dropped == 1
+    assert report.rows_carried == 1
+    assert report.rows_unaccounted == 0
+
+
+# =====================================================================
+# B-2. 範囲端 — 不完全な UTC 日を「完成品」として書かない（工程 5 🔴-1）
+#
+# 走査範囲の端にある UTC 日は、**その日の全行を見たとは言えない**。
+#   - 末尾: 次の UTC 日の行が来ていない＝まだ増えるかもしれない。
+#   - 先頭: 先頭 zip は前月末日の途中から始まる（実測: 2020-05 の先頭ラベルは
+#     ``2020.04.30``）ため、その日の頭が欠けている可能性を排除できない。
+# 端の日を書いてしまうと、既存日スキップがその欠けを**恒久化**する（実測: 月分割実行で
+# 2020-06-30 が 4,173 行のまま凍結・一括なら 5,673 行）。
+# =====================================================================
+
+#: 1 か月 3 UTC 日（先頭 / 内側 / 末尾）。端の扱いだけを見るための最小形。
+_THREE_DAYS = [
+    ("2020.05.11 10:00:00.000", 20000.0, 20009.0),  # 走査の先頭 UTC 日
+    ("2020.05.12 10:00:00.000", 20010.0, 20019.0),  # 内側（唯一「閉じた」日）
+    ("2020.05.13 10:00:00.000", 20020.0, 20029.0),  # 末尾＝開いたまま
+]
+
+
+def _ingest_three_days(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    path = _write_month(src, "2020-05", _THREE_DAYS)
+    report = archive_ingest.ingest_months(
+        [path], symbol_token=_TOKEN, data_dir=tmp_path / "data"
+    )
+    return report, tmp_path / "data"
+
+
+def test_the_open_day_at_the_end_of_the_scan_is_carried_not_written(tmp_path):
+    """TC-022 境界: 走査終了時に開いている UTC 日は**書かず**持ち越しとして報告する。"""
+    # Arrange / Act
+    report, data_dir = _ingest_three_days(tmp_path)
+
+    # Assert: 末尾日は 1 バイトも書かれていない（欠けたまま凍結させない）。
+    assert not tick_m1.day_parquet_path(
+        dt.date(2020, 5, 13), symbol=_TOKEN, data_dir=data_dir
+    ).is_file()
+    assert report.days_carried == 1
+    assert report.rows_carried == 1
+
+
+def test_the_first_utc_day_of_the_scan_is_dropped_not_written(tmp_path):
+    """TC-023 境界: 走査全体の最初の UTC 日は**書かず**切り落としとして報告する。"""
+    # Arrange / Act
+    report, data_dir = _ingest_three_days(tmp_path)
+
+    # Assert: 先頭日は書かれず、内側の日だけが書かれる。
+    assert not tick_m1.day_parquet_path(
+        dt.date(2020, 5, 11), symbol=_TOKEN, data_dir=data_dir
+    ).is_file()
+    assert tick_m1.day_parquet_path(
+        dt.date(2020, 5, 12), symbol=_TOKEN, data_dir=data_dir
+    ).is_file()
+    assert report.head_dropped_day == dt.date(2020, 5, 11)
+    assert report.rows_head_dropped == 1
+    assert report.days_written == 1
+    # 読んだ行の行方は全部説明がつく（切り落とし・持ち越しも「行方」である）。
+    assert report.rows_unaccounted == 0
+
+
+def _written_days(data_dir):
+    """``data_dir`` の木に在る日別 parquet を ``{日: バイト列}`` で返す。"""
+    return {
+        p.parts[-4:-1]: p.read_bytes()
+        for p in tick_m1.day_parquet_files(
+            dt.date(2020, 4, 1), dt.date(2020, 7, 1), symbol=_TOKEN, data_dir=data_dir
+        )
+    }
+
+
+def test_splitting_the_run_by_month_never_freezes_a_partial_day(tmp_path):
+    """TC-024 同値: 月分割でも一括でも、書かれた日は**バイト等価**である。
+
+    是正前の欠陥（工程 5 🔴-1 の実測）:
+        月分割実行では月跨ぎの UTC 日が「その月にある行だけ」で書かれ、次の月の実行は
+        既存日スキップでそれを恒久化していた（2020-06-30 が 4,173 行で凍結・一括なら
+        5,673 行）。**中身の違う同名の日**が出来るのが欠陥の本体である。
+
+    集合として一致しない理由（レビュー指摘「同一の日集合」からの是正・2026-09-02 実測）:
+        月跨ぎの日は、前月の実行では「開いた日」・翌月の実行では「先頭日」であり、
+        どちらの実行でも完全な姿を持たない。「不完全な日を書かない」という規則の下では
+        **分割実行がその日を書けないことが正しい**。よって集合は一致せず、差は
+        「内部の月境界日」ちょうどになる。集合一致を要求すると、不完全な日を書けという
+        要求と同じになる（是正の目的そのものを打ち消す）。
+    """
+    # Arrange
+    src = tmp_path / "src"
+    src.mkdir()
+    may = _write_month(src, "2020-05", _MAY)
+    june = _write_month(src, "2020-06", _JUNE)
+    boundary = ("2020", "05", "31")
+
+    # Act: 一括 1 回 / 月ごとに 2 回。
+    bulk_dir = tmp_path / "bulk"
+    archive_ingest.ingest_months([may, june], symbol_token=_TOKEN, data_dir=bulk_dir)
+    split_dir = tmp_path / "split"
+    first = archive_ingest.ingest_months([may], symbol_token=_TOKEN, data_dir=split_dir)
+    second = archive_ingest.ingest_months([june], symbol_token=_TOKEN, data_dir=split_dir)
+
+    bulk, split = _written_days(bulk_dir), _written_days(split_dir)
+
+    # Assert 1: 両方に在る日は 1 バイトも違わない（部分的な日を凍結していない）。
+    assert {d: split[d] for d in split.keys() & bulk.keys()} == {
+        d: bulk[d] for d in split.keys() & bulk.keys()
+    }
+    # Assert 2: 分割が余計な日を作っていない。
+    assert split.keys() - bulk.keys() == set()
+    # Assert 3: 足りない日は「内部の月境界日」ちょうど（他の日は 1 つも落ちない）。
+    assert bulk.keys() - split.keys() == {boundary}
+    # Assert 4: その日は黙って消えたのではなく、両方の実行の報告に出ている。
+    #   持ち越した行 + 切り落とした行 = 一括で書かれたその日の行数（1 行も失われていない）。
+    assert first.days_carried == 1
+    assert second.head_dropped_day == dt.date(2020, 5, 31)
+    assert first.rows_carried + second.rows_head_dropped == len(
+        _read_day(dt.date(2020, 5, 31), bulk_dir)
+    )
+    assert first.rows_unaccounted == 0 and second.rows_unaccounted == 0
 
 
 # =====================================================================
@@ -202,8 +336,13 @@ def test_report_accounts_for_every_row_that_was_read(tmp_path):
 # =====================================================================
 
 def test_a_calendar_day_without_rows_inside_the_range_gets_an_empty_marker(tmp_path):
-    """TC-008 境界: 範囲内の 0 行日は ``.empty``。範囲の外には何も置かない。"""
-    # Arrange / Act: 5/29・5/31・6/1 に行があり、5/30（休場）だけ 0 行。
+    """TC-008 境界: **書いた**範囲内の 0 行日は ``.empty``。範囲の外には何も置かない。
+
+    範囲は「書いた日の最初〜最後」である。切り落とした先頭日・持ち越した末尾日を範囲に
+    含めると、書いていない日の周りに ``.empty`` を置くことになる（「取れていない」と
+    「行が無い」の区別が消える）。
+    """
+    # Arrange / Act: 5/29・5/31・6/1 を書き、5/30（休場）だけ 0 行。
     report, data_dir = _ingest_may_and_june(tmp_path)
 
     # Assert
@@ -211,6 +350,7 @@ def test_a_calendar_day_without_rows_inside_the_range_gets_an_empty_marker(tmp_p
         return tick_m1.day_empty_marker_path(day, symbol=_TOKEN, data_dir=data_dir)
 
     assert marker(dt.date(2020, 5, 30)).is_file()
+    # 5/28 は切り落とした先頭日、6/2 は持ち越した末尾日。どちらも書いた範囲の外。
     assert not marker(dt.date(2020, 5, 28)).exists()
     assert not marker(dt.date(2020, 6, 2)).exists()
     assert report.days_empty == 1
@@ -239,6 +379,76 @@ def test_a_day_that_already_has_a_parquet_is_skipped_byte_for_byte(tmp_path):
     assert report.rows_written == 0
     assert report.rows_skipped_existing == 4
     assert report.rows_unaccounted == 0
+
+
+# =====================================================================
+# C-2. 既存日スキップは**中身に依存する**（工程 5 🔴-2）
+#
+# 「在るからスキップ」は、既存が何であってもスキップする。壊れた日・欠けた日が在っても
+# 黙って通り、以後の実行がそれを恒久化する。スキップしてよいのは**同じものが在るとき**
+# だけであり、違うものが在るのは供給か台帳の異常なので Fail-Stop にする。
+# =====================================================================
+
+def _existing_day_path(data_dir):
+    return tick_m1.day_parquet_path(dt.date(2020, 5, 29), symbol=_TOKEN, data_dir=data_dir)
+
+
+def _reingest_may_and_june(tmp_path, data_dir):
+    src = tmp_path / "src"
+    return archive_ingest.ingest_months(
+        [src / "ticks_JP225_2020-05.zip", src / "ticks_JP225_2020-06.zip"],
+        symbol_token=_TOKEN,
+        data_dir=data_dir,
+    )
+
+
+def _overwrite_day_with(rows, data_dir):
+    """既存日を ``rows`` の内容で置き換える（検定用の「食い違う既存」を作る）。"""
+    journal.write_parquet_atomically(ingest.rows_to_frame(rows), _existing_day_path(data_dir))
+
+
+def test_an_existing_day_with_the_same_content_is_skipped(tmp_path):
+    """TC-025 正常系: 既存日の中身が入力と一致していればスキップする（従来どおり）。"""
+    # Arrange
+    _first, data_dir = _ingest_may_and_june(tmp_path)
+
+    # Act
+    report = _reingest_may_and_june(tmp_path, data_dir)
+
+    # Assert
+    assert report.days_skipped_existing == 3
+    assert report.rows_written == 0
+    assert report.rows_unaccounted == 0
+
+
+def test_an_existing_day_with_a_different_row_count_stops_the_ingest(tmp_path):
+    """TC-026 異常系: 既存日の**行数**が入力と違えば Fail-Stop（日と両方の行数を報せる）。"""
+    # Arrange: 5/29 の parquet を 2 行に差し替える（入力は 1 行）。
+    _first, data_dir = _ingest_may_and_june(tmp_path)
+    label = _label_ms("2020.05.29 10:00:00.000")
+    _overwrite_day_with([(label, 20000.0, 20009.0), (label + 1000, 20001.0, 20010.0)], data_dir)
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError) as excinfo:
+        _reingest_may_and_june(tmp_path, data_dir)
+    message = str(excinfo.value)
+    assert "2020-05-29" in message
+    assert "2" in message and "1" in message
+
+
+def test_an_existing_day_with_different_endpoints_stops_the_ingest(tmp_path):
+    """TC-027 異常系: 行数が同じでも**先頭 / 末尾 UTC ms** が違えば Fail-Stop。
+
+    行数だけの照合では、同じ本数で中身が入れ替わった日（別の時間帯の行）を通してしまう。
+    """
+    # Arrange: 行数は 1 のまま、時刻だけずらす。
+    _first, data_dir = _ingest_may_and_june(tmp_path)
+    _overwrite_day_with([(_label_ms("2020.05.29 11:00:00.000"), 20000.0, 20009.0)], data_dir)
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError) as excinfo:
+        _reingest_may_and_june(tmp_path, data_dir)
+    assert "2020-05-29" in str(excinfo.value)
 
 
 # =====================================================================
@@ -307,6 +517,58 @@ def test_a_non_positive_bid_stops_the_ingest_without_writing_anything(tmp_path):
     assert _written_files(tmp_path) == []
 
 
+def test_zips_of_different_pairs_stop_the_ingest(tmp_path):
+    """TC-028 異常系: 銘柄の違う zip が混ざっていれば Fail-Stop（1 つの木へ混ぜない）。"""
+    # Arrange: ファイル名の銘柄部が JP225 と USDJPY で食い違う。
+    src = tmp_path / "src"
+    src.mkdir()
+    jp = _write_month(src, "2020-05", _MAY)
+    other = src / "ticks_USDJPY_2020-06.zip"
+    with zipfile.ZipFile(other, "w") as archive:
+        archive.writestr("ticks_USDJPY_2020-06.csv", _HEADER + "\n")
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError) as excinfo:
+        archive_ingest.ingest_months(
+            [jp, other], symbol_token=_TOKEN, data_dir=tmp_path / "data"
+        )
+    assert "USDJPY" in str(excinfo.value)
+    assert _written_files(tmp_path) == []
+
+
+def test_a_zip_whose_pair_differs_from_the_token_stops_the_ingest(tmp_path):
+    """TC-029 異常系: zip の銘柄とトークンの銘柄部が違えば Fail-Stop。
+
+    ここが無いと、JP225 のアーカイブを USDJPY のトークンで指定して**別銘柄の木へ**
+    書き込める（工程 5 🔴-3: Dukascopy 木へ構造的に到達しうる経路）。
+    """
+    # Arrange
+    src = tmp_path / "src"
+    src.mkdir()
+    jp = _write_month(src, "2020-05", _MAY)
+    wrong_token = "USDJPY" + ingest.TOKEN_SEPARATOR + "OANDA-Japan-MT5-Live"
+
+    # Act / Assert
+    with pytest.raises(Mt5SupplyError) as excinfo:
+        archive_ingest.ingest_months(
+            [jp], symbol_token=wrong_token, data_dir=tmp_path / "data"
+        )
+    message = str(excinfo.value)
+    assert "JP225" in message and "USDJPY" in message
+    assert _written_files(tmp_path) == []
+
+
+def test_the_pair_is_read_from_the_archive_file_name(tmp_path):
+    """TC-030 正常系: ``ticks_<PAIR>_YYYY-MM.zip`` から銘柄を読む（読む場所は 1 つ）。"""
+    # Arrange
+    src = tmp_path / "src"
+    src.mkdir()
+    path = _write_month(src, "2020-05", _MAY)
+
+    # Act / Assert
+    assert archive_ingest.pair_of(path) == "JP225"
+
+
 def test_a_file_name_without_a_month_stops_the_ingest(tmp_path):
     """TC-013 異常系: ``*_YYYY-MM.zip`` でない入力は Fail-Stop（読む順序を決められない）。"""
     # Arrange
@@ -330,17 +592,28 @@ def test_a_file_name_without_a_month_stops_the_ingest(tmp_path):
 # （ISSUE-450）。ここで固定するのは回数そのものではなく **無駄の不在**である。
 # =====================================================================
 
+#: 1 か月ぶんの行数（``_months_for`` の 1 か月＝ 4 UTC 日・5 行）。
+_ROWS_PER_MONTH = 5
+
+
 def _months_for(tmp_path, count):
-    """``count`` か月ぶんの入力（各月 2 日・1 日 2 行）。"""
+    """``count`` か月ぶんの入力（各月 4 日・計 5 行）。
+
+    4 日にしてあるのは、範囲の端（先頭 1 日・末尾 1 日）が書かれないためである。
+    2 日だと 1 か月の実行で書かれる日が 0 になり、``spy.total == rows_written`` が
+    ``0 == 0`` の空虚な等式になる（無駄の不在を何も表明しなくなる）。
+    """
     src = tmp_path / "src"
     src.mkdir()
     paths = []
     for index in range(count):
         month = 5 + index
         paths.append(_write_month(src, f"2020-{month:02d}", [
+            (f"2020.{month:02d}.09 10:00:00.000", 19999.0, 20008.0),
             (f"2020.{month:02d}.10 10:00:00.000", 20000.0, 20009.0),
             (f"2020.{month:02d}.10 10:00:01.000", 20001.0, 20010.0),
             (f"2020.{month:02d}.11 10:00:00.000", 20002.0, 20011.0),
+            (f"2020.{month:02d}.12 10:00:00.000", 20003.0, 20012.0),
         ]))
     return paths
 
@@ -380,6 +653,85 @@ def test_each_month_archive_is_opened_exactly_once(tmp_path, monkeypatch, months
     assert spy.count == months
 
 
+class _RecordingWriter:
+    """書かずに「いつ・何行で書こうとしたか」だけを記録する writer。"""
+
+    def __init__(self, counter):
+        self._counter = counter
+        #: ``(その時点で読んだ行数, 書こうとした行数)`` の並び。
+        self.calls = []
+
+    def write_day(self, rows, path):
+        self.calls.append((self._counter["lines"], len(rows)))
+
+    def write_marker(self, path):
+        return None
+
+
+def _one_month_of(tmp_path, days, rows_per_day):
+    """1 か月 = ``days`` UTC 日 × ``rows_per_day`` 行の zip を 1 本作る。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    specs = [
+        (f"2020.05.{day + 5:02d} 10:00:{row:02d}.000", 20000.0 + row, 20009.0 + row)
+        for day in range(days)
+        for row in range(rows_per_day)
+    ]
+    return _write_month(src, "2020-05", specs), len(specs) + 1  # +1 はヘッダ行
+
+
+def _count_lines_through(monkeypatch, counter):
+    """``open_month_zip`` を「流れた行を数える」ラッパへ差し替える。"""
+    import contextlib as _contextlib
+
+    real = archive_ingest.open_month_zip
+
+    @_contextlib.contextmanager
+    def counting(zip_path):
+        with real(zip_path) as lines:
+            def counted():
+                for line in lines:
+                    counter["lines"] += 1
+                    yield line
+            yield counted()
+
+    monkeypatch.setattr(archive_ingest, "open_month_zip", counting)
+
+
+@pytest.mark.parametrize("days", [4, 8])
+def test_the_ingest_writes_days_while_still_reading_the_archive(tmp_path, monkeypatch, days):
+    """CX-e: 1 回の ``write_day`` が扱う行数は**入力の総行数に比例しない**（最大日行数で頭打ち）。
+
+    月 1 本は最大 474 万行ある。月を丸ごとリストへ載せる実装（``parse_lines``）でも
+    parquet の中身は同じになるため、**状態検証では原理的に落ちない**（ISSUE-450 と同型）。
+    ここで固定するのは回数ではなく「入力 total に比例して溜め込まない」という無駄の不在で、
+    行数 N / 2N の 2 点で同じ値になることをもってオーダーを表明する。
+    """
+    # Arrange
+    rows_per_day = 3
+    counter = {"lines": 0}
+    path, total_lines = _one_month_of(tmp_path, days, rows_per_day)
+    _count_lines_through(monkeypatch, counter)
+    writer = _RecordingWriter(counter)
+
+    # Act
+    archive_ingest.ingest_months(
+        [path], symbol_token=_TOKEN, data_dir=tmp_path / "data", writer=writer
+    )
+
+    # Assert 1: 最初の書込は**まだ読み終わっていない**時点で起きる（溜めてから書いていない）。
+    assert writer.calls, "1 日も書こうとしていません（検定の前提が壊れています）。"
+    first_write_at = writer.calls[0][0]
+    assert first_write_at < total_lines
+
+    # Assert 2: その時点は入力の総行数に依存しない定数である
+    #   （ヘッダ 1 + 切り落とす先頭日 + 書く最初の日 + 次の日の 1 行目）。
+    assert first_write_at == 2 * rows_per_day + 2
+
+    # Assert 3: 1 回の書込が扱う行数も入力 total ではなく「1 日ぶん」で頭打ちになる。
+    assert max(rows for _at, rows in writer.calls) == rows_per_day
+
+
 def test_dry_run_writes_nothing_and_builds_no_frames(tmp_path, monkeypatch):
     """CX-c: ``--dry-run`` は 1 バイトも書かず、捨てるためのフレームも作らない。"""
     # Arrange
@@ -396,10 +748,79 @@ def test_dry_run_writes_nothing_and_builds_no_frames(tmp_path, monkeypatch):
     )
 
     # Assert: 判断（何日・何行を書くか）は返るが、実体は 1 つも作られない。
-    assert report.rows_read == 6
-    assert report.days_written == 4
+    assert report.rows_read == 2 * _ROWS_PER_MONTH
+    assert report.days_written == 6          # 8 UTC 日 − 先頭 1 − 末尾 1
     assert spy.count == 0
     assert not (tmp_path / "data").exists()
+
+
+# =====================================================================
+# E-2. 原子書込は 1 つの公開名（工程 5 🟡-4）
+#
+# 日次確定（``journal.finalize``）とアーカイブ取り込みは別経路だが、**同じ原子置換**を
+# 使わなければならない。片方が private 名を跨いで掴んでいると、所有者側の改名・改修が
+# 沈黙のうちに他方を壊す（private は「外から呼ばれない」という約束である）。
+# =====================================================================
+
+_PRODUCTION_SOURCES = (
+    Path(archive_ingest.__file__),
+    Path(journal.__file__),
+)
+
+
+def _references_to(source: Path, symbol: str):
+    """``source`` の AST に現れる ``symbol`` の参照を ``(ファイル名, 行)`` で列挙する。"""
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    named = [
+        node for node in ast.walk(tree)
+        if (isinstance(node, ast.Attribute) and node.attr == symbol)
+        or (isinstance(node, ast.Name) and node.id == symbol)
+    ]
+    return [(source.name, node.lineno) for node in named]
+
+
+def test_the_atomic_parquet_write_is_reached_through_a_public_name_only():
+    """TC-031: 原子書込は公開名で呼ばれ、private 名の参照が 0 である（AST）。
+
+    grep ではなく AST で見るのは、docstring や注釈の中の綴りを参照と数えないためである。
+    """
+    # Arrange
+    private_refs = [
+        ref
+        for source in _PRODUCTION_SOURCES
+        for ref in _references_to(source, "_write_parquet_atomically")
+    ]
+
+    # Act
+    public = getattr(journal, "write_parquet_atomically", None)
+
+    # Assert
+    assert callable(public), "原子書込の公開名がありません（journal 側の公開が未了）。"
+    assert private_refs == [], f"private 名の参照が残っています: {private_refs}"
+
+
+def test_both_finalize_and_the_archive_ingest_call_the_same_public_name():
+    """TC-031b: ``journal.finalize`` と ``archive_ingest`` の双方が同じ公開名を呼ぶ。
+
+    「公開名を足したが片方は private を呼び続けている」を許さない（名前が 2 つある状態は
+    単一ソースではない）。
+    """
+    # Arrange
+    def calls_public(source: Path) -> bool:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "write_parquet_atomically":
+                return True
+            if isinstance(func, ast.Name) and func.id == "write_parquet_atomically":
+                return True
+        return False
+
+    # Act / Assert
+    assert calls_public(Path(journal.__file__))
+    assert calls_public(Path(archive_ingest.__file__))
 
 
 # =====================================================================
@@ -456,11 +877,16 @@ _REAL_ZIP = Path(__file__).resolve().parents[2] / "data" / "test" / "ticks_JP225
 
 @pytest.mark.skipif(not _REAL_ZIP.is_file(), reason=f"実アーカイブが無い: {_REAL_ZIP}")
 def test_the_real_may_2020_archive_ingests_to_the_measured_row_count(tmp_path):
-    """TC-015 スモーク: 実ファイル 1 件を tmp_path へ取り込み、ISSUE-447 の実測値と一致する。
+    """TC-015 スモーク: 実ファイル 1 件を tmp_path へ取り込み、実測値と一致する。
 
     ISSUE-447 T1b の「225,381 行 / 22 日」のうち **22 日はラベル日**（``<DATE>`` 列）であり、
     UTC 日 partition の数ではない。ラベル 00:00〜02:59 は UTC では前日に落ちるため、
-    UTC 日は 26（+ 範囲内の 0 行日 4）になる。両方を固定して取り違えを防ぐ。
+    UTC 日は 26 になる。両方を固定して取り違えを防ぐ。
+
+    26 UTC 日のうち**書かれるのは 24 日**である（2026-09-02 実測）:
+        先頭 ``2020-04-30`` は 9,289 行しかない部分日（月 zip は前月末日の途中から始まる）、
+        末尾 ``2020-05-29`` は 9,712 行で開いたまま（次の UTC 日の行は 6 月 zip にある）。
+        どちらも「完成品」ではないので書かない（TC-022 / TC-023）。
     """
     # Arrange
     data_dir = tmp_path / "data"
@@ -473,12 +899,16 @@ def test_the_real_may_2020_archive_ingests_to_the_measured_row_count(tmp_path):
         [_REAL_ZIP], symbol_token=_TOKEN, data_dir=data_dir
     )
 
-    # Assert: 行数・日数
+    # Assert: 行数・日数（すべて 2026-09-02 の実測値）
     assert report.rows_read == 225381          # ISSUE-447 実測値
     assert len(label_days) == 22               # ISSUE-447 実測値（ラベル日）
-    assert report.rows_written == 225381
+    assert report.head_dropped_day == dt.date(2020, 4, 30)
+    assert report.rows_head_dropped == 9289
+    assert report.days_carried == 1
+    assert report.rows_carried == 9712         # 末尾 UTC 日 2020-05-29
+    assert report.rows_written == 225381 - 9289 - 9712
     assert report.rows_unaccounted == 0
-    assert report.days_written == 26           # UTC 日 partition
+    assert report.days_written == 24           # UTC 日 26 − 先頭 1 − 末尾 1
     assert report.days_empty == 4
 
     # Assert: 木に入った行の総数と、全行が 0.1 格子に載ること（T1b: 225,381/225,381）。
@@ -487,9 +917,9 @@ def test_the_real_may_2020_archive_ingests_to_the_measured_row_count(tmp_path):
     files = tick_m1.day_parquet_files(
         dt.date(2020, 4, 1), dt.date(2020, 6, 30), symbol=_TOKEN, data_dir=data_dir
     )
-    assert len(files) == 26
+    assert len(files) == 24
     frame = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
-    assert len(frame) == 225381
+    assert len(frame) == report.rows_written
     for column in ("bidPrice", "askPrice"):
         scaled = frame[column] * 10.0
         assert ((scaled - scaled.round()).abs() < 1e-6).all()

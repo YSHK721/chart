@@ -128,8 +128,14 @@ def is_finalized(day: Any, *, symbol: str, data_dir: Any) -> bool:
     )
 
 
-def _write_parquet_atomically(frame: pd.DataFrame, path: Path) -> None:
-    """tmp→``os.replace`` で確定パスを「完全な新ファイル」か「旧ファイル」に限定する。"""
+def write_parquet_atomically(frame: pd.DataFrame, path: Path) -> None:
+    """tmp→``os.replace`` で確定パスを「完全な新ファイル」か「旧ファイル」に限定する。
+
+    **公開名である理由**: 日次確定（:func:`finalize`）と月別アーカイブ取り込み
+    （:mod:`marketdata.mt5_ticks.archive_ingest`）は別経路だが、同じ日別 parquet を書く。
+    片方が private 名を跨いで掴んでいると、所有者側の改名が沈黙のうちに他方を壊す。
+    日別 parquet を「途中の姿で残さない」規則はここ 1 箇所が持つ。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     os.close(fd)
@@ -140,6 +146,39 @@ def _write_parquet_atomically(frame: pd.DataFrame, path: Path) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+#: 日別 parquet が「空」だったときの端点（実在しない ms として比較で必ず外れる）。
+_NO_EXTENT = (0, -1, -1)
+
+
+def day_parquet_extent(path: Any) -> "Tuple[int, int, int]":
+    """既存の日別 parquet の ``(行数, 先頭 UTC ms, 末尾 UTC ms)`` を返す。
+
+    用途は「既に在る日と、これから書こうとしている日が**同じものか**」の判定である
+    （:mod:`marketdata.mt5_ticks.archive_ingest` の既存日スキップ）。
+
+    時刻列 1 列だけを読む理由:
+        同一性の判定に全列は要らない。全列を読めば、読んだ上で捨てる列を作ることになる
+        （ISSUE-450 と同型の浪費）。列名は :mod:`marketdata.tick_m1` が権威であり、ここで
+        綴りを書き写さない。
+
+    読めないファイルも Fail-Stop の型で報せる（別種の例外で上位の扱いから外れない）。
+    """
+    column = tick_m1._TICK_COLUMNS[0]
+    try:
+        series = pd.read_parquet(path, columns=[column])[column]
+    except Exception as exc:  # noqa: BLE001 — 読めないこと自体が供給/台帳の異常。
+        raise Mt5SupplyError(
+            f"既存の日別 parquet を読めません（{path}）: {exc}"
+        ) from exc
+    if series.empty:
+        return _NO_EXTENT
+    return (
+        len(series),
+        int(pd.Timestamp(series.iloc[0]).value // 1_000_000),
+        int(pd.Timestamp(series.iloc[-1]).value // 1_000_000),
+    )
 
 
 def finalize(day: Any, *, symbol: str, data_dir: Any) -> str:
@@ -170,5 +209,5 @@ def finalize(day: Any, *, symbol: str, data_dir: Any) -> str:
         existing = pd.read_parquet(parquet, columns=list(frame.columns))
         if existing.reset_index(drop=True).equals(frame.reset_index(drop=True)):
             return "unchanged"
-    _write_parquet_atomically(frame, parquet)
+    write_parquet_atomically(frame, parquet)
     return "written"

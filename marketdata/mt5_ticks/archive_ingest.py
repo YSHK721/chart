@@ -8,6 +8,11 @@
 依存宣言（``test_mt5_module_dependency_declarations.py`` が AST で強制）:
     stdlib（zipfile 含む）/ :mod:`marketdata.tick_m1` / :mod:`marketdata.mt5_ticks` 下位。
 
+走査範囲の端は「完成品」ではない:
+    月 zip は前月末日の途中から始まり、最後の UTC 日は次の月 zip へ続く。よって走査の
+    先頭日と末尾日は**書かない**（:func:`ingest_months` の docstring に理由）。書いてしまうと
+    既存日スキップがその欠けを恒久化する。
+
 実測（2026-09-02・全 76 か月 75,082,747 行を走査）:
     全行が 6 列 TAB で ``<TIME>`` のミリ秒は **3 桁**（75,082,747 / 75,082,747）。
     それでも 1〜3 桁を受けるのは、桁数ではなく**小数として**読むためである
@@ -88,10 +93,25 @@ def parse_lines(lines: "Iterable[str]", *, source: str = "") -> "List[Row]":
     return list(iter_rows(lines, source=source))
 
 
-#: 月別アーカイブのファイル名に埋まっている年月（``ticks_JP225_2020-05.zip``）。
-_MONTH_IN_NAME = re.compile(r"_(?P<year>\d{4})-(?P<month>\d{2})\.zip$")
+#: 月別アーカイブの命名（``ticks_JP225_2020-05.zip``）。**銘柄も年月も名前から読む**。
+#:
+#: 銘柄を名前から読む理由（工程 5 🔴-3）: 取り込み先の木は ``symbol_token`` が決める。
+#: 名前の銘柄と突き合わせなければ、ある銘柄のアーカイブを別銘柄の木へ書き込める。
+_ARCHIVE_NAME = re.compile(
+    r"^ticks_(?P<pair>[A-Z0-9]+)_(?P<year>\d{4})-(?P<month>\d{2})\.zip$"
+)
 
 _MIDNIGHT = dt.time(0, 0)
+
+
+def _name_parts(zip_path: Any) -> "re.Match":
+    name = Path(zip_path).name
+    matched = _ARCHIVE_NAME.match(name)
+    if matched is None:
+        raise Mt5SupplyError(
+            f"月別アーカイブの命名 ``ticks_<PAIR>_YYYY-MM.zip`` に一致しません: {name!r}"
+        )
+    return matched
 
 
 def month_key(zip_path: Any) -> str:
@@ -101,13 +121,13 @@ def month_key(zip_path: Any) -> str:
     （実測 T8・``ticks_JP225_2020-05.zip`` の先頭は ``2020.04.30``）。中身で並べると
     月順が 1 つずれる。
     """
-    name = Path(zip_path).name
-    matched = _MONTH_IN_NAME.search(name)
-    if matched is None:
-        raise Mt5SupplyError(
-            f"月別アーカイブの命名 ``*_YYYY-MM.zip`` に一致しません: {name!r}"
-        )
+    matched = _name_parts(zip_path)
     return f"{matched.group('year')}-{matched.group('month')}"
+
+
+def pair_of(zip_path: Any) -> str:
+    """月 zip のファイル名から**銘柄**を読む（``ticks_JP225_2020-05.zip`` の銘柄部）。"""
+    return _name_parts(zip_path).group("pair")
 
 
 @contextlib.contextmanager
@@ -144,11 +164,27 @@ def _decoded(stream: "Iterable[bytes]", *, source: str) -> "Iterator[str]":
 
 
 @dataclass(frozen=True)
+class MonthProgress:
+    """月 1 本ぶんの経過（CLI が 1 行ずつ報せるための素材・規則は持たない）。
+
+    月ごとに出す理由: 76 か月の一括実行は数十分かかる。全部終わってから 1 行だけ出す
+    報告は、途中で落ちたときに「どこまで進んだか」を何も残さない。
+    """
+
+    month: str
+    rows_read: int
+    days_written: int
+    rows_carried: int
+
+
+@dataclass(frozen=True)
 class IngestReport:
     """取り込み 1 回の結果（**読んだ行の行方が全部書いてある**）。
 
-    ``rows_read == rows_written + rows_skipped_existing`` が不変条件である
-    （:attr:`rows_unaccounted` が 0 でなければ、どこかで行を捨てている）。
+    不変条件は
+    ``rows_read == rows_written + rows_skipped_existing + rows_head_dropped + rows_carried``
+    である（:attr:`rows_unaccounted` が 0 でなければ、どこかで行を捨てている）。
+    切り落とし・持ち越しも「行方」であり、報告に出さなければ黙って捨てたのと同じである。
     """
 
     months: "Tuple[str, ...]"
@@ -158,11 +194,22 @@ class IngestReport:
     days_written: int
     days_skipped_existing: int
     days_empty: int
+    head_dropped_day: "Optional[dt.date]"
+    rows_head_dropped: int
+    days_carried: int
+    rows_carried: int
+    month_progress: "Tuple[MonthProgress, ...]"
 
     @property
     def rows_unaccounted(self) -> int:
         """行方の説明がつかない行数（0 でなければ捨てている）。"""
-        return self.rows_read - self.rows_written - self.rows_skipped_existing
+        return (
+            self.rows_read
+            - self.rows_written
+            - self.rows_skipped_existing
+            - self.rows_head_dropped
+            - self.rows_carried
+        )
 
 
 class Writer(Protocol):
@@ -185,7 +232,7 @@ class DayWriter:
     """
 
     def write_day(self, rows: "Sequence[Row]", path: Path) -> None:
-        journal._write_parquet_atomically(ingest.rows_to_frame(rows), path)
+        journal.write_parquet_atomically(ingest.rows_to_frame(rows), path)
 
     def write_marker(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +253,63 @@ class DryRunWriter:
         return None
 
 
+def _assert_pairs_match_token(paths: "Sequence[Path]", symbol_token: str) -> None:
+    """入力 zip の銘柄が 1 つに揃い、書込先トークンの銘柄部と一致することを確かめる。
+
+    2 つを別々に見る理由（工程 5 🔴-3）:
+        - 銘柄が揃っていない入力を 1 パスで読むと、時刻の単調性検査が別銘柄の並びに対して
+          働き、**別銘柄の行が同じ日 partition へ混ざる**。
+        - 揃っていても、トークンが別銘柄を指していれば別銘柄の木へ書き込める。入力と
+          書込先を突き合わせる場所がここ以外に無い（CLI は合成点であり規則を持たない）。
+
+    銘柄の綴りはファイル名（供給側）とトークン（書込先）の 2 つの独立した出所を持つ。
+    一致を要求することで、片方だけ間違えた指定が**必ず**止まる。
+    """
+    if not paths:
+        return
+    pairs = sorted({pair_of(p) for p in paths})
+    if len(pairs) != 1:
+        raise Mt5SupplyError(
+            f"銘柄の違う月別アーカイブが混ざっています: {pairs}。"
+            " 1 回の取り込みが書けるのは 1 銘柄ぶんの木だけです。"
+        )
+    expected = str(symbol_token).partition(ingest.TOKEN_SEPARATOR)[0]
+    if pairs[0] != expected:
+        raise Mt5SupplyError(
+            f"アーカイブの銘柄と書込先トークンの銘柄部が違います:"
+            f" アーカイブ {pairs[0]!r} に対しトークン {symbol_token!r}（銘柄部 {expected!r}）。"
+            " 別銘柄の木へ書き込む指定になっています。"
+        )
+
+
+def _assert_existing_day_matches(
+    day: dt.date, rows: "Sequence[Row]", parquet: Path
+) -> None:
+    """既存の日別 parquet が、いま読んだ行と**同じ日**であることを確かめる。
+
+    「在るからスキップ」では、既存が何であってもスキップする。壊れた日・欠けた日が在っても
+    黙って通り、以後の実行がそれを恒久化する（工程 5 🔴-2）。照合するのは行数と先頭 / 末尾の
+    UTC ms である。全行の突合は月全体を 2 度読むことになり、判定に見合わない。
+
+    一致しなければ Fail-Stop にする理由:
+        上書きも黙認もできない。上書きは「既に在る台帳を書き換えない」方針に反し、黙認は
+        欠けた日を恒久化する。どちらが正しいかは入力からは決まらないので、人が決めるまで止める。
+    """
+    existing = journal.day_parquet_extent(parquet)
+    incoming = (
+        len(rows),
+        server_clock.to_utc_ms(rows[0][0]),
+        server_clock.to_utc_ms(rows[-1][0]),
+    )
+    if existing != incoming:
+        raise Mt5SupplyError(
+            f"既存の日別 parquet と入力が一致しません: {day} —"
+            f" 既存 {existing[0]} 行（UTC ms {existing[1]}〜{existing[2]}）に対し"
+            f" 入力 {incoming[0]} 行（UTC ms {incoming[1]}〜{incoming[2]}）。"
+            f" 上書きはしないため中止します（{parquet}）。"
+        )
+
+
 def _utc_midnight_ms(day: dt.date) -> int:
     """UTC 日の 00:00 の epoch ms（日境界の比較点）。"""
     return (dt.datetime.combine(day, _MIDNIGHT, tzinfo=dt.timezone.utc) - _EPOCH) // _MILLISECOND
@@ -220,36 +324,73 @@ def ingest_months(
 ) -> IngestReport:
     """月 zip を年月順に **1 パス**で読み、UTC 日別 parquet を書く。
 
-    月跨ぎの UTC 日（実測 T8: 53/75 境界）は、日が変わるまで書かずに持ち越して
-    **1 つの parquet へ統合**する。持ち越しはファイル境界を跨いで生き続ける。
+    **日を閉じて書くのは「次の UTC 日の行が到来したとき」だけ**である。月跨ぎの UTC 日
+    （実測 T8: 53/75 境界）は、日が変わるまで書かずに持ち越して**1 つの parquet へ統合**
+    する。持ち越しはファイル境界を跨いで生き続ける。
+
+    範囲の端にある 2 つの日を書かない理由（工程 5 🔴-1）:
+        末尾（``days_carried`` / ``rows_carried``）
+            走査が終わった時点で開いている日は、次の UTC 日の行を見ていない。まだ増える
+            かもしれない日を「完成品」として書くと、既存日スキップがその欠けを恒久化する
+            （実測: 月分割実行で 2020-06-30 が 4,173 行のまま凍結・一括なら 5,673 行）。
+        先頭（``head_dropped_day`` / ``rows_head_dropped``）
+            月 zip は前月末日の途中から始まる（実測: ``ticks_JP225_2020-05.zip`` の先頭
+            ラベルは ``2020.04.30``・その UTC 日は 9,289 行しかない）。走査全体の最初の
+            UTC 日は**頭が欠けている可能性を排除できない**ため、末尾と同じ理由で書かない。
+            端が欠けていないことを入力から示す手段が無い以上、「書かない」が唯一の
+            Fail-Safe である（欠けた日を書いてから直す経路は存在しない）。
+
+    先頭日と末尾日が同一（走査に UTC 日が 1 つしか無い）の場合は**先頭として 1 度だけ**
+    数える（同じ行を 2 度数えると :attr:`IngestReport.rows_unaccounted` が壊れる）。
     """
     writer = writer or DayWriter()
     paths = sorted((Path(p) for p in zip_paths), key=month_key)
+    _assert_pairs_match_token(paths, symbol_token)
 
     rows_read = 0
     rows_written = 0
     rows_skipped = 0
     days_written = 0
     days_skipped = 0
+    rows_head_dropped = 0
+    head_dropped_day: "Optional[dt.date]" = None
+    days_carried = 0
+    rows_carried = 0
     day: "Optional[dt.date]" = None
+    head_day: "Optional[dt.date]" = None
     day_rows: "List[Row]" = []
     day_end_ms = 0
     last_utc_ms: "Optional[int]" = None
     seen_days: "List[dt.date]" = []
+    progress: "List[MonthProgress]" = []
 
-    def flush() -> None:
+    def close_day(*, final: bool) -> None:
+        """開いている日を閉じる。端の日（先頭 / 走査終了時点）は**書かない**。"""
         nonlocal rows_written, rows_skipped, days_written, days_skipped, day_rows
+        nonlocal rows_head_dropped, head_dropped_day, days_carried, rows_carried
         if day is None or not day_rows:
             return
-        seen_days.append(day)
         # 気配の実在性・型・ラベル単調は段階 1 の権威が持つ（第 2 実装を作らない）。
-        # **書く前に**通すことで、壊れた行を含む日を 1 バイトも書かない。
+        # 書かない日にも通すのは、壊れた行を「端だから」で見逃さないためである。
         ingest.validate_rows(day_rows, from_msc=day_rows[0][0])
+        if day == head_day:
+            head_dropped_day = day
+            rows_head_dropped += len(day_rows)
+            day_rows = []
+            return
+        if final:
+            days_carried += 1
+            rows_carried += len(day_rows)
+            day_rows = []
+            return
+        seen_days.append(day)
         parquet = tick_m1.day_parquet_path(day, symbol=symbol_token, data_dir=data_dir)
         if parquet.is_file():
             # 既存の日は**上書きしない**（ISSUE-447 方針: 既に在る台帳を書き換えない）。
+            # ただしスキップしてよいのは**同じものが在るとき**だけである。
             # 行は月ファイル単位でしか読めないため、読むこと自体は避けられない。
             # よって「読んだが書かなかった行」を報告へ出す（捨てた行を黙らせない）。
+            _assert_existing_day_matches(day, day_rows, parquet)
             rows_skipped += len(day_rows)
             days_skipped += 1
         else:
@@ -259,9 +400,12 @@ def ingest_months(
         day_rows = []
 
     for path in paths:
+        month_rows = 0
+        month_days = days_written
         with open_month_zip(path) as lines:
             for row in iter_rows(lines, source=path.name):
                 rows_read += 1
+                month_rows += 1
                 utc_ms = server_clock.to_utc_ms(row[0])
                 if last_utc_ms is not None and utc_ms < last_utc_ms:
                     raise Mt5SupplyError(
@@ -270,11 +414,19 @@ def ingest_months(
                     )
                 last_utc_ms = utc_ms
                 if utc_ms >= day_end_ms:
-                    flush()
+                    close_day(final=False)
                     day = server_clock.utc_day_of(row[0])
+                    if head_day is None:
+                        head_day = day
                     day_end_ms = _utc_midnight_ms(day + dt.timedelta(days=1))
                 day_rows.append(row)
-    flush()
+        progress.append(MonthProgress(
+            month=month_key(path),
+            rows_read=month_rows,
+            days_written=days_written - month_days,
+            rows_carried=len(day_rows),
+        ))
+    close_day(final=True)
 
     days_empty = _mark_empty_days(
         seen_days, symbol_token=symbol_token, data_dir=data_dir, writer=writer
@@ -288,6 +440,11 @@ def ingest_months(
         days_written=days_written,
         days_skipped_existing=days_skipped,
         days_empty=days_empty,
+        head_dropped_day=head_dropped_day,
+        rows_head_dropped=rows_head_dropped,
+        days_carried=days_carried,
+        rows_carried=rows_carried,
+        month_progress=tuple(progress),
     )
 
 
