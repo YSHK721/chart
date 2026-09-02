@@ -166,7 +166,7 @@ def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> p
     groupby して open=最初/high=最大/low=最小/close=最終、volume=その分のティック数（float）を
     返す。open/close を時刻順に確定させるため、集計前に ``timestamp`` 昇順へ安定ソートする。
 
-    戻り値は ``date`` を index（名前 ``"date"``・``DatetimeIndex`` 昇順）に持つ OHLCV DataFrame。
+    戻り値は date を index（名前は "date"・``DatetimeIndex`` 昇順）に持つ OHLCV DataFrame。
     入力が空なら空（列のみ）を返す。必須列を欠く場合は :class:`ValueError`（fail-fast）。
     本関数は**純粋な集計のみ**を担う（外れ分バーの除去は :func:`_clean_m1_day` ＝ CSV 素材化
     経路の責務・本関数は行除去しない）。
@@ -433,7 +433,7 @@ def _read_last_m1_row(out_path: Any) -> "pd.DataFrame | None":
 
 
 def last_m1_date(out_path: Any) -> "pd.Timestamp | None":
-    """既存 M1 CSV の最終バー ``date``（末尾行）。不在/空（ヘッダのみ）は ``None``。メモリ有界。"""
+    """既存 M1 CSV の最終バーの日時（末尾行）。不在/空（ヘッダのみ）は ``None``。メモリ有界。"""
     tail = _read_last_m1_row(out_path)
     return None if tail is None else pd.Timestamp(tail.index[-1])
 

@@ -42,7 +42,7 @@ def test_bridge_renames_date_to_time_and_adds_zero_spread():
     # Assert: engine 形式（time/open/high/low/close/volume/spread）に変換され spread=0
     assert list(bridged.columns) == ["time", "open", "high", "low", "close", "volume", "spread"]
     # ISSUE-411: engine の `Bar.time` 契約は epoch int / numpy.datetime64 であり文字列ではない。
-    #   marketdata の `date` は naive 文字列（UTC・ユーザー裁定 2026-08-18）なので epoch 秒へ据える。
+    #   marketdata の date 列は naive 文字列（UTC・ユーザー裁定 2026-08-18）なので epoch 秒へ据える。
     assert list(bridged["time"]) == [1735808400, 1735808460]
     assert list(bridged["spread"]) == [0, 0]
 

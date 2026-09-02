@@ -90,7 +90,7 @@ def bridge_marketdata_df(src: pd.DataFrame) -> pd.DataFrame:
 
     ISSUE-411: engine の `Bar.time` 契約は epoch int / ``numpy.datetime64`` であり、rename
     しただけの naive 文字列は契約違反だった（`CsvOHLCRepository` が ``Bar(time=str)`` を作る）。
-    marketdata の `date` は naive 文字列で UTC（ユーザー裁定 2026-08-18）。文字列 →
+    marketdata の date 列は naive 文字列で UTC（ユーザー裁定 2026-08-18）。文字列 →
     epoch 秒の規則は tick store の公開実体 `timestamp_epoch_seconds` が唯一持ち（naive=UTC・
     秒へ floor）、ここでは書き写さず呼ぶだけにする。
     """

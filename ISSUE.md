@@ -13198,3 +13198,18 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 - **未充足の日（申し送り）**: 2026-08-26 の 15:00 UTC 以降〜08-31 はアーカイブ末尾の切れ目と
   端末由来開始（09-01）の間隙。端末履歴（2026-01-02〜）から追補可能＝別作業。
   T9（NY 配信区間 299,417 行）はフラグ無しで取り込み済み（行単位フラグは別途裁定）。
+
+## ISSUE-478: [検定] declaration_integrity の BACKTICK 検出が列名 `date` を未定義シンボルと誤検出
+
+- **ステータス**: RESOLVED（2026-09-02・当面の docstring 修正で解消。根治は要検討）
+- **重大度**: 低（機能無関係・docstring 内の列名参照。gate をブロックするのが害）
+- **実測**: `.claude/scripts/declaration_integrity.py:51` の `BACKTICK` 正規表現が docstring 内の
+  ``date`` を拾い C1 が「date が未定義（到達不能）」と誤判定。列名・index 名 date を backtick 表記した
+  既存 docstring 6 箇所（marketdata/tick_m1.py・rollup_store.py・time_column.py×2・
+  simulator/tools/export_trade_markers.py・同 tests・indicator_ui の増分テスト）。大半は develop 既存で
+  fix/issue-455 の差分外。行番号込み違反 ID（ISSUE-467）のため無関係な行挿入・baseline 未整備で
+  「新規」判定になり Stop フックが無限再起動した。
+- **当面の解消**: 該当 docstring の `` `date` `` を backtick なし表記へ（挙動・API 完全不変）。gate exit 0 を実測。
+- **抜本策（未実施・要検討）**: (a) `PATHLIKE` と同様に一般的な列名語を BACKTICK 検出の対象外にする
+  ホワイトリスト、または (b) 違反 ID から行番号を外す（ISSUE-467 の恒久策と統合）。
+- **関連**: ISSUE-467（行番号込み ID で Stop 無限再起動）・ISSUE-455（表面化の経路）。

@@ -1,7 +1,7 @@
 """export_jp225_m1 の自動増分更新＋継続ポーリング機能の検証（TDD: Red→Green）。
 
 検証対象（1 分足原子 CSV ``jp225_m1.csv`` の自動更新のみ。上位足 resample は対象外）:
-  - read_last_timestamp: 既存 CSV 末尾 ``date`` の UTC ナイーブ datetime / 不在・空・ヘッダーのみ → None。
+  - read_last_timestamp: 既存 CSV 末尾 date 列の UTC ナイーブ datetime / 不在・空・ヘッダーのみ → None。
   - compute_fetch_window: now 注入の純粋関数。lag による未確定足除外境界・start>=end→None。
   - append_incremental: 追記モード "a"・ヘッダー二重書き禁止・last_ts 以前の重複除去。
   - run_watch: sleep_fn 注入＋stop_after で有限終了 / KeyboardInterrupt 正常停止。
