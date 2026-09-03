@@ -79,13 +79,23 @@ def test_the_legacy_module_still_exists_and_is_not_required_to_be_deleted() -> N
     assert _LEGACY_MODULE.exists(), "旧パスのファイルは段階 1 では削除しない（要承認）"
 
 
-def _legacy_import_offenders() -> "list[str]":
-    """旧パスを import しているソースのリポジトリ相対パス一覧（走査本体・分岐はここに閉じる）。"""
+def _legacy_import_offenders_over(files, read=None) -> "list[str]":
+    """``files`` のうち旧パスを import しているものの一覧（走査本体・分岐はここに閉じる）。
+
+    ``read`` はソース取得のシーム（既定は実ファイル読み）。計算量検定が **走査本体そのもの**を
+    測れるように分けてある（テスト側で走査を書き直すと恒真式になる）。
+    """
+    read = read or (lambda p: p.read_text(encoding="utf-8"))
     out: "list[str]" = []
-    for path in _repo_sources():
-        if _imports_legacy_api_contract(path.read_text(encoding="utf-8")):
+    for path in files:
+        if _imports_legacy_api_contract(read(path)):
             out.append(str(path.relative_to(_REPO_ROOT)))
     return out
+
+
+def _legacy_import_offenders() -> "list[str]":
+    """旧パスを import しているソースのリポジトリ相対パス一覧（リポジトリ全体）。"""
+    return _legacy_import_offenders_over(_repo_sources())
 
 
 def test_no_code_imports_the_legacy_api_contract_path() -> None:
@@ -130,33 +140,64 @@ def test_legacy_import_detection_has_power() -> None:
         assert not _imports_legacy_api_contract(clean), f"誤検出しています: {clean!r}"
 
 
-def test_scan_reads_each_source_exactly_once() -> None:
-    """計算量テスト: 走査は 1 ファイル 1 読込（発行 − 判定に使ったソース数 = 0）。
-
-    オーダー表明として対象 1 件 / 2 件の 2 点で、発行が対象数だけで決まることを固定する
-    （ファイルの長さ・行数では増えない）。回数リテラルは焼き込まない。
-    """
-    sources = _repo_sources()
+def _reads_issued_by(files, scan=None) -> "list[Path]":
+    """``scan``（既定は走査本体）を read シームの下で走らせ、発行された読込を返す。"""
     reads: "list[Path]" = []
-    real_read = Path.read_text
 
-    def _spy(self, *args, **kwargs):
-        reads.append(self)
-        return real_read(self, *args, **kwargs)
+    def _spy(path: Path) -> str:
+        reads.append(path)
+        return path.read_text(encoding="utf-8")
 
-    Path.read_text = _spy
-    try:
-        one = sources[:1]
-        used_one = [_imports_legacy_api_contract(p.read_text(encoding="utf-8")) for p in one]
-        issued_one = len(reads)
-        reads.clear()
+    (scan or _legacy_import_offenders_over)(files, read=_spy)
+    return reads
 
-        two = sources[:2] if len(sources) >= 2 else sources
-        used_two = [_imports_legacy_api_contract(p.read_text(encoding="utf-8")) for p in two]
-        issued_two = len(reads)
-    finally:
-        Path.read_text = real_read
 
-    assert issued_one - len(used_one) == 0, "1 ファイルあたりの読込発行が判定使用数を超えています"
-    assert issued_two - len(used_two) == 0, "1 ファイルあたりの読込発行が判定使用数を超えています"
-    assert issued_two == len(two), "読込発行が対象ファイル数以外の要因で増えています"
+def test_scan_reads_each_source_exactly_once() -> None:
+    """計算量テスト: 走査本体が 1 ファイル 1 読込（発行 − 判定に使ったソース数 = 0）。
+
+    測るのは **SUT（``_legacy_import_offenders_over``）が発行した読込**である。テスト側で走査を
+    書き直して数えると、SUT の読込回数を一切見ない恒真式になり、走査本体に二度読みが入っても
+    緑のまま通る（ISSUE-450 と同型の「作ってから捨てる」を保護する形）。
+    """
+    # Arrange
+    sources = _repo_sources()
+
+    # Act
+    reads = _reads_issued_by(sources)
+
+    # Assert
+    assert len(reads) - len(sources) == 0, "走査の読込発行が判定使用数と一致しません"
+    assert set(reads) == set(sources), "読み捨て／読み漏らしがあります"
+    assert len(set(reads)) - len(reads) == 0, "同じファイルを二度読んでいます"
+
+
+def test_the_read_count_is_determined_by_the_target_count_alone() -> None:
+    """オーダーの表明: 対象 1 件 / 2 件の 2 点で「読込数 == 対象数」。
+
+    ファイルの長さ・行数では増えない（回数リテラルは焼き込まず対象数から導く）。
+    """
+    # Arrange
+    sources = _repo_sources()
+
+    # Act / Assert
+    for count in (1, 2):
+        subset = sources[:count]
+        assert len(_reads_issued_by(subset)) == len(subset)
+
+
+def test_the_read_measurement_detects_a_wasteful_scan() -> None:
+    """検出力: 同じファイルを二度読む走査は、この測り方で必ず落ちる（恒真式ではない）。"""
+    # Arrange — 判定に 1 回しか使わないのに 2 回読む「浪費する走査」。
+    def _wasteful(files, read=None):
+        for path in files:
+            read(path)
+            _imports_legacy_api_contract(read(path))
+        return []
+
+    sources = _repo_sources()[:2]
+
+    # Act
+    reads = _reads_issued_by(sources, scan=_wasteful)
+
+    # Assert
+    assert len(reads) - len(sources) != 0
