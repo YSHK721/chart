@@ -214,6 +214,38 @@ def test_two_file_distribution_works_without_the_repository(tmp_path: Path) -> N
     assert proc.stdout.splitlines() == ["OANDA-Japan-MT5-Live", "PathTokenError"]
 
 
+_BROKEN_REPO_DRIVER = """\
+import capture_mt5_symbol_spec as cap
+
+print(cap.sanitize_path_component("x"))
+"""
+
+
+def test_a_broken_marketdata_package_is_not_silently_replaced_by_the_copy(tmp_path: Path) -> None:
+    """リポジトリ側が壊れているとき、隣の写しへ**黙って退かない**（規則が静かに割れない）。
+
+    経路 1 が ``ModuleNotFoundError`` になる原因は 2 通りある: (a) そこが本 repo ではない
+    （marketdata が無い）＝経路 2 へ進んでよい、(b) marketdata は在るのにその依存が壊れている
+    ＝進んではいけない。(b) で退くと、リポジトリ内で作業しているのに隣の写し（更新が遅れて
+    いるかもしれない実体）が使われ、しかも本当の原因が握り潰される。
+    """
+    # Arrange — .git を持ち、marketdata は在るが依存が欠けている「壊れた repo」を作る。
+    dest = _standalone_distribution(tmp_path)
+    (dest / ".git").mkdir()
+    pkg = dest / "marketdata"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("import definitely_absent_dependency\n", encoding="utf-8")
+    shutil.copy2(_AUTHORITY_SOURCE, pkg / "path_tokens.py")
+    (dest / "_drive.py").write_text(_BROKEN_REPO_DRIVER, encoding="utf-8")
+
+    # Act
+    proc = _run_standalone(dest)
+
+    # Assert — 本当の原因が表に出る（隣の写しで動いてしまわない）。
+    assert proc.returncode != 0, f"壊れた repo なのに隣の写しで動いています: {proc.stdout!r}"
+    assert "definitely_absent_dependency" in proc.stderr, proc.stderr
+
+
 def test_one_file_distribution_fails_loudly(tmp_path: Path) -> None:
     """写しを配り忘れたら **黙って別規則で動かず**、import 時に落ちる（負の対照）。"""
     # Arrange

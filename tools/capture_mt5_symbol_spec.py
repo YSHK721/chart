@@ -150,6 +150,11 @@ def _load_path_tokens():
     経路 2（VM 単体）: 本スクリプトの隣に置いた写し ``path_tokens.py`` を読む。VM には
         リポジトリが無いため経路 1 は成立しない。
 
+    経路 1 → 2 へ落ちてよいのは「そこが本 repo ではない（marketdata が無い）」ときだけである。
+    marketdata は在るのにその依存が壊れている場合は**退かずに原因をそのまま上げる**。区別
+    しないと、リポジトリ内で作業しているのに隣の写し（更新が遅れているかもしれない実体）が
+    使われ、しかも本当の原因が握り潰される。
+
     どちらでも解決できなければ ``ModuleNotFoundError`` のまま落とす。**自前実装へ退かない**：
     退避先を持つと「写しを配り忘れたのに動いてしまう」状態になり、規則が静かに割れる。
     """
@@ -159,8 +164,11 @@ def _load_path_tokens():
             sys.path.insert(0, str(root))
         try:
             from marketdata.path_tokens import PathTokenError, sanitize_path_component
-        except ModuleNotFoundError:
-            pass                      # リポジトリではあるが本 repo ではない → 経路 2 へ
+        except ModuleNotFoundError as exc:
+            # 経路 1 が失敗する原因は 2 通りある。区別せずに退くと、リポジトリ内で作業して
+            # いるのに隣の写しが使われ（規則が割れる）、本当の原因も握り潰される。
+            if (exc.name or "").split(".")[0] != "marketdata":
+                raise                 # marketdata は在るのに依存が壊れている → 退かない
         else:
             return PathTokenError, sanitize_path_component
     from path_tokens import PathTokenError, sanitize_path_component
