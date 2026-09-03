@@ -273,6 +273,45 @@ def _require_forming_time(bar: Any) -> int:
     return int(bar["time"])
 
 
+def inject_forming_bars(df: "pd.DataFrame", bars: Any) -> "pd.DataFrame":
+    """``df`` へ ``bars`` を set/replace した **新しい** DataFrame を返す（注入の唯一の実体）。
+
+    ライブ経路の 2 つの供給側が共有する: ``/compute`` の形成中バー注入
+    （:func:`apply_forming_bar`）と、``/live_ticks`` の末尾値が使う窓の供給
+    （``adapter.compute.live_tick_tails.window_with_forming``）。同じバーの追加・置換を
+    手で 2 度書くと、片方だけ直した瞬間に「描いたローソクと指標値が別のバー」になる。
+
+    Args:
+        df: date-index の OHLCV。
+        bars: 注入するバー（``time`` ＋ OHLCV）の昇順列。
+
+    Returns:
+        複製した DataFrame。同じ ``time`` の行が在れば置換、無ければ追加して
+        ``sort_index()`` した結果（``updateLastCandle`` と同じ append/replace 規則）。
+
+    Raises:
+        KeyError / ValueError / TypeError: :func:`_require_forming_time` の事前条件違反、
+            および窓に在る列に対応する OHLCV キーが欠けている場合（緩めない）。
+    """
+    out = df.copy()
+    lower = {str(c).lower(): c for c in out.columns}
+    for b in bars:
+        # 列決定（大小無視の照合・float 正規化）は共有核から導出する。末尾との比較は呼び出し側で
+        #   済んでいるため、ここで要るのは「どの列へ何を書くか」だけ（last_time=None → append）。
+        bt = pd.Timestamp(_require_forming_time(b), unit="s")
+        patch = forming_patch(None, b)
+        for key in ("open", "high", "low", "close", "volume"):
+            col = lower.get(key)
+            if col is None:
+                continue
+            if key not in patch.values:
+                # 共有核は「forming に在るキーだけ更新」だが、ライブ注入は OHLCV 完備のバーしか
+                #   作らない。欠落は上流の破損なので握らず露出させる（事前条件を緩めない）。
+                raise KeyError(key)
+            out.loc[bt, col] = patch.values[key]
+    return out.sort_index()
+
+
 def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
                       synthesize_closed_gaps: bool = True) -> "pd.DataFrame":
     """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す。
@@ -341,21 +380,4 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
         to_inject.append(bar)
     if not to_inject:
         return df  # 注入なし＝同一オブジェクトで素通し（従来挙動・コピーもしない）。
-
-    out = df.copy()
-    lower = {str(c).lower(): c for c in out.columns}
-    for b in to_inject:
-        # 列決定（大小無視の照合・float 正規化）も共有核から導出する。末尾との比較は上で済んで
-        #   いるため、ここで要るのは「どの列へ何を書くか」だけ（last_time=None → append）。
-        bt = pd.Timestamp(_require_forming_time(b), unit="s")
-        patch = forming_patch(None, b)
-        for key in ("open", "high", "low", "close", "volume"):
-            col = lower.get(key)
-            if col is None:
-                continue
-            if key not in patch.values:
-                # 共有核は「forming に在るキーだけ更新」だが、ライブ注入は OHLCV 完備のバーしか
-                #   作らない。欠落は上流の破損なので握らず露出させる（事前条件を緩めない）。
-                raise KeyError(key)
-            out.loc[bt, col] = patch.values[key]
-    return out.sort_index()
+    return inject_forming_bars(df, to_inject)

@@ -45,6 +45,50 @@ def _last_bar_time(window: Any) -> "int | None":
     return None if value is None else int(value // 1_000_000_000)
 
 
+def forming_bar_of_state(state: Any) -> "dict[str, Any]":
+    """形成中バーの状態 → 差し替え規則が受け取る形（``time`` ＋ OHLCV）。唯一の写像。
+
+    窓の末尾を揃える側（controller の窓供給）と末尾行へ値を書く側（:func:`make_tail_at`）は
+    **同じ材料**から作らなければならない。2 箇所で別々に組むと、片方だけ変えた瞬間に窓と値が
+    別のバーを指す（ISSUE-232 の失敗モード）。
+    """
+    return {
+        "time": int(state.time),
+        "open": float(state.open), "high": float(state.high),
+        "low": float(state.low), "close": float(state.close),
+        "volume": float(state.volume),
+    }
+
+
+def window_with_forming(window: Any, bar: "dict[str, Any]", *, inject: Callable) -> Any:
+    """窓の末尾を形成中バー ``bar`` の周期へ揃えた窓を返す（供給側の唯一の適用点）。
+
+    なぜ供給側で揃えるか: 末尾行への代入が正しいのは「窓の末尾＝形成中バー」＝述語
+    :func:`common.forming_window.forming_patch` が ``"replace"`` を返すときだけである。
+    ところが確定窓は直前の確定分までしか持たない（1m は ``tools/live_tick_watch.py`` の
+    排他 floor で M1 CSV が M-1 までしか無い）ため、分 M の途中では末尾が構造的に M-1 になり、
+    **確定済みの行**へ形成中の OHLCV を書いてしまう。窓の側を形成中バーへ揃えることで、
+    前提を仮定ではなく構造で満たす。
+
+    Args:
+        window: 確定バーの窓（末尾 1 本が比較対象）。
+        bar: 形成中バー（:func:`forming_bar_of_state` の写像）。
+        inject: ``(window, [bar]) -> 新しい窓``（pandas 依存を注入側へ寄せる＝
+            ``set_last_bar`` と同じ規律。実体は ``forming_bar.inject_forming_bars``）。
+
+    Returns:
+        ``"append"`` のときだけ ``inject`` を通した新しい窓。``"replace"``（既に末尾＝形成中
+        バー＝上位足の rollup partial 等）・``"skip"``（末尾より過去）・末尾 time を読めない窓は
+        ``window`` をそのまま返す（複製もしない＝既に前提を満たす経路の挙動を変えない）。
+    """
+    last_time = _last_bar_time(window)
+    if last_time is None:
+        return window  # 時刻 index でない窓＝比較材料が無い（呼び出し側が記録する）。
+    if forming_patch(last_time, bar).mode != "append":
+        return window
+    return inject(window, [bar])
+
+
 def is_incremental(indicator_id: str, variant: str, params: "dict[str, Any]") -> bool:
     """その指標が真の増分計算を宣言しているか（＝毎ティック納期に載るか）。
 
@@ -82,16 +126,16 @@ def make_tail_at(
         nonlocal reported
         if empty or not is_incremental(spec.indicator_id, spec.variant, spec.params):
             return None
-        values = {
-            "open": state.open, "high": state.high, "low": state.low,
-            "close": state.close, "volume": float(state.volume),
-        }
+        bar = forming_bar_of_state(state)
+        values = {k: v for k, v in bar.items() if k != "time"}
         # 差し込み規則は共有核 forming_patch ただ 1 つ（F-9）。末尾行への代入が正しいのは
         #   「窓の末尾＝形成中バーと同じバー」＝ mode == "replace" のときだけである。以前は
         #   比較せず代入し、その前提をコメントで仮定していただけだった（前提が破れると別の
-        #   バーの値を黙って描く＝ISSUE-232 の失敗モード）。
+        #   バーの値を黙って描く＝ISSUE-232 の失敗モード）。窓は供給側
+        #   （:func:`window_with_forming`）が同じ材料で揃えてあるので、ここが否定されるのは
+        #   バッチが周期をまたいだ場合など「本当に食い違った」ときだけになる。
         last_time = _last_bar_time(window)
-        if forming_patch(last_time, {"time": state.time, **values}).mode != "replace":
+        if forming_patch(last_time, bar).mode != "replace":
             if not reported:
                 reported = True   # ISSUE-278 #3 と同じ規律: 無音にせず、かつ毎ティック吐かない。
                 logger.warning(

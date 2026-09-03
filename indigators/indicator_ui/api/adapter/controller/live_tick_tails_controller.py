@@ -24,7 +24,12 @@ from marketdata.resample import is_known_timeframe
 from marketdata.tf_meta import bar_time_unix, period_start_unix
 from adapter.compute.indicator_compute_adapter import IndicatorComputeAdapter
 from adapter.compute.latest_dispatch import latest_compute
-from adapter.compute.live_tick_tails import make_tail_at
+from adapter.compute.forming_bar import inject_forming_bars
+from adapter.compute.live_tick_tails import (
+    forming_bar_of_state,
+    make_tail_at,
+    window_with_forming,
+)
 from usecase.dataset_port import dataset_port as _dataset_port
 from usecase.serve_live_tick_tails import (
     merge_tail_batches,
@@ -202,6 +207,15 @@ def handle_live_tick_tails(
             buffer=buffer, forming=forming_mod,
         )
         states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
+        if not states:
+            continue
+        # 🔴-1: 窓は確定分（1m なら M1 CSV の排他 floor で M-1 まで）しか無い。末尾行への代入が
+        #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。揃える材料は
+        #   states[0]（この増分の先頭 tick 時点の累積）＝以降 tail_at が書く値と**同じ材料**であり、
+        #   窓と値が別のバーになることが構造的に起こらない。
+        df = window_with_forming(
+            df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
+        )
         tail_at = make_tail_at(
             df=df, adapter=compute_adapter,
             latest_compute=latest_compute, set_last_bar=_set_last_bar,
