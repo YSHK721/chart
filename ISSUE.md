@@ -13385,3 +13385,20 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
   （模擬恒久解での赤転化を実測済み＝アサーション弱体でないことの証拠）。
 - 🟡-4（窓供給の group 単位縮退契約）: 7435e2b — window_with_forming/make_tail_at を既存 group try 内へ
   収容し、失敗時は logger.exception ＋当該グループのみ欠落（/live_ticks 応答は生存）。計算量表明付き。
+
+### Wave 1b 完了記録（2026-09-03・レビュー承認済み）
+
+- **F-1 完了（承認済み 2 ファイル配布化）**: sanitize_path_component を `marketdata/path_tokens.py`（import ゼロ）へ
+  移設し循環 C-1 根絶（mt5_ticks→tools 依存は免除ゼロで 0 件）。PathTokenError→Mt5SupplyError 翻訳で
+  CaptureError 漏出も解消。VM 単体経路は隔離別プロセス検定 4 本＋突然変異 M1/M2/M3 で識別力実証。
+- **削除 4 件完了（承認済み）**: MP shim 2 本（`_REEXPORT_SHIMS` 免除も撤去＝DIP ゲート免除ゼロ化）・
+  `marketdata/api_contract.py`・`tools/watch_loop.py`。baseline prune 済み（stale 10→0・static quality 5 passed）。
+- **レビュー 2 巡**（差戻し 1 回→承認）: 🔴-1 silent fallback 残存は `exc.name != "marketdata"` 完全一致で根治。
+  自己レビューで「退いてよい側」分岐の無検定も発見・封鎖（53e2255）。
+- **Wave 2 へ繰延（レビュー記録）**:
+  1. 🟡-2: `tools/capture_mt5_symbol_spec.py:163-174` の import 時 sys.path 恒久挿入と裸名 `from path_tokens import`。
+     是正案は `importlib.util.spec_from_file_location` による明示パス読込（裸名解決の取り違えも同時に消える）。
+  2. 🔵: `_load_path_tokens` の責務分離（配布形態解決の分離・現状 38 行は分離便益未実証）／
+     差分 772 行の PR 分割（F 番号ごと）／`test_composition_root_arg_parity` の pre-existing 赤（JS 合成根 4 件・
+     基点 438d56e から赤と実証済み・別途起票対象）。
+  3. VM 実機動作（MT5 端末での 2 ファイル配布完走）は ISSUE-448 V-1〜V-7 の実疎通時に確認。
