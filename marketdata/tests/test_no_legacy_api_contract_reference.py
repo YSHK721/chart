@@ -1,9 +1,10 @@
 """アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロ（ISSUE-479 F-8 段階 1）。
 
-HTTP 契約（``ERROR_STATUS`` / ``nested_error``）の所有者は配信殻であり、``marketdata`` のどの
-アクターでもない（ISSUE-094 🔵-11）。実体は中立共有パッケージ ``api_shared.http_contract`` へ
-移設済みで、``marketdata/api_contract.py`` は後方互換の再エクスポートに過ぎない。互換シムを
-残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの偽装）が固定化する。
+HTTP 契約（error.type → HTTP ステータスの表と nested エラーの整形関数）の所有者は配信殻であり、
+marketdata のどのアクターでもない（ISSUE-094 🔵-11）。実体は中立共有パッケージ api_shared の
+http_contract モジュールへ移設済みで、marketdata/api_contract.py は後方互換の再エクスポートに
+過ぎない。互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの
+偽装）が固定化する。
 
 本テストは「旧パスを import する本番・テストコードがリポジトリに 1 件も無い」ことだけを主張する。
 **ファイルの存在自体は Red にしない**（削除は要承認事項であり、段階 2 で免除の撤去と同時に行う）。
@@ -78,16 +79,22 @@ def test_the_legacy_module_still_exists_and_is_not_required_to_be_deleted() -> N
     assert _LEGACY_MODULE.exists(), "旧パスのファイルは段階 1 では削除しない（要承認）"
 
 
+def _legacy_import_offenders() -> "list[str]":
+    """旧パスを import しているソースのリポジトリ相対パス一覧（走査本体・分岐はここに閉じる）。"""
+    out: "list[str]" = []
+    for path in _repo_sources():
+        if _imports_legacy_api_contract(path.read_text(encoding="utf-8")):
+            out.append(str(path.relative_to(_REPO_ROOT)))
+    return out
+
+
 def test_no_code_imports_the_legacy_api_contract_path() -> None:
-    """``marketdata.api_contract`` を import する本番・テストコードが 1 件も無い。
+    """旧パス（marketdata の api_contract）を import する本番・テストコードが 1 件も無い。
 
     識別力: どこかで ``from marketdata.api_contract import ERROR_STATUS`` を復活させると Red になる。
     落ちた場合の直し方は ``from api_shared.http_contract import ...`` への付替え。
     """
-    offenders: "list[str]" = []
-    for path in _repo_sources():
-        if _imports_legacy_api_contract(path.read_text(encoding="utf-8")):
-            offenders.append(str(path.relative_to(_REPO_ROOT)))
+    offenders = _legacy_import_offenders()
     assert not offenders, (
         "旧 HTTP 契約パス marketdata.api_contract を import している箇所が残っています:\n"
         + "\n".join(offenders)

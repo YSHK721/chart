@@ -281,6 +281,19 @@ def test_repo_scan_covers_the_shim_package() -> None:
     assert Path(__file__).resolve() in sources, "走査が本テスト自身に届いていません"
 
 
+def _old_path_import_offenders() -> "list[str]":
+    """旧 compute パスを import しているソースの一覧（走査本体・分岐はここに閉じる）。
+
+    シム自身は除外する（シムが import しているのは旧パスではなく実体側の gateway であるため）。
+    """
+    out: "list[str]" = []
+    for path in _repo_sources():
+        is_shim = path.parent == _PKG / "compute" and path.name in _SHIM_FILE_NAMES
+        if not is_shim and _imports_old_compute_store_path(path.read_text(encoding="utf-8")):
+            out.append(str(path.relative_to(_REPO_ROOT)))
+    return out
+
+
 def test_no_code_imports_the_old_compute_store_paths():
     """旧 compute パス（互換シム）を import する本番・テストコードがリポジトリに 1 件も無い。
 
@@ -288,12 +301,7 @@ def test_no_code_imports_the_old_compute_store_paths():
     落ちた場合の直し方は gateway 直参照（``market_profile_api.gateway.zp_store`` /
     ``gateway.dwell_rollup_store``）への付替え。
     """
-    offenders: "list[str]" = []
-    for path in _repo_sources():
-        if path.parent == _PKG / "compute" and path.name in _SHIM_FILE_NAMES:
-            continue  # シム自身は「旧パス」ではなく実体側（gateway）を import している。
-        if _imports_old_compute_store_path(path.read_text(encoding="utf-8")):
-            offenders.append(str(path.relative_to(_REPO_ROOT)))
+    offenders = _old_path_import_offenders()
     assert not offenders, (
         "互換シム（旧 compute パス）を import している箇所が残っています:\n"
         + "\n".join(offenders)

@@ -68,7 +68,7 @@ def test_nested_error_is_pure_and_returns_independent_bodies() -> None:
 
     ISSUE-479 F-8: 旧パス経由の出力同一性検査（同じ関数を 2 回呼んで比べるだけ）は参照ゼロ化に
     伴い恒真式へ退化するため、実質的な検査＝純関数性と可変状態の非共有へ置き換えた。
-    識別力: ERROR_STATUS やボディの ``violations`` をモジュール定数として使い回す実装に退行すると
+    識別力: ERROR_STATUS やボディの violations 欄をモジュール定数として使い回す実装に退行すると
     （呼び出し側の変更が次の応答へ漏れるため）Red になる。
     """
     first = http_contract.nested_error("internal", "boom", generation=3)

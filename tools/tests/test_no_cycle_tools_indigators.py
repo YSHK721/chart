@@ -1,13 +1,13 @@
 """アーキ回帰: ``indigators.indicator_ui.tools`` → ``tools`` の循環依存を禁ずる（ISSUE-479 F-3）。
 
-``tools`` パッケージは横断的な運用スクリプトのアクターであり、``indigators.indicator_ui`` は
+tools パッケージは横断的な運用スクリプトのアクターであり、indigators の indicator_ui は
 チャート UI のアクターである。両者は別アクターなので依存辺を持ってはならない。ところが
-``export_jp225_m1.py`` が汎用ポーリングループを ``tools.watch_loop`` から import しており、
-``tools`` ↔ ``indigators`` の相互参照（循環 C-2）が成立していた。
+export_jp225_m1 が汎用ポーリングループを運用スクリプト層から import しており、
+tools ↔ indigators の相互参照（循環 C-2）が成立していた。
 
-規則の実体（``run_watch``）は stdlib のみで書かれた**中立核**であり、どちらのアクターにも属さない。
-実体は ``common.watch_loop`` へ移し、両アクターはそこを参照する。本テストはその向きを固定する
-（AST 走査＝構造で固定し、実行時の import 有無に依存しない）。
+規則の実体（ポーリングループ run_watch）は stdlib のみで書かれた**中立核**であり、どちらの
+アクターにも属さない。実体は中立核パッケージ common の watch_loop へ移し、両アクターはそこを
+参照する。本テストはその向きを固定する（AST 走査＝構造で固定し、実行時の import 有無に依存しない）。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _UI_TOOLS = _REPO_ROOT / "indigators" / "indicator_ui" / "tools"
 
-#: 走査対象（本番のみ・テストと ``__init__`` は除外）。
+#: 走査対象（本番のみ・テストとパッケージ初期化ファイルは除外）。
 _SOURCES = sorted(
     p
     for p in _UI_TOOLS.rglob("*.py")
@@ -43,6 +43,11 @@ def _imported_roots(source: str) -> set[str]:
     return roots
 
 
+def _forbidden_roots_of(path: Path) -> set[str]:
+    """``path`` が import している禁止パッケージ根の集合（読込と判定はここに閉じる）。"""
+    return _imported_roots(path.read_text(encoding="utf-8")) & {_FORBIDDEN_ROOT}
+
+
 def test_scan_target_is_not_empty() -> None:
     """走査対象が空なら本テストは恒真式に退化する（検査の生存確認）。"""
     assert _SOURCES, f"走査対象が空です: {_UI_TOOLS}"
@@ -53,11 +58,11 @@ def test_indicator_ui_tools_do_not_import_the_tools_actor(path: Path) -> None:
     """``indigators/indicator_ui/tools`` の本番モジュールは ``tools`` パッケージを import しない。
 
     識別力: ``from tools.watch_loop import run_watch`` を戻すと Red になる。中立核は
-    ``common.watch_loop`` を参照すること。
+    ``from common.watch_loop import run_watch`` を参照すること。
     """
-    roots = _imported_roots(path.read_text(encoding="utf-8"))
-    assert _FORBIDDEN_ROOT not in roots, (
-        f"{path.relative_to(_REPO_ROOT)} が別アクター '{_FORBIDDEN_ROOT}' を import しています"
+    leaked = _forbidden_roots_of(path)
+    assert not leaked, (
+        f"{path.relative_to(_REPO_ROOT)} が別アクター {sorted(leaked)} を import しています"
         "（循環 C-2）。中立核は common へ置き、双方がそこを参照すること。"
     )
 

@@ -1,9 +1,9 @@
 """``common.watch_loop`` — 汎用ポーリングループ（中立核）の契約（ISSUE-479 F-3）。
 
-``run_watch`` は stdlib のみで書かれ、``tools`` にも ``indigators.indicator_ui`` にも属さない
-汎用抽象である。旧所在 ``tools/watch_loop.py`` に置いたままだと
-``indigators.indicator_ui.tools.export_jp225_m1`` → ``tools`` の依存辺が生まれ、``tools`` 側からの
-参照と合わせて循環（C-2）になる。実体を中立核 ``common`` へ移し、両アクターがそこを参照する。
+run_watch は stdlib のみで書かれ、運用スクリプト層（tools）にもチャート UI（indigators の
+indicator_ui）にも属さない汎用抽象である。旧所在 tools/watch_loop.py に置いたままだと
+export_jp225_m1 から運用スクリプト層への依存辺が生まれ、運用スクリプト層側からの参照と
+合わせて循環（C-2）になる。実体を中立核である common へ移し、両アクターがそこを参照する。
 
 本モジュールは (1) 移設が byte 等価であること、(2) ループの副作用契約、(3) 計算量（無駄な待機の
 不在）を固定する。
@@ -42,15 +42,21 @@ def test_moved_implementation_is_byte_equivalent_to_the_old_location() -> None:
     assert _function_source(_NEW, "run_watch") == _function_source(_OLD, "run_watch")
 
 
-def test_module_imports_only_stdlib() -> None:
-    """中立核の条件: import は stdlib のみ（アクター・偶有的技術に依存しない）。"""
+def _imported_roots(path: Path) -> set[str]:
+    """``path`` の絶対 import 文から、パッケージ根の集合を返す（走査本体・分岐はここに閉じる）。"""
     roots: set[str] = set()
-    for node in ast.walk(ast.parse(_NEW.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             roots |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             roots.add(node.module.split(".")[0])
-    assert roots <= {"__future__", "logging", "time", "typing"}, f"stdlib 以外に依存: {roots}"
+    return roots
+
+
+def test_module_imports_only_stdlib() -> None:
+    """中立核の条件: import は stdlib のみ（アクター・偶有的技術に依存しない）。"""
+    outside = _imported_roots(_NEW) - {"__future__", "logging", "time", "typing"}
+    assert not outside, f"stdlib 以外に依存: {sorted(outside)}"
 
 
 def test_stop_after_bounds_the_number_of_updates() -> None:
@@ -102,7 +108,7 @@ def test_keyboard_interrupt_from_update_terminates_normally() -> None:
 def test_loop_issues_no_work_and_no_wait_beyond_what_the_run_produces(stop_after: int) -> None:
     """計算量テスト: 発行した更新・待機が、実際に消化した周期の分をちょうど 1 つも超えない。
 
-    - 更新: 発行（``update_fn`` 呼出）− 使用（消化した周期＝出力に現れた成果物）= 0。
+    - 更新: 発行（更新関数の呼出回数）− 使用（消化した周期＝出力に現れた成果物）= 0。
     - 待機: 周期の**間**にだけ入る。最後の周期のあとに待つのは捨てられる待機（無駄）なので、
       発行は使用 − 1 に一致する（末尾スリープの不在＝無駄の不在を固定する）。
 

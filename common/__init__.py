@@ -17,11 +17,11 @@
 stdlib のみで書かれた中立核（どのアクターにも属さない汎用抽象）も本パッケージが所有する。
 パッケージ表面には出さず、サブモジュールを直接 import して使う:
     forming_window : 未確定足（forming）の差し替え規則。
-    watch_loop     : 汎用ポーリングループ `run_watch`（ISSUE-479 F-3 で tools から移設）。
+    watch_loop     : 汎用ポーリングループ run_watch（ISSUE-479 F-3 で運用スクリプト層から移設）。
 
-上記の公開 API は **遅延解決**する（PEP 562・ISSUE-479 F-2）。実装 `applied_price.py` は numpy を
+上記の公開 API は **遅延解決**する（PEP 562・ISSUE-479 F-2）。実装 applied_price.py は numpy を
 必要とするが、本パッケージには上記のとおり numpy を使わない中立核も同居しており、
-そちらだけを使う純層（`simulator.replay_ui.domain` / `usecase`）まで `import common` 経由で numpy を
+そちらだけを使う純層（リプレイ UI の domain / usecase）まで `import common` 経由で numpy を
 背負っていた。初回アクセス時にだけ実装を解決することで推移的流入を断つ（表面・同一性は不変）。
 
 典型的な使い方:
@@ -74,10 +74,10 @@ def __dir__():
 class _CommonPackage(ModuleType):
     """公開名とサブモジュール名の衝突ガード。
 
-    公開名 ``applied_price`` はサブモジュール ``common.applied_price`` と同名である。CPython の
+    公開名 applied_price はサブモジュール common.applied_price と同名である。CPython の
     import 機構はサブモジュール読込後に親パッケージの属性へ**無条件に** setattr する
-    （``importlib/_bootstrap.py`` の ``_load``）ため、``from common.applied_price import ...`` が
-    先行すると ``common.applied_price`` はモジュールに差し替わり、以後
+    （標準ライブラリ importlib の _bootstrap が行う）ため、``from common.applied_price import ...`` が
+    先行すると common.applied_price はモジュールに差し替わり、以後
     ``from common import applied_price`` が関数ではなくモジュールを掴む（呼び出し側で TypeError）。
     ``__getattr__`` は「属性が無いとき」しか呼ばれないので PEP 562 だけでは防げない。
 

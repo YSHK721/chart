@@ -1,11 +1,11 @@
 """汎用ポーリングループ（watch 共通基盤・アクター非依存の中立核）。
 
 ``update_fn → sleep_fn(interval)`` を繰り返す薄いループの**単一定義**。本体は sleep と例外捕捉
-のみで、``tools``（運用スクリプト）にも ``indigators.indicator_ui``（チャート UI）にも属さない
-汎用抽象である。旧所在 ``tools/watch_loop.py`` に置いたままだと
-``indigators.indicator_ui.tools.export_jp225_m1`` → ``tools`` の依存辺が生まれ、``tools`` 側の
-参照と合わせて循環（ISSUE-479 循環 C-2）になるため、stdlib のみの中立核 ``common`` へ移設した。
-``tools.live_tick_watch`` / ``export_jp225_m1 --watch`` の両 watch が共用する。
+のみで、運用スクリプト層（tools）にもチャート UI（indigators.indicator_ui）にも属さない汎用抽象
+である。旧所在 tools/watch_loop.py に置いたままだと export_jp225_m1 から運用スクリプト層への
+依存辺が生まれ、運用スクリプト層側の参照と合わせて循環（ISSUE-479 循環 C-2）になるため、
+stdlib のみの中立核である本パッケージへ移設した。live_tick_watch と
+``export_jp225_m1 --watch`` の両 watch が共用する。
 """
 from __future__ import annotations
 

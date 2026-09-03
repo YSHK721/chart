@@ -1,17 +1,17 @@
 """アーキ回帰: ``common`` パッケージ表面の純度と遅延化契約（ISSUE-479 F-2 / F-7d）。
 
-``common`` は「計算・本質・安定層」であり、**import しただけ**では偶有的技術（numpy / pandas）を
-プロセスへ持ち込まない。従来 ``common/__init__.py`` は ``.applied_price`` を eager import して
-おり、``common.forming_window``（stdlib のみ）を使うだけの純層（``simulator.replay_ui.domain`` /
-``usecase``）にも numpy が推移的に流入していた。本モジュールはその遅延化を 3 段で固定する:
+common は「計算・本質・安定層」であり、**import しただけ**では偶有的技術（numpy / pandas）を
+プロセスへ持ち込まない。従来 common/__init__.py は applied_price を eager import しており、
+中立核 common.forming_window（stdlib のみ）を使うだけの純層（リプレイ UI の domain / usecase）にも
+numpy が推移的に流入していた。本モジュールはその遅延化を 3 段で固定する:
 
   1. **実行**（Red-1）: 新しいインタプリタで ``import common`` し ``sys.modules`` に numpy / pandas が
-     現れないこと。AST 走査では推移的流入を検出できない（``test_contact_scan_usecase_purity`` 流儀）。
-  2. **順序独立**（Red-2）: 公開名 ``applied_price`` はサブモジュール名と同名である。CPython の
+     現れないこと。AST 走査では推移的流入を検出できない（contact_scan 純度検査と同じ流儀）。
+  2. **順序独立**（Red-2）: 公開名 applied_price はサブモジュール名と同名である。CPython の
      import 機構はサブモジュール読込後に親属性へ無条件 setattr するため、素朴な PEP 562 遅延化では
      ``from common.applied_price import ...`` が先行したときに ``from common import applied_price``
      が**モジュール**を掴む。どの import 順でも関数が得られることを固定する。
-  3. **同一性**: 公開 11 名が ``common.applied_price`` の同名オブジェクトそのものであること。
+  3. **同一性**: 公開 11 名が common.applied_price の同名オブジェクトそのものであること。
 
 加えて計算量テスト（絶対命令）を置く。遅延化は「アクセスのたびに解決し直す」実装でも状態検証は
 緑のままになるため、Test Spy で「発行した解決 − 出力が必要とした解決 = 0」を表明する。
@@ -258,8 +258,8 @@ def test_lazy_surface_resolution_count_does_not_grow_with_access_count() -> None
 # --------------------------------------------------------------------------------------
 # 5. パッケージ依存純度（ISSUE-479 F-7d）
 #
-# ``common`` は「計算・本質・安定層」であり、どのアクターにも属さない。import してよいのは
-# stdlib と計算の型（numpy / pandas）と自パッケージのみ。表示層 ``common_view`` への依存は
+# common は「計算・本質・安定層」であり、どのアクターにも属さない。import してよいのは
+# stdlib と計算の型（numpy / pandas）と自パッケージのみ。表示層（common_view）への依存は
 # 安定度逆転（安定→不安定）になるため特に禁ずる（ISSUE-104 🟡-1 の是正を構造で固定する）。
 #
 # 現状すべて緑＝**回帰錨**である（違反を直すためではなく、混入を検出するために置く）。検査に力が

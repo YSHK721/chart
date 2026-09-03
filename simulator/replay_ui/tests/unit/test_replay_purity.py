@@ -6,9 +6,9 @@ domain=依存ゼロ（stdlib のみ）／usecase=domain のみ（偶有的技術
   1. **構造**: ソースを AST 走査し、import 文に numpy / pandas が現れないこと。
   2. **実行**（ISSUE-479 F-7a）: 各モジュールを新しいインタプリタで import し、``sys.modules`` に
      numpy / pandas が現れないこと。AST だけでは**推移的な**流入（依存先の依存が numpy を引く）を
-     検出できず、宣言「純・stdlib のみ」が静かに偽になる。実際 ``forming_bar`` / ``causal_compute``
-     は stdlib のみの ``common.forming_window`` を import しているだけなのに、``common/__init__``
-     が ``applied_price``（numpy）を eager ロードしていたため import しただけで汚染されていた。
+     検出できず、宣言「純・stdlib のみ」が静かに偽になる。実際 domain の forming_bar と usecase の
+     causal_compute は stdlib のみの中立核 common.forming_window を import しているだけなのに、
+     common パッケージの __init__ が numpy 実装を eager ロードしていたため汚染されていた。
 """
 from __future__ import annotations
 
@@ -75,8 +75,8 @@ def test_usecase_depends_only_on_domain_or_stdlib(path):
 # 実行検定（ISSUE-479 F-7a）: AST では見えない**推移的**流入を新しいインタプリタで実測する。
 #
 # 上の 3 検査は直接 import しか見ない。実際 domain/forming_bar.py・usecase/causal_compute.py は
-# ``common.forming_window``（stdlib のみ）を import しているが、``common/__init__.py`` が
-# ``.applied_price``（numpy）を eager import していたため、パッケージ経由で numpy が流入していた。
+# 中立核 common.forming_window（stdlib のみ）を import しているが、common/__init__.py が
+# numpy 実装を eager import していたため、パッケージ経由で numpy が流入していた。
 # 宣言「純・stdlib のみ」が静かに偽になるため、``test_contact_scan_usecase_purity.py:56-92`` と
 # 同じ様式で実行時の ``sys.modules`` を固定する。対象は上の列挙から機械導出する（第 2 の表を作らない）。
 # ======================================================================================
