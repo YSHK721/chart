@@ -33,6 +33,7 @@ from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.run_features import RunFeatures
+from simulator.usecase.schedule_selection import requires_tick_granularity
 from simulator.usecase.session_gate import SessionGate
 from simulator.usecase.stop_out_policy import StopOutContext, resolve_stop_out_policy
 from simulator.usecase.tick_schedule import TickSchedule
@@ -170,6 +171,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         tick_model: Any,
         session_calendar: Any = None,
         position_manager: Any = None,
+        schedule: Any = None,
     ) -> None:
         self._strategy = strategy
         self._indicators = indicators
@@ -180,6 +182,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # ＝既定経路 byte-identical・Phase 7）。None のときは呼出点を素通りする（`if pm is
         # not None` ゲート）。注入時のみ B2（bar）/B4（tick）で保有玉を評価する。
         self._position_manager = position_manager
+        # 評価スケジュール（DI・既定 None＝run ごとに粒度から組む＝既定経路 byte-identical）。
+        #   注入する場合の契約: スケジュールは run のあいだの状態（ティック 0 件バーの
+        #   持ち越しクォート等）を持ちうるため、**1 run につき 1 つ**でなければならない。
+        #   同じ Interactor で複数 run を回す呼出側が 1 つのスケジュールを注入すると、
+        #   run をまたいで状態が漏れる。既定（None）はその心配が無い——run ごとに組むため。
+        self._schedule = schedule
         # 約定損益の口座通貨丸め桁（run の準備段が config から設定する）。
         # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
         self._profit_round_digits: "int | None" = None
@@ -398,19 +406,19 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         run のスイッチを 1 度だけ読み、粒度に合うスケジュールを組んで本体へ渡す。
         """
         features = RunFeatures.of(request.config)
-        return self._run(request, features, self._make_schedule(request, features))
+        schedule = self._schedule or self._make_schedule(request, features)
+        return self._run(request, features, schedule)
 
     def _make_schedule(
         self, request: RunBacktestRequest, features: RunFeatures
     ) -> Any:
         """run の粒度に合う評価スケジュールを組む（run につき 1 つ）。
 
-        実ティックを消費する run と、ペンディングのライフサイクルを回す run は、足の
-        途中に評価点を要する（前者はティックごとの値洗いのため、後者はトリガ評価のため）。
-        それ以外は 1 バー 1 点で足りる。
+        どの run が足の途中の評価点を要するかは選択規則の表が決める（実行経路は条件を
+        持たない）。要らない run は 1 バー 1 点で足りる。
         """
         point_size = request.symbol_spec.point_size
-        if features.tick_model == "real_ticks" or features.pending_lifecycle:
+        if requires_tick_granularity(features):
             return TickSchedule(
                 tick_model=self._tick_model,
                 pending_lifecycle=features.pending_lifecycle,

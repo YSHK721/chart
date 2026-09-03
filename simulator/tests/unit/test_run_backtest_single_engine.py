@@ -1433,3 +1433,99 @@ class TestTheEngineHoldsItsOrderAcrossSizes:
                 measured[high]["updates_per_point"] - measured[low]["updates_per_point"]
             ) == 0, (axis, measured)
             assert measured[low]["updates_per_point"] - 1 == 0, (axis, measured)
+
+
+# ---- 4-11: 粒度の選択規則と加法注入（O-1） ----
+
+class TestTheEngineHoldsNoGranularityCondition:
+    """粒度を決める条件が実行経路に書かれていないこと。"""
+
+    def test_the_engine_holds_no_tick_model_name_literal(self):
+        """実行経路に粒度を決める文字列が 1 つも無いこと（AST）。
+
+        規則の所在は選択規則の表 1 箇所である。実行経路にリテラルが残っていると、
+        条件を増やすときに実行経路を開くことになり、しかも表と実行経路が食い違いうる。
+        """
+        import ast
+
+        offenders = [
+            (node.lineno, node.value)
+            for node in ast.walk(_run_backtest_tree())
+            if isinstance(node, ast.Constant) and node.value == "real_ticks"
+        ]
+        assert offenders == [], f"粒度を決める文字列が実行経路に残っている: {offenders}"
+
+    def test_taking_a_row_out_of_the_trigger_table_changes_the_granularity(
+        self, monkeypatch
+    ):
+        """**負の対照**: 表が実際に粒度を決めていること。
+
+        表から実ティックの行を外すと、実ティックの run がバー粒度で走るようになる
+        （＝表が飾りではなく判定そのものであることの実証）。
+        """
+        import simulator.usecase.schedule_selection as selection
+        from simulator.usecase.run_features import RunFeatures
+
+        request = _request(_bars(4), config=_config(tick_model="real_ticks"))
+        features = RunFeatures.of(request.config)
+        # 表が効いているとき
+        assert _interactor()._make_schedule(request, features).id == "tick"
+        # 行を外すと効かなくなる
+        monkeypatch.setattr(
+            selection,
+            "TICK_GRANULARITY_TRIGGERS",
+            tuple(r for r in selection.TICK_GRANULARITY_TRIGGERS if r[0] != "tick_model"),
+        )
+        assert _interactor()._make_schedule(request, features).id == "bar"
+
+
+class TestTheScheduleCanBeSuppliedFromOutside:
+    """スケジュールの加法注入（既定 None＝従来どおり run ごとに組む）。"""
+
+    def test_the_constructor_takes_a_schedule_with_a_default_of_none(self):
+        import inspect
+
+        parameter = inspect.signature(RunBacktestInteractor.__init__).parameters["schedule"]
+        assert parameter.default is None
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_a_run_without_an_injected_schedule_builds_its_own(self):
+        # 既定の 44 構築点はこの経路を通る（1 行も変えていない）。
+        assert _interactor()._schedule is None
+        result = _interactor().execute(_request(_bars(6)))
+        assert len(result.equity_curve) - 6 == 0
+
+    def test_an_injected_schedule_is_used_verbatim(self):
+        # Arrange: 生んだ点を数えるスケジュールを外から渡す。
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        injected = _CountingSchedule(
+            BarSchedule(floating_pnl_basis="close", point_size=0.00001)
+        )
+        interactor = RunBacktestInteractor(
+            strategy=_NullStrategy(),
+            indicators=_NullIndicators(),
+            tick_model=_OneTickPerBar(),
+            schedule=injected,
+        )
+        # Act
+        result = interactor.execute(_request(_bars(9)))
+        # Assert: 注入した実体が run を駆動した（自前で組み直していない）。
+        assert len(injected.produced) - len(result.equity_curve) == 0
+        assert len(injected.produced) - 9 == 0
+
+    def test_an_injected_schedule_overrides_the_granularity_the_config_asks_for(self):
+        """注入は選択規則より優先される（呼出側が粒度を決められる＝拡張点）。"""
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        interactor = RunBacktestInteractor(
+            strategy=_NullStrategy(),
+            indicators=_NullIndicators(),
+            tick_model=_OneTickPerBar(),
+            schedule=BarSchedule(floating_pnl_basis="close", point_size=0.00001),
+        )
+        # config は実ティックを求めるが、注入されたバー粒度で走る。
+        result = interactor.execute(
+            _request(_bars(6), config=_config(tick_model="real_ticks"))
+        )
+        assert len(result.equity_curve) - 6 == 0
