@@ -1,7 +1,7 @@
 """dwell_rollup_store — dwell 日別ロールアップのディスク永続キャッシュ Repository（gateway 層）。
 
 ISSUE-092 ④: 永続化の物理 I/O（レイヤ責務違反・ISSUE-091 #5）を compute 層から本 gateway 層へ移設
-した（``compute/market_profile_dwell_store.py`` は本モジュールへの薄い再エクスポートとして温存）。
+した。旧 compute パスの互換再エクスポートシムは参照ゼロの孤児となり削除済み（ISSUE-479 F-4）。
 クラス・公開シンボル・保存形式・原子的確定・fail-safe は移設前と完全に同一（byte 不変・回帰ゼロ）。
 
 ISSUE-040(b): :mod:`market_profile_dwell` に混在していた 3 責務（dwell 集計数学 / ディスクキャッシュ

@@ -1,7 +1,7 @@
 """zp_store — z(p) 日別成果物のディスク永続キャッシュ Repository（gateway 層・純 I/O・fail-safe）。
 
 ISSUE-092 ④: 永続化の物理 I/O（レイヤ責務違反・ISSUE-091 #5）を compute 層から本 gateway 層へ移設
-した（``compute/market_profile_zp_store.py`` は本モジュールへの薄い再エクスポートとして温存）。
+した。旧 compute パスの互換再エクスポートシムは参照ゼロの孤児となり削除済み（ISSUE-479 F-4）。
 クラス・公開シンボル・保存形式・原子的確定・fail-safe は移設前と完全に同一（byte 不変・回帰ゼロ）。
 
 :class:`DwellRollupStore` と同パターンの Store（既存 Store は非改変）。保存単位は 2 種:
