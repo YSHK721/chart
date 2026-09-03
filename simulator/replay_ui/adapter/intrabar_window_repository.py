@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort
 
 _M1_CAP = 1500
@@ -60,7 +60,7 @@ class IntrabarWindowRepository:
         # 既定は dataset のみのアクセサ（ISSUE-136 ISP: MP controller を eager import しない）。
         # テストは fake loader を注入（MarketProfileGateway と同型）。
         self._loader = (
-            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_dataset
+            bridge_loader if bridge_loader is not None else api_loader.load_dataset
         )
 
     # ---- IntrabarWindowPort ----

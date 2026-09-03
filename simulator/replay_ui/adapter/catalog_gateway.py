@@ -2,7 +2,7 @@
 
 CLEAN_ARCH §6: 指標 param の既定値と **variant ごとの受理 param（paramScopes）** の単一情報源は
 ライブ側 back（``call_binding._TABLE``）にある。本 gateway はライブ controller ``handle_catalog``
-を ``_indicator_ui_bridge`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す
+を ``api_loader`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す
 （DRY・無改変＝ライブとリプレイで応答が byte 一致する）。serve は本 gateway を Port として注入し
 bridge を直 import しない（DIP）。
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 
 
 class CatalogGateway:
@@ -33,7 +33,7 @@ class CatalogGateway:
         self._loader = (
             bridge_loader
             if bridge_loader is not None
-            else _indicator_ui_bridge.load_catalog_handler
+            else api_loader.load_catalog_handler
         )
 
     def catalog(self) -> "tuple[int, dict]":

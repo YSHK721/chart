@@ -135,9 +135,9 @@ def test_a_repeated_tick_request_issues_no_additional_material(monkeypatch) -> N
     数えるのは確定素材の発行（full_compute）だけである。形成中足の末尾 1 点（増分ディス
     パッチ）は段 2 の観測値更新であり、要求ごとに出るのが仕様（§7）。
     """
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
+    from indigators.indicator_ui import api_loader
 
-    bridge = _indicator_ui_bridge.load_compute()
+    bridge = api_loader.load_compute()
     issued: "list[str]" = []
     inner = bridge.full_compute
     monkeypatch.setattr(

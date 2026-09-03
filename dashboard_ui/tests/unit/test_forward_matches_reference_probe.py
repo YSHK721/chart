@@ -39,9 +39,9 @@ CASES = {
 
 @pytest.fixture(scope="module")
 def bridge():
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
+    from indigators.indicator_ui import api_loader
 
-    return _indicator_ui_bridge.load_compute()
+    return api_loader.load_compute()
 
 
 @pytest.fixture(scope="module")

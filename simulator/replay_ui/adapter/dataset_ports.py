@@ -1,6 +1,6 @@
 """dataset 具象（``marketdata.dataset``）の役割別 狭いポート（ISSUE-136 ISP）。
 
-replay の adapter 群は ``_indicator_ui_bridge`` 経由で取得した dataset 具象（module）の **一部の面**
+replay の adapter 群は api_loader 経由で取得した dataset 具象（module）の **一部の面**
 だけを使う。実測（ISSUE-136）では:
 
 - ``is_known`` / ``is_known_timeframe`` … ref・timeframe のホワイトリスト検証

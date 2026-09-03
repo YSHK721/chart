@@ -2,7 +2,7 @@
 
 CLEAN_ARCH §6: 取引密度プロファイルの集計（session_offset_profile / concentration_bands）と検証は
 indicator_ui の ``handle_tickvol_profile`` 純ロジックに一元化されている。本 gateway はそれを
-``_indicator_ui_bridge`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す
+``api_loader`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す
 （DRY・無改変＝ライブとリプレイの帯が byte 一致する）。serve は本 gateway を Port として注入し
 bridge を直 import しない（DIP・market_profile_gateway と同型）。
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 
 
 class TickvolProfileGateway:
@@ -31,7 +31,7 @@ class TickvolProfileGateway:
         self._loader = (
             bridge_loader
             if bridge_loader is not None
-            else _indicator_ui_bridge.load_tickvol_handler
+            else api_loader.load_tickvol_handler
         )
 
     def profile(

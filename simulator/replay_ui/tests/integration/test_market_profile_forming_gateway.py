@@ -1,6 +1,6 @@
 """MarketProfileFormingGateway: bridge 委譲の検証（fake bridge 注入）＋ 実 bridge export 到達性。
 
-Gateway は ``_indicator_ui_bridge`` の ``handle_market_profile_forming``（indicator_ui controller の
+Gateway は ``api_loader`` の ``handle_market_profile_forming``（indicator_ui controller の
 純ロジック）へ委譲し、(status, body) を返す。serve は本 gateway を Port として注入し、bridge を
 直 import しない（DIP）。実 bridge が当該シンボルを export していることも到達性テストで固定する。
 
@@ -102,8 +102,8 @@ def test_gateway_frm_omitted_does_not_pass_frm_backward_compat():
 
 
 def test_real_bridge_exports_handle_market_profile_forming():
-    # Arrange: 実 _indicator_ui_bridge.load の namespace に handle_market_profile_forming がある。
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
-    ns = _indicator_ui_bridge.load()
+    # Arrange: 実 api_loader.load の namespace に handle_market_profile_forming がある。
+    from indigators.indicator_ui import api_loader
+    ns = api_loader.load()
     # Assert: export 到達性（callable）。
     assert callable(getattr(ns, "handle_market_profile_forming", None))

@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import RefValidationPort
 from simulator.replay_ui.adapter.causal_candle_repository import CausalCandleRepository
 from simulator.replay_ui.adapter.causal_compute_gateway import CausalComputeGateway
@@ -67,7 +67,7 @@ def build_replay_app(
 
     # ISSUE-136 ISP: ref ホワイトリスト検証（is_known）だけを要するため dataset のみのアクセサを使い、
     #   dataset 具象を検証専用の狭いポート型で受ける。
-    bridge = _indicator_ui_bridge.load_dataset(api_path, root)
+    bridge = api_loader.load_dataset(api_path, root)
     ref_validation: RefValidationPort = bridge.dataset
 
     # MP サブバー tick 逐次成長: forming gateway（bridge 委譲）を Port として注入する。

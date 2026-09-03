@@ -3,7 +3,7 @@
 MP backend は固有名トップパッケージ ``market_profile_api`` を持ち、共有インフラ
 （``adapter.compute`` の dataset/forming_bar/ERROR_STATUS・``framework.server``）は
 indicator_ui の ``api/`` を sys.path 経由で参照する。両 sys.path 根＋repo 根（marketdata 用）を
-import パスへ追加する（server.py・_indicator_ui_bridge.py と同じ結線機構）。
+import パスへ追加する（server.py・api_loader.py と同じ結線機構）。
 
 this file: indigators/market_profile/api/tests/conftest.py
   parents[1] = indigators/market_profile/api      （market_profile_api の解決）

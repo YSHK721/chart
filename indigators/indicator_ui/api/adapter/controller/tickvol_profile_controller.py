@@ -7,7 +7,7 @@
 
 集計協調子（marketdata.tickvol_profile）は本 module の名前解決を通して注入する
 （``candles_controller`` の ``forming_bar_mod`` と同規律＝テストの monkeypatch アンカーを残す）。
-リプレイ core（simulator/replay_ui）は ``_indicator_ui_bridge`` 経由で本 handler を read-only 再利用
+リプレイ core（simulator/replay_ui）は api_loader 経由で本 handler を read-only 再利用
 するため、実装は 1 か所のままライブ・リプレイ双方の応答が byte 一致する。
 """
 from __future__ import annotations
