@@ -72,7 +72,7 @@ class Account:
         実質ノーマージン＝stop-out しない・実 MT5 hedging 整合）。実効証拠金が 0 のとき
         （保有ゼロ含む）は margin_level と同じく ∞ を返す。
 
-        従来 RunBacktestInteractor._execute_every_tick に inline されていた実効証拠金
+        従来 RunBacktestInteractor の実行経路に inline されていた実効証拠金
         算出（買い計・売り計を required_margin で合算し大きい側を採る）を、口座不変
         ルールとして Account が所有する。合算は self.open_positions を保有順で走査し、
         Position.required_margin（volume × contract_size × entry_price ÷ leverage）を

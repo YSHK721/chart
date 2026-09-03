@@ -1529,3 +1529,153 @@ class TestTheScheduleCanBeSuppliedFromOutside:
             _request(_bars(6), config=_config(tick_model="real_ticks"))
         )
         assert len(result.equity_curve) - 6 == 0
+
+
+# ---- 4-12: 計算量ゲートの検出力（C4・負の対照） ----
+#
+# ここに置く 3 つの欠陥は、いずれも**出力を 1 ビットも変えない**。だから状態検証
+# （確定トレード・equity 系列・sha256 指紋）では原理的に落ちない。落とせるのは
+# 「発行した計算 − 使った計算」を数える検定だけである。各検定は
+#   (1) 欠陥を入れても出力が変わらないこと
+#   (2) それでも計算量の検定は赤になること
+# の 2 つを続けて示す。(1) が無いと「ただ壊れているものを検出しただけ」になり、
+# 計算量検定が要る理由の実証にならない。
+
+
+class _DiscardingSchedule:
+    """M1: 点を 2 セット作って 1 セットだけ差し出す（作ってから捨てる）。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    @property
+    def id(self):
+        return self._inner.id
+
+    def points(self, bar_index, bar, prev_close):
+        list(self._inner.points(bar_index, bar, prev_close))  # 作って捨てる
+        yield from self._inner.points(bar_index, bar, prev_close)
+
+
+class _PerLotSettlingInteractor(RunBacktestInteractor):
+    """M2: 評価点ごとで足りる口座再評価を、保有玉ごとに繰り返す（N+1）。"""
+
+    def _settle_evaluation_point(self, state, open_trades, halted, **kwargs):
+        for _ot in open_trades:
+            state.account.update_floating_pnl_at(
+                bid=kwargs["eval_bid"], ask=kwargs["eval_ask"]
+            )
+        return super()._settle_evaluation_point(state, open_trades, halted, **kwargs)
+
+
+class _ResetupPerBarInteractor(RunBacktestInteractor):
+    """M3: run につき 1 度で足りる準備（セッション判定の導出）をバーごとに繰り返す。"""
+
+    def _evaluate_point(self, state, point, open_trades, halted):
+        self._session_gate(state.bars)  # 同じ答えを毎回求め直す
+        return super()._evaluate_point(state, point, open_trades, halted)
+
+
+def _outcome(result):
+    """出力の同一性を測るための正規形（欠陥が出力を変えないことの確認用）。"""
+    return (
+        [(t.side, t.entry_price, t.exit_price, t.exit_reason) for t in result.trades],
+        list(result.equity_curve),
+        list(result.balance_curve),
+    )
+
+
+class TestTheComplexityGatesHaveDetectionPower:
+    """3 つの欠陥が「出力は同じまま」計算量の検定に捕まること。"""
+
+    def test_m1_producing_points_that_are_thrown_away_is_caught(self):
+        # Arrange: 正しい run と、点を作って捨てる run。
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        def _build(wrap):
+            counted = _CountingSchedule(
+                BarSchedule(floating_pnl_basis="close", point_size=0.00001)
+            )
+            schedule = wrap(counted) if wrap else counted
+            interactor = RunBacktestInteractor(
+                strategy=_OrdersPerBar({0: [_market("buy")]}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+                schedule=schedule,
+            )
+            return counted, interactor.execute(_request(_bars(12)))
+
+        sound_counter, sound = _build(None)
+        faulty_counter, faulty = _build(_DiscardingSchedule)
+        # Assert (1): 出力は 1 ビットも変わらない（状態検証では落ちない）。
+        assert _outcome(faulty) == _outcome(sound)
+        # Assert (2): それでも「生んだ点 − 使った点」は 0 でなくなる。
+        consumed = len(sound.equity_curve)
+        assert len(sound_counter.produced) - consumed == 0
+        assert len(faulty_counter.produced) - consumed > 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_m2_resolving_once_per_open_trade_is_caught(
+        self, path, overrides, monkeypatch
+    ):
+        # Arrange: 玉 1 / 玉 4 で、正しい run と玉ごとに再評価する run を測る。
+        from simulator.domain.account import Account
+
+        original = Account.update_floating_pnl_at
+
+        def _measure(cls, lot_count):
+            updates: "list[int]" = []
+            monkeypatch.setattr(
+                Account,
+                "update_floating_pnl_at",
+                lambda self, **kw: (updates.append(1), original(self, **kw))[1],
+            )
+            result = cls(
+                strategy=_OrdersPerBar({0: [_market("buy")] * lot_count}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+            ).execute(_request(_bars(8), config=_config(**overrides)))
+            return result, len(updates) / len(result.equity_curve)
+
+        sound, sound_ratio = _measure(RunBacktestInteractor, 4)
+        faulty, faulty_ratio = _measure(_PerLotSettlingInteractor, 4)
+        _, faulty_ratio_one_lot = _measure(_PerLotSettlingInteractor, 1)
+        # Assert (1): 出力は同じ（含み損益の再評価は同じクォートなら冪等）。
+        assert _outcome(faulty) == _outcome(sound)
+        # Assert (2): 点あたりの発行が玉数に比例して増える（正しい版は増えない）。
+        assert sound_ratio - 1 == 0
+        assert faulty_ratio - faulty_ratio_one_lot > 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_m3_repeating_the_setup_on_every_bar_is_caught(self, path, overrides):
+        # Arrange: セッション判定の導出発行を数える（正しい版は run につき 1 回）。
+        def _measure(cls, bar_count):
+            log: "list[str]" = []
+            cls(
+                strategy=_NullStrategy(),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+                session_calendar=_LoggingCalendar(log),
+            ).execute(_request(_bars(bar_count), config=_config(**overrides)))
+            return log.count("calendar.closed_bar_indices")
+
+        def _run_once(cls, bar_count):
+            return cls(
+                strategy=_OrdersPerBar({0: [_market("buy")]}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+            ).execute(_request(_bars(bar_count), config=_config(**overrides)))
+
+        # Assert (1): 出力は同じ（同じ入力から同じ閉鎖バー集合が出るだけ）。
+        assert _outcome(_run_once(_ResetupPerBarInteractor, 10)) == _outcome(
+            _run_once(RunBacktestInteractor, 10)
+        )
+        # Assert (2): 準備の発行がバー数に比例して増える（正しい版は増えない）。
+        sound_small, sound_large = _measure(RunBacktestInteractor, 10), _measure(
+            RunBacktestInteractor, 40
+        )
+        faulty_small, faulty_large = _measure(_ResetupPerBarInteractor, 10), _measure(
+            _ResetupPerBarInteractor, 40
+        )
+        assert sound_large - sound_small == 0
+        assert faulty_large - faulty_small > 0
