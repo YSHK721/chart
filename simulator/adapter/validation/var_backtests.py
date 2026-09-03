@@ -7,9 +7,9 @@ usecase へは float p 値のみ返す契約は不変。
 """
 from __future__ import annotations
 
-from common.stats_boot import (  # noqa: F401
+from common.stats_boot import norm_cdf  # noqa: F401
+from common.var_backtests import (  # noqa: F401
     VarBacktests,
     _xlogx_term,
     chi2_sf_df1,
-    norm_cdf,
 )

@@ -1,12 +1,16 @@
 """stats_boot — 定常ブートストラップ統計核（純 numpy/math・共有プリミティブ層）。
 
-Hansen(2005) SPA_c・Politis-White(2004) 自動ブロック長・Politis-Romano(1994) 定常ブートの
-単一定義。simulator（adapter/validation）と mp_stats（分析パイプライン）の両方が本モジュールへ
+Politis-White(2004) 自動ブロック長・Politis-Romano(1994) 定常ブートの単一定義。
+simulator（adapter/validation）と mp_stats（分析パイプライン）の両方が本モジュールへ
 依存する（ISSUE-091 A1: mp_stats → simulator.adapter private 直結の安定度逆転を、中立共有核への
 抽出で解消。simulator 側は従来名の再エクスポートで互換維持）。
 
+本モジュールはブートストラップ核だけを持つ。核の**利用者**である検定は別モジュールにある
+（ISSUE-479 Wave2 C-3 で分割・後方互換の再エクスポートは置かない）:
+    Hansen SPA           : common の hansen_spa（本モジュールを利用する）。
+    VaR 被覆検定         : common の var_backtests（ブートストラップを使わない）。
+
 出典:
-    Hansen (2005) "A Test for Superior Predictive Ability", JBES 23(4).
     Politis & White (2004) "Automatic Block-Length Selection for the Dependent
     Bootstrap", Econometric Reviews 23(1):53-70.
     Politis & Romano (1994) "The Stationary Bootstrap", JASA 89(428).
@@ -14,7 +18,6 @@ Hansen(2005) SPA_c・Politis-White(2004) 自動ブロック長・Politis-Romano(
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
 import numpy as np
 
@@ -22,113 +25,6 @@ import numpy as np
 def norm_cdf(x: float) -> float:
     """標準正規 CDF Φ（SPA studentize 用にも供給）。"""
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def chi2_sf_df1(x: float) -> float:
-    """χ²(df=1) 生存関数（上側確率）。x<=0 は p=1。"""
-    if x <= 0:
-        return 1.0
-    return math.erfc(math.sqrt(x / 2.0))
-
-
-def _xlogx_term(count: int, prob: float) -> float:
-    """count * log(prob)。count==0 は極限で 0 扱い（0·log0=0）。"""
-    if count == 0:
-        return 0.0
-    if prob <= 0.0:
-        return 0.0
-    return count * math.log(prob)
-
-
-class VarBacktests:
-    """ストップ被覆検定（Kupiec・Christoffersen）。χ²(1)・Φ は math.erf/erfc（scipy 禁止）。"""
-
-    def kupiec(self, hit_series: "Sequence[int]", alpha: float = 0.05) -> float:
-        n = len(hit_series)
-        if n == 0:
-            return 1.0
-        x = sum(1 for h in hit_series if h)
-        pi_hat = x / n
-        # LR_POF = -2[ x lnα + (n-x)ln(1-α) - x lnπ̂ - (n-x)ln(1-π̂) ]
-        log_l_null = _xlogx_term(x, alpha) + _xlogx_term(n - x, 1 - alpha)
-        log_l_alt = _xlogx_term(x, pi_hat) + _xlogx_term(n - x, 1 - pi_hat)
-        lr = -2.0 * (log_l_null - log_l_alt)
-        if lr < 0:
-            lr = 0.0
-        return chi2_sf_df1(lr)
-
-    def christoffersen_independence(self, hit_series: "Sequence[int]") -> float:
-        # 遷移カウント n_ij（i=前, j=今）
-        n00 = n01 = n10 = n11 = 0
-        for prev, cur in zip(hit_series, hit_series[1:]):
-            if prev == 0 and cur == 0:
-                n00 += 1
-            elif prev == 0 and cur == 1:
-                n01 += 1
-            elif prev == 1 and cur == 0:
-                n10 += 1
-            else:
-                n11 += 1
-        denom0 = n00 + n01
-        denom1 = n10 + n11
-        total = denom0 + denom1
-        if total == 0:
-            return 1.0
-        pi01 = n01 / denom0 if denom0 else 0.0
-        pi11 = n11 / denom1 if denom1 else 0.0
-        pi = (n01 + n11) / total
-        # L_null = (1-π)^(n00+n10) π^(n01+n11)
-        log_l_null = _xlogx_term(n00 + n10, 1 - pi) + _xlogx_term(n01 + n11, pi)
-        # L_alt = (1-π01)^n00 π01^n01 (1-π11)^n10 π11^n11
-        log_l_alt = (
-            _xlogx_term(n00, 1 - pi01) + _xlogx_term(n01, pi01)
-            + _xlogx_term(n10, 1 - pi11) + _xlogx_term(n11, pi11)
-        )
-        lr = -2.0 * (log_l_null - log_l_alt)
-        if lr < 0:
-            lr = 0.0
-        return chi2_sf_df1(lr)
-
-
-class HansenSpa:
-    """Hansen(2005) SPA_c consistent（詳細設計 §5.5・D3）。
-
-    定常ブート（Politis-Romano 1994・幾何 block・wrap）・PW(2004) 自動ブロック長・
-    studentize（√n·f̄_k/ω̂_k）・consistent 再センタリング（閾値 √(2 log log n)）。
-    seed 固定（np.random.default_rng）で決定論再現（NFR-D3）。
-    """
-
-    def spa_pvalue(
-        self,
-        f_matrix: "Sequence[Sequence[float]]",
-        *,
-        seed: int,
-        B: int = 5000,
-    ) -> float:
-        F = np.asarray([list(r) for r in f_matrix], dtype=float)
-        n, K = F.shape
-        if n < 2 or K < 1:
-            return 1.0
-        fbar = F.mean(axis=0)
-        block = pw_block_len(F)
-        omega = bootstrap_std(F, seed, B, block)
-        omega = np.where(omega <= 0, 1e-12, omega)
-        z = np.sqrt(n) * fbar / omega
-        V = float(np.max(z))
-        # consistent 再センタリング閾値 √(2 log log n)
-        ll = math.log(math.log(n)) if n > math.e else 0.0
-        thr = math.sqrt(2.0 * ll) if ll > 0 else 0.0
-        g = np.where(z >= -thr, fbar, 0.0)
-        rng = np.random.default_rng(seed)
-        exceed = 0
-        for _ in range(B):
-            idx = stationary_bootstrap_indices(n, block, rng)
-            Fb = F[idx]
-            fbar_b = Fb.mean(axis=0)
-            Vb = float(np.max(np.sqrt(n) * (fbar_b - g) / omega))
-            if Vb > V:
-                exceed += 1
-        return exceed / B
 
 
 def bootstrap_std(F: "np.ndarray", seed: int, B: int, block: int) -> "np.ndarray":

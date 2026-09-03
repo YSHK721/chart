@@ -25,7 +25,7 @@ from .report import StepResult
 from .step7_spa import Rule, build_har_arrays, rule_dummy
 
 # ISSUE-091 A1: simulator.adapter への側方依存を廃し、中立共有核から取得。
-from common.stats_boot import VarBacktests  # noqa: E402
+from common.var_backtests import VarBacktests  # noqa: E402
 
 IS_FRAC = 0.70       # validate_strategy と同じ floor 0.7 分割。
 TAIL_ALPHA = 0.05    # 超過イベントの名目発生率（Kupiec の α）。

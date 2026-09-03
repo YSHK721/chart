@@ -339,7 +339,7 @@ def lr_test_last_coefficient(y: "np.ndarray", X: "np.ndarray") -> "tuple[float, 
     増分検定に使う（例: 切片・log σ̂ を統制したうえで RSI の係数を検定する）。
     自由度 1 の χ² 分布で評価する。
     """
-    from common.stats_boot import chi2_sf_df1
+    from common.var_backtests import chi2_sf_df1
 
     X = np.asarray(X, dtype=np.float64)
     full = covariate_gpd_fit(y, X)
