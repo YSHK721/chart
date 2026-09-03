@@ -133,8 +133,10 @@ def make_tail_at(
         #   「窓の末尾＝形成中バーと同じバー」＝ mode == "replace" のときだけである。以前は
         #   比較せず代入し、その前提をコメントで仮定していただけだった（前提が破れると別の
         #   バーの値を黙って描く＝ISSUE-232 の失敗モード）。窓は供給側
-        #   （:func:`window_with_forming`）が同じ材料で揃えてあるので、ここが否定されるのは
-        #   バッチが周期をまたいだ場合など「本当に食い違った」ときだけになる。
+        #   （:func:`window_with_forming`）が **バッチ先頭 tick（states[0]）の周期に限り**
+        #   揃えてある。バッチが周期をまたいだ以降の tick では否定され（残存 A）、その場合も
+        #   従来同様に末尾行へ代入しつつ 1 度だけ記録する。恒久解は ISSUE-481。この検査を
+        #   外してはならない — 前提はコメントでなく本分岐が担保している。
         last_time = _last_bar_time(window)
         if forming_patch(last_time, bar).mode != "replace":
             if not reported:

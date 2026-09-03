@@ -208,10 +208,13 @@ def handle_live_tick_tails(
         )
         states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
         # 🔴-1: 窓は確定分（1m なら M1 CSV の排他 floor で M-1 まで）しか無い。末尾行への代入が
-        #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。揃える材料は
-        #   states[0]（この増分の先頭 tick 時点の累積）＝以降 tail_at が書く値と**同じ材料**であり、
-        #   窓と値が別のバーになることが構造的に起こらない。states は ticks と同数・同順で、
-        #   ticks が空なら本関数は既に None を返しているため、必ず 1 件以上ある。
+        #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。揃うのは
+        #   states[0]（この増分の先頭 tick 時点の累積）の周期**のみ**であり、バッチが周期を
+        #   またいだ以降の tick では成立しない（その場合 make_tail_at が 1 度記録する）。また
+        #   M1 焼き込み猶予（live_tick_watch の grace 約 12-17 秒）の間は窓が閉じた分を欠いた
+        #   まま append される（無警告・ISSUE-481 残存 B）。恒久解は ISSUE-481（閉周期合成の
+        #   窓供給側適用）。states は ticks と同数・同順で、ticks が空なら本関数は既に None を
+        #   返しているため、必ず 1 件以上ある。
         df = window_with_forming(
             df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
         )
