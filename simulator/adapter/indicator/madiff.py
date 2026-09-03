@@ -52,6 +52,22 @@ def _ma_series(price: np.ndarray, period: int, method: str) -> np.ndarray:
     return out
 
 
+def ema_series(price: pd.Series, period: int) -> pd.Series:
+    """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
+
+    MADiff と同じ共有実装 exponential_ma_on_buffer（α=2/(period+1)・index0 シード）を
+    :func:`_ma_series` 経由で再利用する。MaSlope が indicators.get("ema") で参照する
+    確定足 EMA を供給し、report_ui（別スライス）が EA 同一 EMA の再現に用いる。
+
+    所有者が指標 adapter である理由（ISSUE-479 Wave2 S-2）: これは計算であって組み立て
+    ではない。Composition Root（simulator.main）に置くと、外側スライスは 1 本の関数を
+    借りるために EA レジストリも Interactor 構築も引き連れることになる。main 側は
+    後方互換のため同一オブジェクトを re-export するだけである。
+    """
+    values = price.to_numpy(dtype=float)
+    return pd.Series(_ma_series(values, period, "ema"), index=price.index)
+
+
 def madiff(df: pd.DataFrame, period: int, method: str = "sma") -> pd.Series:
     """MADiff = MA(close) − MA(open) を入力 index に揃えた Series で返す。"""
     close = df["close"].to_numpy(dtype=float)

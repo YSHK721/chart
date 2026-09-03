@@ -39,7 +39,7 @@ from simulator.adapter.execution.tick_model_registry import (
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
-from simulator.adapter.indicator.madiff import madiff
+from simulator.adapter.indicator.madiff import ema_series, madiff
 from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
@@ -276,25 +276,10 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
 
 
-def ema_series(price: pd.Series, period: int) -> pd.Series:
-    """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
-
-    madiff.py と同じ共有実装 ``exponential_ma_on_buffer``（α=2/(period+1)・index0 シード）
-    を再利用する。MaSlope が indicators.get("ema") で参照する確定足 EMA を供給する。
-    report_ui（別スライス）が EA 同一 EMA の再現に用いるため公開 API とする（ISSUE-091 #3:
-    private 名の越境 import を解消）。
-    """
-    import numpy as np
-
-    from simulator.adapter.indicator.madiff import (  # 共有 moving_averages を sys.path 登録済
-        _ma_series,
-    )
-
-    values = price.to_numpy(dtype=float)
-    ema = _ma_series(values, period, "ema")
-    return pd.Series(ema, index=price.index)
-
-
+# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2）。ここは **re-export** であり
+# 写しではない（simulator.main.ema_series is madiff.ema_series を検定が固定する）。
+# 新規の参照は adapter から直接借りること。main 経由の借用は
+# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じる。
 _ema_series = ema_series  # 後方互換の旧名（simulator 内部の既存参照・テスト経路を温存）。
 
 
