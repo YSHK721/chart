@@ -52,9 +52,25 @@ ISSUE-445 の根本原因 RC-1 は「値が 1 つ間違っていたこと」で�
 引数で受け取る。これにより MetaTrader5 が存在しない Linux コンテナでも import と ``--help`` が
 通り、fake を注入した単体検定が成立する。
 
+## 配布形態（**2 ファイル**をコピーして持ち込む）
+
+本スクリプトはリポジトリごとではなく**ファイル単位で Windows VM へ持ち込む**（MT5 端末は
+VM 側にしかない）。名前 → パス成分の変換規則の所有者は ``marketdata.path_tokens`` なので
+（ISSUE-479 F-1・層の逆流の是正）、VM へ配るのは次の 2 ファイルであり、**同じディレクトリ**へ
+置く:
+
+1. ``tools/capture_mt5_symbol_spec.py``（本体）
+2. ``marketdata/path_tokens.py`` の写し（ファイル名は ``path_tokens.py`` のまま）
+
+``path_tokens.py`` は **import 文を 1 つも持たない**ため、写しても他に何も要らない。本体は
+リポジトリ内なら ``marketdata.path_tokens`` を、VM 単体なら隣の写しを読む（``_load_path_tokens``）。
+写しを配り忘れたときは ``ModuleNotFoundError`` で**大きな音を立てて**止まる（自前実装へ退かない
+＝規則が静かに割れない）。この 2 経路は
+``tools/tests/test_capture_path_token_translation.py`` が隔離ディレクトリの別プロセス実行で固定する。
+
 ## 実行（Windows VM・MT5 端末が起動している状態で）
 
-    python tools\\capture_mt5_symbol_spec.py --symbol JP225
+    python capture_mt5_symbol_spec.py --symbol JP225
 
 出力: ``marketdata/symbol_specs/<server>/<symbol>.json``（``--out`` で上書き可）。
 
@@ -89,16 +105,6 @@ ACCOUNT_KEYS: "tuple[str, ...]" = ("company", "currency", "leverage", "server", 
 #: ``meta.terminal`` に記録する ``terminal_info()`` のキー。
 TERMINAL_KEYS: "tuple[str, ...]" = ("company", "name", "build")
 
-#: パス成分に許すのは ASCII 英数と ``.`` ``_`` ``-`` のみ。それ以外は 1 文字 1 文字を
-#: ``-`` へ機械的に置換する（1 文字 → 1 文字。長さは変えない）。
-#: 例: ``OANDA-Japan MT5 Live`` → ``OANDA-Japan-MT5-Live`` / ``a/b\\c`` → ``a-b-c``。
-#: 置換後が空白のみ・``.``・``..`` になる場合は、親ディレクトリへ逃げる経路になるため中断する。
-_SAFE_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-)
-_REPLACEMENT = "-"
-
-
 class CaptureError(RuntimeError):
     """取得の前提が崩れたことを表す（Fail-Stop）。黙って空ファイルを書かない。"""
 
@@ -107,24 +113,12 @@ class CaptureError(RuntimeError):
 # 純粋関数（MT5 を知らない）
 # ---------------------------------------------------------------------
 
-def sanitize_path_component(raw: str) -> str:
-    """サーバ名・銘柄名をファイルパス成分へ機械的に変換する（規則は ``_SAFE_CHARS`` を参照）。"""
-    text = "" if raw is None else str(raw)
-    converted = "".join(c if c in _SAFE_CHARS else _REPLACEMENT for c in text)
-    if not text.strip() or converted in (".", ".."):
-        raise CaptureError(
-            f"パス成分として使えない値です: {raw!r} → {converted!r}。"
-            " 供給元の server / symbol を確認してください。"
-        )
-    return converted
-
-
 def find_repo_root(start: Path) -> "Path | None":
     """``start`` を含む git リポジトリの根を返す。無ければ ``None``。
 
     **スクリプトの位置から推測しない**（実測 2026-08-25 の事故）: 当初は
     ``Path(__file__).parents[1]`` をリポジトリ根と決め打ちしていた。本スクリプトは
-    リポジトリごと配布せず**単体ファイルとして Windows VM へ持ち込む**運用であり
+    リポジトリごと配布せず**ファイル単位で Windows VM へ持ち込む**運用であり
     （MT5 端末は VM 側にしかない）、そこでは親ディレクトリがリポジトリではない。
     その結果、デスクトップ等の正当な出力先が「リポジトリ配下」と誤判定され中断した。
     判定は ``.git`` の実在という**事実**で行う。
@@ -135,6 +129,45 @@ def find_repo_root(start: Path) -> "Path | None":
         if (candidate / ".git").exists():
             return candidate
     return None
+
+
+# ---------------------------------------------------------------------
+# パス成分規則の解決（配布形態が 2 通りあるので 2 経路で解く）
+# ---------------------------------------------------------------------
+
+def _load_path_tokens():
+    """名前 → パス成分の変換規則を **持ってくる**（ここには実装を書かない）。
+
+    規則の所有者は ``marketdata.path_tokens`` である（ISSUE-479 F-1）。かつて実体は本
+    スクリプト側にあり、最下層の ``marketdata/mt5_ticks/ingest.py`` が ``tools`` を import
+    する層の逆流になっていた。所有権を下へ移し、本スクリプトは参照するだけにする。
+
+    経路 1（リポジトリ内で実行）: ``find_repo_root`` が見つけた根を ``sys.path`` に載せて
+        ``marketdata.path_tokens`` を読む。``ingest`` と **同一の関数オブジェクト**を掴むので、
+        規則が 2 つに割れない（``marketdata/tests/test_mt5_equivalence.py`` が固定）。
+    経路 2（VM 単体）: 本スクリプトの隣に置いた写し ``path_tokens.py`` を読む。VM には
+        リポジトリが無いため経路 1 は成立しない。
+
+    どちらでも解決できなければ ``ModuleNotFoundError`` のまま落とす。**自前実装へ退かない**：
+    退避先を持つと「写しを配り忘れたのに動いてしまう」状態になり、規則が静かに割れる。
+    """
+    root = find_repo_root(SCRIPT_PATH)
+    if root is not None:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        try:
+            from marketdata.path_tokens import PathTokenError, sanitize_path_component
+        except ModuleNotFoundError:
+            pass                      # リポジトリではあるが本 repo ではない → 経路 2 へ
+        else:
+            return PathTokenError, sanitize_path_component
+    from path_tokens import PathTokenError, sanitize_path_component
+
+    return PathTokenError, sanitize_path_component
+
+
+#: 規則の所有者が送出する失敗型と、変換関数そのもの（再エクスポート＝第 2 実装を作らない）。
+PathTokenError, sanitize_path_component = _load_path_tokens()
 
 
 def _snapshot_base_dir() -> Path:
@@ -401,7 +434,11 @@ def main(
             write_text_lf(deals_out, serialize(deals))
             print(f"deals   : {deals_out}（リポジトリ外・コミットしない）")
         return 0
-    except CaptureError as exc:
+    except (CaptureError, PathTokenError) as exc:
+        # PathTokenError は規則の所有者（marketdata.path_tokens）が送出する失敗型である。
+        # 捕捉集合に入れないと、server / symbol がパス成分に使えないときだけ
+        # 「[FAIL-STOP] …／終了コード 2」が素のトレースバックへ退化する
+        # （tools/tests/test_capture_path_token_translation.py が CLI の出口で固定）。
         print(f"[FAIL-STOP] {exc}", file=sys.stderr)
         return 2
     except ModuleNotFoundError as exc:
