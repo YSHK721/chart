@@ -23,6 +23,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from marketdata.tf_ledger import TF_BAR_SEC
+from simulator.adapter.calendar.session_calendar import (
+    Jp225SessionCalendar,
+    NullCalendar,
+)
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
@@ -85,6 +89,18 @@ def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
     return _DEFAULT_TICK_MODEL()
 
 
+# SessionCalendarPort 実装の単一レジストリ（_make_tick_model / TICK_MODEL_REGISTRY と
+# 対称の形）。キーから実装を選ぶ判断は本表だけが持ち、キーの文字列を条件式で比較する
+# 箇所は 0 である。**モジュール定数**なのは、呼び出しのたびに表を組み直さないため
+# （`test_session_calendar_registry.py` が発行回数で固定する）。
+SESSION_CALENDAR_REGISTRY: dict[str, Any] = {
+    "jp225": Jp225SessionCalendar,
+}
+# 列挙外キー時の既定（config_loader の既定 "broker"/"none"/未知値）。常時開場＝既定経路を
+# byte-identical に保つ（_DEFAULT_TICK_MODEL と同じ役割）。
+_DEFAULT_SESSION_CALENDAR = NullCalendar
+
+
 def _make_session_calendar(session_calendar_key: str) -> Any:
     """config.session_calendar キーから SessionCalendarPort 実装を生成する。
 
@@ -93,14 +109,10 @@ def _make_session_calendar(session_calendar_key: str) -> Any:
     それ以外（既定 "broker"/"none"/未知値）は NullCalendar＝常時開場で既定経路を
     byte-identical に保つ（config_loader の既定 "broker" を変更しないためのフォールバック）。
     """
-    from simulator.adapter.calendar.session_calendar import (
-        Jp225SessionCalendar,
-        NullCalendar,
+    factory = SESSION_CALENDAR_REGISTRY.get(
+        session_calendar_key, _DEFAULT_SESSION_CALENDAR
     )
-
-    if session_calendar_key == "jp225":
-        return Jp225SessionCalendar()
-    return NullCalendar()
+    return factory()
 
 
 # 本番 tick-store のルート（実 marketdata は gitignore・大容量）。テストは
