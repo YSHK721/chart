@@ -11,18 +11,15 @@ adapter 層は pandas を内部利用してよい（CLEAN_ARCH §7）。入力�
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-# moving_averages を名前付き共有ライブラリとして読み込む（indigators/ を sys.path へ）。
-_INDIGATORS = str(Path(__file__).resolve().parents[3] / "indigators")
-if _INDIGATORS not in sys.path:
-    sys.path.insert(0, _INDIGATORS)
-
-from moving_averages import (  # noqa: E402
+# moving_averages（MQL 忠実 MA の共有実装）は indigators/ に住む固有名トップパッケージ。
+# 解決は tools/dev_paths.txt（唯一源）が済ませている＝本モジュールは sys.path を書き換えない。
+# 実行時に書き換えると解決先が import 順に依存し、起動経路ごとに別ツリーを掴み得る
+# （ISSUE-279 と同型）。この不変条件は
+# simulator/tests/unit/test_adapter_path_resolution_comes_from_the_ledger.py が固定する。
+from moving_averages import (
     exponential_ma_on_buffer,
     simple_ma_on_buffer,
 )
