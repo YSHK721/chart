@@ -60,7 +60,10 @@ def forming_bar_of_state(state: Any) -> "dict[str, Any]":
     }
 
 
-def window_with_forming(window: Any, bar: "dict[str, Any]", *, inject: Callable) -> Any:
+def window_with_forming(
+    window: Any, bar: "dict[str, Any]", *, inject: Callable,
+    gap_bars: "Callable | None" = None,
+) -> Any:
     """窓の末尾を形成中バー ``bar`` の周期へ揃えた窓を返す（供給側の唯一の適用点）。
 
     なぜ供給側で揃えるか: 末尾行への代入が正しいのは「窓の末尾＝形成中バー」＝述語
@@ -70,24 +73,36 @@ def window_with_forming(window: Any, bar: "dict[str, Any]", *, inject: Callable)
     **確定済みの行**へ形成中の OHLCV を書いてしまう。窓の側を形成中バーへ揃えることで、
     前提を仮定ではなく構造で満たす。
 
+    欠落した閉周期（ISSUE-481）: M1 焼き込み猶予（live_tick_watch の grace 約 12-17 秒）の間、
+    確定窓は末尾の**閉じた**周期を欠いたまま届く。形成中バーだけを足すと窓のラベル間隔に
+    周期 2 本ぶんの跳びが残り、同じ穴を閉周期合成（ISSUE-162）で埋めている ``/compute`` と
+    **別の窓**で計算することになる（実データ 24 点中 5-6 点で無音のまま発生）。``gap_bars``
+    は「確定末尾 ``time`` を渡すと、埋めるべき閉周期バーの昇順列を返す」呼び出し可能で、
+    合成規則そのものは呼び出し側（adapter/compute/forming_bar.py の closed_gap_bars）が
+    唯一の実体として持つ。本モジュールは規則も上限も知らない（規則を 2 度書かない）。
+
     Args:
         window: 確定バーの窓（末尾 1 本が比較対象）。
         bar: 形成中バー（:func:`forming_bar_of_state` の写像）。
-        inject: ``(window, [bar]) -> 新しい窓``（pandas 依存を注入側へ寄せる＝
+        inject: ``(window, bars) -> 新しい窓``（pandas 依存を注入側へ寄せる＝
             ``set_last_bar`` と同じ規律。実体は adapter/compute/forming_bar.py の
             注入関数で、/compute の形成中バー注入と同じものを共有する）。
+        gap_bars: ``(確定末尾 time) -> 閉周期バーの昇順列``。既定 ``None``＝合成しない
+            （従来挙動そのまま＝後方互換）。
 
     Returns:
-        ``"append"`` のときだけ ``inject`` を通した新しい窓。``"replace"``（既に末尾＝形成中
-        バー＝上位足の rollup partial 等）・``"skip"``（末尾より過去）・末尾 time を読めない窓は
-        ``window`` をそのまま返す（複製もしない＝既に前提を満たす経路の挙動を変えない）。
+        ``"append"`` のときだけ ``inject`` を通した新しい窓（合成した閉周期バー → 形成中バー
+        の順に **1 回で**注入する）。``"replace"``（既に末尾＝形成中バー＝上位足の rollup
+        partial 等）・``"skip"``（末尾より過去）・末尾 time を読めない窓は ``window`` を
+        そのまま返す（複製もしない＝既に前提を満たす経路の挙動を変えない）。
     """
     last_time = _last_bar_time(window)
     if last_time is None:
         return window  # 時刻 index でない窓＝比較材料が無い（呼び出し側が記録する）。
     if forming_patch(last_time, bar).mode != "append":
         return window
-    return inject(window, [bar])
+    closed = list(gap_bars(last_time)) if gap_bars is not None else []
+    return inject(window, [*closed, bar])   # 注入は 1 回のまま（窓の複製を増やさない）。
 
 
 def is_incremental(indicator_id: str, variant: str, params: "dict[str, Any]") -> bool:
@@ -108,6 +123,7 @@ def make_tail_at(
     adapter: Any,
     latest_compute: Callable[..., list],
     set_last_bar: Callable[[Any, dict], None],
+    inject: Callable,
 ) -> Callable:
     """``tail_at(spec, state) -> {系列名: 値} | None`` を組み立てる。
 
@@ -118,13 +134,15 @@ def make_tail_at(
         set_last_bar: 窓の**末尾行だけ**を形成中バーで上書きする注入関数（pandas 依存を
             注入側へ寄せる）。窓は 1 回だけ複製し、以降は末尾行の代入のみ＝1 ステップの
             費用が窓長に比例しない（DataFrame を毎ティック作り直すと 12.3ms/tick になる）。
+        inject: ``(window, bars) -> 新しい窓``。バッチが周期をまたいだ**その時だけ**呼び、
+            進んだバーの行を窓へ足す（ISSUE-481）。窓供給と同じ注入の実体を共有する。
     """
     window = df.copy()
     empty = len(window) == 0
     reported = False
 
     def tail_at(spec, state) -> "dict[str, float] | None":
-        nonlocal reported
+        nonlocal window, reported
         if empty or not is_incremental(spec.indicator_id, spec.variant, spec.params):
             return None
         bar = forming_bar_of_state(state)
@@ -132,17 +150,34 @@ def make_tail_at(
         # 差し込み規則は共有核 forming_patch ただ 1 つ（F-9）。末尾行への代入が正しいのは
         #   「窓の末尾＝形成中バーと同じバー」＝ mode == "replace" のときだけである。以前は
         #   比較せず代入し、その前提をコメントで仮定していただけだった（前提が破れると別の
-        #   バーの値を黙って描く＝ISSUE-232 の失敗モード）。窓は供給側
-        #   （:func:`window_with_forming`）が **バッチ先頭 tick（states[0]）の周期に限り**
-        #   揃えてある。バッチが周期をまたいだ以降の tick では否定され（残存 A）、その場合も
-        #   従来同様に末尾行へ代入しつつ 1 度だけ記録する。恒久解は ISSUE-481。この検査を
-        #   外してはならない — 前提はコメントでなく本分岐が担保している。
+        #   バーの値を黙って描く＝ISSUE-232 の失敗モード）。
+        #
+        #   ISSUE-481: 窓を揃えるのは供給側（:func:`window_with_forming`）だが、それが揃える
+        #   のは **バッチ先頭 tick（states[0]）の周期だけ**である。バッチが周期をまたぐと
+        #   以降の tick で述語は ``"append"`` を返す。これは食い違いではなく「バーが進んだ」
+        #   ことなので、窓へ行を足して前提を回復する（足すのは跨いだ回数ぶんだけ）。以前は
+        #   ここで 1 つ前のバーの行へ代入し、警告を 1 度出していた（旧「残存 A」）。
+        #
+        #   窓の事前拡張（未来の周期の行を先に置く）は採らない。``/compute`` の窓と食い違い、
+        #   述語の "append" の定義（末尾より新しい＝まだ無い）にも反する。
+        #
+        #   説明のつかない入力は 2 つだけ残る。``"skip"``（形成中バーが窓末尾より過去＝順序が
+        #   逆転した tick）と、**末尾 time を読めない窓**（時刻 index でない＝比較材料が無い。
+        #   :func:`window_with_forming` はこの窓を素通しして「呼び出し側が記録する」契約に
+        #   している）である。行を足せるのは「窓末尾より新しい」と**確かめられた**ときだけで、
+        #   比較材料が無いまま足すと時刻でない index へ時刻ラベルの行を混ぜることになる。
+        #   どちらの場合も従来どおり末尾行への代入は続け、1 度だけ記録する（skip 時に代入を
+        #   続ける是非は本 Issue の範囲外）。この検査を外してはならない — 前提はコメントでなく
+        #   本分岐が担保している。
         last_time = _last_bar_time(window)
-        if forming_patch(last_time, bar).mode != "replace":
+        mode = forming_patch(last_time, bar).mode
+        if last_time is not None and mode == "append":
+            window = inject(window, [bar])   # バーが進んだ＝行を足す（跨ぎ回数ぶんのみ）。
+        elif last_time is None or mode == "skip":
             if not reported:
                 reported = True   # ISSUE-278 #3 と同じ規律: 無音にせず、かつ毎ティック吐かない。
                 logger.warning(
-                    "live tails: 窓の末尾が形成中バーと別のバー（窓末尾 time=%s・形成中 time=%s）"
+                    "live tails: 窓の末尾が形成中バーと対応しない（窓末尾 time=%s・形成中 time=%s）"
                     "＝末尾行の代入は続けるが、窓と形成中バーの対応は保証されない",
                     last_time, state.time,
                 )

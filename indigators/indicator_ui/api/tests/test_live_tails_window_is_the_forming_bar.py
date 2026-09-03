@@ -20,11 +20,12 @@
     3. その正常経路では警告を出さない（警告は「本当に食い違ったとき」だけの信号にする）。
     4. 計算量: 窓への適用は要求あたり・計算足グループあたり 1 回で、tick 数では増えない。
 
-本ファイルが記録する現挙動（不変条件では**ない**・ISSUE-481 の恒久解で赤へ転じる）:
-    5. 残存 A: バッチが周期をまたぐと、境界より後の tick は警告 1 回のうえ
-       バッチ先頭 tick の周期のラベル行（＝1 つ前のバー）へ書かれる。
-    6. 残存 B: 確定末尾を欠いた窓（M1 焼き込み猶予中）は、閉じた分を飛ばしたまま
-       無警告で形成中バーが追加される（窓のラベル間隔に周期 2 本ぶんの跳びが残る）。
+ISSUE-481 で恒久解へ移った項目（かつて「残存 A / B」として現挙動を記録していた）:
+    5. 旧「残存 A」: バッチが周期をまたぐと、境界より後の tick が警告 1 回のうえ
+       1 つ前のバーのラベル行へ書かれていた。バーが進んだら窓へ行を足すので、
+       値は自分のバーの行に入り、警告も出ない（警告は mode=="skip" 専用の信号になった）。
+    6. 旧「残存 B」: 確定末尾を欠いた窓（M1 焼き込み猶予中）は閉じた分を飛ばしていた。
+       窓供給側にも閉周期合成（ISSUE-162）を適用したので穴は残らない。
 
 data/: 実データを読まない（合成 DataFrame・注入した偽 port のみ）。
 構造: Arrange-Act-Assert（AAA）。
@@ -387,16 +388,15 @@ def _label_seconds(window) -> "list[int]":
     return [int(pd.Timestamp(t).value // 1_000_000_000) for t in window.index]
 
 
-def test_a_batch_crossing_the_period_warns_exactly_once(_wired, caplog) -> None:
-    """残存 A の**現挙動の記録**: バッチが分をまたぐと警告はちょうど 1 回出る。
+def test_a_batch_crossing_the_period_does_not_warn(_wired, caplog) -> None:
+    """恒久解（ISSUE-481）: バッチが分をまたいでも警告は出ない。
 
-    窓の供給が揃えるのは states[0]（バッチ先頭 tick）の周期だけなので、境界より後の
-    tick では述語が append を返し、window_with_forming ではなく make_tail_at 側が
-    1 度だけ記録する。
+    窓の供給が揃えるのは states[0]（バッチ先頭 tick）の周期だけである。以前は境界より後の
+    tick で述語が append を返し、make_tail_at が「窓と形成中バーが別のバー」として 1 度
+    記録していた。バーが進んだのなら窓へ行を足せばよいので、これは食い違いではない。
 
-    これは不変条件ではない。ISSUE-481 の恒久解（窓供給に閉周期合成を入れ、バーが進んだら
-    窓へ行を足す）が入ると警告は 0 回になり、本テストは**意図的に赤へ転じる**。赤になった
-    時点で現挙動の記録としての役目は終わりであり、恒久解の期待値（警告 0 件）へ書き換える。
+    警告は今後 ``mode == "skip"``（順序が逆転した tick＝本当に説明のつかない入力）専用の
+    信号にする。構造的に必ず出る警告を残すと、本物の食い違いがそこへ埋もれる。
     """
     # Arrange
     port = _Port({"1m": _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)})
@@ -407,31 +407,40 @@ def test_a_batch_crossing_the_period_warns_exactly_once(_wired, caplog) -> None:
         ctl.handle_live_tick_tails(_query(_SPEC), _BOUNDARY_TICKS)
 
     # Assert
-    assert len([r for r in caplog.records if r.name == _LTT_LOGGER]) == 1
+    assert [r for r in caplog.records if r.name == _LTT_LOGGER] == []
 
 
-def test_a_tick_after_the_period_boundary_lands_on_the_previous_bar_row(_wired) -> None:
-    """残存 A の**現挙動の記録**: 境界より後の tick は 1 つ前のバーのラベル行へ入る。
+def test_a_tick_after_the_period_boundary_lands_on_its_own_bar_row(_wired) -> None:
+    """恒久解（ISSUE-481）: 境界より後の tick は**自分のバー**のラベル行へ入る。
 
-    窓の末尾ラベルは 09:04（バッチ先頭 tick の周期）のままで、そこへ 09:05 の形成中バーの
-    OHLCV が代入される（09:05 のラベル行は作られない）＝描いたローソクと指標値が別のバー。
+    以前は窓の末尾ラベルが 09:04（バッチ先頭 tick の周期）のままで、そこへ 09:05 の形成中
+    バーの OHLCV が代入されていた（＝描いたローソクと指標値が別のバー・ISSUE-232 の失敗
+    モード）。バーが進んだ時点で窓へ行を足すので、09:05 のラベル行が生まれて値はそちらへ入る。
 
-    ISSUE-481 の恒久解が入ると 09:05 のラベル行が生まれ、値はそちらへ入る。したがって
-    本テストは恒久解で**意図的に赤へ転じる**（そのとき恒久解の期待値へ書き換える）。
+    09:04 の行は跨いだ時点の値で**凍結**する（跨いだ後の tick が過去のバーを書き換えない）。
     """
     # Arrange
     port = _Port({"1m": _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)})
+    confirmed = _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)
     seen = _wired(port)
 
     # Act
     ctl.handle_live_tick_tails(_query(_SPEC), _BOUNDARY_TICKS)
 
-    # Assert — 末尾ラベルは 09:04 のまま、値は 09:05 の 2 tick ぶんの累積。
+    # Assert — 末尾ラベルは 09:05 で、09:04 の行も残っている。
     labels = _label_seconds(seen[-1])
-    assert labels[-1] == _unix(_FORMING_MINUTE)
-    assert _unix(_NEXT_MINUTE) not in labels
-    last_row = seen[-1].iloc[-1]
-    assert [float(last_row[c]) for c in _FIELDS] == [200.0, 201.0, 200.0, 201.0, 2.0]
+    assert labels[-1] == _unix(_NEXT_MINUTE)
+    assert _unix(_FORMING_MINUTE) in labels
+    # 09:04 は跨ぎ時点の累積で凍結・09:05 は自分の 2 tick ぶん。
+    row_0904 = seen[-1].loc[pd.Timestamp(_FORMING_MINUTE)]
+    row_0905 = seen[-1].loc[pd.Timestamp(_NEXT_MINUTE)]
+    assert [float(row_0904[c]) for c in _FIELDS] == [100.0, 101.0, 100.0, 101.0, 2.0]
+    assert [float(row_0905[c]) for c in _FIELDS] == [200.0, 201.0, 200.0, 201.0, 2.0]
+    # 確定済みの 2 行は 1 ビットも変わらない。
+    for confirmed_label in ("2026-01-05 09:02:00", _LAST_CONFIRMED):
+        kept = seen[-1].loc[pd.Timestamp(confirmed_label)]
+        expected = confirmed.loc[pd.Timestamp(confirmed_label)]
+        assert [float(kept[c]) for c in _FIELDS] == [float(expected[c]) for c in _FIELDS]
 
 
 # --------------------------------------------------------------------------- #
@@ -442,27 +451,44 @@ def test_a_tick_after_the_period_boundary_lands_on_the_previous_bar_row(_wired) 
 _STALE_WINDOW_LABELS = ("2026-01-05 09:01:00", "2026-01-05 09:02:00")
 
 
-def test_a_window_missing_the_last_confirmed_bar_keeps_a_period_gap(_wired) -> None:
-    """残存 B の**現挙動の記録**: 閉じた分を 1 本飛ばした窓がそのまま計算へ渡る。
+#: 猶予中に欠けている閉じた分（09:03）を合成したときの値。
+_SYNTHESIZED_CLOSED = {
+    "time": _unix(_LAST_CONFIRMED), "open": 50.0, "high": 55.0,
+    "low": 49.0, "close": 54.0, "volume": 7.0,
+}
+
+
+def test_a_window_missing_the_last_confirmed_bar_is_filled_by_the_closed_period_synthesis(
+    _wired, monkeypatch
+) -> None:
+    """恒久解（ISSUE-481）: 猶予中に欠けた閉じた分は閉周期合成で埋まり、穴が残らない。
 
     M1 焼き込み猶予（live_tick_watch の grace）の間、確定窓は M-1 を欠いたまま M-2 で
-    終わる。そこへ形成中バー M を追加すると、窓のラベル間隔は周期 1 本ぶんではなく
-    2 本ぶん（120 秒）の跳びを含む＝閉じた分 09:03 が窓から欠落したまま計算される。
-    /compute は同じ穴を閉周期合成（ISSUE-162）で埋めるため、2 経路が別の窓で計算する。
+    終わる。以前はそこへ形成中バー M を足すだけで、窓のラベル間隔に周期 2 本ぶん（120 秒）の
+    跳びが残っていた。``/compute`` は同じ穴を閉周期合成（ISSUE-162）で埋めるため、2 経路が
+    **別の窓**で計算していた（無音・実データ 24 点中 5-6 点）。窓供給側にも同じ合成規則を
+    適用したので、間隔は周期どおりに揃い、合成行には合成値が入る。
 
-    ISSUE-481 の恒久解（窓供給側にも閉周期合成を適用）が入ると間隔は周期どおりに揃い、
-    本テストは**意図的に赤へ転じる**（そのとき恒久解の期待値へ書き換える）。
+    合成規則そのものの検査は ``test_forming_rule_parity.py`` の 2 経路突合（P-1〜P-5）が
+    担う。ここで見るのは「窓供給の経路が実際にその規則を通っている」という結線だけなので、
+    素材読み（tick parquet）へは降りず、合成の入口を偽物へ差し替える。
     """
     # Arrange
     port = _Port({"1m": _confirmed_window(*_STALE_WINDOW_LABELS)})
     seen = _wired(port)
+    monkeypatch.setattr(ctl, "closed_gap_bars", lambda *a, **k: [_SYNTHESIZED_CLOSED])
 
     # Act
     ctl.handle_live_tick_tails(_query(_SPEC), _TICKS)
 
-    # Assert — 間隔は [周期, 周期 x 2]＝閉じた 1 本が欠けた跡。
+    # Assert — 間隔は周期 1 本ぶんだけ（穴なし）。
     labels = _label_seconds(seen[-1])
-    assert [b - a for a, b in zip(labels, labels[1:])] == [_PERIOD_SEC, _PERIOD_SEC * 2]
+    assert [b - a for a, b in zip(labels, labels[1:])] == [_PERIOD_SEC] * 3
+    # 合成された 09:03 の行は合成値そのもの（形成中バーの値が混ざっていない）。
+    filled = seen[-1].loc[pd.Timestamp(_LAST_CONFIRMED)]
+    assert [float(filled[c]) for c in _FIELDS] == [
+        _SYNTHESIZED_CLOSED[c] for c in _FIELDS
+    ]
 
 
 def test_the_missing_closed_bar_is_not_reported(_wired, caplog) -> None:
@@ -485,3 +511,377 @@ def test_the_missing_closed_bar_is_not_reported(_wired, caplog) -> None:
 
     # Assert
     assert [r for r in caplog.records if r.name == _LTT_LOGGER] == []
+
+
+# --------------------------------------------------------------------------- #
+# 7. 計算量テスト（絶対命令・ISSUE-481）— 行追加も閉周期合成も「要る回数」だけ
+#
+#    ここで固定するのは出力の正しさではなく **無駄の不在** である。回数そのものは
+#    期待値へ焼き込まない（焼き込むと浪費が仕様へ昇格する＝ISSUE-450 の実害）。
+#    固定するのは「発行 − 使用 = 0」と「何に比例し何に比例しないか」だけである。
+# --------------------------------------------------------------------------- #
+
+#: バッチが 09:04→09:05→09:06 と 2 度またぐ 6 tick（跨ぎ 2 点目）。
+_THIRD_MINUTE = "2026-01-05 09:06:00"
+_TWO_CROSSING_TICKS = _BOUNDARY_TICKS + [
+    [_unix(_THIRD_MINUTE) * 1000 + 100, 300.0],
+    [_unix(_THIRD_MINUTE) * 1000 + 300, 301.0],
+]
+
+#: 同じ分（09:04）に収まる 16 tick（tick 数の 2 点目・跨ぎゼロ）。
+_MANY_TICKS = [[_TICKS[0][0] + i, 100.0 + i * 0.1] for i in range(len(_TICKS) * 8)]
+
+#: 猶予中に欠ける閉じた分が 1 本（09:03）／3 本（09:01-09:03）の窓（gap 長の 2 点）。
+_GAP1_LABELS = _STALE_WINDOW_LABELS
+_GAP3_LABELS = ("2026-01-05 08:58:00", "2026-01-05 09:00:00")
+
+#: 跨ぎの計測に使う窓（穴なし＝行追加だけを見る）。
+_NO_GAP_LABELS = ("2026-01-05 09:02:00", _LAST_CONFIRMED)
+
+
+def _synthetic_closed(start: int, tickless) -> "dict | None":
+    """合成閉周期バー。``tickless`` に挙げた始端は tick 無し（``None``）。"""
+    return None if start in tickless else {
+        "time": start, "open": 1.0, "high": 2.0,
+        "low": 0.5, "close": 1.5, "volume": 1.0,
+    }
+
+
+class _Record:
+    """1 要求ぶんの「発行」と「使用」の記録。
+
+    実体（DataFrame）は参照ごと保持する。``id()`` だけ控えると解放後に別の物へ
+    使い回されて、同一性の検査が偶然通る／落ちるようになる。
+    """
+
+    def __init__(self) -> None:
+        self.inject_bars: "list[int]" = []      # 注入 1 回ごとに足したバー数
+        self.inject_outs: list = []             # 注入が返した窓（参照を保持）
+        self.synth_starts: "list[int]" = []     # 素材へ要求した閉周期の始端
+        self.tickless: int = 0                  # うち tick が無かった周期の数
+        self.computed: list = []                # 計算が受け取った窓（参照を保持）
+        self.snapshots: list = []               # その時点の断面（値の確認用）
+
+
+def _run(monkeypatch, *, labels, ticks, specs=_SPEC, tickless=(),
+         latest_compute=None) -> _Record:
+    """1 要求ぶんを本番経路で走らせ、発行と使用を記録して返す（実データは読まない）。"""
+    from adapter.compute import forming_bar as fb
+
+    rec = _Record()
+    port = _Port({"1m": _confirmed_window(*labels)})
+    real_inject = ctl.inject_forming_bars
+
+    def _inject(df, bars):
+        out = real_inject(df, bars)
+        rec.inject_bars.append(len(bars))
+        rec.inject_outs.append(out)
+        return out
+
+    def _reader(start, end):
+        rec.synth_starts.append(int(start))
+        return _synthetic_closed(int(start), tickless)
+
+    def _compute(adapter, indicator_id, variant, window, params):  # noqa: ANN001, ARG001
+        rec.computed.append(window)
+        rec.snapshots.append(window.copy())
+        return [{"name": "v", "data": [{"value": 1.0}]}]
+
+    monkeypatch.setattr(ctl, "inject_forming_bars", _inject)
+    monkeypatch.setattr(fb, "forming_bar_from_ticks", _reader)
+    monkeypatch.setattr(ctl, "_dataset_port", lambda: port)
+    monkeypatch.setattr(ltt, "is_incremental", lambda *a, **k: True)
+    monkeypatch.setattr(ctl, "latest_compute", latest_compute or _compute)
+    ctl.handle_live_tick_tails(_query(specs), ticks)
+    rec.tickless = len(set(rec.synth_starts) & set(tickless))
+    return rec
+
+
+def _crossed_bars(ticks) -> int:
+    """バッチが触れたバーの本数（＝跨ぎ回数 + 1）。規則は本番と同じ tf_meta。"""
+    from marketdata.tf_meta import bar_time_unix
+
+    return len({bar_time_unix("1m", int(ms) // 1000) for ms, _mid in ticks})
+
+
+# --- C-1 -------------------------------------------------------------------- #
+
+def test_the_synthesis_issues_exactly_the_bars_it_uses(monkeypatch) -> None:
+    """C-1 発行 − 使用 = 0: 合成の要求は「窓の行になった」か「tick が無かった」のどちらか。
+
+    使用数は**出力から導出**する（窓に現れた合成行 ＋ tick が無かった周期）。要求したのに
+    どちらでもない合成が 1 件でもあれば、それは作って捨てた計算である。
+    """
+    # Arrange / Act — 欠落 3 本のうち 09:02 だけ tick 無しにする。
+    rec = _run(monkeypatch, labels=_GAP3_LABELS, ticks=_TICKS,
+               tickless=(_unix("2026-01-05 09:02:00"),))
+
+    # Assert
+    assert rec.synth_starts, "合成が 1 度も発行されていません（検定が空振り）"
+    in_window = set(_label_seconds(rec.snapshots[-1]))
+    used = len(set(rec.synth_starts) & in_window) + rec.tickless
+    assert len(rec.synth_starts) - used == 0
+
+
+# --- C-2 -------------------------------------------------------------------- #
+
+def _synthesis_issued(labels, ticks) -> int:
+    """当該条件で合成が発行された回数。"""
+    with pytest.MonkeyPatch.context() as mp:
+        return len(_run(mp, labels=labels, ticks=ticks).synth_starts)
+
+
+def test_the_synthesis_follows_the_gap_length_not_the_tick_count() -> None:
+    """C-2 合成の発行は gap 長で決まり、tick 数では増えない（各 2 点で固定）。
+
+    tick 数に比例すると、出力（窓）は正しいまま poll ごとに同じ閉周期を何度も読み直す
+    ことになる（状態検証では原理的に落ちない浪費）。
+    """
+    # Arrange / Act
+    gap1 = _synthesis_issued(_GAP1_LABELS, _TICKS)      # 欠落 1 本 / tick 2 本
+    gap3 = _synthesis_issued(_GAP3_LABELS, _TICKS)      # 欠落 3 本 / tick 2 本
+    many = _synthesis_issued(_GAP1_LABELS, _MANY_TICKS)  # 欠落 1 本 / tick 16 本
+
+    # Assert
+    assert gap3 - gap1 == 2      # gap 長に比例（欠落が 2 本増えれば発行も 2 増える）
+    assert many == gap1          # tick 数には非比例
+
+
+# --- C-4 -------------------------------------------------------------------- #
+
+def _issued_and_crossed(ticks) -> "tuple[int, int]":
+    """``(注入の発行数, バッチが触れたバーの本数)``（穴のない窓で計測）。"""
+    with pytest.MonkeyPatch.context() as mp:
+        rec = _run(mp, labels=_NO_GAP_LABELS, ticks=ticks)
+    return len(rec.inject_bars), _crossed_bars(ticks)
+
+
+def test_the_row_growth_follows_only_the_period_crossings() -> None:
+    """C-4 行追加の発行は「バッチが跨いだ回数」だけで決まる（跨ぎ 0 / 1 / 2 の 3 点）。
+
+    発行のうち 1 回は窓供給（要求あたり 1 回）ぶんなので、残りが跨ぎ回数と一致すれば
+    余分な行追加はゼロである。回数そのものは焼き込まず、SUT が数えた跨ぎとの関係を固定する。
+    """
+    # Arrange / Act
+    zero = _issued_and_crossed(_TICKS)
+    one = _issued_and_crossed(_BOUNDARY_TICKS)
+    two = _issued_and_crossed(_TWO_CROSSING_TICKS)
+
+    # Assert
+    assert [i - 1 for i, _d in (zero, one, two)] == [d - 1 for _i, d in (zero, one, two)]
+
+
+# --- C-5 -------------------------------------------------------------------- #
+
+def test_no_window_is_built_that_the_computation_never_sees(monkeypatch) -> None:
+    """C-5 作って捨てる窓ゼロ: 跨ぎで足した窓はすべて計算が受け取っている。
+
+    先頭の 1 回は窓供給ぶんで、末尾値の組み立てが入口で 1 度だけ複製する材料になる
+    （その複製が計算の受け取る最初の窓）。したがって検査対象は 2 回目以降＝跨ぎで
+    足した窓であり、それらが計算へ渡らなければ「作って捨てた」ことになる。
+    """
+    # Arrange / Act
+    rec = _run(monkeypatch, labels=_NO_GAP_LABELS, ticks=_TWO_CROSSING_TICKS)
+
+    # Assert
+    crossing_windows = {id(w) for w in rec.inject_outs[1:]}
+    received = {id(w) for w in rec.computed}
+    assert crossing_windows, "跨ぎで窓が足されていません（検定が空振り）"
+    assert crossing_windows <= received
+    # 実体の総数は「入口の複製 1 つ ＋ 跨ぎぶん」ちょうど（余分な窓を作らない）。
+    assert len(received) == len(rec.inject_outs)
+
+
+# --- C-7 -------------------------------------------------------------------- #
+
+_SPY_INCREMENTER = "spy_live_tails"
+
+
+class _PrefixIncrementer:
+    """確定プレフィクスが一致すれば流用する Test Spy（実物の ``adapt`` と同型）。
+
+    実物（moving_averages 等）は「保持した状態の確定ぶんが、今回の確定ぶんの先頭に
+    一致するか」を見て流用可否を決める。この Spy はその一点だけを写し、計算式は持たない。
+    """
+
+    def __init__(self) -> None:
+        self.builds: "list[int]" = []
+
+    @staticmethod
+    def _prefix(df) -> tuple:
+        return tuple(int(pd.Timestamp(t).value) for t in df.index[:-1])
+
+    def prepare(self, df, params):  # noqa: ANN001, ARG002
+        return {"prefix": self._prefix(df)}
+
+    def build(self, req):  # noqa: ANN001
+        self.builds.append(len(req["prefix"]))
+        return {"prefix": req["prefix"]}
+
+    def adapt(self, state, req):  # noqa: ANN001
+        kept = state["prefix"]
+        return {"prefix": req["prefix"]} if req["prefix"][:len(kept)] == kept else None
+
+    def emit(self, state, req, skeleton, k):  # noqa: ANN001, ARG002
+        return [{**skeleton[0], "data": [{"time": 1, "value": 1.0}]}]
+
+
+class _SkeletonAdapter:
+    """系列 metadata の骨格だけを返す計算面（骨格は素材にも窓長にも依らない）。"""
+
+    def compute(self, compute_id, variant, df, params):  # noqa: ANN001, ARG002
+        return [{"name": "v", "kind": "line", "data": []}]
+
+
+def _rebuilds_for(ticks) -> int:
+    """当該バッチで発行された「状態の再構築」の回数。"""
+    from adapter.compute import incremental as incremental_registry
+    from adapter.compute import incremental_state
+
+    spy = _PrefixIncrementer()
+    with pytest.MonkeyPatch.context() as mp:
+        incremental_state.reset()
+        mp.setitem(incremental_registry._INSTANCES, _SPY_INCREMENTER, spy)
+
+        def _through(adapter, indicator_id, variant, window, params):  # noqa: ANN001, ARG001
+            return incremental_state.compute(
+                _SkeletonAdapter(), indicator_id, variant, window, params,
+                name=_SPY_INCREMENTER, k=1,
+            )
+
+        _run(mp, labels=_NO_GAP_LABELS, ticks=ticks, latest_compute=_through)
+        incremental_state.reset()
+    return len(spy.builds)
+
+
+def test_the_incremental_state_is_not_rebuilt_on_a_period_crossing() -> None:
+    """C-7 増分状態は跨ぎで再構築しない（跨ぎ 0 / 2 の 2 点で発行が変わらない）。
+
+    跨ぎで窓へ行を足すと窓の実体は別物になる。状態キャッシュがそれを「別の素材」と
+    見なすと、跨ぐたびに全再構築が起きる（値は同じままなので状態検証では落ちない・
+    ISSUE-465 の実測では 0.2ms → 374ms）。再構築が跨ぎ回数に比例しないことを固定する。
+    """
+    # Arrange / Act
+    without_crossing = _rebuilds_for(_TICKS)
+    with_crossings = _rebuilds_for(_TWO_CROSSING_TICKS)
+
+    # Assert
+    assert without_crossing > 0, "増分計算まで到達していません（検定が空振り）"
+    assert with_crossings == without_crossing
+
+
+# --- C-8 検出力（負の対照）------------------------------------------------- #
+
+class _AlwaysAppend:
+    """述語が常に「バーが進んだ」と答える突然変異（＝毎 tick 行を足す実装）。
+
+    行追加の可否を決めているのは :func:`adapter.compute.live_tick_tails.make_tail_at` の中の
+    共有核 :func:`common.forming_window.forming_patch` ただ 1 つである。そこだけを差し替えると
+    本番経路（controller → 窓供給 → make_tail_at → 注入）はそのまま走り、「毎 tick 行を足す」
+    実装が実際に出来上がる。発行数は**その実装が数えた実測値**であって、検定が置いた定数ではない。
+    """
+
+    mode = "append"
+
+
+def _issued_and_crossed_appending_every_tick(ticks) -> "tuple[int, int]":
+    """毎 tick 行を足す突然変異を**実 SUT へ注入**して測る ``(注入の発行数, 触れたバー本数)``。"""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ltt, "forming_patch", lambda *a, **k: _AlwaysAppend())
+        rec = _run(mp, labels=_NO_GAP_LABELS, ticks=ticks)
+    return len(rec.inject_bars), _crossed_bars(ticks)
+
+
+def test_adding_a_row_every_tick_breaks_the_crossing_relation() -> None:
+    """C-8a: 「毎 tick 行を足す」突然変異を実 SUT へ注入すると C-4 の関係式が破れる。
+
+    突然変異の発行数を検定が算術で置くと、置いた定数どうしの比較になり SUT を一切通らない
+    （どんな実装でも同じ結論が出る＝検出力を証明していない）。ここでは述語を差し替えて本番経路を
+    走らせ、**実装が実際に発行した回数**で関係式が破れることを観測する。
+    """
+    # Arrange / Act — 同じ入力（跨ぎ 0 の 16 tick）を、正しい実装と突然変異の両方で走らせる。
+    honest_issued, honest_crossed = _issued_and_crossed(_MANY_TICKS)
+    mutant_issued, mutant_crossed = _issued_and_crossed_appending_every_tick(_MANY_TICKS)
+
+    # Assert
+    assert mutant_issued > honest_issued            # 突然変異が実経路で効いた（検定が空振りでない）
+    assert honest_issued - 1 == honest_crossed - 1  # 正しい実装は関係式を満たす
+    assert mutant_issued - 1 != mutant_crossed - 1  # 突然変異は満たさない＝C-4 に検出力が在る
+
+
+def _synthesis_issued_per_tick(labels, ticks) -> int:
+    """窓供給を **tick ごとに呼ぶ** 突然変異の合成発行数（合成規則は実物のまま走らせる）。
+
+    ISSUE-481 で避けたいのはまさにこれ（要求あたり 1 回の窓供給が tick ループの中へ落ちる）で
+    ある。窓を受け取り直さずに毎回同じ確定窓から供給するので、同じ穴の閉周期合成が tick 数だけ
+    発行される。合成規則そのもの（:func:`adapter.compute.forming_bar.closed_gap_bars`）と適用点
+    （:func:`adapter.compute.live_tick_tails.window_with_forming`）は実物を通す。
+    """
+    from adapter.compute import forming_bar as fb
+
+    starts: "list[int]" = []
+
+    def _reader(start, end):  # noqa: ANN001, ARG001
+        starts.append(int(start))
+        return _synthetic_closed(int(start), ())
+
+    window = _confirmed_window(*labels)
+    bar = {"time": _unix(_FORMING_MINUTE), "open": 100.0, "high": 101.0,
+           "low": 100.0, "close": 101.0, "volume": 2.0}
+
+    def _gap_bars(last):
+        return fb.closed_gap_bars(_REF, "1m", last, int(bar["time"]))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fb, "forming_bar_from_ticks", _reader)
+        for _tick in ticks:                     # 窓を進めない＝毎 tick 同じ穴を読み直す
+            ltt.window_with_forming(
+                window, bar, inject=fb.inject_forming_bars, gap_bars=_gap_bars,
+            )
+    return len(starts)
+
+
+def test_synthesising_every_tick_breaks_the_tick_independence() -> None:
+    """C-8b: 「毎 tick 合成する」突然変異を実 SUT へ注入すると C-2 の tick 数非比例が破れる。
+
+    突然変異の発行数を ``正しい発行数 × tick 数`` と算術で置くと、その比較は SUT を通らず
+    「tick 数が 1 でない」ことしか言っていない。ここでは C-2 と同じ 2 点（tick 2 本 / 16 本）を
+    突然変異でも実測し、正しい実装では動かない量が突然変異では動くことを観測する。
+    """
+    # Arrange / Act — 欠落 1 本の窓で、tick 2 本 / 16 本の 2 点を両実装について測る。
+    honest_few = _synthesis_issued(_GAP1_LABELS, _TICKS)
+    honest_many = _synthesis_issued(_GAP1_LABELS, _MANY_TICKS)
+    mutant_few = _synthesis_issued_per_tick(_GAP1_LABELS, _TICKS)
+    mutant_many = _synthesis_issued_per_tick(_GAP1_LABELS, _MANY_TICKS)
+
+    # Assert
+    assert honest_few > 0, "合成が 1 度も発行されていません（検定が空振り）"
+    assert mutant_few > 0, "突然変異が実経路で効いていません（検定が空振り）"
+    assert honest_many == honest_few    # 正しい実装は tick 数に非比例
+    assert mutant_many != mutant_few    # 突然変異は tick 数で増える＝C-2 に検出力が在る
+
+
+def test_removing_the_cap_breaks_the_gap_bound() -> None:
+    """C-8c: 「上限を撤去する」突然変異では C-3 の gap 長非比例が破れる。
+
+    上限は暴走防御そのものであり、外すと停止していた端末の再開時に gap 長ぶんの
+    parquet 読みが一度に走る。出力は正しいままなので状態検証では落ちない。
+    """
+    # Arrange
+    from adapter.compute import forming_bar as fb
+
+    period = fb.closed_gap_period_seconds(_REF, "1m")
+    last = _unix(_LAST_CONFIRMED)
+
+    def uncapped(gap_periods: int) -> int:
+        """上限を撤去した列挙の発行数（突然変異）。"""
+        return len(fb._gap_starts(last, last + period * (gap_periods + 1), period))
+
+    def capped(gap_periods: int) -> int:
+        """本番の列挙（上限つき）の発行数。"""
+        starts = fb._gap_starts(last, last + period * (gap_periods + 1), period)
+        return len(starts[-fb._MAX_GAP_FILL_PERIODS:])
+
+    # Act / Assert
+    assert capped(2000) == capped(20000)        # 正しい実装は gap 長に非比例
+    assert uncapped(2000) != uncapped(20000)    # 突然変異は gap 長に比例して落ちる

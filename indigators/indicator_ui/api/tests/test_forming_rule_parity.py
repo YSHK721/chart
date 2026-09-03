@@ -13,7 +13,9 @@
        （``(time, o, h, l, c, v)`` へ正規化し float は ``struct.pack("<d", v)`` のバイト一致で見る）。
     2. ライブ経路（``apply_forming_bar``）の出力は改修前と 1 ビット一致する。改修前の出力は
        本ファイル内の ``_legacy_*`` として明示的に構築した golden で固定する（git stash を使わない）。
-    3. 述語が「窓の末尾＝形成中バー」を否定した場合、``make_tail_at`` は無音にせず 1 度だけ記録する。
+    3. 述語が ``"skip"``（形成中バーが窓末尾より過去＝順序逆転）を返した場合、
+       ``make_tail_at`` は無音にせず 1 度だけ記録する（``"append"``＝バーが進んだ、は
+       ISSUE-481 で窓へ行を足して吸収するため食い違いではない）。
     4. 計算量: 述語の発行数は**出力量だけ**で決まり、窓長（bars 本数）に比例しない。
 
 data/: 実データを読まない（合成 DataFrame のみ・注入で置換）。
@@ -654,6 +656,7 @@ def _tail_at_over(window, monkeypatch):
         adapter=object(),
         latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
         set_last_bar=_set_last_bar,
+        inject=fb.inject_forming_bars,
     )
 
 
@@ -668,15 +671,21 @@ def test_a_mismatched_window_is_recorded_once_and_still_yields_tails(monkeypatch
 
     従来は比較なしで末尾行へ代入し、「窓の末尾＝形成中バーと同じバー」をコメントで仮定して
     いただけだった。仮定が破れると別のバーの値を黙って描く（ISSUE-232 の失敗モード）。
+
+    ISSUE-481: 「形成中バーが窓末尾より**新しい**」は食い違いではなく「バーが進んだ」なので、
+    窓へ行を足して吸収する（警告は出ない）。本当に説明のつかない入力は残る ``"skip"``
+    ＝形成中バーが窓末尾より過去（順序が逆転した tick）だけであり、警告はそこ専用の信号に
+    なった。したがって Arrange をその入力へ移す（assert する性質＝無音にしない・毎ティック
+    吐かない・tails を落とさない、は不変）。
     """
-    # Arrange — 窓の末尾は 09:00、形成中バーは 09:05（＝別のバー）。
-    window = _frame(_WINDOW[:1])
+    # Arrange — 窓の末尾は 09:05、形成中バーは 09:00（＝末尾より過去＝順序逆転）。
+    window = _frame(_WINDOW)
     tail_at = _tail_at_over(window, monkeypatch)
 
     # Act
     with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
-        first = tail_at(_spec(), _state("2025-01-02 09:05:00"))
-        second = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+        first = tail_at(_spec(), _state("2025-01-02 09:00:00"))
+        second = tail_at(_spec(), _state("2025-01-02 09:00:00"))
 
     # Assert
     records = [r for r in caplog.records if r.name == _LTT_LOGGER]
@@ -699,6 +708,31 @@ def test_a_matching_window_is_not_recorded(monkeypatch, caplog) -> None:
     assert got == {"v": 1.0}
 
 
+def test_a_window_without_a_clock_index_never_grows_a_row(monkeypatch, caplog) -> None:
+    """時刻 index でない窓へは行を足さない（比較材料が無いまま新しいバーと決めない）。
+
+    ``window_with_forming`` は末尾 time を読めない窓を素通しし、「呼び出し側が記録する」
+    契約にしている（末尾 time の解決が None になる）。``make_tail_at`` が行追加をこの窓へも
+    適用すると、整数 index へ時刻ラベルの行が混ざって並べ替えが ``TypeError`` で落ちる
+    （実測: `/live_ticks` の既存検定 19 件が同時に落ちた）。行を足せるのは「窓末尾より
+    新しい」と**確かめられた**ときだけである。
+    """
+    # Arrange — index が時刻でない窓（時刻は列として持つ形）。
+    window = pd.DataFrame({
+        "time": [100, 200], "open": [1.0, 1.5], "high": [2.0, 2.5],
+        "low": [0.5, 1.0], "close": [1.5, 2.0], "volume": [10.0, 20.0],
+    })
+    tail_at = _tail_at_over(window, monkeypatch)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        got = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+
+    # Assert — 行は増えず、対応不明として 1 度だけ記録される。
+    assert got == {"v": 1.0}
+    assert len([r for r in caplog.records if r.name == _LTT_LOGGER]) == 1
+
+
 def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
     """末尾行へ渡す値は従来どおり OHLCV の 5 キーのみ（``time`` は渡さない＝列照合は完全一致）。"""
     # Arrange
@@ -710,6 +744,7 @@ def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
         adapter=object(),
         latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
         set_last_bar=lambda w, values: seen.append(dict(values)),
+        inject=fb.inject_forming_bars,
     )
 
     # Act
@@ -718,3 +753,295 @@ def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
     # Assert
     assert seen == [{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.75, "volume": 3.0}]
     assert float(window.iloc[-1]["close"]) == 2.0  # 入力 df は複製されており不変
+
+
+# --------------------------------------------------------------------------- #
+# 7. 計算量テスト（絶対命令）— 閉周期合成は gap 長を実体化せず上限で有界
+# --------------------------------------------------------------------------- #
+
+class _SynthesisSpy:
+    """素材集計（forming_bar_from_ticks）が受け取った窓 ``(start, end)`` を記録する Test Spy。
+
+    回数そのものは期待値へ焼き込まない（焼き込むと浪費が仕様へ昇格する＝ISSUE-450）。
+    固定するのは **無駄の不在**（gap 長を増やしても発行が増えないこと）だけである。
+    """
+
+    def __init__(self, monkeypatch, *, result=None) -> None:
+        self.windows: "list[tuple[int, int]]" = []
+
+        def counting(start, end):
+            self.windows.append((int(start), int(end)))
+            return None if result is None else result(int(start), int(end))
+
+        monkeypatch.setattr(fb, "forming_bar_from_ticks", counting)
+
+
+def _issued_for_gap(gap_periods: int) -> "list[tuple[int, int]]":
+    """欠落 ``gap_periods`` 周期に対して閉周期合成が発行した窓の列を返す。"""
+    period = fb.closed_gap_period_seconds(_REF, "1m")
+    last = _unix("2025-01-02 09:00:00")
+    with pytest.MonkeyPatch.context() as mp:
+        spy = _SynthesisSpy(mp)
+        fb.closed_gap_bars(_REF, "1m", last, last + period * (gap_periods + 1))
+        return spy.windows
+
+
+def test_closed_gap_synthesis_does_not_grow_with_the_gap_length() -> None:
+    """欠落 gap を 10 倍にしても合成の発行数は変わらない（オーダーの表明・2 点で固定）。
+
+    ここが gap 長に比例すると、出力（窓に並ぶ行）は正しいまま「作っては捨てる」浪費が入り、
+    状態検証では原理的に落ちない（ISSUE-450 の失敗モード）。上限は実装の定数から導出し、
+    回数リテラルは書かない。
+    """
+    # Arrange / Act
+    small, large = _issued_for_gap(2000), _issued_for_gap(20000)
+
+    # Assert
+    assert small, "合成が 1 度も発行されていません（検定が空振りしています）"
+    assert len(small) == len(large)                     # gap 長に非比例
+    assert len(large) <= fb._MAX_GAP_FILL_PERIODS       # 上限で有界
+
+
+def test_the_gap_enumeration_is_not_materialised() -> None:
+    """欠落周期の列挙は ``range`` のまま扱う（gap 長ぶんの list を作って捨てない）。
+
+    ``list(...)`` へ落とすと、上限で切り詰める前に gap 長ぶんの要素を必ず実体化する。
+    出力は同じなので状態検証では見えない浪費であり、型そのものを固定して禁じる。
+    """
+    # Arrange / Act
+    starts = fb._gap_starts(0, 60 * 20000, 60)
+
+    # Assert
+    assert isinstance(starts, range)
+
+
+# --------------------------------------------------------------------------- #
+# 8. 2 供給経路の窓同値（ISSUE-481）— 同じ穴を同じ規則で埋める
+#
+#    /compute（apply_forming_bar）と /live_ticks の窓供給（window_with_forming）は、
+#    M1 焼き込み猶予中に開く**同じ**穴を埋めなければならない。片方だけが埋めていた間、
+#    2 経路は別の窓で計算しており、実データ 24 点中 5-6 点で無音のまま食い違っていた
+#    （ISSUE-481 の実測）。ここで固定するのは「両者が同じ答えを出す」ことであって、
+#    どちらか一方の実装詳細ではない。
+# --------------------------------------------------------------------------- #
+
+#: 突合の行列: 計算足 × 「確定末尾から形成中周期までの周期数 k」。
+#:   k=1 は穴なし・k=2,3 は穴あり・k=6 は上限ちょうど・k=8 は上限超過（縮退）。
+_PARITY_TFS = ("1m", "5m")
+_PARITY_OFFSETS = (1, 2, 3, 6, 8)
+
+#: 突合の基準となる確定末尾の時刻。
+_PARITY_LAST = "2025-01-02 09:00:00"
+
+
+def _closed_at(start: int) -> "dict":
+    """始端 ``start`` の合成閉周期バー（値を始端から一意に導き、取り違えを検出可能にする）。"""
+    base = float(start % 100000)
+    return {"time": int(start), "open": base, "high": base + 2.0,
+            "low": base - 1.0, "close": base + 1.0, "volume": 5.0}
+
+
+def _parity_setup(tf: str, k: int) -> "tuple":
+    """``(確定窓, 形成中バー, 周期秒)`` — 確定末尾から ``k`` 周期先が形成中周期。"""
+    period = fb.closed_gap_period_seconds(_REF, tf)
+    last = _unix(_PARITY_LAST)
+    frame = _frame([
+        {"time": last - period, "open": 1.0, "high": 2.0,
+         "low": 0.5, "close": 1.5, "volume": 10.0},
+        {"time": last, "open": 1.5, "high": 2.5,
+         "low": 1.0, "close": 2.0, "volume": 20.0},
+    ])
+    bar = {"time": last + period * k, **_FULL}
+    return frame, bar, period
+
+
+def _label_gaps(frame) -> "list[int]":
+    """窓のラベル間隔（秒）の列。穴が残っていれば周期の整数倍として現れる。"""
+    labels = [int(pd.Timestamp(ts).value // 1_000_000_000) for ts in frame.index]
+    return [b - a for a, b in zip(labels, labels[1:])]
+
+
+def _run_both(tf: str, k: int, *, reader=None) -> "tuple":
+    """両経路を**同じ材料**で走らせ、``((窓, 合成呼び出し列), (窓, 合成呼び出し列))`` を返す。
+
+    合成素材の読み手（``reader``）は両側で同一のものを注入する。したがって残る差は
+    「規則の実装」だけになり、突合はそこだけを見る。
+    """
+    frame, bar, _period = _parity_setup(tf, k)
+    reader = reader or (lambda s, e: _closed_at(s))
+
+    with pytest.MonkeyPatch.context() as mp:
+        spy = _SynthesisSpy(mp, result=reader)
+        mp.setattr(fb, "forming_bar", lambda *a, **kw: bar)
+        from_compute = fb.apply_forming_bar(
+            frame, _REF, tf, _NOW, synthesize_closed_gaps=True
+        )
+        compute_calls = list(spy.windows)
+
+    with pytest.MonkeyPatch.context() as mp:
+        spy = _SynthesisSpy(mp, result=reader)
+        from_tails = ltt.window_with_forming(
+            frame, bar, inject=fb.inject_forming_bars,
+            gap_bars=lambda last: fb.closed_gap_bars(_REF, tf, last, int(bar["time"])),
+        )
+        tails_calls = list(spy.windows)
+
+    return (from_compute, compute_calls), (from_tails, tails_calls)
+
+
+@pytest.mark.parametrize("k", _PARITY_OFFSETS)
+@pytest.mark.parametrize("tf", _PARITY_TFS)
+def test_the_two_supply_paths_produce_the_same_window(tf, k) -> None:
+    """P-1 窓同値: 2 経路の窓は index も値も byte 一致する（穴の有無・上限超過を含む）。"""
+    # Arrange / Act
+    (from_compute, _), (from_tails, _) = _run_both(tf, k)
+
+    # Assert
+    assert _normalize_frame(from_tails) == _normalize_frame(from_compute)
+
+
+@pytest.mark.parametrize("k", _PARITY_OFFSETS)
+@pytest.mark.parametrize("tf", _PARITY_TFS)
+def test_the_two_supply_paths_issue_the_same_synthesis_windows(tf, k) -> None:
+    """P-2 合成呼び出し列同一: 素材へ要求した窓 ``(start, end)`` の列が 2 経路で同じ。
+
+    窓が一致していても要求の出し方が違えば、片方だけが余分に読む（＝作って捨てる）か、
+    片方だけが読み落とす。出力の一致だけでは原理的に見えないので発行側も突き合わせる。
+    """
+    # Arrange / Act
+    (_, compute_calls), (_, tails_calls) = _run_both(tf, k)
+
+    # Assert — 発行は「穴の数（上限で頭打ち）」ちょうど＝作って捨てる要求がゼロ。
+    assert tails_calls == compute_calls
+    assert len(compute_calls) == min(max(k - 1, 0), fb._MAX_GAP_FILL_PERIODS)
+
+
+def test_the_two_supply_paths_degrade_identically_over_the_cap() -> None:
+    """P-3a 縮退同値: 上限超過でも 2 経路は同じ本数だけ充填し、残る穴も同じ位置に残る。"""
+    # Arrange / Act
+    (from_compute, compute_calls), (from_tails, tails_calls) = _run_both("1m", 8)
+
+    # Assert
+    assert _normalize_frame(from_tails) == _normalize_frame(from_compute)
+    assert len(tails_calls) == len(compute_calls) == fb._MAX_GAP_FILL_PERIODS
+    assert _label_gaps(from_tails) == _label_gaps(from_compute)
+    assert max(_label_gaps(from_tails)) > 60, "上限超過なのに穴が残っていません（前提崩れ）"
+
+
+def test_the_two_supply_paths_add_nothing_when_the_periods_have_no_ticks() -> None:
+    """P-3b 縮退同値: tick の無い周期（週末等）では 2 経路とも合成行を足さない。"""
+    # Arrange / Act
+    (from_compute, _), (from_tails, _) = _run_both("1m", 3, reader=lambda s, e: None)
+
+    # Assert
+    assert _normalize_frame(from_tails) == _normalize_frame(from_compute)
+    assert _label_gaps(from_tails) == [60, 180]   # 確定 2 本 + 形成中のみ（合成なし）
+
+
+def test_the_two_supply_paths_skip_only_the_failing_period() -> None:
+    """P-3c 縮退同値: 素材読込が失敗した周期だけを 2 経路とも飛ばす（他は合成する）。"""
+    # Arrange
+    _frame_in, _bar, period = _parity_setup("1m", 3)
+    boom = _unix(_PARITY_LAST) + period          # 最初の欠落周期だけ失敗させる
+
+    def reader(s, e):
+        if s == boom:
+            raise OSError("torn read")
+        return _closed_at(s)
+
+    # Act
+    (from_compute, compute_calls), (from_tails, tails_calls) = _run_both(
+        "1m", 3, reader=reader
+    )
+
+    # Assert
+    assert _normalize_frame(from_tails) == _normalize_frame(from_compute)
+    assert tails_calls == compute_calls           # 失敗した周期も両者が同じだけ要求する
+    assert len(from_tails) == len(_frame_in) + 2  # 合成 1 本（1 本は失敗）＋形成中 1 本
+
+
+def test_the_supplied_window_keeps_the_material_identity() -> None:
+    """P-5 素材識別保存: 供給後の窓の素材識別が入力と一致する（状態キーを壊さない）。
+
+    識別（ISSUE-465）が落ちると増分計算の状態キャッシュが素材を区別できなくなり、
+    足を巡回するたび全再構築が起きる（実測 0.2ms → 374ms）。値は変わらないので
+    状態検証では落ちない種類の劣化であり、識別そのものを固定する。
+    """
+    # Arrange
+    from marketdata.material_identity import label, material_of
+
+    frame, bar, _period = _parity_setup("1m", 3)
+    label(frame, ref=_REF, timeframe="1m")
+    expected = material_of(frame)
+
+    # Act
+    with pytest.MonkeyPatch.context() as mp:
+        _SynthesisSpy(mp, result=lambda s, e: _closed_at(s))
+        out = ltt.window_with_forming(
+            frame, bar, inject=fb.inject_forming_bars,
+            gap_bars=lambda last: fb.closed_gap_bars(_REF, "1m", last, int(bar["time"])),
+        )
+
+    # Assert
+    assert expected is not None                  # 前提（識別が載っている）
+    assert material_of(out) == expected
+
+
+# --------------------------------------------------------------------------- #
+# 9. P-4 検出力（負の対照）— 突合が「規則の書き直し」を実際に捕まえる
+# --------------------------------------------------------------------------- #
+
+def _mutant_gap_bars(tf: str, bar: "dict", *, cap=None, start_offset: int = 1):
+    """供給側が閉周期合成の規則を**自前で書き直した**場合の突然変異。
+
+    ISSUE-481 で避けたいのはまさにこれ（上限の再宣言・列挙起点の取り違え）である。
+    突合がこれを捕まえられなければ、突合は規則の単一化を担保していない。
+    """
+    period = fb.closed_gap_period_seconds(_REF, tf)
+
+    def gap_bars(last):
+        starts = range(int(last) + period * start_offset, int(bar["time"]), period)
+        out = []
+        for gs in (starts if cap is None else starts[-cap:]):
+            closed = fb.forming_bar_from_ticks(gs, gs + period)
+            if closed is not None:
+                out.append(closed)
+        return out
+
+    return gap_bars
+
+
+@pytest.mark.parametrize(
+    ("mutation", "k"),
+    [
+        ({"cap": 4}, 8),              # 上限を tails 側で再宣言してずらした
+        ({"start_offset": 2}, 3),     # 列挙起点を last + 2*period にした
+    ],
+)
+def test_the_parity_check_catches_a_reimplemented_rule(mutation, k) -> None:
+    """P-4 検出力: 供給側が規則を書き直すと P-1（窓）か P-2（呼び出し列）が必ず落ちる。"""
+    # Arrange
+    frame, bar, _period = _parity_setup("1m", k)
+
+    def run(gap_bars):
+        with pytest.MonkeyPatch.context() as mp:
+            spy = _SynthesisSpy(mp, result=lambda s, e: _closed_at(s))
+            mp.setattr(fb, "forming_bar", lambda *a, **kw: bar)
+            good = fb.apply_forming_bar(frame, _REF, "1m", _NOW,
+                                        synthesize_closed_gaps=True)
+            good_calls = list(spy.windows)
+        with pytest.MonkeyPatch.context() as mp:
+            spy = _SynthesisSpy(mp, result=lambda s, e: _closed_at(s))
+            mutant = ltt.window_with_forming(
+                frame, bar, inject=fb.inject_forming_bars, gap_bars=gap_bars,
+            )
+            return (good, good_calls), (mutant, list(spy.windows))
+
+    # Act
+    (good, good_calls), (mutant, mutant_calls) = run(
+        _mutant_gap_bars("1m", bar, **mutation)
+    )
+
+    # Assert — P-1（窓）と P-2（呼び出し列）が **どちらも** 食い違う＝突合に検出力が在る。
+    assert mutant_calls != good_calls
+    assert _normalize_frame(mutant) != _normalize_frame(good)

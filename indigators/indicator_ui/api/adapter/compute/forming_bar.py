@@ -260,6 +260,83 @@ def rollup_forming_bar(
     return merge_forming(base, tail)
 
 
+def closed_gap_period_seconds(ref: str, tf: str) -> "int | None":
+    """閉周期合成の**対象判定の唯一源**: 対象なら周期秒、対象外なら ``None``。
+
+    名前が「固定長 tf の周期秒」ではなく「閉周期合成の周期秒」なのは、判定が tf だけで
+    閉じないからである。返す値は 2 つのゲートを**両方**通ったときの周期秒であり、
+    tf の性質を答える関数ではない（旧名 fixed_period_seconds は ref ゲートを名前から
+    落としており、tf さえ固定長なら値が返るかのように読めた。バッククォートで囲まないのは、
+    実在しない記号を名指さないためである＝C1 の趣旨）。
+
+    契約（``None`` を返す条件は次の 2 つだけで、呼び出し側はこれを再宣言しない）:
+      - **ref ゲート**: ``is_tick_ref(ref)`` が偽（sample 等の非 tick ref）→ ``None``。
+        非 tick ref へ実 tick から組んだ合成バーを混ぜるとデータ源が混線する。
+      - **tf ゲート**: ``tf`` が固定長でない（1W/1M 等）→ ``None``。周期が可変で、
+        ライブ中に「閉じた周期が欠落する」という状況そのものが起こらない。
+
+    判定を配って歩くと供給側ごとに条件がずれるため、**定数ではなく本関数を配る**
+    （呼び出し側は ``_FIXED_TF_SECONDS`` も ``_MAX_GAP_FILL_PERIODS`` も知らない）。
+
+    ``tf`` が空・``None`` のときは既定 ``"1m"`` として解決する（従来挙動）。
+    """
+    return _FIXED_TF_SECONDS.get(tf or "1m") if is_tick_ref(ref) else None
+
+
+def _gap_starts(last_unix: int, forming_start: int, period: int) -> range:
+    """欠落した閉周期の始端列 ``[last+period, forming_start)`` を **range のまま**返す。
+
+    ``list`` へ落とさないのは、上限（:data:`_MAX_GAP_FILL_PERIODS`）で切り詰める前に gap 長
+    ぶんの要素を必ず実体化してしまうからである。出力は同じなので状態検証では見えないが、
+    停止していた端末が長い gap を抱えて再開したときだけ費用が跳ねる（ISSUE-450 と同型の
+    「作ってから捨てる」浪費）。``range`` のスライスは ``range`` を返す（Python 仕様）ため、
+    切り詰めた後も実体化しない。
+    """
+    return range(last_unix + period, forming_start, period)
+
+
+def closed_gap_bars(
+    ref: str, tf: str, last_unix: int, forming_start: int
+) -> "list[dict]":
+    """欠落閉周期（ISSUE-162）の合成バー列を返す — **合成規則の唯一の実装**。
+
+    ``last_unix``（確定末尾の time）と ``forming_start``（形成中周期の始端）の間に閉じた周期が
+    空いていれば、その各周期を実 tick の完結窓 ``[gs, gs+period)`` から組み立てる。
+
+    なぜ関数にするか（ISSUE-481）: 同じ穴を ``/compute``（:func:`apply_forming_bar`）と
+    ``/live_ticks`` の窓供給（live_tick_tails の window_with_forming）の**両方**が埋めなければ
+    ならない。規則を 2 度書くと片方だけ直した瞬間に「2 経路が別の窓で計算する」状態へ戻る
+    （ISSUE-481 で実際に起きていた欠陥そのもの）。
+
+    Args:
+        ref: データセット ref（tick 系でなければ対象外＝空リスト）。
+        tf: 計算足（固定長でなければ対象外＝空リスト）。
+        last_unix: 確定末尾バーの ``time``（UNIX 秒）。
+        forming_start: 形成中周期の始端（UNIX 秒）。
+
+    Returns:
+        合成できた閉周期バーの昇順列。以下はいずれも **合成しない**（従来挙動）:
+          - 対象外 ref/tf → ``[]``
+          - tick の無い周期（週末等）→ その周期を飛ばす（実データの無いバーを捏造しない）
+          - 素材読込の失敗 → その周期だけ飛ばして WARNING（橋渡しの失敗で本計算を落とさない）
+          - 欠落が上限を超える → **直近** :data:`_MAX_GAP_FILL_PERIODS` 本だけ充填（暴走防御）
+    """
+    period = closed_gap_period_seconds(ref, tf)
+    if period is None:
+        return []
+    out: "list[dict]" = []
+    starts = _gap_starts(int(last_unix), int(forming_start), period)
+    for gs in starts[-_MAX_GAP_FILL_PERIODS:]:
+        try:
+            closed = forming_bar_from_ticks(gs, gs + period)  # 完結窓 [gs, gs+period)
+        except Exception as exc:  # noqa: BLE001 — 橋渡しは表示補完・失敗しても本計算を落とさない
+            logger.warning("欠落閉周期の合成に失敗（skip）: %s/%s t=%s (%s)", ref, tf, gs, exc)
+            continue
+        if closed is not None:
+            out.append(closed)
+    return out
+
+
 def _require_forming_time(bar: Any) -> int:
     """注入するバーの ``time``（UNIX 秒）。adapter 固有の事前条件であり、緩めない。
 
@@ -361,21 +438,15 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     #   周期（週末等）は合成せず skip（実データが無いバーを捏造しない）。
     to_inject = []
     # ref ゲート: tick 系 ref のみ（forming_bar と同一条件）。非 tick ref（sample 等）へ実 tick の
-    #   合成バーを混入させない（データ源の混線防止）。
-    period = _FIXED_TF_SECONDS.get(tf or "1m") if is_tick_ref(ref) else None
+    #   合成バーを混入させない（データ源の混線防止）。判定は closed_gap_period_seconds ただ 1 つ
+    #   （ref ゲートと tf ゲートの両方を含む＝ここで条件を再宣言しない）。
+    period = closed_gap_period_seconds(ref, tf)
     if period is not None and synthesize_closed_gaps:
         last_unix = int(df.index[-1].timestamp())
         now_i = int(now_unix)
         forming_start = int(bar["time"]) if bar is not None else now_i - (now_i % period)
-        gap_starts = range(last_unix + period, forming_start, period)
-        for gs in list(gap_starts)[-_MAX_GAP_FILL_PERIODS:]:
-            try:
-                closed = forming_bar_from_ticks(gs, gs + period)  # 完結窓 [gs, gs+period)
-            except Exception as exc:  # noqa: BLE001 — 橋渡しは表示補完・失敗しても本計算を落とさない
-                logger.warning("欠落閉周期の合成に失敗（skip）: %s/%s t=%s (%s)", ref, tf, gs, exc)
-                continue
-            if closed is not None:
-                to_inject.append(closed)
+        # 合成規則そのものは closed_gap_bars（唯一の実装）。ここはアンカー算出だけを持つ。
+        to_inject.extend(closed_gap_bars(ref, tf, last_unix, forming_start))
     if bar is not None:
         to_inject.append(bar)
     if not to_inject:

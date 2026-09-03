@@ -329,7 +329,7 @@ def test_forming_bar_is_folded_per_compute_timeframe(_port):
     """形成中バーは計算足の周期で畳む（チャート足の周期で畳んだ値を渡さない）。"""
     seen: "dict[str, list]" = {}
 
-    def _fake_make_tail_at(*, df, adapter, latest_compute, set_last_bar):
+    def _fake_make_tail_at(*, df, adapter, latest_compute, set_last_bar, inject):
         def _tail_at(spec, state):
             seen.setdefault(spec.instance_id, []).append(state.time)
             return {"v": 1.0}

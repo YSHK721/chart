@@ -13313,7 +13313,8 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
 
 ## ISSUE-480: [欠陥] 1m ライブ tails の窓末尾≠形成中バー — `_set_last_bar` が前分 M-1 行へ現分 M の値を書いていた
 
-- **ステータス**: OPEN（部分是正。2026-09-03 是正コミット 7573a96 で主経路は解消。残存 A/B は下記追記と ISSUE-481 参照）
+- **ステータス**: RESOLVED（2026-09-03。主経路は 7573a96、残存 A/B は ISSUE-481 の 4 コミット
+  8b158f9 / 369da8b / b5dca42 / f16a851 で解消。実データ再観測で残存 0 件）
 - **重大度**: 中（1m ライブ tails 経路の指標末尾値が誤ったバー行に基づく。/compute 経路は影響なし）
 - **実測**: `live_tick_tails_controller._load_window` は確定窓（M1 CSV は排他 floor により常に M-1 分まで＝
   `tools/live_tick_watch.py:348`）をそのまま渡し、`live_tick_tails.py:66-67` の「窓末尾＝形成中バーの周期」
@@ -13365,7 +13366,8 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
 
 ## ISSUE-481: [設計] ライブ tails の窓供給に閉周期合成が無い — 境界バッチ（残存 A）と焼き込み猶予中の閉分欠落（残存 B）
 
-- **ステータス**: OPEN（2026-09-03 起票。ISSUE-480 の部分是正後の残存・2 巡目レビューが実測で確定）
+- **ステータス**: RESOLVED（2026-09-03。`fix/issue-481-tails-window` の 4 コミット
+  8b158f9 / 369da8b / b5dca42 / f16a851。S5 実データ再観測で残存 A/B とも 0 件）
 - **重大度**: 中（発生率 約 6-7/24 ポーリング。残存 B は無警告で /compute と別の窓になり、
   ティック更新と定期再計算で指標値が跳ぶ）
 - **実測**: ISSUE-480 の再レビュー追記を参照（残存 A: 境界跨ぎバッチで前バー行へ代入・WARNING 1 回／
@@ -13377,6 +13379,72 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
 - **着手順**: ISSUE-479 Wave 2 の先頭（コードの現状は 2 巡目レビューで「どの断面でも develop より改善」と
   裁定済みのため、マージ後に本 Issue を単独ブランチで実施）。
 - **関連**: ISSUE-480（部分是正）・ISSUE-162（閉周期合成の規則元）・ISSUE-232（失敗モードの類型）。
+
+### 是正完了記録（2026-09-03・TDD・fix/issue-481-tails-window）
+
+- **S1 関数抽出（8b158f9・挙動 1 ビット不変）**: 閉周期合成を `apply_forming_bar` の
+  インラインブロックから 3 関数へ抽出した。`closed_gap_period_seconds`（対象判定の唯一源。
+  抽出時の名は `fixed_period_seconds` だったが、ref ゲートを名前から落としていたためレビュー
+  🟡-2 で改名した）・
+  `_gap_starts`（欠落周期の始端列を range のまま返す）・`closed_gap_bars`（ISSUE-162 規則の
+  唯一の実装）。`list(gap_starts)[-N:]` を range スライスへ替え、gap 長ぶんの実体化を消した。
+  上限 `_MAX_GAP_FILL_PERIODS` は配らず関数を配る（供給側は上限も列挙も知らない）。
+  既存 `test_forming_bar.py` は差分 0 行・`test_forming_rule_parity.py` は追記のみ（+60 / -0）。
+- **S2 突合検定の先行追加（369da8b・意図的に赤）**: P-1 窓同値（{1m,5m} × k∈{1,2,3,6,8} の
+  行列で index と値バイト列が一致）／P-2 合成呼び出し列同一／P-3 縮退同値（上限超過・無 tick・
+  読込失敗）／P-4 検出力（上限再宣言・列挙起点ずらしの 2 突然変異を捕まえる）／P-5 素材識別保存。
+  **Red 実測**: 26 failed（すべて `TypeError: window_with_forming() got an unexpected
+  keyword argument 'gap_bars'`）。
+- **S3 供給側適用（b5dca42）**: `window_with_forming` に `gap_bars`（キーワード専用・既定 None＝
+  従来挙動）を追加し、合成した閉周期バー → 形成中バーを **1 回の注入**にまとめる。controller は
+  `closed_gap_bars` を直 import して結線。P-1〜P-5 の 26 件が緑。Pin-3 を恒久解の期待値へ
+  書き換え（`..._keeps_a_period_gap` → `..._is_filled_by_the_closed_period_synthesis`）。
+- **S3b 費用ゲート（実測・読み取り専用・通過）**: 閉周期合成 1 回の実費用は 1m で
+  p50 14.6ms / p95 21.9ms / 最悪 32.7ms（2026-09-02 の 98,422 tick 日）、最大日 2016-01-21
+  （172,070 tick）でも p50 21.8ms / 最悪 26.8ms。1 要求ぶん（固定長 tf 7 グループ同時）の
+  端から端までの実測は、定常（各 1 周期欠落）**113ms＝poll 予算 2.5 秒の 4.5%・余裕 2387ms**、
+  上限いっぱい（各 5 周期欠落）**607ms＝24.3%・余裕 1893ms**、gap 20 周期でも 484ms（上限が
+  効いている証拠）。予算内につき **`closed_gap_bars` の記憶化は不要**と判定（実装せず）。
+- **S4 バッチ内周期跨ぎの吸収（f16a851）**: `make_tail_at` に `inject` を追加し、
+  `mode == "append"` のときだけ窓へ行を 1 本足す（跨いだ回数ぶんのみ）。窓の事前拡張は
+  /compute と食い違うため不採用。警告は `mode == "skip"`（順序逆転 tick）と「末尾 time を
+  読めない窓」専用の信号へ。Pin-1/Pin-2 を実装と同一コミットで書き換え（赤い中間コミット無し）。
+- **計算量テスト（絶対命令・全 8 件）**: C-1 合成の発行 − 使用 = 0（使用数は出力から導出）／
+  C-2 gap 長比例・tick 数非比例（gap 1/3・tick 2/16 の各 2 点）／C-3 上限で有界・O(gap) 非実体化
+  （gap 2000/20000 の 2 点＋`isinstance(..., range)`）／C-4 行追加は跨ぎ回数のみに比例
+  （跨ぎ 0/1/2 の 3 点）／C-5 作って捨てる窓ゼロ／C-6 供給は要求・グループあたり 1 回（既存を
+  不変維持）／C-7 増分状態は跨ぎで再構築しない（build 発行が跨ぎ回数に非比例・2 点）／
+  C-8 検出力（毎 tick 行追加・毎 tick 合成・上限撤去の 3 突然変異で C-4/C-2/C-3 が落ちることを実証）。
+  回数リテラルは焼き込まず、固定したのは **無駄の不在**だけ。
+- **S5 実データ断面の再観測（読み取り専用・data/ 書き込み 0）**: 2026-09-03 09:00 UTC 起点・
+  poll 間隔 2.5 秒・1m・M1 焼き込み猶予（grace 12 秒）を実 M1 の切り詰めで再現。
+  24 ポーリング相当では **観測 22 / 猶予中 3 / 境界跨ぎ 1** で WARNING 0 件・
+  tails と /compute の窓が一致（不一致 0 件）。tick の存在しない周期は両経路とも合成せず
+  同じ穴を残す＝契約どおりの挙動であり回帰ではない（合成しないのは実データの無いバーを
+  捏造しないため）。600 ポーリングへ拡大しても **観測 518 / 猶予中 88 / 境界跨ぎ 11**
+  で WARNING 0 件・ラベル間隔は 207,283 区間すべて 60 秒ちょうど・窓不一致 0 件
+  （+1 秒が分を跨ぎ比較不能な 5 断面のみ突合から除外）。是正前は残存 6-7/24 だった。
+- **設計書との食い違い 2 件（実確認のうえ是正）**:
+  1. 設計 S4 の骨子は「末尾 time を読めない窓（時刻 index でない窓）」の護りを欠いていた。
+     整数 index へ時刻ラベルの行が混ざり `sort_index` が `TypeError`（既存検定 19 件が同時に赤で
+     露見）。`window_with_forming` と同じ「比較材料が無ければ触らない」規律を入れ、名前つきの
+     検定 `test_a_window_without_a_clock_index_never_grows_a_row` を追加した。
+  2. 設計の「既存アサーション変更は pin 3 本のみ」に対し 4 本目が必要だった。
+     `test_a_mismatched_window_is_recorded_once_and_still_yields_tails` は append を食い違いと
+     して扱う Arrange だったため skip（順序逆転）の入力へ移した。assert する性質（無音にしない・
+     毎ティック吐かない・tails を落とさない）は不変。
+- **検証**: `indigators/indicator_ui/api/tests` + `marketdata/tests` = 1825 passed
+  （基線 1788 + 新規 37）／`common/tests` = 152 passed／
+  `indigators/market_profile/api/tests` + `tools/tests` = 902 passed（既知 pre-existing
+  `test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+  の 1 件のみ failed・本 Issue の変更前から同一）／`run_quality_gate.py` exit 0／
+  `test_static_quality.py` 5 passed。
+- **既知の環境制約（本 Issue の変更とは無関係）**: `indigators/indicator_ui/api/tests` と
+  `common/tests` は同一 pytest 実行で収集できない（`test_module_loader.py` の basename 衝突・
+  f645c7f で両方が同時に追加されて以来）。実行は 2 回に分ける（既存の運用と同じ）。
+- **残す（別 Issue 候補・本 Issue の範囲外）**: skip 分岐での末尾行代入継続（ISSUE-232 型）／
+  形成中バー自体の 2 素材差（buffer vs parquet）／`_set_last_bar` の列名完全一致と
+  `inject_forming_bars` の大小無視の非対称。
 
 ### 再提出条件の充足記録（2026-09-03・2 巡目差戻しへの対応完了）
 
