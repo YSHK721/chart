@@ -13,6 +13,17 @@ meta}`` を、Dukascopy 実データ（``marketdata``）で全面再構築する
 既存資産（``sample_data.js`` / ``dataset.py`` / 指標 src / build / サーバ）は **無改変**。
 変更対象は ``out/prototype.html`` のみ。指標の既定 params は UI catalog（``web/js/usecase/
 catalog.js``）の既定値に一致させる。
+
+実行時 sys.path 書き換えを**維持する理由**（ISSUE-479 Wave2 2-7 / ISSUE-482・重要）:
+    同ディレクトリの他の CLI は repo 根の insert を撤去し、解決を台帳（tools/dev_paths.txt）
+    ＋ venv の .pth へ一本化した。本ファイルだけは撤去できない——``_API_DIR``
+    （``indicator_ui/api``）が挿すのは adapter / framework / domain という
+    **汎用名**であり、スライス間で衝突するため台帳へ載せられない（台帳の規律：載せるのは
+    衝突しない固有名のトップパッケージだけ）。同じ理由で
+    replay_ui/adapter/_indicator_ui_bridge の _ensure_paths も維持されている。
+    つまりこれは撤去漏れではなく、bridge と同一の規律による意図的な例外である。
+    例外が 1 件だけであることは
+    ``tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`` が固定する。
 """
 from __future__ import annotations
 

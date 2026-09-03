@@ -13475,7 +13475,7 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
 
 ## ISSUE-482: [設計] Wave2 2-7 の前提「venv 経由起動」が成立しない — .pth を書く運用手順がリポジトリに無い
 
-- **ステータス**: OPEN（承認待ち・作業中断）
+- **ステータス**: RESOLVED（2026-09-03・コーディネータ承認のうえ根治）
 - **重大度**: 中（本番実行時ではなく、文書化された CLI 再生成手順が壊れる）
 - **起票**: 2026-09-03（ISSUE-479 Wave2 フェーズ 2-7 着手時）
 
@@ -13538,3 +13538,68 @@ repo 根 insert 撤去（venv 経由起動前提を docstring 明記）」を、
 引数を解釈せず fixture を再生成した（`simulator/tests/fixtures/account_engine/js_golden_cases.json`）。
 `git diff` で byte 不変を確認済み（決定的生成のため内容は同一）。
 副次的な発見として、この CLI は `--help` を受け付けず必ず書き込む。
+
+### 解決（2026-09-03・対策案 3 段すべてを実施）
+
+**段階 1: `.pth` の正規インストール**（加法・可逆＝当該ファイルを消せば元に戻る）
+
+    実行: <venv>/bin/python tools/install_dev_paths.py
+    書き込み先:
+      lightweight-charts-python-main/.venv/lib/python3.13/site-packages/jp225_chart_paths.pth
+    内容（3 行・台帳 tools/dev_paths.txt から導出。値は書き写していない）:
+      /workspaces/app
+      /workspaces/app/indigators/market_profile/api
+      /workspaces/app/indigators
+
+`tools/setup_worktree.sh` は worktree をメインチェックアウトの venv に向けるため、
+本 .pth は worktree からも効く。
+
+**段階 3 を段階 2 より先に実施**（検査が無い状態で撤去しないため）:
+新設 `tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`。対象ディレクトリ
+（`simulator/tools`・`indigators/indicator_ui/tools`）の `__main__` ガードを持つ入口を
+**表を手書きせずに走査**し、PYTHONPATH を落とした素の venv python で 1 本ずつ起動して
+ModuleNotFoundError にならないことを固定する。`--help` は使えない（起票時の付記のとおり
+`export_account_engine_fixtures.py` は引数を解釈せず書き込む）ため、モジュール本体だけを
+実行し `__main__` ガードの内側へは入らない起動形にした（起動形自体も自己検査で固定）。
+`.pth` 依存は skipif にせず、`test_the_ledger_entries_are_visible_to_a_bare_interpreter`
+が前提として名指しで検査し、失敗時に打つべきコマンドを出す。
+
+**起票時の実測より状況は悪かった（本作業での新実測）**: 撤去以前から、`simulator/tools` の
+**6 本**（`optimize_cli` / `run_is_oos_cli` / `run_scan_contacts_cli` / `walk_forward_cli` /
+`regenerate_account_engine_fixtures` / `export_trade_markers`）が既に素の python で
+ModuleNotFoundError になっていた。`.pth` の導入はこの 6 本も同時に直している。
+
+**段階 2: repo 根 insert の撤去**（実測 9 本）
+`simulator/tools/` 4 本＋`indigators/indicator_ui/tools/` 5 本。各ファイルの docstring に
+「venv 経由起動が前提・解決は台帳＋.pth」を明記した。`prototype_inject_marketdata.py` は
+**維持**する——`indicator_ui/api` が挿すのは汎用名（adapter/framework/domain）で台帳へ
+載せられないため（`_indicator_ui_bridge._ensure_paths` と同一規律）。例外がこの 1 件だけで
+あることは同検定の AST ゲートが固定する（識別力: 撤去した insert を 1 本戻すと Red を実測）。
+
+### .pth 導入の副作用 1 件（検出・是正済み）
+
+`.pth` を入れた直後、`tools/tests/test_dev_paths_indigators_entry.py::
+TestTheIndigatorsEntryShadowsNothing::test_no_exposed_name_had_a_resolution_before_the_entry`
+が赤になった。原因は当該検定の**対照条件**である。同検定は「PYTHONPATH から `indigators` を
+外した構成」を作って衝突不在を測るが、素の起動は site を読むため .pth が同じ entry を
+裏口から入れてしまい、「外した構成」が作れなくなった（実測: `PYTHONPATH=<repo>` だけでも
+`moving_averages` が解決した）。
+
+**壊れたのは検定の対照であって性質ではない**——報告された「衝突」の解決先は全件
+`<repo>/indigators/...`（すなわち当の entry 自身）であり、別ツリーによる覆い隠しは 0 件。
+是正は対照の隔離のみ: 探索用 subprocess を `-S`（site を読まない＝.pth 非適用。`-E` では
+ないので PYTHONPATH は従来どおり効く）で起動する。**アサーションは 1 行も変えていない**。
+検出力は正の対照で確認済み（別ツリーに `moving_averages` を置くと `-S` でも検出される）。
+
+### 起票時の記述の訂正
+
+起票時の実測 3「`.pth` を入れる運用手順がどこにも無い」は `docs/**` を見ての判断だったが、
+**`.doc/LAYERING_CONVENTIONS.md:62` に `<venv>/bin/python tools/install_dev_paths.py` を
+1 回実行する旨が明記されていた**。欠けていたのは文書ではなく (a) 実行されていたことの保証と
+(b) 自動化である。(a) は本検定が機械的に強制するようになった。
+
+### 残る承認事項（本作業では実施しない）
+
+(b) 自動化: `tools/setup_worktree.sh` または環境構築手順から `tools/install_dev_paths.py`
+を呼ぶこと。未実施のため、**新しいコンテナ・新しい venv では本検定が赤で始まる**
+（これは仕様＝前提の不在を緑で覆い隠さない設計）。失敗メッセージが打つべきコマンドを示す。

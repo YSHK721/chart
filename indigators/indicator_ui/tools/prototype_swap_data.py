@@ -13,31 +13,32 @@ A方式の自己完結 HTML（``out/prototype.html``）は ``SAMPLE_DATA = {cand
 使用例:
     python tools/prototype_swap_data.py                       # 既定: 2022-01-01〜今日, 日足
     python tools/prototype_swap_data.py --start 2024-01-01 --interval day_1
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。トップレベル
+``marketdata`` を含む import パスの解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは
+`tools/install_dev_paths.py` が書く .pth が届ける。本ファイルは実行時に sys.path を書き換え
+ない（解決先が起動位置に依存しなくなる・ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Tuple
 
 import dukascopy_python
 
-_UI_ROOT = Path(__file__).resolve().parent.parent
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_TARGET = _UI_ROOT / "out" / "prototype.html"
-
-if str(_WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_ROOT))
-
-from marketdata import (  # noqa: E402  （sys.path 設定後に import）
+from marketdata import (
     INTERVALS,
     DukascopyCandleSource,
     repair_ohlc_outliers,
 )
+
+_UI_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_TARGET = _UI_ROOT / "out" / "prototype.html"
 
 logger = logging.getLogger("prototype_swap_data")
 

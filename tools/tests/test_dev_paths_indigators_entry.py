@@ -76,6 +76,17 @@ def _resolve_in_subprocess(names: "list[str]", pythonpath: "list[str]", cwd: Pat
 
     起動を名前ごとに分けないのは、測るべきが「名前の解決先」であって
     「interpreter の起動回数」ではないからである（計算量検定が発行 − 使用 = 0 を数える）。
+
+    ``-S`` が要る理由（対照条件の回復・ISSUE-482 で実測）:
+        本関数は「``pythonpath`` に与えた構成だけ」で名前を引く対照実験の器である。ところが
+        素の起動は site を読むため venv の ``jp225_chart_paths.pth``（``install_dev_paths.py``
+        が書く台帳の恒久登録）が sys.path へ加わり、**PYTHONPATH から entry を外しても
+        同じ entry が裏口から入る**。実測: ``PYTHONPATH=<repo>`` だけを与えても
+        moving_averages が ``<repo>/indigators`` から解決してしまい、
+        「entry を外した構成」が作れなかった。``-S`` は site を読まないため .pth が適用されず、
+        PYTHONPATH は従来どおり効く（``-E`` ではないので PYTHONPATH は落ちない）。
+        以前これが問題にならなかったのは .pth が未導入だったからであり、対照が成立していたのは
+        偶然である。条件を変えたのではなく、変数を隔離し直したという位置づけである。
     """
     code = (
         "import importlib.util, json, sys\n"
@@ -95,7 +106,7 @@ def _resolve_in_subprocess(names: "list[str]", pythonpath: "list[str]", cwd: Pat
         "print(json.dumps(out))\n"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", code, json.dumps(names)],
+        [sys.executable, "-S", "-c", code, json.dumps(names)],
         cwd=str(cwd),
         env={"PYTHONPATH": ":".join(pythonpath), "PATH": "/usr/bin:/bin"},
         capture_output=True,

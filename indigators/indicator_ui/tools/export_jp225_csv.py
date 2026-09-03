@@ -7,6 +7,12 @@ B方式（サーバ）の ``datasetRef='jp225'`` 用データを生成する。`
 
 出力既定: ``DATA_DIR/jp225_daily.csv``（dataset.py の whitelist と対応）。
 既存データ（sample 系）には一切触れない。
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。import パスの
+解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは `tools/install_dev_paths.py`
+が書く .pth が届ける。本ファイルは実行時に sys.path を書き換えない（解決先が起動位置に
+依存しなくなる・ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 from __future__ import annotations
 
@@ -14,19 +20,13 @@ import argparse
 import csv
 import datetime as dt
 import logging
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
 import dukascopy_python
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-
-if str(_WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_ROOT))
-
-from marketdata import (  # noqa: E402
+from marketdata import (
     INTERVALS,
     DukascopyCandleSource,
     repair_ohlc_outliers,
