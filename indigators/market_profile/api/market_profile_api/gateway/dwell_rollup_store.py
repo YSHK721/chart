@@ -11,7 +11,7 @@ Repository / tick 読込）のうち、**ディスクキャッシュ Repository*
 数えるか）は一切知らない。集計は :mod:`market_profile_dwell` が保持し、本 Store を経由して永続化する。
 
 依存方向（同 adapter 層内・低リスク分割）:
-    market_profile_dwell（集計数学 + 走査オーケストレーション） → market_profile_dwell_store（本 I/O）
+    market_profile_dwell（集計数学 + 走査オーケストレーション） → gateway.dwell_rollup_store（本 I/O）
     本 Store は :mod:`market_profile_dwell` を import しない（循環なし）。可変な設定（cache root /
     形式バージョン / 正準ティック列挙 day_parquet_files）は provider として注入で受け取る。これにより
     設定の**テスト注入（monkeypatch）経路を壊さず**（call-time にクロージャで読む）、Store は純 I/O に

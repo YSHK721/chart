@@ -68,6 +68,9 @@ VM 側にしかない）。名前 → パス成分の変換規則の所有者は
 ＝規則が静かに割れない）。この 2 経路は
 ``tools/tests/test_capture_path_token_translation.py`` が隔離ディレクトリの別プロセス実行で固定する。
 
+ISSUE-479 F-1 以降、パス成分エラーは ``CaptureError`` でなく ``PathTokenError``（ValueError 系）で
+送出される（規則の所有者が marketdata へ移ったため。``main()`` の捕捉集合は両方を含む）。
+
 ## 実行（Windows VM・MT5 端末が起動している状態で）
 
     python capture_mt5_symbol_spec.py --symbol JP225
