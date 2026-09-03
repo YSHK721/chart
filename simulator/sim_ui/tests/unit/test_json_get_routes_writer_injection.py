@@ -130,13 +130,18 @@ def test_a_query_string_does_not_break_the_prefix_match() -> None:
     assert seen == ["/candles?datasetRef=jp225_m1&limit=2"], "ルートは元の path を受け取る"
 
 
-def test_the_fallback_receives_the_path_without_the_query() -> None:
-    """静的配信にクエリを渡さない（現行の呼び出しと同じ値になる）。"""
+def test_the_fallback_receives_the_path_unchanged() -> None:
+    """転送する値を書き換えない（数珠つなぎにしたとき内側がクエリを失わない）。
+
+    実測した壊れ方: 応答器が「クエリを落とした値」を fallback へ渡すと、連結の内側にある
+    ルートがクエリを読めず ``/intraday?start=..&end=..`` が 400 になった。クエリを落とす
+    責務は終端（静的配信の直前）に 1 つだけ置く。
+    """
     fallback = _FakeFallback()
     GetRouteResponder(routes={"/x": lambda _p: _response()}, fallback=fallback).serve(
         _FakeHandler(), "/asset.js?v=3"
     )
-    assert fallback.served == ["/asset.js"]
+    assert fallback.served == ["/asset.js?v=3"]
 
 
 @pytest.mark.parametrize(
@@ -156,7 +161,7 @@ def test_a_neighbouring_asset_is_not_swallowed_by_the_prefix(path: str) -> None:
     GetRouteResponder(routes={"/x": lambda _p: _response()}, fallback=fallback).serve(
         _FakeHandler(), path
     )
-    assert fallback.served == [path.split("?")[0]], path
+    assert fallback.served == [path], path
 
 
 # --------------------------------------------------------------------------------------

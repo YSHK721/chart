@@ -45,10 +45,14 @@ class GetRouteResponder:
         渡さなければ現行と 1 ビットも変わらない。
 
     **クエリの扱い**（同上・加法）:
-        prefix の一致判定と fallback へ渡す値は**クエリを落とした path**、ルート関数へ渡す
-        値は**元の path** とする。sim 側の呼び出しは呼ぶ前にクエリを落としているため
-        両者は同一であり挙動は変わらない。replay のルートはクエリを読むため、元の path が
-        要る（``/candles?datasetRef=...``）。
+        prefix の一致判定だけがクエリを落とし、**転送する値は書き換えない**（ルート関数へも
+        fallback へも元の path をそのまま渡す）。sim 側の呼び出しは呼ぶ前にクエリを落として
+        いるため両者は同一で、挙動は変わらない。
+
+        転送値を書き換えない理由（実測した壊れ方）: 応答器を数珠つなぎにすると、外側が
+        「落とした値」を内側へ渡してしまい、内側のルートがクエリを失う。実際この形で
+        ``/intraday?start=..&end=..`` が ``start/end required``（400）になった
+        （分割前 golden が検出）。落とす責務は**終端**（静的配信の直前）に 1 つだけ置く。
 
     prefix の一致は**区切り境界**で判定する。``str.startswith`` だけで判定すると
     ``/indicators-extra.js`` のような別資産まで JSON 経路へ吸い込む。
@@ -70,4 +74,4 @@ class GetRouteResponder:
         for prefix, responder in self._routes.items():
             if route_path == prefix or route_path.startswith(prefix + "/"):
                 return self._writer(handler, responder(path))
-        return self._fallback.serve(handler, route_path)
+        return self._fallback.serve(handler, path)
