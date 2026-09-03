@@ -870,7 +870,7 @@ def test_removing_the_cap_breaks_the_gap_bound() -> None:
     # Arrange
     from adapter.compute import forming_bar as fb
 
-    period = fb.fixed_period_seconds(_REF, "1m")
+    period = fb.closed_gap_period_seconds(_REF, "1m")
     last = _unix(_LAST_CONFIRMED)
 
     def uncapped(gap_periods: int) -> int:

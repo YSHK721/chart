@@ -778,7 +778,7 @@ class _SynthesisSpy:
 
 def _issued_for_gap(gap_periods: int) -> "list[tuple[int, int]]":
     """欠落 ``gap_periods`` 周期に対して閉周期合成が発行した窓の列を返す。"""
-    period = fb.fixed_period_seconds(_REF, "1m")
+    period = fb.closed_gap_period_seconds(_REF, "1m")
     last = _unix("2025-01-02 09:00:00")
     with pytest.MonkeyPatch.context() as mp:
         spy = _SynthesisSpy(mp)
@@ -843,7 +843,7 @@ def _closed_at(start: int) -> "dict":
 
 def _parity_setup(tf: str, k: int) -> "tuple":
     """``(確定窓, 形成中バー, 周期秒)`` — 確定末尾から ``k`` 周期先が形成中周期。"""
-    period = fb.fixed_period_seconds(_REF, tf)
+    period = fb.closed_gap_period_seconds(_REF, tf)
     last = _unix(_PARITY_LAST)
     frame = _frame([
         {"time": last - period, "open": 1.0, "high": 2.0,
@@ -997,7 +997,7 @@ def _mutant_gap_bars(tf: str, bar: "dict", *, cap=None, start_offset: int = 1):
     ISSUE-481 で避けたいのはまさにこれ（上限の再宣言・列挙起点の取り違え）である。
     突合がこれを捕まえられなければ、突合は規則の単一化を担保していない。
     """
-    period = fb.fixed_period_seconds(_REF, tf)
+    period = fb.closed_gap_period_seconds(_REF, tf)
 
     def gap_bars(last):
         starts = range(int(last) + period * start_offset, int(bar["time"]), period)

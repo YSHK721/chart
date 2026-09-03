@@ -13383,7 +13383,9 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
 ### 是正完了記録（2026-09-03・TDD・fix/issue-481-tails-window）
 
 - **S1 関数抽出（8b158f9・挙動 1 ビット不変）**: 閉周期合成を `apply_forming_bar` の
-  インラインブロックから 3 関数へ抽出した。`fixed_period_seconds`（対象判定の唯一源）・
+  インラインブロックから 3 関数へ抽出した。`closed_gap_period_seconds`（対象判定の唯一源。
+  抽出時の名は `fixed_period_seconds` だったが、ref ゲートを名前から落としていたためレビュー
+  🟡-2 で改名した）・
   `_gap_starts`（欠落周期の始端列を range のまま返す）・`closed_gap_bars`（ISSUE-162 規則の
   唯一の実装）。`list(gap_starts)[-N:]` を range スライスへ替え、gap 長ぶんの実体化を消した。
   上限 `_MAX_GAP_FILL_PERIODS` は配らず関数を配る（供給側は上限も列挙も知らない）。

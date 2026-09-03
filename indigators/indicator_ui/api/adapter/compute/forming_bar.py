@@ -260,11 +260,20 @@ def rollup_forming_bar(
     return merge_forming(base, tail)
 
 
-def fixed_period_seconds(ref: str, tf: str) -> "int | None":
+def closed_gap_period_seconds(ref: str, tf: str) -> "int | None":
     """閉周期合成の**対象判定の唯一源**: 対象なら周期秒、対象外なら ``None``。
 
-    対象は「tick 系 ref」かつ「固定長 tf」だけである。非 tick ref（sample 等）へ実 tick の
-    合成バーを混ぜるとデータ源が混線し、1W/1M は周期が可変でライブ中に閉周期が欠落し得ない。
+    名前が「固定長 tf の周期秒」ではなく「閉周期合成の周期秒」なのは、判定が tf だけで
+    閉じないからである。返す値は 2 つのゲートを**両方**通ったときの周期秒であり、
+    tf の性質を答える関数ではない（旧名 ``fixed_period_seconds`` は ref ゲートを名前から
+    落としており、tf さえ固定長なら値が返るかのように読めた）。
+
+    契約（``None`` を返す条件は次の 2 つだけで、呼び出し側はこれを再宣言しない）:
+      - **ref ゲート**: ``is_tick_ref(ref)`` が偽（sample 等の非 tick ref）→ ``None``。
+        非 tick ref へ実 tick から組んだ合成バーを混ぜるとデータ源が混線する。
+      - **tf ゲート**: ``tf`` が固定長でない（1W/1M 等）→ ``None``。周期が可変で、
+        ライブ中に「閉じた周期が欠落する」という状況そのものが起こらない。
+
     判定を配って歩くと供給側ごとに条件がずれるため、**定数ではなく本関数を配る**
     （呼び出し側は ``_FIXED_TF_SECONDS`` も ``_MAX_GAP_FILL_PERIODS`` も知らない）。
 
@@ -311,7 +320,7 @@ def closed_gap_bars(
           - 素材読込の失敗 → その周期だけ飛ばして WARNING（橋渡しの失敗で本計算を落とさない）
           - 欠落が上限を超える → **直近** :data:`_MAX_GAP_FILL_PERIODS` 本だけ充填（暴走防御）
     """
-    period = fixed_period_seconds(ref, tf)
+    period = closed_gap_period_seconds(ref, tf)
     if period is None:
         return []
     out: "list[dict]" = []
@@ -428,8 +437,9 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     #   周期（週末等）は合成せず skip（実データが無いバーを捏造しない）。
     to_inject = []
     # ref ゲート: tick 系 ref のみ（forming_bar と同一条件）。非 tick ref（sample 等）へ実 tick の
-    #   合成バーを混入させない（データ源の混線防止）。判定は fixed_period_seconds ただ 1 つ。
-    period = fixed_period_seconds(ref, tf)
+    #   合成バーを混入させない（データ源の混線防止）。判定は closed_gap_period_seconds ただ 1 つ
+    #   （ref ゲートと tf ゲートの両方を含む＝ここで条件を再宣言しない）。
+    period = closed_gap_period_seconds(ref, tf)
     if period is not None and synthesize_closed_gaps:
         last_unix = int(df.index[-1].timestamp())
         now_i = int(now_unix)
