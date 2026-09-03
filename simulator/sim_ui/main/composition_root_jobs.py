@@ -135,8 +135,14 @@ def build_settings_validation_port() -> SettingsIniValidator:
 
     実装（adapter）が framework の `tester_settings_from_mapping` へ委譲するため、
     本関数は実装の**選択**だけを行う（規則をここに書かない）。
+
+    具象検証関数の束縛点はここ 1 箇所である（ISSUE-479 F-5）。adapter 側に既定値を置くと
+    adapter → framework の逆流が復活するため、必ず注入する。import を関数内に置く理由は
+    `_build_ea_indicators` と同じ（本モジュールの import で設定検証系一式を引き込まない）。
     """
-    return SettingsIniValidator()
+    from simulator.framework.tester_settings import tester_settings_from_mapping
+
+    return SettingsIniValidator(tester_settings_from_mapping)
 
 
 class _EaSubject(EaSubjectPort):

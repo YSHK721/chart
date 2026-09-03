@@ -13255,3 +13255,102 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   5. SRP/ISP 大物（EvaluationSchedule 抽出・CausalComputePort 3 分割等）と bridge 所有者移転は
      個別承認のうえ別 Issue 化。
 - **関連**: ISSUE-091（側方依存を common 抽出で解消した前例）・ISSUE-286・ISSUE-405（文字列検査の取り逃し実績）・ISSUE-455。
+
+### Wave 1 進捗記録（2026-09-03・ブランチ fix/issue-479-solid-wave1）
+
+- **完了（TDD・計算量テスト付き・全緑）**: F-2（common PEP 562 遅延化＋名前衝突ガード）／F-3（watch_loop
+  中立核化・循環 C-2 解消＝indigators→tools 辺ゼロ実測）／F-4 段階 1（MP shim 参照ゼロ化）／
+  F-5（adapter→framework 逆流除去・注入化）／F-6（keep-last 単一ソース化・本番 5 実装→1 定義）／
+  F-7a-d（検査対称化: subprocess 実行段・層順序表・rglob 化・common/common_view 純度検査）／
+  F-8 段階 1（api_contract 参照ゼロ化）／F-9（forming 単一述語化・突合バイト一致）。
+- **F-1 未実施の理由（要承認）**: `tools/capture_mt5_symbol_spec.py` は「VM へ単体ファイルでコピー配布・
+  リポジトリ内 import 禁止」の規律を持つ（同ファイル find_repo_root docstring・mt5_tick_feed.py:4-7・
+  MT5_REALTIME_TICK_SUPPLY_BASIC_DESIGN.md:10・本台帳 :9509 の 4 出典で実証）。設計書の
+  「tools 側再エクスポート」案はこの規律と両立せず、是正には配布形態の変更（capture 本体＋
+  path_tokens.py の 2 ファイル配布化）の承認が必要。成果物は scratchpad へ退避済みで承認後即再開可。
+- **削除保留（不可逆・要承認）**: MP shim 2 本（compute/market_profile_{zp,dwell}_store.py・参照ゼロ固定済み）／
+  `marketdata/api_contract.py`（参照ゼロ固定済み）／`tools/watch_loop.py`（参照ゼロ・byte 等価アンカーとして
+  common/tests/test_watch_loop.py が現存に依存＝削除時に同テストの撤去が必要）。
+- **工程 5 レビュー（code-review-executor）**: 差戻し 1 回（🔴1・🟡6）。🔴-1 は F-9 の述語検査が暴いた
+  既存欠陥（ISSUE-480 として起票）に起因。**是正完了（TDD・7573a96 ほか 6 コミット）**:
+  🔴-1＝窓供給側で形成中バーを適用（ISSUE-480 は部分是正＝残存 A/B は ISSUE-481）／🟡-1＝壊れた形成中バーの Fail-Stop を
+  旧挙動へ復元（ca0f189）／🟡-2＝`apply_forming` の末尾参照を forming 検証より後へ戻す（dfaf7be・
+  3 版突合で「末尾 time=None を黙って追加」という別インスタンスも発見し封鎖 3b843ff）／
+  🟡-3＝恒真式だった走査の計算量テスト 2 本を SUT 実行へ是正（7d3b05e）／🟡-4＝窓ラベルの
+  秒境界前提を機械的検査へ（8447623）。静的品質検定 exit 0・4 スイート全緑
+  （既知 pre-existing の `tools/tests/test_composition_root_arg_parity` 1 件を除く）。
+
+## ISSUE-480: [欠陥] 1m ライブ tails の窓末尾≠形成中バー — `_set_last_bar` が前分 M-1 行へ現分 M の値を書いていた
+
+- **ステータス**: OPEN（部分是正。2026-09-03 是正コミット 7573a96 で主経路は解消。残存 A/B は下記追記と ISSUE-481 参照）
+- **重大度**: 中（1m ライブ tails 経路の指標末尾値が誤ったバー行に基づく。/compute 経路は影響なし）
+- **実測**: `live_tick_tails_controller._load_window` は確定窓（M1 CSV は排他 floor により常に M-1 分まで＝
+  `tools/live_tick_watch.py:348`）をそのまま渡し、`live_tick_tails.py:66-67` の「窓末尾＝形成中バーの周期」
+  というコメント上の前提は無検査だった。分 M の途中では前提が構造的に不成立で、`_set_last_bar` は
+  M-1 行へ現分 M の OHLCV を代入していた（本番コード＋実データ 2026-09-03 01:14 UTC で再現:
+  窓末尾 1788397500・形成中 1788397560）。ISSUE-232 型の失敗モード。
+- **検出経路**: ISSUE-479 F-9 で前提を `forming_patch` の実確認（mode == "replace"）に落とした結果、
+  不成立が WARNING として可視化された（従来は無音で誤代入）。
+- **抜本的解決**: 窓の供給側で形成中バーを適用し、`make_tail_at` に渡る窓末尾＝形成中バーの周期を成立させる
+  （ログ抑制は応急処置のため不採用）。/compute 経路との二重適用なしを検証条件に含める。
+- **是正内容（7573a96・TDD）**: 供給側 `window_with_forming`（adapter/compute/live_tick_tails.py）で窓末尾を
+  形成中バーの周期へ揃える。揃える材料は `states[0]`＝以降 `tail_at` が末尾行へ書く値と同じ材料であり、
+  窓と値が別のバーになることが構造的に起こらない。注入の実体は `/compute` と共有（`apply_forming_bar` の
+  末尾ループを `inject_forming_bars` へ抽出）。既に末尾＝形成中バーの窓（上位足の rollup partial）と
+  時刻 index でない窓は素通し＝従来経路は不変。
+- **二重適用なし（実測）**: `/compute` の入口 `apply_forming_bar` はライブ経路を通らない（spy で 0 回）／
+  `window_with_forming` は冪等（2 度目は "replace" で同一オブジェクト）／追加される足は常に 1 本／
+  素材識別（DataFrame.attrs）・dtype・index 型は保存（pandas 3.0.3 実測）。
+- **計算量**: 適用は要求あたり・計算足グループあたり 1 回（発行 − 使用 = 0）。グループ 1→2 で比例、
+  tick 数 2→16 では不変（2 点で固定）。
+- **残る警告の意味**: バッチが周期をまたいだときだけ WARNING が 1 度出る（本物の食い違いの信号として機能）。
+- **関連**: ISSUE-479（検出の経緯）・ISSUE-232（同型）・ISSUE-145（足内更新の登録漏れ＝隣接類型）。
+
+### 再レビュー（2 巡目・2026-09-03）による残存の実測追記
+
+- **残存 A（警告あり）**: バッチが分をまたぐと窓は states[0] の周期で固定されるため、以降の tick で
+  append 判定＋前バー行への代入が残る（発生率 約 1/24 ポーリング・WARNING 1 回・本番コード直叩きで再現:
+  09:05 の tick2/3 が 09:04 ラベル行へ）。
+- **残存 B（無警告・2 巡目レビューが新規発見）**: M1 焼き込み猶予（live_tick_watch.py:279 の
+  `_STREAM_M1_GRACE_SECONDS=12.0`・:348/:400）の間、窓が閉じた分を 1 本飛ばして形成中を append する
+  （発生率 約 5-6/24 ポーリング・警告 0 件・実データ 24 点観測 2026-09-03 02:35-02:37 UTC で欠落 1→3 本を確認。
+  feed 停止時は 17 秒で閉じる保証なし）。/compute は synthesize_closed_gaps=True（ISSUE-162）で
+  同じ穴を埋めるが tails 経路は埋めない＝2 経路が別の窓で計算する。
+- **是正前後の比較（レビュー実測）**: 是正前は毎ポーリング（24/24）で確定バー破壊＋毎回 WARNING。
+  是正後は残存 6-7/24 に減少し、どの断面でも悪化なし。コードは 2 巡目レビューで是認済み。
+- **恒久解**: ISSUE-481。
+
+### 1 巡目レビュー 🔵 群の処遇記録（2026-09-03）
+
+- 🔵-1（forming_bar.py の到達不能 raise KeyError("time")）: 是正 2（ca0f189）の Fail-Stop 復元で
+  `_require_forming_time` に置換され解消。**採用（コミット済）**。
+- 🔵-2（_CommonPackage のパッケージ意味論逸脱の docstring 注記）: **繰延（ISSUE-479 Wave 2）**。
+  本番参照 0 を実測済みのため危険は現存しない。
+- 🔵-3（test_keep_last の _SCAN_DIRS に dashboard_ui 欠落）: **繰延（ISSUE-479 Wave 2）**。
+  現時点 offender 0 を repo 全域 grep で確認済み。
+- 🔵-4（循環ゲートの走査範囲が indicator_ui/tools 限定）: **繰延（ISSUE-479 Wave 2）**。残存参照 0 確認済み。
+- 🔵-5（probe_forming_long の sys.path 副作用）: **棄却**（同ディレクトリ 5 本の probe と同一様式・
+  計測スクリプト限定。様式統一は ISSUE-479 #7 sys.path 越境の恒久解で一括処理する）。
+
+## ISSUE-481: [設計] ライブ tails の窓供給に閉周期合成が無い — 境界バッチ（残存 A）と焼き込み猶予中の閉分欠落（残存 B）
+
+- **ステータス**: OPEN（2026-09-03 起票。ISSUE-480 の部分是正後の残存・2 巡目レビューが実測で確定）
+- **重大度**: 中（発生率 約 6-7/24 ポーリング。残存 B は無警告で /compute と別の窓になり、
+  ティック更新と定期再計算で指標値が跳ぶ）
+- **実測**: ISSUE-480 の再レビュー追記を参照（残存 A: 境界跨ぎバッチで前バー行へ代入・WARNING 1 回／
+  残存 B: 窓ラベル間隔 [60,120] 秒＝閉分 1 本欠落・警告 0 件）。
+- **抜本的解決**: /compute と同じ ISSUE-162 の規則（確定末尾〜形成中始端の閉周期を実 tick で合成・
+  上限 _MAX_GAP_FILL_PERIODS 共有）を窓供給側（window_with_forming）にも適用し、さらに
+  「バーが進んだら窓へ行を足す」ことで バッチ内周期跨ぎも吸収する。tails と /compute の窓同値性を
+  突合テストで固定する。make_tail_at の mode 検査（現挙動を固定した検査群）が実装時に赤へ転じる。
+- **着手順**: ISSUE-479 Wave 2 の先頭（コードの現状は 2 巡目レビューで「どの断面でも develop より改善」と
+  裁定済みのため、マージ後に本 Issue を単独ブランチで実施）。
+- **関連**: ISSUE-480（部分是正）・ISSUE-162（閉周期合成の規則元）・ISSUE-232（失敗モードの類型）。
+
+### 再提出条件の充足記録（2026-09-03・2 巡目差戻しへの対応完了）
+
+- 条件 1（台帳訂正・ISSUE-481 起票）・条件 2（虚偽注記の訂正）: fd8fede。
+- 条件 3（残存 A/B の機械的検査化）: e1bb29f — 現挙動を pin し、ISSUE-481 恒久解の実装時に赤へ転じる形
+  （模擬恒久解での赤転化を実測済み＝アサーション弱体でないことの証拠）。
+- 🟡-4（窓供給の group 単位縮退契約）: 7435e2b — window_with_forming/make_tail_at を既存 group try 内へ
+  収容し、失敗時は logger.exception ＋当該グループのみ欠落（/live_ticks 応答は生存）。計算量表明付き。

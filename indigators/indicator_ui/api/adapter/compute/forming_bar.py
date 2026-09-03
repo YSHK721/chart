@@ -32,6 +32,7 @@ import sys as _sys
 from pathlib import Path as _Path
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
+from common.forming_window import forming_patch  # noqa: E402  (差し替え規則の唯一の述語・F-9)
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
 from marketdata.tick_m1 import day_parquet_files, forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
@@ -259,6 +260,58 @@ def rollup_forming_bar(
     return merge_forming(base, tail)
 
 
+def _require_forming_time(bar: Any) -> int:
+    """注入するバーの ``time``（UNIX 秒）。adapter 固有の事前条件であり、緩めない。
+
+    共有核 :func:`forming_patch` は壊れた forming（非 Mapping・``time`` 欠落/非数値）を
+    ``"skip"`` へ丸めるが、それは list 版の防御であって本モジュールの契約ではない。ライブ注入が
+    作るのは常に ``time`` 付き OHLCV 完備のバーなので、丸められる入力は**上流の破損**である。
+    丸めた結果を素通しにすると「注入しなかった」と区別できず、最新足だけ指標が消える障害が
+    痕跡なく起きる。欠落は ``KeyError``・非数値は ``ValueError``・非 Mapping は ``TypeError``
+    （旧実装 ``pd.Timestamp(int(bar["time"]), unit="s")`` と同一種別）で握らず露出させる。
+    """
+    return int(bar["time"])
+
+
+def inject_forming_bars(df: "pd.DataFrame", bars: Any) -> "pd.DataFrame":
+    """``df`` へ ``bars`` を set/replace した **新しい** DataFrame を返す（注入の唯一の実体）。
+
+    ライブ経路の 2 つの供給側が共有する: ``/compute`` の形成中バー注入
+    （:func:`apply_forming_bar`）と、``/live_ticks`` の末尾値が使う窓の供給
+    （``adapter.compute.live_tick_tails.window_with_forming``）。同じバーの追加・置換を
+    手で 2 度書くと、片方だけ直した瞬間に「描いたローソクと指標値が別のバー」になる。
+
+    Args:
+        df: date-index の OHLCV。
+        bars: 注入するバー（``time`` ＋ OHLCV）の昇順列。
+
+    Returns:
+        複製した DataFrame。同じ ``time`` の行が在れば置換、無ければ追加して
+        ``sort_index()`` した結果（``updateLastCandle`` と同じ append/replace 規則）。
+
+    Raises:
+        KeyError / ValueError / TypeError: :func:`_require_forming_time` の事前条件違反、
+            および窓に在る列に対応する OHLCV キーが欠けている場合（緩めない）。
+    """
+    out = df.copy()
+    lower = {str(c).lower(): c for c in out.columns}
+    for b in bars:
+        # 列決定（大小無視の照合・float 正規化）は共有核から導出する。末尾との比較は呼び出し側で
+        #   済んでいるため、ここで要るのは「どの列へ何を書くか」だけ（last_time=None → append）。
+        bt = pd.Timestamp(_require_forming_time(b), unit="s")
+        patch = forming_patch(None, b)
+        for key in ("open", "high", "low", "close", "volume"):
+            col = lower.get(key)
+            if col is None:
+                continue
+            if key not in patch.values:
+                # 共有核は「forming に在るキーだけ更新」だが、ライブ注入は OHLCV 完備のバーしか
+                #   作らない。欠落は上流の破損なので握らず露出させる（事前条件を緩めない）。
+                raise KeyError(key)
+            out.loc[bt, col] = patch.values[key]
+    return out.sort_index()
+
+
 def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
                       synthesize_closed_gaps: bool = True) -> "pd.DataFrame":
     """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す。
@@ -293,9 +346,14 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     if df is None or len(df) == 0:
         return df
     if bar is not None:
-        t = pd.Timestamp(int(bar["time"]), unit="s")  # naive UTC（df.index と同基準）
-        if t < df.index[-1]:
-            return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
+        # 差し替え規則は共有核 forming_patch ただ 1 つ（list 版 apply_forming と同一述語・F-9）。
+        #   末尾 time の変換は :204 と同じ式（naive UTC → unix 秒）。``.timestamp()`` は使わない。
+        #   前提: df の index ラベルは秒境界（resample の固定周期ラベル / rollup CSV の date）。
+        #   marketdata.dataset も同じ前提で index を UNIX 秒へ落としている（_to_unix_seconds）。
+        last_time = int(pd.Timestamp(df.index[-1]).value // 1_000_000_000)
+        if forming_patch(last_time, bar).mode == "skip":
+            _require_forming_time(bar)  # skip の理由を絞る（事前条件違反はここで露出する）。
+            return df  # 残るのは「末尾より過去の time」だけ → 触らない（異常時の防御）。
 
     # ISSUE-162: 注入するバーを先に確定する（欠落閉周期の tick 合成＋形成中バー）。
     #   形成中バーが None（新周期の tick 未着＝境界直後の数秒）でも閉周期合成は独立に行う
@@ -322,13 +380,4 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
         to_inject.append(bar)
     if not to_inject:
         return df  # 注入なし＝同一オブジェクトで素通し（従来挙動・コピーもしない）。
-
-    out = df.copy()
-    lower = {str(c).lower(): c for c in out.columns}
-    for b in to_inject:
-        bt = pd.Timestamp(int(b["time"]), unit="s")
-        for key in ("open", "high", "low", "close", "volume"):
-            col = lower.get(key)
-            if col is not None:
-                out.loc[bt, col] = float(b[key])
-    return out.sort_index()
+    return inject_forming_bars(df, to_inject)

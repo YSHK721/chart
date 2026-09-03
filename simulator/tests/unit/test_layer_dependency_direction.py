@@ -316,3 +316,199 @@ class TestTheGateHasDetectionPower:
     def test_the_dynamic_form_is_detected(self):
         call = ast.parse('importlib.import_module("simulator.main")').body[0].value
         assert _dynamic_import_targets(call) == ["simulator.main"]
+
+
+# =====================================================================
+# 層順序表ゲート（ISSUE-479 F-7b・加法のみ。上の 2 クラスと _is_forbidden は据置）
+# =====================================================================
+
+#: 各層が import してよい **他の層**（自層は常に可）。禁止先の列挙ではなく順序の宣言である。
+#:
+#: 禁止先を 1 点（`simulator.main`）で持つと、`adapter → framework` のような外向きの辺は
+#: 永久に検出されない。実際 `sim_ui/adapter/settings_ini_validator.py` は simulator 本番で
+#: 唯一の inner → framework 辺を持っていた（ISSUE-479 F-5 で注入化して解消）。
+#: 層を増やすときは本表を増やす（`test_the_order_table_covers_exactly_the_inner_layer_names`
+#: が走査対象の層名と本表の鍵の一致を強制する）。
+_LAYER_ORDER: "dict[str, frozenset[str]]" = {
+    "domain": frozenset(),
+    "usecase": frozenset({"domain"}),
+    "adapter": frozenset({"usecase", "domain"}),
+    "framework": frozenset({"adapter", "usecase", "domain"}),
+}
+
+
+def _layer_of(dotted: str) -> "str | None":
+    """ドット成分の**完全一致**で層名を返す（無ければ `None`）。
+
+    部分一致で判定してはならない: `simulator.domain.trade_record` の "domain" は
+    "main" を部分文字列として含み、`simulator.main` の判定と混線する（実測済みの罠）。
+    成分に分割してから比較することでこの誤検出を構造的に排除する。
+    """
+    for part in dotted.split("."):
+        if part in _LAYER_ORDER:
+            return part
+    return None
+
+
+def _layer_of_path(path: Path) -> "str | None":
+    """ファイルパスから所属層名を返す（ドット成分の完全一致で判定する）。"""
+    return _layer_of(".".join(path.relative_to(_SIMULATOR_DIR.parent).parts))
+
+
+def _order_violations_in_source(
+    source: str, package: str, own_layer: str, filename: str = "<source>"
+) -> "list[str]":
+    """ソース 1 本に含まれる「層順序表に反する import」を列挙する。
+
+    事前条件: `own_layer` は `_LAYER_ORDER` の鍵。
+    事後条件: `simulator` 配下でない import と、自層・内向きの辺は返さない。
+    """
+    out: "list[str]" = []
+    allowed = _LAYER_ORDER[own_layer]
+    for module in _imported_modules_in_source(source, package=package, filename=filename):
+        if module != "simulator" and not module.startswith("simulator."):
+            continue
+        target = _layer_of(module)
+        if target is None or target == own_layer or target in allowed:
+            continue
+        out.append(f"{filename}: {own_layer} → {target}（{module}）")
+    return out
+
+
+def _read_source(path: Path) -> str:
+    """走査の読込点（計算量検定が発行回数を数えるための単一の入口）。"""
+    return path.read_text(encoding="utf-8")
+
+
+def _order_scan_over(files, read=None) -> "tuple[list[Path], list[str]]":
+    """`(path, own_layer)` の並びを走査する。**1 ファイルにつき読込 1 回**。
+
+    読込点を引数で差し替えられるようにしてあるのは、計算量検定が「読み捨てが無い」ことを
+    数えるためである（免除リストを持たない＝走査ファイル数 == 判定に使ったファイル数）。
+    """
+    reader = read or _read_source
+    scanned: "list[Path]" = []
+    violations: "list[str]" = []
+    for path, own_layer in files:
+        scanned.append(path)
+        violations.extend(
+            _order_violations_in_source(
+                reader(path),
+                package=_package_of(path) if path.is_relative_to(_SIMULATOR_DIR) else "",
+                own_layer=own_layer,
+                filename=str(path),
+            )
+        )
+    return scanned, violations
+
+
+def _order_scan() -> "tuple[list[Path], list[str]]":
+    """内側層の全モジュールを走査する（走査対象は既存 `_inner_layer_dirs` から導く）。"""
+    files = []
+    for layer_dir in sorted(_inner_layer_dirs()):
+        own_layer = _layer_of_path(layer_dir)
+        if own_layer is None:      # 到達不能（`_inner_layer_dirs` は層名で選んでいる）
+            continue
+        for path in _layer_modules(layer_dir):
+            files.append((path, own_layer))
+    scanned, violations = _order_scan_over(files)
+    return scanned, [
+        v.replace(str(_SIMULATOR_DIR.parent) + "/", "", 1) for v in violations
+    ]
+
+
+class TestTheLayerOrderIsRespected:
+    """内側 4 層が「外向きの辺」を持たないこと（依存方向の一般化）。
+
+    上の `TestInnerLayersDoNotImportTheCompositionRoot` は `simulator.main` という
+    **1 つの禁止先**しか見ない。実際には `adapter → framework` のような外向きの辺も
+    依存方向の反転であり（ISSUE-479 F-5 の `settings_ini_validator.py`）、禁止先 1 点の
+    ゲートでは永久に検出されない。ここでは禁止先の列挙ではなく **層順序表**で固定する。
+    """
+
+    def test_no_module_imports_a_layer_that_is_outside_its_own(self):
+        _, violations = _order_scan()
+        assert violations == [], (
+            "層順序表に反する依存（内側から外側への辺）:\n  " + "\n  ".join(violations)
+            + "\n  具象は Composition Root で束縛し、内側は注入で受けてください（DIP）。"
+        )
+
+
+class TestTheLayerOrderGateHasDetectionPower:
+    """順序表ゲートが空振りしていないこと（恒真式に退化していないこと）。"""
+
+    @pytest.mark.parametrize(
+        "own_layer,source",
+        [
+            ("adapter", "from simulator.framework.tester_settings import x"),
+            ("usecase", "from simulator.sim_ui.adapter.settings_ini_validator import X"),
+            ("domain", "from simulator.usecase.run_backtest import run"),
+        ],
+        ids=["adapter_to_framework", "usecase_to_adapter", "domain_to_usecase"],
+    )
+    def test_every_outward_edge_form_is_detected(self, own_layer, source):
+        found = _order_violations_in_source(
+            source, package=f"simulator.sim_ui.{own_layer}", own_layer=own_layer
+        )
+        assert found, (own_layer, source)
+
+    def test_the_layer_name_is_matched_on_whole_dot_components(self):
+        """`simulator.domain.*` の "domain" 内 "main" を別語として拾わない（実測済みの罠）。"""
+        assert _layer_of("simulator.domain.trade_record") == "domain"
+        assert _layer_of("simulator.maintenance.tools") is None
+        assert _layer_of("simulator.main.run_config") is None
+
+    def test_inward_and_same_layer_edges_are_not_flagged(self):
+        assert _order_violations_in_source(
+            "from simulator.domain.exceptions import ConfigError",
+            package="simulator.sim_ui.adapter", own_layer="adapter",
+        ) == []
+        assert _order_violations_in_source(
+            "from simulator.sim_ui.adapter.other import X",
+            package="simulator.sim_ui.adapter", own_layer="adapter",
+        ) == []
+
+    def test_non_simulator_imports_are_out_of_scope(self):
+        assert _order_violations_in_source(
+            "import pandas\nfrom pathlib import Path",
+            package="simulator.sim_ui.domain", own_layer="domain",
+        ) == []
+
+    def test_the_gate_actually_scans_files(self):
+        scanned, _ = _order_scan()
+        assert len(scanned) > 0
+
+    def test_the_order_table_covers_exactly_the_inner_layer_names(self):
+        """走査対象の層名と順序表の鍵が一致する（片方だけ増える取り残しを防ぐ）。"""
+        assert set(_LAYER_ORDER) == set(_INNER_LAYER_NAMES)
+
+
+class TestTheLayerOrderGateDoesNotWasteWork:
+    """計算量検定（Test Spy・発行 − 使用 = 0）。測るのは時間ではなく回数。"""
+
+    def test_every_scanned_file_is_read_exactly_once(self, monkeypatch):
+        reads = []
+        original = _read_source
+        monkeypatch.setitem(
+            globals(), "_read_source", lambda p: (reads.append(p), original(p))[1]
+        )
+        scanned, _ = _order_scan()
+        # 発行（読込）− 使用（判定に用いたファイル）= 0。読み捨てが 1 件も無い。
+        assert len(reads) - len(scanned) == 0
+        assert len(set(scanned)) - len(scanned) == 0  # 同じファイルを二度走査しない
+
+    def test_the_read_count_is_determined_by_the_file_count_alone(self, tmp_path):
+        """走査対象 3 件 / 6 件の 2 点で「読込数 == ファイル数」（オーダーの表明）。"""
+        measured = {}
+        for count in (3, 6):
+            files = []
+            for i in range(count):
+                path = tmp_path / f"m{count}_{i}.py"
+                path.write_text("from simulator.domain.exceptions import ConfigError\n",
+                                encoding="utf-8")
+                files.append((path, "adapter"))
+            reads = []
+            _order_scan_over(files, read=lambda p: (reads.append(p), p.read_text())[1])
+            measured[count] = (len(reads), count)
+        for count, (reads_done, files_given) in measured.items():
+            assert reads_done - files_given == 0, (count, measured)

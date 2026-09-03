@@ -86,7 +86,9 @@ def test_compute_has_no_module_level_gateway_store_binding():
     """
     # 互換再エクスポートシム（旧 import パス温存・ISSUE-092 ④）は gateway クラスを **再エクスポート**
     #   するのが唯一の責務で、Store の合成（new）も方針への持ち込みも行わない＝DIP 違反ではない。
-    #   これらは test_old_compute_store_paths_reexport が別途保証するため本ガードの対象外にする。
+    #   ISSUE-479 F-4 段階 1 以降、これらは test_no_code_imports_the_old_compute_store_paths が
+    #   「参照ゼロ」を保証する（＝削除待ちの孤児）ため本ガードの対象外にする。免除行の撤去は
+    #   シムファイル削除と同時に行う（段階 2・要承認）。
     _REEXPORT_SHIMS = {"market_profile_zp_store.py", "market_profile_dwell_store.py"}
     offenders: list[str] = []
     for p in (_PKG / "compute").rglob("*.py"):
@@ -208,21 +210,257 @@ def test_store_port_injection_round_trip(monkeypatch):
         sp.set_dwell_store(None)
 
 
-def test_old_compute_store_paths_reexport():
-    """旧 compute パスは gateway への薄い再エクスポートとして温存される（既存 import 無変更で動く）。
+# ======================================================================================
+# ISSUE-479 F-4 段階 1: 互換シム（旧 compute パス）の参照ゼロ化
+#
+# ISSUE-183 の時点で、シムの消費者は gateway 直参照へ移行済みで、旧 compute パスを import するのは
+# シム自身の契約テスト 1 関数だけになっていた。その契約テストを gateway 直参照へ書き換えると
+# ``GwDwell is GwDwell`` の恒真式に退化して検証が消えるため、旧パス参照のまま残されていた。
+# つまり「シムが要るからテストが旧パスを参照し、テストが参照するからシムが要る」という自己参照で、
+# シムの存在根拠が実需ではなく検査自身になっていた。
+#
+# 段階 1 では、契約テストを**参照ゼロの検査**へ置き換えて自己参照を断つ。旧パスを import する
+# 本番・テストコードがリポジトリに 1 件も無いことを主張し、本テスト自身も旧パスを import しない。
+# シムファイルの削除と ``_REEXPORT_SHIMS`` 免除の撤去は段階 2（要承認）で、削除と免除撤去を
+# 同時に行って Red→Green を確認する。
+# ======================================================================================
 
-    ISSUE-183: シムの**消費者**（``test_market_profile_dwell_store`` / ``test_market_profile_zp_store``）は
-    gateway 直参照へ移行済みで、旧 compute パスを import するのは本テスト（＝シム自身の契約テスト）
-    のみになった。本テストを gateway 直参照へ書き換えると ``GwDwell is GwDwell`` の恒真式に退化して
-    契約検証が消えるため、シムが現存する限り本テストは旧パス参照のまま残す
-    （``_REEXPORT_SHIMS`` 免除の根拠もこれ）。シム 2 ファイルの削除は要承認事項。
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+#: 走査から外すディレクトリ名（仮想環境・キャッシュ・第三者コード・試作・データ）。
+_SKIP_DIR_NAMES = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
+_SKIP_TOP_LEVEL = {"lightweight-charts-python-main", "data", "sample", "node_modules", "scratchpad"}
+
+#: シム自身のファイル名（旧パスではなく実体側 gateway を import するため走査対象外）。
+_SHIM_FILE_NAMES = {"market_profile_zp_store.py", "market_profile_dwell_store.py"}
+
+#: 旧 compute パスの import 形態。ドット付きの明示パスと、パッケージからの名前 import の 2 系統。
+_OLD_PATH_DOTTED = re.compile(
+    r"\b(?:from|import)\s+(?:market_profile_api\.compute\.|\.)"
+    r"market_profile_(?:zp|dwell)_store\b"
+)
+_OLD_PATH_FROM_PACKAGE = re.compile(
+    r"\bfrom\s+(?:market_profile_api\.compute|\.)\s+import\s+(?P<names>[^#\n]+)"
+)
+_OLD_PATH_NAME = re.compile(r"\bmarket_profile_(?:zp|dwell)_store\b")
+
+
+def _imports_old_compute_store_path(source: str) -> bool:
+    """ソース文字列が旧 compute パスのシムを import しているか。"""
+    if _OLD_PATH_DOTTED.search(source):
+        return True
+    for m in _OLD_PATH_FROM_PACKAGE.finditer(source):
+        if _OLD_PATH_NAME.search(m.group("names")):
+            return True
+    return False
+
+
+def _repo_sources() -> "list[Path]":
+    """リポジトリの Python ソース（本番・テストの両方。仮想環境・試作・第三者コードは除く）。"""
+    out: "list[Path]" = []
+    for top in sorted(_REPO_ROOT.iterdir()):
+        if not top.is_dir():
+            continue
+        if top.name in _SKIP_TOP_LEVEL or top.name in _SKIP_DIR_NAMES:
+            continue
+        if top.name.startswith("prototype_"):
+            continue
+        for p in top.rglob("*.py"):
+            if _SKIP_DIR_NAMES & set(p.parts):
+                continue
+            out.append(p)
+    out += sorted(_REPO_ROOT.glob("*.py"))
+    return out
+
+
+def test_repo_scan_covers_the_shim_package() -> None:
+    """走査が実際にシムのあるパッケージと本テスト自身へ届いている（空走査で恒真式に退化しない）。"""
+    sources = set(_repo_sources())
+    for shim in sorted(_SHIM_FILE_NAMES):
+        assert (_PKG / "compute" / shim) in sources, f"走査がシム {shim} に届いていません"
+    assert Path(__file__).resolve() in sources, "走査が本テスト自身に届いていません"
+
+
+def _scannable_sources(files) -> "list[Path]":
+    """走査対象（シム自身を除く）。**読む前に**決まる集合＝計算量検定の「使用」側。
+
+    シムが import しているのは旧パスではなく実体側の gateway なので対象外にする。
     """
-    from market_profile_api.compute.market_profile_dwell_store import DwellRollupStore
-    from market_profile_api.compute.market_profile_zp_store import ZpStore
-    from market_profile_api.gateway.dwell_rollup_store import (
-        DwellRollupStore as GwDwell,
-    )
-    from market_profile_api.gateway.zp_store import ZpStore as GwZp
+    return [
+        p for p in files
+        if not (p.parent == _PKG / "compute" and p.name in _SHIM_FILE_NAMES)
+    ]
 
-    assert DwellRollupStore is GwDwell  # 同一クラス（identity）＝再エクスポートの証明。
-    assert ZpStore is GwZp
+
+def _old_path_import_offenders_over(files, read=None) -> "list[str]":
+    """``files`` のうち旧 compute パスを import しているものの一覧（走査本体）。
+
+    ``read`` はソース取得のシーム（既定は実ファイル読み）。計算量検定が **走査本体そのもの**を
+    測れるように分けてある（テスト側で走査を書き直すと恒真式になる）。
+    """
+    read = read or (lambda p: p.read_text(encoding="utf-8"))
+    out: "list[str]" = []
+    for path in _scannable_sources(files):
+        if _imports_old_compute_store_path(read(path)):
+            out.append(str(path.relative_to(_REPO_ROOT)))
+    return out
+
+
+def _old_path_import_offenders() -> "list[str]":
+    """旧 compute パスを import しているソースの一覧（リポジトリ全体）。"""
+    return _old_path_import_offenders_over(_repo_sources())
+
+
+def test_no_code_imports_the_old_compute_store_paths():
+    """旧 compute パス（互換シム）を import する本番・テストコードがリポジトリに 1 件も無い。
+
+    識別力: どこかで旧パス import を復活させると Red になる（本テスト自身も例外ではない）。
+    落ちた場合の直し方は gateway 直参照（``market_profile_api.gateway.zp_store`` /
+    ``gateway.dwell_rollup_store``）への付替え。
+    """
+    offenders = _old_path_import_offenders()
+    assert not offenders, (
+        "互換シム（旧 compute パス）を import している箇所が残っています:\n"
+        + "\n".join(offenders)
+        + "\ngateway 直参照へ付替えてください。"
+    )
+
+
+class _SyntheticSource:
+    """実ファイルを作らずに走査関数へソースを与えるスタブ（``Path`` の被走査面だけを満たす）。"""
+
+    def __init__(self, name: str, text: str) -> None:
+        self._name, self._text = name, text
+
+    def read_text(self, encoding: str = "utf-8") -> str:  # noqa: ARG002
+        return self._text
+
+    def relative_to(self, other):  # noqa: ANN001, ARG002
+        return self._name
+
+
+def test_module_level_offender_detection_has_power():
+    """検出力: ``_module_level_offenders`` が module-level の gateway 直結だけを違反にする。
+
+    合成ソース文字列で与える（実ファイルは生成しない）。行頭（module-level）は違反、関数本体の
+    遅延 import / 合成は自己完結起動の許容パターンとして非違反であることの両方を固定する。
+    """
+    dotted = "market_profile_api.gateway."
+    module_level = _SyntheticSource(
+        "synthetic.py",
+        "from " + dotted + "zp_store import ZpStore\n"
+        "from " + dotted + "dwell_rollup_store import DwellRollupStore\n",
+    )
+    assert len(_module_level_offenders(module_level, _GATEWAY_STORE_IMPORT)) == 2
+
+    new_at_module_level = _SyntheticSource(
+        "synthetic.py", "_STORE = ZpStore()\n_DWELL = DwellRollupStore()\n"
+    )
+    assert len(_module_level_offenders(new_at_module_level, _GATEWAY_STORE_NEW)) == 2
+
+    lazy_in_function = _SyntheticSource(
+        "synthetic.py",
+        "def _get():\n"
+        "    from " + dotted + "zp_store import ZpStore\n"
+        "    return ZpStore()\n",
+    )
+    assert _module_level_offenders(lazy_in_function, _GATEWAY_STORE_IMPORT) == []
+    assert _module_level_offenders(lazy_in_function, _GATEWAY_STORE_NEW) == []
+
+    unrelated = _SyntheticSource(
+        "synthetic.py", "from market_profile_api.compute import store_port\n"
+    )
+    assert _module_level_offenders(unrelated, _GATEWAY_STORE_IMPORT) == []
+
+
+def test_old_path_detection_has_power():
+    """検出力: 旧 compute パスの import 形態を検出し、紛らわしい非違反を誤検出しない。
+
+    合成ソース文字列で与える（実ファイルは生成しない。かつ本テスト自身が走査の offender に
+    ならないよう、リテラルは連結して組み立てる）。
+    """
+    dotted = "market_profile_api.compute."
+    zp, dwell = "market_profile_zp_store", "market_profile_dwell_store"
+
+    for offender in (
+        "from " + dotted + zp + " import ZpStore\n",
+        "import " + dotted + dwell + "\n",
+        "from market_profile_api.compute import " + zp + "\n",
+        "from ." + dwell + " import DwellRollupStore\n",
+        "from . import " + zp + "\n",
+        "    from " + dotted + zp + " import ZpStore\n",   # 関数内 import も参照は参照。
+    ):
+        assert _imports_old_compute_store_path(offender), f"検出できていません: {offender!r}"
+
+    for clean in (
+        "from market_profile_api.gateway.zp_store import ZpStore\n",
+        "from test_" + zp + " import _synth_ticks_for_day\n",   # テストモジュール名は別物。
+        "_SHIMS = {'" + zp + ".py'}\n",                          # 文字列リテラルは import ではない。
+        "# " + dotted + zp + " は削除予定\n",
+        "from market_profile_api.compute import store_port\n",
+    ):
+        assert not _imports_old_compute_store_path(clean), f"誤検出しています: {clean!r}"
+
+
+def _reads_issued_by(files, scan=None) -> "list":
+    """``scan``（既定は走査本体）を read シームの下で走らせ、発行された読込を返す。"""
+    reads: "list" = []
+
+    def _spy(path):
+        reads.append(path)
+        return path.read_text(encoding="utf-8")
+
+    (scan or _old_path_import_offenders_over)(files, read=_spy)
+    return reads
+
+
+def test_repo_scan_reads_each_source_exactly_once():
+    """計算量テスト: 走査本体が 1 ファイル 1 読込（発行 − 判定に使ったソース数 = 0）。
+
+    測るのは **SUT（``_old_path_import_offenders_over``）が発行した読込**である。テスト側で
+    走査を書き直して数えると、SUT が何回読んでいるかを一切見ない恒真式になり、走査本体に
+    二度読みが入っても緑のまま通る（ISSUE-450 と同型の「作ってから捨てる」を保護する形）。
+    """
+    # Arrange
+    sources = _repo_sources()
+    used = _scannable_sources(sources)
+
+    # Act
+    reads = _reads_issued_by(sources)
+
+    # Assert
+    assert len(reads) - len(used) == 0, "走査の読込発行が判定使用数と一致しません"
+    assert set(reads) == set(used), "読み捨て／読み漏らしがあります"
+    assert len(set(reads)) - len(reads) == 0, "同じファイルを二度読んでいます"
+
+
+def test_the_read_count_is_determined_by_the_target_count_alone():
+    """オーダーの表明: 対象 1 件 / 2 件の 2 点で「読込数 == 対象数」。
+
+    ファイルの長さ・import 数では増えない（回数リテラルは焼き込まず対象数から導く）。
+    """
+    # Arrange
+    used = _scannable_sources(_repo_sources())
+
+    # Act / Assert
+    for count in (1, 2):
+        subset = used[:count]
+        assert len(_reads_issued_by(subset)) == len(subset)
+
+
+def test_the_read_measurement_detects_a_wasteful_scan():
+    """検出力: 同じファイルを二度読む走査は、この測り方で必ず落ちる（恒真式ではない）。"""
+    # Arrange — 判定に 1 回しか使わないのに 2 回読む「浪費する走査」。
+    def _wasteful(files, read=None):
+        for path in _scannable_sources(files):
+            read(path)
+            _imports_old_compute_store_path(read(path))
+        return []
+
+    used = _scannable_sources(_repo_sources())[:2]
+
+    # Act
+    reads = _reads_issued_by(used, scan=_wasteful)
+
+    # Assert
+    assert len(reads) - len(used) != 0

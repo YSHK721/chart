@@ -52,7 +52,7 @@ def test_resolve_now_unix_override_precedence():
 
 
 def test_error_status_contract():
-    from marketdata.api_contract import ERROR_STATUS
+    from api_shared.http_contract import ERROR_STATUS
 
     assert ERROR_STATUS["validation"] == 400
     assert ERROR_STATUS["empty_series"] == 422

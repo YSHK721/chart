@@ -27,7 +27,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from marketdata import material_identity, rollup_store, tail_reader
+from marketdata import keep_last, material_identity, rollup_store, tail_reader
 
 # datasetRef 台帳は marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）から
 # 導出する。従来 4 断片（DATASET_WHITELIST・_OUTLIER_CLAMP_REFS_SET・_ROLLUP_REFS・
@@ -77,10 +77,10 @@ def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
     （jp225_tick_m1）に日境界の二重分バーが既に残っていても、serving でチャート/指標へ渡る前に
     無害化される（フロントの lwc 厳密増加不変条件違反＝毎フレーム "Value is null" クラッシュを遮断）。
     冪等・純粋（正常データは has_duplicates 偽で素通し＝挙動不変）。発生源（tick_m1._dedupe_minutes）と
-    多重防御（本所）の二段構え。
+    多重防御（本所）の二段構え。keep-last の規則そのものは :mod:`marketdata.keep_last`
+    （唯一の実体・ISSUE-479 F-6）へ委譲する。
     """
-    if df.index.has_duplicates:
-        df = df[~df.index.duplicated(keep="last")]
+    df = keep_last.dedupe_index_keep_last(df)
     if ref not in _OUTLIER_CLAMP_REFS_SET:
         return df
     return outlier_policy.clamp_ohlc_envelope(df, threshold=OUTLIER_CLAMP_THRESHOLD)

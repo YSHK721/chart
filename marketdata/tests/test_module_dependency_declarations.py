@@ -38,12 +38,15 @@ _ALLOWED: "dict[str, set[str]]" = {
     # ため、依存として明示し検定で固定する。
     "csv_source.py": {"pandas", "datawindow.half_open", "marketdata.port"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
+    # ``marketdata.keep_last`` は「同一キーの最終出現を採る」規則の唯一の実体（依存ゼロの中立核・
+    # ISSUE-479 F-6）。この 1 エントリを消すと _dedupe_minutes に同じ式の複製が復活する。
     "tick_m1.py": {
         "pandas",
         "marketdata.paths",
         "marketdata.outlier_policy",
         "marketdata.csv_schema",
         "marketdata.tail_reader",
+        "marketdata.keep_last",
     },
 }
 

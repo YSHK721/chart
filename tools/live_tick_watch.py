@@ -507,8 +507,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)
         return 0
 
-    # 継続ポーリング: 共有層の run_watch（例外はログして次インターバル継続・KeyboardInterrupt 正常終了）。
-    from tools.watch_loop import run_watch
+    # 継続ポーリング: 中立核の run_watch（例外はログして次インターバル継続・KeyboardInterrupt 正常終了）。
+    from common.watch_loop import run_watch
 
     def _update() -> None:
         update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)

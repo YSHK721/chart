@@ -11,6 +11,11 @@
     依存方向: 本モジュールはどちらのアプリも知らない（ISSUE-091 A1 と同じ規律＝アプリ間の
     側方依存を作らず、中立核へ抽出する）。
 
+規則の唯一化（F-9 / ISSUE-479）:
+    判定は :func:`forming_patch`（純関数）1 つに集約し、list 版（:func:`apply_forming`）・
+    DataFrame 版（indicator_ui の adapter/compute/forming_bar.py）・ライブ末尾値
+    （同 adapter/compute/live_tick_tails.py）はいずれもその**消費者**である。
+
 規則の出典:
     ``apply_forming`` は ``simulator/replay_ui/domain/forming_bar.apply`` の移設であり、
     proto_server._apply_forming（＝本番 forming_bar.apply_forming_bar）に bit 一致する:
@@ -26,9 +31,87 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
 _FIELDS = ("open", "high", "low", "close", "volume")
+
+
+class FormingPatch(NamedTuple):
+    """「窓の末尾に対して forming をどうするか」の判定結果（規則の唯一の表現）。
+
+    Attributes:
+        mode: ``"skip"``（触らない）/ ``"replace"``（末尾を置換）/ ``"append"``（追加）。
+        time: 形成中バーの ``time``（UNIX 秒）。判定できなかった場合は ``0``。
+        values: 更新する値（小文字キー・float 正規化済み）。``forming`` に在るキーだけを含み、
+            ``mode == "skip"`` のときは空。
+    """
+
+    mode: str
+    time: int
+    values: "dict[str, float]"
+
+
+def forming_patch(last_time: Any, forming: "Mapping[str, Any] | None") -> FormingPatch:
+    """差し替え規則そのもの（純関数・唯一の述語）。
+
+    「形成中バーを窓の末尾へ set/replace する」規則は list 版・DataFrame 版・ライブ末尾値の
+    3 経路が必要とする。実装が分かれると食い違った瞬間に「描いたローソクと指標値が別のバー」に
+    なるため（ISSUE-232 の失敗モード）、判定はここ 1 箇所だけに置き、各経路は**適用**だけを行う。
+
+    Args:
+        last_time: 窓の末尾バーの ``time``（UNIX 秒・``int()`` 可能な値）。末尾が無い窓は
+            ``None``（比較対象が無い＝``"append"``）。
+        forming: 形成中バー。``Mapping`` でない・``time`` が欠落/非数値なら ``"skip"``。
+
+    Returns:
+        :class:`FormingPatch`。判定規則は次のとおり（``apply_forming`` の docstring と同一）:
+          - ``time == last_time`` → ``"replace"``
+          - ``time  > last_time`` → ``"append"``
+          - ``time  < last_time`` → ``"skip"``（異常時の防御）
+          - ``forming`` が None/非 Mapping・``time`` が欠落/不正 → ``"skip"``
+
+    Raises:
+        ValueError / TypeError: ``last_time`` または値が数値へ変換できない場合（呼び出し側の
+            前提違反をここで潰さない＝黙って別の値を描かない）。``last_time`` が遅延参照
+            （:class:`_LastBarTime`）の場合は、その解決で生じる例外（``KeyError`` 等）も
+            同じ理由でそのまま通す。
+    """
+    if not isinstance(forming, Mapping):
+        return FormingPatch("skip", 0, {})
+    try:
+        t = int(forming["time"])
+    except (KeyError, TypeError, ValueError):
+        return FormingPatch("skip", 0, {})
+    if last_time is not None and t < int(last_time):  # 末尾より過去 → 触らない（防御）
+        return FormingPatch("skip", t, {})
+
+    # forming のキーを大小無視で引くための小文字マップ。
+    lower_forming = {str(k).lower(): v for k, v in forming.items()}
+    values = {key: float(lower_forming[key]) for key in _FIELDS if key in lower_forming}
+    mode = "replace" if last_time is not None and t == int(last_time) else "append"
+    return FormingPatch(mode, t, values)
+
+
+class _LastBarTime:
+    """窓の末尾 ``time`` を「規則が実際に要求した時点」で解決する遅延参照。
+
+    なぜ即値で渡さないか: list 版は「``forming`` が非 Mapping・``time`` 欠落/非数値なら
+    **末尾を見ずに**無変更」という順序を持つ（規則を述語へ集約する前からの挙動）。
+    ``forming_patch(out[-1]["time"], forming)`` と即時評価すると、無変更で済むはずの入力が
+    末尾バーの ``time`` 欠落で ``KeyError`` になり、順序が失われる。判定の分岐を呼び出し側へ
+    書き戻す（＝規則を二重化する）ことなく順序だけを保つため、末尾 time の解決を遅らせる。
+
+    欠落は ``KeyError``・非数値は ``ValueError``（``int()`` が送出する種別のまま）で、
+    いずれも握らない。
+    """
+
+    __slots__ = ("_bar",)
+
+    def __init__(self, bar: "Mapping[str, Any]") -> None:
+        self._bar = bar
+
+    def __int__(self) -> int:
+        return int(self._bar["time"])
 
 
 def apply_forming(
@@ -36,27 +119,17 @@ def apply_forming(
 ) -> "list[dict]":
     """形成中バー ``forming`` を ``bars`` 末尾へ set/replace した新しい list を返す。"""
     out = [dict(b) for b in bars]
-    if not isinstance(forming, Mapping) or len(out) == 0:
+    if len(out) == 0:
+        return out  # 空窓は list API 固有の契約（述語ではなくここが持つ）。
+    patch = forming_patch(_LastBarTime(out[-1]), forming)
+    if patch.mode == "skip":
         return out
-    try:
-        t = int(forming["time"])
-    except (KeyError, TypeError, ValueError):
-        return out
-    if t < int(out[-1]["time"]):  # 末尾より過去 → 触らない（防御）
-        return out
-
-    # forming のキーを大小無視で引くための小文字マップ。
-    lower_forming = {str(k).lower(): v for k, v in forming.items()}
-
-    if t == int(out[-1]["time"]):  # 末尾を置換
+    if patch.mode == "replace":  # 末尾を置換
         target = out[-1]
     else:  # t > 末尾 → 追加
-        target = {"time": t}
+        target = {"time": patch.time}
         out.append(target)
-
-    for key in _FIELDS:
-        if key in lower_forming:
-            target[key] = float(lower_forming[key])
+    target.update(patch.values)
     return out
 
 

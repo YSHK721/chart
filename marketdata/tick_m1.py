@@ -28,7 +28,7 @@ Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC �
 
 依存方向: 本モジュールは pandas と marketdata 内の下位部品
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
-:mod:`marketdata.tail_reader`）にのみ依存する（indicator_ui を逆 import しない・
+:mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last`）にのみ依存する（indicator_ui を逆 import しない・
 marketdata の循環依存禁止）。
 
 この宣言は ``marketdata/tests/test_module_dependency_declarations.py`` が **AST 走査で強制**する
@@ -47,6 +47,7 @@ from typing import Any, List
 
 import pandas as pd
 
+from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
 from marketdata.paths import DATA_DIR
 
@@ -243,11 +244,12 @@ def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
     「厳密増加 time」不変条件違反で candlestick 描画を毎フレーム "Value is null" で落とす
     （実測: 1m 切替で 31 秒フリーズ）。5m 以上は resample が融合するため露見せず 1m のみ発症する。
     本 dedupe を build/append の concat 直後（sort 済み）に適用し、素材段で分一意を保証する
-    （後勝ち＝最新集計を採用）。正常データは ``has_duplicates`` が偽で同一オブジェクトを返す＝no-op。
+    （後勝ち＝最新集計を採用）。正常データは has_duplicates が偽で同一オブジェクトを返す＝no-op。
+
+    keep-last の規則そのものは :mod:`marketdata.keep_last`（唯一の実体）へ委譲する。かつては
+    同じ式が repo 内 5 箇所へ手書き複製されていた（ISSUE-479 F-6）。
     """
-    if m1.index.has_duplicates:
-        return m1[~m1.index.duplicated(keep="last")]
-    return m1
+    return _keep_last.dedupe_index_keep_last(m1)
 
 
 def tick_root(data_dir: Any = DATA_DIR) -> Path:
