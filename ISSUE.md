@@ -13272,11 +13272,17 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   `marketdata/api_contract.py`（参照ゼロ固定済み）／`tools/watch_loop.py`（参照ゼロ・byte 等価アンカーとして
   common/tests/test_watch_loop.py が現存に依存＝削除時に同テストの撤去が必要）。
 - **工程 5 レビュー（code-review-executor）**: 差戻し 1 回（🔴1・🟡6）。🔴-1 は F-9 の述語検査が暴いた
-  既存欠陥（ISSUE-480 として起票）に起因。是正コミットで対応中。
+  既存欠陥（ISSUE-480 として起票）に起因。**是正完了（TDD・7573a96 ほか 6 コミット）**:
+  🔴-1＝窓供給側で形成中バーを適用（ISSUE-480 RESOLVED）／🟡-1＝壊れた形成中バーの Fail-Stop を
+  旧挙動へ復元（ca0f189）／🟡-2＝`apply_forming` の末尾参照を forming 検証より後へ戻す（dfaf7be・
+  3 版突合で「末尾 time=None を黙って追加」という別インスタンスも発見し封鎖 3b843ff）／
+  🟡-3＝恒真式だった走査の計算量テスト 2 本を SUT 実行へ是正（7d3b05e）／🟡-4＝窓ラベルの
+  秒境界前提を機械的検査へ（8447623）。静的品質検定 exit 0・4 スイート全緑
+  （既知 pre-existing の `tools/tests/test_composition_root_arg_parity` 1 件を除く）。
 
 ## ISSUE-480: [欠陥] 1m ライブ tails の窓末尾≠形成中バー — `_set_last_bar` が前分 M-1 行へ現分 M の値を書いていた
 
-- **ステータス**: IN_PROGRESS（2026-09-03 起票。ISSUE-479 Wave 1 工程 5 レビューが実データで検出・同ブランチで是正中）
+- **ステータス**: RESOLVED（2026-09-03 是正完了。`fix/issue-479-solid-wave1` の 7573a96）
 - **重大度**: 中（1m ライブ tails 経路の指標末尾値が誤ったバー行に基づく。/compute 経路は影響なし）
 - **実測**: `live_tick_tails_controller._load_window` は確定窓（M1 CSV は排他 floor により常に M-1 分まで＝
   `tools/live_tick_watch.py:348`）をそのまま渡し、`live_tick_tails.py:66-67` の「窓末尾＝形成中バーの周期」
@@ -13287,4 +13293,15 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   不成立が WARNING として可視化された（従来は無音で誤代入）。
 - **抜本的解決**: 窓の供給側で形成中バーを適用し、`make_tail_at` に渡る窓末尾＝形成中バーの周期を成立させる
   （ログ抑制は応急処置のため不採用）。/compute 経路との二重適用なしを検証条件に含める。
+- **是正内容（7573a96・TDD）**: 供給側 `window_with_forming`（adapter/compute/live_tick_tails.py）で窓末尾を
+  形成中バーの周期へ揃える。揃える材料は `states[0]`＝以降 `tail_at` が末尾行へ書く値と同じ材料であり、
+  窓と値が別のバーになることが構造的に起こらない。注入の実体は `/compute` と共有（`apply_forming_bar` の
+  末尾ループを `inject_forming_bars` へ抽出）。既に末尾＝形成中バーの窓（上位足の rollup partial）と
+  時刻 index でない窓は素通し＝従来経路は不変。
+- **二重適用なし（実測）**: `/compute` の入口 `apply_forming_bar` はライブ経路を通らない（spy で 0 回）／
+  `window_with_forming` は冪等（2 度目は "replace" で同一オブジェクト）／追加される足は常に 1 本／
+  素材識別（DataFrame.attrs）・dtype・index 型は保存（pandas 3.0.3 実測）。
+- **計算量**: 適用は要求あたり・計算足グループあたり 1 回（発行 − 使用 = 0）。グループ 1→2 で比例、
+  tick 数 2→16 では不変（2 点で固定）。
+- **残る警告の意味**: バッチが周期をまたいだときだけ WARNING が 1 度出る（本物の食い違いの信号として機能）。
 - **関連**: ISSUE-479（検出の経緯）・ISSUE-232（同型）・ISSUE-145（足内更新の登録漏れ＝隣接類型）。
