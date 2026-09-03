@@ -49,6 +49,11 @@ _STOP_OUT_BREACH_MESSAGE = "margin_level が stop_out_level を下回りまし�
 _STOP_OUT_AT_BAR_OPEN = "（bar open 評価）"
 _STOP_OUT_AT_EVALUATION = ""
 
+# 建玉変更（PositionManagerPort）へ伝える評価粒度。トレーリング規則は自身の設定粒度と
+# 一致するときだけ作動するため、粒度は呼出側の事実として渡す。
+_BAR_GRANULARITY = "bar"
+_TICK_GRANULARITY = "tick"
+
 
 def _close_deal(trade: TradeRecord) -> Deal:
     """確定 TradeRecord から決済 Deal を生成する（balance 反映用）。"""
@@ -520,15 +525,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   SL/TP 判定と非対称になる）。閉鎖バーは EA 動作外として適用しない（H と一貫）。
             pm = self._position_manager
             if pm is not None and open_trades and not session_gate.is_closed(bar_index):
-                for ot in list(open_trades):
-                    ref = bar.high if ot.position.side == "buy" else bar.low
-                    directive = pm.evaluate(
-                        ot=ot, ref_price=ref, granularity="bar", account=account
-                    )
-                    self._apply_directive(
-                        directive, ot, close_trade=close_trade,
-                        exit_time=bar.time, exit_price=ref,
-                    )
+                self._apply_position_directives(
+                    state,
+                    open_trades,
+                    bar=bar,
+                    granularity=_BAR_GRANULARITY,
+                    ref_buy=bar.high,
+                    ref_sell=bar.low,
+                )
 
             # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
             #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
@@ -647,6 +651,46 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
             )
         return open_trades
+
+    def _apply_position_directives(
+        self,
+        state: _RunState,
+        open_trades: list,
+        *,
+        bar: Any,
+        granularity: str,
+        ref_buy: float,
+        ref_sell: float,
+    ) -> None:
+        """保有玉すべてに建玉変更を適用する（両実行経路で同型だった B2/B4 の単一化）。
+
+        呼ばれる位置は hit 判定（H）の後・口座再評価（I）の前である（サーバ hit →
+        EA 動作 → 口座再評価という実 MT5 の順序）。参照価格は玉のサイドだけで決まる
+        ため、**評価点ごとに 2 つ（買い用・売り用）を先に解決して玉に配る**。玉ごとに
+        引き直すと、同じ答えを玉の数だけ求める形（N+1）になり、玉が増えるほど捨てる
+        計算が増える。出力は 1 ビットも変わらないので状態検証では落ちない類の浪費である。
+
+        参照価格の意味は粒度で異なる（呼出側が決めて渡す）:
+            バー粒度: トレーリング方向の到達価格（買い=high / 売り=low）。SL/TP の
+                到達判定が high/low で touch を見るのと対称にする。
+            ティック粒度: 保有玉の決済価格（買い=Bid / 売り=Ask）＝含み損評価と同一基準。
+
+        `list(open_trades)` を走査するのは、適用中に部分決済が保有列を書き換えうるため
+        （走査中の列を直接回すと取りこぼす）。
+        """
+        pm = self._position_manager
+        for ot in list(open_trades):
+            ref = ref_buy if ot.position.side == "buy" else ref_sell
+            directive = pm.evaluate(
+                ot=ot, ref_price=ref, granularity=granularity, account=state.account
+            )
+            self._apply_directive(
+                directive,
+                ot,
+                close_trade=state.close_trade,
+                exit_time=bar.time,
+                exit_price=ref,
+            )
 
     def _apply_stop_out(
         self,
@@ -1025,15 +1069,16 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 if pm is not None and open_trades and not bar_closed:
                     mb = q_bid if pending_mode else bid
                     ma = q_ask if pending_mode else ask
-                    for ot in list(open_trades):
-                        exit_px = close_price_for(ot.position.side, bid=mb, ask=ma)
-                        directive = pm.evaluate(
-                            ot=ot, ref_price=exit_px, granularity="tick", account=account
-                        )
-                        self._apply_directive(
-                            directive, ot, close_trade=close_trade,
-                            exit_time=bar.time, exit_price=exit_px,
-                        )
+                    self._apply_position_directives(
+                        state,
+                        open_trades,
+                        bar=bar,
+                        granularity=_TICK_GRANULARITY,
+                        # サイドごとの決済価格は評価点で 1 度ずつ解決する（玉数に非比例）。
+                        #   規則そのものは close_price_for が単一ソース。
+                        ref_buy=close_price_for("buy", bid=mb, ask=ma),
+                        ref_sell=close_price_for("sell", bid=mb, ask=ma),
+                    )
 
                 # ★armed ペンディングのトリガ評価（約定価格＝注文価格・スリッページ0）。
                 #   クォート規約は derive_quotes と対称に bid=ティック価格 / ask=bid+spread×point

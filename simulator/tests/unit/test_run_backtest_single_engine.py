@@ -850,3 +850,142 @@ class TestTheMarketFillDoesNotWasteWork:
             assert derived_count - filling_bars == 0, measured
         # 注文数は増えているのに導出は約定バー数しか増えない（注文数に非比例）。
         assert measured[2][1] - measured[1][1] == 1, measured
+
+
+# ---- 4-6: 建玉変更（B2/B4）の単一化 ----
+
+class _RecordingPositionManager:
+    """建玉変更の呼ばれ方（粒度・参照価格・玉）だけを記録する（無変更を返す）。"""
+
+    def __init__(self):
+        self.calls: "list[tuple[str, str, float]]" = []
+
+    def evaluate(self, *, ot, ref_price, granularity, account):
+        self.calls.append((granularity, ot.position.side, ref_price))
+        return None
+
+
+def _held_positions_scenario(overrides, *, position_manager):
+    """買い 2 玉を建てて数バー保有し続ける run（建玉変更が毎評価点で問われる）。"""
+    interactor = RunBacktestInteractor(
+        strategy=_OrdersPerBar({0: [_market("buy"), _market("buy")]}),
+        indicators=_NullIndicators(),
+        tick_model=_OneTickPerBar(),
+        position_manager=position_manager,
+    )
+    return interactor, _request(_bars(6), config=_config(**overrides))
+
+
+class TestBothEnginesShareThePositionDirectiveStage:
+    """建玉変更の適用（粒度と参照価格の決め方）の定義点が 1 つであること。"""
+
+    def test_the_position_directive_stage_has_exactly_one_definition_point(self):
+        assert callable(getattr(RunBacktestInteractor, "_apply_position_directives", None))
+
+    def test_the_bar_path_asks_at_bar_granularity_with_the_reached_extreme(self):
+        """バー粒度の参照価格は「トレーリング方向の到達価格」（買い=high / 売り=low）。
+
+        なぜ極値か: SL/TP の到達判定が high/low で touch を見るのと対称にするためである。
+        close を参照にすると、同じバーで SL/TP は当たったのにトレーリングは動かない、
+        という非対称が生まれる。
+        """
+        # Arrange
+        pm = _RecordingPositionManager()
+        interactor, request = _held_positions_scenario({}, position_manager=pm)
+        bars = list(request.bars)
+        # Act
+        interactor.execute(request)
+        # Assert: 粒度は "bar"、参照価格は買い玉なので当該バーの high。
+        assert {granularity for granularity, _, _ in pm.calls} == {"bar"}
+        asked_prices = {price for _, _, price in pm.calls}
+        assert asked_prices <= {bar.high for bar in bars}
+
+    def test_the_tick_path_asks_at_tick_granularity_with_the_exit_quote(self):
+        """ティック粒度の参照価格は保有玉の決済価格（買い=Bid / 売り=Ask）。"""
+        # Arrange
+        pm = _RecordingPositionManager()
+        interactor, request = _held_positions_scenario(
+            {"tick_model": "real_ticks"}, position_manager=pm
+        )
+        bars = list(request.bars)
+        # Act
+        interactor.execute(request)
+        # Assert: 粒度は "tick"、参照価格は各ティックの Bid（買い玉の決済価格）。
+        assert {granularity for granularity, _, _ in pm.calls} == {"tick"}
+        asked_prices = {price for _, _, price in pm.calls}
+        assert asked_prices <= {bar.low for bar in bars}  # _OneTickPerBar の bid=bar.low
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_every_open_trade_is_offered_to_the_position_manager(self, path, overrides):
+        # Arrange
+        pm = _RecordingPositionManager()
+        interactor, request = _held_positions_scenario(overrides, position_manager=pm)
+        # Act
+        interactor.execute(request)
+        # Assert: 2 玉を保有しているので、各評価点で 2 回問われる（取りこぼしなし）。
+        assert len(pm.calls) % 2 == 0
+        assert len(pm.calls) > 0
+        assert {side for _, side, _ in pm.calls} == {"buy"}
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_nothing_is_asked_when_no_position_manager_is_injected(self, path, overrides):
+        """既定（未注入）では建玉変更の段を素通りすること（byte 等価の担保）。"""
+        interactor, request = _held_positions_scenario(overrides, position_manager=None)
+        result = interactor.execute(request)
+        assert [t.exit_reason for t in result.trades] == []
+
+
+class TestThePositionDirectiveStageDoesNotWasteWork:
+    """計算量検定（Test Spy・発行 − 使用 = 0）。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_exit_quote_is_not_resolved_once_per_open_trade(
+        self, path, overrides, monkeypatch
+    ):
+        """決済価格の解決は評価点あたりで決まり、玉の数に比例しないこと。
+
+        なぜ固定するか: 参照価格は玉のサイドだけで決まる（buy=Bid / sell=Ask）ので、
+        玉ごとに引き直すのは同じ答えを人数分求める形（N+1）になる。玉が増えるほど
+        捨てる計算が増えるが、出力は 1 ビットも変わらないため状態検証では落ちない。
+        """
+        # Arrange: 玉 1 / 玉 4 の 2 点で、玉あたりの決済価格解決の発行を測る。
+        original = rb.close_price_for
+        measured = {}
+        for lot_count in (1, 4):
+            resolved: "list[int]" = []
+            monkeypatch.setattr(
+                rb, "close_price_for",
+                lambda side, **kw: (resolved.append(1), original(side, **kw))[1],
+            )
+            pm = _RecordingPositionManager()
+            interactor = RunBacktestInteractor(
+                strategy=_OrdersPerBar({0: [_market("buy")] * lot_count}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+                position_manager=pm,
+            )
+            interactor.execute(_request(_bars(6), config=_config(**overrides)))
+            measured[lot_count] = (len(resolved), len(pm.calls))
+        # Assert: 建玉変更の問い合わせは玉数に比例して増える（玉ごとに 1 回・取りこぼし無し）。
+        assert measured[4][1] - 4 * (measured[1][1]) == 0, measured
+        # 一方、決済価格の解決は玉数に比例して増えない（評価点あたりで決まる）。
+        assert measured[4][0] - measured[1][0] == 0, measured
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_manager_is_asked_exactly_once_per_open_trade_per_point(
+        self, path, overrides
+    ):
+        # Arrange: 玉 2 / 玉 4 の 2 点。
+        measured = {}
+        for lot_count in (2, 4):
+            pm = _RecordingPositionManager()
+            interactor = RunBacktestInteractor(
+                strategy=_OrdersPerBar({0: [_market("buy")] * lot_count}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+                position_manager=pm,
+            )
+            interactor.execute(_request(_bars(6), config=_config(**overrides)))
+            measured[lot_count] = len(pm.calls)
+        # Assert: 発行（問い合わせ）− 使用（玉 × 評価点）= 0。玉を 2 倍にすれば 2 倍。
+        assert measured[4] - 2 * measured[2] == 0, measured
