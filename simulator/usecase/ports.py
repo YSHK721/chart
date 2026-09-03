@@ -152,6 +152,36 @@ class PositionManagerPort(abc.ABC):
         raise NotImplementedError
 
 
+class EvaluationSchedulePort(abc.ABC):
+    """「どこで口座を再評価するか」の隔離（ISSUE-479 Wave2 4-8）。
+
+    Interactor は 1 バーぶんの材料（位置・バー・前足終値）を渡し、そのバーで評価すべき
+    点の列を受け取る。点で**何をするか**（SL/TP 到達判定・建玉変更・口座再評価）は
+    Interactor が 1 箇所で持ち、**どこで評価するか**だけが実装ごとに違う。
+
+    移設前はこの 2 つが混ざっていた。バー用エンジンは「1 バー 1 回・bar.close で」、
+    ティック用エンジンは「1 ティック 1 回・ティック価格で」を、それぞれ手続きごと写して
+    持っていたため、同じ手続きの 2 つの写しが並存していた。
+
+    `prev_close` はティックを合成する実装だけが使う（バー粒度は無視する）。入口の形を
+    粒度に依らず同じにして、呼出側が粒度で分岐しなくて済むようにするためである。
+    """
+
+    #: 粒度の名前（どのスケジュールで走った run かを辿れるようにする）。
+    id: str = ""
+
+    @abc.abstractmethod
+    def points(
+        self, bar_index: int, bar: Any, prev_close: "float | None"
+    ) -> Iterable[Any]:
+        """当該バーで評価すべき EvaluationPoint の列を返す（空列を許容する）。
+
+        空列は「そのバーには評価する点が無い」を意味する（実ティックが 0 件のバー）。
+        呼出側は非空を前提にしない。
+        """
+        raise NotImplementedError
+
+
 class StopOutPolicyPort(abc.ABC):
     """証拠金割れ（stop-out）が起きたときに何をするかの隔離（ISSUE-479 Wave2 4-4）。
 

@@ -26,7 +26,9 @@ from simulator.usecase._execution import (
     fill_market_order,
     resolve_eval_quote,
 )
+from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
+from simulator.usecase.evaluation_point import BAR_GRANULARITY, TICK_GRANULARITY
 from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
@@ -49,10 +51,7 @@ _STOP_OUT_BREACH_MESSAGE = "margin_level が stop_out_level を下回りまし�
 _STOP_OUT_AT_BAR_OPEN = "（bar open 評価）"
 _STOP_OUT_AT_EVALUATION = ""
 
-# 建玉変更（PositionManagerPort）へ伝える評価粒度。トレーリング規則は自身の設定粒度と
-# 一致するときだけ作動するため、粒度は呼出側の事実として渡す。
-_BAR_GRANULARITY = "bar"
-_TICK_GRANULARITY = "tick"
+# 評価粒度の名前は evaluation_point が単一ソース（建玉変更へもこの名前で伝える）。
 
 
 def _close_deal(trade: TradeRecord) -> Deal:
@@ -411,6 +410,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         primed_done = state.primed_done
         # stop-out をバー open でも先行評価するか（config gated・既定 False=従来 close のみ）。
         stop_out_at_open = features.stop_out_at_open
+        # 評価点を生むスケジュール（run につき 1 つ・バー粒度は 1 バー 1 点）。
+        schedule = BarSchedule(
+            floating_pnl_basis=floating_pnl_basis, point_size=spec.point_size
+        )
 
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
@@ -489,69 +492,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             open_trades = self._fill_market_orders(
                 state, orders, open_trades, bar=bar, bar_index=bar_index
             )
-            # H 保有ポジの SL/TP ヒット判定（fill_delay=次tick: 発注足は監視しない）
-            #   閉鎖バー（市場閉鎖）では SL/TP（顧客注文）を処理しない＝トレードセッション・ゲート
-            #   （every-tick 経路と一貫）。stop-out（リスク清算・後段 I）は閉鎖バーでも継続する。
-            still_open: list[_OpenTrade] = []
-            for ot in open_trades:
-                if session_gate.is_closed(bar_index):
-                    still_open.append(ot)  # 閉鎖バーは SL/TP 監視外（セッション外）
-                    continue
-                if ot.opened_bar_index == bar_index:
-                    still_open.append(ot)  # 発注足は次tick以降まで監視しない
-                    continue
-                reason = check_sltp_hit(
-                    ot.position,
-                    high=bar.high,
-                    low=bar.low,
-                    sl=ot.sl,
-                    tp=ot.tp,
-                    sltp_tie=features.sltp_tie,
+            # H → 建玉変更 → I をスケジュールが生む評価点ごとに行う。バー粒度は
+            #   1 バー 1 点なので、このループはちょうど 1 周する。「どこで評価するか」は
+            #   スケジュールが決め、「評価点で何をするか」は _evaluate_point が持つ。
+            for point in schedule.points(bar_index, bar, prev_close=None):
+                open_trades, halted = self._evaluate_point(
+                    state, point, open_trades, halted
                 )
-                if reason is None:
-                    still_open.append(ot)
-                    continue
-                exit_price = ot.sl if reason == "sl" else ot.tp
-                close_trade(
-                    ot,
-                    exit_time=bar.time,
-                    exit_price=exit_price,
-                    exit_reason=reason,
-                )
-            open_trades = still_open
-
-            # B2 建玉変更（トレーリング FR-07・部分決済 FR-08）を hit 判定（H）の後・I の前に
-            #   適用する（Phase 7・忠実順序: サーバ hit → EA 動作 → 口座再評価）。既定 pm=None
-            #   は素通り＝byte-identical。参照/決済価格はトレーリング方向の到達価格（buy=high /
-            #   sell=low）で、check_sltp_hit が high/low で touch を見るのと対称にする（close だと
-            #   SL/TP 判定と非対称になる）。閉鎖バーは EA 動作外として適用しない（H と一貫）。
-            pm = self._position_manager
-            if pm is not None and open_trades and not session_gate.is_closed(bar_index):
-                self._apply_position_directives(
-                    state,
-                    open_trades,
-                    bar=bar,
-                    granularity=_BAR_GRANULARITY,
-                    ref_buy=bar.high,
-                    ref_sell=bar.low,
-                )
-
-            # I エクイティ/残高の更新（含み損益反映）→ margin_level < stop_out で停止処理
-            #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
-            eq_bid, eq_ask = resolve_eval_quote(
-                bar, basis=floating_pnl_basis, point_size=spec.point_size
-            )
-            open_trades, halted = self._settle_evaluation_point(
-                state,
-                open_trades,
-                halted,
-                bar=bar,
-                bar_index=bar_index,
-                eval_bid=eq_bid,
-                eval_ask=eq_ask,
-                # バー評価は両建て相殺を適用しない（現状の契約・上記 docstring 参照）。
-                hedged=False,
-            )
 
         # OnDeinit 集計
         return self._finish_run(
@@ -644,6 +591,96 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
             )
         return open_trades
+
+    def _check_sltp_hits(
+        self, state: _RunState, point: Any, open_trades: list, *, closed: bool
+    ) -> list:
+        """評価点 1 つで保有玉の SL/TP 到達を判定し、残る保有列を返す（H 段の単一化）。
+
+        監視しない玉が 2 種類ある:
+
+          * 市場閉鎖バーの全玉。SL/TP は顧客注文であり、トレードセッション外では
+            執行されない（stop-out はブローカーのリスク清算なので閉鎖中も続く）。
+          * 建てた足の玉のうち、まだ「約定の次」に達していないもの。成行は足全体を
+            監視外にし（fill_delay=次tick）、ペンディング約定は約定ティックより後から
+            監視する（約定したティック自身では決済しない＝実 MT5 server 整合）。
+
+        到達を見る価格範囲は点がサイドごとに持つ。ペンディング経路だけが買い（Bid）と
+        売り（Ask）で違う範囲になるためである。
+        """
+        if closed:
+            return open_trades
+        still_open: "list[_OpenTrade]" = []
+        for ot in open_trades:
+            if ot.opened_bar_index == point.bar_index:
+                if ot.skip_entry_bar:
+                    still_open.append(ot)  # 建てた足は監視外（成行）
+                    continue
+                if point.tick_ordinal <= ot.opened_tick_ordinal:
+                    still_open.append(ot)  # 約定ティック以前は監視外（ペンディング）
+                    continue
+            if ot.position.side == "buy":
+                hit_high, hit_low = point.hit_buy_high, point.hit_buy_low
+            else:
+                hit_high, hit_low = point.hit_sell_high, point.hit_sell_low
+            reason = check_sltp_hit(
+                ot.position,
+                high=hit_high,
+                low=hit_low,
+                sl=ot.sl,
+                tp=ot.tp,
+                sltp_tie=state.features.sltp_tie,
+            )
+            if reason is None:
+                still_open.append(ot)
+                continue
+            exit_price = ot.sl if reason == "sl" else ot.tp
+            state.close_trade(
+                ot,
+                exit_time=point.bar.time,
+                exit_price=exit_price,
+                exit_reason=reason,
+            )
+        return still_open
+
+    def _evaluate_point(
+        self, state: _RunState, point: Any, open_trades: list, halted: bool
+    ) -> "tuple[list, bool]":
+        """1 評価点で行うことすべて（両粒度で共有する唯一の手続き）。
+
+        順序は実 MT5 の成立順に従う: サーバが SL/TP を執行し（H）、EA が建玉を触り
+        （建玉変更）、最後に口座が再評価される（I）。粒度による違いは点の中身
+        （価格の取り方・粒度名・ティック序数）に畳み込まれており、手続き自体は 1 つである。
+
+        両建ての証拠金相殺はティック粒度の規則なので、粒度から決める（バー評価は設定が
+        立っていても適用しない＝現状の契約）。
+
+        事後条件: `(更新後の保有列, halt したか)`。
+        """
+        closed = state.session_gate.is_closed(point.bar_index)
+        open_trades = self._check_sltp_hits(state, point, open_trades, closed=closed)
+        if self._position_manager is not None and open_trades and not closed:
+            self._apply_position_directives(
+                state,
+                open_trades,
+                bar=point.bar,
+                granularity=point.granularity,
+                ref_buy=point.pm_ref_buy,
+                ref_sell=point.pm_ref_sell,
+            )
+        return self._settle_evaluation_point(
+            state,
+            open_trades,
+            halted,
+            bar=point.bar,
+            bar_index=point.bar_index,
+            eval_bid=point.eval_bid,
+            eval_ask=point.eval_ask,
+            hedged=(
+                state.features.hedged_margin
+                and point.granularity == TICK_GRANULARITY
+            ),
+        )
 
     def _apply_position_directives(
         self,
@@ -1120,7 +1157,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         state,
                         open_trades,
                         bar=bar,
-                        granularity=_TICK_GRANULARITY,
+                        granularity=TICK_GRANULARITY,
                         # サイドごとの決済価格は評価点で 1 度ずつ解決する（玉数に非比例）。
                         #   規則そのものは close_price_for が単一ソース。
                         ref_buy=close_price_for("buy", bid=mb, ask=ma),

@@ -1130,11 +1130,17 @@ class TestTheSettlementDoesNotWasteWork:
     def test_the_evaluation_quote_is_resolved_once_per_evaluation_point(
         self, path, overrides, monkeypatch
     ):
-        """評価クォートを同じ引数で二度引かないこと（bar 経路の強制決済で起きていた形）。"""
+        """評価クォートを同じ引数で二度引かないこと（bar 経路の強制決済で起きていた形）。
+
+        バー粒度の評価クォートはスケジュールが点を作るときに解決する（4-8 以降）ので、
+        数えるのはそちらの発行である。
+        """
+        import simulator.usecase.bar_schedule as bar_schedule_mod
+
         resolved: "list[int]" = []
-        original = rb.resolve_eval_quote
+        original = bar_schedule_mod.resolve_eval_quote
         monkeypatch.setattr(
-            rb, "resolve_eval_quote",
+            bar_schedule_mod, "resolve_eval_quote",
             lambda bar, **kw: (resolved.append(1), original(bar, **kw))[1],
         )
         # Arrange / Act: 割れて強制決済する run（bar 経路はここで二度引いていた）。
@@ -1146,3 +1152,90 @@ class TestTheSettlementDoesNotWasteWork:
         # Assert: bar 経路は評価点ごとに 1 回だけ（tick 経路はティッククォートを使うので 0 回）。
         used = len(result.equity_curve) if path == "bar" else 0
         assert len(resolved) - used == 0, (len(resolved), used)
+
+
+# ---- 4-8: 評価点による駆動（C1: 生んだ点 − 消費した点 = 0） ----
+
+class _CountingSchedule:
+    """生んだ点を数えるスケジュール（内側の実物へ委譲する）。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.produced: "list[object]" = []
+
+    @property
+    def id(self):
+        return self._inner.id
+
+    def points(self, bar_index, bar, prev_close):
+        for point in self._inner.points(bar_index, bar, prev_close):
+            self.produced.append(point)
+            yield point
+
+
+class TestTheEngineIsDrivenByEvaluationPoints:
+    """エンジンが評価点で駆動され、生んだ点をすべて消費すること。"""
+
+    def test_the_point_evaluation_has_exactly_one_definition_point(self):
+        assert callable(getattr(RunBacktestInteractor, "_evaluate_point", None))
+        assert callable(getattr(RunBacktestInteractor, "_check_sltp_hits", None))
+
+    def test_the_bar_path_takes_one_point_per_bar(self, monkeypatch):
+        # Arrange: スケジュールを数える版に差し替える。
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        boxes: "list[_CountingSchedule]" = []
+
+        def _factory(**kwargs):
+            box = _CountingSchedule(BarSchedule(**kwargs))
+            boxes.append(box)
+            return box
+
+        monkeypatch.setattr(rb, "BarSchedule", _factory)
+        # Act
+        result = _interactor().execute(_request(_bars(16)))
+        # Assert: 生んだ点 − 使った点（equity 系列に載った点）= 0。
+        assert len(boxes) - 1 == 0  # スケジュールは run につき 1 つ
+        assert len(boxes[0].produced) - len(result.equity_curve) == 0
+
+    def test_the_point_count_tracks_bars_at_two_sizes(self, monkeypatch):
+        """バー 50 本 / 200 本の 2 点で「点数 == バー数」（オーダーの表明）。"""
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        measured = {}
+        for bar_count in (50, 200):
+            boxes: "list[_CountingSchedule]" = []
+            monkeypatch.setattr(
+                rb, "BarSchedule",
+                lambda **kw: (boxes.append(_CountingSchedule(BarSchedule(**kw))), boxes[-1])[1],
+            )
+            result = _interactor().execute(_request(_bars(bar_count)))
+            measured[bar_count] = (len(boxes[0].produced), len(result.equity_curve), bar_count)
+        for bar_count, (produced, consumed, bars) in measured.items():
+            assert produced - consumed == 0, measured
+            assert produced - bars == 0, measured
+
+    def test_every_produced_point_reaches_the_evaluation_procedure(self, monkeypatch):
+        """点を作っておいて評価しない（作ってから捨てる）形になっていないこと。"""
+        from simulator.usecase.bar_schedule import BarSchedule
+
+        boxes: "list[_CountingSchedule]" = []
+        monkeypatch.setattr(
+            rb, "BarSchedule",
+            lambda **kw: (boxes.append(_CountingSchedule(BarSchedule(**kw))), boxes[-1])[1],
+        )
+        evaluated: "list[object]" = []
+        original = RunBacktestInteractor._evaluate_point
+        monkeypatch.setattr(
+            RunBacktestInteractor,
+            "_evaluate_point",
+            lambda self, state, point, open_trades, halted: (
+                evaluated.append(point),
+                original(self, state, point, open_trades, halted),
+            )[1],
+        )
+        # Act
+        _interactor().execute(_request(_bars(20)))
+        # Assert: 発行 − 使用 = 0。順序も一致する（作った順に評価される）。
+        assert len(boxes[0].produced) - len(evaluated) == 0
+        assert boxes[0].produced == evaluated
