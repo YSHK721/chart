@@ -240,7 +240,6 @@
  "T6|indigators/market_profile/analysis/tests/test_steps.py|test_step6_end_to_end_runs",
  "T6|indigators/market_profile/api/tests/test_market_profile_api.py|test_sessions_capped_to_recent_days",
  "T6|indigators/market_profile/api/tests/test_no_indicator_ui_dependency.py|test_no_bare_adapter_imports",
- "T6|indigators/market_profile/api/tests/test_store_gateway_layering.py|test_compute_has_no_module_level_gateway_store_binding",
  "T6|indigators/market_profile/api/tests/test_tick_store_port.py|test_compute_has_no_marketdata_io_imports",
  "T6|indigators/market_profile/api/tests/test_va_pct_propagation.py|test_front_js_has_no_va_ratio_literal",
  "T6|indigators/market_profile/api/tests/test_va_pct_propagation.py|test_va_ratio_literal_exists_only_in_the_single_source",

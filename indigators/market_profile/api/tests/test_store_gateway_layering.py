@@ -84,16 +84,11 @@ def test_compute_has_no_module_level_gateway_store_binding():
 
     自己完結起動の遅延フォールバック（getter 内・関数本体のインデント import/合成）は許容する。
     """
-    # 互換再エクスポートシム（旧 import パス温存・ISSUE-092 ④）は gateway クラスを **再エクスポート**
-    #   するのが唯一の責務で、Store の合成（new）も方針への持ち込みも行わない＝DIP 違反ではない。
-    #   ISSUE-479 F-4 段階 1 以降、これらは test_no_code_imports_the_old_compute_store_paths が
-    #   「参照ゼロ」を保証する（＝削除待ちの孤児）ため本ガードの対象外にする。免除行の撤去は
-    #   シムファイル削除と同時に行う（段階 2・要承認）。
-    _REEXPORT_SHIMS = {"market_profile_zp_store.py", "market_profile_dwell_store.py"}
+    # ISSUE-479 F-4 段階 2（要承認・承認済み）: 互換再エクスポートシム 2 本を削除したので、
+    #   本ガードの免除リストは要らなくなった。**免除ゼロ**が DIP ゲートの完成形である
+    #   （免除が残ると「例外に入れれば通る」経路が残り、次の逆流を招き入れる）。
     offenders: list[str] = []
     for p in (_PKG / "compute").rglob("*.py"):
-        if p.name in _REEXPORT_SHIMS:
-            continue
         offenders += _module_level_offenders(p, _GATEWAY_STORE_IMPORT)
         offenders += _module_level_offenders(p, _GATEWAY_STORE_NEW)
     assert not offenders, (
@@ -211,7 +206,7 @@ def test_store_port_injection_round_trip(monkeypatch):
 
 
 # ======================================================================================
-# ISSUE-479 F-4 段階 1: 互換シム（旧 compute パス）の参照ゼロ化
+# ISSUE-479 F-4: 互換シム（旧 compute パス）の撤去と、旧パス復活の回帰ガード
 #
 # ISSUE-183 の時点で、シムの消費者は gateway 直参照へ移行済みで、旧 compute パスを import するのは
 # シム自身の契約テスト 1 関数だけになっていた。その契約テストを gateway 直参照へ書き換えると
@@ -219,10 +214,11 @@ def test_store_port_injection_round_trip(monkeypatch):
 # つまり「シムが要るからテストが旧パスを参照し、テストが参照するからシムが要る」という自己参照で、
 # シムの存在根拠が実需ではなく検査自身になっていた。
 #
-# 段階 1 では、契約テストを**参照ゼロの検査**へ置き換えて自己参照を断つ。旧パスを import する
-# 本番・テストコードがリポジトリに 1 件も無いことを主張し、本テスト自身も旧パスを import しない。
-# シムファイルの削除と ``_REEXPORT_SHIMS`` 免除の撤去は段階 2（要承認）で、削除と免除撤去を
-# 同時に行って Red→Green を確認する。
+# 段階 1（Wave 1a）で契約テストを**参照ゼロの検査**へ置き換えて自己参照を断ち、段階 2
+# （Wave 1b・承認済み）でシムファイル 2 本を削除した。削除と同時に
+# test_compute_has_no_module_level_gateway_store_binding の免除リストを撤去し、免除ゼロで
+# Red→Green を確認している。以降ここに残るのは「旧パスを復活させたら Red」という回帰ガードで
+# あり、走査が空になって恒真式へ退化しないことも併せて固定する。
 # ======================================================================================
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -231,8 +227,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _SKIP_DIR_NAMES = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
 _SKIP_TOP_LEVEL = {"lightweight-charts-python-main", "data", "sample", "node_modules", "scratchpad"}
 
-#: シム自身のファイル名（旧パスではなく実体側 gateway を import するため走査対象外）。
-_SHIM_FILE_NAMES = {"market_profile_zp_store.py", "market_profile_dwell_store.py"}
+#: 削除済みのシムのファイル名（ISSUE-479 F-4 段階 2）。復活していないことを検定で固定する。
+_DELETED_SHIM_FILE_NAMES = ("market_profile_zp_store.py", "market_profile_dwell_store.py")
 
 #: 旧 compute パスの import 形態。ドット付きの明示パスと、パッケージからの名前 import の 2 系統。
 _OLD_PATH_DOTTED = re.compile(
@@ -273,23 +269,28 @@ def _repo_sources() -> "list[Path]":
     return out
 
 
-def test_repo_scan_covers_the_shim_package() -> None:
-    """走査が実際にシムのあるパッケージと本テスト自身へ届いている（空走査で恒真式に退化しない）。"""
+def test_the_deleted_shims_are_gone_and_the_scan_is_not_vacuous() -> None:
+    """シム 2 本が実在せず、かつ走査が空でない（恒真式に退化していない）。
+
+    削除と回帰ガードは別事象なので両方を固定する。走査の到達点として、旧パスの実体側
+    （gateway）と本テスト自身がソース集合に入っていることを確かめる。
+    """
     sources = set(_repo_sources())
-    for shim in sorted(_SHIM_FILE_NAMES):
-        assert (_PKG / "compute" / shim) in sources, f"走査がシム {shim} に届いていません"
+    for shim in _DELETED_SHIM_FILE_NAMES:
+        assert not (_PKG / "compute" / shim).exists(), (
+            f"削除したはずのシム {shim} が復活しています（旧 import パスの入口が 2 つに戻る）"
+        )
+    assert (_PKG / "gateway" / "zp_store.py") in sources, "走査が実体側 gateway に届いていません"
     assert Path(__file__).resolve() in sources, "走査が本テスト自身に届いていません"
 
 
 def _scannable_sources(files) -> "list[Path]":
-    """走査対象（シム自身を除く）。**読む前に**決まる集合＝計算量検定の「使用」側。
+    """走査対象。シム削除後は **免除ゼロ**（与えられたソースをそのまま全部読む）。
 
-    シムが import しているのは旧パスではなく実体側の gateway なので対象外にする。
+    計算量検定の「使用」側の集合であり、**読む前に**決まる。免除リストを持たないことが
+    走査の射程と宣言を一致させる（免除が残ると、そこへ入れれば検査を免れる穴になる）。
     """
-    return [
-        p for p in files
-        if not (p.parent == _PKG / "compute" and p.name in _SHIM_FILE_NAMES)
-    ]
+    return list(files)
 
 
 def _old_path_import_offenders_over(files, read=None) -> "list[str]":

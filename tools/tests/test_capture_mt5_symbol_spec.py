@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata import path_tokens
 from tools import capture_mt5_symbol_spec as cap
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -413,7 +414,8 @@ def test_server_sanitize_rule(raw, expected):
 
 @pytest.mark.parametrize("bad", ["", "   ", ".", ".."])
 def test_server_sanitize_rejects_unsafe_components(bad):
-    with pytest.raises(cap.CaptureError):
+    # 規則の所有者は marketdata.path_tokens（ISSUE-479 F-1）。失敗型も所有者が持つ。
+    with pytest.raises(path_tokens.PathTokenError):
         cap.sanitize_path_component(bad)
 
 

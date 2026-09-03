@@ -22,24 +22,18 @@ _NEW = _REPO_ROOT / "common" / "watch_loop.py"
 _OLD = _REPO_ROOT / "tools" / "watch_loop.py"
 
 
-def _function_source(path: Path, name: str) -> str:
-    """``path`` 内の関数 ``name`` の定義本文をソース断片として返す。"""
-    source = path.read_text(encoding="utf-8")
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            segment = ast.get_source_segment(source, node)
-            assert segment is not None
-            return segment
-    raise AssertionError(f"{path} に関数 {name} がありません")
+def test_the_old_location_is_gone() -> None:
+    """旧所在 tools/watch_loop.py は削除済み（ISSUE-479 F-3 段階 2・承認済み）。
 
-
-def test_moved_implementation_is_byte_equivalent_to_the_old_location() -> None:
-    """移設は byte 等価（挙動を書き換えていない）。
-
-    識別力: 移設のついでに条件・順序を足す／削ると Red になる。旧所在は参照ゼロの孤児として
-    残っているため（削除は要承認）、両者を突き合わせられる。
+    移設が byte 等価であることは、旧所在が孤児として残っていた段階 1 で関数定義の
+    ソース断片どうしの突合により確認済みである。両者が並存する限り「どちらが実体か」が
+    曖昧なままなので、参照ゼロを確かめたうえで旧所在を消した。以降ここが固定するのは
+    **入口が 1 つであること**であり、旧所在を復活させると Red になる。
     """
-    assert _function_source(_NEW, "run_watch") == _function_source(_OLD, "run_watch")
+    assert not _OLD.exists(), (
+        "旧所在 tools/watch_loop.py が復活しています。run_watch の実体は common.watch_loop の"
+        " 1 箇所だけです（運用スクリプト層に置くと循環 C-2 が戻ります）。"
+    )
 
 
 def _imported_roots(path: Path) -> set[str]:

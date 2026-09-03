@@ -1,13 +1,14 @@
-"""アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロ（ISSUE-479 F-8 段階 1）。
+"""アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロと不在（ISSUE-479 F-8）。
 
 HTTP 契約（error.type → HTTP ステータスの表と nested エラーの整形関数）の所有者は配信殻であり、
 marketdata のどのアクターでもない（ISSUE-094 🔵-11）。実体は中立共有パッケージ api_shared の
-http_contract モジュールへ移設済みで、marketdata/api_contract.py は後方互換の再エクスポートに
-過ぎない。互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの
-偽装）が固定化する。
+http_contract モジュールが唯一持つ。旧 marketdata/api_contract.py は後方互換の再エクスポート
+シムであったが、参照ゼロ化（段階 1）ののち **ISSUE-479 F-8 段階 2 で削除済み**である。
+互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの偽装）が
+固定化するため、参照と実体の双方を絶っている。
 
-本テストは「旧パスを import する本番・テストコードがリポジトリに 1 件も無い」ことだけを主張する。
-**ファイルの存在自体は Red にしない**（削除は要承認事項であり、段階 2 で免除の撤去と同時に行う）。
+本テストは 2 つを主張する。(1) 旧パスを import する本番・テストコードがリポジトリに 1 件も無い。
+(2) 旧パスのファイル自体が存在しない（復活させると Red になる）。
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: 旧パスの実体（存在は前提であり、削除は段階 2・要承認）。
+#: 旧パスの所在（ISSUE-479 F-8 段階 2 で削除済み。**不在**を Red 判定の基準にする）。
 _LEGACY_MODULE = _REPO_ROOT / "marketdata" / "api_contract.py"
 
 #: 所有者（実体）モジュール。付替え先はここ。
@@ -62,21 +63,26 @@ def _repo_sources() -> "list[Path]":
     return out
 
 
-def test_scan_reaches_both_the_legacy_and_the_owner_module() -> None:
-    """走査が旧パス・所有者・本テスト自身へ届いている（空走査で恒真式に退化しない）。"""
+def test_scan_reaches_the_owner_module_and_this_test() -> None:
+    """走査が所有者・本テスト自身へ届いている（空走査で恒真式に退化しない）。
+
+    旧パスのファイルは段階 2 で削除済みなので、到達点は所有者側で確かめる。
+    """
     sources = set(_repo_sources())
-    assert _LEGACY_MODULE in sources, "走査が marketdata/api_contract.py に届いていません"
     assert _OWNER_MODULE in sources, "走査が api_shared/http_contract.py に届いていません"
     assert Path(__file__).resolve() in sources, "走査が本テスト自身に届いていません"
 
 
-def test_the_legacy_module_still_exists_and_is_not_required_to_be_deleted() -> None:
-    """段階 1 の適用範囲: 旧パスのファイル削除は行わない（要承認・段階 2）。
+def test_the_legacy_module_no_longer_exists() -> None:
+    """段階 2（承認済み）: 参照ゼロ化のあと、旧パスのファイル自体を削除した。
 
-    参照ゼロと削除は別事象なので分けて固定する。本テストが緑である限り、参照ゼロ化は
-    「ファイルを消したから 0 件」ではなく「実際に付替えたから 0 件」であることが保証される。
+    参照ゼロと削除は別事象である。段階 1 の時点で参照は 0 件になっており、本テストが
+    緑である限り「契約の入口が 2 つある状態」は復活していない。復活させると Red になる。
     """
-    assert _LEGACY_MODULE.exists(), "旧パスのファイルは段階 1 では削除しない（要承認）"
+    assert not _LEGACY_MODULE.exists(), (
+        "旧 HTTP 契約パス marketdata/api_contract.py が復活しています。"
+        " 契約の所有者は api_shared.http_contract の 1 箇所だけです。"
+    )
 
 
 def _legacy_import_offenders_over(files, read=None) -> "list[str]":

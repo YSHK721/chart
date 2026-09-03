@@ -5,8 +5,10 @@ indicator_ui api・market_profile api・replay backend の 3 殻が本表・本�
 （殻ごとの独自整形＝契約分岐を排する。HTTP 機構は含まない純粋な対応表・純関数）。
 
 ISSUE-094 🔵-11: HTTP 契約の所有者は配信殻であり marketdata のどのアクターでもないため、
-中立共有パッケージ ``api_shared`` へ実体を移設した。``marketdata.api_contract`` は後方互換の
-再エクスポートへ降格し、本モジュールが唯一の実体となる。
+中立共有パッケージ ``api_shared`` へ実体を移設した。実体は本モジュールの 1 箇所のみである。
+旧 marketdata/api_contract.py は後方互換の再エクスポートへ降格したのち、参照ゼロ化を経て
+ISSUE-479 F-8 で削除済み（不在は marketdata/tests/test_no_legacy_api_contract_reference.py
+が固定する）。
 """
 from __future__ import annotations
 

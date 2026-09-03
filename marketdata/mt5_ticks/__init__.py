@@ -20,7 +20,7 @@
 ``marketdata.mt5_ticks.wire``            domain     stdlib のみ
 ``marketdata.mt5_ticks.port``            usecase    stdlib のみ
 ``marketdata.mt5_ticks.journal``         adapter    pandas / :mod:`marketdata.tick_m1` / 同下位
-``marketdata.mt5_ticks.ingest``          adapter    :mod:`marketdata.tick_m1` / sanitize / 同下位
+``marketdata.mt5_ticks.ingest``          adapter    tick_m1 / :mod:`marketdata.path_tokens` / 同下位
 ``marketdata.mt5_ticks.archive_ingest``  adapter    :mod:`marketdata.tick_m1` / 同下位（pandas 無し）
 ``marketdata.mt5_ticks.m1_chain``        adapter    pandas / tick_m1 / rollup / 同下位
 ``marketdata.mt5_ticks.rebuild``         adapter    pandas / tick_m1 / rollup / 外れ値規約 / 同下位
@@ -33,8 +33,10 @@
 辿れず、宣言整合性検定（静的品質ゲートの C1 DECL）が到達不能と判定する。
 宣言は辿れて初めて宣言である。
 
-sanitize（銘柄・サーバ名→パス成分）の唯一の実装は `tools/capture_mt5_symbol_spec.py` にあり、
-ingest はそれを import する（複製を作らないため層の向きを曲げる・設計 §4）。
+sanitize（銘柄・サーバ名→パス成分）の唯一の実装は :mod:`marketdata.path_tokens`（依存ゼロ）に
+あり、ingest はそれを import する。`tools/capture_mt5_symbol_spec.py` は同じ関数オブジェクトを
+再エクスポートするだけである（ISSUE-479 F-1。以前は逆向きで、本パッケージが tools を import
+していた＝循環 C-1）。
 
 依存規則の施行を `tools/tests/test_tools_composition_declaration.py` 側に置かないのは、
 そちらが tools 直下を**非再帰**で走査するためである（パッケージ配下へ潜れば検査を免れる穴を
