@@ -21,7 +21,9 @@ from simulator.replay_ui.usecase.forming_tickvol import forming_tick_counts, wit
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import (
         CausalComputePort,
+        IndicatorComputePort,
         IntrabarWindowPort,
+        SourceLoadPort,
     )
 
 
@@ -249,7 +251,7 @@ def _compute_seq_higher_timeframe(
 
 def _seq_steps_over_h_window(
     *, window, seq: "list[dict]", indicator: str, variant: str, params: dict,
-    compute_port: "CausalComputePort",
+    compute_port: "IndicatorComputePort",
 ) -> "list[list[dict]]":
     """H 窓素材を 1 つ受け取り、足内の各時点の latest を同順で返す（唯一の実体）。
 
@@ -327,9 +329,13 @@ def causal_compute_seq(
 
 def _seq_chart_window(
     *, ref: str, timeframe: "str | None", until_time: "int | None", limit: "int | None",
-    compute_port: "CausalComputePort",
+    compute_port: "SourceLoadPort",
 ) -> "list[dict]":
-    """チャート足 C の計算窓（load → truncate → tail）。単発と一括が共有する唯一の実体。"""
+    """チャート足 C の計算窓（load → truncate → tail）。単発と一括が共有する唯一の実体。
+
+    受けるのは**ロード面だけ**である（ISSUE-479 S-5）。この関数が指標計算を呼ばないことは
+    型に現れているべきで、広い型で受けると読み手にも Decorator にもそれが伝わらない。
+    """
     bars = compute_port.load_source(ref, timeframe)
     bars = truncate(bars, until_time)
     if isinstance(limit, int) and limit > 0:
