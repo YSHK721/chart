@@ -296,6 +296,8 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     if bar is not None:
         # 差し替え規則は共有核 forming_patch ただ 1 つ（list 版 apply_forming と同一述語・F-9）。
         #   末尾 time の変換は :204 と同じ式（naive UTC → unix 秒）。``.timestamp()`` は使わない。
+        #   前提: df の index ラベルは秒境界（resample の固定周期ラベル / rollup CSV の date）。
+        #   marketdata.dataset も同じ前提で index を UNIX 秒へ落としている（_to_unix_seconds）。
         last_time = int(pd.Timestamp(df.index[-1]).value // 1_000_000_000)
         if forming_patch(last_time, bar).mode == "skip":
             return df  # 形成中バーが既存末尾より過去／time 不正 → 触らない（異常時の防御）。
