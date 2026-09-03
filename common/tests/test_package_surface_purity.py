@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -252,3 +253,132 @@ def test_lazy_surface_resolution_count_does_not_grow_with_access_count() -> None
         "実装モジュールのロード発行がアクセス回数に比例しています:"
         f" {few.loads_issued} → {many.loads_issued}"
     )
+
+
+# --------------------------------------------------------------------------------------
+# 5. パッケージ依存純度（ISSUE-479 F-7d）
+#
+# ``common`` は「計算・本質・安定層」であり、どのアクターにも属さない。import してよいのは
+# stdlib と計算の型（numpy / pandas）と自パッケージのみ。表示層 ``common_view`` への依存は
+# 安定度逆転（安定→不安定）になるため特に禁ずる（ISSUE-104 🟡-1 の是正を構造で固定する）。
+#
+# 現状すべて緑＝**回帰錨**である（違反を直すためではなく、混入を検出するために置く）。検査に力が
+# あること（合成ソースで違反を検出し、非違反を誤検出しないこと）を併せて固定する。
+# 走査ヘルパはアーキ回帰テストの既存様式に倣い自己完結させる（パッケージ独立性を検査する
+# モジュールが他パッケージのテストを import すると、検査対象の性質そのものを壊すため）。
+# --------------------------------------------------------------------------------------
+
+_PKG = Path(__file__).resolve().parents[1]
+
+#: 走査対象（本番のみ・``tests`` は下位ディレクトリなので glob で自然に除外される）。
+_PKG_SOURCES = sorted(_PKG.glob("*.py"))
+
+#: 自パッケージ名（ディレクトリ名から導出。名前を焼き込まない）。
+_SELF = _PKG.name
+
+#: 計算の型として許す偶有的技術。
+_ALLOWED_TECH = {"numpy", "pandas"}
+
+#: 参照してはならないアクター／層（allowlist の裏返しだが、違反時のメッセージを具体化する）。
+_FORBIDDEN_ROOTS = {
+    "simulator",
+    "indigators",
+    "dashboard_ui",
+    "unified_ui",
+    "marketdata",
+    "tools",
+    "common_view",
+}
+
+
+def _imported_roots(source: str) -> set[str]:
+    """ソース文字列の絶対 import 文から、パッケージ根の集合を返す（相対 import は自パッケージ）。"""
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_package_scan_target_is_not_empty() -> None:
+    """走査対象が空なら本検査は恒真式に退化する（検査の生存確認）。"""
+    assert _PKG_SOURCES, f"走査対象が空です: {_PKG}"
+
+
+@pytest.mark.parametrize("path", _PKG_SOURCES, ids=lambda p: p.name)
+def test_module_imports_only_stdlib_numpy_pandas_or_self(path: Path) -> None:
+    allowed = set(sys.stdlib_module_names) | _ALLOWED_TECH | {_SELF}
+    roots = _imported_roots(path.read_text(encoding="utf-8"))
+    outside = roots - allowed
+    assert not outside, (
+        f"{path.name} が許可外のパッケージを import: {sorted(outside)}"
+        f"（{_SELF} は stdlib / {sorted(_ALLOWED_TECH)} / 自パッケージのみに依存する）"
+    )
+
+
+@pytest.mark.parametrize("path", _PKG_SOURCES, ids=lambda p: p.name)
+def test_module_does_not_depend_on_any_actor_or_on_common_view(path: Path) -> None:
+    roots = _imported_roots(path.read_text(encoding="utf-8"))
+    leaked = roots & _FORBIDDEN_ROOTS
+    assert not leaked, (
+        f"{path.name} がアクター／表示層に依存: {sorted(leaked)}"
+        "（common_view への依存は安定度逆転・ISSUE-104 🟡-1）"
+    )
+
+
+def test_the_purity_check_detects_synthetic_violations() -> None:
+    """検出力: 合成ソース（実ファイルを作らない）で違反を検出し、非違反を誤検出しない。"""
+    for offender in (
+        "from common_view import level_colors\n",
+        "from simulator.framework import x\n",
+        "import marketdata.tick_m1\n",
+        "import tools.watch_loop\n",
+        "from indigators.indicator_ui import y\n",
+    ):
+        assert _imported_roots(offender) & _FORBIDDEN_ROOTS, f"検出できていません: {offender!r}"
+
+    for clean in (
+        "from __future__ import annotations\n",
+        "import numpy as np\nimport pandas as pd\n",
+        "from .applied_price import applied_price\n",      # 相対 import＝自パッケージ
+        f"from {_SELF} import event_quantiles as _evq\n",
+        "import importlib\nfrom types import ModuleType\n",
+    ):
+        roots = _imported_roots(clean)
+        assert not (roots & _FORBIDDEN_ROOTS), f"誤検出しています: {clean!r}"
+        assert not (roots - (set(sys.stdlib_module_names) | _ALLOWED_TECH | {_SELF}))
+
+
+def test_purity_scan_parses_each_source_exactly_once() -> None:
+    """計算量テスト: 対象ファイル数 == AST パース回数（発行 − 判定に使ったソース数 = 0）。
+
+    オーダー表明として対象 1 件 / 2 件の 2 点で、発行が対象数だけで決まることを固定する
+    （ファイルの長さ・import 数では増えない）。回数リテラルは焼き込まない。
+    """
+    parsed: list[str] = []
+    real_parse = ast.parse
+
+    def _spy(source, *args, **kwargs):
+        parsed.append(source)
+        return real_parse(source, *args, **kwargs)
+
+    ast.parse = _spy
+    try:
+        one = _PKG_SOURCES[:1]
+        used_one = [_imported_roots(p.read_text(encoding="utf-8")) for p in one]
+        issued_one = len(parsed)
+        parsed.clear()
+
+        two = _PKG_SOURCES[:2] if len(_PKG_SOURCES) >= 2 else _PKG_SOURCES
+        used_two = [_imported_roots(p.read_text(encoding="utf-8")) for p in two]
+        issued_two = len(parsed)
+    finally:
+        ast.parse = real_parse
+
+    assert issued_one - len(used_one) == 0, "1 ファイルあたりのパース発行が判定使用数を超えています"
+    assert issued_two - len(used_two) == 0, "1 ファイルあたりのパース発行が判定使用数を超えています"
+    assert issued_two == len(two), "パース発行が対象ファイル数以外の要因で増えています"
