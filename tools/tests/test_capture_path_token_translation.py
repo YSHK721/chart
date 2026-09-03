@@ -246,6 +246,43 @@ def test_a_broken_marketdata_package_is_not_silently_replaced_by_the_copy(tmp_pa
     assert "definitely_absent_dependency" in proc.stderr, proc.stderr
 
 
+def test_a_partially_installed_marketdata_is_not_silently_replaced_by_the_copy(
+    tmp_path: Path,
+) -> None:
+    """規則モジュールだけが欠けた repo でも、隣の写しへ**黙って退かない**（case (b)）。
+
+    ``test_a_broken_marketdata_package_is_not_silently_replaced_by_the_copy`` は
+    ``marketdata/__init__.py`` の実行が失敗する形（欠落の名前は ``marketdata`` でない）を扱う。
+    本ケースはより狭く危険な形である: ``marketdata`` パッケージは健全に import でき、
+    ``marketdata/path_tokens.py`` **だけ**が欠けている。このとき欠落の名前は
+    ``marketdata.path_tokens`` であり、**先頭成分は ``marketdata`` と一致する**。退避条件を
+    先頭成分の一致で書くと、本ケースは「そこが本 repo ではない」と誤判定されて隣の写しへ退き、
+    規則が静かに割れたまま成功してしまう（docstring の契約
+    「marketdata は在るのに依存が壊れている場合は退かない」との不一致）。
+
+    識別力: 退避条件を ``exc.name`` の完全一致から先頭成分の一致へ緩めると Red になる。
+    """
+    # Arrange — .git を持ち、marketdata は健全に import できるが path_tokens だけ無い repo。
+    dest = _standalone_distribution(tmp_path)
+    (dest / ".git").mkdir()
+    pkg = dest / "marketdata"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (dest / "_drive.py").write_text(_BROKEN_REPO_DRIVER, encoding="utf-8")
+
+    # Arrange の前提を検査化: 退避先（隣の写し）は実在する。無い状態で落ちても意味がない。
+    assert (dest / "path_tokens.py").exists()
+    assert not (pkg / "path_tokens.py").exists()
+
+    # Act
+    proc = _run_standalone(dest)
+
+    # Assert — 隣の写しで動かず、欠けている当のものを名指して落ちる。
+    assert proc.returncode != 0, f"隣の写しへ黙って退きました: {proc.stdout!r}"
+    assert "ModuleNotFoundError" in proc.stderr, proc.stderr
+    assert "marketdata.path_tokens" in proc.stderr, proc.stderr
+
+
 def test_one_file_distribution_fails_loudly(tmp_path: Path) -> None:
     """写しを配り忘れたら **黙って別規則で動かず**、import 時に落ちる（負の対照）。"""
     # Arrange
@@ -298,3 +335,34 @@ def test_default_out_path_issue_count_does_not_grow_with_input_length(monkeypatc
     assert measured[8][0] == measured[64][0], f"入力長で発行数が変わりました: {measured}"
     for length, (issued, used) in measured.items():
         assert issued - used == 0, length
+
+
+def _spy_on_repo_root(monkeypatch) -> "list[Path]":
+    calls: "list[Path]" = []
+    original = cap.find_repo_root
+
+    def _spy(start):
+        calls.append(start)
+        return original(start)
+
+    monkeypatch.setattr(cap, "find_repo_root", _spy)
+    return calls
+
+
+def test_repo_root_probes_are_issued_once_per_produced_path(monkeypatch) -> None:
+    """出力 1 → 4 の 2 点で「発行した根探索 − 出力したパス数 = 0」（オーダーの表明）。
+
+    根探索は ``.git`` を求めて親方向へ走るファイルシステム走査であり、規則の解決経路
+    （``_load_path_tokens`` / ``_snapshot_base_dir``）が共有する唯一の重い手続きである。
+    ここが出力量以外の何か（成分数・入力長・呼出のたびの重複探索）で増えると、作った端から
+    捨てる走査が入り込む。期待値は**出力から導出**し、回数そのものは焼き込まない。
+    """
+    # Arrange / Act
+    measured = {}
+    for produced in (1, 4):
+        calls = _spy_on_repo_root(monkeypatch)
+        outs = [cap.default_out_path(f"S{i}", f"V{i}") for i in range(produced)]
+        measured[produced] = (len(calls), len(outs))
+    # Assert
+    for produced, (issued, used) in measured.items():
+        assert issued - used == 0, f"出力 {produced} 件で余分な根探索: {measured}"

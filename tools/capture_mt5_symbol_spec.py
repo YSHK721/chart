@@ -167,7 +167,10 @@ def _load_path_tokens():
         except ModuleNotFoundError as exc:
             # 経路 1 が失敗する原因は 2 通りある。区別せずに退くと、リポジトリ内で作業して
             # いるのに隣の写しが使われ（規則が割れる）、本当の原因も握り潰される。
-            if (exc.name or "").split(".")[0] != "marketdata":
+            # 退いてよいのは「``marketdata`` そのものが無い」= 欠落名が完全に ``marketdata``
+            # のときだけ。先頭成分で比べると ``marketdata.path_tokens`` の欠落（規則モジュール
+            # だけが無い repo）まで「本 repo ではない」と誤判定し、隣の写しへ黙って退く。
+            if exc.name != "marketdata":
                 raise                 # marketdata は在るのに依存が壊れている → 退かない
         else:
             return PathTokenError, sanitize_path_component
