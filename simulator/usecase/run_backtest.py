@@ -77,6 +77,41 @@ class _OpenTrade:
 
 
 @dataclass
+class _RunState:
+    """1 run の開始状態（両実行経路で完全一致していた準備段の産物）。
+
+    保持するのは「run の間ずっと同じであり続けるもの」（銘柄仕様・口座・記録先・
+    セッション判定・取引区間の設定）と、「run の進行で書き換わるもの」の**初期値**
+    （保有玉・halt・プライム消費済フラグ）である。
+
+    なぜ 1 つの値にまとめるか: 準備段は 2 つのエンジンに字句レベルで書き写されており、
+    片方だけに項目が足される形の食い違いを検定で捉えられなかった（両経路が同じ
+    fixture を通らない限り数値の指紋に現れない）。組み立ての定義点を 1 つにすれば、
+    その食い違い自体が起こり得なくなる。
+
+    `close_trade` は決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様・レバレッジ）を
+    束ねた呼び口である（ISSUE-308）。各決済地点が同じ 4 つを書き写す必要をなくす。
+    """
+
+    bars: list
+    spec: Any
+    contract_size: float
+    floating_pnl_basis: str
+    account: Account
+    session_gate: SessionGate
+    close_trade: Any
+    trades: list
+    deals: list
+    balance_curve: list
+    equity_curve: list
+    open_trades: list
+    halted: bool
+    trading_start: Any
+    prime_first: bool
+    primed_done: bool
+
+
+@dataclass
 class RunBacktestRequest:
     """UC-001 Input Model（CLEAN_ARCH §3: {config, data}）。
 
@@ -132,6 +167,89 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         SessionGate.from_calendar へ委譲する。カレンダー未注入なら空集合＝常時開場。
         """
         return SessionGate.from_calendar(self._session_calendar, bars)
+
+    def _begin_run(self, request: RunBacktestRequest) -> _RunState:
+        """run の開始状態を組み立てる（両実行経路で完全一致していた準備段の単一化）。
+
+        副作用の順序は移設前と同一である（この順序自体が仕様）:
+            1. 約定損益の丸め桁を確定する（以降の確定トレード生成が参照する）
+            2. セッション判定（閉鎖バー集合）を導出する
+            3. 戦略を初期化する（OnInit）
+
+        2 が 3 より先である理由: 戦略の OnInit は config を受けて自分の状態を組む。
+        その前に「どのバーが閉鎖か」を確定しておかないと、戦略が走り出した後で
+        エンジン側の世界が組み上がることになり、成立順が run ごとに揺れうる。
+
+        口座（`Account`）の構築は OnInit の後である（移設前と同一）。
+        """
+        config = request.config
+        bars = list(request.bars)
+        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。確定トレード生成
+        # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
+        self._profit_round_digits = getattr(config, "profit_round_digits", None)
+        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
+        session_gate = self._session_gate(bars)
+
+        # OnInit 前処理
+        self._strategy.on_init(config, self._indicators)
+
+        trades: list[TradeRecord] = []
+        deals: list = []
+        balance_curve: list[float] = []
+        equity_curve: list[float] = []
+        spec = request.symbol_spec
+        contract_size = spec.contract_size
+        # 層2: 含み損益の評価基準を config から引く（既定 "close"＝従来 close 固定で不変）。
+        # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
+        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
+        account = Account(
+            balance=request.account.initial_deposit,
+            contract_size=contract_size,
+            floating_pnl_basis=floating_pnl_basis,
+            point_size=spec.point_size,
+        )
+
+        # ISSUE-308: 決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様）をここで 1 度だけ束ねる。
+        #   これらは 1 回の実行中に変わらないため、各決済地点で書き写す必要がない。
+        def close_trade(ot, *, exit_time, exit_price, exit_reason, close_volume=None) -> None:
+            self._close_open_trade(
+                ot,
+                exit_time=exit_time,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                contract_size=contract_size,
+                leverage=request.account.leverage,
+                account=account,
+                trades=trades,
+                deals=deals,
+                balance_curve=balance_curve,
+                close_volume=close_volume,
+            )
+
+        return _RunState(
+            bars=bars,
+            spec=spec,
+            contract_size=contract_size,
+            floating_pnl_basis=floating_pnl_basis,
+            account=account,
+            session_gate=session_gate,
+            close_trade=close_trade,
+            trades=trades,
+            deals=deals,
+            balance_curve=balance_curve,
+            equity_curve=equity_curve,
+            # 保有玉（走査順＝反映順が byte 依存）。
+            open_trades=[],
+            # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
+            halted=False,
+            # warmup/trading_start: 指定時のみウォームアップ区間を有効化（既定 None=全バー取引）。
+            trading_start=request.trading_start,
+            # 層1: prime_first_trading_bar=True かつ trading_start 指定時、取引区間の最初の
+            # 1 バー（bar.time >= trading_start となる最初のバー）を warmup 同様にプライム扱い
+            # する。primed_done で 1 回だけ消費する（既定 False=無効＝従来不変）。
+            prime_first=getattr(config, "prime_first_trading_bar", False),
+            primed_done=False,
+        )
 
     def _close_open_trade(
         self,
@@ -248,59 +366,23 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             return self._execute_every_tick(request)
 
         config = request.config
-        bars = list(request.bars)
-        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。確定トレード生成
-        # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
-        self._profit_round_digits = getattr(config, "profit_round_digits", None)
-        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
-        session_gate = self._session_gate(bars)
-
-        # OnInit 前処理
-        self._strategy.on_init(config, self._indicators)
-
-        trades: list[TradeRecord] = []
-        deals: list = []
-        balance_curve: list[float] = []
-        equity_curve: list[float] = []
-        open_trades: list[_OpenTrade] = []
-        spec = request.symbol_spec
-        contract_size = spec.contract_size
-        # 層2: 含み損益の評価基準を config から引く（既定 "close"＝従来 close 固定で不変）。
-        # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
-        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
-        account = Account(
-            balance=request.account.initial_deposit,
-            contract_size=contract_size,
-            floating_pnl_basis=floating_pnl_basis,
-            point_size=spec.point_size,
-        )
-        # ISSUE-308: 決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様）をここで 1 度だけ束ねる。
-        #   これらは 1 回の実行中に変わらないため、各決済地点で書き写す必要がない。
-        def close_trade(ot, *, exit_time, exit_price, exit_reason, close_volume=None) -> None:
-            self._close_open_trade(
-                ot,
-                exit_time=exit_time,
-                exit_price=exit_price,
-                exit_reason=exit_reason,
-                contract_size=contract_size,
-                leverage=request.account.leverage,
-                account=account,
-                trades=trades,
-                deals=deals,
-                balance_curve=balance_curve,
-                close_volume=close_volume,
-            )
-
-        # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
-        halted = False
-
-        # warmup/trading_start: 指定時のみウォームアップ区間を有効化（既定 None=全バー取引）。
-        trading_start = request.trading_start
-        # 層1: prime_first_trading_bar=True かつ trading_start 指定時、取引区間の最初の 1 バー
-        # （bar.time >= trading_start となる最初のバー）を warmup 同様にプライム扱いする。
-        # primed_done で 1 回だけ消費する（既定 False=無効＝従来不変）。
-        prime_first = getattr(config, "prime_first_trading_bar", False)
-        primed_done = False
+        state = self._begin_run(request)
+        bars = state.bars
+        spec = state.spec
+        contract_size = state.contract_size
+        floating_pnl_basis = state.floating_pnl_basis
+        account = state.account
+        session_gate = state.session_gate
+        close_trade = state.close_trade
+        trades = state.trades
+        deals = state.deals
+        balance_curve = state.balance_curve
+        equity_curve = state.equity_curve
+        open_trades = state.open_trades
+        halted = state.halted
+        trading_start = state.trading_start
+        prime_first = state.prime_first
+        primed_done = state.primed_done
         # stop-out をバー open でも先行評価するか（config gated・既定 False=従来 close のみ）。
         stop_out_at_open = getattr(config, "stop_out_at_open", False)
 
@@ -581,9 +663,23 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
               config.sltp_tie の同点解消（既定 SL 優先）を継承する。
         """
         config = request.config
-        bars = list(request.bars)
-        # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。
-        self._profit_round_digits = getattr(config, "profit_round_digits", None)
+        state = self._begin_run(request)
+        bars = state.bars
+        spec = state.spec
+        contract_size = state.contract_size
+        floating_pnl_basis = state.floating_pnl_basis
+        account = state.account
+        session_gate = state.session_gate
+        close_trade = state.close_trade
+        trades = state.trades
+        deals = state.deals
+        balance_curve = state.balance_curve
+        equity_curve = state.equity_curve
+        open_trades = state.open_trades
+        halted = state.halted
+        trading_start = state.trading_start
+        prime_first = state.prime_first
+        primed_done = state.primed_done
         # ペンディング（指値/逆指値）ライフサイクル経路か（既定 False＝real_ticks 等は不変）。
         pending_mode = getattr(config, "pending_lifecycle", False)
         # 同時設置ペンディングの OCO（既定 False＝兄弟は独立約定／単一ペンディングEAでは無影響）。
@@ -596,49 +692,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # hedging 口座の両建て証拠金相殺（既定 False＝従来の単純加算）。True で stop-out 判定の
         # 証拠金を「買い計・売り計の大きい側」とする（反対玉は相殺＝同量両建ては stop-out しない）。
         hedged_margin = getattr(config, "hedged_margin", False)
-        # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で挙動不変。
-        session_gate = self._session_gate(bars)
-
-        self._strategy.on_init(config, self._indicators)
-
-        trades: list[TradeRecord] = []
-        deals: list = []
-        balance_curve: list[float] = []
-        equity_curve: list[float] = []
-        open_trades: list[_OpenTrade] = []
-        spec = request.symbol_spec
-        contract_size = spec.contract_size
-        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
-        account = Account(
-            balance=request.account.initial_deposit,
-            contract_size=contract_size,
-            floating_pnl_basis=floating_pnl_basis,
-            point_size=spec.point_size,
-        )
-
-        # ISSUE-308: execute() と同じ不変文脈の束ね（決済地点ごとの書き写しを無くす）。
-        def close_trade(ot, *, exit_time, exit_price, exit_reason, close_volume=None) -> None:
-            self._close_open_trade(
-                ot,
-                exit_time=exit_time,
-                exit_price=exit_price,
-                exit_reason=exit_reason,
-                contract_size=contract_size,
-                leverage=request.account.leverage,
-                account=account,
-                trades=trades,
-                deals=deals,
-                balance_curve=balance_curve,
-                close_volume=close_volume,
-            )
-
-        halted = False
         # 建玉変更の適用器（Phase 7・既定 None＝素通り＝byte-identical）。B4 で参照する。
         pm = self._position_manager
-
-        trading_start = request.trading_start
-        prime_first = getattr(config, "prime_first_trading_bar", False)
-        primed_done = False
 
         prev_close: float | None = None
         # 残存ペンディング（指値/逆指値・最大 1 件）。前足で設置され未約定のまま次足へ持ち越し、
