@@ -121,7 +121,7 @@ data/marketdata/
 - 形式：`date,open,high,low,close,volume`（UTC・1分足・ローソク由来と同形式＝loader 互換）
 - 値：price は **mid=(bid+ask)/2**、volume は **その1分のティック数**（出来高ではない）。
 - 範囲：2012-06-14 〜 最新／約 274MB。
-- 生成：`marketdata/tick_m1.py`（`ticks/` の日別 parquet を集約）。`rollups/jp225_tick/*` はここから導出する。
+- 生成：`python -m marketdata.tools.tick_m1_cli`（集計規則は `marketdata/tick_m1.py`、`ticks/` の日別 parquet の所在は `marketdata/tick_tree.py` が解決）。`rollups/jp225_tick/*` はここから導出する。
 
 ### jp225_daily.csv
 - 形式：`date,open,high,low,close`（日足）

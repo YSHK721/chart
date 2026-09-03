@@ -42,6 +42,9 @@ _ALLOWED: "dict[str, set[str]]" = {
     # Bar 段（UTC 解釈）と食い違う（実測 32400 秒差）。**この 1 エントリを消すと複製が復活する**
     # ため、依存として明示し検定で固定する。
     "csv_source.py": {"pandas", "datawindow.half_open", "marketdata.port"},
+    # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
+    # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
+    "tick_tree.py": {"pandas", "marketdata.paths"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
     # ``marketdata.keep_last`` は「同一キーの最終出現を採る」規則の唯一の実体（依存ゼロの中立核・
     # ISSUE-479 F-6）。この 1 エントリを消すと _dedupe_minutes に同じ式の複製が復活する。
@@ -52,6 +55,9 @@ _ALLOWED: "dict[str, set[str]]" = {
         "marketdata.csv_schema",
         "marketdata.tail_reader",
         "marketdata.keep_last",
+        # tick 木レイアウトの唯一権威（ISSUE-479 M-2）。この 1 エントリを消すと、木の形を
+        # 組む式が本モジュールへ復活し、レイアウト権威が 2 箇所になる。
+        "marketdata.tick_tree",
     },
 }
 

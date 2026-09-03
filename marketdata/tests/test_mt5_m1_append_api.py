@@ -191,11 +191,13 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
     }
+    # ISSUE-479 M-2: tick 木の権威 5 名は marketdata.tick_tree へ、CLI の main は
+    # marketdata.tools.tick_m1_cli へ移した（tick_m1 は同一オブジェクトを再輸出する）。
+    # 許容集合から 6 名が抜ける＝**縮小**であり、検定は緩まず強まる。
     assert public == {
-        "ts_and_mid", "ticks_to_m1", "tick_root", "m1_csv_path", "day_parquet_path",
-        "day_empty_marker_path", "day_parquet_name", "day_parquet_files",
+        "ts_and_mid", "ticks_to_m1", "m1_csv_path",
         "build_m1_from_ticks", "last_m1_date", "append_m1_from_ticks",
-        "forming_bar_from_ticks", "main", "append_m1_rows",
+        "forming_bar_from_ticks", "append_m1_rows",
     }
 
 

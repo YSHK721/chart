@@ -20,7 +20,9 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 
 #: レイアウトの権威（ここだけが tick tree のパスを組んでよい）。
-_AUTHORITY = _ROOT / "marketdata" / "tick_m1.py"
+#: ISSUE-479 M-2 で権威を ``tick_m1.py`` から専用モジュールへ移した。除外対象が 1 ファイル
+#: 狭まる＝``tick_m1.py`` も走査対象に入るため、本変更は許容集合の**縮小**（検定の強化）である。
+_AUTHORITY = _ROOT / "marketdata" / "tick_tree.py"
 
 #: 走査対象（本番コード。テストとプロトタイプ・仮想環境は除く）。
 _SCAN_DIRS = ("marketdata", "tools", "simulator", "indigators", "unified_ui")
