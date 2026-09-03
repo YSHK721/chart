@@ -42,7 +42,7 @@ def _read_source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-#: keep-last 規則を「自前で書いている」と判定する印。``marketdata.keep_last`` への委譲は
+#: keep-last 規則を「自前で書いている」と判定する印。marketdata/keep_last.py への委譲は
 #: これらの語を含まないため、委譲だけが残る形に自然に収束する。
 _KEEP_LAST_MARKS = ('keep="last"', "keep='last'", "drop_duplicates(")
 
