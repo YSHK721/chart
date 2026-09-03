@@ -69,11 +69,11 @@ def _install(monkeypatch, port) -> "tuple[list, list]":
         supplied.append(out)
         return out
 
-    def _make(*, df, adapter, latest_compute, set_last_bar):
+    def _make(*, df, adapter, latest_compute, set_last_bar, inject):
         used.append(df)
         return real_make(
             df=df, adapter=adapter,
-            latest_compute=latest_compute, set_last_bar=set_last_bar,
+            latest_compute=latest_compute, set_last_bar=set_last_bar, inject=inject,
         )
 
     monkeypatch.setattr(ctl, "window_with_forming", _supply)

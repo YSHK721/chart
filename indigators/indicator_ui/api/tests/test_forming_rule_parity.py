@@ -13,7 +13,9 @@
        （``(time, o, h, l, c, v)`` へ正規化し float は ``struct.pack("<d", v)`` のバイト一致で見る）。
     2. ライブ経路（``apply_forming_bar``）の出力は改修前と 1 ビット一致する。改修前の出力は
        本ファイル内の ``_legacy_*`` として明示的に構築した golden で固定する（git stash を使わない）。
-    3. 述語が「窓の末尾＝形成中バー」を否定した場合、``make_tail_at`` は無音にせず 1 度だけ記録する。
+    3. 述語が ``"skip"``（形成中バーが窓末尾より過去＝順序逆転）を返した場合、
+       ``make_tail_at`` は無音にせず 1 度だけ記録する（``"append"``＝バーが進んだ、は
+       ISSUE-481 で窓へ行を足して吸収するため食い違いではない）。
     4. 計算量: 述語の発行数は**出力量だけ**で決まり、窓長（bars 本数）に比例しない。
 
 data/: 実データを読まない（合成 DataFrame のみ・注入で置換）。
@@ -654,6 +656,7 @@ def _tail_at_over(window, monkeypatch):
         adapter=object(),
         latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
         set_last_bar=_set_last_bar,
+        inject=fb.inject_forming_bars,
     )
 
 
@@ -668,15 +671,21 @@ def test_a_mismatched_window_is_recorded_once_and_still_yields_tails(monkeypatch
 
     従来は比較なしで末尾行へ代入し、「窓の末尾＝形成中バーと同じバー」をコメントで仮定して
     いただけだった。仮定が破れると別のバーの値を黙って描く（ISSUE-232 の失敗モード）。
+
+    ISSUE-481: 「形成中バーが窓末尾より**新しい**」は食い違いではなく「バーが進んだ」なので、
+    窓へ行を足して吸収する（警告は出ない）。本当に説明のつかない入力は残る ``"skip"``
+    ＝形成中バーが窓末尾より過去（順序が逆転した tick）だけであり、警告はそこ専用の信号に
+    なった。したがって Arrange をその入力へ移す（assert する性質＝無音にしない・毎ティック
+    吐かない・tails を落とさない、は不変）。
     """
-    # Arrange — 窓の末尾は 09:00、形成中バーは 09:05（＝別のバー）。
-    window = _frame(_WINDOW[:1])
+    # Arrange — 窓の末尾は 09:05、形成中バーは 09:00（＝末尾より過去＝順序逆転）。
+    window = _frame(_WINDOW)
     tail_at = _tail_at_over(window, monkeypatch)
 
     # Act
     with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
-        first = tail_at(_spec(), _state("2025-01-02 09:05:00"))
-        second = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+        first = tail_at(_spec(), _state("2025-01-02 09:00:00"))
+        second = tail_at(_spec(), _state("2025-01-02 09:00:00"))
 
     # Assert
     records = [r for r in caplog.records if r.name == _LTT_LOGGER]
@@ -699,6 +708,31 @@ def test_a_matching_window_is_not_recorded(monkeypatch, caplog) -> None:
     assert got == {"v": 1.0}
 
 
+def test_a_window_without_a_clock_index_never_grows_a_row(monkeypatch, caplog) -> None:
+    """時刻 index でない窓へは行を足さない（比較材料が無いまま新しいバーと決めない）。
+
+    ``window_with_forming`` は末尾 time を読めない窓を素通しし、「呼び出し側が記録する」
+    契約にしている（末尾 time の解決が None になる）。``make_tail_at`` が行追加をこの窓へも
+    適用すると、整数 index へ時刻ラベルの行が混ざって並べ替えが ``TypeError`` で落ちる
+    （実測: `/live_ticks` の既存検定 19 件が同時に落ちた）。行を足せるのは「窓末尾より
+    新しい」と**確かめられた**ときだけである。
+    """
+    # Arrange — index が時刻でない窓（時刻は列として持つ形）。
+    window = pd.DataFrame({
+        "time": [100, 200], "open": [1.0, 1.5], "high": [2.0, 2.5],
+        "low": [0.5, 1.0], "close": [1.5, 2.0], "volume": [10.0, 20.0],
+    })
+    tail_at = _tail_at_over(window, monkeypatch)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        got = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+
+    # Assert — 行は増えず、対応不明として 1 度だけ記録される。
+    assert got == {"v": 1.0}
+    assert len([r for r in caplog.records if r.name == _LTT_LOGGER]) == 1
+
+
 def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
     """末尾行へ渡す値は従来どおり OHLCV の 5 キーのみ（``time`` は渡さない＝列照合は完全一致）。"""
     # Arrange
@@ -710,6 +744,7 @@ def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
         adapter=object(),
         latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
         set_last_bar=lambda w, values: seen.append(dict(values)),
+        inject=fb.inject_forming_bars,
     )
 
     # Act

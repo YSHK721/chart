@@ -235,6 +235,7 @@ def handle_live_tick_tails(
             tail_at = make_tail_at(
                 df=df, adapter=compute_adapter,
                 latest_compute=latest_compute, set_last_bar=_set_last_bar,
+                inject=inject_forming_bars,
             )
             batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
         except Exception:  # noqa: BLE001 — 記録したうえで当該計算足だけ落とす（無言にしない）。
