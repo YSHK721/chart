@@ -13470,3 +13470,71 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
      差分 772 行の PR 分割（F 番号ごと）／`test_composition_root_arg_parity` の pre-existing 赤（JS 合成根 4 件・
      基点 438d56e から赤と実証済み・別途起票対象）。
   3. VM 実機動作（MT5 端末での 2 ファイル配布完走）は ISSUE-448 V-1〜V-7 の実疎通時に確認。
+
+---
+
+## ISSUE-482: [設計] Wave2 2-7 の前提「venv 経由起動」が成立しない — .pth を書く運用手順がリポジトリに無い
+
+- **ステータス**: OPEN（承認待ち・作業中断）
+- **重大度**: 中（本番実行時ではなく、文書化された CLI 再生成手順が壊れる）
+- **起票**: 2026-09-03（ISSUE-479 Wave2 フェーズ 2-7 着手時）
+
+### 何を止めたか
+
+Wave2 設計書のフェーズ 2-7「`simulator/tools/` 4 本・`indigators/indicator_ui/tools/` 4 本の
+repo 根 insert 撤去（venv 経由起動前提を docstring 明記）」を、前提が実測で否定されたため
+**着手せず中断**した。2-1〜2-6 は完了・コミット済み。
+
+### 実測（証拠）
+
+1. **venv に `.pth` が無い**
+   `ls lightweight-charts-python-main/.venv/lib/python3.13/site-packages/*.pth`
+   → `__editable__.lightweight_charts-2.1.pth` のみ。`jp225_chart_paths.pth`
+   （`tools/install_dev_paths.py` が書くもの）は存在しない。
+
+2. **insert を外すと文書化された起動手順が死ぬ**
+   `export_account_engine_fixtures.py` から repo 根 insert だけを外した複製を
+   `PYTHONPATH` 無し・venv python で実行 →
+   `ModuleNotFoundError: No module named 'simulator'`（rc=1）。
+   当該ファイルの docstring は `再生成: <venv python> simulator/tools/export_account_engine_fixtures.py`
+   と明記しており、これが動かなくなる。
+
+3. **`.pth` を入れる運用手順がどこにも無い**
+   `install_dev_paths` の grep 結果に、`tools/setup_worktree.sh`・`docs/**` からの
+   呼び出しは 1 件も無い。ISSUE.md:2190 は「真の供給源は venv の .pth」と記録しているが、
+   その .pth を作る手順は人手の暗黙知であり、現に失われている。
+
+4. **テストでは落ちない**
+   当該 8 本をスクリプトとして起動するテストは 0 件（`indigators/indicator_ui/tools/tests/`・
+   `tools/tests/` の subprocess 起動を全数確認）。つまり撤去してもスイートは緑のまま、
+   人間が手順どおり叩いたときだけ壊れる——本 Wave が消そうとしている欠陥と同型である。
+
+### 設計書との数の食い違い（併せて報告）
+
+設計書は `indigators/indicator_ui/tools/` を「4 本」とするが、実測は **6 本**:
+`export_jp225_m1.py` / `export_jp225_csv.py` / `jp225_chart.py` / `prototype_swap_data.py` /
+`period_presets_measure.py`（以上 repo 根のみ）＋ `prototype_inject_marketdata.py`
+（repo 根 **と** api ディレクトリの 2 つを挿す）。
+`prototype_inject_marketdata.py` の api 側は汎用名（adapter/framework/domain）を含むため
+台帳へ載せられず、撤去対象にできない（bridge の `_ensure_paths` と同じ規律）。
+`simulator/tools/` は設計どおり 4 本で一致。
+
+### 対策案（根本解決・応急処置なし）
+
+前提を作ってから撤去する。順序は次のとおり:
+
+1. `.pth` の設置を運用手順として明文化・自動化する（`tools/setup_worktree.sh` から
+   `tools/install_dev_paths.py` を呼ぶ／README に環境構築手順として記載）。
+   検定は「台帳の全エントリが素の venv python から解決できる」ことを実測する形にする。
+2. それが緑になってはじめて 8 本（実測 10 本）の repo 根 insert を撤去する。
+3. 撤去後は、当該 CLI を**スクリプトとして起動する**検定を最低 1 本置く
+   （置かないと今回と同じく「テストは緑だが手順は死ぬ」が再発する）。
+
+段階 1 は venv（git 管理外）への書き込みを伴うため、実施可否の承認が要る。
+
+### 付記（本調査中の副作用・実害なし）
+
+調査で `export_account_engine_fixtures.py` を `--help` 付きで起動したところ、当該 CLI は
+引数を解釈せず fixture を再生成した（`simulator/tests/fixtures/account_engine/js_golden_cases.json`）。
+`git diff` で byte 不変を確認済み（決定的生成のため内容は同一）。
+副次的な発見として、この CLI は `--help` を受け付けず必ず書き込む。
