@@ -77,13 +77,15 @@ from common_view.lwc_adapter import emit_line as _emit_line
 from common_view.lwc_adapter import resolve_times as _resolve_times
 
 from common.event_quantiles import (
-    EVQ_COLOR,
-    EVQ_LINE_SPECS,
     DEFAULT_EVENT_AGG,
     DEFAULT_K_EVENTS,
     DEFAULT_Q_OUT,
-    emit_event_quantile_lines,
     outlier_event_quantiles,
+)
+from common_view.event_quantile_view import (
+    EVQ_COLOR,
+    EVQ_LINE_SPECS,
+    emit_event_quantile_lines,
 )
 from common.marod_bands import quantile_bands
 

@@ -9,6 +9,8 @@ lightweight-charts（lwc_chart.py）双方から同一規則で利用する。
 公開 API:
     level_colors     : レベルカウント系の値→HEX 色（緑→赤・|中心からの距離|）写像。
     LEVEL_LINE_WIDTH : σ水準線（horizontal_line）の既定線幅（px）の単一ソース。
+    EVQ_COLOR / EVQ_LINE_SPECS / emit_event_quantile_lines :
+        イベント分位水準線の表示仕様（色・線種・系列名サフィックス）と定型 emit。
 
 典型的な使い方:
     >>> import numpy as np
@@ -19,10 +21,14 @@ lightweight-charts（lwc_chart.py）双方から同一規則で利用する。
 
 from __future__ import annotations
 
+from .event_quantile_view import EVQ_COLOR, EVQ_LINE_SPECS, emit_event_quantile_lines
 from .level_colors import level_colors
 from .level_style import LEVEL_LINE_WIDTH
 
 __all__ = [
     "level_colors",
     "LEVEL_LINE_WIDTH",
+    "EVQ_COLOR",
+    "EVQ_LINE_SPECS",
+    "emit_event_quantile_lines",
 ]

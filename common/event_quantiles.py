@@ -10,8 +10,8 @@
     DEFAULT_Q_OUT / DEFAULT_K_EVENTS / DEFAULT_EVENT_AGG : 既定値（単一情報源）。
     q_out_valid              : 極端分位の有効判定（btlm_trail q_out 前例と同規約）。
     outlier_event_quantiles  : 本体（バンド超過イベントの因果分位水準）。
-    emit_event_quantile_lines: 表示層ヘルパー（4 本の水準線を定型 emit。色・線種・系列名
-                               サフィックスの単一情報源。emit 実体は呼び出し側から注入）。
+    水準線の表示仕様（色・線種・系列名サフィックスと定型 emit）は本モジュールにはない。
+    表示仕様層（common_view の event_quantile_view）が単一情報源である（ISSUE-479 C-1）。
 
 ③設計の経緯（ユーザー裁定 2026-07-21・実測根拠は .doc/MA_MAROD_BASIC_DESIGN.md）:
     バンド線（因果分位バンドでは新記録スパイクを原理的に含められない）→ 超過点マーク
@@ -32,13 +32,6 @@ DEFAULT_Q_OUT: float = 0.99            # イベントの極端分位（上側 q_
 DEFAULT_K_EVENTS: int = 50             # ローリング側の直近観測件数（分散非定常対策・実測 2026-07-20）
 DEFAULT_EVENT_AGG: str = "episode"     # episode＝エピソード極値（既定）／bar＝旧方式（復帰用）
 _MIN_EVENTS: int = 5                   # 分位を計算する最小観測数（未満は NaN＝描画除外）
-
-# 表示規約（単一情報源）: 系列名サフィックス＝評価キー、中央値＝実線・極端分位＝破線・赤系。
-EVQ_COLOR: str = "rgba(210, 67, 58, 1)"    # btlm_trail _COLOR_OFFSET と同系（外れ値系の赤）
-EVQ_LINE_SPECS: tuple[tuple[str, str], ...] = (
-    ("med_hi", "solid"), ("med_lo", "solid"),
-    ("ext_hi", "dashed"), ("ext_lo", "dashed"),
-)
 
 
 def q_out_valid(q_out, q_high: float) -> bool:
@@ -288,20 +281,3 @@ def outlier_event_quantiles(
             out[med_key + "_all"] = med_a[cnt]
             out[ext_key + "_all"] = ext_a[cnt]
     return out
-
-
-def emit_event_quantile_lines(prefix: str, times, evq: dict, emit_line) -> list:
-    """イベント分位水準線 4 本を定型 emit する表示層ヘルパー（採用指標間の表示規約の単一情報源）。
-
-    系列名は ``{prefix}_evq_{med|ext}_{hi|lo}``、色は ``EVQ_COLOR``、中央値＝実線・極端分位
-    ＝破線（``EVQ_LINE_SPECS``）。emit の実体（chart への追加・NaN 除外）は呼び出し側の
-    ``emit_line(name, times, values, color, style)`` に注入する（本モジュールは描画 API に
-    依存しない）。全履歴（_all）系列は描画しない（認知負荷削減・ユーザー裁定 2026-07-21）。
-
-    Returns:
-        emit_line の戻り値のリスト（4 要素・EVQ_LINE_SPECS 順）。
-    """
-    return [
-        emit_line(f"{prefix}_evq_{key}", times, evq[key], EVQ_COLOR, style)
-        for key, style in EVQ_LINE_SPECS
-    ]

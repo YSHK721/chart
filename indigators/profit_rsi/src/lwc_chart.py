@@ -32,7 +32,8 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-from common.event_quantiles import DEFAULT_K_EVENTS, DEFAULT_Q_OUT, EVQ_COLOR
+from common.event_quantiles import DEFAULT_K_EVENTS, DEFAULT_Q_OUT
+from common_view.event_quantile_view import EVQ_COLOR
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
 from common_view.lwc_adapter import emit_line as _emit_line  # noqa: E402
 from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402

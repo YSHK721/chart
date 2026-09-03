@@ -27,7 +27,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 import pandas as pd
 
-from common.event_quantiles import emit_event_quantile_lines
+from common_view.event_quantile_view import emit_event_quantile_lines
 from common_view.lwc_adapter import (  # noqa: E402
     emit_line as _emit_line,
     resolve_times as _resolve_times,
