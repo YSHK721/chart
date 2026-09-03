@@ -9,7 +9,7 @@
     AppliedPrice          : MQL ENUM_APPLIED_PRICE と同一値の列挙。
     close_price / open_price / high_price / low_price : 単純な列選択。
     median_price / typical_price / weighted_price     : 算術合成。
-    applied_price         : 列挙値で 7 種を切り替えるディスパッチャ。
+    applied_price         : 列挙値で 8 種を切り替えるディスパッチャ（単一表 _APPLIED 経由）。
 
 ③元 MQL 対応:
     MQL の ENUM_APPLIED_PRICE（PRICE_CLOSE / OPEN / HIGH / LOW / MEDIAN / TYPICAL /
@@ -104,6 +104,27 @@ def ohlc4_price(
 
 
 # ---------------------------------------------------------------------------
+# 種別の単一表（ISSUE-479 Wave2 C-5）
+# ---------------------------------------------------------------------------
+# 同じ種別集合が enum 定義・ディスパッチャの if 連鎖・SOURCE_TO_APPLIED の 3 箇所で
+# 列挙されていたため、種別 1 つの追加が 3 箇所の同時改変を要求していた（OCP 違反）。
+# 本表を唯一の情報源とし、ディスパッチャは表引き、SOURCE_TO_APPLIED は表から導出する。
+# キーは AppliedPrice（IntEnum ＝ int）で、enum 値の昇順に並べる。
+# 値は (catalog の source キー, 抽出関数) の組。抽出関数は上の公開関数へ委譲する
+# （式の定義は公開関数側 1 箇所のまま。ここでは引数の割り当てだけを持つ）。
+_APPLIED: "dict[AppliedPrice, tuple[str, object]]" = {
+    AppliedPrice.CLOSE: ("close", lambda o, h, lo, c: close_price(c)),
+    AppliedPrice.OPEN: ("open", lambda o, h, lo, c: open_price(o)),
+    AppliedPrice.HIGH: ("high", lambda o, h, lo, c: high_price(h)),
+    AppliedPrice.LOW: ("low", lambda o, h, lo, c: low_price(lo)),
+    AppliedPrice.MEDIAN: ("hl2", lambda o, h, lo, c: median_price(h, lo)),
+    AppliedPrice.TYPICAL: ("hlc3", lambda o, h, lo, c: typical_price(h, lo, c)),
+    AppliedPrice.WEIGHTED: ("hlcc4", lambda o, h, lo, c: weighted_price(h, lo, c)),
+    AppliedPrice.OHLC4: ("ohlc4", lambda o, h, lo, c: ohlc4_price(o, h, lo, c)),
+}
+
+
+# ---------------------------------------------------------------------------
 # ディスパッチャ
 # ---------------------------------------------------------------------------
 def applied_price(
@@ -129,25 +150,18 @@ def applied_price(
         指定種別の価格系列（float の np.ndarray）。
 
     Raises:
-        ValueError: ``kind`` が 7 種のいずれにも該当しない場合。
+        ValueError: ``kind`` が 8 種のいずれにも該当しない場合。
     """
-    if kind == AppliedPrice.CLOSE:
-        return close_price(close)
-    if kind == AppliedPrice.OPEN:
-        return open_price(open_)
-    if kind == AppliedPrice.HIGH:
-        return high_price(high)
-    if kind == AppliedPrice.LOW:
-        return low_price(low)
-    if kind == AppliedPrice.MEDIAN:
-        return median_price(high, low)
-    if kind == AppliedPrice.TYPICAL:
-        return typical_price(high, low, close)
-    if kind == AppliedPrice.WEIGHTED:
-        return weighted_price(high, low, close)
-    if kind == AppliedPrice.OHLC4:
-        return ohlc4_price(open_, high, low, close)
-    raise ValueError(f"未知の適用価格種別です: {kind!r}")
+    try:
+        # int / float / np.int64 は AppliedPrice（IntEnum）と等値かつ同一ハッシュなので
+        # そのまま解決される。非ハッシュ可能値は TypeError となり、下で ValueError へ揃える
+        # （if 連鎖時代も未知種別として ValueError にしていた＝文言まで挙動不変）。
+        entry = _APPLIED.get(kind)
+    except TypeError:
+        entry = None
+    if entry is None:
+        raise ValueError(f"未知の適用価格種別です: {kind!r}")
+    return entry[1](open_, high, low, close)
 
 
 # ---------------------------------------------------------------------------
@@ -158,13 +172,7 @@ def applied_price(
 # 要求する状態＝OCP 違反の解消）。値・キーは移設元と完全に同一（無改変移設）。
 #
 # キーは catalog の source enum（小文字）。呼び出し側は ``str(source).lower()`` で引く。
+# 種別の第 3 の列挙にならないよう、単一表 _APPLIED から導出する（キー・値・挿入順は同一）。
 SOURCE_TO_APPLIED: dict[str, AppliedPrice] = {
-    "close": AppliedPrice.CLOSE,
-    "open": AppliedPrice.OPEN,
-    "high": AppliedPrice.HIGH,
-    "low": AppliedPrice.LOW,
-    "hl2": AppliedPrice.MEDIAN,
-    "hlc3": AppliedPrice.TYPICAL,
-    "hlcc4": AppliedPrice.WEIGHTED,
-    "ohlc4": AppliedPrice.OHLC4,
+    source: kind for kind, (source, _extract) in _APPLIED.items()
 }
