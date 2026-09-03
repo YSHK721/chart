@@ -33,6 +33,8 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GOLDEN = Path(__file__).resolve().parent / "fixtures" / "pseudo_vwap_frozen.json"
+_GOLDEN_SESSION = (Path(__file__).resolve().parent / "fixtures"
+                   / "pseudo_vwap_frozen_session.json")
 
 #: 分割対象の表面（本 Wave の責任範囲）。ここに private 越境 import を 1 件も残さない。
 _SURFACE = ("tools/verify_pseudo_vwap.py", "tools/pseudo_vwap")
@@ -41,11 +43,11 @@ _SURFACE = ("tools/verify_pseudo_vwap.py", "tools/pseudo_vwap")
 # --------------------------------------------------------------------------- #
 # 合成ティック（実データを読まない・決定論）
 # --------------------------------------------------------------------------- #
-def _synthetic_day(day: str, seed: int) -> pd.DataFrame:
-    """1 日分の合成ティック（1 分あたり 4 本・決定論のランダムウォーク）。"""
+def _synthetic_day(day: str, seed: int, step_sec: int = 15) -> pd.DataFrame:
+    """1 日分の合成ティック（``step_sec`` 秒間隔・決定論のランダムウォーク）。"""
     rng = np.random.default_rng(seed)
     base = pd.Timestamp(day)
-    offsets = np.arange(0, 24 * 60 * 60, 15)          # 15 秒間隔 = 1 分 4 本
+    offsets = np.arange(0, 24 * 60 * 60, step_sec)
     ts = base + pd.to_timedelta(offsets, unit="s")
     steps = rng.normal(0.0, 0.6, size=offsets.size)
     mid = 28000.0 + np.cumsum(steps)
@@ -55,16 +57,22 @@ def _synthetic_day(day: str, seed: int) -> pd.DataFrame:
     )
 
 
-@pytest.fixture()
-def synthetic_tick_days(tmp_path):
-    """合成ティック parquet を 4 日分書き、そのパス列を返す。"""
+def _write_days(root: Path, n: int, *, seed0: int, step_sec: int) -> "list[Path]":
+    """``n`` 日分の合成ティック parquet を書き、そのパス列を返す。"""
+    root.mkdir(parents=True, exist_ok=True)
     paths = []
-    for i in range(4):
-        day = f"2026-01-{5 + i:02d}"
-        out = tmp_path / f"{day}.parquet"
-        _synthetic_day(day, seed=1000 + i).to_parquet(out)
+    for i in range(n):
+        day = (pd.Timestamp("2026-01-05") + pd.Timedelta(days=i)).strftime("%Y-%m-%d")
+        out = root / f"{day}.parquet"
+        _synthetic_day(day, seed=seed0 + i, step_sec=step_sec).to_parquet(out)
         paths.append(out)
     return paths
+
+
+@pytest.fixture()
+def synthetic_tick_days(tmp_path):
+    """合成ティック parquet を 4 日分書き、そのパス列を返す（日中足シナリオ用）。"""
+    return _write_days(tmp_path / "intraday", 4, seed0=1000, step_sec=15)
 
 
 def _material_module():
@@ -85,6 +93,7 @@ def _patch_day_source(monkeypatch, paths):
                         lambda lo, hi, symbol=None: list(paths))
 
 
+#: 日中足シナリオ（5m）。滞在秒加重は使わない（--no-dwell）。
 _FROZEN_ARGV = [
     "--periods", "2026-01-05:2026-01-08",
     "--tfs", "5m",
@@ -97,13 +106,32 @@ _FROZEN_ARGV = [
     "--seed", "1",
 ]
 
+#: セッション足シナリオ（1D）。ブローカー暦日への index 写像と滞在秒加重（活発地図・
+#: 滞在秒積分）を通す。日中足シナリオだけでは、この 2 経路が 1 度も実行されない。
+_FROZEN_SESSION_ARGV = [
+    "--periods", "2026-01-05:2026-01-24",
+    "--tfs", "1D",
+    "--windows", "3",
+    "--horizons", "1",
+    "--dev-horizons", "2",
+    "--perms", "3",
+    "--band-window", "5",
+    "--seed", "7",
+]
 
-def _run_frozen(monkeypatch, tmp_path, paths) -> str:
-    """凍結条件で ``main`` を回し、``--json`` の中身（環境依存部を正規化済み）を返す。"""
+#: シナリオ名 → (golden ファイル, argv, 生成する日数, 乱数 seed 基点, ティック間隔秒)
+_SCENARIOS = {
+    "intraday": (_GOLDEN, _FROZEN_ARGV, 4, 1000, 15),
+    "session": (_GOLDEN_SESSION, _FROZEN_SESSION_ARGV, 20, 2000, 60),
+}
+
+
+def _run_frozen(monkeypatch, tmp_path, paths, argv=None) -> str:
+    """凍結条件で ``main`` を回し、JSON 出力（環境依存部を正規化済み）を返す。"""
     _patch_day_source(monkeypatch, paths)
     tmp_path.mkdir(parents=True, exist_ok=True)
     out = tmp_path / "pseudo_vwap.json"
-    _cli_module().main([*_FROZEN_ARGV, "--json", str(out)])
+    _cli_module().main([*(argv or _FROZEN_ARGV), "--json", str(out)])
     payload = json.loads(out.read_text(encoding="utf-8"))
     # measure_forming の "file" は絶対パス（tmp_path）なのでファイル名だけに正規化する。
     for row in payload.get("forming", []):
@@ -114,17 +142,25 @@ def _run_frozen(monkeypatch, tmp_path, paths) -> str:
 # --------------------------------------------------------------------------- #
 # 出力の凍結（分割の前後で 1 バイトも変わらない）
 # --------------------------------------------------------------------------- #
-def test_the_json_output_matches_the_frozen_golden(monkeypatch, tmp_path, synthetic_tick_days):
-    """合成ティックからの ``--json`` 出力が golden と完全一致する。
+@pytest.mark.parametrize("scenario", sorted(_SCENARIOS))
+def test_the_json_output_matches_the_frozen_golden(monkeypatch, tmp_path, scenario):
+    """合成ティックからの JSON 出力が golden と完全一致する（分割前の実装で採取済み）。
 
     分割・公開名化・台帳化のいずれも「出力を変えない構造変更」である。値が動いたなら、
     それは移設ではなく仕様変更であり、意図した変更なら golden を明示的に作り直す。
+
+    シナリオを 2 つ置く理由: 日中足（5m）だけでは、セッション足のブローカー暦日写像と
+    滞在秒加重（活発地図・滞在秒積分）が 1 度も実行されない。公開名へ差し替えた経路が
+    golden の外に残ると、凍結は「通った所だけ」の保証になる。
     """
-    got = _run_frozen(monkeypatch, tmp_path, synthetic_tick_days)
-    assert _GOLDEN.exists(), (
-        f"golden 未生成: {_GOLDEN}。分割前の実装で作成してからコミットすること。"
+    golden, argv, days, seed0, step = _SCENARIOS[scenario]
+    paths = _write_days(tmp_path / "ticks", days, seed0=seed0, step_sec=step)
+
+    got = _run_frozen(monkeypatch, tmp_path / "run", paths, argv)
+    assert golden.exists(), (
+        f"golden 未生成: {golden}。分割前の実装で作成してからコミットすること。"
     )
-    assert got == _GOLDEN.read_text(encoding="utf-8")
+    assert got == golden.read_text(encoding="utf-8")
 
 
 def test_the_frozen_run_is_deterministic(monkeypatch, tmp_path, synthetic_tick_days):
