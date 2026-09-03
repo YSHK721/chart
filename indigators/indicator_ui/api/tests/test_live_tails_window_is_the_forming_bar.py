@@ -20,6 +20,12 @@
     3. その正常経路では警告を出さない（警告は「本当に食い違ったとき」だけの信号にする）。
     4. 計算量: 窓への適用は要求あたり・計算足グループあたり 1 回で、tick 数では増えない。
 
+本ファイルが記録する現挙動（不変条件では**ない**・ISSUE-481 の恒久解で赤へ転じる）:
+    5. 残存 A: バッチが周期をまたぐと、境界より後の tick は警告 1 回のうえ
+       バッチ先頭 tick の周期のラベル行（＝1 つ前のバー）へ書かれる。
+    6. 残存 B: 確定末尾を欠いた窓（M1 焼き込み猶予中）は、閉じた分を飛ばしたまま
+       無警告で形成中バーが追加される（窓のラベル間隔に周期 2 本ぶんの跳びが残る）。
+
 data/: 実データを読まない（合成 DataFrame・注入した偽 port のみ）。
 構造: Arrange-Act-Assert（AAA）。
 """
@@ -357,3 +363,125 @@ def test_the_application_does_not_grow_with_the_tick_count(monkeypatch) -> None:
 
     # Assert
     assert many_issued == few_issued
+
+
+# --------------------------------------------------------------------------- #
+# 5. 残存 A の現挙動固定（ISSUE-481 の恒久解で意図的に赤へ転じる）
+# --------------------------------------------------------------------------- #
+
+#: 形成中の分 M の次の分（バッチが周期をまたいだ先）。
+_NEXT_MINUTE = "2026-01-05 09:05:00"
+
+#: 周期 M と M+1 にまたがる 4 tick（09:04 が 2 本・09:05 が 2 本）。
+_BOUNDARY_TICKS = _TICKS + [
+    [_unix(_NEXT_MINUTE) * 1000 + 100, 200.0],
+    [_unix(_NEXT_MINUTE) * 1000 + 300, 201.0],
+]
+
+#: 周期 M の秒数（1m）。窓のラベル間隔がこの整数倍から外れると閉じた分が欠けている。
+_PERIOD_SEC = 60
+
+
+def _label_seconds(window) -> "list[int]":
+    """窓のラベル（date-index）を UNIX 秒の列で返す（``.timestamp()`` は使わない）。"""
+    return [int(pd.Timestamp(t).value // 1_000_000_000) for t in window.index]
+
+
+def test_a_batch_crossing_the_period_warns_exactly_once(_wired, caplog) -> None:
+    """残存 A の**現挙動の記録**: バッチが分をまたぐと警告はちょうど 1 回出る。
+
+    窓の供給が揃えるのは states[0]（バッチ先頭 tick）の周期だけなので、境界より後の
+    tick では述語が append を返し、window_with_forming ではなく make_tail_at 側が
+    1 度だけ記録する。
+
+    これは不変条件ではない。ISSUE-481 の恒久解（窓供給に閉周期合成を入れ、バーが進んだら
+    窓へ行を足す）が入ると警告は 0 回になり、本テストは**意図的に赤へ転じる**。赤になった
+    時点で現挙動の記録としての役目は終わりであり、恒久解の期待値（警告 0 件）へ書き換える。
+    """
+    # Arrange
+    port = _Port({"1m": _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)})
+    _wired(port)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        ctl.handle_live_tick_tails(_query(_SPEC), _BOUNDARY_TICKS)
+
+    # Assert
+    assert len([r for r in caplog.records if r.name == _LTT_LOGGER]) == 1
+
+
+def test_a_tick_after_the_period_boundary_lands_on_the_previous_bar_row(_wired) -> None:
+    """残存 A の**現挙動の記録**: 境界より後の tick は 1 つ前のバーのラベル行へ入る。
+
+    窓の末尾ラベルは 09:04（バッチ先頭 tick の周期）のままで、そこへ 09:05 の形成中バーの
+    OHLCV が代入される（09:05 のラベル行は作られない）＝描いたローソクと指標値が別のバー。
+
+    ISSUE-481 の恒久解が入ると 09:05 のラベル行が生まれ、値はそちらへ入る。したがって
+    本テストは恒久解で**意図的に赤へ転じる**（そのとき恒久解の期待値へ書き換える）。
+    """
+    # Arrange
+    port = _Port({"1m": _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)})
+    seen = _wired(port)
+
+    # Act
+    ctl.handle_live_tick_tails(_query(_SPEC), _BOUNDARY_TICKS)
+
+    # Assert — 末尾ラベルは 09:04 のまま、値は 09:05 の 2 tick ぶんの累積。
+    labels = _label_seconds(seen[-1])
+    assert labels[-1] == _unix(_FORMING_MINUTE)
+    assert _unix(_NEXT_MINUTE) not in labels
+    last_row = seen[-1].iloc[-1]
+    assert [float(last_row[c]) for c in _FIELDS] == [200.0, 201.0, 200.0, 201.0, 2.0]
+
+
+# --------------------------------------------------------------------------- #
+# 6. 残存 B の現挙動固定（ISSUE-481 の恒久解で意図的に赤へ転じる）
+# --------------------------------------------------------------------------- #
+
+#: M1 焼き込み猶予中の窓＝確定末尾 M-1（09:03）が未着で M-2（09:02）までしか無い。
+_STALE_WINDOW_LABELS = ("2026-01-05 09:01:00", "2026-01-05 09:02:00")
+
+
+def test_a_window_missing_the_last_confirmed_bar_keeps_a_period_gap(_wired) -> None:
+    """残存 B の**現挙動の記録**: 閉じた分を 1 本飛ばした窓がそのまま計算へ渡る。
+
+    M1 焼き込み猶予（live_tick_watch の grace）の間、確定窓は M-1 を欠いたまま M-2 で
+    終わる。そこへ形成中バー M を追加すると、窓のラベル間隔は周期 1 本ぶんではなく
+    2 本ぶん（120 秒）の跳びを含む＝閉じた分 09:03 が窓から欠落したまま計算される。
+    /compute は同じ穴を閉周期合成（ISSUE-162）で埋めるため、2 経路が別の窓で計算する。
+
+    ISSUE-481 の恒久解（窓供給側にも閉周期合成を適用）が入ると間隔は周期どおりに揃い、
+    本テストは**意図的に赤へ転じる**（そのとき恒久解の期待値へ書き換える）。
+    """
+    # Arrange
+    port = _Port({"1m": _confirmed_window(*_STALE_WINDOW_LABELS)})
+    seen = _wired(port)
+
+    # Act
+    ctl.handle_live_tick_tails(_query(_SPEC), _TICKS)
+
+    # Assert — 間隔は [周期, 周期 x 2]＝閉じた 1 本が欠けた跡。
+    labels = _label_seconds(seen[-1])
+    assert [b - a for a, b in zip(labels, labels[1:])] == [_PERIOD_SEC, _PERIOD_SEC * 2]
+
+
+def test_the_missing_closed_bar_is_not_reported(_wired, caplog) -> None:
+    """残存 B の**現挙動の記録**: 閉じた分の欠落は警告として出ない（無音）。
+
+    述語が見るのは「窓末尾と形成中バーが同じバーか」だけで、窓の内部に空いた穴は見ない。
+    そのため残存 B は残存 A と違い信号が一切出ず、実データでも 24 点中 5-6 点で無音のまま
+    起きていた（ISSUE-481 の実測）。
+
+    ISSUE-481 の恒久解が入れば穴自体が無くなる。本テストが赤へ転じるのは「無音のまま穴が
+    残る経路が別に生えた」ときであり、そのとき現挙動の記録として書き換える。
+    """
+    # Arrange
+    port = _Port({"1m": _confirmed_window(*_STALE_WINDOW_LABELS)})
+    _wired(port)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        ctl.handle_live_tick_tails(_query(_SPEC), _TICKS)
+
+    # Assert
+    assert [r for r in caplog.records if r.name == _LTT_LOGGER] == []
