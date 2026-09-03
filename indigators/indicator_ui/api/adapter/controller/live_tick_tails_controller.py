@@ -207,12 +207,11 @@ def handle_live_tick_tails(
             buffer=buffer, forming=forming_mod,
         )
         states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
-        if not states:
-            continue
         # 🔴-1: 窓は確定分（1m なら M1 CSV の排他 floor で M-1 まで）しか無い。末尾行への代入が
         #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。揃える材料は
         #   states[0]（この増分の先頭 tick 時点の累積）＝以降 tail_at が書く値と**同じ材料**であり、
-        #   窓と値が別のバーになることが構造的に起こらない。
+        #   窓と値が別のバーになることが構造的に起こらない。states は ticks と同数・同順で、
+        #   ticks が空なら本関数は既に None を返しているため、必ず 1 件以上ある。
         df = window_with_forming(
             df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
         )
