@@ -55,7 +55,7 @@ _SERIES_NAME = "ma_marod"
 _COLOR_MA_MAROD = "rgba(255, 152, 0, 1)"   # 橙（marod の紫系と識別・基本設計 §5 仮値）
 # バンドは本体（橙）と明確に区別できる色にする（btlm_trail_marod の視認性規約 ISSUE-143 踏襲）。
 _COLOR_QUANTILE = "rgba(38, 198, 218, 1)"    # 分位バンド（シアン・点線）＝marod と同色
-# イベント分位水準線の色・線種は common.event_quantiles（EVQ_COLOR/EVQ_LINE_SPECS）が単一情報源。
+# イベント分位水準線の色・線種は common_view.event_quantile_view（EVQ_COLOR/EVQ_LINE_SPECS）が単一情報源。
 _BASELINE = 0.0                            # 0% 基準線（乖離ゼロ＝価格が MA に一致する水準）
 _LEVEL_COLOR = "rgba(84, 84, 84, 1)"       # 基準線色（profit_* 水準線と同系）
 _LEVEL_WIDTH = 1

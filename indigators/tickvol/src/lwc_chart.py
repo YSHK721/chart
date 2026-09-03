@@ -18,12 +18,12 @@
     ⚠ 回帰トレンド系（``tickvol_trend_*``）は ISSUE-244 で **UI から外した**。計算は
     :mod:`.trend` にアーカイブとして残っている（結線からは呼ばれない）。
 
-    ``_evq_{med|ext}_{hi|lo}`` の命名・色・線種は共有規約
-    （:mod:`common.event_quantiles` の ``EVQ_LINE_SPECS`` / ``EVQ_COLOR``）に従う。下側
+    ``_evq_{med|ext}_{hi|lo}`` の命名・色・線種は表示仕様層の共有規約
+    （:mod:`common_view.event_quantile_view` の ``EVQ_LINE_SPECS`` / ``EVQ_COLOR``）に従う。下側
     （``_lo``）は持たない: tickvol は 1 tick 以上でしか足が立たない計数量で下側は裾でない
     （実測 min=1・0 の足は 0 本）。GPD 線は経験的線と**並べて読む**ことが目的なので、
-    共有の外れ値色をそのまま使うと 2 本が区別できない。別色を本モジュールに置き、共有定数
-    ``EVQ_COLOR`` は書き換えない（他 2 指標へ非波及・ISSUE-223 と同規律）。
+    共有の外れ値色をそのまま使うと 2 本が区別できない。別色を本モジュールに置き、表示仕様層の
+    共有定数（common_view 側の ``EVQ_COLOR``）は書き換えない（他 2 指標へ非波及・ISSUE-223 と同規律）。
 
 呼出規約:
     ``add_tickvol(chart, df)``。API 経路（``adapter.compute.call_binding``）は df 以降を

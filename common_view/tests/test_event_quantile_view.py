@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import ast
 import importlib
+import io
 import pathlib
+import tokenize
 
 import pytest
 
@@ -133,3 +135,103 @@ def test_emit_issues_exactly_the_lines_the_output_contains(n_times: int) -> None
     # Assert
     assert len(issued) - len(created) == 0
     assert len(issued) == len(_view().EVQ_LINE_SPECS)
+
+
+# --------------------------------------------------------------------------- #
+# 4. 消費者側の記述が移設先を指している（陳腐化の検出・ISSUE-479 Wave2 追随 A）
+#
+# 定義の移設（AST 検定）だけでは、消費者の docstring / コメントが旧所有者を指したまま残る。
+# 読み手はそこから「どこを直せば表示が変わるか」を判断するため、間違った所有者を指す記述は
+# 実装の誤りと同じ結果（別の指標へ波及する場所を書き換える）を招く。記述の鮮度も機械的に固定する。
+# --------------------------------------------------------------------------- #
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_PREVIOUS_OWNER = "common.event_quantiles"
+#: 走査から外す木（第三者コード・生成物・仮想環境）。
+_EXCLUDED_PARTS = {".venv", "venv", "node_modules", "__pycache__", ".git", "out", "site-packages"}
+
+
+def _prose_blocks(path: pathlib.Path) -> list[tuple[int, str]]:
+    """文字列定数（docstring 含む）と、連続するコメント行のまとまりを (行, 本文) で返す。"""
+    source = path.read_text(encoding="utf-8")
+    blocks: list[tuple[int, str]] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # pragma: no cover - 走査対象外の壊れた木
+        return blocks
+    blocks.extend(
+        (n.lineno, n.value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    )
+    lines: list[str] = []
+    start = previous = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        contiguous = bool(lines) and token.start[0] == previous + 1
+        if not contiguous and lines:
+            blocks.append((start, "\n".join(lines)))
+            lines = []
+        start = start if contiguous else token.start[0]
+        lines.append(token.string)
+        previous = token.start[0]
+    if lines:
+        blocks.append((start, "\n".join(lines)))
+    return blocks
+
+
+def _attributes_display_spec_to_the_old_owner(text: str) -> bool:
+    """1 つの記述の中で「旧計算層」と「表示 3 名」が**同じ文**に現れるか。
+
+    判定の単位は連続 2 行の窓である。大きな module docstring は計算層への正当な言及
+    （外れ値イベント分位の算出関数など）と表示 3 名の言及を同居させるため、ブロック全体で
+    突き合わせると偽陽性になる。折り返しで 2 行に跨る文を取りこぼさない最小の窓が 2 行。
+    """
+    lines = text.splitlines() or [text]
+    windows = [" ".join(lines[i:i + 2]) for i in range(len(lines))]
+    return any(
+        _PREVIOUS_OWNER in window and any(name in window for name in _MOVED_NAMES)
+        for window in windows
+    )
+
+
+def _stale_ownership_mentions() -> list[str]:
+    """表示 3 名の所有者を旧計算層と書いている記述（docstring / コメント）を列挙する。"""
+    offenders: list[str] = []
+    for path in _REPO_ROOT.rglob("*.py"):
+        if _EXCLUDED_PARTS & set(path.parts):
+            continue
+        for lineno, text in _prose_blocks(path):
+            if _attributes_display_spec_to_the_old_owner(text):
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}")
+    return sorted(offenders)
+
+
+def test_no_document_attributes_the_display_spec_to_the_calculation_layer() -> None:
+    """消費者の記述が表示 3 名の所有者を旧計算層と書いていない。"""
+    offenders = _stale_ownership_mentions()
+    assert offenders == [], (
+        "表示仕様の所有者を旧計算層と書いた記述が残っている（所有は "
+        "common_view.event_quantile_view）:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_stale_ownership_detector_catches_a_synthetic_offender() -> None:
+    """検出器の自己検定: 陳腐化記述は捕捉し、正当な計算層への言及は捕捉しない。"""
+    # Arrange: 是正前の実物と同型（1 行内・折り返し 2 行）＋ 偽陽性にしてはならない記述。
+    stale_one_line = f"# 色・線種は {_PREVIOUS_OWNER}（{_MOVED_NAMES[0]}）が単一情報源。"
+    stale_wrapped = (
+        f"表示規約（色・線種）も ``{_PREVIOUS_OWNER}`` の\n``{_MOVED_NAMES[2]}`` に委譲する。"
+    )
+    legitimate = (
+        f"水準は ``{_PREVIOUS_OWNER}.outlier_event_quantiles`` で求める。\n"
+        "\n"
+        "……（間に別の段落）……\n"
+        "\n"
+        f"表示規約は common_view の ``{_MOVED_NAMES[1]}`` に従う。"
+    )
+
+    # Act / Assert
+    assert _attributes_display_spec_to_the_old_owner(stale_one_line)
+    assert _attributes_display_spec_to_the_old_owner(stale_wrapped)
+    assert not _attributes_display_spec_to_the_old_owner(legitimate)

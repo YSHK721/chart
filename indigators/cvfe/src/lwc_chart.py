@@ -41,7 +41,7 @@
     で求める（連続超過は episode declustering で 1 回に畳む）。得られる水準は
     ``z`` の単位なので ``mid · exp(± evq · σ̂_t)`` で価格へ写す。
 
-    表示規約（色・線種・系列名サフィックス）も ``common.event_quantiles`` の
+    表示規約（色・線種・系列名サフィックス）は表示仕様層 ``common_view.event_quantile_view`` の
     ``emit_event_quantile_lines`` に委譲する＝``ma_marod`` / ``btlm_trail_marod`` と同一。
     新規の裾推定は実装しない（既存の外れ値水準機構を参照する・ユーザー裁定 2026-07-30）。
 
@@ -222,7 +222,7 @@ _RGBA_RE = None
 def scale_alpha(color: str, factor: float) -> str:
     """``rgba(r, g, b, a)`` / ``rgb(r, g, b)`` の alpha を ``factor`` 倍した色を返す。
 
-    共有プリミティブの色定数（``common.event_quantiles.EVQ_COLOR`` 等）を**書き換えずに**
+    表示仕様層の色定数（``common_view.event_quantile_view.EVQ_COLOR`` 等）を**書き換えずに**
     薄い派生色を作るためのローカルヘルパー。解釈できない書式はそのまま返す
     （色指定の自由度を狭めない）。
     """

@@ -52,7 +52,7 @@ _SERIES_NAME = "btlm_trail_marod"
 _COLOR_MAROD = "rgba(123, 104, 238, 1)"   # MediumSlateBlue（btlm_trail 系と同系色）
 # バンドは MAROD 本体（紫）と明確に区別できる高コントラスト色にする（視認性・ISSUE-143）。
 _COLOR_QUANTILE = "rgba(38, 198, 218, 1)"    # 分位バンド（シアン・点線）＝紫の本体から独立
-# イベント分位水準線の色・線種は common.event_quantiles（EVQ_COLOR/EVQ_LINE_SPECS）が単一情報源。
+# イベント分位水準線の色・線種は common_view.event_quantile_view（EVQ_COLOR/EVQ_LINE_SPECS）が単一情報源。
 _BASELINE = 0.0                            # 0% 基準線（乖離ゼロ＝トレンド一致水準）
 _LEVEL_COLOR = "rgba(84, 84, 84, 1)"       # 基準線色（profit_* 水準線と同系）
 _LEVEL_WIDTH = 1
