@@ -106,6 +106,7 @@ class _RunState:
     features: RunFeatures
     spec: Any
     contract_size: float
+    leverage: float
     floating_pnl_basis: str
     account: Account
     session_gate: SessionGate
@@ -247,6 +248,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             features=features,
             spec=spec,
             contract_size=contract_size,
+            leverage=request.account.leverage,
             floating_pnl_basis=floating_pnl_basis,
             account=account,
             session_gate=session_gate,
@@ -475,45 +477,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   再現する。SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
             if session_gate.is_closed(bar_index):
                 orders = []
-            # F 発注（成行約定）。約定価格基準（config）→当該足の建値を一元化した
-            #   derive_quotes（_execution）へ委譲する。決済価格は close_price_for で
-            #   約定価格ルール（long 決済=bid / short 決済=ask）を一意に決める。
-            bid, ask, fill_spread, fill_point = derive_quotes(
-                bar,
-                entry_price_basis=features.entry_price_basis,
-                point_size=spec.point_size,
+            # F 発注（成行約定）。反対玉の reverse 決済 → 建玉 → 口座反映を注文ごとに
+            #   完了させる（走査順＝反映順）。建値の導出も約定段が所有する。
+            open_trades = self._fill_market_orders(
+                state, orders, open_trades, bar=bar, bar_index=bar_index
             )
-            for order in orders:
-                # 反対サイドの保有玉があれば reverse 決済する（PROCESS §6）
-                reverse_kept: list[_OpenTrade] = []
-                for ot in open_trades:
-                    if ot.position.side != order.side:
-                        close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
-                        close_trade(
-                            ot,
-                            exit_time=bar.time,
-                            exit_price=close_price,
-                            exit_reason="reverse",
-                        )
-                    else:
-                        reverse_kept.append(ot)
-                open_trades = reverse_kept
-
-                position = fill_market_order(
-                    order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
-                )
-                account.open_positions.append(position)
-                account.margin += position.required_margin(request.account.leverage, contract_size)
-                open_trades.append(
-                    _OpenTrade(
-                        position=position,
-                        sl=order.sl,
-                        tp=order.tp,
-                        entry_time=bar.time,
-                        entry_price=position.entry_price,
-                        opened_bar_index=bar_index,
-                    )
-                )
             # H 保有ポジの SL/TP ヒット判定（fill_delay=次tick: 発注足は監視しない）
             #   閉鎖バー（市場閉鎖）では SL/TP（顧客注文）を処理しない＝トレードセッション・ゲート
             #   （every-tick 経路と一貫）。stop-out（リスク清算・後段 I）は閉鎖バーでも継続する。
@@ -596,6 +564,89 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             initial_deposit=request.account.initial_deposit,
         )
+
+    def _close_opposite_positions(
+        self,
+        state: _RunState,
+        open_trades: list,
+        order: Any,
+        *,
+        bar: Any,
+        bid: float,
+        ask: float,
+    ) -> list:
+        """発注と反対サイドの保有玉を reverse 決済し、残る保有列を返す（PROCESS §6）。
+
+        走査順をそのまま残す（残す玉は `kept` へ現れた順に積む）。保有列の並びは証拠金の
+        按分解放と強制決済の走査順に効くため、ここで並びが変わると確定トレードの並びが動く。
+
+        決済価格は `close_price_for` が約定価格ルール（買い決済=Bid / 売り決済=Ask）で
+        一意に決める。成行・ペンディング設置の双方が同じ規則で反対玉を畳む。
+        """
+        kept: "list[_OpenTrade]" = []
+        for ot in open_trades:
+            if ot.position.side != order.side:
+                close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
+                state.close_trade(
+                    ot,
+                    exit_time=bar.time,
+                    exit_price=close_price,
+                    exit_reason="reverse",
+                )
+            else:
+                kept.append(ot)
+        return kept
+
+    def _fill_market_orders(
+        self,
+        state: _RunState,
+        orders: list,
+        open_trades: list,
+        *,
+        bar: Any,
+        bar_index: int,
+    ) -> list:
+        """成行注文を約定させる（両実行経路で完全一致していた F 段の単一化）。
+
+        1 注文ごとに「反対玉の reverse 決済 → 建玉 → 口座反映」を**完了してから**次の
+        注文へ進む。まとめて約定してから反映すると、2 本目の注文が 1 本目の建玉を
+        見られず、起きるべき reverse 決済が起きなくなる（走査順＝反映順）。
+
+        建値は足境界のバー open クォート（`derive_quotes`）で、両経路とも同一である
+        （実 MT5 は新規バーの成行をバー open のクォートで約定する）。注文が 1 本も無い
+        バーではクォートを引かない——引いても捨てるだけの計算だからである。
+
+        事後条件: 更新後の保有列を返す（呼出側が受け取って進む）。
+        """
+        if not orders:
+            return open_trades
+        bid, ask, fill_spread, fill_point = derive_quotes(
+            bar,
+            entry_price_basis=state.features.entry_price_basis,
+            point_size=state.spec.point_size,
+        )
+        for order in orders:
+            open_trades = self._close_opposite_positions(
+                state, open_trades, order, bar=bar, bid=bid, ask=ask
+            )
+            position = fill_market_order(
+                order, bid=bid, ask=ask, spread=fill_spread, point_size=fill_point
+            )
+            state.account.open_positions.append(position)
+            state.account.margin += position.required_margin(
+                state.leverage, state.contract_size
+            )
+            open_trades.append(
+                _OpenTrade(
+                    position=position,
+                    sl=order.sl,
+                    tp=order.tp,
+                    entry_time=bar.time,
+                    entry_price=position.entry_price,
+                    opened_bar_index=bar_index,
+                )
+            )
+        return open_trades
 
     def _apply_stop_out(
         self,
@@ -876,46 +927,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
             #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
             if bar_ticks and market_orders and not session_gate.is_closed(bar_index):
-                bid0, ask0, fill_spread, fill_point = derive_quotes(
-                    bar,
-                    entry_price_basis=features.entry_price_basis,
-                    point_size=spec.point_size,
+                open_trades = self._fill_market_orders(
+                    state, market_orders, open_trades, bar=bar, bar_index=bar_index
                 )
-                for order in market_orders:
-                    # 反対サイドの保有玉があれば bar open クォートで reverse 決済。
-                    reverse_kept: list[_OpenTrade] = []
-                    for ot in open_trades:
-                        if ot.position.side != order.side:
-                            close_price = close_price_for(
-                                ot.position.side, bid=bid0, ask=ask0
-                            )
-                            close_trade(
-                                ot,
-                                exit_time=bar.time,
-                                exit_price=close_price,
-                                exit_reason="reverse",
-                            )
-                        else:
-                            reverse_kept.append(ot)
-                    open_trades = reverse_kept
-
-                    position = fill_market_order(
-                        order, bid=bid0, ask=ask0, spread=fill_spread, point_size=fill_point
-                    )
-                    account.open_positions.append(position)
-                    account.margin += position.required_margin(
-                        request.account.leverage, contract_size
-                    )
-                    open_trades.append(
-                        _OpenTrade(
-                            position=position,
-                            sl=order.sl,
-                            tp=order.tp,
-                            entry_time=bar.time,
-                            entry_price=position.entry_price,
-                            opened_bar_index=bar_index,
-                        )
-                    )
 
             # ★ペンディング（指値/逆指値）の bar open 処理（PROCESS §4.2 拡張）。
             #   実 EA は毎バー自ペンディングを取消し（DeleteOwnPendingOrders）最新シグナルで再設置
@@ -935,21 +949,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     point_size=spec.point_size,
                 )
                 for order in pending_orders:
-                    reverse_kept2: list[_OpenTrade] = []
-                    for ot in open_trades:
-                        if ot.position.side != order.side:
-                            close_price = close_price_for(
-                                ot.position.side, bid=pbid0, ask=pask0
-                            )
-                            close_trade(
-                                ot,
-                                exit_time=bar.time,
-                                exit_price=close_price,
-                                exit_reason="reverse",
-                            )
-                        else:
-                            reverse_kept2.append(ot)
-                    open_trades = reverse_kept2
+                    open_trades = self._close_opposite_positions(
+                        state, open_trades, order, bar=bar, bid=pbid0, ask=pask0
+                    )
                     resting_pending.append(order)
 
             saw_tick = False

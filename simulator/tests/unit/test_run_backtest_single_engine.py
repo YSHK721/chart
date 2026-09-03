@@ -661,3 +661,192 @@ class TestTheStopOutDecisionDoesNotWasteWork:
             _interactor().execute(_request(_bars(bar_count), config=_config(**overrides)))
             measured[bar_count] = len(resolved)
         assert measured[200] - measured[50] == 0, measured
+
+
+# ---- 4-5: 成行約定（F）の単一化 ----
+
+class _OrdersPerBar(_NullStrategy):
+    """指定バーで指定の成行注文列を返す戦略。"""
+
+    def __init__(self, orders_by_bar):
+        self._orders_by_bar = orders_by_bar
+
+    def on_new_bar(self, bar_index, indicators, account):
+        return list(self._orders_by_bar.get(bar_index, []))
+
+
+def _market(side):
+    from simulator.domain.order import Order
+
+    return Order(side=side, kind="market", volume=1.0, price=None)
+
+
+def _fill_scenario(overrides, orders_by_bar):
+    """同一バーに複数の成行注文を投げ、走査順と反映順の対応を測る run。"""
+    interactor = RunBacktestInteractor(
+        strategy=_OrdersPerBar(orders_by_bar),
+        indicators=_NullIndicators(),
+        tick_model=_OneTickPerBar(),
+    )
+    return interactor, _request(_bars(4), config=_config(**overrides))
+
+
+#: **同一バー**に買い 2 本 → 反対の売り 1 本。並びを入れ替えると結果が変わる
+#: （前から: 買い 2 本を建ててから売りが両方を reverse 決済 → 確定 2 本。
+#:   後ろから: 売りを建ててから買いがそれを reverse 決済 → 確定 1 本）。
+#: 走査順そのものを測るには、順序を変えると出力が変わる並びでなければならない。
+_FILL_ORDERS = {0: [_market("buy"), _market("buy"), _market("sell")]}
+
+#: 約定が起きるバーが 2 本になる並び（クォート導出のオーダーを 2 点で測るため）。
+_FILL_ORDERS_TWO_BARS = {
+    0: [_market("buy"), _market("buy"), _market("sell")],
+    1: [_market("buy")],
+}
+
+
+class TestBothEnginesShareTheMarketFillStage:
+    """成行約定（反対玉の reverse 決済 → 建玉 → 口座反映）の定義点が 1 つであること。"""
+
+    def test_the_market_fill_stage_has_exactly_one_definition_point(self):
+        assert callable(getattr(RunBacktestInteractor, "_fill_market_orders", None))
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_orders_are_applied_in_the_order_they_were_scanned(
+        self, path, overrides, monkeypatch
+    ):
+        """走査順 ＝ 反映順（口座の保有列に載る順）であること。
+
+        なぜ順序が仕様か: 保有列の並びは証拠金の按分解放（部分決済）と強制決済の走査に
+        そのまま効く。走査順と反映順がずれると、同じ注文列から違う決済順が生まれ、
+        確定トレードの並び（したがって sha256 指紋）が動く。
+        """
+        # Arrange: 約定の発行順を記録する。
+        scanned: "list[str]" = []
+        original = rb.fill_market_order
+
+        def _spy(order, **kwargs):
+            scanned.append(order.side)
+            return original(order, **kwargs)
+
+        monkeypatch.setattr(rb, "fill_market_order", _spy)
+        interactor, request = _fill_scenario(overrides, _FILL_ORDERS)
+        # Act
+        result = interactor.execute(request)
+        # Assert: 発行順・保有列の並び・確定トレードの並びが 1 本の順序で貫かれている。
+        assert scanned == ["buy", "buy", "sell"]
+        assert [t.side for t in result.trades] == ["buy", "buy"]
+        assert [t.exit_reason for t in result.trades] == ["reverse", "reverse"]
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_each_fill_lands_in_the_account_before_the_next_order_is_scanned(
+        self, path, overrides, monkeypatch
+    ):
+        """1 注文の反映が済んでから次の注文を走査すること（一括反映にしない）。
+
+        なぜ交互でなければならないか: reverse 決済は「その時点の保有」を見る。注文を
+        まとめて約定してから反映すると、2 本目の注文が 1 本目の建玉を見られず、
+        反対玉の決済が起きるべきところで起きなくなる。
+        """
+        # Arrange: 各約定の直前に「口座がすでに何玉持っているか」を記録する。
+        seen: "list[tuple[str, int]]" = []
+        account_box: list = []
+
+        class _Recording(_OrdersPerBar):
+            def on_new_bar(self, bar_index, indicators, account):
+                account_box.append(account)
+                return super().on_new_bar(bar_index, indicators, account)
+
+        original = rb.fill_market_order
+        monkeypatch.setattr(
+            rb,
+            "fill_market_order",
+            lambda order, **kw: (
+                seen.append((order.side, len(account_box[-1].open_positions))),
+                original(order, **kw),
+            )[1],
+        )
+        interactor = RunBacktestInteractor(
+            strategy=_Recording(_FILL_ORDERS),
+            indicators=_NullIndicators(),
+            tick_model=_OneTickPerBar(),
+        )
+        # Act
+        interactor.execute(_request(_bars(4), config=_config(**overrides)))
+        # Assert: 2 本目の買いは 1 本目の建玉を見ている（一括反映なら 0 のままになる）。
+        #   売りは反対玉 2 本を reverse 決済した後なので、見える保有は 0。
+        assert seen == [("buy", 0), ("buy", 1), ("sell", 0)]
+
+
+class TestTheMarketFillDoesNotWasteWork:
+    """計算量検定（Test Spy・発行 − 使用 = 0）。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_no_entry_quote_is_derived_for_a_bar_that_has_no_orders(
+        self, path, overrides, monkeypatch
+    ):
+        # Arrange: 建値クォートの導出発行を数える（注文が 1 本も無い run）。
+        derived: "list[int]" = []
+        original = rb.derive_quotes
+
+        def _spy(bar, **kwargs):
+            derived.append(1)
+            return original(bar, **kwargs)
+
+        monkeypatch.setattr(rb, "derive_quotes", _spy)
+        # Act: 発注しない戦略で 32 バー走らせる。
+        _interactor().execute(_request(_bars(32), config=_config(**overrides)))
+        # Assert: 発行（建値クォート）− 使用（約定に使った回数 0）= 0。
+        assert len(derived) - 0 == 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_entry_quote_is_derived_once_per_filling_bar_not_once_per_order(
+        self, path, overrides, monkeypatch
+    ):
+        # Arrange
+        derived: "list[int]" = []
+        original = rb.derive_quotes
+        monkeypatch.setattr(
+            rb, "derive_quotes",
+            lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
+        )
+        filled: "list[str]" = []
+        original_fill = rb.fill_market_order
+        monkeypatch.setattr(
+            rb, "fill_market_order",
+            lambda order, **kw: (filled.append(order.side), original_fill(order, **kw))[1],
+        )
+        interactor, request = _fill_scenario(overrides, _FILL_ORDERS)
+        # Act
+        interactor.execute(request)
+        # Assert: 約定 3 本に対しクォート導出は 1 回（約定が起きたバーの数）。
+        #   注文の数に比例しない＝1 バー 1 クォート。
+        assert len(derived) - 1 == 0, (len(derived), filled)
+        assert len(filled) - 3 == 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_quote_count_tracks_filling_bars_not_order_count(
+        self, path, overrides, monkeypatch
+    ):
+        """約定バー 1 本 / 2 本の 2 点で「導出数 == 約定バー数」（オーダーの表明）。"""
+        measured = {}
+        # 素の実体は差し替える前に 1 度だけ捉える（2 周目に spy が spy を包むのを防ぐ）。
+        original = rb.derive_quotes
+        original_fill = rb.fill_market_order
+        for filling_bars, orders_by_bar in ((1, _FILL_ORDERS), (2, _FILL_ORDERS_TWO_BARS)):
+            derived: "list[int]" = []
+            filled: "list[str]" = []
+            monkeypatch.setattr(
+                rb, "derive_quotes",
+                lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
+            )
+            monkeypatch.setattr(
+                rb, "fill_market_order",
+                lambda order, **kw: (filled.append(order.side), original_fill(order, **kw))[1],
+            )
+            interactor, request = _fill_scenario(overrides, orders_by_bar)
+            interactor.execute(request)
+            measured[filling_bars] = (len(derived), len(filled))
+        for filling_bars, (derived_count, filled_count) in measured.items():
+            assert derived_count - filling_bars == 0, measured
+        # 注文数は増えているのに導出は約定バー数しか増えない（注文数に非比例）。
+        assert measured[2][1] - measured[1][1] == 1, measured
