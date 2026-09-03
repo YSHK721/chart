@@ -21,8 +21,9 @@ market_profile api=controller+compute+gateway 構成）に対し、**役割の�
    共有が必要な純粋物は、**市場データの語彙に属するもの**は marketdata（tf_meta / session_day /
    resample / csv_schema / outlier_policy / dataset_registry）へ、**配信殻が共有し marketdata の
    どのアクターにも属さないもの**（HTTP 契約＝ERROR_STATUS/nested_error 等）は中立パッケージ
-   `api_shared/` へ降ろす（ISSUE-094 🔵-11: api_contract の実体は `api_shared/http_contract.py` へ
-   移設済み・`marketdata/api_contract.py` は後方互換の再エクスポート）。
+   `api_shared/` へ降ろす（ISSUE-094 🔵-11: api_contract の実体は `api_shared/http_contract.py` の
+   1 箇所のみ。旧 marketdata/api_contract.py は後方互換の再エクスポートを経て ISSUE-479 F-8 で
+   削除済み）。
    例外はスライスが明示公開する Facade のみ（replay bridge → `adapter/compute/__init__.py`・
    ISSUE-092 ②。内部モジュール（latest_dispatch 等）への直接 import はガードテストで禁止）。
 3. Python/JS で同一規則を二重実装する場合、権威は Python とし、JS は

@@ -1,13 +1,14 @@
-"""アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロ（ISSUE-479 F-8 段階 1）。
+"""アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロと不在（ISSUE-479 F-8）。
 
 HTTP 契約（error.type → HTTP ステータスの表と nested エラーの整形関数）の所有者は配信殻であり、
 marketdata のどのアクターでもない（ISSUE-094 🔵-11）。実体は中立共有パッケージ api_shared の
-http_contract モジュールへ移設済みで、marketdata/api_contract.py は後方互換の再エクスポートに
-過ぎない。互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの
-偽装）が固定化する。
+http_contract モジュールが唯一持つ。旧 marketdata/api_contract.py は後方互換の再エクスポート
+シムであったが、参照ゼロ化（段階 1）ののち **ISSUE-479 F-8 段階 2 で削除済み**である。
+互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの偽装）が
+固定化するため、参照と実体の双方を絶っている。
 
-本テストは「旧パスを import する本番・テストコードがリポジトリに 1 件も無い」ことだけを主張する。
-**ファイルの存在自体は Red にしない**（削除は要承認事項であり、段階 2 で免除の撤去と同時に行う）。
+本テストは 2 つを主張する。(1) 旧パスを import する本番・テストコードがリポジトリに 1 件も無い。
+(2) 旧パスのファイル自体が存在しない（復活させると Red になる）。
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: 旧パスの実体（存在は前提であり、削除は段階 2・要承認）。
+#: 旧パスの所在（ISSUE-479 F-8 段階 2 で削除済み。**不在**を Red 判定の基準にする）。
 _LEGACY_MODULE = _REPO_ROOT / "marketdata" / "api_contract.py"
 
 #: 所有者（実体）モジュール。付替え先はここ。

@@ -352,8 +352,8 @@ def _spy_on_repo_root(monkeypatch) -> "list[Path]":
 def test_repo_root_probes_are_issued_once_per_produced_path(monkeypatch) -> None:
     """出力 1 → 4 の 2 点で「発行した根探索 − 出力したパス数 = 0」（オーダーの表明）。
 
-    根探索は ``.git`` を求めて親方向へ走るファイルシステム走査であり、規則の解決経路
-    （``_load_path_tokens`` / ``_snapshot_base_dir``）が共有する唯一の重い手続きである。
+    根探索は ``.git`` を求めて親方向へ走るファイルシステム走査であり、規則の解決経路と
+    既定出力先の起点算出が共有する唯一の重い手続きである（``cap.find_repo_root``）。
     ここが出力量以外の何か（成分数・入力長・呼出のたびの重複探索）で増えると、作った端から
     捨てる走査が入り込む。期待値は**出力から導出**し、回数そのものは焼き込まない。
     """
