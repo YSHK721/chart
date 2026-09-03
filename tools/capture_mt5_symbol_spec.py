@@ -105,6 +105,7 @@ ACCOUNT_KEYS: "tuple[str, ...]" = ("company", "currency", "leverage", "server", 
 #: ``meta.terminal`` に記録する ``terminal_info()`` のキー。
 TERMINAL_KEYS: "tuple[str, ...]" = ("company", "name", "build")
 
+
 class CaptureError(RuntimeError):
     """取得の前提が崩れたことを表す（Fail-Stop）。黙って空ファイルを書かない。"""
 
@@ -139,12 +140,13 @@ def _load_path_tokens():
     """名前 → パス成分の変換規則を **持ってくる**（ここには実装を書かない）。
 
     規則の所有者は ``marketdata.path_tokens`` である（ISSUE-479 F-1）。かつて実体は本
-    スクリプト側にあり、最下層の ``marketdata/mt5_ticks/ingest.py`` が ``tools`` を import
+    スクリプト側にあり、最下層の ``marketdata/mt5_ticks/ingest.py`` が tools を import
     する層の逆流になっていた。所有権を下へ移し、本スクリプトは参照するだけにする。
 
     経路 1（リポジトリ内で実行）: ``find_repo_root`` が見つけた根を ``sys.path`` に載せて
-        ``marketdata.path_tokens`` を読む。``ingest`` と **同一の関数オブジェクト**を掴むので、
-        規則が 2 つに割れない（``marketdata/tests/test_mt5_equivalence.py`` が固定）。
+        ``marketdata.path_tokens`` を読む。台帳側（marketdata/mt5_ticks/ingest.py）と
+        **同一の関数オブジェクト**を掴むので、規則が 2 つに割れない
+        （``marketdata/tests/test_mt5_equivalence.py`` が固定）。
     経路 2（VM 単体）: 本スクリプトの隣に置いた写し ``path_tokens.py`` を読む。VM には
         リポジトリが無いため経路 1 は成立しない。
 

@@ -114,7 +114,7 @@ class _Info:
 
 
 class _FakeTerminal:
-    """``mt5_session`` が要求する最小の端末ダック（server が空白のみ＝パス成分に使えない）。"""
+    """capture のセッション文脈が要求する最小の端末ダック（server が空白のみ）。"""
 
     def initialize(self) -> bool:
         return True

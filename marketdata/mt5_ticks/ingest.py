@@ -4,14 +4,16 @@ MT5 の生の並びと marketdata の台帳の境目。台帳側の規約は :mo
 あり、列も日 partition のパスも本モジュールでは**定義しない**（import して委譲する）。
 
 依存宣言（``test_mt5_module_dependency_declarations.py`` が AST で強制）:
-    pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.mt5_ticks` 下位 /
-    ``tools.capture_mt5_symbol_spec.sanitize_path_component``。
+    pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.path_tokens` /
+    :mod:`marketdata.mt5_ticks` 下位。
 
-``tools`` から sanitize を import する理由（層としては逆向き）:
-    銘柄・サーバ名 → パス成分の変換規則は ``tools/capture_mt5_symbol_spec.py`` が
-    **既に持っている唯一の実装**である（ISSUE-445 の供給連鎖）。同じ規則を marketdata 側へ
-    複製すると、片方だけ直った瞬間にトークンが割れて別ディレクトリへ書き始める。
-    層の向きより「規則の第 2 実装を作らない」を優先する（設計 §4・検定 M-1）。
+sanitize を :mod:`marketdata.path_tokens` から取る理由（ISSUE-479 F-1）:
+    銘柄・サーバ名 → パス成分の変換規則の実体は、かつて ``tools/capture_mt5_symbol_spec.py``
+    にあり、本モジュールが tools を import していた（層の逆流・循環 C-1）。実害は例外型に
+    出ていた: sanitize が送出する CaptureError は tools の型なので
+    ``tools/mt5_tick_watch.py`` の捕捉集合をすり抜け、周期処理がトレースバックで exit 1 に
+    なっていた。所有権を依存ゼロの最下層へ移し、tools 側が同一関数を再エクスポートする
+    形にした（「規則の第 2 実装を作らない」は保ったまま層の向きが正になる・検定 M-1）。
 
 異常をすべて Fail-Stop にする理由:
     ここで通した値はそのまま台帳になる。部分的に書かれた台帳は、後から見て
@@ -28,7 +30,7 @@ import pandas as pd
 from marketdata import tick_m1
 from marketdata.mt5_ticks import server_clock
 from marketdata.mt5_ticks.port import Mt5SupplyError
-from tools.capture_mt5_symbol_spec import sanitize_path_component
+from marketdata.path_tokens import PathTokenError, sanitize_path_component
 
 #: ティック 1 行 = ``(サーバ時刻ラベル ms, bid, ask)``。
 Row = Tuple[int, float, float]
@@ -61,12 +63,23 @@ def token_for(symbol: str, server: str) -> str:
 
     Dukascopy 木（symbol="JP225"）と衝突しない別トークンになるため、既存木へ 1 バイトも
     波及しない。VM 側はトークンを作らない（コンテナ側だけが知る）。
+
+    失敗型を翻訳する理由（本モジュールが担う唯一の追加分岐）:
+        規則の所有者（:mod:`marketdata.path_tokens`）は「入力値が規則を満たさない」だけを
+        ``PathTokenError``（ValueError 系）で表明する。供給の失敗分類は
+        :mod:`marketdata.mt5_ticks.port` が持つので、ここで ``Mt5SupplyError`` へ写す。
+        写さないと ``tools/mt5_tick_watch.py`` の捕捉集合（SupplyUnavailable /
+        Mt5SupplyError / WireError）をすり抜け、周期処理がトレースバックで exit 1 になる。
+        原因は ``from exc`` で残す（どの値が規則を破ったかを捨てない）。
     """
-    return (
-        sanitize_path_component(symbol)
-        + TOKEN_SEPARATOR
-        + sanitize_path_component(server)
-    )
+    try:
+        return (
+            sanitize_path_component(symbol)
+            + TOKEN_SEPARATOR
+            + sanitize_path_component(server)
+        )
+    except PathTokenError as exc:
+        raise Mt5SupplyError(str(exc)) from exc
 
 
 def _check_types(row: "Sequence") -> Row:

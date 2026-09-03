@@ -33,9 +33,9 @@ _ALLOWED: "dict[str, set[str]]" = {
     "port.py": set(),
     # adapter: 台帳の権威へ委譲する。
     "journal.py": {"pandas", "marketdata.tick_m1", _SELF},
-    # `tools/capture_mt5_symbol_spec.py` はパス成分変換の**唯一の実装**であり、
-    # 複製を作らないために層の向きを曲げて import する（設計 §4・検定 M-1）。
-    "ingest.py": {"pandas", "marketdata.tick_m1", "tools.capture_mt5_symbol_spec", _SELF},
+    # パス成分変換の唯一の実装は `marketdata/path_tokens.py`（依存ゼロ・ISSUE-479 F-1）。
+    # かつては `tools/capture_mt5_symbol_spec.py` にあり、層の向きを曲げて import していた。
+    "ingest.py": {"pandas", "marketdata.tick_m1", "marketdata.path_tokens", _SELF},
     # 月別アーカイブ（zip）の取り込み。pandas を**持たない**のが要点で、行 → DataFrame は
     # ingest（権威）に、原子置換は journal に委譲する（ISSUE-447 段階 2）。
     "archive_ingest.py": {"marketdata.tick_m1", _SELF},
@@ -125,12 +125,17 @@ def test_the_pure_layer_never_reaches_for_pandas_or_numpy(filename):
     assert not (got & {"pandas", "numpy"}), f"{filename} が {sorted(got)} を import しています。"
 
 
-def test_only_ingest_reaches_into_tools():
-    """tools パッケージへの逆向き依存は sanitize 1 点に閉じる（無制限に広げない）。"""
+def test_no_module_reaches_into_tools():
+    """tools パッケージへの逆向き依存が **1 件も無い**（循環 C-1 の辺が消えた・ISSUE-479 F-1）。
+
+    かつては ingest.py だけが例外として許されていた（sanitize の唯一の実装が tools にあった
+    ため）。規則の所有者を ``marketdata.path_tokens`` へ移したので、例外は要らなくなった。
+    識別力: どこかで ``tools.*`` を import すると Red になる（免除リストを持たない）。
+    """
     offenders = {
         name for name in _ALLOWED
         if any(dep.startswith("tools") for dep in _external_imports(_PKG / name))
     }
-    assert offenders == {"ingest.py"}, (
-        f"``tools`` へ依存してよいのは ingest.py だけです: {sorted(offenders)}"
+    assert offenders == set(), (
+        f"``marketdata.mt5_ticks`` から ``tools`` への逆向き依存が残っています: {sorted(offenders)}"
     )
