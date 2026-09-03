@@ -246,6 +246,34 @@ def test_a_broken_marketdata_package_is_not_silently_replaced_by_the_copy(tmp_pa
     assert "definitely_absent_dependency" in proc.stderr, proc.stderr
 
 
+def test_a_repository_without_marketdata_does_fall_back_to_the_copy(tmp_path: Path) -> None:
+    """``.git`` はあるが marketdata が無い場所では、隣の写しへ**退いてよい**（case (a)）。
+
+    退避条件の**緩い側**の対照。case (b)(c) は「退かないこと」だけを主張するので、条件を
+    無条件 raise に書き換えても両者は緑のままになる。それでは「配布先が偶然どこかの git
+    リポジトリの中だった」だけで VM 運用が壊れる（``.git`` はあるが marketdata は無い）。
+    退いてよい唯一の形＝欠落名がちょうど ``marketdata`` であることを、ここで固定する。
+
+    識別力: 退避条件を無条件 raise にすると Red になる（実測で確認済み）。
+    """
+    # Arrange — .git はあるが marketdata が存在しない配布先。
+    dest = _standalone_distribution(tmp_path)
+    (dest / ".git").mkdir()
+    (dest / "_drive.py").write_text(_BROKEN_REPO_DRIVER, encoding="utf-8")
+
+    # Arrange の前提を検査化: 本当に marketdata が無く、退避先の写しは在る。
+    assert not (dest / "marketdata").exists()
+    assert (dest / "path_tokens.py").exists()
+    assert cap.find_repo_root(dest / _CAPTURE_SOURCE.name) == dest, "根が .git で検出されていない"
+
+    # Act
+    proc = _run_standalone(dest)
+
+    # Assert — 隣の写しで正常に動く（規則も正しい）。
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert proc.stdout.splitlines() == ["x"]
+
+
 def test_a_partially_installed_marketdata_is_not_silently_replaced_by_the_copy(
     tmp_path: Path,
 ) -> None:
