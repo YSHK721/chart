@@ -13,8 +13,8 @@
 
 規則の唯一化（F-9 / ISSUE-479）:
     判定は :func:`forming_patch`（純関数）1 つに集約し、list 版（:func:`apply_forming`）・
-    DataFrame 版（``adapter.compute.forming_bar.apply_forming_bar``）・ライブ末尾値
-    （``adapter.compute.live_tick_tails.make_tail_at``）はいずれもその**消費者**である。
+    DataFrame 版（indicator_ui の adapter/compute/forming_bar.py）・ライブ末尾値
+    （同 adapter/compute/live_tick_tails.py）はいずれもその**消費者**である。
 
 規則の出典:
     ``apply_forming`` は ``simulator/replay_ui/domain/forming_bar.apply`` の移設であり、
