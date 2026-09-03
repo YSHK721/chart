@@ -772,31 +772,93 @@ def test_the_incremental_state_is_not_rebuilt_on_a_period_crossing() -> None:
 
 # --- C-8 検出力（負の対照）------------------------------------------------- #
 
+class _AlwaysAppend:
+    """述語が常に「バーが進んだ」と答える突然変異（＝毎 tick 行を足す実装）。
+
+    行追加の可否を決めているのは :func:`adapter.compute.live_tick_tails.make_tail_at` の中の
+    共有核 :func:`common.forming_window.forming_patch` ただ 1 つである。そこだけを差し替えると
+    本番経路（controller → 窓供給 → make_tail_at → 注入）はそのまま走り、「毎 tick 行を足す」
+    実装が実際に出来上がる。発行数は**その実装が数えた実測値**であって、検定が置いた定数ではない。
+    """
+
+    mode = "append"
+
+
+def _issued_and_crossed_appending_every_tick(ticks) -> "tuple[int, int]":
+    """毎 tick 行を足す突然変異を**実 SUT へ注入**して測る ``(注入の発行数, 触れたバー本数)``。"""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ltt, "forming_patch", lambda *a, **k: _AlwaysAppend())
+        rec = _run(mp, labels=_NO_GAP_LABELS, ticks=ticks)
+    return len(rec.inject_bars), _crossed_bars(ticks)
+
+
 def test_adding_a_row_every_tick_breaks_the_crossing_relation() -> None:
-    """C-8a: 「毎 tick 行を足す」突然変異では C-4 の関係式が破れる（検出力の実証）。"""
-    # Arrange — 跨ぎ 0 のバッチで、tick ごとに 1 行足す実装を模す。
-    ticks = _MANY_TICKS
-    crossed = _crossed_bars(ticks)
-    mutant_issued = 1 + len(ticks)          # 窓供給 1 回 ＋ 毎 tick の行追加
+    """C-8a: 「毎 tick 行を足す」突然変異を実 SUT へ注入すると C-4 の関係式が破れる。
 
-    # Act
-    honest_issued, honest_crossed = _issued_and_crossed(ticks)
+    突然変異の発行数を検定が算術で置くと、置いた定数どうしの比較になり SUT を一切通らない
+    （どんな実装でも同じ結論が出る＝検出力を証明していない）。ここでは述語を差し替えて本番経路を
+    走らせ、**実装が実際に発行した回数**で関係式が破れることを観測する。
+    """
+    # Arrange / Act — 同じ入力（跨ぎ 0 の 16 tick）を、正しい実装と突然変異の両方で走らせる。
+    honest_issued, honest_crossed = _issued_and_crossed(_MANY_TICKS)
+    mutant_issued, mutant_crossed = _issued_and_crossed_appending_every_tick(_MANY_TICKS)
 
-    # Assert — 正しい実装は関係式を満たし、突然変異は満たさない。
-    assert honest_issued - 1 == honest_crossed - 1
-    assert mutant_issued - 1 != crossed - 1
+    # Assert
+    assert mutant_issued > honest_issued            # 突然変異が実経路で効いた（検定が空振りでない）
+    assert honest_issued - 1 == honest_crossed - 1  # 正しい実装は関係式を満たす
+    assert mutant_issued - 1 != mutant_crossed - 1  # 突然変異は満たさない＝C-4 に検出力が在る
+
+
+def _synthesis_issued_per_tick(labels, ticks) -> int:
+    """窓供給を **tick ごとに呼ぶ** 突然変異の合成発行数（合成規則は実物のまま走らせる）。
+
+    ISSUE-481 で避けたいのはまさにこれ（要求あたり 1 回の窓供給が tick ループの中へ落ちる）で
+    ある。窓を受け取り直さずに毎回同じ確定窓から供給するので、同じ穴の閉周期合成が tick 数だけ
+    発行される。合成規則そのもの（:func:`adapter.compute.forming_bar.closed_gap_bars`）と適用点
+    （:func:`adapter.compute.live_tick_tails.window_with_forming`）は実物を通す。
+    """
+    from adapter.compute import forming_bar as fb
+
+    starts: "list[int]" = []
+
+    def _reader(start, end):  # noqa: ANN001, ARG001
+        starts.append(int(start))
+        return _synthetic_closed(int(start), ())
+
+    window = _confirmed_window(*labels)
+    bar = {"time": _unix(_FORMING_MINUTE), "open": 100.0, "high": 101.0,
+           "low": 100.0, "close": 101.0, "volume": 2.0}
+
+    def _gap_bars(last):
+        return fb.closed_gap_bars(_REF, "1m", last, int(bar["time"]))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fb, "forming_bar_from_ticks", _reader)
+        for _tick in ticks:                     # 窓を進めない＝毎 tick 同じ穴を読み直す
+            ltt.window_with_forming(
+                window, bar, inject=fb.inject_forming_bars, gap_bars=_gap_bars,
+            )
+    return len(starts)
 
 
 def test_synthesising_every_tick_breaks_the_tick_independence() -> None:
-    """C-8b: 「毎 tick 合成する」突然変異では C-2 の tick 数非比例が破れる。"""
-    # Arrange
-    gap1 = _synthesis_issued(_GAP1_LABELS, _TICKS)
-    many = _synthesis_issued(_GAP1_LABELS, _MANY_TICKS)
-    mutant_many = gap1 * len(_MANY_TICKS)   # tick ごとに同じ穴を読み直す実装を模す
+    """C-8b: 「毎 tick 合成する」突然変異を実 SUT へ注入すると C-2 の tick 数非比例が破れる。
 
-    # Act / Assert
-    assert many == gap1                     # 正しい実装は tick 数に非比例
-    assert mutant_many != gap1              # 突然変異は tick 数に比例して落ちる
+    突然変異の発行数を ``正しい発行数 × tick 数`` と算術で置くと、その比較は SUT を通らず
+    「tick 数が 1 でない」ことしか言っていない。ここでは C-2 と同じ 2 点（tick 2 本 / 16 本）を
+    突然変異でも実測し、正しい実装では動かない量が突然変異では動くことを観測する。
+    """
+    # Arrange / Act — 欠落 1 本の窓で、tick 2 本 / 16 本の 2 点を両実装について測る。
+    honest_few = _synthesis_issued(_GAP1_LABELS, _TICKS)
+    honest_many = _synthesis_issued(_GAP1_LABELS, _MANY_TICKS)
+    mutant_few = _synthesis_issued_per_tick(_GAP1_LABELS, _TICKS)
+    mutant_many = _synthesis_issued_per_tick(_GAP1_LABELS, _MANY_TICKS)
+
+    # Assert
+    assert honest_few > 0, "合成が 1 度も発行されていません（検定が空振り）"
+    assert mutant_few > 0, "突然変異が実経路で効いていません（検定が空振り）"
+    assert honest_many == honest_few    # 正しい実装は tick 数に非比例
+    assert mutant_many != mutant_few    # 突然変異は tick 数で増える＝C-2 に検出力が在る
 
 
 def test_removing_the_cap_breaks_the_gap_bound() -> None:
