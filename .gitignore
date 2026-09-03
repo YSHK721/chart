@@ -118,6 +118,11 @@ data/marketdata
 # blanket *.csv ignore から除外し、移設前コードで採取した golden を版管理に固定する。
 !indigators/indicator_ui/api/tests/golden/
 !indigators/indicator_ui/api/tests/golden/**
+# tools のテスト golden（ISSUE-479 M-4）。verify_pseudo_vwap の分割前に採取した --json 出力の
+#   凍結であり、これが追跡されないと clean clone で「分割は出力を変えていない」の証拠が消える。
+#   生成物ではあるが**移設前の挙動の記録そのもの**なので、blanket `*.json` から除外して追跡する。
+!tools/tests/fixtures/
+!tools/tests/fixtures/**
 # 銘柄仕様スナップショット（ISSUE-445 段階 2・供給元 MT5 の権威値を機械取得した台帳）。
 #   時系列データではなく**版管理する台帳**であり、上の blanket `*.json` から除外する。
 #   これに巻き込まれると台帳が clean clone に無く、銘柄仕様の唯一の権威が消える。

@@ -45,14 +45,29 @@ from typing import List, Optional, Sequence, Tuple
 
 LOG = logging.getLogger("build_tick_rollup")
 
-# 出力 ref（tick 由来）と既定の全期間起点（既存 tick tree の最古日＝2012-06-14・--full-start 上書き可）。
+# 出力 ref（tick 由来）と既定の全期間起点（既存 tick tree の最古日・--full-start 上書き可）。
+# 起点の値は datasetRef 記述子レジストリ（唯一源）の ``data_start`` から**導出**する
+# （ISSUE-479 M-4 段階 A）。「素材がいつから在るか」はデータセットの属性であって、
+# 本パイプラインの設定ではない。値・CLI 既定・help 文言は従来と不変。
 REF = "jp225_tick"
-_DEFAULT_FULL_START = dt.date(2012, 6, 14)
 STAGE_NAMES = ("acquire", "m1", "rollup")
 
 
 class PipelineError(RuntimeError):
     """本パイプライン固有の明示エラー。"""
+
+
+def _registry_data_start(ref: str) -> dt.date:
+    """datasetRef の素材開始日を記述子レジストリ（唯一源）から引く。"""
+    from marketdata.dataset_registry import REGISTRY  # 遅延: import 副作用を実行時に限定
+
+    start = REGISTRY[ref].data_start
+    if start is None:
+        raise PipelineError(f"datasetRef {ref!r} に data_start が登録されていません。")
+    return start
+
+
+_DEFAULT_FULL_START = _registry_data_start(REF)
 
 
 # --------------------------------------------------------------------------- #

@@ -16,6 +16,7 @@ datasetRef ごとの属性（実 CSV パス・外れ値クランプ対象か・�
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,10 @@ class DatasetDescriptor:
         clamp_outliers: 読取時 外れ値クランプ（serving 戦略）の対象か（実市場 ref のみ True）。
         rollup: 1 分足原子＋事前生成ロールアップ CSV の供給経路を使うか（メモリ有界化・D-2）。
         tick: 形成中バー/tf-period を供給するティック由来 ref か（ticks parquet を持つ）。
+        data_start: 素材が実在する最古日（全期間再構築の既定起点）。ISSUE-479 M-4 段階 A:
+            この値は ``tools/build_tick_rollup`` が全期間起点として持っていたが、「その
+            データセットの素材がいつから在るか」は台帳の属性であり、パイプライン側の設定では
+            ない。持たない ref は None（全期間起点の概念が無い＝日足同梱データ等）。
     """
 
     path: Path
@@ -46,6 +51,7 @@ class DatasetDescriptor:
     clamp_outliers: bool = False
     rollup: bool = False
     tick: bool = False
+    data_start: "dt.date | None" = None
 
 
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
@@ -84,6 +90,9 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         clamp_outliers=True,
         rollup=True,
         tick=True,
+        # 既存 tick tree の最古日（実測 2012-06-14）。build_tick_rollup の全期間起点は本値の
+        # 導出であり、CLI 既定・help 文言とも従来と 1 バイトも変わらない（ISSUE-479 M-4 段階 A）。
+        data_start=dt.date(2012, 6, 14),
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /

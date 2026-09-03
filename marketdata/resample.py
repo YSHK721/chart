@@ -74,9 +74,17 @@ _NY_TZ = "America/New_York"
 _BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
 
 
-def _to_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    """naive UTC index → naive ブローカー時間 index（DST は IANA tz へ委譲・自前カレンダー禁止）。"""
+def to_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """naive UTC index → naive ブローカー時間 index（DST は IANA tz へ委譲・自前カレンダー禁止）。
+
+    ISSUE-479 M-4: セッション日への index 写像はセッション集計の規則そのものであり、外部
+    （検証スクリプト）が同じ写像を必要とする。式を写させないため公開名を与えた。
+    """
     return idx.tz_localize("UTC").tz_convert(_NY_TZ).tz_localize(None) + _BROKER_SHIFT
+
+
+#: 旧 private 名（**同一オブジェクト**）。既存参照を 1 箇所も変えないために温存する。
+_to_broker_naive_index = to_broker_naive_index
 
 
 def resample_ohlc_session(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:

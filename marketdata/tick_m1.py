@@ -62,7 +62,10 @@ _HEADER = _csv_schema.HEADER
 _OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた値列。
 _DATE_FMT = _csv_schema.DATE_FMT
 # 集計に要する生ティックの必須列（ingest.RAW_COLUMNS の price 部分集合）。
-_TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
+#   ISSUE-479 M-4: 外部（tools の検証スクリプト）が読む列の唯一源なので公開名を与えた。
+#   private 名は**同一オブジェクトのまま**温存する（既存参照は 1 箇所も変わらない）。
+TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
+_TICK_COLUMNS = TICK_COLUMNS
 # 価格基準（price basis）— 生ティックのどの気配を「価格」とするか。
 #   既定は mid（従来の唯一の規則）。bid は MT5 端末チャートが描いている系列であり、
 #   同じティックから mid で M1 を作ると端末表示と系統的にずれる（ISSUE.md 段階 0 実測 T5:
