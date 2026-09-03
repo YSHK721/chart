@@ -297,3 +297,225 @@ def test_split_prefix_tails_equivalence_still_holds() -> None:
     # Assert
     for forming, tail in zip(formings, tails):
         assert prefix + tail == apply_forming(_BARS, forming)
+
+
+# --------------------------------------------------------------------------- #
+# 4. list 版 / DataFrame 版の突合（同じ規則が同じ答えを出す）
+# --------------------------------------------------------------------------- #
+
+import pandas as pd  # noqa: E402  — 突合は DataFrame 版が要るため、ここから下でのみ使う
+from pandas.testing import assert_frame_equal  # noqa: E402
+
+from adapter.compute import forming_bar as fb  # noqa: E402
+
+_REF = "jp225_tick"
+_TF = "5m"
+_NOW = 999
+
+
+def _unix(text: str) -> int:
+    """naive UTC の日時文字列 → UNIX 秒（``.timestamp()`` は使わない）。"""
+    return int(pd.Timestamp(text).value // 1_000_000_000)
+
+
+def _frame(bars, *, columns=None) -> "pd.DataFrame":
+    """list 表現のバー列を date-index の DataFrame へ射影する（同じ材料の別表現）。"""
+    index = pd.DatetimeIndex(
+        [pd.Timestamp(int(b["time"]), unit="s") for b in bars], name="date"
+    )
+    frame = pd.DataFrame({k: [float(b[k]) for b in bars] for k in _FIELDS}, index=index)
+    if columns is not None:
+        frame.columns = columns
+    return frame
+
+
+def _normalize_frame(frame) -> "list[tuple]":
+    """DataFrame 表現を list 表現と同じ正規形 ``(time, o, h, l, c, v)`` へ。"""
+    lower = {str(c).lower(): c for c in frame.columns}
+    return [
+        (
+            int(pd.Timestamp(ts).value // 1_000_000_000),
+            *(_pack(row[lower[k]]) if k in lower else None for k in _FIELDS),
+        )
+        for ts, row in frame.iterrows()
+    ]
+
+
+def _forming_at(text: str, values: "dict") -> "dict":
+    """``text`` 時刻の形成中バー（DataFrame 版の事前条件を満たす 5 キー完備）。"""
+    return {"time": _unix(text), **values}
+
+
+#: 突合用の窓（末尾 = 09:05）。list / DataFrame の同じ材料。
+_WINDOW = [
+    {"time": _unix("2025-01-02 09:00:00"), "open": 1.0, "high": 2.0,
+     "low": 0.5, "close": 1.5, "volume": 10.0},
+    {"time": _unix("2025-01-02 09:05:00"), "open": 1.5, "high": 2.5,
+     "low": 1.0, "close": 2.0, "volume": 20.0},
+]
+
+#: 8 分岐を DataFrame 版が受け取れる形（5 キー完備）で表現したもの。
+_PARITY_CASES = {
+    "t<last": _forming_at("2025-01-02 09:00:00", _FULL),
+    "t==last": _forming_at("2025-01-02 09:05:00", _FULL),
+    "t>last": _forming_at("2025-01-02 09:10:00", _FULL),
+    "None": None,
+    "non-mapping": "x",
+    "time-missing": dict(_FULL),
+    "time-non-numeric": {"time": "abc", **_FULL},
+    "mixed-case-keys": {"time": _unix("2025-01-02 09:05:00"), "Open": 3.25,
+                        "HIGH": 4.5, "low": 2.125, "Close": 3.75, "VOLUME": 7.0},
+}
+
+
+def test_the_dataframe_path_derives_the_rule_from_the_shared_predicate() -> None:
+    """DataFrame 版は規則を持たず、共有核の述語を参照する（実装の二重化を構造で禁じる）。"""
+    # Arrange / Act / Assert
+    assert fb.forming_patch is fw.forming_patch
+
+
+@pytest.mark.parametrize("name", sorted(_PARITY_CASES))
+def test_list_and_dataframe_paths_agree_on_every_branch(name, monkeypatch) -> None:
+    """同じ ``(bars, forming)`` に対し list 版と DataFrame 版の出力が byte 一致する。"""
+    # Arrange
+    forming = _PARITY_CASES[name]
+    frame = _frame(_WINDOW)
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+
+    # Act
+    from_list = apply_forming(_WINDOW, forming)
+    from_frame = fb.apply_forming_bar(
+        frame, _REF, _TF, _NOW, synthesize_closed_gaps=False
+    )
+
+    # Assert
+    assert _normalize_frame(from_frame) == _normalize_bars(from_list)
+
+
+def test_missing_ohlcv_keys_keep_their_branching(monkeypatch) -> None:
+    """5 キー欠落は分岐を保存する: list は skip（在るキーだけ更新）・DataFrame は KeyError。
+
+    共有核は「forming に在るキーだけ更新」で欠落を許すが、ライブ注入は OHLCV 完備のバーしか
+    作らない。欠落は上流の破損なので DataFrame 版は握らず露出させる（事前条件を緩めない）。
+    """
+    # Arrange
+    partial = {"time": _unix("2025-01-02 09:05:00"), "close": 9.9}
+    frame = _frame(_WINDOW)
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: partial)
+
+    # Act
+    from_list = apply_forming(_WINDOW, partial)
+
+    # Assert
+    assert from_list[-1]["close"] == 9.9 and from_list[-1]["open"] == 1.5
+    with pytest.raises(KeyError):
+        fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+
+def test_missing_key_without_a_matching_column_is_not_a_precondition_breach(monkeypatch) -> None:
+    """列が無いキーの欠落は従来どおり無害（事前条件は「列が在るキー」だけに掛かる）。"""
+    # Arrange
+    frame = _frame(_WINDOW)[["close"]]
+    partial = {"time": _unix("2025-01-02 09:05:00"), "close": 9.9}
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: partial)
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+    # Assert
+    assert float(out.iloc[-1]["close"]) == 9.9 and len(out) == len(_WINDOW)
+
+
+# --------------------------------------------------------------------------- #
+# 5. ライブ経路の 1 ビット不変（改修前ロジックの golden をテスト内で明示構築）
+# --------------------------------------------------------------------------- #
+
+def _legacy_inject(df, to_inject):
+    """改修前 ``forming_bar.py:326-334`` と同値の写し（期待値の明示構築）。"""
+    out = df.copy()
+    lower = {str(c).lower(): c for c in out.columns}
+    for b in to_inject:
+        bt = pd.Timestamp(int(b["time"]), unit="s")
+        for key in _FIELDS:
+            col = lower.get(key)
+            if col is not None:
+                out.loc[bt, col] = float(b[key])
+    return out.sort_index()
+
+
+@pytest.mark.parametrize("name", ["t==last", "t>last"])
+def test_live_injection_output_is_bit_identical_to_the_pre_change_logic(name, monkeypatch) -> None:
+    """注入結果が改修前と 1 ビット一致する（``check_exact=True``）。"""
+    # Arrange
+    forming = _PARITY_CASES[name]
+    frame = _frame(_WINDOW)
+    golden = _legacy_inject(frame, [forming])
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+    # Assert
+    assert_frame_equal(out, golden, check_exact=True)
+
+
+def test_live_injection_with_uppercase_columns_is_bit_identical(monkeypatch) -> None:
+    """大文字列名の窓でも改修前と 1 ビット一致する（列照合は大小無視のまま）。"""
+    # Arrange
+    forming = _PARITY_CASES["t>last"]
+    frame = _frame(_WINDOW, columns=[c.upper() for c in _FIELDS])
+    golden = _legacy_inject(frame, [forming])
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+    # Assert
+    assert_frame_equal(out, golden, check_exact=True)
+
+
+def test_synthesized_closed_gap_injection_is_bit_identical(monkeypatch) -> None:
+    """欠落閉周期の合成を伴う経路（ISSUE-162）も改修前と 1 ビット一致する。"""
+    # Arrange
+    frame = _frame(_WINDOW[:1])
+    forming = _forming_at("2025-01-02 09:02:00", _FULL)
+    closed = _forming_at("2025-01-02 09:01:00",
+                         {"open": 2.0, "high": 2.5, "low": 1.9, "close": 2.2, "volume": 6.0})
+    golden = _legacy_inject(frame, [closed, forming])
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+    monkeypatch.setattr(
+        fb, "forming_bar_from_ticks",
+        lambda s, e: closed if s == closed["time"] else None,
+    )
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, "1m", _NOW)
+
+    # Assert
+    assert_frame_equal(out, golden, check_exact=True)
+
+
+def test_no_injection_still_passes_the_same_object_through(monkeypatch) -> None:
+    """注入するものが無ければ複製もせず同一オブジェクトを返す（:324 の素通し契約）。"""
+    # Arrange
+    frame = _frame(_WINDOW)
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: None)
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+    # Assert
+    assert out is frame
+
+
+def test_a_forming_bar_older_than_the_window_tail_passes_the_frame_through(monkeypatch) -> None:
+    """末尾より過去の形成中バーは触らない（防御分岐が述語由来になっても同一オブジェクト）。"""
+    # Arrange
+    frame = _frame(_WINDOW)
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: _PARITY_CASES["t<last"])
+
+    # Act
+    out = fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
+
+    # Assert
+    assert out is frame

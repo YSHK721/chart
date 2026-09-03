@@ -32,6 +32,7 @@ import sys as _sys
 from pathlib import Path as _Path
 
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
+from common.forming_window import forming_patch  # noqa: E402  (差し替え規則の唯一の述語・F-9)
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
 from marketdata.tick_m1 import day_parquet_files, forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
@@ -293,9 +294,11 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     if df is None or len(df) == 0:
         return df
     if bar is not None:
-        t = pd.Timestamp(int(bar["time"]), unit="s")  # naive UTC（df.index と同基準）
-        if t < df.index[-1]:
-            return df  # 形成中バーが既存末尾より過去 → 触らない（異常時の防御）。
+        # 差し替え規則は共有核 forming_patch ただ 1 つ（list 版 apply_forming と同一述語・F-9）。
+        #   末尾 time の変換は :204 と同じ式（naive UTC → unix 秒）。``.timestamp()`` は使わない。
+        last_time = int(pd.Timestamp(df.index[-1]).value // 1_000_000_000)
+        if forming_patch(last_time, bar).mode == "skip":
+            return df  # 形成中バーが既存末尾より過去／time 不正 → 触らない（異常時の防御）。
 
     # ISSUE-162: 注入するバーを先に確定する（欠落閉周期の tick 合成＋形成中バー）。
     #   形成中バーが None（新周期の tick 未着＝境界直後の数秒）でも閉周期合成は独立に行う
@@ -326,9 +329,19 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     out = df.copy()
     lower = {str(c).lower(): c for c in out.columns}
     for b in to_inject:
-        bt = pd.Timestamp(int(b["time"]), unit="s")
+        # 列決定（大小無視の照合・float 正規化）も共有核から導出する。末尾との比較は上で済んで
+        #   いるため、ここで要るのは「どの列へ何を書くか」だけ（last_time=None → append）。
+        patch = forming_patch(None, b)
+        if patch.mode == "skip":
+            raise KeyError("time")  # adapter 側の追加事前条件: time 必須（緩めない）。
+        bt = pd.Timestamp(patch.time, unit="s")
         for key in ("open", "high", "low", "close", "volume"):
             col = lower.get(key)
-            if col is not None:
-                out.loc[bt, col] = float(b[key])
+            if col is None:
+                continue
+            if key not in patch.values:
+                # 共有核は「forming に在るキーだけ更新」だが、ライブ注入は OHLCV 完備のバーしか
+                #   作らない。欠落は上流の破損なので握らず露出させる（事前条件を緩めない）。
+                raise KeyError(key)
+            out.loc[bt, col] = patch.values[key]
     return out.sort_index()
