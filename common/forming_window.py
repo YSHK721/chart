@@ -72,7 +72,9 @@ def forming_patch(last_time: Any, forming: "Mapping[str, Any] | None") -> Formin
 
     Raises:
         ValueError / TypeError: ``last_time`` または値が数値へ変換できない場合（呼び出し側の
-            前提違反をここで潰さない＝黙って別の値を描かない）。
+            前提違反をここで潰さない＝黙って別の値を描かない）。``last_time`` が遅延参照
+            （:class:`_LastBarTime`）の場合は、その解決で生じる例外（``KeyError`` 等）も
+            同じ理由でそのまま通す。
     """
     if not isinstance(forming, Mapping):
         return FormingPatch("skip", 0, {})
@@ -90,6 +92,28 @@ def forming_patch(last_time: Any, forming: "Mapping[str, Any] | None") -> Formin
     return FormingPatch(mode, t, values)
 
 
+class _LastBarTime:
+    """窓の末尾 ``time`` を「規則が実際に要求した時点」で解決する遅延参照。
+
+    なぜ即値で渡さないか: list 版は「``forming`` が非 Mapping・``time`` 欠落/非数値なら
+    **末尾を見ずに**無変更」という順序を持つ（規則を述語へ集約する前からの挙動）。
+    ``forming_patch(out[-1]["time"], forming)`` と即時評価すると、無変更で済むはずの入力が
+    末尾バーの ``time`` 欠落で ``KeyError`` になり、順序が失われる。判定の分岐を呼び出し側へ
+    書き戻す（＝規則を二重化する）ことなく順序だけを保つため、末尾 time の解決を遅らせる。
+
+    欠落は ``KeyError``・非数値は ``ValueError``（``int()`` が送出する種別のまま）で、
+    いずれも握らない。
+    """
+
+    __slots__ = ("_bar",)
+
+    def __init__(self, bar: "Mapping[str, Any]") -> None:
+        self._bar = bar
+
+    def __int__(self) -> int:
+        return int(self._bar["time"])
+
+
 def apply_forming(
     bars: "Sequence[Mapping[str, Any]]", forming: "Mapping[str, Any] | None"
 ) -> "list[dict]":
@@ -97,7 +121,7 @@ def apply_forming(
     out = [dict(b) for b in bars]
     if len(out) == 0:
         return out  # 空窓は list API 固有の契約（述語ではなくここが持つ）。
-    patch = forming_patch(out[-1]["time"], forming)
+    patch = forming_patch(_LastBarTime(out[-1]), forming)
     if patch.mode == "skip":
         return out
     if patch.mode == "replace":  # 末尾を置換

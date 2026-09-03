@@ -83,6 +83,12 @@ _BARS = [
     {"time": 200, "open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0, "volume": 20.0},
 ]
 
+#: 末尾バーに ``time`` が無い異常窓（旧実装の「末尾をいつ見るか」を固定するための材料）。
+_BARS_WITHOUT_TAIL_TIME = [
+    {"time": 100, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
+    {"open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0, "volume": 20.0},
+]
+
 _FULL = {"open": 3.25, "high": 4.5, "low": 2.125, "close": 3.75, "volume": 7.0}
 
 #: 規則の 8 分岐（同値分割＋境界値: 末尾 time の直下・同値・直上）。
@@ -181,6 +187,45 @@ def test_apply_forming_output_is_byte_identical_to_the_pre_change_logic(name) ->
     # Assert
     assert _normalize_bars(got) == _normalize_bars(golden)
     assert got == golden  # キーの集合・挿入順まで一致
+
+
+#: 末尾 time を**見ずに**無変更で終わる入力（forming 側だけで判定が確定する）。
+_TAIL_TIME_NOT_REQUIRED = ("None", "non-mapping", "time-missing", "time-non-numeric")
+
+#: 末尾 time との比較が要る入力（末尾 time の欠落はここで初めて露出する）。
+_TAIL_TIME_REQUIRED = ("t<last", "t==last", "t>last", "mixed-case-keys")
+
+
+@pytest.mark.parametrize("name", _TAIL_TIME_NOT_REQUIRED)
+def test_an_invalid_forming_is_decided_without_looking_at_the_window_tail(name) -> None:
+    """``forming`` 側だけで無変更が確定する入力は、窓の末尾を参照せずに終わる（旧実装の順序）。
+
+    旧実装は「非 Mapping・``time`` 欠落/非数値なら末尾を見ずに無変更」の順序を持っていた。
+    述語化でこの順序が失われると、無変更で済むはずの入力（``forming=None`` 等）が末尾バーの
+    ``time`` 欠落で ``KeyError`` になる。緩和ではなく硬化だが、どちらも「挙動を 1 ビットも
+    変えない」に反する（F-9 の適用範囲は規則の単一化であって挙動の変更ではない）。
+    """
+    # Arrange
+    forming = _RULE_CASES[name]
+
+    # Act
+    got = apply_forming(_BARS_WITHOUT_TAIL_TIME, forming)
+
+    # Assert
+    assert got == _legacy_apply_forming(_BARS_WITHOUT_TAIL_TIME, forming)
+
+
+@pytest.mark.parametrize("name", _TAIL_TIME_REQUIRED)
+def test_a_valid_forming_still_requires_the_window_tail_time(name) -> None:
+    """末尾との比較が要る入力では、末尾 ``time`` の欠落を握らず旧実装と同じ例外を出す。"""
+    # Arrange
+    forming = _RULE_CASES[name]
+    with pytest.raises(KeyError):
+        _legacy_apply_forming(_BARS_WITHOUT_TAIL_TIME, forming)  # 旧実装の露出（期待値の明示）
+
+    # Act / Assert
+    with pytest.raises(KeyError):
+        apply_forming(_BARS_WITHOUT_TAIL_TIME, forming)
 
 
 def test_apply_forming_still_preserves_unspecified_fields_on_replace() -> None:
