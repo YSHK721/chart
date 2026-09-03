@@ -718,3 +718,63 @@ def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
     # Assert
     assert seen == [{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.75, "volume": 3.0}]
     assert float(window.iloc[-1]["close"]) == 2.0  # 入力 df は複製されており不変
+
+
+# --------------------------------------------------------------------------- #
+# 7. 計算量テスト（絶対命令）— 閉周期合成は gap 長を実体化せず上限で有界
+# --------------------------------------------------------------------------- #
+
+class _SynthesisSpy:
+    """素材集計（forming_bar_from_ticks）が受け取った窓 ``(start, end)`` を記録する Test Spy。
+
+    回数そのものは期待値へ焼き込まない（焼き込むと浪費が仕様へ昇格する＝ISSUE-450）。
+    固定するのは **無駄の不在**（gap 長を増やしても発行が増えないこと）だけである。
+    """
+
+    def __init__(self, monkeypatch, *, result=None) -> None:
+        self.windows: "list[tuple[int, int]]" = []
+
+        def counting(start, end):
+            self.windows.append((int(start), int(end)))
+            return None if result is None else result(int(start), int(end))
+
+        monkeypatch.setattr(fb, "forming_bar_from_ticks", counting)
+
+
+def _issued_for_gap(gap_periods: int) -> "list[tuple[int, int]]":
+    """欠落 ``gap_periods`` 周期に対して閉周期合成が発行した窓の列を返す。"""
+    period = fb.fixed_period_seconds(_REF, "1m")
+    last = _unix("2025-01-02 09:00:00")
+    with pytest.MonkeyPatch.context() as mp:
+        spy = _SynthesisSpy(mp)
+        fb.closed_gap_bars(_REF, "1m", last, last + period * (gap_periods + 1))
+        return spy.windows
+
+
+def test_closed_gap_synthesis_does_not_grow_with_the_gap_length() -> None:
+    """欠落 gap を 10 倍にしても合成の発行数は変わらない（オーダーの表明・2 点で固定）。
+
+    ここが gap 長に比例すると、出力（窓に並ぶ行）は正しいまま「作っては捨てる」浪費が入り、
+    状態検証では原理的に落ちない（ISSUE-450 の失敗モード）。上限は実装の定数から導出し、
+    回数リテラルは書かない。
+    """
+    # Arrange / Act
+    small, large = _issued_for_gap(2000), _issued_for_gap(20000)
+
+    # Assert
+    assert small, "合成が 1 度も発行されていません（検定が空振りしています）"
+    assert len(small) == len(large)                     # gap 長に非比例
+    assert len(large) <= fb._MAX_GAP_FILL_PERIODS       # 上限で有界
+
+
+def test_the_gap_enumeration_is_not_materialised() -> None:
+    """欠落周期の列挙は ``range`` のまま扱う（gap 長ぶんの list を作って捨てない）。
+
+    ``list(...)`` へ落とすと、上限で切り詰める前に gap 長ぶんの要素を必ず実体化する。
+    出力は同じなので状態検証では見えない浪費であり、型そのものを固定して禁じる。
+    """
+    # Arrange / Act
+    starts = fb._gap_starts(0, 60 * 20000, 60)
+
+    # Assert
+    assert isinstance(starts, range)
