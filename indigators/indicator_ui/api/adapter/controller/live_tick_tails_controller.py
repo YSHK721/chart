@@ -215,21 +215,27 @@ def handle_live_tick_tails(
         #   まま append される（無警告・ISSUE-481 残存 B）。恒久解は ISSUE-481（閉周期合成の
         #   窓供給側適用）。states は ticks と同数・同順で、ticks が空なら本関数は既に None を
         #   返しているため、必ず 1 件以上ある。
-        df = window_with_forming(
-            df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
-        )
-        tail_at = make_tail_at(
-            df=df, adapter=compute_adapter,
-            latest_compute=latest_compute, set_last_bar=_set_last_bar,
-        )
         # ISSUE-278 #3: 増分器の実装バグは adapter が握らず、この境界まで伝播させる。ここで
         #   **1 度だけ記録**して当該グループを落とす（他の計算足の末尾値は出す）。以前は adapter が
         #   無言で None を返しており、指標が痕跡なくティック更新から消えて原因が追えなかった。
+        #   窓供給（window_with_forming）も同じ契約に入れる（2 巡目レビュー 🟡-4）。注入は
+        #   事前条件を緩めない設計（欠けた OHLCV キーで KeyError）なので、契約の外に置くと
+        #   1 つの計算足の材料破損で /live_ticks の応答全体が落ちた。_load_window・_bar_seed と
+        #   同じ「そのグループだけ落とす」規律へ揃える。窓は失敗時に作られない（try の中で
+        #   供給してから使うため、使わない窓を作って捨てる経路が構造上できない）。
         try:
+            df = window_with_forming(
+                df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
+            )
+            tail_at = make_tail_at(
+                df=df, adapter=compute_adapter,
+                latest_compute=latest_compute, set_last_bar=_set_last_bar,
+            )
             batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
         except Exception:  # noqa: BLE001 — 記録したうえで当該計算足だけ落とす（無言にしない）。
             logger.exception(
-                "live_ticks: 末尾値の計算に失敗（計算足=%s・指標=%s）＝当該グループを落とす",
+                "live_ticks: 末尾値の窓供給または計算に失敗（計算足=%s・指標=%s）"
+                "＝当該グループを落とす",
                 group_tf, [s.indicator_id for s in group_specs],
             )
 
