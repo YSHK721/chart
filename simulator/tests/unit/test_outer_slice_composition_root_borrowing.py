@@ -27,14 +27,14 @@
     許可を**責務**で宣言し、それ以外を既定で違反にする（ホワイトリスト）ことで、
     main に計算が増えるたびに外側スライスがそれを借りれば必ず赤になる。
 
-現在の違反（S-2・凍結中）:
-    `_FROZEN_OFFENDERS` の 2 件は「EMA 系列の計算が Composition Root に居座り、
-    2 つの外側スライスがそこから借りている」という 1 つの構造違反（S-2）の 2 つの現れ
-    である。解消は本 Wave のフェーズ 2-3/2-4（当該計算を
-    `simulator/adapter/indicator/madiff.py` へ移し、消費側 2 行を差し替える）で行う。
-    凍結は単調減少しかできない: 解消済みの凍結が残ると
-    test_no_frozen_offender_is_stale が赤になり、除去を強制する
-    （静的品質ゲートの baseline と同じ規律）。
+違反の履歴（S-2・解消済み）:
+    新設時に凍結した 2 件は「EMA 系列の計算が Composition Root に居座り、2 つの外側
+    スライスがそこから借りている」という 1 つの構造違反（S-2）の 2 つの現れだった。
+    フェーズ 2-3 で当該計算を `simulator/adapter/indicator/madiff.py` へ移し、
+    2-4 で消費側 2 行を差し替えて解消した。そのとき
+    test_no_frozen_offender_is_stale が実際に赤くなり、凍結の除去を強制した
+    （凍結は単調減少しかできない＝静的品質ゲートの baseline と同じ規律）。
+    現在 `_FROZEN_OFFENDERS` は空であり、以後は新しい借用が 1 件でも生えれば赤になる。
 """
 from __future__ import annotations
 
@@ -68,14 +68,13 @@ _COMPOSITION_ROOT_DUTIES = (
     "tester_settings",  # 設定ファイル → Interactor 引数の変換一式
 )
 
-#: 解消待ちの違反（単調減少のみ。フェーズ 2-4 で 0 件になる）。
-#: 実測（本ゲート新設時・凍結前）:
-#:   simulator/report_ui/tools/export_report_payload.py:27 ema_series
-#:   simulator/tools/run_scan_contacts_cli.py:114 _ema_series
-_FROZEN_OFFENDERS: "tuple[str, ...]" = (
-    "simulator/report_ui/tools/export_report_payload.py::ema_series",
-    "simulator/tools/run_scan_contacts_cli.py::_ema_series",
-)
+#: 解消待ちの違反（単調減少のみ）。
+#: 新設時の 2 件（export_report_payload.py:27 ema_series /
+#: run_scan_contacts_cli.py:114 _ema_series）はフェーズ 2-4 で解消し、
+#: test_no_frozen_offender_is_stale が実際に赤くなって除去を強制した。
+#: 借り先が adapter であることは
+#: simulator/tests/unit/test_outer_slices_borrow_ema_from_the_adapter.py が固定する。
+_FROZEN_OFFENDERS: "tuple[str, ...]" = ()
 
 
 @dataclass(frozen=True)
