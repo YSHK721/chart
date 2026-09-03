@@ -13255,3 +13255,36 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   5. SRP/ISP 大物（EvaluationSchedule 抽出・CausalComputePort 3 分割等）と bridge 所有者移転は
      個別承認のうえ別 Issue 化。
 - **関連**: ISSUE-091（側方依存を common 抽出で解消した前例）・ISSUE-286・ISSUE-405（文字列検査の取り逃し実績）・ISSUE-455。
+
+### Wave 1 進捗記録（2026-09-03・ブランチ fix/issue-479-solid-wave1）
+
+- **完了（TDD・計算量テスト付き・全緑）**: F-2（common PEP 562 遅延化＋名前衝突ガード）／F-3（watch_loop
+  中立核化・循環 C-2 解消＝indigators→tools 辺ゼロ実測）／F-4 段階 1（MP shim 参照ゼロ化）／
+  F-5（adapter→framework 逆流除去・注入化）／F-6（keep-last 単一ソース化・本番 5 実装→1 定義）／
+  F-7a-d（検査対称化: subprocess 実行段・層順序表・rglob 化・common/common_view 純度検査）／
+  F-8 段階 1（api_contract 参照ゼロ化）／F-9（forming 単一述語化・突合バイト一致）。
+- **F-1 未実施の理由（要承認）**: `tools/capture_mt5_symbol_spec.py` は「VM へ単体ファイルでコピー配布・
+  リポジトリ内 import 禁止」の規律を持つ（同ファイル find_repo_root docstring・mt5_tick_feed.py:4-7・
+  MT5_REALTIME_TICK_SUPPLY_BASIC_DESIGN.md:10・本台帳 :9509 の 4 出典で実証）。設計書の
+  「tools 側再エクスポート」案はこの規律と両立せず、是正には配布形態の変更（capture 本体＋
+  path_tokens.py の 2 ファイル配布化）の承認が必要。成果物は scratchpad へ退避済みで承認後即再開可。
+- **削除保留（不可逆・要承認）**: MP shim 2 本（compute/market_profile_{zp,dwell}_store.py・参照ゼロ固定済み）／
+  `marketdata/api_contract.py`（参照ゼロ固定済み）／`tools/watch_loop.py`（参照ゼロ・byte 等価アンカーとして
+  common/tests/test_watch_loop.py が現存に依存＝削除時に同テストの撤去が必要）。
+- **工程 5 レビュー（code-review-executor）**: 差戻し 1 回（🔴1・🟡6）。🔴-1 は F-9 の述語検査が暴いた
+  既存欠陥（ISSUE-480 として起票）に起因。是正コミットで対応中。
+
+## ISSUE-480: [欠陥] 1m ライブ tails の窓末尾≠形成中バー — `_set_last_bar` が前分 M-1 行へ現分 M の値を書いていた
+
+- **ステータス**: IN_PROGRESS（2026-09-03 起票。ISSUE-479 Wave 1 工程 5 レビューが実データで検出・同ブランチで是正中）
+- **重大度**: 中（1m ライブ tails 経路の指標末尾値が誤ったバー行に基づく。/compute 経路は影響なし）
+- **実測**: `live_tick_tails_controller._load_window` は確定窓（M1 CSV は排他 floor により常に M-1 分まで＝
+  `tools/live_tick_watch.py:348`）をそのまま渡し、`live_tick_tails.py:66-67` の「窓末尾＝形成中バーの周期」
+  というコメント上の前提は無検査だった。分 M の途中では前提が構造的に不成立で、`_set_last_bar` は
+  M-1 行へ現分 M の OHLCV を代入していた（本番コード＋実データ 2026-09-03 01:14 UTC で再現:
+  窓末尾 1788397500・形成中 1788397560）。ISSUE-232 型の失敗モード。
+- **検出経路**: ISSUE-479 F-9 で前提を `forming_patch` の実確認（mode == "replace"）に落とした結果、
+  不成立が WARNING として可視化された（従来は無音で誤代入）。
+- **抜本的解決**: 窓の供給側で形成中バーを適用し、`make_tail_at` に渡る窓末尾＝形成中バーの周期を成立させる
+  （ログ抑制は応急処置のため不採用）。/compute 経路との二重適用なしを検証条件に含める。
+- **関連**: ISSUE-479（検出の経緯）・ISSUE-232（同型）・ISSUE-145（足内更新の登録漏れ＝隣接類型）。
