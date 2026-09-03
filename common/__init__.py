@@ -14,8 +14,13 @@
 安定度逆転（安定→不安定の依存）を生むため撤去した（ISSUE-104 🟡-1）。表示定数は common_view から
 直接 import すること（`from common_view import level_colors, LEVEL_LINE_WIDTH`）。
 
+stdlib のみで書かれた中立核（どのアクターにも属さない汎用抽象）も本パッケージが所有する。
+パッケージ表面には出さず、サブモジュールを直接 import して使う:
+    forming_window : 未確定足（forming）の差し替え規則。
+    watch_loop     : 汎用ポーリングループ `run_watch`（ISSUE-479 F-3 で tools から移設）。
+
 上記の公開 API は **遅延解決**する（PEP 562・ISSUE-479 F-2）。実装 `applied_price.py` は numpy を
-必要とするが、本パッケージには numpy を使わない中立核（`forming_window` 等）も同居しており、
+必要とするが、本パッケージには上記のとおり numpy を使わない中立核も同居しており、
 そちらだけを使う純層（`simulator.replay_ui.domain` / `usecase`）まで `import common` 経由で numpy を
 背負っていた。初回アクセス時にだけ実装を解決することで推移的流入を断つ（表面・同一性は不変）。
 

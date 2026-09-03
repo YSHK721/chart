@@ -417,10 +417,12 @@ def build_rollup_hook(
     return _hook
 
 
-# 汎用ポーリングループは共有層 tools.watch_loop へ移設した（本体は sleep＋例外捕捉のみで UI 非依存
-# の汎用抽象＝本アクターが所有する理由が無いため）。既存 API（本モジュール経由の run_watch 参照・
-# --watch 経路・テスト）互換のため re-export する（repo 根は上で sys.path 済）。
-from tools.watch_loop import run_watch  # noqa: E402,F401
+# 汎用ポーリングループは中立核 common.watch_loop へ移設した（本体は sleep＋例外捕捉のみで UI 非依存
+# の汎用抽象＝本アクターが所有する理由が無いため）。tools 配下から参照すると本アクター →
+# tools アクターの依存辺ができ循環になるため、どちらにも属さない common を参照する（ISSUE-479 F-3）。
+# 既存 API（本モジュール経由の run_watch 参照・--watch 経路・テスト）互換のため re-export する
+# （repo 根は上で sys.path 済）。
+from common.watch_loop import run_watch  # noqa: E402,F401
 
 
 def _interval_seconds(value: str) -> int:
