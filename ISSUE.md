@@ -13268,9 +13268,11 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   MT5_REALTIME_TICK_SUPPLY_BASIC_DESIGN.md:10・本台帳 :9509 の 4 出典で実証）。設計書の
   「tools 側再エクスポート」案はこの規律と両立せず、是正には配布形態の変更（capture 本体＋
   path_tokens.py の 2 ファイル配布化）の承認が必要。成果物は scratchpad へ退避済みで承認後即再開可。
+  → **Wave 1b で承認取得・完了**（下記 Wave 1b 進捗記録）。
 - **削除保留（不可逆・要承認）**: MP shim 2 本（compute/market_profile_{zp,dwell}_store.py・参照ゼロ固定済み）／
   `marketdata/api_contract.py`（参照ゼロ固定済み）／`tools/watch_loop.py`（参照ゼロ・byte 等価アンカーとして
   common/tests/test_watch_loop.py が現存に依存＝削除時に同テストの撤去が必要）。
+  → **Wave 1b で承認取得・3 件とも削除完了**（下記 Wave 1b 進捗記録）。
 - **工程 5 レビュー（code-review-executor）**: 差戻し 1 回（🔴1・🟡6）。🔴-1 は F-9 の述語検査が暴いた
   既存欠陥（ISSUE-480 として起票）に起因。**是正完了（TDD・7573a96 ほか 6 コミット）**:
   🔴-1＝窓供給側で形成中バーを適用（ISSUE-480 は部分是正＝残存 A/B は ISSUE-481）／🟡-1＝壊れた形成中バーの Fail-Stop を
@@ -13279,6 +13281,35 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
   🟡-3＝恒真式だった走査の計算量テスト 2 本を SUT 実行へ是正（7d3b05e）／🟡-4＝窓ラベルの
   秒境界前提を機械的検査へ（8447623）。静的品質検定 exit 0・4 スイート全緑
   （既知 pre-existing の `tools/tests/test_composition_root_arg_parity` 1 件を除く）。
+
+### Wave 1b 進捗記録（2026-09-03・ブランチ fix/issue-479-solid-wave1b）
+
+Wave 1 で「要承認」として保留した 2 系統を、依頼者承認のうえ TDD（Red→Green・計算量テスト付き）で完了した。
+
+- **F-1 完了（配布形態 2 ファイル化・承認済み）**: `marketdata/path_tokens.py` を新設（import 文ゼロ・
+  `PathTokenError(ValueError)`・`sanitize_path_component`）。`tools/capture_mt5_symbol_spec.py` は
+  自前の文字集合と実装を撤去し、2 経路ブートストラップ `_load_path_tokens` で解決する
+  （経路 1＝`find_repo_root` で repo 根を sys.path に載せ `marketdata.path_tokens`／経路 2＝隣の写し
+  `path_tokens.py`）。どちらも不可なら ModuleNotFoundError のまま落とす（自前実装へ退かない）。
+  VM への配布は本体＋`marketdata/path_tokens.py` の写しの **2 ファイル**。`marketdata/mt5_ticks/ingest.py`
+  は `marketdata.path_tokens` を参照し、`token_for` が `PathTokenError` → `Mt5SupplyError` を翻訳する
+  （`port.py` の Fail-Stop 契約＝`mt5_tick_watch.py:342-349` の捕捉集合に載る）。
+  循環 C-1 の辺が消え、`test_no_module_reaches_into_tools` は免除ゼロで緑。
+  検定: AST で第 2 実装ゼロ・3 者が同一関数オブジェクト・CLI 出口（rc=2／[FAIL-STOP]）不変・
+  隔離ディレクトリの別プロセス実行で VM 単体経路（1 ファイル配布は ModuleNotFoundError の負の対照つき）・
+  計算量（発行 − 出力成分数 = 0／入力長 8-64 の 2 点で発行不変／浪費検出力）。
+  コミット: fbb1c7f・5ee015c・7c6a509・2043b48・3d53d1f。
+- **削除 3 件完了（承認済み・各 1 コミット・すべて Red→Green を観測）**:
+  1. MP shim 2 本 `compute/market_profile_{zp,dwell}_store.py`（ccb245c）— 先に `_REEXPORT_SHIMS` 免除を
+     撤去して 4 行が offender として検出されることを確認してから削除。DIP ゲートは免除ゼロになった。
+  2. `marketdata/api_contract.py`（38b21f3）— 「ファイル不在」の主張へ反転して Red を観測してから削除。
+     参照ゼロ検査・検出力・計算量テストは不変。
+  3. `tools/watch_loop.py`（4419716）— byte 等価アンカーを「旧所在が存在しない」回帰ガードへ反転。
+     突合相手が消えたためアンカーは維持不能（削除時に撤去する段取りは同テストに記録済みだった）。
+- **検証**: `marketdata/tests`＋`tools/tests`＋`indigators/market_profile/api/tests`＋`common/tests`
+  1849 passed（既知 pre-existing の `test_composition_root_arg_parity` 1 件のみ失敗）／`simulator` 4941 passed／
+  `dashboard_ui` 537 passed／`indigators/indicator_ui`＋`dashboard_ui` 1585 passed／`common_view`＋`api_shared` 25 passed／
+  `run_quality_gate.py` 新規違反 0 件・exit 0。
 
 ## ISSUE-480: [欠陥] 1m ライブ tails の窓末尾≠形成中バー — `_set_last_bar` が前分 M-1 行へ現分 M の値を書いていた
 
