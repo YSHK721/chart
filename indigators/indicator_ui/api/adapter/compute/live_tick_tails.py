@@ -74,7 +74,8 @@ def window_with_forming(window: Any, bar: "dict[str, Any]", *, inject: Callable)
         window: 確定バーの窓（末尾 1 本が比較対象）。
         bar: 形成中バー（:func:`forming_bar_of_state` の写像）。
         inject: ``(window, [bar]) -> 新しい窓``（pandas 依存を注入側へ寄せる＝
-            ``set_last_bar`` と同じ規律。実体は ``forming_bar.inject_forming_bars``）。
+            ``set_last_bar`` と同じ規律。実体は adapter/compute/forming_bar.py の
+            注入関数で、/compute の形成中バー注入と同じものを共有する）。
 
     Returns:
         ``"append"`` のときだけ ``inject`` を通した新しい窓。``"replace"``（既に末尾＝形成中

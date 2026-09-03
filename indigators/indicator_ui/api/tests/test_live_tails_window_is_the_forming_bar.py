@@ -9,7 +9,7 @@
     の排他 floor）。したがって 1m では分 M の途中の窓末尾は常に M-1 であり、
 
       (a) 述語は毎ポーリング（2.5 秒）``mode == "append"`` を返して警告が出続ける、
-      (b) ``_set_last_bar`` が **確定済みの M-1 行**へ分 M の OHLCV を書き込む、
+      (b) 末尾行への代入が **確定済みの M-1 行**へ分 M の OHLCV を書き込む、
 
     の 2 つが構造的に起きていた。(b) は「描いたローソクと指標値が別のバー」そのもので
     ある（ISSUE-232 の失敗モード）。
@@ -226,9 +226,9 @@ def test_a_window_that_already_ends_on_the_forming_bar_is_passed_through(_wired)
 def test_applying_the_window_forming_twice_is_the_same_as_once() -> None:
     """窓への適用は冪等（2 度目は述語が ``"replace"`` を返し、同一オブジェクトを返す）。
 
-    ``/compute`` は ``apply_forming_bar`` で、``/live_ticks`` は本経路で形成中バーを注入する。
-    仮に両方が同じ窓に掛かっても、形成中バーは 1 本ぶんしか増えない（重ねがけで足が 2 本に
-    ならない）ことを、規則そのものの性質として固定する。
+    /compute と /live_ticks は別々の入口で形成中バーを注入する。仮に両方が同じ窓に掛かっても、
+    形成中バーは 1 本ぶんしか増えない（重ねがけで足が 2 本にならない）ことを、規則そのものの
+    性質として固定する。
     """
     # Arrange
     window = _confirmed_window("2026-01-05 09:02:00", _LAST_CONFIRMED)
@@ -249,9 +249,8 @@ def test_the_live_window_supply_does_not_use_the_compute_injection_entry(
 ) -> None:
     """``/live_ticks`` の窓供給は ``/compute`` の注入入口を通らない（二重適用の経路が無い）。
 
-    ``apply_forming_bar`` は ``forming_bar()``（tick parquet 読込）と欠落閉周期の合成を伴う
-    ``/compute`` 専用の入口である。ライブ末尾値の窓はそこを通らず、注入の実体
-    （``inject_forming_bars``）だけを共有する。
+    /compute 専用の入口は tick parquet の読込と欠落閉周期の合成を伴う。ライブ末尾値の窓は
+    そこを通らず、注入の実体だけを共有する。
     """
     # Arrange
     from adapter.compute import forming_bar as fb
