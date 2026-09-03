@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from simulator.sim_ui.usecase.job_ports import JobLauncherPort
+# 子へ渡す import パスは台帳（tools/dev_paths.txt）から**導出**する。ここで値を書き写すと
+# 台帳と launcher の片方だけが腐る（ISSUE-279 で潰した「値の書き写し」の残り 1 件）。
+# 導出関数は台帳の唯一の Python 消費者であり、.pth 生成器と同じものを読むだけである。
+from tools.install_dev_paths import path_entries as ledger_path_entries
 
 # 既定の子プロセス CLI（`--job-dir` のみを受ける）。
 _DEFAULT_SCRIPT = Path(__file__).resolve().parents[1] / "main" / "run_job.py"
@@ -100,10 +104,22 @@ class SubprocessJobLauncher(JobLauncherPort):
         return proc.poll()
 
     def _child_env(self) -> "dict[str, str]":
-        """repo 根を PYTHONPATH の先頭へ置いた環境を返す（`simulator` を import させる）。"""
+        """台帳が定める import パスを PYTHONPATH の先頭へ置いた環境を返す。
+
+        値をここに書き写さない（ISSUE-279）。「1 つのチェックアウトを構成する import
+        パス」の唯一源は ``tools/dev_paths.txt`` であり、本メソッドはその 4 人目の消費者
+        として**導出**する。以前は repo 根だけを置いていたが、それで動いていたのは
+        共有 MA 実装を読む adapter が import 時に自分で ``sys.path`` を書き換えていた
+        からであり、その書き換えを撤去した時点で子は
+        ``ModuleNotFoundError: No module named 'moving_averages'`` で死んだ
+        （ISSUE-479 Wave2 2-2 実測）。
+
+        既存の ``PYTHONPATH`` は捨てず後ろへ継ぐ（呼び出し側の意図を壊さない）。
+        既に載っているエントリは積み直さない（起動を繰り返しても増殖しない）。
+        """
         env = dict(os.environ)
-        existing = env.get("PYTHONPATH", "")
-        root = str(self._repo_root)
-        if root not in existing.split(os.pathsep):
-            env["PYTHONPATH"] = f"{root}{os.pathsep}{existing}" if existing else root
+        existing = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+        wanted = [str(p) for p in ledger_path_entries(self._repo_root)]
+        merged = wanted + [p for p in existing if p not in wanted]
+        env["PYTHONPATH"] = os.pathsep.join(merged)
         return env

@@ -7,7 +7,10 @@
 #   - tools/dev_paths.sh        : serve.sh 群が source して PYTHONPATH を組み立てる（実行時）
 #   - tools/install_dev_paths.py: venv の .pth を書く（対話シェル用のフォールバック）
 #   - pyproject.toml の [tool.pytest.ini_options] pythonpath（rootdir 相対・テスト時）
-#   一致は tools/tests/test_dev_paths_single_source.py が強制する。
+#   - simulator/sim_ui/adapter/subprocess_job_launcher.py: 計算の子プロセスへ渡す
+#     PYTHONPATH（install_dev_paths.path_entries を読むだけ・値は持たない）
+#   一致は tools/tests/test_dev_paths_single_source.py と
+#   simulator/sim_ui/tests/unit/test_child_env_comes_from_the_ledger.py が強制する。
 #
 # なぜ相対パスか: 絶対パスで固定すると、git worktree から起動しても「インストールした時の
 #   チェックアウト」が読まれる。実際に worktree の殻（新）＋ main の実装（旧）という組合せで

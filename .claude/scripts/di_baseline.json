@@ -828,7 +828,6 @@
  "C1|simulator/main/tester_settings/window.py|apply_unsupported_rules",
  "C1|simulator/main/tester_settings/window.py|context",
  "C1|simulator/main/tester_settings/window.py|run_from_settings",
- "C1|simulator/replay_ui/adapter/_indicator_ui_bridge.py|validation",
  "C1|simulator/replay_ui/adapter/catalog_gateway.py|validation",
  "C1|simulator/replay_ui/adapter/causal_candle_repository.py|tickvol",
  "C1|simulator/replay_ui/adapter/dataset_ports.py|_indicator_ui_bridge",
