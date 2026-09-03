@@ -52,6 +52,9 @@ _STOP_OUT_BREACH_MESSAGE = "margin_level が stop_out_level を下回りまし�
 _STOP_OUT_AT_BAR_OPEN = "（bar open 評価）"
 _STOP_OUT_AT_EVALUATION = ""
 
+# バー open の pseudo-tick を評価するときの約定価格基準（実 bid/ask 固定）。
+_BAR_OPEN_PSEUDO_TICK_BASIS = "current_open"
+
 # 評価粒度の名前は evaluation_point が単一ソース（建玉変更へもこの名前で伝える）。
 
 
@@ -177,7 +180,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # ＝既定経路 byte-identical・Phase 7）。None のときは呼出点を素通りする（`if pm is
         # not None` ゲート）。注入時のみ B2（bar）/B4（tick）で保有玉を評価する。
         self._position_manager = position_manager
-        # 約定損益の口座通貨丸め桁（execute/_execute_every_tick が config から設定）。
+        # 約定損益の口座通貨丸め桁（run の準備段が config から設定する）。
         # __init__ で明示初期化し「execute 経由で必ず設定済み」の前提を明確化する。
         self._profit_round_digits: "int | None" = None
 
@@ -389,44 +392,89 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             ot.tp = directive.new_tp
 
     def execute(self, request: RunBacktestRequest) -> BacktestResult:
-        # every-tick 経路への分岐（every-tick #5）。config.tick_model == "real_ticks"
-        # のときのみ実ティック内側ループ経路へ委譲する。それ以外は冒頭で early-return
-        # せず以降の現行 bar ループへ直行し、既定（bar-mode）経路を 1 行も変えない。
-        features = RunFeatures.of(request.config)
-        if features.tick_model == "real_ticks" or features.pending_lifecycle:
-            return self._execute_every_tick(request, features)
+        """1 run を実行する（UC-001 の入口）。
 
+        粒度（バーで評価するかティックで評価するか）はスケジュールが引き受ける。入口は
+        run のスイッチを 1 度だけ読み、粒度に合うスケジュールを組んで本体へ渡す。
+        """
+        features = RunFeatures.of(request.config)
+        return self._run(request, features, self._make_schedule(request, features))
+
+    def _make_schedule(
+        self, request: RunBacktestRequest, features: RunFeatures
+    ) -> Any:
+        """run の粒度に合う評価スケジュールを組む（run につき 1 つ）。
+
+        実ティックを消費する run と、ペンディングのライフサイクルを回す run は、足の
+        途中に評価点を要する（前者はティックごとの値洗いのため、後者はトリガ評価のため）。
+        それ以外は 1 バー 1 点で足りる。
+        """
+        point_size = request.symbol_spec.point_size
+        if features.tick_model == "real_ticks" or features.pending_lifecycle:
+            return TickSchedule(
+                tick_model=self._tick_model,
+                pending_lifecycle=features.pending_lifecycle,
+                point_size=point_size,
+            )
+        return BarSchedule(
+            floating_pnl_basis=features.floating_pnl_basis, point_size=point_size
+        )
+
+    def _run(
+        self, request: RunBacktestRequest, features: RunFeatures, schedule: Any
+    ) -> BacktestResult:
+        """バックテストの本体（PROCESS §2 A〜I）。粒度を問わず本メソッド 1 本で走る。
+
+        1 バーの進み方:
+            C   確定足の指標を更新する（足単位・粒度に依らない）
+            -   ウォームアップ / プライム区間はここで打ち切る（指標の収束だけを行う）
+            -   当該バーの評価点を取り出す（ティック列の取得もここで 1 回きり）
+            I'  バー open の stop-out 先行判定（**バー粒度のみ**・後述）
+            -   ペンディング経路のサーバ処理（バー先頭の点で SL/TP → 残存トリガ）
+            D/E 新規バーのシグナル評価（足境界のみ。足の途中では呼ばない）
+            F   成行約定（足境界のバー open クォート）
+            -   ペンディングの設置（EA が毎バー貼り替える／持続モードでは残す）
+            H→建玉変更→I を評価点ごとに（1 点ぶんは _evaluate_point が担う）
+
+        バー open の stop-out 先行判定がバー粒度だけの規則である理由:
+            実 MT5 の 1 分足 OHLC は O→H→L→C の最初の pseudo-tick（open）で証拠金を
+            評価する。バー粒度の run には足の途中の評価点が無いので、この pseudo-tick を
+            明示的に補う必要がある。ティック粒度の run では **open のティック自体が評価点**
+            なので、補えば同じ瞬間を二度評価することになる（現に every-tick 経路はこの
+            設定を見ていない）。
+
+        ペンディング注文がティック粒度だけの概念である理由:
+            指値・逆指値は「足の途中で価格が水準に触れたら約定する」注文であり、引く機会
+            （評価点）が足の途中に無ければ意味を持たない。バー粒度の run では発注方式で
+            分けず、すべて足境界の成行として扱う（現状の契約）。
+        """
         state = self._begin_run(request, features)
         bars = state.bars
         spec = state.spec
-        contract_size = state.contract_size
-        floating_pnl_basis = state.floating_pnl_basis
         account = state.account
         session_gate = state.session_gate
-        close_trade = state.close_trade
-        trades = state.trades
-        deals = state.deals
-        balance_curve = state.balance_curve
-        equity_curve = state.equity_curve
         open_trades = state.open_trades
         halted = state.halted
         trading_start = state.trading_start
         prime_first = state.prime_first
         primed_done = state.primed_done
-        # stop-out をバー open でも先行評価するか（config gated・既定 False=従来 close のみ）。
-        stop_out_at_open = features.stop_out_at_open
-        # 評価点を生むスケジュール（run につき 1 つ・バー粒度は 1 バー 1 点）。
-        schedule = BarSchedule(
-            floating_pnl_basis=floating_pnl_basis, point_size=spec.point_size
-        )
+        # 粒度はスケジュール自身が名乗る（実行経路で config の文字列を読み直さない）。
+        tick_granularity = schedule.id == TICK_GRANULARITY
+        # ペンディングのライフサイクル（EA が毎バー貼り替えるか・約定まで持続させるか）。
+        pending_mode = features.pending_lifecycle
+        pending_persistent = features.pending_persistent
+        # バー open の stop-out 先行判定はバー粒度の規則（上記 docstring 参照）。
+        stop_out_at_open = features.stop_out_at_open and not tick_granularity
+        # 前足の終値（ティックを合成する実装が要求する。バー粒度では使われない）。
+        prev_close: "float | None" = None
 
-        # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
             # C 指標値の取得（前計算系列から現足インデックスを引く）
             self._indicators.update(bar_index)
             # warmup 区間（bar.time < trading_start）は指標 seed 収束のみを行い、トレード
             # 評価・約定・SL/TP 監視・equity 記録をすべてスキップする（config-gated）。
             if trading_start is not None and bar.time < trading_start:
+                prev_close = bar.close
                 continue
             # 層1: 取引区間の最初の 1 バーをプライム（アタッチ）として warmup 同様にスキップ。
             #   trading_start 指定 + prime_first 有効時のみ。1 回消費したら以降は通常取引。
@@ -438,26 +486,38 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 and not primed_done
             ):
                 primed_done = True
+                prev_close = bar.close
                 continue
-            # I' ★バー open での stop-out 先行判定（config gated）。実 MT5 1分足OHLC は
-            #   O→H→L→C の最初の pseudo-tick（open）で margin を評価するため、週末ギャップ等で
+
+            # 当該足の評価点を materialize する。バー先頭の先行処理と約定可否の判断が
+            #   「このバーに評価点が在るか／先頭の点がどのクォートか」を要するため、点は
+            #   バーの先頭で 1 度だけ取り出す（ティック列の取得もここで 1 回きり）。
+            points = list(schedule.points(bar_index, bar, prev_close))
+            # 実際に価格が成立した点が在るバーか（ティック 0 件バーは合成点 1 つだけ）。
+            #   実 MT5 every-tick は新規バーを「最初のティック」で検知するため、ティック
+            #   0 件足では新規バーを検知せず発注しない（次足へ持ち越さない）。
+            has_points = bool(points) and not points[0].is_synthetic_bar_point
+            bar_closed = session_gate.is_closed(bar_index)
+
+            # I' ★バー open での stop-out 先行判定（バー粒度・config gated）。週末ギャップ等で
             #   open が割れた保有玉は「バー open クォート」で強制決済される（買い=Bid=open /
-            #   売り=Ask=open+spread×point）。後段の close 基準判定（I）は残すため、open が割れず
-            #   bar 内で割れる場合は従来どおり close で決済する。既定 False で本ブロックは不活性＝
-            #   byte-identical（ISSUE-022）。open 評価は floating_pnl_basis を参照せず実 bid/ask
-            #   固定（買い=Bid=open / 売り=Ask=open+spread＝MT5 open pseudo-tick 整合）。
+            #   売り=Ask=open+spread×point）。後段の close 基準判定（I）は残すため、open が
+            #   割れず bar 内で割れる場合は従来どおり close で決済する。既定 False で本ブロックは
+            #   不活性（ISSUE-022）。open 評価は floating_pnl_basis を参照せず実 bid/ask 固定。
             if stop_out_at_open and open_trades and not halted:
                 o_bid, o_ask, _, _ = derive_quotes(
-                    bar, entry_price_basis="current_open", point_size=spec.point_size
+                    bar,
+                    entry_price_basis=_BAR_OPEN_PSEUDO_TICK_BASIS,
+                    point_size=spec.point_size,
                 )
                 account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
-                if account.margin_level() < request.account.stop_out_level:
+                if account.margin_level() < state.stop_out_level:
                     self._apply_stop_out(
                         policy=state.stop_out_policy,
                         open_trades=open_trades,
-                        close_trade=close_trade,
+                        close_trade=state.close_trade,
                         account=account,
-                        stop_out_level=request.account.stop_out_level,
+                        stop_out_level=state.stop_out_level,
                         bar=bar,
                         bar_index=bar_index,
                         bid=o_bid,
@@ -469,13 +529,31 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 else:
                     # 非breach: open 基準で書き換えた floating を close 基準へ戻す
                     #   （後続 on_new_bar 等へ open 基準 floating を漏らさない。equity_curve は
-                    #   後段 I で close 基準により記録する）。レビュー🟡対応。
-                    #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
+                    #   後段 I で close 基準により記録する）。
                     nb_bid, nb_ask = resolve_eval_quote(
-                        bar, basis=floating_pnl_basis, point_size=spec.point_size
+                        bar,
+                        basis=state.floating_pnl_basis,
+                        point_size=spec.point_size,
                     )
                     account.update_floating_pnl_at(bid=nb_bid, ask=nb_ask)
-            # D 保有状態 / E シグナル評価（EA ロジック）
+
+            # ★ペンディング経路のサーバ処理。実 MT5 はバー先頭ティック(open)で、EA の
+            #   OnTick を呼ぶ**前に**保有玉の SL/TP を処理し、残存ペンディングを評価する。
+            #   open で SL/TP が当たった玉は on_new_bar 時点で flat となり、同足で新規
+            #   ペンディングを設置できる（2603-01: SL@バー open→同足で次玉設置を再現）。
+            #   後段の評価点ループは open の点を再評価するが、生存玉は同クォートで冪等。
+            if pending_mode and not halted and has_points and not bar_closed:
+                if open_trades:
+                    # この時点で当該バーに建てた玉は無いので、建て足の監視抑止は空振りする。
+                    open_trades = self._check_sltp_hits(
+                        state, points[0], open_trades, closed=False
+                    )
+                if state.resting_pending:
+                    # 先頭の点（バー open ティック）で 1 回だけトリガ評価する。約定玉は
+                    #   序数 0 で積まれ、後段の点は open の判定を抑止する。
+                    self._trigger_resting_pending(state, open_trades, points[0])
+
+            # D/E ★足境界のみ: 新規バーのシグナル評価（足の途中では呼ばない）。
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
             orders = (
@@ -486,31 +564,81 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     spec,
                 )
             )
-            # 市場閉鎖バーは新規成行を約定しない（ドテン反転の reverse 決済も含め全約定を
-            #   スキップ）。on_new_bar は評価済＝保有不変のため、戦略（保有側基準の
-            #   level-trigger）が次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を
-            #   再現する。SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
-            if session_gate.is_closed(bar_index):
+            # 市場閉鎖バーは新規注文を一切通さない（ドテン反転の reverse 決済も含む）。
+            #   on_new_bar は評価済＝保有不変のため、戦略（保有側基準の level-trigger）が
+            #   次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を再現する。
+            #   SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
+            if bar_closed:
                 orders = []
+            if tick_granularity:
+                # 指値・逆指値は足途中の評価点でトリガを引く別経路へ回す。
+                market_orders = [o for o in orders if o.kind == "market"]
+                pending_orders = [o for o in orders if o.kind != "market"]
+            else:
+                # バー粒度は足途中の評価点を持たないのでペンディングを引く機会が無い。
+                #   発注方式で分けず、すべて足境界の成行として扱う（現状の契約）。
+                market_orders, pending_orders = orders, []
+
             # F 発注（成行約定）。反対玉の reverse 決済 → 建玉 → 口座反映を注文ごとに
-            #   完了させる（走査順＝反映順）。建値の導出も約定段が所有する。
-            open_trades = self._fill_market_orders(
-                state, orders, open_trades, bar=bar, bar_index=bar_index
-            )
-            # H → 建玉変更 → I をスケジュールが生む評価点ごとに行う。バー粒度は
-            #   1 バー 1 点なので、このループはちょうど 1 周する。「どこで評価するか」は
+            #   完了させる（走査順＝反映順）。建値の導出も約定段が所有する。実 MT5 は
+            #   新規バーの成行を「バー open のクォート」で約定し、足途中の点は含み損・
+            #   SL/TP・stop-out の評価にのみ用いる。
+            if has_points and market_orders:
+                open_trades = self._fill_market_orders(
+                    state, market_orders, open_trades, bar=bar, bar_index=bar_index
+                )
+
+            # ★ペンディングの設置（PROCESS §4.2 拡張）。実 EA は毎バー自ペンディングを
+            #   取消し、最新シグナルで再設置する。逆方向を保有していれば bar open クォートで
+            #   成行ドテン決済してから設置する（原典 PositionClose→OpenPending）。
+            #   持続モードでは貼り替えず約定まで保持する（再アームは足途中の点が担う）。
+            if pending_mode and not pending_persistent:
+                state.resting_pending = []
+            if has_points and pending_orders:
+                pbid0, pask0, _, _ = derive_quotes(
+                    bar,
+                    entry_price_basis=features.entry_price_basis,
+                    point_size=spec.point_size,
+                )
+                for order in pending_orders:
+                    open_trades = self._close_opposite_positions(
+                        state, open_trades, order, bar=bar, bid=pbid0, ask=pask0
+                    )
+                    state.resting_pending.append(order)
+
+            # H → 建玉変更 → ペンディング → I を評価点ごとに行う。「どこで評価するか」は
             #   スケジュールが決め、「評価点で何をするか」は _evaluate_point が持つ。
-            for point in schedule.points(bar_index, bar, prev_close=None):
+            for point in points:
                 open_trades, halted = self._evaluate_point(
                     state, point, open_trades, halted
                 )
 
+            prev_close = bar.close
+
+        # ★ペンディング経路: テスト期間終了時に残る建玉を最終足の close クォートで清算する
+        #   （実 MT5 はテスト終了時に未決済ポジションを最終価格で決済する。2603-01: 最終 buy を
+        #   最終足 23:59 の close=51029.8 で決済し profit+20）。買い決済=Bid=close /
+        #   売り決済=Ask=close+spread×point。ペンディング経路限定で既定経路は不変。
+        if pending_mode and open_trades and bars:
+            fbar = bars[-1]
+            f_bid = fbar.close
+            f_ask = fbar.close + fbar.spread * spec.point_size
+            for ot in open_trades:
+                close_price = close_price_for(ot.position.side, bid=f_bid, ask=f_ask)
+                state.close_trade(
+                    ot,
+                    exit_time=fbar.time,
+                    exit_price=close_price,
+                    exit_reason="end_of_test",
+                )
+            open_trades = []
+
         # OnDeinit 集計
         return self._finish_run(
-            trades=trades,
-            deals=deals,
-            balance_curve=balance_curve,
-            equity_curve=equity_curve,
+            trades=state.trades,
+            deals=state.deals,
+            balance_curve=state.balance_curve,
+            equity_curve=state.equity_curve,
             initial_deposit=request.account.initial_deposit,
         )
 
@@ -944,8 +1072,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
     ) -> BacktestResult:
         """OnDeinit 集計段（両実行経路で完全一致していた終了処理の単一化）。
 
-        両経路の終了段（移設前 `execute` :515-527 / `_execute_every_tick` :1027-1039）は
-        字句まで同一だった。同じ処理が 2 箇所に在ると「片方だけが更新される」形の欠陥
+        2 つのエンジンが並存していた頃、終了段は字句まで同一の写しが 2 つ在った。
+        同じ処理が 2 箇所に在ると「片方だけが更新される」形の欠陥
         （例: 統計へ渡す系列を 1 本足し忘れる）が起こり得るのに、両経路が同じ検定を
         通らない限り検出できない。集計の定義点を 1 つにして、その食い違い自体を
         構造的に不能にする。
@@ -965,227 +1093,4 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             balance_curve=balance_curve,
             stats=stats,
-        )
-
-    def _execute_every_tick(
-        self, request: RunBacktestRequest, features: "RunFeatures | None" = None
-    ) -> BacktestResult:
-        """every-tick 経路（PROCESS A〜I・config.tick_model=="real_ticks" 専用）。
-
-        バー外側ループ + 実ティック内側ループ。確定足指標 update（C）と新規バー
-        シグナル評価（D/E on_new_bar）は「足境界」でのみ行い、約定（F）・SL/TP 判定
-        （H）・含み損評価/equity 記録/stop-out（I）は「ティック」で行う。bar-mode 経路
-        （execute 本体）は不変で、本メソッドは並存する新経路。
-
-        判断点（PROCESS §2/§5/§7 推奨案）:
-            - ティック 0 件バー: 保有玉があれば最後の既知ティック価格（無ければ
-              bar.close）で 1 点だけ floating/equity を記録する。当該バーで on_new_bar が
-              返した orders は「約定タイミング（ティック）が存在しない」ため約定せず、
-              次バーへ持ち越さない（実ティック不在の足では建玉しない＝実 MT5 整合）。
-              保有玉も無いティック 0 件バーは equity_curve に点を追加しない（評価対象なし）。
-            - bar-mode との非一致: equity 系 stats（equity_curve 長・DD）は「評価点が
-              ティック数に依存する」ため bar-mode（1 バー 1 点）と一致しない。確定トレード
-              （約定・決済価格）は縮退条件（1 バー 1 ティック=close・spread0）で一致する。
-            - 約定価格の基準（非対称・意図的）: 成行約定（新規建て・reverse 決済）は
-              「足境界のバー open クォート」（derive_quotes・bar-mode と同一）で約定する。
-              一方 SL/TP・stop-out の決済は「到達/評価ティック価格」を用いる（ティック駆動
-              の固有挙動）。基準が約定種別で異なる点に注意（実 MT5 every-tick 整合）。
-            - fill_delay=next_tick: 建てたバー（opened_bar_index==bar_index）のティック
-              では SL/TP 監視しない。次バー以降のティックで監視する。
-            - SL/TP 同時到達: check_sltp_hit_at_tick が単一価格 p で high=low=p として
-              config.sltp_tie の同点解消（既定 SL 優先）を継承する。
-        """
-        features = features if features is not None else RunFeatures.of(request.config)
-        state = self._begin_run(request, features)
-        bars = state.bars
-        spec = state.spec
-        contract_size = state.contract_size
-        floating_pnl_basis = state.floating_pnl_basis
-        account = state.account
-        session_gate = state.session_gate
-        close_trade = state.close_trade
-        trades = state.trades
-        deals = state.deals
-        balance_curve = state.balance_curve
-        equity_curve = state.equity_curve
-        open_trades = state.open_trades
-        halted = state.halted
-        trading_start = state.trading_start
-        prime_first = state.prime_first
-        primed_done = state.primed_done
-        # ペンディング（指値/逆指値）ライフサイクル経路か（既定 False＝real_ticks 等は不変）。
-        pending_mode = features.pending_lifecycle
-        # 同時設置ペンディングの OCO（既定 False＝兄弟は独立約定／単一ペンディングEAでは無影響）。
-        # True で 1 本約定時に残る兄弟ペンディングを全取消する（StopEntryProbe の両建て用）。
-        pending_oco = features.pending_oco
-        # ペンディング持続＋足途中ティック再アーム（既定 False＝従来 cancel-and-replace）。
-        # True で resting をバー境界でリセットせず約定まで保持し、フラット＆未装填のティックで
-        # strategy.on_tick を呼び当該ティッククォートで即再装填する（StopEntryProbe 用）。
-        pending_persistent = features.pending_persistent
-        # hedging 口座の両建て証拠金相殺（既定 False＝従来の単純加算）。True で stop-out 判定の
-        # 証拠金を「買い計・売り計の大きい側」とする（反対玉は相殺＝同量両建ては stop-out しない）。
-        hedged_margin = features.hedged_margin
-        # 建玉変更の適用器（Phase 7・既定 None＝素通り＝byte-identical）。B4 で参照する。
-        pm = self._position_manager
-
-        prev_close: float | None = None
-        # 評価点を生むスケジュール（run につき 1 つ）。ティック列の取得と、ティック 0 件
-        #   バーの持ち越しクォートはスケジュールが持つ。
-        schedule = TickSchedule(
-            tick_model=self._tick_model,
-            pending_lifecycle=pending_mode,
-            point_size=spec.point_size,
-        )
-
-        for bar_index, bar in enumerate(bars):
-            # C 確定足指標（足単位・bar-mode と同一）
-            self._indicators.update(bar_index)
-            # warmup 区間（bar.time < trading_start）は指標 seed 収束のみ。
-            if trading_start is not None and bar.time < trading_start:
-                prev_close = bar.close
-                continue
-            # 取引区間の最初の 1 バーをプライム（warmup 同様にスキップ・1 回消費）。
-            if (
-                prime_first
-                and trading_start is not None
-                and bar.time >= trading_start
-                and not primed_done
-            ):
-                primed_done = True
-                prev_close = bar.close
-                continue
-
-            # 当該足の評価点を materialize する。open tick の先行処理・空判定・約定可否の
-            #   判断が「このバーに評価点が在るか／先頭の点がどのクォートか」を必要とするため、
-            #   点はバーの先頭で 1 度だけ取り出す（ティック列の取得もここで 1 回きり）。
-            #   実 MT5 every-tick は新規バーを「最初のティック」で検知するため、ティック 0 件足
-            #   では新規バーを検知せず発注しない（次足へ持ち越さない＝実 MT5 整合）。
-            points = list(schedule.points(bar_index, bar, prev_close))
-            # ティックが在るバーか（ティック 0 件バーは合成点 1 つだけを差し出す）。
-            has_ticks = bool(points) and not points[0].is_synthetic_bar_point
-
-            # ★ペンディング経路: 実 MT5 はバー先頭ティック(open)でサーバが保有玉の SL/TP を
-            #   処理してから EA の OnTick(on_new_bar) を呼ぶ。よって on_new_bar より先に、前足
-            #   からの保有玉の SL/TP を open クォート（buy=Bid=open / sell=Ask=open+spread×point）
-            #   で判定する。open で SL/TP が当たった玉は on_new_bar 時点で flat となり同足で新規
-            #   ペンディングを設置できる（2603-01: SL@バー open→同足で次玉設置を再現）。後段の
-            #   ティックループは open tick を再評価するが、生存玉は同クォートで冪等（二重決済なし）。
-            if (
-                pending_mode and not halted and open_trades and has_ticks
-                and not session_gate.is_closed(bar_index)
-            ):
-                # 先頭の点＝バー open ティック。到達判定は評価点ごとの手続きと同じもの
-                #   （この時点で当該バーに建てた玉は無いので、建て足の監視抑止は空振りする）。
-                open_trades = self._check_sltp_hits(
-                    state, points[0], open_trades, closed=False
-                )
-
-            # ★ペンディング経路: 前足から残存するペンディングは、実 MT5 ではサーバが当該バーの
-            #   open tick で評価してから EA が OnTick で削除する。よって on_new_bar より先に、
-            #   残存ペンディングを open クォートで 1 回トリガ評価する（2603-01: bar 23:49 の
-            #   sell_limit が bar 23:50 の open=約定価格に達し open tick で約定する例を再現）。
-            #   約定玉は opened_tick_ordinal=0 とし、後段ティックループでは open tick（序数0）の
-            #   SL/TP 判定を抑止する（約定ティック自身では決済しない）。未約定分は直後の
-            #   on_new_bar で EA が削除する（resting_pending を空へ再設定）。flat 時のみ残存
-            #   ペンディングを持つ（保有中は signal==current で再設置されないため）。
-            if (
-                pending_mode
-                and not halted
-                and state.resting_pending
-                and has_ticks
-                and not session_gate.is_closed(bar_index)
-            ):
-                # 先頭の点（バー open ティック）で 1 回だけトリガ評価する。約定玉は
-                #   序数 0 で積まれ、後段の点は open tick の判定を抑止する。
-                self._trigger_resting_pending(state, open_trades, points[0])
-
-            # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
-            #   halt 後は発注しない（玉を増やさない）。open-tick SL/TP 後の保有で評価する。
-            #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
-            orders = (
-                []
-                if halted
-                else admit_orders(
-                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
-                    spec,
-                )
-            )
-            # 注文方式で経路を分ける（kind="market" は足境界の成行・既存経路／指値・逆指値の
-            #   ペンディングは足途中ティックでトリガ評価する別経路）。pending EA は kind が
-            #   pending 4 種のみを返し market_orders は空＝既存成行経路は不活性。
-            market_orders = [o for o in orders if o.kind == "market"]
-            pending_orders = [o for o in orders if o.kind != "market"]
-
-            # F ★足境界・バー open クォートで成行約定（bar-mode と同一: derive_quotes）。
-            #   実 MT5 は新規バーの成行を「バー open のクォート」（買い=open+spread×point、
-            #   売り=open）で約定し、ティックは含み損/SL-TP/stop-out の評価にのみ用いる
-            #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
-            #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
-            #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
-            if has_ticks and market_orders and not session_gate.is_closed(bar_index):
-                open_trades = self._fill_market_orders(
-                    state, market_orders, open_trades, bar=bar, bar_index=bar_index
-                )
-
-            # ★ペンディング（指値/逆指値）の bar open 処理（PROCESS §4.2 拡張）。
-            #   実 EA は毎バー自ペンディングを取消し（DeleteOwnPendingOrders）最新シグナルで再設置
-            #   する。よって on_new_bar 時点で残存ペンディングを破棄（resting_pending を空へ）し、
-            #   今足のシグナルが返したペンディングを新たな resting_pending とする。逆方向保有時は
-            #   bar open クォートで成行ドテン決済してから設置する（原典 PositionClose→OpenPending）。
-            #   市場閉鎖バー（closed_bars）は発注も逆決済もしない（[market closed]）。pending_mode で
-            #   なくても resting_pending は空のまま（pending_orders は market EA では空）。
-            #   pending_persistent では resting をバー境界でリセットしない（約定まで保持し、
-            #   再アームは足途中ティックの on_tick が担う＝実 MT5 の OnTick 即時再設置に整合）。
-            if pending_mode and not pending_persistent:
-                state.resting_pending = []  # EA が自ペンディングを削除（未約定の残存分を破棄）
-            if has_ticks and pending_orders and not session_gate.is_closed(bar_index):
-                pbid0, pask0, _, _ = derive_quotes(
-                    bar,
-                    entry_price_basis=features.entry_price_basis,
-                    point_size=spec.point_size,
-                )
-                for order in pending_orders:
-                    open_trades = self._close_opposite_positions(
-                        state, open_trades, order, bar=bar, bid=pbid0, ask=pask0
-                    )
-                    state.resting_pending.append(order)
-
-            # 閉鎖バー（pre-open 01:00 / 日次クローズ 23:59 等）の取引可否は評価点ごとの
-            #   手続きが見る。実 MT5 のセッション規約: 顧客注文（新規約定・ペンディング fill・
-            #   SL/TP）はトレードセッション外では実行しない。一方 stop-out（ブローカーの
-            #   リスク清算）と含み損評価はセッション外でも行う（2603 で 01:00 pre-open の
-            #   stop-out が MT5 と一致・2604-02 で 01:00 の SL/TP は MT5 で発火しないと実証）。
-            # H → 建玉変更 → ペンディング → I をスケジュールが生む評価点ごとに行う。
-            #   ティック粒度は 1 ティック 1 点、ティック 0 件バーは持ち越し点 1 つ。
-            for point in points:
-                open_trades, halted = self._evaluate_point(
-                    state, point, open_trades, halted
-                )
-
-            prev_close = bar.close
-
-        # ★ペンディング経路: テスト期間終了時に残存する建玉を最終足の close クォートで強制
-        #   決済する（実 MT5 はテスト終了時に未決済ポジションを最終価格で清算する。2603-01:
-        #   最終 buy を最終足 23:59 の close=51029.8 で決済し profit+20）。buy 決済=Bid=close /
-        #   sell 決済=Ask=close+spread×point（close_price_for）。pending_mode 限定で既定経路は不変。
-        if pending_mode and open_trades and bars:
-            fbar = bars[-1]
-            f_bid = fbar.close
-            f_ask = fbar.close + fbar.spread * spec.point_size
-            for ot in open_trades:
-                close_price = close_price_for(ot.position.side, bid=f_bid, ask=f_ask)
-                close_trade(
-                    ot,
-                    exit_time=fbar.time,
-                    exit_price=close_price,
-                    exit_reason="end_of_test",
-                )
-            open_trades = []
-
-        return self._finish_run(
-            trades=trades,
-            deals=deals,
-            balance_curve=balance_curve,
-            equity_curve=equity_curve,
-            initial_deposit=request.account.initial_deposit,
         )

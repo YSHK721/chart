@@ -1364,3 +1364,72 @@ class TestBothPathsDoTheSameWorkPerPoint:
             monitored_points = m["points"] - (m["points"] / bar_count)
             issued = m["hits_per_point"] * m["points"]
             assert issued - lot_count * monitored_points == 0, (bar_count, measured)
+
+
+# ---- 4-10: 1 本のエンジン（C3: 2 点オーダー 3 種） ----
+
+class TestThereIsOnlyOneEngine:
+    """実行経路が 1 本であること。"""
+
+    def test_the_engine_body_has_exactly_one_definition_point(self):
+        assert callable(getattr(RunBacktestInteractor, "_run", None))
+
+    def test_there_is_no_separate_every_tick_engine_any_more(self):
+        """粒度ごとの別エンジンが残っていないこと。"""
+        assert getattr(RunBacktestInteractor, "_execute_every_tick", None) is None
+
+    def test_the_entry_point_only_picks_a_schedule_and_runs(self):
+        """入口はスケジュールを選んで本体へ渡すだけであること（分岐を持たない）。"""
+        import ast
+        import inspect
+
+        source = inspect.getsource(RunBacktestInteractor.execute)
+        tree = ast.parse(source.lstrip())
+        branches = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.If, ast.For, ast.While))
+        ]
+        assert branches == []
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_schedule_matches_the_granularity_the_run_asked_for(self, path, overrides):
+        from simulator.usecase.run_features import RunFeatures
+
+        request = _request(_bars(4), config=_config(**overrides))
+        schedule = _interactor()._make_schedule(request, RunFeatures.of(request.config))
+        assert schedule.id == path
+
+    def test_a_pending_lifecycle_run_takes_tick_granularity(self):
+        from simulator.usecase.run_features import RunFeatures
+
+        request = _request(_bars(4), config=_config(pending_lifecycle=True))
+        schedule = _interactor()._make_schedule(request, RunFeatures.of(request.config))
+        assert schedule.id == "tick"
+
+
+class TestTheEngineHoldsItsOrderAcrossSizes:
+    """C3: 入力量を変えた 2 点 3 種で、点あたりの発行が変わらないこと。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_work_per_point_holds_across_bars_ticks_and_lots(
+        self, path, overrides, monkeypatch
+    ):
+        """バー 50/200・ティック 2/16・玉 1/4 の 3 軸で点あたりの発行を測る。
+
+        3 軸すべてで「点あたりの含み損益更新が 1 のまま」であることが、評価の仕事が
+        点の数だけで決まる（バー数にも、ティック数にも、玉数にも比例しない）ことの表明である。
+        """
+        axes = {
+            "bars": ((50, 200), lambda v: dict(bar_count=v, ticks_per_bar=2, lot_count=1)),
+            "ticks": ((2, 16), lambda v: dict(bar_count=8, ticks_per_bar=v, lot_count=1)),
+            "lots": ((1, 4), lambda v: dict(bar_count=8, ticks_per_bar=2, lot_count=v)),
+        }
+        for axis, (values, make) in axes.items():
+            measured = {
+                v: _measure_per_point(overrides, monkeypatch=monkeypatch, **make(v))
+                for v in values
+            }
+            low, high = values
+            assert (
+                measured[high]["updates_per_point"] - measured[low]["updates_per_point"]
+            ) == 0, (axis, measured)
+            assert measured[low]["updates_per_point"] - 1 == 0, (axis, measured)
