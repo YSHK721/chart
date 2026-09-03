@@ -71,16 +71,13 @@ _WRITER_FUNCTIONS = frozenset({
 #: 書込モードを表す open の文字列（"r" のみは読取）。
 _WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
 
-#: 解消待ちの違反（単調減少のみ。1-D / 1-E で 0 件になる）。
+#: 解消待ちの違反（単調減少のみ。1-E で 0 件になる）。
 #: 実測（本ゲート新設時・凍結前）: 試作 2 本・書き込み 5 点。
-#:   prototype_260626-01/prep_tick_rollup.py:49,50      → 1-E で fail-stop
-#:   prototype_260811-01/make_regression_fixture.py:69,73,93 → 1-D で本体へ移設
+#:   prototype_260626-01/prep_tick_rollup.py:49,50      → 1-E で fail-stop（残り）
+#:   prototype_260811-01/make_regression_fixture.py:69,73,93 → 1-D で本体へ移設（解消済）
 _FROZEN_OFFENDERS: "tuple[str, ...]" = (
     "prototype_260626-01/prep_tick_rollup.py::mkdir → 保護領域",
     "prototype_260626-01/prep_tick_rollup.py::to_csv() → 保護領域",
-    "prototype_260811-01/make_regression_fixture.py::mkdir → 保護領域",
-    "prototype_260811-01/make_regression_fixture.py::write_text → 保護領域",
-    "prototype_260811-01/make_regression_fixture.py::open(書込モード) → 保護領域",
 )
 
 
