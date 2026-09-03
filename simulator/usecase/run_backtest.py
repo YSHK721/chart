@@ -512,11 +512,39 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 halted = True
 
         # OnDeinit 集計
+        return self._finish_run(
+            trades=trades,
+            deals=deals,
+            balance_curve=balance_curve,
+            equity_curve=equity_curve,
+            initial_deposit=request.account.initial_deposit,
+        )
+
+    def _finish_run(
+        self,
+        *,
+        trades: list,
+        deals: list,
+        balance_curve: list,
+        equity_curve: list,
+        initial_deposit: float,
+    ) -> BacktestResult:
+        """OnDeinit 集計段（両実行経路で完全一致していた終了処理の単一化）。
+
+        両経路の終了段（移設前 `execute` :515-527 / `_execute_every_tick` :1027-1039）は
+        字句まで同一だった。同じ処理が 2 箇所に在ると「片方だけが更新される」形の欠陥
+        （例: 統計へ渡す系列を 1 本足し忘れる）が起こり得るのに、両経路が同じ検定を
+        通らない限り検出できない。集計の定義点を 1 つにして、その食い違い自体を
+        構造的に不能にする。
+
+        振る舞いは不変: `compute_stats` へ渡す 4 引数と `BacktestResult` の 5 フィールドは
+        移設前と同一の値である（G0 の sha256 指紋が 1 bit の変化も赤にする）。
+        """
         stats = compute_stats(
             trades=trades,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
-            initial_deposit=request.account.initial_deposit,
+            initial_deposit=initial_deposit,
         )
         return BacktestResult(
             trades=trades,
@@ -1024,16 +1052,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
             open_trades = []
 
-        stats = compute_stats(
+        return self._finish_run(
             trades=trades,
+            deals=deals,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
             initial_deposit=request.account.initial_deposit,
-        )
-        return BacktestResult(
-            trades=trades,
-            deals=deals,
-            equity_curve=equity_curve,
-            balance_curve=balance_curve,
-            stats=stats,
         )
