@@ -62,10 +62,10 @@ def _install(monkeypatch, port) -> "tuple[list, list]":
     real_supply = ctl.window_with_forming
     real_make = ctl.make_tail_at
 
-    def _supply(window, bar, *, inject):
+    def _supply(window, bar, *, inject, gap_bars=None):
         if int(bar["time"]) == _FAILING_BAR_TIME:
             raise RuntimeError("窓供給の注入が事前条件違反で失敗した（試験用の注入）")
-        out = real_supply(window, bar, inject=inject)
+        out = real_supply(window, bar, inject=inject, gap_bars=gap_bars)
         supplied.append(out)
         return out
 

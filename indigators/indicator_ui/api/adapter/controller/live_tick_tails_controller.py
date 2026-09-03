@@ -24,7 +24,7 @@ from marketdata.resample import is_known_timeframe
 from marketdata.tf_meta import bar_time_unix, period_start_unix
 from adapter.compute.indicator_compute_adapter import IndicatorComputeAdapter
 from adapter.compute.latest_dispatch import latest_compute
-from adapter.compute.forming_bar import inject_forming_bars
+from adapter.compute.forming_bar import closed_gap_bars, inject_forming_bars
 from adapter.compute.live_tick_tails import (
     forming_bar_of_state,
     make_tail_at,
@@ -208,13 +208,14 @@ def handle_live_tick_tails(
         )
         states = states_for_batch(prior, ticks, bar_time_fn, seed=seed)
         # 🔴-1: 窓は確定分（1m なら M1 CSV の排他 floor で M-1 まで）しか無い。末尾行への代入が
-        #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。揃うのは
-        #   states[0]（この増分の先頭 tick 時点の累積）の周期**のみ**であり、バッチが周期を
-        #   またいだ以降の tick では成立しない（その場合 make_tail_at が 1 度記録する）。また
-        #   M1 焼き込み猶予（live_tick_watch の grace 約 12-17 秒）の間は窓が閉じた分を欠いた
-        #   まま append される（無警告・ISSUE-481 残存 B）。恒久解は ISSUE-481（閉周期合成の
-        #   窓供給側適用）。states は ticks と同数・同順で、ticks が空なら本関数は既に None を
-        #   返しているため、必ず 1 件以上ある。
+        #   正しいのは「窓の末尾＝形成中バー」のときだけなので、供給側でここを揃える。
+        #   ISSUE-481: 揃えるのは 2 つある。(a) 形成中バー（states[0]＝この増分の先頭 tick 時点の
+        #   累積）の周期、(b) M1 焼き込み猶予（live_tick_watch の grace 約 12-17 秒）の間に
+        #   確定窓が欠いている**閉じた**周期。(b) を埋めないと /compute（閉周期合成 ISSUE-162）と
+        #   別の窓で計算することになる。合成規則は closed_gap_bars ただ 1 つで、ここは
+        #   「どの ref/tf の・どこからどこまでの穴か」を束ねるだけである（上限も列挙も知らない）。
+        #   バッチが周期をまたいだ以降の tick は make_tail_at 側が窓へ行を足す。states は
+        #   ticks と同数・同順で、ticks が空なら本関数は既に None を返しているため必ず 1 件以上ある。
         # ISSUE-278 #3: 増分器の実装バグは adapter が握らず、この境界まで伝播させる。ここで
         #   **1 度だけ記録**して当該グループを落とす（他の計算足の末尾値は出す）。以前は adapter が
         #   無言で None を返しており、指標が痕跡なくティック更新から消えて原因が追えなかった。
@@ -224,8 +225,12 @@ def handle_live_tick_tails(
         #   同じ「そのグループだけ落とす」規律へ揃える。窓は失敗時に作られない（try の中で
         #   供給してから使うため、使わない窓を作って捨てる経路が構造上できない）。
         try:
+            first_bar = forming_bar_of_state(states[0])
             df = window_with_forming(
-                df, forming_bar_of_state(states[0]), inject=inject_forming_bars,
+                df, first_bar, inject=inject_forming_bars,
+                gap_bars=lambda last: closed_gap_bars(
+                    ref, group_tf, last, int(first_bar["time"])
+                ),
             )
             tail_at = make_tail_at(
                 df=df, adapter=compute_adapter,

@@ -876,10 +876,9 @@ def test_the_two_supply_paths_issue_the_same_synthesis_windows(tf, k) -> None:
     # Arrange / Act
     (_, compute_calls), (_, tails_calls) = _run_both(tf, k)
 
-    # Assert
+    # Assert — 発行は「穴の数（上限で頭打ち）」ちょうど＝作って捨てる要求がゼロ。
     assert tails_calls == compute_calls
-    if k > 1:
-        assert compute_calls, "穴が在るのに合成が 1 度も発行されていません（空振り）"
+    assert len(compute_calls) == min(max(k - 1, 0), fb._MAX_GAP_FILL_PERIODS)
 
 
 def test_the_two_supply_paths_degrade_identically_over_the_cap() -> None:
@@ -1008,8 +1007,6 @@ def test_the_parity_check_catches_a_reimplemented_rule(mutation, k) -> None:
         _mutant_gap_bars("1m", bar, **mutation)
     )
 
-    # Assert — 窓・呼び出し列の少なくとも一方が食い違う（＝突合に検出力が在る）
-    assert (
-        _normalize_frame(mutant) != _normalize_frame(good)
-        or mutant_calls != good_calls
-    )
+    # Assert — P-1（窓）と P-2（呼び出し列）が **どちらも** 食い違う＝突合に検出力が在る。
+    assert mutant_calls != good_calls
+    assert _normalize_frame(mutant) != _normalize_frame(good)

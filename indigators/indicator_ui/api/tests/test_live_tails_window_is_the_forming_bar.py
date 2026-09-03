@@ -23,8 +23,10 @@
 本ファイルが記録する現挙動（不変条件では**ない**・ISSUE-481 の恒久解で赤へ転じる）:
     5. 残存 A: バッチが周期をまたぐと、境界より後の tick は警告 1 回のうえ
        バッチ先頭 tick の周期のラベル行（＝1 つ前のバー）へ書かれる。
-    6. 残存 B: 確定末尾を欠いた窓（M1 焼き込み猶予中）は、閉じた分を飛ばしたまま
-       無警告で形成中バーが追加される（窓のラベル間隔に周期 2 本ぶんの跳びが残る）。
+
+ISSUE-481 で恒久解へ移った項目:
+    6. 旧「残存 B」: 確定末尾を欠いた窓（M1 焼き込み猶予中）は閉じた分を飛ばしていた。
+       窓供給側にも閉周期合成（ISSUE-162）を適用したので穴は残らない。
 
 data/: 実データを読まない（合成 DataFrame・注入した偽 port のみ）。
 構造: Arrange-Act-Assert（AAA）。
@@ -442,27 +444,44 @@ def test_a_tick_after_the_period_boundary_lands_on_the_previous_bar_row(_wired) 
 _STALE_WINDOW_LABELS = ("2026-01-05 09:01:00", "2026-01-05 09:02:00")
 
 
-def test_a_window_missing_the_last_confirmed_bar_keeps_a_period_gap(_wired) -> None:
-    """残存 B の**現挙動の記録**: 閉じた分を 1 本飛ばした窓がそのまま計算へ渡る。
+#: 猶予中に欠けている閉じた分（09:03）を合成したときの値。
+_SYNTHESIZED_CLOSED = {
+    "time": _unix(_LAST_CONFIRMED), "open": 50.0, "high": 55.0,
+    "low": 49.0, "close": 54.0, "volume": 7.0,
+}
+
+
+def test_a_window_missing_the_last_confirmed_bar_is_filled_by_the_closed_period_synthesis(
+    _wired, monkeypatch
+) -> None:
+    """恒久解（ISSUE-481）: 猶予中に欠けた閉じた分は閉周期合成で埋まり、穴が残らない。
 
     M1 焼き込み猶予（live_tick_watch の grace）の間、確定窓は M-1 を欠いたまま M-2 で
-    終わる。そこへ形成中バー M を追加すると、窓のラベル間隔は周期 1 本ぶんではなく
-    2 本ぶん（120 秒）の跳びを含む＝閉じた分 09:03 が窓から欠落したまま計算される。
-    /compute は同じ穴を閉周期合成（ISSUE-162）で埋めるため、2 経路が別の窓で計算する。
+    終わる。以前はそこへ形成中バー M を足すだけで、窓のラベル間隔に周期 2 本ぶん（120 秒）の
+    跳びが残っていた。``/compute`` は同じ穴を閉周期合成（ISSUE-162）で埋めるため、2 経路が
+    **別の窓**で計算していた（無音・実データ 24 点中 5-6 点）。窓供給側にも同じ合成規則を
+    適用したので、間隔は周期どおりに揃い、合成行には合成値が入る。
 
-    ISSUE-481 の恒久解（窓供給側にも閉周期合成を適用）が入ると間隔は周期どおりに揃い、
-    本テストは**意図的に赤へ転じる**（そのとき恒久解の期待値へ書き換える）。
+    合成規則そのものの検査は ``test_forming_rule_parity.py`` の 2 経路突合（P-1〜P-5）が
+    担う。ここで見るのは「窓供給の経路が実際にその規則を通っている」という結線だけなので、
+    素材読み（tick parquet）へは降りず、合成の入口を偽物へ差し替える。
     """
     # Arrange
     port = _Port({"1m": _confirmed_window(*_STALE_WINDOW_LABELS)})
     seen = _wired(port)
+    monkeypatch.setattr(ctl, "closed_gap_bars", lambda *a, **k: [_SYNTHESIZED_CLOSED])
 
     # Act
     ctl.handle_live_tick_tails(_query(_SPEC), _TICKS)
 
-    # Assert — 間隔は [周期, 周期 x 2]＝閉じた 1 本が欠けた跡。
+    # Assert — 間隔は周期 1 本ぶんだけ（穴なし）。
     labels = _label_seconds(seen[-1])
-    assert [b - a for a, b in zip(labels, labels[1:])] == [_PERIOD_SEC, _PERIOD_SEC * 2]
+    assert [b - a for a, b in zip(labels, labels[1:])] == [_PERIOD_SEC] * 3
+    # 合成された 09:03 の行は合成値そのもの（形成中バーの値が混ざっていない）。
+    filled = seen[-1].loc[pd.Timestamp(_LAST_CONFIRMED)]
+    assert [float(filled[c]) for c in _FIELDS] == [
+        _SYNTHESIZED_CLOSED[c] for c in _FIELDS
+    ]
 
 
 def test_the_missing_closed_bar_is_not_reported(_wired, caplog) -> None:
