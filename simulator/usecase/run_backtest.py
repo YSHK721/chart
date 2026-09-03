@@ -20,7 +20,6 @@ from simulator.domain.trade_record import TradeRecord
 from simulator.usecase._execution import (
     admit_orders,
     check_sltp_hit,
-    check_sltp_hit_at_tick,
     close_price_for,
     derive_quotes,
     fill_market_order,
@@ -28,7 +27,7 @@ from simulator.usecase._execution import (
 )
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
-from simulator.usecase.evaluation_point import BAR_GRANULARITY, TICK_GRANULARITY
+from simulator.usecase.evaluation_point import TICK_GRANULARITY
 from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
