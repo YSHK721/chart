@@ -24,8 +24,20 @@ from pathlib import Path
 import pytest
 
 from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
+from simulator.sim_ui.main.composition_root_jobs import _dev_path_entries
 
 _REPO = Path(__file__).resolve().parents[4]
+
+
+def _launcher(path_entries=_dev_path_entries) -> SubprocessJobLauncher:
+    """本番と同じ束縛（Composition Root が渡すもの）で起動器を組む。
+
+    導出関数は注入で受ける（adapter が運用スクリプト層を掴まない・ISSUE-479 是正 1）。
+    束縛先そのものは Composition Root の 1 箇所が権威なので、検定もそこから取る。
+    """
+    return SubprocessJobLauncher(
+        job_dir_of=lambda _id: _REPO, repo_root=_REPO, path_entries=path_entries
+    )
 
 
 def _ledger_entries() -> "list[str]":
@@ -43,8 +55,7 @@ def _child_path(monkeypatch, existing: "str | None") -> "list[str]":
         monkeypatch.delenv("PYTHONPATH", raising=False)
     else:
         monkeypatch.setenv("PYTHONPATH", existing)
-    launcher = SubprocessJobLauncher(job_dir_of=lambda _id: _REPO, repo_root=_REPO)
-    return launcher._child_env()["PYTHONPATH"].split(os.pathsep)
+    return _launcher()._child_env()["PYTHONPATH"].split(os.pathsep)
 
 
 class TestTheChildInheritsTheLedgerPaths:
@@ -113,19 +124,15 @@ class TestTheChildEnvDoesNotWasteWork:
 
         読込回数を焼き込まず、1 構築につき読み捨てが 0 であることを固定する。
         """
-        import simulator.sim_ui.adapter.subprocess_job_launcher as mod
-
         reads: "list[Path]" = []
-        original = mod.ledger_path_entries
 
         def spy(root):
             reads.append(root)
-            return original(root)
+            return _dev_path_entries(root)
 
-        monkeypatch.setattr(mod, "ledger_path_entries", spy)
         monkeypatch.delenv("PYTHONPATH", raising=False)
 
-        launcher = SubprocessJobLauncher(job_dir_of=lambda _id: _REPO, repo_root=_REPO)
+        launcher = _launcher(path_entries=spy)
         built = [launcher._child_env() for _ in range(calls)]
 
         assert len(built) == calls
@@ -134,7 +141,7 @@ class TestTheChildEnvDoesNotWasteWork:
     def test_the_entry_count_does_not_grow_with_repeated_builds(self, monkeypatch):
         """同じ env を作り直してもエントリが増殖しない（前置の積み重ねが起きない）。"""
         monkeypatch.delenv("PYTHONPATH", raising=False)
-        launcher = SubprocessJobLauncher(job_dir_of=lambda _id: _REPO, repo_root=_REPO)
+        launcher = _launcher()
         first = launcher._child_env()["PYTHONPATH"].split(os.pathsep)
         monkeypatch.setenv("PYTHONPATH", os.pathsep.join(first))
         second = launcher._child_env()["PYTHONPATH"].split(os.pathsep)

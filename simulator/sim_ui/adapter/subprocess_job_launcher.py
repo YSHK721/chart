@@ -24,10 +24,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from simulator.sim_ui.usecase.job_ports import JobLauncherPort
-# 子へ渡す import パスは台帳（tools/dev_paths.txt）から**導出**する。ここで値を書き写すと
-# 台帳と launcher の片方だけが腐る（ISSUE-279 で潰した「値の書き写し」の残り 1 件）。
-# 導出関数は台帳の唯一の Python 消費者であり、.pth 生成器と同じものを読むだけである。
-from tools.install_dev_paths import path_entries as ledger_path_entries
 
 # 既定の子プロセス CLI（`--job-dir` のみを受ける）。
 _DEFAULT_SCRIPT = Path(__file__).resolve().parents[1] / "main" / "run_job.py"
@@ -44,6 +40,13 @@ class SubprocessJobLauncher(JobLauncherPort):
 
     ``job_dir_of``: ジョブ識別子 → ジョブディレクトリ（絶対パス）。台帳が採番規則を
       持つため、そちらの関数を注入して受ける（launcher は FS 配置を決めない）。
+    ``path_entries``: repo 根 → 子へ渡す import パス列。**既定値を置かない**
+      （ISSUE-479 Wave2 是正 1・F-5 と同規律）。値を書き写さないために唯一源
+      （tools/dev_paths.txt）から導出するのは正しいが、その導出関数を adapter が
+      静的に import すると simulator ⇄ 運用スクリプト層の循環辺が増える。具象の束縛は
+      Composition Root（`simulator/sim_ui/main/composition_root_jobs.py`）1 箇所で行う。
+      既定値を置くと「注入し忘れても動く」経路が残り、逆流が黙って復活する。
+      向きの機械強制は `sim_ui/tests/unit/test_launcher_path_source_injection.py`。
     ``script``: 子プロセス CLI のパス（既定は `run_job.py`）。検定で差し替える。
     """
 
@@ -51,10 +54,12 @@ class SubprocessJobLauncher(JobLauncherPort):
         self,
         *,
         job_dir_of: "Callable[[str], Any]",
+        path_entries: "Callable[[Path], Any]",
         script: Any = None,
         repo_root: Any = None,
     ) -> None:
         self._job_dir_of = job_dir_of
+        self._path_entries = path_entries
         self._script = Path(script).resolve() if script else _DEFAULT_SCRIPT
         self._repo_root = Path(repo_root).resolve() if repo_root else _REPO_ROOT
         self._procs: "dict[str, subprocess.Popen]" = {}
@@ -107,8 +112,9 @@ class SubprocessJobLauncher(JobLauncherPort):
         """台帳が定める import パスを PYTHONPATH の先頭へ置いた環境を返す。
 
         値をここに書き写さない（ISSUE-279）。「1 つのチェックアウトを構成する import
-        パス」の唯一源は ``tools/dev_paths.txt`` であり、本メソッドはその 4 人目の消費者
-        として**導出**する。以前は repo 根だけを置いていたが、それで動いていたのは
+        パス」の唯一源は ``tools/dev_paths.txt`` であり、子はその 4 人目の消費者として
+        **導出**した値を受け取る。導出関数を掴むのは Composition Root であり、本メソッドは
+        注入されたものを呼ぶだけである（是正 1）。以前は repo 根だけを置いていたが、それで動いていたのは
         共有 MA 実装を読む adapter が import 時に自分で ``sys.path`` を書き換えていた
         からであり、その書き換えを撤去した時点で子は
         ``ModuleNotFoundError: No module named 'moving_averages'`` で死んだ
@@ -119,7 +125,7 @@ class SubprocessJobLauncher(JobLauncherPort):
         """
         env = dict(os.environ)
         existing = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
-        wanted = [str(p) for p in ledger_path_entries(self._repo_root)]
+        wanted = [str(p) for p in self._path_entries(self._repo_root)]
         merged = wanted + [p for p in existing if p not in wanted]
         env["PYTHONPATH"] = os.pathsep.join(merged)
         return env

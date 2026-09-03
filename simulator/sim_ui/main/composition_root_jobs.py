@@ -55,6 +55,21 @@ def _required_series(entry_price_basis: str) -> str:
     return required_price_series(entry_price_basis)
 
 
+def _dev_path_entries(root: Path) -> "list[Path]":
+    """repo 根 → 子プロセスへ渡す import パス列（`SubprocessJobLauncher` への束縛）。
+
+    「1 つのチェックアウトを構成する import パス」の唯一源は `tools/dev_paths.txt` で
+    あり、その導出関数（.pth 生成器と同じもの）を本 Root だけが掴む。adapter に持たせると
+    simulator ⇄ 運用スクリプト層の循環辺になるため、束縛はここに閉じる（ISSUE-479 是正 1）。
+
+    import を関数内に置く理由は `_build_ea_indicators` と同じ（本モジュールの import で
+    運用スクリプト層を引き込まない。子の環境が実際に要求された時点で解決される）。
+    """
+    from tools.install_dev_paths import path_entries
+
+    return path_entries(root)
+
+
 def _build_ea_indicators(**spec: Any) -> Any:
     """`simulator.main.build_ea_indicators` への束縛（EA 別の指標レジストリ）。
 
@@ -234,7 +249,12 @@ def build_sim_job_app(
 
     ledger = FileJobLedger(data_root=jobs_root)
     # ジョブディレクトリの解決は台帳の採番規則をそのまま使う（FS 配置を二重定義しない）。
-    launcher = SubprocessJobLauncher(job_dir_of=ledger.job_dir, repo_root=root)
+    # 子へ渡す import パスの導出も同じく注入する（束縛点は本 Root 1 箇所・是正 1）。
+    launcher = SubprocessJobLauncher(
+        job_dir_of=ledger.job_dir,
+        path_entries=_dev_path_entries,
+        repo_root=root,
+    )
 
     return SimJobApp(
         web_dir=web_dir,

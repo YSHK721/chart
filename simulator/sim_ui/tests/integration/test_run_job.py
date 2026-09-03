@@ -190,7 +190,14 @@ def test_スクリプトとして直接実行できる(job_dir: Path) -> None:
     import subprocess
 
     repo_root = Path(run_job.__file__).resolve().parents[3]
-    launcher = SubprocessJobLauncher(job_dir_of=lambda _id: job_dir, repo_root=repo_root)
+    # import パスの導出は本番と同じ束縛（Composition Root が渡すもの）を使う（是正 1）。
+    from simulator.sim_ui.main.composition_root_jobs import _dev_path_entries
+
+    launcher = SubprocessJobLauncher(
+        job_dir_of=lambda _id: job_dir,
+        repo_root=repo_root,
+        path_entries=_dev_path_entries,
+    )
     script = Path(run_job.__file__).resolve()
     # Act（spec.json 不在 → 非 0 で即終了する。ここでは「起動して終われる」ことを見る）
     proc = subprocess.run(
