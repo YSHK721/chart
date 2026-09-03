@@ -15,4 +15,4 @@
 #   テストしてしまい「worktree で緑」が偽になる（venv の .pth が絶対パス固定である問題と同型）。
 #   実行時（サーバ起動）の同解決は tools/dev_paths.sh（serve.sh が source）が担う。
 [tool.pytest.ini_options]
-pythonpath = [".", "indigators/market_profile/api"]
+pythonpath = [".", "indigators/market_profile/api", "indigators"]

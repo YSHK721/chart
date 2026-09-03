@@ -17,5 +17,13 @@
 # ここに載せるのは**衝突しない固有名**のトップパッケージだけ（ISSUE-087 🟡-3）。
 #   汎用名（indicator_ui api の adapter/framework/domain・replay_ui の同名群）はスライス間で
 #   衝突するため載せず、各エントリポイントが自スライス root だけを結線する。
+#
+# indigators について（ISSUE-479 Wave2 2-1）: 直下は `__init__.py` を持つ 3 件だけでなく、
+#   全ディレクトリが名前空間パッケージ（PEP 420）としてトップレベル名になる。載せてよい
+#   根拠は「その全名前が、載せる前は 1 件も解決先を持たない」ことであり、これは
+#   tools/tests/test_dev_paths_indigators_entry.py が実測で常設検査する（調査を文章で
+#   残さず検査に落とす）。載せる目的は moving_averages の解決を madiff.py の実行時
+#   sys.path 書き換えから台帳へ戻すこと（解決先が import 順に依存しなくなる）。
 .
 indigators/market_profile/api
+indigators
