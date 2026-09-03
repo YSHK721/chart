@@ -519,3 +519,103 @@ def test_a_forming_bar_older_than_the_window_tail_passes_the_frame_through(monke
 
     # Assert
     assert out is frame
+
+
+# --------------------------------------------------------------------------- #
+# 6. ライブ末尾値（make_tail_at）— 述語で "replace" を実確認し、否定を無音にしない
+# --------------------------------------------------------------------------- #
+
+import logging  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from adapter.compute import live_tick_tails as ltt  # noqa: E402
+from adapter.controller.live_tick_tails_controller import _set_last_bar  # noqa: E402
+
+_LTT_LOGGER = "adapter.compute.live_tick_tails"
+
+
+def _spec():
+    """``tail_at`` が要する最小の spec（指標の同定だけ）。"""
+    return SimpleNamespace(indicator_id="x", variant=None, params={})
+
+
+def _state(text: str):
+    """``text`` 時刻のバーに属する形成中バーの累積状態。"""
+    return SimpleNamespace(
+        time=_unix(text), open=1.0, high=2.0, low=0.5, close=1.75, volume=3,
+        tick_ms=_unix(text) * 1000,
+    )
+
+
+def _tail_at_over(window, monkeypatch):
+    """実 ``make_tail_at`` を最小の協調子で組み立てる（増分宣言と計算は注入で置換）。"""
+    monkeypatch.setattr(ltt, "is_incremental", lambda *a, **k: True)
+    return ltt.make_tail_at(
+        df=window,
+        adapter=object(),
+        latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
+        set_last_bar=_set_last_bar,
+    )
+
+
+def test_the_live_tail_path_derives_the_rule_from_the_shared_predicate() -> None:
+    """ライブ末尾値の経路も規則を持たず、共有核の述語を参照する。"""
+    # Arrange / Act / Assert
+    assert ltt.forming_patch is fw.forming_patch
+
+
+def test_a_mismatched_window_is_recorded_once_and_still_yields_tails(monkeypatch, caplog) -> None:
+    """末尾 time と形成中バーの周期が食い違う窓は、1 度だけ記録して tails を落とさない。
+
+    従来は比較なしで末尾行へ代入し、「窓の末尾＝形成中バーと同じバー」をコメントで仮定して
+    いただけだった。仮定が破れると別のバーの値を黙って描く（ISSUE-232 の失敗モード）。
+    """
+    # Arrange — 窓の末尾は 09:00、形成中バーは 09:05（＝別のバー）。
+    window = _frame(_WINDOW[:1])
+    tail_at = _tail_at_over(window, monkeypatch)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        first = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+        second = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+
+    # Assert
+    records = [r for r in caplog.records if r.name == _LTT_LOGGER]
+    assert len(records) == 1                      # 無音にしない・かつ毎ティック吐かない
+    assert first == {"v": 1.0} and second == {"v": 1.0}   # tails は落ちない
+
+
+def test_a_matching_window_is_not_recorded(monkeypatch, caplog) -> None:
+    """窓の末尾と形成中バーが同じバー（mode == "replace"）なら記録しない。"""
+    # Arrange — 窓の末尾 09:05 と形成中バー 09:05 が一致。
+    window = _frame(_WINDOW)
+    tail_at = _tail_at_over(window, monkeypatch)
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger=_LTT_LOGGER):
+        got = tail_at(_spec(), _state("2025-01-02 09:05:00"))
+
+    # Assert
+    assert [r for r in caplog.records if r.name == _LTT_LOGGER] == []
+    assert got == {"v": 1.0}
+
+
+def test_the_tail_row_assignment_is_unchanged(monkeypatch) -> None:
+    """末尾行へ渡す値は従来どおり OHLCV の 5 キーのみ（``time`` は渡さない＝列照合は完全一致）。"""
+    # Arrange
+    window = _frame(_WINDOW)
+    seen: "list[dict]" = []
+    monkeypatch.setattr(ltt, "is_incremental", lambda *a, **k: True)
+    tail_at = ltt.make_tail_at(
+        df=window,
+        adapter=object(),
+        latest_compute=lambda *a, **k: [{"name": "v", "data": [{"value": 1.0}]}],
+        set_last_bar=lambda w, values: seen.append(dict(values)),
+    )
+
+    # Act
+    tail_at(_spec(), _state("2025-01-02 09:05:00"))
+
+    # Assert
+    assert seen == [{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.75, "volume": 3.0}]
+    assert float(window.iloc[-1]["close"]) == 2.0  # 入力 df は複製されており不変
