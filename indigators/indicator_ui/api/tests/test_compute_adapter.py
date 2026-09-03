@@ -415,9 +415,11 @@ def test_adapter_required_bucket_empty_translates_to_empty_series():
 def test_profit_band_value_error_translation_is_type_based_not_message_based():
     # LSP 是正 LSP-3: 翻訳は EmptyBucketError 型で識別する（日本語メッセージ片照合ではない）。
     from adapter.compute.call_binding import profit_band_empty_bucket_error
-    from adapter.compute.indicator_compute_adapter import (
-        _translate_profit_band_value_error,
-    )
+    from adapter.compute.indicator_compute_adapter import _VALUE_ERROR_TRANSLATORS
+
+    # ISSUE-479 Wave2 I-1（OCP-3）: 翻訳器は _TABLE の value_error_types 宣言からの導出値に
+    #   なった（adapter に指標名リテラルを置かない）。取得経路だけが変わり、下の検証は不変。
+    _translate_profit_band_value_error = _VALUE_ERROR_TRANSLATORS["profit_band"]
 
     empty_bucket_cls = profit_band_empty_bucket_error()
     assert issubclass(empty_bucket_cls, ValueError)  # 後方互換（サブクラス）

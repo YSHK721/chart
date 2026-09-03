@@ -57,6 +57,7 @@ from marketdata import (  # noqa: E402
 from adapter.compute.indicator_compute_adapter import (  # noqa: E402
     IndicatorComputeAdapter,
 )
+from adapter.compute.bindings.price_range_power import nice_step  # noqa: E402
 
 logger = logging.getLogger("prototype_inject_marketdata")
 
@@ -105,16 +106,9 @@ def _prp_interval(df: pd.DataFrame, override: float | None) -> float:
     if override is not None:
         return override
     price_range = float(df["high"].max() - df["low"].min())
-    step = price_range / _PRP_TARGET_BANDS
-    # 1,2,5×10^n の見やすい刻みへ丸める（最低 0.1）。
-    import math
-
-    if step <= 0:
-        return 0.1
-    exp = math.floor(math.log10(step))
-    base = step / (10 ** exp)
-    nice = 1.0 if base <= 1 else 2.0 if base <= 2 else 5.0 if base <= 5 else 10.0
-    return max(round(nice * (10 ** exp), 4), 0.1)
+    # 1,2,5×10^n の見やすい刻みへの丸めは計算層の協働子が単一ソースで持つ
+    #   （逐語第 2 実装は取り残しを生む・ISSUE-479 Wave2 I-1）。
+    return nice_step(price_range / _PRP_TARGET_BANDS)
 
 
 def _candles_to_df(candles: List[dict]) -> pd.DataFrame:
