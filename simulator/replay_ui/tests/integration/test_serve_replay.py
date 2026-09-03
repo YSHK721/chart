@@ -92,7 +92,7 @@ def test_candles_ok_and_no_store(server_ctx):
 
 
 def test_candles_internal_error_translated(server_ctx):
-    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_contract）どおり 500・nested 形（ok/generation 付き）。
+    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_shared.http_contract）どおり 500・nested 形（ok/generation 付き）。
     base, _ = server_ctx
     with pytest.raises(HTTPError) as ei:
         _get(base, "/candles?datasetRef=boom")
@@ -135,7 +135,7 @@ def test_compute_unknown_ref_is_validation_error(server_ctx):
 
 
 def test_compute_memory_error_is_internal(server_ctx):
-    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_contract）どおり 500・nested 形（ok/generation 付き）。
+    # ISSUE-091 A2: internal は正典 ERROR_STATUS（api_shared.http_contract）どおり 500・nested 形（ok/generation 付き）。
     base, _ = server_ctx
     with pytest.raises(HTTPError) as ei:
         _post(base, "/compute", {"indicatorId": "x", "datasetRef": "oom"})

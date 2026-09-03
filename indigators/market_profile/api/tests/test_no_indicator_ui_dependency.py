@@ -1,6 +1,6 @@
 """ISSUE-087 🔴-1: MP backend が indicator_ui の `adapter` パッケージへ裸名依存しない回帰ガード。
 
-共有純粋物（tf メタ・tick ref・期間始端・ERROR_STATUS）は最下層 marketdata（tf_meta/api_contract）
+共有純粋物（tf メタ・tick ref・期間始端）は最下層 marketdata（tf_meta）、ERROR_STATUS は api_shared（http_contract）
 に単一定義し、market_profile_api は marketdata のみを参照する（sys.path 注入前提の横断結合を排す）。
 """
 from __future__ import annotations
