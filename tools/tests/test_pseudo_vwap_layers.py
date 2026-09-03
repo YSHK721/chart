@@ -319,15 +319,11 @@ def test_material_reads_exactly_the_days_it_concatenates(monkeypatch, tmp_path,
     assert reads["n"] - len(paths) == 0
 
 
-@pytest.mark.parametrize("windows", [["20"], ["20", "30", "40"]])
-def test_parquet_reads_do_not_grow_with_the_measurement_grid(monkeypatch, tmp_path,
-                                                             synthetic_tick_days, windows):
-    """測定の組み合わせ（--windows の個数）を増やしても parquet 読取は増えない。
-
-    素材化は 1 回で、その上に測定を重ねる。窓ごとに読み直すと入力量に比例しない浪費になる。
-    """
+def _reads_for_windows(monkeypatch, tmp_path, paths, windows: "list[str]") -> int:
+    """``--windows`` を指定して CLI を 1 回回し、その間の parquet 読取回数を返す。"""
     mod = _material_module()
-    _patch_day_source(monkeypatch, synthetic_tick_days)
+    _patch_day_source(monkeypatch, paths)
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
     reads = {"n": 0}
     real = mod.pd.read_parquet
@@ -340,6 +336,20 @@ def test_parquet_reads_do_not_grow_with_the_measurement_grid(monkeypatch, tmp_pa
     argv = [a for a in _FROZEN_ARGV if a != "20"]
     argv[argv.index("--windows") + 1: argv.index("--windows") + 1] = windows
     _cli_module().main([*argv, "--json", str(tmp_path / "out.json")])
+    monkeypatch.setattr(mod.pd, "read_parquet", real)
+    return reads["n"]
 
-    # 素材化 4 日 ＋ 測定 4（形成中バーの検算で 1 日を読み直す）＝ 窓の本数に依らず一定。
-    assert reads["n"] == len(synthetic_tick_days) + 1
+
+def test_parquet_reads_do_not_grow_with_the_measurement_grid(monkeypatch, tmp_path,
+                                                             synthetic_tick_days):
+    """測定の組み合わせ（窓の個数）を増やしても parquet 読取は増えない。
+
+    素材化は 1 回で、その上に測定を重ねる。窓ごとに読み直すと入力量に比例しない浪費になる。
+    固定するのは**無駄の不在**（2 点で読取が動かないこと）であって、読取回数そのものではない。
+    回数を期待値へ焼き込むと、そのとき偶然存在した浪費が仕様へ昇格する（ISSUE-450 の教訓）。
+    """
+    one = _reads_for_windows(monkeypatch, tmp_path / "w1", synthetic_tick_days, ["20"])
+    three = _reads_for_windows(monkeypatch, tmp_path / "w3", synthetic_tick_days,
+                               ["20", "30", "40"])
+
+    assert three - one == 0
