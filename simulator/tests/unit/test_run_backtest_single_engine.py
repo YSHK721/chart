@@ -989,3 +989,160 @@ class TestThePositionDirectiveStageDoesNotWasteWork:
             measured[lot_count] = len(pm.calls)
         # Assert: 発行（問い合わせ）− 使用（玉 × 評価点）= 0。玉を 2 倍にすれば 2 倍。
         assert measured[4] - 2 * measured[2] == 0, measured
+
+
+# ---- 4-7: 評価点の決済（含み損益 → equity 記録 → stop-out 判定）の単一化 ----
+
+class TestBothEnginesShareTheEvaluationPointSettlement:
+    """1 評価点の口座再評価（I 段）の定義点が 1 つであること。"""
+
+    def test_the_settlement_stage_has_exactly_one_definition_point(self):
+        assert callable(getattr(RunBacktestInteractor, "_settle_evaluation_point", None))
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_one_equity_point_is_recorded_per_evaluation_point(self, path, overrides):
+        # Arrange / Act: 発注しない run（評価点はバー数と一致する）。
+        result = _interactor().execute(_request(_bars(12), config=_config(**overrides)))
+        # Assert: 評価点 1 つにつき equity 系列へ 1 点（取りこぼしも重複も無い）。
+        assert len(result.equity_curve) - 12 == 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_equity_series_is_unchanged_value_for_value(self, path, overrides):
+        """含み玉を持つ run の equity 系列を値まで固定する（byte 一致の防波堤）。"""
+        # Arrange: bar0 で買い建て、以降 6 バー保有し続ける。
+        interactor = RunBacktestInteractor(
+            strategy=_OrdersPerBar({0: [_market("buy")]}),
+            indicators=_NullIndicators(),
+            tick_model=_OneTickPerBar(),
+        )
+        request = _request(_bars(6), config=_config(**overrides))
+        bars = list(request.bars)
+        # Act
+        result = interactor.execute(request)
+        # Assert: 各点は「評価現値 − 建値」を deposit に足した値そのもの。
+        #   （contract_size=1.0・volume=1.0・spread=0 なので含み損益 = 評価現値 − 建値）
+        #   評価現値は経路で違う: バー評価は bar.close、ティック評価はティックの Bid。
+        #   建値はどちらも足境界の bar open クォート（既定 "close" 基準＝bar0.close）。
+        entry = bars[0].close
+        mark = (lambda bar: bar.close) if path == "bar" else (lambda bar: bar.low)
+        expected = [10_000.0 + (mark(bar) - entry) for bar in bars]
+        assert len(result.equity_curve) == len(expected)
+        for i, (got, want) in enumerate(zip(result.equity_curve, expected)):
+            assert got == pytest.approx(want), (i, result.equity_curve, expected)
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_hedged_margin_rule_is_a_tick_granularity_rule(
+        self, path, overrides, monkeypatch
+    ):
+        """両建ての証拠金相殺はティック評価にだけ効くこと（bar 経路は単純加算のまま）。
+
+        現挙動の記録: 両建て相殺の設定を立てても bar 経路の stop-out 判定は実効証拠金を
+        求めない。この非対称は設計上の意図ではなく現状の契約なので、段を束ねる改修で
+        **どちらかに寄せてしまわない**ように固定する（寄せれば数値が動く）。
+        """
+        # Arrange: 相殺規則の呼び出しを数える。
+        from simulator.domain.account import Account
+
+        asked: "list[int]" = []
+        original = Account.hedged_margin_level
+        monkeypatch.setattr(
+            Account,
+            "hedged_margin_level",
+            lambda self, **kw: (asked.append(1), original(self, **kw))[1],
+        )
+        interactor = RunBacktestInteractor(
+            strategy=_OrdersPerBar({0: [_market("buy")]}),
+            indicators=_NullIndicators(),
+            tick_model=_OneTickPerBar(),
+        )
+        # Act
+        interactor.execute(
+            _request(_bars(6), config=_config(hedged_margin=True, **overrides))
+        )
+        # Assert: tick 経路だけが実効証拠金を求める。bar 経路は 1 度も求めない。
+        assert (len(asked) > 0) is (path == "tick"), (path, len(asked))
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_settlement_reports_whether_the_run_was_halted(self, path, overrides):
+        # Arrange: 割れて halt する run（close_and_halt）。
+        interactor, request = _margin_breach_request(
+            config_overrides={**overrides, "stop_out_action": "close_and_halt"},
+            bars=_flat_then_crash_bars(),
+        )
+        # Act
+        result = interactor.execute(request)
+        # Assert: 強制決済されたうえで run は完走する（halt が呼出側へ伝わっている）。
+        assert [t.exit_reason for t in result.trades] == ["stop_out"]
+        assert len(result.equity_curve) > 0
+
+
+class TestTheSettlementDoesNotWasteWork:
+    """計算量検定（Test Spy・発行 − 使用 = 0）。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_floating_pnl_is_updated_once_per_recorded_equity_point(
+        self, path, overrides, monkeypatch
+    ):
+        # Arrange: 含み損益の更新発行を数える。
+        from simulator.domain.account import Account
+
+        updates: "list[int]" = []
+        original = Account.update_floating_pnl_at
+        monkeypatch.setattr(
+            Account,
+            "update_floating_pnl_at",
+            lambda self, **kw: (updates.append(1), original(self, **kw))[1],
+        )
+        # Act
+        result = _interactor().execute(_request(_bars(24), config=_config(**overrides)))
+        # Assert: 発行（含み損益更新）− 使用（equity 系列に載った点）= 0。
+        assert len(updates) - len(result.equity_curve) == 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_update_count_tracks_evaluation_points_not_open_trades(
+        self, path, overrides, monkeypatch
+    ):
+        """玉 1 / 玉 4 の 2 点で、評価点あたりの更新発行が変わらないこと。"""
+        from simulator.domain.account import Account
+
+        original = Account.update_floating_pnl_at
+        measured = {}
+        for lot_count in (1, 4):
+            updates: "list[int]" = []
+            monkeypatch.setattr(
+                Account,
+                "update_floating_pnl_at",
+                lambda self, **kw: (updates.append(1), original(self, **kw))[1],
+            )
+            interactor = RunBacktestInteractor(
+                strategy=_OrdersPerBar({0: [_market("buy")] * lot_count}),
+                indicators=_NullIndicators(),
+                tick_model=_OneTickPerBar(),
+            )
+            result = interactor.execute(_request(_bars(8), config=_config(**overrides)))
+            measured[lot_count] = (len(updates), len(result.equity_curve))
+        # Assert: 玉を 4 倍にしても更新発行は増えない（玉数に非比例）。
+        assert measured[4][0] - measured[1][0] == 0, measured
+        for lot_count, (issued, used) in measured.items():
+            assert issued - used == 0, measured
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_evaluation_quote_is_resolved_once_per_evaluation_point(
+        self, path, overrides, monkeypatch
+    ):
+        """評価クォートを同じ引数で二度引かないこと（bar 経路の強制決済で起きていた形）。"""
+        resolved: "list[int]" = []
+        original = rb.resolve_eval_quote
+        monkeypatch.setattr(
+            rb, "resolve_eval_quote",
+            lambda bar, **kw: (resolved.append(1), original(bar, **kw))[1],
+        )
+        # Arrange / Act: 割れて強制決済する run（bar 経路はここで二度引いていた）。
+        interactor, request = _margin_breach_request(
+            config_overrides={**overrides, "stop_out_action": "close_and_halt"},
+            bars=_flat_then_crash_bars(),
+        )
+        result = interactor.execute(request)
+        # Assert: bar 経路は評価点ごとに 1 回だけ（tick 経路はティッククォートを使うので 0 回）。
+        used = len(result.equity_curve) if path == "bar" else 0
+        assert len(resolved) - used == 0, (len(resolved), used)

@@ -112,6 +112,7 @@ class _RunState:
     spec: Any
     contract_size: float
     leverage: float
+    stop_out_level: float
     floating_pnl_basis: str
     account: Account
     session_gate: SessionGate
@@ -254,6 +255,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             spec=spec,
             contract_size=contract_size,
             leverage=request.account.leverage,
+            stop_out_level=request.account.stop_out_level,
             floating_pnl_basis=floating_pnl_basis,
             account=account,
             session_gate=session_gate,
@@ -539,26 +541,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             eq_bid, eq_ask = resolve_eval_quote(
                 bar, basis=floating_pnl_basis, point_size=spec.point_size
             )
-            account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
-            equity_curve.append(account.equity)
-            if account.margin_level() < request.account.stop_out_level:
-                # 強制決済のクォートは、直上で含み損を評価したのと同じ (eq_bid, eq_ask)。
-                #   移設前はここで resolve_eval_quote を同じ引数でもう一度呼んでいたが、
-                #   同じ純関数を同じ入力で二度引いた値であり、常に等しい（捨てる計算）。
-                self._apply_stop_out(
-                    policy=state.stop_out_policy,
-                    open_trades=open_trades,
-                    close_trade=close_trade,
-                    account=account,
-                    stop_out_level=request.account.stop_out_level,
-                    bar=bar,
-                    bar_index=bar_index,
-                    bid=eq_bid,
-                    ask=eq_ask,
-                    where=_STOP_OUT_AT_EVALUATION,
-                )
-                open_trades = []
-                halted = True
+            open_trades, halted = self._settle_evaluation_point(
+                state,
+                open_trades,
+                halted,
+                bar=bar,
+                bar_index=bar_index,
+                eval_bid=eq_bid,
+                eval_ask=eq_ask,
+                # バー評価は両建て相殺を適用しない（現状の契約・上記 docstring 参照）。
+                hedged=False,
+            )
 
         # OnDeinit 集計
         return self._finish_run(
@@ -691,6 +684,60 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 exit_time=bar.time,
                 exit_price=ref,
             )
+
+    def _settle_evaluation_point(
+        self,
+        state: _RunState,
+        open_trades: list,
+        halted: bool,
+        *,
+        bar: Any,
+        bar_index: int,
+        eval_bid: float,
+        eval_ask: float,
+        hedged: bool,
+    ) -> "tuple[list, bool]":
+        """1 評価点で口座を再評価する（両実行経路で同型だった I 段の単一化）。
+
+        手順は 3 つ: 含み損益を評価クォートで更新し、equity 系列へ 1 点記録し、証拠金
+        維持率が stop-out 水準を割っていれば割れの処理へ渡す。評価点 1 つにつき equity は
+        ちょうど 1 点であり、この対応が equity 系 stats（系列長・最大ドローダウン）の
+        土台になる。
+
+        `hedged`（両建ての証拠金相殺）は**ティック粒度の規則**であり、呼出側が渡す。
+        バー評価は設定が立っていても単純加算のままである——これは設計上の意図ではなく
+        現状の契約なので、段を束ねるにあたり寄せずにそのまま残す（寄せれば数値が動く）。
+
+        事後条件: `(更新後の保有列, halt したか)` を返す。割れて強制決済したときは
+        保有列が空・halt が真になる。方針が「強制決済しない」なら本メソッドは返らず
+        証拠金割れ例外を送出する（run を捨てる）。
+        """
+        account = state.account
+        account.update_floating_pnl_at(bid=eval_bid, ask=eval_ask)
+        state.equity_curve.append(account.equity)
+        margin_level = account.margin_level()
+        if hedged and open_trades:
+            # 実効証拠金算出は口座不変ルールとして Account が所有する（ISSUE-094）。
+            #   保有列は account.open_positions と open_trades が常時 lockstep のため
+            #   走査対象・順序・式が inline 版と同一＝byte-identical。
+            margin_level = account.hedged_margin_level(
+                leverage=state.leverage, contract_size=state.contract_size
+            )
+        if margin_level < state.stop_out_level:
+            self._apply_stop_out(
+                policy=state.stop_out_policy,
+                open_trades=open_trades,
+                close_trade=state.close_trade,
+                account=account,
+                stop_out_level=state.stop_out_level,
+                bar=bar,
+                bar_index=bar_index,
+                bid=eval_bid,
+                ask=eval_ask,
+                where=_STOP_OUT_AT_EVALUATION,
+            )
+            return [], True
+        return open_trades, halted
 
     def _apply_stop_out(
         self,
@@ -1142,34 +1189,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   評価し floating_pnl_basis="bid_ask" と整合させる（centered tick は使わない）。
                 eval_bid = q_bid if pending_mode else bid
                 eval_ask = q_ask if pending_mode else ask
-                account.update_floating_pnl_at(bid=eval_bid, ask=eval_ask)
-                equity_curve.append(account.equity)
-                # stop-out 判定の証拠金維持率。hedged_margin では反対玉を相殺し「買い計・売り計の
-                #   大きい側」を実効証拠金とする（同量両建ては実質ノーマージン＝stop-out しない・
-                #   実 MT5 hedging に整合）。既定は account.margin_level()（従来の単純加算）で不変。
-                margin_level = account.margin_level()
-                if hedged_margin and open_trades:
-                    # 実効証拠金算出は口座不変ルールとして Account が所有する（ISSUE-094）。
-                    #   保有列は account.open_positions と open_trades が常時 lockstep のため
-                    #   走査対象・順序・式が inline 版と同一＝byte-identical。
-                    margin_level = account.hedged_margin_level(
-                        leverage=request.account.leverage, contract_size=contract_size
-                    )
-                if margin_level < request.account.stop_out_level:
-                    self._apply_stop_out(
-                        policy=state.stop_out_policy,
-                        open_trades=open_trades,
-                        close_trade=close_trade,
-                        account=account,
-                        stop_out_level=request.account.stop_out_level,
-                        bar=bar,
-                        bar_index=bar_index,
-                        bid=eval_bid,
-                        ask=eval_ask,
-                        where=_STOP_OUT_AT_EVALUATION,
-                    )
-                    open_trades = []
-                    halted = True
+                open_trades, halted = self._settle_evaluation_point(
+                    state,
+                    open_trades,
+                    halted,
+                    bar=bar,
+                    bar_index=bar_index,
+                    eval_bid=eval_bid,
+                    eval_ask=eval_ask,
+                    # ティック評価は両建て相殺を適用する（実 MT5 hedging 整合）。
+                    hedged=hedged_margin,
+                )
 
             # ティック 0 件バー: 保有玉があれば直近既知 bid/ask（無ければ close）で 1 点記録。
             if not saw_tick and open_trades:
