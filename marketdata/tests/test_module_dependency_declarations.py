@@ -25,9 +25,14 @@ _PKG = Path(__file__).resolve().parents[1]
 #: 値は **docstring の宣言と一致していなければならない**。宣言を広げるなら、その理由を
 #: 当該モジュールの docstring へ書いたうえで本表も広げる（片方だけの更新を許さない）。
 _ALLOWED: "dict[str, set[str]]" = {
-    # 時間足台帳（唯一源）。**依存ゼロ**＝stdlib すら型注釈用の typing のみ。pandas を持ち込むと
-    # 「pandas を使えない純層も同じ台帳から導出する」という分離目的（ISSUE-261）が崩れる。
+    # 時間足台帳（唯一源）。**依存ゼロ**＝stdlib（typing と、期間先頭日の暦算術に使う datetime）
+    # のみ。pandas を持ち込むと「pandas を使えない純層も同じ台帳から導出する」という分離目的
+    # （ISSUE-261）が崩れる。
     "tf_ledger.py": set(),
+    # セッション日境界の唯一源。週/月ラベル規則は resample、暦ラベル tf 集合と期間先頭日の
+    # 暦算術は tf_ledger（いずれも唯一源）へ委譲する。この 2 エントリを消すと、同じ暦算術の
+    # 手書き複製が本モジュールへ復活する（ISSUE-479 M-3）。
+    "session_day.py": {"numpy", "pandas", "marketdata.resample", "marketdata.tf_ledger"},
     # 純規則層。csv_schema / tf_ledger はいずれも依存ゼロの定数モジュール
     # （前者は集約対象列の唯一源・後者は時間足台帳の唯一源）。
     "resample.py": {"pandas", "marketdata.csv_schema", "marketdata.tf_ledger"},
@@ -54,6 +59,7 @@ _STDLIB_PREFIXES = {
     "__future__", "typing", "pathlib", "datetime", "os", "sys", "re", "json", "csv",
     "time", "math", "logging", "tempfile", "collections", "dataclasses", "functools",
     "itertools", "hashlib", "zlib", "queue", "threading", "urllib", "shutil", "glob",
+    "zoneinfo",
 }
 
 

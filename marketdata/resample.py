@@ -66,10 +66,10 @@ def is_known_timeframe(timeframe: Any) -> bool:
 SESSION_TFS = tuple(code for code, d in TF_DESCRIPTORS.items() if d.calendar)
 
 # 暦ラベル tf（単純 floor 不可のカレンダー tf＝W-FRI/ME ラベル規約）。period_label_naive が扱う集合。
-# 台帳の calendar かつ非 floorable からの導出値（= {"1W", "1M"}）。
-CALENDAR_LABEL_TFS = frozenset(
-    code for code, d in TF_DESCRIPTORS.items() if d.calendar and not d.floorable
-)
+# 台帳 :data:`marketdata.tf_ledger.CALENDAR_LABEL_CODES`（calendar かつ非 floorable からの導出値
+# = {"1W", "1M"}）の**再輸出**。名前・型（frozenset）・内容は不変で、値はここに持たない
+# （同じ導出式を 2 つ書けば台帳の第 2 定義になる）。
+CALENDAR_LABEL_TFS = _tf_ledger.CALENDAR_LABEL_CODES
 _NY_TZ = "America/New_York"
 _BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
 
@@ -113,16 +113,16 @@ def period_utc_start(tf: str, label: pd.Timestamp) -> pd.Timestamp:
     ブローカー日を求め、その日のセッション始端（NY 前日 17:00）へ写像する:
       1D: ラベル日そのもの / 1W(W-FRI): ラベル金曜の 6 日前（週= [土..金] ブローカー日）/
       1M(ME): ラベル月の 1 日。rollup の probe 被覆判定（「現周期の始端を probe が含むか」）に使う。
+
+    期間先頭ブローカー日の暦算術は台帳（:func:`marketdata.tf_ledger.period_first_ymd`）が持つ
+    （ISSUE-479 M-3）。ここに tf 別のリテラル分岐を書かない＝時間足の追加は台帳 1 行で完結する。
     """
     label = pd.Timestamp(label)
     if tf not in SESSION_TFS:
         return label
-    if tf == "1D":
-        first = label
-    elif tf == "1W":
-        first = label - pd.Timedelta(days=6)
-    else:  # 1M
-        first = label.replace(day=1)
+    first_day = _tf_ledger.period_first_ymd(tf, label.year, label.month, label.day)
+    # 日付だけを差し替える（``pd.Timestamp(first_day)`` は時刻成分を 00:00 に落としてしまう）。
+    first = label.replace(year=first_day.year, month=first_day.month, day=first_day.day)
     # ブローカー日 first のセッション始端 = NY ローカル（first - 1 日）17:00。
     ny_naive = first - _BROKER_SHIFT
     return ny_naive.tz_localize(_NY_TZ).tz_convert("UTC").tz_localize(None)
