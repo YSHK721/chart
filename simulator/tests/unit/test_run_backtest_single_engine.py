@@ -1239,3 +1239,128 @@ class TestTheEngineIsDrivenByEvaluationPoints:
         # Assert: 発行 − 使用 = 0。順序も一致する（作った順に評価される）。
         assert len(boxes[0].produced) - len(evaluated) == 0
         assert boxes[0].produced == evaluated
+
+
+# ---- 4-9: 点あたりの仕事量が両経路で同じであること（C2） ----
+
+class _NTicksPerBar:
+    """1 バーにつき n 本のティックを返す（点の数を経路間で変えて測るため）。"""
+
+    def __init__(self, n):
+        self._n = n
+
+    def ticks_of(self, bar, prev_close):
+        span = bar.high - bar.low
+        out = []
+        for i in range(self._n):
+            price = bar.low + span * (i + 1) / (self._n + 1)
+            out.append((price, price, price, bar.time))
+        return out
+
+
+def _measure_per_point(overrides, *, ticks_per_bar, bar_count, lot_count, monkeypatch):
+    """1 run の「評価点あたりの発行数」を測る。
+
+    数えるのは両経路が共有する 2 つの仕事:
+      * SL/TP 到達判定（監視対象の玉ごと）
+      * 含み損益の更新（点ごと）
+    """
+    from simulator.domain.account import Account
+
+    hits: "list[int]" = []
+    updates: "list[int]" = []
+    original_hit = rb.check_sltp_hit
+    original_update = Account.update_floating_pnl_at
+    monkeypatch.setattr(
+        rb, "check_sltp_hit",
+        lambda position, **kw: (hits.append(1), original_hit(position, **kw))[1],
+    )
+    monkeypatch.setattr(
+        Account, "update_floating_pnl_at",
+        lambda self, **kw: (updates.append(1), original_update(self, **kw))[1],
+    )
+    interactor = RunBacktestInteractor(
+        strategy=_OrdersPerBar({0: [_market("buy")] * lot_count}),
+        indicators=_NullIndicators(),
+        tick_model=_NTicksPerBar(ticks_per_bar),
+    )
+    result = interactor.execute(
+        _request(_bars(bar_count), config=_config(**overrides))
+    )
+    points = len(result.equity_curve)
+    return {
+        "points": points,
+        "hits_per_point": len(hits) / points,
+        "updates_per_point": len(updates) / points,
+    }
+
+
+class TestBothPathsDoTheSameWorkPerPoint:
+    """C2: 点あたりの発行比が bar 経路と tick 経路で同一であること。
+
+    なぜ比で測るか: 2 つの経路は点の数が違う（バー粒度は 1 バー 1 点、ティック粒度は
+    1 ティック 1 点）。総発行数を比べても点数の差しか見えない。**1 点あたり**に直すと、
+    「同じ 1 点で同じだけの仕事をしているか」が測れる。片方の経路にだけ余分な仕事が
+    残っていれば比がずれる。
+    """
+
+    def test_the_work_per_point_is_identical_across_paths(self, monkeypatch):
+        # Arrange / Act: 同じシナリオを両経路で走らせる（ティック数は経路で違ってよい）。
+        bar_side = _measure_per_point(
+            {}, ticks_per_bar=1, bar_count=10, lot_count=2, monkeypatch=monkeypatch
+        )
+        tick_side = _measure_per_point(
+            {"tick_model": "real_ticks"},
+            ticks_per_bar=4, bar_count=10, lot_count=2, monkeypatch=monkeypatch,
+        )
+        # Assert: 点の数は違うが、点あたりの仕事量は同じ。
+        assert tick_side["points"] > bar_side["points"]
+        assert tick_side["hits_per_point"] - bar_side["hits_per_point"] == 0, (
+            bar_side, tick_side
+        )
+        assert tick_side["updates_per_point"] - bar_side["updates_per_point"] == 0, (
+            bar_side, tick_side
+        )
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_work_per_point_does_not_grow_with_the_number_of_ticks(
+        self, path, overrides, monkeypatch
+    ):
+        """ティック 2 本 / 16 本の 2 点で、点あたりの発行が変わらないこと。"""
+        measured = {}
+        for ticks_per_bar in (2, 16):
+            measured[ticks_per_bar] = _measure_per_point(
+                overrides, ticks_per_bar=ticks_per_bar, bar_count=8, lot_count=2,
+                monkeypatch=monkeypatch,
+            )
+        assert (
+            measured[16]["hits_per_point"] - measured[2]["hits_per_point"] == 0
+        ), measured
+        assert (
+            measured[16]["updates_per_point"] - measured[2]["updates_per_point"] == 0
+        ), measured
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_evaluation_work_per_point_does_not_grow_with_the_number_of_bars(
+        self, path, overrides, monkeypatch
+    ):
+        """バー 50 本 / 200 本の 2 点で、点あたりの発行が入力量に依らないこと。
+
+        到達判定の発行は「監視対象の点 × 監視対象の玉」ちょうどである。建てたバーの点は
+        監視外（fill_delay=次tick）なので、そのぶんを引いた数と突き合わせる。比で見ると
+        建て足の免除がバー数によって薄まり、量ではなく端数を見てしまう。
+        """
+        lot_count, ticks_per_bar = 1, 2
+        measured = {}
+        for bar_count in (50, 200):
+            measured[bar_count] = _measure_per_point(
+                overrides, ticks_per_bar=ticks_per_bar, bar_count=bar_count,
+                lot_count=lot_count, monkeypatch=monkeypatch,
+            )
+        for bar_count, m in measured.items():
+            # 含み損益の更新は点あたりちょうど 1（点数に比例・それ以上でも以下でもない）。
+            assert m["updates_per_point"] - 1 == 0, measured
+            # 到達判定は「監視対象の点 × 玉」ちょうど（発行 − 使用 = 0）。
+            monitored_points = m["points"] - (m["points"] / bar_count)
+            issued = m["hits_per_point"] * m["points"]
+            assert issued - lot_count * monitored_points == 0, (bar_count, measured)

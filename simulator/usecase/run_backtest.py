@@ -35,6 +35,7 @@ from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.run_features import RunFeatures
 from simulator.usecase.session_gate import SessionGate
 from simulator.usecase.stop_out_policy import StopOutContext, resolve_stop_out_policy
+from simulator.usecase.tick_schedule import TickSchedule
 
 
 # 部分決済（FR-08）の確定トレードに付す exit_reason。部分決済は実現 Deal であり、full-TP-hit
@@ -122,6 +123,9 @@ class _RunState:
     balance_curve: list
     equity_curve: list
     open_trades: list
+    # 残存ペンディング（指値/逆指値）。前足で設置され未約定のまま次足へ持ち越し、
+    # 評価点ごとにトリガ評価される。ペンディング経路以外では常に空で挙動不変。
+    resting_pending: list
     halted: bool
     trading_start: Any
     prime_first: bool
@@ -267,6 +271,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             # 保有玉（走査順＝反映順が byte 依存）。
             open_trades=[],
+            resting_pending=[],
             # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
             halted=False,
             # warmup/trading_start: 指定時のみウォームアップ区間を有効化（既定 None=全バー取引）。
@@ -592,6 +597,67 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             )
         return open_trades
 
+    def _admit_pending_fills(
+        self,
+        state: _RunState,
+        open_trades: list,
+        filled: list,
+        *,
+        bar: Any,
+        bar_index: int,
+        tick_ordinal: int,
+    ) -> None:
+        """トリガしたペンディングの約定を口座へ反映する（走査順＝反映順）。
+
+        トリガ判定と OCO はエンジン（PendingLifecycleEngine）が純ロジックとして持ち、
+        約定 Position の口座反映（保有列・証拠金・保有玉）は口座アクターである本
+        Interactor が担う。約定玉は `skip_entry_bar=False`・`opened_tick_ordinal` 付きで
+        積み、「約定したティックより後」からのみ SL/TP を監視させる（約定したティック
+        自身では決済しない＝実 MT5 server 整合）。
+        """
+        for order, pos in filled:
+            state.account.open_positions.append(pos)
+            state.account.margin += pos.required_margin(
+                state.leverage, state.contract_size
+            )
+            open_trades.append(
+                _OpenTrade(
+                    position=pos,
+                    sl=order.sl,
+                    tp=order.tp,
+                    entry_time=bar.time,
+                    entry_price=pos.entry_price,
+                    opened_bar_index=bar_index,
+                    skip_entry_bar=False,
+                    opened_tick_ordinal=tick_ordinal,
+                )
+            )
+
+    def _trigger_resting_pending(
+        self, state: _RunState, open_trades: list, point: Any
+    ) -> None:
+        """残存ペンディングを当該評価点のクォートでトリガ評価する。
+
+        OCO: 同一評価点で trigger した注文は（OCO 無効なら）すべて約定する。実 MT5 の
+        hedging 口座では広い spread や doji で両建てが成立する（2604-02 実証）。約定が
+        起きたら、非約定分は EA が取り消す。
+        """
+        filled, carried = PendingLifecycleEngine.evaluate_triggers(
+            state.resting_pending,
+            bid=point.eval_bid,
+            ask=point.eval_ask,
+            oco=state.features.pending_oco,
+        )
+        self._admit_pending_fills(
+            state,
+            open_trades,
+            filled,
+            bar=point.bar,
+            bar_index=point.bar_index,
+            tick_ordinal=point.tick_ordinal,
+        )
+        state.resting_pending = carried
+
     def _check_sltp_hits(
         self, state: _RunState, point: Any, open_trades: list, *, closed: bool
     ) -> list:
@@ -657,6 +723,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         事後条件: `(更新後の保有列, halt したか)`。
         """
+        if point.is_synthetic_bar_point:
+            # ティックが 1 本も無いバーの点。そのバーで実際に成立した価格が無いので、
+            #   SL/TP も stop-out も判定しない（判定する材料が無い）。保有玉が在るときだけ、
+            #   持ち越したクォートで値洗いして equity へ 1 点残す。保有が無ければ評価対象
+            #   自体が無いので何も記録しない。
+            if not open_trades:
+                return open_trades, halted
+            state.account.update_floating_pnl_at(bid=point.eval_bid, ask=point.eval_ask)
+            state.equity_curve.append(state.account.equity)
+            return open_trades, halted
+
         closed = state.session_gate.is_closed(point.bar_index)
         open_trades = self._check_sltp_hits(state, point, open_trades, closed=closed)
         if self._position_manager is not None and open_trades and not closed:
@@ -668,6 +745,32 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 ref_buy=point.pm_ref_buy,
                 ref_sell=point.pm_ref_sell,
             )
+        # 残存ペンディングのトリガ評価。約定価格＝注文価格（スリッページ 0）。
+        #   バー粒度では残存が常に空なので、この段は素通りする。
+        if state.resting_pending and not closed:
+            self._trigger_resting_pending(state, open_trades, point)
+        # ペンディング持続モードの足途中再アーム（実 MT5 の OnTick 即時再設置に相当）。
+        #   SL/TP 決済直後など「保有 0・残存 0」の点で、その点のクォートで即装填する。
+        #   バー境界の on_new_bar ではなく決済が起きた実ティックのクォートを使うため、
+        #   再アーム価格が実 MT5 と一致する。置いた点自身では約定判定しない（次の点から）。
+        if (
+            state.features.pending_persistent
+            and state.features.pending_lifecycle
+            and not halted
+            and not open_trades
+            and not state.resting_pending
+            and not closed
+        ):
+            # 再アームも発注であり、受理の門（admit_orders）を通す。
+            rearm = admit_orders(
+                self._strategy.on_tick(
+                    point.bar_index, point.eval_bid, point.eval_ask, state.account
+                )
+                or [],
+                state.spec,
+            )
+            if rearm:
+                state.resting_pending = list(rearm)
         return self._settle_evaluation_point(
             state,
             open_trades,
@@ -926,13 +1029,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         pm = self._position_manager
 
         prev_close: float | None = None
-        # 残存ペンディング（指値/逆指値・最大 1 件）。前足で設置され未約定のまま次足へ持ち越し、
-        # 次足 open tick で 1 回トリガ評価される（実 MT5: サーバが OnTick 前に評価）。on_new_bar
-        # で EA が削除し最新シグナルで再設置する。pending_mode 以外では常に空で挙動不変。
-        resting_pending: list = []
-        # ティック 0 件バーで保有玉を評価するための直近既知 bid/ask（carry-forward）。
-        last_bid: float | None = None
-        last_ask: float | None = None
+        # 評価点を生むスケジュール（run につき 1 つ）。ティック列の取得と、ティック 0 件
+        #   バーの持ち越しクォートはスケジュールが持つ。
+        schedule = TickSchedule(
+            tick_model=self._tick_model,
+            pending_lifecycle=pending_mode,
+            point_size=spec.point_size,
+        )
 
         for bar_index, bar in enumerate(bars):
             # C 確定足指標（足単位・bar-mode と同一）
@@ -952,10 +1055,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 prev_close = bar.close
                 continue
 
-            # 当該足のティックを materialize（open-tick SL/TP・空判定・トリガ評価に先行使用）。
-            # 実 MT5 every-tick は新規バーを「最初のティック」で検知するため、ティック 0 件足
-            # では新規バーを検知せず発注しない（次足へ持ち越さない＝実 MT5 整合）。
-            bar_ticks = list(self._tick_model.ticks_of(bar, prev_close))
+            # 当該足の評価点を materialize する。open tick の先行処理・空判定・約定可否の
+            #   判断が「このバーに評価点が在るか／先頭の点がどのクォートか」を必要とするため、
+            #   点はバーの先頭で 1 度だけ取り出す（ティック列の取得もここで 1 回きり）。
+            #   実 MT5 every-tick は新規バーを「最初のティック」で検知するため、ティック 0 件足
+            #   では新規バーを検知せず発注しない（次足へ持ち越さない＝実 MT5 整合）。
+            points = list(schedule.points(bar_index, bar, prev_close))
+            # ティックが在るバーか（ティック 0 件バーは合成点 1 つだけを差し出す）。
+            has_ticks = bool(points) and not points[0].is_synthetic_bar_point
 
             # ★ペンディング経路: 実 MT5 はバー先頭ティック(open)でサーバが保有玉の SL/TP を
             #   処理してから EA の OnTick(on_new_bar) を呼ぶ。よって on_new_bar より先に、前足
@@ -964,28 +1071,14 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   ペンディングを設置できる（2603-01: SL@バー open→同足で次玉設置を再現）。後段の
             #   ティックループは open tick を再評価するが、生存玉は同クォートで冪等（二重決済なし）。
             if (
-                pending_mode and not halted and open_trades and bar_ticks
+                pending_mode and not halted and open_trades and has_ticks
                 and not session_gate.is_closed(bar_index)
             ):
-                o_price = bar_ticks[0][0]
-                oq_bid, oq_ask = PendingLifecycleEngine.tick_quote(
-                    o_price, spread=bar.spread, point_size=spec.point_size
+                # 先頭の点＝バー open ティック。到達判定は評価点ごとの手続きと同じもの
+                #   （この時点で当該バーに建てた玉は無いので、建て足の監視抑止は空振りする）。
+                open_trades = self._check_sltp_hits(
+                    state, points[0], open_trades, closed=False
                 )
-                kept_open: list[_OpenTrade] = []
-                for ot in open_trades:
-                    sltp_price = oq_ask if ot.position.side == "sell" else oq_bid
-                    reason = check_sltp_hit_at_tick(
-                        ot.position, price=sltp_price, sl=ot.sl, tp=ot.tp,
-                        sltp_tie=features.sltp_tie,
-                    )
-                    if reason is None:
-                        kept_open.append(ot)
-                        continue
-                    exit_price = ot.sl if reason == "sl" else ot.tp
-                    close_trade(
-                        ot, exit_time=bar.time, exit_price=exit_price, exit_reason=reason,
-                    )
-                open_trades = kept_open
 
             # ★ペンディング経路: 前足から残存するペンディングは、実 MT5 ではサーバが当該バーの
             #   open tick で評価してから EA が OnTick で削除する。よって on_new_bar より先に、
@@ -998,38 +1091,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             if (
                 pending_mode
                 and not halted
-                and resting_pending
-                and bar_ticks
+                and state.resting_pending
+                and has_ticks
                 and not session_gate.is_closed(bar_index)
             ):
-                ro_price = bar_ticks[0][0]
-                rq_bid, rq_ask = PendingLifecycleEngine.tick_quote(
-                    ro_price, spread=bar.spread, point_size=spec.point_size
-                )
-                # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の口座
-                #   反映（open_positions/margin/open_trades）は口座アクターとして本 Interactor
-                #   が担う。走査順＝反映順のため byte-identical（opened_tick_ordinal=0）。
-                #   OCO: 同一評価点で trigger した stop は全て約定（実 MT5 hedging・広 spread/doji
-                #   で両建て成立＝2604-02 実証）。約定が起きたら非約定分のみ EA が取消す。
-                filled, carried = PendingLifecycleEngine.evaluate_triggers(
-                    resting_pending, bid=rq_bid, ask=rq_ask, oco=pending_oco
-                )
-                for order, pos in filled:
-                    account.open_positions.append(pos)
-                    account.margin += pos.required_margin(request.account.leverage, contract_size)
-                    open_trades.append(
-                        _OpenTrade(
-                            position=pos,
-                            sl=order.sl,
-                            tp=order.tp,
-                            entry_time=bar.time,
-                            entry_price=pos.entry_price,
-                            opened_bar_index=bar_index,
-                            skip_entry_bar=False,
-                            opened_tick_ordinal=0,
-                        )
-                    )
-                resting_pending = carried
+                # 先頭の点（バー open ティック）で 1 回だけトリガ評価する。約定玉は
+                #   序数 0 で積まれ、後段の点は open tick の判定を抑止する。
+                self._trigger_resting_pending(state, open_trades, points[0])
 
             # D/E ★足境界のみ: 新規バーシグナル評価（ティックで呼ばない）。
             #   halt 後は発注しない（玉を増やさない）。open-tick SL/TP 後の保有で評価する。
@@ -1054,7 +1122,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   （bar-mode 突合 2025-01 と同一の建値ルール）。ティック 0 件足では発注しない。
             #   市場閉鎖バー（closed_bars）も新規成行を約定しない（ドテン反転の reverse
             #   決済も含め全約定を抑止。保有不変＝戦略が次の開場バーで自動再発注）。
-            if bar_ticks and market_orders and not session_gate.is_closed(bar_index):
+            if has_ticks and market_orders and not session_gate.is_closed(bar_index):
                 open_trades = self._fill_market_orders(
                     state, market_orders, open_trades, bar=bar, bar_index=bar_index
                 )
@@ -1069,8 +1137,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   pending_persistent では resting をバー境界でリセットしない（約定まで保持し、
             #   再アームは足途中ティックの on_tick が担う＝実 MT5 の OnTick 即時再設置に整合）。
             if pending_mode and not pending_persistent:
-                resting_pending = []  # EA が自ペンディングを削除（未約定の残存分を破棄）
-            if bar_ticks and pending_orders and not session_gate.is_closed(bar_index):
+                state.resting_pending = []  # EA が自ペンディングを削除（未約定の残存分を破棄）
+            if has_ticks and pending_orders and not session_gate.is_closed(bar_index):
                 pbid0, pask0, _, _ = derive_quotes(
                     bar,
                     entry_price_basis=features.entry_price_basis,
@@ -1080,170 +1148,19 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     open_trades = self._close_opposite_positions(
                         state, open_trades, order, bar=bar, bid=pbid0, ask=pask0
                     )
-                    resting_pending.append(order)
+                    state.resting_pending.append(order)
 
-            saw_tick = False
-            # 閉鎖バー（pre-open 01:00 / 日次クローズ 23:59 等）の取引可否（トレードセッション）。
-            #   実 MT5 のセッション規約: 顧客注文（新規約定・ペンディング fill・SL/TP）はトレード
-            #   セッション外では実行しない。一方 stop-out（ブローカーのリスク清算）と含み損評価は
-            #   セッション外でも行う（2603 で 01:00 pre-open の stop-out が MT5 と一致・2604-02 で
-            #   01:00 の SL/TP は MT5 で発火しないことを実証）。よって閉鎖バーでは SL/TP・約定・
-            #   再アームのみ抑止し、equity 更新と stop-out は継続する。
-            bar_closed = session_gate.is_closed(bar_index)
-            for tick_ordinal, tick in enumerate(bar_ticks):
-                price, bid, ask, _tick_time = tick
-                saw_tick = True
-                last_bid, last_ask = bid, ask
-                # ペンディング経路は実 MT5 OHLC のクォート規約（bid=ティック価格＝OHLC /
-                #   ask=bid+spread×point）を採る。SL/TP は決済サイドのクォートで判定する
-                #   （sell 保有は Ask で SL/TP・buy 保有は Bid で SL/TP＝実 MT5 整合。2603-01:
-                #   sell の SL は high tick の Ask=high+spread×point で発火）。非ペンディング
-                #   （real_ticks）経路は従来どおり tick の price で判定し byte-identical を保つ。
-                if pending_mode:
-                    q_bid, q_ask = PendingLifecycleEngine.tick_quote(
-                        price, spread=bar.spread, point_size=spec.point_size
-                    )
-                else:
-                    q_bid = q_ask = None
-
-                # H 保有玉 SL/TP を到達ティック価格で判定（fill_delay=次tick: 発注足は監視外）。
-                #   skip_entry_bar=True（成行）は建てた足のティックを監視外とし従来不変。
-                #   ペンディング約定玉（skip_entry_bar=False）は「約定ティックより後」の同足ティック
-                #   から監視する（opened_tick_ordinal 以下のティックは約定ティック自身ゆえ抑止）。
-                still_open: list[_OpenTrade] = []
-                for ot in open_trades:
-                    if bar_closed:
-                        still_open.append(ot)  # 閉鎖バーは SL/TP 監視外（顧客注文＝セッション外不可）
-                        continue
-                    if ot.opened_bar_index == bar_index:
-                        if ot.skip_entry_bar:
-                            still_open.append(ot)  # 建てた足は監視外（成行）
-                            continue
-                        if tick_ordinal <= ot.opened_tick_ordinal:
-                            still_open.append(ot)  # 約定ティック以前は監視外（ペンディング）
-                            continue
-                    if pending_mode:
-                        sltp_price = q_ask if ot.position.side == "sell" else q_bid
-                    else:
-                        sltp_price = price
-                    reason = check_sltp_hit_at_tick(
-                        ot.position,
-                        price=sltp_price,
-                        sl=ot.sl,
-                        tp=ot.tp,
-                        sltp_tie=features.sltp_tie,
-                    )
-                    if reason is None:
-                        still_open.append(ot)
-                        continue
-                    exit_price = ot.sl if reason == "sl" else ot.tp
-                    close_trade(
-                        ot,
-                        exit_time=bar.time,
-                        exit_price=exit_price,
-                        exit_reason=reason,
-                    )
-                open_trades = still_open
-
-                # B4 建玉変更（トレーリング FR-07・部分決済 FR-08）を hit 判定（H）の後・I の前に
-                #   適用する（Phase 7・忠実順序: on_tick 等の EA 動作帯・I の前）。既定 pm=None は
-                #   素通り＝byte-identical。参照/決済価格は保有玉の決済価格（buy=Bid / sell=Ask＝
-                #   close_price_for・floating 評価と同一基準）。pending_mode は q_bid/q_ask、
-                #   real_ticks は tick の bid/ask を用いる。閉鎖バーは EA 動作外で適用しない。
-                if pm is not None and open_trades and not bar_closed:
-                    mb = q_bid if pending_mode else bid
-                    ma = q_ask if pending_mode else ask
-                    self._apply_position_directives(
-                        state,
-                        open_trades,
-                        bar=bar,
-                        granularity=TICK_GRANULARITY,
-                        # サイドごとの決済価格は評価点で 1 度ずつ解決する（玉数に非比例）。
-                        #   規則そのものは close_price_for が単一ソース。
-                        ref_buy=close_price_for("buy", bid=mb, ask=ma),
-                        ref_sell=close_price_for("sell", bid=mb, ask=ma),
-                    )
-
-                # ★armed ペンディングのトリガ評価（約定価格＝注文価格・スリッページ0）。
-                #   クォート規約は derive_quotes と対称に bid=ティック価格 / ask=bid+spread×point
-                #   （centered tick の bid/ask は使わない）。実 MT5 はペンディングが約定した
-                #   コントロールポイント（ティック）自身では SL/TP を判定せず、後続ティック以降で
-                #   監視する（2603-01 journal で実証: 約定@H tick→SL は後続 C tick で発火＝同足、
-                #   後続足が SL/TP 未達なら次足へ持ち越し）。よって同ティック判定はせず、
-                #   skip_entry_bar=False で open_trades へ積み「約定ティックより後」のみ監視させる。
-                if resting_pending and not session_gate.is_closed(bar_index):
-                    # トリガ評価 + OCO 判定はエンジンへ委譲（純ロジック）。約定 Position の
-                    #   口座反映（open_positions/margin/open_trades）は本 Interactor が担う。
-                    #   走査順＝反映順のため byte-identical（opened_tick_ordinal=tick_ordinal）。
-                    #   OCO: 同一ティックで trigger した stop は全約定（実 MT5 hedging・広 spread/
-                    #   doji で両建て成立）。約定が起きたら非約定分のみ EA が取消す。
-                    filled, carried = PendingLifecycleEngine.evaluate_triggers(
-                        resting_pending, bid=q_bid, ask=q_ask, oco=pending_oco
-                    )
-                    for order, pos in filled:
-                        account.open_positions.append(pos)
-                        account.margin += pos.required_margin(
-                            request.account.leverage, contract_size
-                        )
-                        open_trades.append(
-                            _OpenTrade(
-                                position=pos,
-                                sl=order.sl,
-                                tp=order.tp,
-                                entry_time=bar.time,
-                                entry_price=pos.entry_price,
-                                opened_bar_index=bar_index,
-                                skip_entry_bar=False,
-                                opened_tick_ordinal=tick_ordinal,
-                            )
-                        )
-                    resting_pending = carried
-
-                # ★ペンディング持続モードの足途中再アーム（ISSUE-024・実 MT5 OnTick 相当）。
-                #   SL/TP 決済直後など「保有0・resting 0」のティックで、当該ティッククォート
-                #   （bid=price / ask=price+spread×point）で即ペンディングを再装填する。バー境界の
-                #   on_new_bar ではなく決済が起きた実ティックの bid/ask を使うため、再アーム価格が
-                #   実 MT5 と一致する（journal 検証: bar 01:01 の SL@L 制御点 Bid=52939.8→
-                #   BuyStop=52954.8）。置いたティック自身では fill 判定せず次ティック以降で評価する。
-                if (
-                    pending_persistent
-                    and pending_mode
-                    and not halted
-                    and not open_trades
-                    and not resting_pending
-                    and not session_gate.is_closed(bar_index)
-                ):
-                    # 再アームも発注であり、受理の門（admit_orders）を通す。
-                    rearm = admit_orders(
-                        self._strategy.on_tick(bar_index, q_bid, q_ask, account) or [],
-                        spec,
-                    )
-                    if rearm:
-                        resting_pending = list(rearm)
-
-                # I ティック評価価格で含み損更新 → equity 記録 → stop-out 判定。
-                #   ペンディング経路は MT5 OHLC クォート（bid=price / ask=price+spread×point）で
-                #   評価し floating_pnl_basis="bid_ask" と整合させる（centered tick は使わない）。
-                eval_bid = q_bid if pending_mode else bid
-                eval_ask = q_ask if pending_mode else ask
-                open_trades, halted = self._settle_evaluation_point(
-                    state,
-                    open_trades,
-                    halted,
-                    bar=bar,
-                    bar_index=bar_index,
-                    eval_bid=eval_bid,
-                    eval_ask=eval_ask,
-                    # ティック評価は両建て相殺を適用する（実 MT5 hedging 整合）。
-                    hedged=hedged_margin,
+            # 閉鎖バー（pre-open 01:00 / 日次クローズ 23:59 等）の取引可否は評価点ごとの
+            #   手続きが見る。実 MT5 のセッション規約: 顧客注文（新規約定・ペンディング fill・
+            #   SL/TP）はトレードセッション外では実行しない。一方 stop-out（ブローカーの
+            #   リスク清算）と含み損評価はセッション外でも行う（2603 で 01:00 pre-open の
+            #   stop-out が MT5 と一致・2604-02 で 01:00 の SL/TP は MT5 で発火しないと実証）。
+            # H → 建玉変更 → ペンディング → I をスケジュールが生む評価点ごとに行う。
+            #   ティック粒度は 1 ティック 1 点、ティック 0 件バーは持ち越し点 1 つ。
+            for point in points:
+                open_trades, halted = self._evaluate_point(
+                    state, point, open_trades, halted
                 )
-
-            # ティック 0 件バー: 保有玉があれば直近既知 bid/ask（無ければ close）で 1 点記録。
-            if not saw_tick and open_trades:
-                eval_bid = last_bid if last_bid is not None else bar.close
-                eval_ask = last_ask if last_ask is not None else bar.close
-                account.update_floating_pnl_at(bid=eval_bid, ask=eval_ask)
-                equity_curve.append(account.equity)
 
             prev_close = bar.close
 

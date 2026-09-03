@@ -167,3 +167,137 @@ class TestTheBarScheduleDoesNotWasteWork:
         assert len(resolved) == 0
         next(iter(stream))
         assert len(resolved) - 1 == 0
+
+
+# ---- 4-9: ティック粒度のスケジュール ----
+
+from simulator.usecase.tick_schedule import TickSchedule  # noqa: E402
+
+
+class _TicksPerBar:
+    """バーごとに決められたティック列を返すティックモデル。"""
+
+    def __init__(self, by_bar, default=None):
+        self._by_bar = by_bar
+        self._default = default
+        self.calls: "list[int]" = []
+
+    def ticks_of(self, bar, prev_close):
+        self.calls.append(1)
+        key = float(bar.close)
+        return self._by_bar.get(key, self._default if self._default is not None else [])
+
+
+def _tick(price, bid, ask):
+    return (price, bid, ask, np.datetime64("2024-01-01T00:00"))
+
+
+def _tick_schedule(ticks, *, pending=False, point_size=0.001):
+    model = _TicksPerBar({}, default=ticks)
+    return TickSchedule(
+        tick_model=model, pending_lifecycle=pending, point_size=point_size
+    ), model
+
+
+class TestTheTickScheduleYieldsOnePointPerTick:
+    """ティック粒度は 1 ティック 1 点であること。"""
+
+    def test_it_satisfies_the_schedule_port(self):
+        schedule, _ = _tick_schedule([])
+        assert isinstance(schedule, EvaluationSchedulePort)
+        assert schedule.id == "tick"
+
+    def test_each_tick_becomes_one_point_in_order(self):
+        ticks = [_tick(1.10, 1.09, 1.11), _tick(1.12, 1.11, 1.13)]
+        schedule, _ = _tick_schedule(ticks)
+        points = list(schedule.points(2, _bar(), prev_close=1.0))
+        assert len(points) - len(ticks) == 0
+        assert [p.tick_ordinal for p in points] == [0, 1]
+        assert {p.granularity for p in points} == {TICK_GRANULARITY}
+        assert {p.bar_index for p in points} == {2}
+
+    def test_a_real_tick_point_evaluates_at_the_tick_quote_and_hits_at_the_price(self):
+        """実ティック経路: 含み損は tick の Bid/Ask、SL/TP は tick の価格 1 点で見る。"""
+        schedule, _ = _tick_schedule([_tick(1.10, 1.09, 1.11)])
+        point = list(schedule.points(0, _bar(), prev_close=1.0))[0]
+        assert (point.eval_bid, point.eval_ask) == (1.09, 1.11)
+        # 到達は価格 1 点（high=low=price）。買い・売りとも同じ。
+        assert (point.hit_buy_high, point.hit_buy_low) == (1.10, 1.10)
+        assert (point.hit_sell_high, point.hit_sell_low) == (1.10, 1.10)
+
+    def test_a_pending_tick_point_hits_at_the_closing_quote_of_each_side(self):
+        """ペンディング経路: 買い保有は Bid、売り保有は Ask で SL/TP を見る。
+
+        ここが両サイドで違う唯一の場所であり、点が到達範囲をサイドごとに持つ理由である。
+        （実 MT5: 売りの SL は high ティックの Ask=high+spread×point で発火する）
+        """
+        bar = _bar(spread=10)
+        schedule, _ = _tick_schedule([_tick(1.10, 9.9, 9.9)], pending=True, point_size=0.001)
+        point = list(schedule.points(0, bar, prev_close=1.0))[0]
+        # クォート規約は bid=ティック価格 / ask=bid+spread×point（centered tick は使わない）。
+        assert point.eval_bid == pytest.approx(1.10)
+        assert point.eval_ask == pytest.approx(1.10 + 10 * 0.001)
+        assert (point.hit_buy_high, point.hit_buy_low) == (point.eval_bid, point.eval_bid)
+        assert (point.hit_sell_high, point.hit_sell_low) == (point.eval_ask, point.eval_ask)
+
+    def test_the_position_manager_reference_is_the_exit_quote_of_each_side(self):
+        schedule, _ = _tick_schedule([_tick(1.10, 1.09, 1.11)])
+        point = list(schedule.points(0, _bar(), prev_close=1.0))[0]
+        # 買い玉の決済は Bid、売り玉の決済は Ask（含み損評価と同一基準）。
+        assert point.pm_ref_buy == point.eval_bid
+        assert point.pm_ref_sell == point.eval_ask
+
+
+class TestABarWithoutTicksStillOffersOnePoint:
+    """ティックが 1 本も無いバーの扱い。"""
+
+    def test_it_yields_a_single_synthetic_point(self):
+        schedule, _ = _tick_schedule([])
+        points = list(schedule.points(0, _bar(c=1.12), prev_close=1.0))
+        assert len(points) - 1 == 0
+        assert points[0].is_synthetic_bar_point is True
+        assert points[0].tick_ordinal == -1
+
+    def test_the_synthetic_point_carries_the_last_known_quote(self):
+        """直近に見たティックの Bid/Ask を持ち越す（評価する材料が他に無いため）。"""
+        model = _TicksPerBar({1.12: [_tick(1.10, 1.09, 1.11)], 1.14: []})
+        schedule = TickSchedule(
+            tick_model=model, pending_lifecycle=False, point_size=0.001
+        )
+        list(schedule.points(0, _bar(c=1.12), prev_close=1.0))  # ティック有りのバー
+        carried = list(schedule.points(1, _bar(c=1.14), prev_close=1.12))
+        assert (carried[0].eval_bid, carried[0].eval_ask) == (1.09, 1.11)
+
+    def test_the_first_bar_without_any_tick_falls_back_to_the_close(self):
+        """一度もティックを見ていなければ持ち越す値が無いので終値で評価する。"""
+        schedule, _ = _tick_schedule([])
+        point = list(schedule.points(0, _bar(c=1.12), prev_close=None))[0]
+        assert (point.eval_bid, point.eval_ask) == (1.12, 1.12)
+
+
+class TestTheTickScheduleDoesNotWasteWork:
+    """計算量検定（発行 − 使用 = 0）。"""
+
+    def test_the_tick_source_is_asked_once_per_bar(self):
+        schedule, model = _tick_schedule([_tick(1.1, 1.0, 1.2)] * 3)
+        for i in range(5):
+            list(schedule.points(i, _bar(), prev_close=1.0))
+        # 発行（ティック取得）− 使用（バー数）= 0。
+        assert len(model.calls) - 5 == 0
+
+    def test_the_point_count_tracks_ticks_at_two_sizes(self):
+        """ティック 2 本 / 16 本の 2 点で「点数 == ティック数」（オーダーの表明）。"""
+        measured = {}
+        for tick_count in (2, 16):
+            schedule, _ = _tick_schedule([_tick(1.1, 1.0, 1.2)] * tick_count)
+            measured[tick_count] = len(list(schedule.points(0, _bar(), prev_close=1.0)))
+        for tick_count, produced in measured.items():
+            assert produced - tick_count == 0, measured
+
+    def test_points_are_produced_lazily_one_at_a_time(self):
+        """先回りしてバー全体の点を作り置きしない。"""
+        schedule, model = _tick_schedule([_tick(1.1, 1.0, 1.2)] * 4)
+        stream = schedule.points(0, _bar(), prev_close=1.0)
+        assert len(model.calls) == 0
+        next(iter(stream))
+        assert len(model.calls) - 1 == 0
