@@ -466,6 +466,11 @@ def build_replay_routes(inner: Any) -> Any:
 
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
+    # import を関数内に置くのは、本モジュールの `_error_response` を参照するためである
+    #   （module-level import にすると循環になる）。
+    from simulator.replay_ui.framework.serve_replay_compute import ReplayComputeApp
+
+    compute_app = ReplayComputeApp(inner=app)
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, code: int, obj: Any) -> None:
@@ -485,50 +490,18 @@ def make_handler(app: ReplayApp):
             return app.static_server.serve(self, self.path)
 
         def do_POST(self):  # noqa: N802
+            """/compute だけを受ける。モードの差と例外分類は `ReplayComputeApp` が持つ。
+
+            分割前はここに 3 モード × 3 分類＝9 つの except ブロックが並んでいた
+            （ISSUE-479 Wave2 3-5）。
+            """
             if urlparse(self.path).path != "/compute":
                 self.send_response(404)
                 self.end_headers()
                 return
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            gen = body.get("generation", 0)
-            # ISSUE-232: 足内一括計算（mode='latest_seq'）。応答キーは steps（series とは別キー＝
-            #   既存クライアントの読み取り面に影響しない）。エラー翻訳は既存と同一の中央経路。
-            # ISSUE-300: 複数指標の足内一括計算。応答キーは results（instanceId → steps）。
-            if body.get("mode") == "latest_seq_multi":
-                try:
-                    results = app.compute_seq_multi(body)
-                except MemoryError as e:
-                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
-                except ValueError as e:
-                    return self._json(*_error_response(e, generation=gen))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*_error_response(
-                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-                return self._json(200, {"ok": True, "generation": gen, "results": results})
-            if body.get("mode") == "latest_seq":
-                try:
-                    steps = app.compute_seq(body)
-                except MemoryError as e:
-                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
-                except ValueError as e:
-                    return self._json(*_error_response(e, generation=gen))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*_error_response(
-                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-                return self._json(200, {"ok": True, "generation": gen, "steps": steps})
-            try:
-                series = app.compute(body)
-            # 分類（status/type）は _error_response へ集約（ISSUE-097 🟡-4）。except ブロックは
-            #   compute 固有のメッセージ（MemoryError→"memory limit"・generic→"Name: msg"）供給のみ。
-            except MemoryError as e:
-                return self._json(*_error_response(e, generation=gen, message="memory limit"))
-            except ValueError as e:
-                return self._json(*_error_response(e, generation=gen))
-            except Exception as e:  # noqa: BLE001
-                return self._json(*_error_response(
-                    e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-            self._json(200, {"ok": True, "generation": gen, "series": series})
+            return self._json(*compute_app.respond(body))
 
     return Handler
 
