@@ -228,6 +228,24 @@ def test_a_valid_forming_still_requires_the_window_tail_time(name) -> None:
         apply_forming(_BARS_WITHOUT_TAIL_TIME, forming)
 
 
+def test_a_null_tail_time_is_not_silently_treated_as_an_empty_window() -> None:
+    """末尾 ``time`` が ``None`` の窓は、比較不能として例外になる（黙って追加しない）。
+
+    実測（3 版の突合）: 改修前は ``int(None)`` の ``TypeError``、述語化の途中版は
+    「末尾が無い窓」とみなして**黙って足を 1 本追加**していた。追加された足は確定バーの
+    直後に別 time で並ぶため、描画と指標が食い違う（ISSUE-232 の失敗モード）。比較材料が
+    壊れているときに黙って別の答えを出さない、が規則の側の要求である。
+    """
+    # Arrange
+    bars = [{"time": 100, "close": 1.0}, {"time": None, "close": 2.0}]
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        _legacy_apply_forming(bars, {"time": 200, "close": 9.0})   # 改修前の露出（期待値）
+    with pytest.raises(TypeError):
+        apply_forming(bars, {"time": 200, "close": 9.0})
+
+
 def test_apply_forming_still_preserves_unspecified_fields_on_replace() -> None:
     """置換では ``forming`` に無いフィールドを保存する（述語化で失われないこと）。"""
     # Arrange / Act
