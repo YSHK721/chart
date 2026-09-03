@@ -1,12 +1,12 @@
 """marketdata.path_tokens — 名前 → パス成分の変換規則の **唯一の実体**（ISSUE-479 F-1）。
 
 なぜ marketdata が所有するのか:
-    この規則の消費者は最下層である（``marketdata/mt5_ticks/ingest.py`` の ``token_for`` が
+    この規則の消費者は最下層である（``marketdata/mt5_ticks/ingest.py`` の token_for が
     tick 木のディレクトリ名を組む）。かつて実体は ``tools/capture_mt5_symbol_spec.py`` にあり、
-    最下層が ``tools`` を import していた（層の逆流・循環 C-1）。実害は例外型に出ていた:
-    sanitize が送出する ``CaptureError`` は ``tools`` の型なので ``tools/mt5_tick_watch.py`` の
+    最下層が tools を import していた（層の逆流・循環 C-1）。実害は例外型に出ていた:
+    sanitize が送出する CaptureError は tools の型なので ``tools/mt5_tick_watch.py`` の
     捕捉集合（SupplyUnavailable / Mt5SupplyError / WireError）をすり抜け、周期処理が
-    トレースバックで exit 1 になっていた。所有権を下へ移し、``tools`` 側は
+    トレースバックで exit 1 になっていた。所有権を下へ移し、tools 側は
     **同一関数オブジェクトを再エクスポート**する（規則の第 2 実装を作らない）。
 
 依存ゼロ（重要）:
@@ -17,7 +17,7 @@
     capture 本体の隣へ写して 2 ファイルで配布する（依存ゼロでなければ写しが動かない）。
 """
 
-#: パス成分に許すのは ASCII 英数と ``.`` ``_`` ``-`` のみ。それ以外は 1 文字 1 文字を
+#: パス成分に許すのは ASCII 英数と、ドット・アンダースコア・ハイフンのみ。それ以外は 1 文字 1 文字を
 #: ``-`` へ機械的に置換する（1 文字 → 1 文字。長さは変えない）。
 #: 例: ``OANDA-Japan MT5 Live`` → ``OANDA-Japan-MT5-Live`` / ``a/b\\c`` → ``a-b-c``。
 #: 置換後が空白のみ・``.``・``..`` になる場合は、親ディレクトリへ逃げる経路になるため中断する。
@@ -31,7 +31,7 @@ class PathTokenError(ValueError):
     """パス成分として使えない値を渡されたことを表す（Fail-Stop）。
 
     ``ValueError`` 系にするのは、これが **入力値の異常**だからである（実行環境の異常ではない）。
-    上位で捕捉して各層の失敗型へ翻訳する（``ingest.token_for`` → ``Mt5SupplyError``）。
+    上位で捕捉して各層の失敗型へ翻訳する（mt5_ticks.ingest の token_for が Mt5SupplyError へ写す）。
     """
 
 
