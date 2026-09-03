@@ -419,7 +419,18 @@ def test_the_dataframe_path_derives_the_rule_from_the_shared_predicate() -> None
     assert fb.forming_patch is fw.forming_patch
 
 
-@pytest.mark.parametrize("name", sorted(_PARITY_CASES))
+#: DataFrame 版が **例外で拒む** 入力と、その種別（adapter 固有の事前条件・下記テスト参照）。
+_DATAFRAME_FAIL_STOP = {
+    "time-missing": KeyError,
+    "time-non-numeric": ValueError,
+    "non-mapping": TypeError,
+}
+
+#: 両版の出力が一致する分岐（＝事前条件を満たす入力）。
+_AGREEING_CASES = tuple(sorted(set(_PARITY_CASES) - set(_DATAFRAME_FAIL_STOP)))
+
+
+@pytest.mark.parametrize("name", _AGREEING_CASES)
 def test_list_and_dataframe_paths_agree_on_every_branch(name, monkeypatch) -> None:
     """同じ ``(bars, forming)`` に対し list 版と DataFrame 版の出力が byte 一致する。"""
     # Arrange
@@ -435,6 +446,31 @@ def test_list_and_dataframe_paths_agree_on_every_branch(name, monkeypatch) -> No
 
     # Assert
     assert _normalize_frame(from_frame) == _normalize_bars(from_list)
+
+
+@pytest.mark.parametrize(("name", "expected"), sorted(_DATAFRAME_FAIL_STOP.items()))
+def test_a_malformed_forming_bar_keeps_its_branching(name, expected, monkeypatch) -> None:
+    """壊れた形成中バーは分岐を保存する: list は skip（無変更）・DataFrame は例外で止まる。
+
+    共有核は「非 Mapping・``time`` 欠落/非数値」を ``"skip"`` へ丸める（list 版の防御）。一方
+    ライブ注入が作るのは常に OHLCV 完備・``time`` 付きのバーなので、DataFrame 版にとって
+    これらは**上流の破損**である。丸めた結果を素通しにすると「注入しなかった」と区別が
+    つかなくなり、最新足だけ指標が消える障害が痕跡なく起きる。例外種別まで固定するのは、
+    F-9（規則の単一化）が挙動を 1 ビットも変えていないことの証拠にするため
+    （旧実装 ``pd.Timestamp(int(bar["time"]), unit="s")`` が送出していた種別と同一）。
+    """
+    # Arrange
+    forming = _PARITY_CASES[name]
+    frame = _frame(_WINDOW)
+    monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
+
+    # Act
+    from_list = apply_forming(_WINDOW, forming)
+
+    # Assert
+    assert from_list == _legacy_apply_forming(_WINDOW, forming)   # list 版は無変更のまま
+    with pytest.raises(expected):
+        fb.apply_forming_bar(frame, _REF, _TF, _NOW, synthesize_closed_gaps=False)
 
 
 def test_missing_ohlcv_keys_keep_their_branching(monkeypatch) -> None:

@@ -260,6 +260,19 @@ def rollup_forming_bar(
     return merge_forming(base, tail)
 
 
+def _require_forming_time(bar: Any) -> int:
+    """注入するバーの ``time``（UNIX 秒）。adapter 固有の事前条件であり、緩めない。
+
+    共有核 :func:`forming_patch` は壊れた forming（非 Mapping・``time`` 欠落/非数値）を
+    ``"skip"`` へ丸めるが、それは list 版の防御であって本モジュールの契約ではない。ライブ注入が
+    作るのは常に ``time`` 付き OHLCV 完備のバーなので、丸められる入力は**上流の破損**である。
+    丸めた結果を素通しにすると「注入しなかった」と区別できず、最新足だけ指標が消える障害が
+    痕跡なく起きる。欠落は ``KeyError``・非数値は ``ValueError``・非 Mapping は ``TypeError``
+    （旧実装 ``pd.Timestamp(int(bar["time"]), unit="s")`` と同一種別）で握らず露出させる。
+    """
+    return int(bar["time"])
+
+
 def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
                       synthesize_closed_gaps: bool = True) -> "pd.DataFrame":
     """``df``（date-index OHLCV）の末尾へ現在形成中バーを **set/replace** して返す。
@@ -300,7 +313,8 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
         #   marketdata.dataset も同じ前提で index を UNIX 秒へ落としている（_to_unix_seconds）。
         last_time = int(pd.Timestamp(df.index[-1]).value // 1_000_000_000)
         if forming_patch(last_time, bar).mode == "skip":
-            return df  # 形成中バーが既存末尾より過去／time 不正 → 触らない（異常時の防御）。
+            _require_forming_time(bar)  # skip の理由を絞る（事前条件違反はここで露出する）。
+            return df  # 残るのは「末尾より過去の time」だけ → 触らない（異常時の防御）。
 
     # ISSUE-162: 注入するバーを先に確定する（欠落閉周期の tick 合成＋形成中バー）。
     #   形成中バーが None（新周期の tick 未着＝境界直後の数秒）でも閉周期合成は独立に行う
@@ -333,10 +347,8 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
     for b in to_inject:
         # 列決定（大小無視の照合・float 正規化）も共有核から導出する。末尾との比較は上で済んで
         #   いるため、ここで要るのは「どの列へ何を書くか」だけ（last_time=None → append）。
+        bt = pd.Timestamp(_require_forming_time(b), unit="s")
         patch = forming_patch(None, b)
-        if patch.mode == "skip":
-            raise KeyError("time")  # adapter 側の追加事前条件: time 必須（緩めない）。
-        bt = pd.Timestamp(patch.time, unit="s")
         for key in ("open", "high", "low", "close", "volume"):
             col = lower.get(key)
             if col is None:
