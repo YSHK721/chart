@@ -61,7 +61,8 @@ def forming_bar_of_state(state: Any) -> "dict[str, Any]":
 
 
 def window_with_forming(
-    window: Any, bar: "dict[str, Any]", *, inject: Callable, gap_bars: Callable = None
+    window: Any, bar: "dict[str, Any]", *, inject: Callable,
+    gap_bars: "Callable | None" = None,
 ) -> Any:
     """窓の末尾を形成中バー ``bar`` の周期へ揃えた窓を返す（供給側の唯一の適用点）。
 
