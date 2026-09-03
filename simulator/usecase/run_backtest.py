@@ -30,6 +30,7 @@ from simulator.usecase.compute_stats import compute_stats
 from simulator.usecase.models import AccountSpec, BacktestResult
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
+from simulator.usecase.run_features import RunFeatures
 from simulator.usecase.session_gate import SessionGate
 
 
@@ -94,6 +95,7 @@ class _RunState:
     """
 
     bars: list
+    features: RunFeatures
     spec: Any
     contract_size: float
     floating_pnl_basis: str
@@ -168,7 +170,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         """
         return SessionGate.from_calendar(self._session_calendar, bars)
 
-    def _begin_run(self, request: RunBacktestRequest) -> _RunState:
+    def _begin_run(
+        self, request: RunBacktestRequest, features: "RunFeatures | None" = None
+    ) -> _RunState:
         """run の開始状態を組み立てる（両実行経路で完全一致していた準備段の単一化）。
 
         副作用の順序は移設前と同一である（この順序自体が仕様）:
@@ -183,10 +187,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         口座（`Account`）の構築は OnInit の後である（移設前と同一）。
         """
         config = request.config
+        # run のスイッチは 1 度だけ読む（既定は BacktestConfig の宣言が単一ソース）。
+        #   呼出側が既に読んでいれば読み直さない（読み取りは run につき 1 回）。
+        features = features if features is not None else RunFeatures.of(config)
         bars = list(request.bars)
         # 約定損益の口座通貨丸め桁（既定 None＝丸めず＝byte-identical）。確定トレード生成
         # （_close_open_trade）が本値を TradeRecord に付与し pnl/deal/balance を一致させる。
-        self._profit_round_digits = getattr(config, "profit_round_digits", None)
+        self._profit_round_digits = features.profit_round_digits
         # 市場閉鎖バー（新規成行を約定しない）。既定 None→空集合で既定経路は不変。
         session_gate = self._session_gate(bars)
 
@@ -201,7 +208,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         contract_size = spec.contract_size
         # 層2: 含み損益の評価基準を config から引く（既定 "close"＝従来 close 固定で不変）。
         # "bid_ask" 時は売り保有を Ask=close+spread×point で評価するため point_size を渡す。
-        floating_pnl_basis = getattr(config, "floating_pnl_basis", "close")
+        floating_pnl_basis = features.floating_pnl_basis
         account = Account(
             balance=request.account.initial_deposit,
             contract_size=contract_size,
@@ -228,6 +235,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         return _RunState(
             bars=bars,
+            features=features,
             spec=spec,
             contract_size=contract_size,
             floating_pnl_basis=floating_pnl_basis,
@@ -247,7 +255,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             # 層1: prime_first_trading_bar=True かつ trading_start 指定時、取引区間の最初の
             # 1 バー（bar.time >= trading_start となる最初のバー）を warmup 同様にプライム扱い
             # する。primed_done で 1 回だけ消費する（既定 False=無効＝従来不変）。
-            prime_first=getattr(config, "prime_first_trading_bar", False),
+            prime_first=features.prime_first_trading_bar,
             primed_done=False,
         )
 
@@ -360,13 +368,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # every-tick 経路への分岐（every-tick #5）。config.tick_model == "real_ticks"
         # のときのみ実ティック内側ループ経路へ委譲する。それ以外は冒頭で early-return
         # せず以降の現行 bar ループへ直行し、既定（bar-mode）経路を 1 行も変えない。
-        if getattr(request.config, "tick_model", None) == "real_ticks" or getattr(
-            request.config, "pending_lifecycle", False
-        ):
-            return self._execute_every_tick(request)
+        features = RunFeatures.of(request.config)
+        if features.tick_model == "real_ticks" or features.pending_lifecycle:
+            return self._execute_every_tick(request, features)
 
-        config = request.config
-        state = self._begin_run(request)
+        state = self._begin_run(request, features)
         bars = state.bars
         spec = state.spec
         contract_size = state.contract_size
@@ -384,7 +390,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         prime_first = state.prime_first
         primed_done = state.primed_done
         # stop-out をバー open でも先行評価するか（config gated・既定 False=従来 close のみ）。
-        stop_out_at_open = getattr(config, "stop_out_at_open", False)
+        stop_out_at_open = features.stop_out_at_open
 
         # tick ループ（PROCESS §2 A〜I を 1 bar = 1 OnTick として処理）
         for bar_index, bar in enumerate(bars):
@@ -418,7 +424,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
                 account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
                 if account.margin_level() < request.account.stop_out_level:
-                    if config.stop_out_action != "close_and_halt":
+                    if features.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました（bar open 評価）",
                             context={
@@ -470,7 +476,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   約定価格ルール（long 決済=bid / short 決済=ask）を一意に決める。
             bid, ask, fill_spread, fill_point = derive_quotes(
                 bar,
-                entry_price_basis=config.entry_price_basis,
+                entry_price_basis=features.entry_price_basis,
                 point_size=spec.point_size,
             )
             for order in orders:
@@ -521,7 +527,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     low=bar.low,
                     sl=ot.sl,
                     tp=ot.tp,
-                    sltp_tie=config.sltp_tie,
+                    sltp_tie=features.sltp_tie,
                 )
                 if reason is None:
                     still_open.append(ot)
@@ -561,7 +567,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve.append(account.equity)
             if account.margin_level() < request.account.stop_out_level:
                 # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
-                if config.stop_out_action != "close_and_halt":
+                if features.stop_out_action != "close_and_halt":
                     raise MarginCallError(
                         "margin_level が stop_out_level を下回りました",
                         context={
@@ -636,7 +642,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             stats=stats,
         )
 
-    def _execute_every_tick(self, request: RunBacktestRequest) -> BacktestResult:
+    def _execute_every_tick(
+        self, request: RunBacktestRequest, features: "RunFeatures | None" = None
+    ) -> BacktestResult:
         """every-tick 経路（PROCESS A〜I・config.tick_model=="real_ticks" 専用）。
 
         バー外側ループ + 実ティック内側ループ。確定足指標 update（C）と新規バー
@@ -662,8 +670,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             - SL/TP 同時到達: check_sltp_hit_at_tick が単一価格 p で high=low=p として
               config.sltp_tie の同点解消（既定 SL 優先）を継承する。
         """
-        config = request.config
-        state = self._begin_run(request)
+        features = features if features is not None else RunFeatures.of(request.config)
+        state = self._begin_run(request, features)
         bars = state.bars
         spec = state.spec
         contract_size = state.contract_size
@@ -681,17 +689,17 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         prime_first = state.prime_first
         primed_done = state.primed_done
         # ペンディング（指値/逆指値）ライフサイクル経路か（既定 False＝real_ticks 等は不変）。
-        pending_mode = getattr(config, "pending_lifecycle", False)
+        pending_mode = features.pending_lifecycle
         # 同時設置ペンディングの OCO（既定 False＝兄弟は独立約定／単一ペンディングEAでは無影響）。
         # True で 1 本約定時に残る兄弟ペンディングを全取消する（StopEntryProbe の両建て用）。
-        pending_oco = getattr(config, "pending_oco", False)
+        pending_oco = features.pending_oco
         # ペンディング持続＋足途中ティック再アーム（既定 False＝従来 cancel-and-replace）。
         # True で resting をバー境界でリセットせず約定まで保持し、フラット＆未装填のティックで
         # strategy.on_tick を呼び当該ティッククォートで即再装填する（StopEntryProbe 用）。
-        pending_persistent = getattr(config, "pending_persistent", False)
+        pending_persistent = features.pending_persistent
         # hedging 口座の両建て証拠金相殺（既定 False＝従来の単純加算）。True で stop-out 判定の
         # 証拠金を「買い計・売り計の大きい側」とする（反対玉は相殺＝同量両建ては stop-out しない）。
-        hedged_margin = getattr(config, "hedged_margin", False)
+        hedged_margin = features.hedged_margin
         # 建玉変更の適用器（Phase 7・既定 None＝素通り＝byte-identical）。B4 で参照する。
         pm = self._position_manager
 
@@ -746,7 +754,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     sltp_price = oq_ask if ot.position.side == "sell" else oq_bid
                     reason = check_sltp_hit_at_tick(
                         ot.position, price=sltp_price, sl=ot.sl, tp=ot.tp,
-                        sltp_tie=config.sltp_tie,
+                        sltp_tie=features.sltp_tie,
                     )
                     if reason is None:
                         kept_open.append(ot)
@@ -827,7 +835,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             if bar_ticks and market_orders and not session_gate.is_closed(bar_index):
                 bid0, ask0, fill_spread, fill_point = derive_quotes(
                     bar,
-                    entry_price_basis=config.entry_price_basis,
+                    entry_price_basis=features.entry_price_basis,
                     point_size=spec.point_size,
                 )
                 for order in market_orders:
@@ -880,7 +888,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             if bar_ticks and pending_orders and not session_gate.is_closed(bar_index):
                 pbid0, pask0, _, _ = derive_quotes(
                     bar,
-                    entry_price_basis=config.entry_price_basis,
+                    entry_price_basis=features.entry_price_basis,
                     point_size=spec.point_size,
                 )
                 for order in pending_orders:
@@ -950,7 +958,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         price=sltp_price,
                         sl=ot.sl,
                         tp=ot.tp,
-                        sltp_tie=config.sltp_tie,
+                        sltp_tie=features.sltp_tie,
                     )
                     if reason is None:
                         still_open.append(ot)
@@ -1058,7 +1066,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         leverage=request.account.leverage, contract_size=contract_size
                     )
                 if margin_level < request.account.stop_out_level:
-                    if config.stop_out_action != "close_and_halt":
+                    if features.stop_out_action != "close_and_halt":
                         raise MarginCallError(
                             "margin_level が stop_out_level を下回りました",
                             context={

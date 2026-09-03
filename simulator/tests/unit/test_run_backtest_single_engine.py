@@ -318,3 +318,138 @@ class TestTheSetupStageDoesNotWasteWork:
             measured[bar_count] = len(log)
         # Assert: 入力を 4 倍にしても準備段の発行は増えない。
         assert measured[200] - measured[50] == 0, measured
+
+
+# ---- 4-3: run のスイッチ読み取り点の単一化（O-2） ----
+
+def _run_backtest_tree():
+    """実行経路の構文木（既定値リテラルの所在を測るため）。"""
+    import ast
+    from pathlib import Path
+
+    source = Path(rb.__file__).read_text(encoding="utf-8")
+    return ast.parse(source, filename=rb.__file__)
+
+
+class TestTheRunSwitchesAreReadInOnePlace:
+    """config 由来のスイッチが 1 点で読まれ、既定値が実行経路に書かれていないこと。"""
+
+    def test_the_engine_holds_no_default_value_for_a_config_switch(self):
+        """実行経路に `getattr(config, 名前, 既定)` の形が 1 つも無いこと。
+
+        なぜこれを固定するか: 既定値リテラルが読み取り側に在ると、models.py の宣言を
+        変えても追随せず、しかも 2 つのエンジンのうち片方だけを直すと両者が違う既定で
+        走る。既定の所在を宣言 1 箇所に閉じたことを、構文木で機械的に施行する。
+        """
+        import ast
+
+        offenders = [
+            node.lineno
+            for node in ast.walk(_run_backtest_tree())
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 3
+        ]
+        assert offenders == [], (
+            f"既定値付き getattr が実行経路に残っている（行: {offenders}）。"
+            " 既定値の単一ソースは models.py の BacktestConfig 宣言である。"
+        )
+
+    def test_the_engine_does_not_read_config_attributes_directly(self):
+        """スイッチの読み取りは RunFeatures 経由だけであること（`config.X` の直参照 0）。"""
+        import ast
+
+        offenders = [
+            (node.lineno, node.attr)
+            for node in ast.walk(_run_backtest_tree())
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "config"
+        ]
+        assert offenders == [], f"config の直参照が残っている: {offenders}"
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_run_state_carries_the_switches_the_run_was_started_with(
+        self, path, overrides
+    ):
+        # Arrange / Act
+        config = _config(**overrides)
+        state = _interactor()._begin_run(_request(_bars(4), config=config))
+        # Assert: run が見るスイッチ束は開始状態の一部として在る。
+        for name in state.features.feature_names():
+            assert getattr(state.features, name) == getattr(config, name), name
+
+    def test_both_engines_are_driven_by_the_same_switch_set(self, monkeypatch):
+        """bar 経路と tick 経路が同じ 1 つの読み取り点から供給されること。"""
+        # Arrange: スイッチ束の生成を記録する。
+        from simulator.usecase.run_features import RunFeatures as _RF
+
+        built: "list[object]" = []
+        original = _RF.of.__func__
+
+        def _spy(cls, config):
+            features = original(cls, config)
+            built.append(features)
+            return features
+
+        monkeypatch.setattr(rb, "RunFeatures", type("_Spy", (_RF,), {"of": classmethod(_spy)}))
+        # Act: tick 経路（分岐を経て内側エンジンへ入る）を 1 run 走らせる。
+        _interactor().execute(_request(_bars(4), config=_config(tick_model="real_ticks")))
+        # Assert: 分岐と内側エンジンは同じ束を使う（読み直しをしない）。
+        assert len(built) == 1
+
+
+class TestTheSwitchReadingDoesNotWasteWork:
+    """計算量検定（Test Spy・発行 − 使用 = 0）。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_config_is_read_once_per_switch_per_run(self, path, overrides):
+        # Arrange: 属性アクセスを記録する config（分岐と内側エンジンの両方が読む）。
+        reads: "list[str]" = []
+        base = _config(**overrides)
+
+        class _Counting:
+            def __getattr__(self, name):
+                reads.append(name)
+                return getattr(base, name)
+
+        # Act
+        _interactor().execute(
+            RunBacktestRequest(
+                config=_Counting(),
+                bars=_bars(24),
+                symbol_spec=_request(_bars(1)).symbol_spec,
+                account=_request(_bars(1)).account,
+            )
+        )
+        # Assert: 発行（config からの読み取り）− 使用（スイッチの数）= 0。
+        from simulator.usecase.run_features import RunFeatures as _RF
+
+        assert len(reads) - len(_RF.feature_names()) == 0, reads
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_config_read_count_does_not_grow_with_the_number_of_bars(
+        self, path, overrides
+    ):
+        """バー数 50 / 200 の 2 点で config 読み取り数が変わらないこと（オーダーの表明）。"""
+        measured = {}
+        for bar_count in (50, 200):
+            reads: "list[str]" = []
+            base = _config(**overrides)
+
+            class _Counting:
+                def __getattr__(self, name):
+                    reads.append(name)
+                    return getattr(base, name)
+
+            _interactor().execute(
+                RunBacktestRequest(
+                    config=_Counting(),
+                    bars=_bars(bar_count),
+                    symbol_spec=_request(_bars(1)).symbol_spec,
+                    account=_request(_bars(1)).account,
+                )
+            )
+            measured[bar_count] = len(reads)
+        assert measured[200] - measured[50] == 0, measured
