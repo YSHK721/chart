@@ -32,6 +32,7 @@ from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.run_features import RunFeatures
 from simulator.usecase.session_gate import SessionGate
+from simulator.usecase.stop_out_policy import StopOutContext, resolve_stop_out_policy
 
 
 # 部分決済（FR-08）の確定トレードに付す exit_reason。部分決済は実現 Deal であり、full-TP-hit
@@ -40,6 +41,13 @@ from simulator.usecase.session_gate import SessionGate
 # （抜本的解決）。既定 pm=None の golden 経路では本理由は一切生成されない（部分決済は opt-in）
 # ため byte 等価は不変。
 _PARTIAL_CLOSE_EXIT_REASON = "partial"
+
+# 証拠金割れで run を捨てるときの文言。評価点の名前（_STOP_OUT_AT_*）を末尾に足す。
+_STOP_OUT_BREACH_MESSAGE = "margin_level が stop_out_level を下回りました"
+# 評価点の名前。バー open 評価だけは「どの pseudo-tick で割れたか」が診断に要るため
+# 文言に残す（移設前と byte 一致）。他の 2 点は評価点名を付けない。
+_STOP_OUT_AT_BAR_OPEN = "（bar open 評価）"
+_STOP_OUT_AT_EVALUATION = ""
 
 
 def _close_deal(trade: TradeRecord) -> Deal:
@@ -101,6 +109,7 @@ class _RunState:
     floating_pnl_basis: str
     account: Account
     session_gate: SessionGate
+    stop_out_policy: Any
     close_trade: Any
     trades: list
     deals: list
@@ -241,6 +250,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             floating_pnl_basis=floating_pnl_basis,
             account=account,
             session_gate=session_gate,
+            # 証拠金割れの方針は run につき 1 度だけ引く（評価点ごとに引き直さない）。
+            stop_out_policy=resolve_stop_out_policy(features.stop_out_action),
             close_trade=close_trade,
             trades=trades,
             deals=deals,
@@ -424,25 +435,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 )
                 account.update_floating_pnl_at(bid=o_bid, ask=o_ask)
                 if account.margin_level() < request.account.stop_out_level:
-                    if features.stop_out_action != "close_and_halt":
-                        raise MarginCallError(
-                            "margin_level が stop_out_level を下回りました（bar open 評価）",
-                            context={
-                                "margin_level": account.margin_level(),
-                                "stop_out_level": request.account.stop_out_level,
-                            },
-                            bar_index=bar_index,
-                        )
-                    for ot in open_trades:
-                        close_price = close_price_for(
-                            ot.position.side, bid=o_bid, ask=o_ask
-                        )
-                        close_trade(
-                            ot,
-                            exit_time=bar.time,
-                            exit_price=close_price,
-                            exit_reason="stop_out",
-                        )
+                    self._apply_stop_out(
+                        policy=state.stop_out_policy,
+                        open_trades=open_trades,
+                        close_trade=close_trade,
+                        account=account,
+                        stop_out_level=request.account.stop_out_level,
+                        bar=bar,
+                        bar_index=bar_index,
+                        bid=o_bid,
+                        ask=o_ask,
+                        where=_STOP_OUT_AT_BAR_OPEN,
+                    )
                     open_trades = []
                     halted = True
                 else:
@@ -566,36 +570,21 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             account.update_floating_pnl_at(bid=eq_bid, ask=eq_ask)
             equity_curve.append(account.equity)
             if account.margin_level() < request.account.stop_out_level:
-                # 既定 "fail_stop": 従来どおり MarginCallError を送出し部分結果を破棄する。
-                if features.stop_out_action != "close_and_halt":
-                    raise MarginCallError(
-                        "margin_level が stop_out_level を下回りました",
-                        context={
-                            "margin_level": account.margin_level(),
-                            "stop_out_level": request.account.stop_out_level,
-                        },
-                        bar_index=bar_index,
-                    )
-                # "close_and_halt": 全保有玉を強制決済し、以降の新規発注を抑止して最終統計
-                # まで完走する（cycle4 バグ②）。強制決済価格は「margin 割れを判定した時点
-                # の現値」＝含み損評価と同一価格（bar.close 基準）を用いる。成行建値が始値
-                # 基準（current_open）でも、過ぎ去った始値でなく割れ時点の close 現値で決済
-                # する（実 MT5 整合・ISSUE-019）。
-                #   評価価格は usecase 側で解決（🟡-10b: 執行クォート規約を domain から分離）。
-                #   買い=Bid / 売り=Ask を close_price_for で選択（旧 mark_price と同一値）。
-                so_bid, so_ask = resolve_eval_quote(
-                    bar, basis=floating_pnl_basis, point_size=spec.point_size
+                # 強制決済のクォートは、直上で含み損を評価したのと同じ (eq_bid, eq_ask)。
+                #   移設前はここで resolve_eval_quote を同じ引数でもう一度呼んでいたが、
+                #   同じ純関数を同じ入力で二度引いた値であり、常に等しい（捨てる計算）。
+                self._apply_stop_out(
+                    policy=state.stop_out_policy,
+                    open_trades=open_trades,
+                    close_trade=close_trade,
+                    account=account,
+                    stop_out_level=request.account.stop_out_level,
+                    bar=bar,
+                    bar_index=bar_index,
+                    bid=eq_bid,
+                    ask=eq_ask,
+                    where=_STOP_OUT_AT_EVALUATION,
                 )
-                for ot in open_trades:
-                    close_price = close_price_for(
-                        ot.position.side, bid=so_bid, ask=so_ask
-                    )
-                    close_trade(
-                        ot,
-                        exit_time=bar.time,
-                        exit_price=close_price,
-                        exit_reason="stop_out",
-                    )
                 open_trades = []
                 halted = True
 
@@ -607,6 +596,60 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             initial_deposit=request.account.initial_deposit,
         )
+
+    def _apply_stop_out(
+        self,
+        *,
+        policy: Any,
+        open_trades: list,
+        close_trade: Any,
+        account: Account,
+        stop_out_level: float,
+        bar: Any,
+        bar_index: int,
+        bid: float,
+        ask: float,
+        where: str,
+    ) -> None:
+        """証拠金割れの処理（3 つの評価点で完全一致していた 2 分岐の単一化）。
+
+        方針が「強制決済しない」と決めたら run を捨てる（`MarginCallError` を送出し
+        部分結果を残さない）。「強制決済する」と決めたら、全保有玉を**割れを判定した
+        時点の現値クォート**で決済する（呼出側が保有列を空にし halt する）。
+
+        強制決済価格が現値である理由: 成行の建値が始値基準（`current_open`）であっても、
+        過ぎ去った始値ではなく割れた時点の値で決済するのが実 MT5 の挙動である
+        （ISSUE-019）。買い＝Bid / 売り＝Ask を `close_price_for` が選ぶ。
+
+        `where` は送出文言の末尾に付く評価点の名前（移設前の文言と byte 一致させる）。
+        診断値 `margin_level` は hedged 相殺を**含まない** `account.margin_level()` で
+        あり、割れ判定に使う実効値とは別である（移設前と同一）。
+        """
+        decision = policy.on_breach(
+            StopOutContext(
+                margin_level=account.margin_level(),
+                stop_out_level=stop_out_level,
+                bar_index=bar_index,
+                open_trade_count=len(open_trades),
+            )
+        )
+        if not decision.liquidate:
+            raise MarginCallError(
+                _STOP_OUT_BREACH_MESSAGE + where,
+                context={
+                    "margin_level": account.margin_level(),
+                    "stop_out_level": stop_out_level,
+                },
+                bar_index=bar_index,
+            )
+        for ot in open_trades:
+            close_price = close_price_for(ot.position.side, bid=bid, ask=ask)
+            close_trade(
+                ot,
+                exit_time=bar.time,
+                exit_price=close_price,
+                exit_reason="stop_out",
+            )
 
     def _finish_run(
         self,
@@ -1066,25 +1109,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                         leverage=request.account.leverage, contract_size=contract_size
                     )
                 if margin_level < request.account.stop_out_level:
-                    if features.stop_out_action != "close_and_halt":
-                        raise MarginCallError(
-                            "margin_level が stop_out_level を下回りました",
-                            context={
-                                "margin_level": account.margin_level(),
-                                "stop_out_level": request.account.stop_out_level,
-                            },
-                            bar_index=bar_index,
-                        )
-                    for ot in open_trades:
-                        close_price = close_price_for(
-                            ot.position.side, bid=eval_bid, ask=eval_ask
-                        )
-                        close_trade(
-                            ot,
-                            exit_time=bar.time,
-                            exit_price=close_price,
-                            exit_reason="stop_out",
-                        )
+                    self._apply_stop_out(
+                        policy=state.stop_out_policy,
+                        open_trades=open_trades,
+                        close_trade=close_trade,
+                        account=account,
+                        stop_out_level=request.account.stop_out_level,
+                        bar=bar,
+                        bar_index=bar_index,
+                        bid=eval_bid,
+                        ask=eval_ask,
+                        where=_STOP_OUT_AT_EVALUATION,
+                    )
                     open_trades = []
                     halted = True
 

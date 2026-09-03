@@ -453,3 +453,211 @@ class TestTheSwitchReadingDoesNotWasteWork:
             )
             measured[bar_count] = len(reads)
         assert measured[200] - measured[50] == 0, measured
+
+
+# ---- 4-4: 証拠金割れの決定点の単一化（O-3） ----
+
+def _margin_breach_request(*, config_overrides, bars):
+    """1 lot 買いを建て、指定した足で証拠金を割らせる run（3 つの評価点で共用）。
+
+    contract=100000・leverage=100 → 必要証拠金 1100。deposit 10,000・stop_out 50%。
+    """
+    from simulator.domain.order import Order
+
+    spec = SymbolSpec(
+        contract_size=100_000.0, volume_min=0.01, volume_max=100.0,
+        volume_step=0.01, stops_level=0, digits=5, point_size=0.00001,
+    )
+
+    class _BuyOnce(_NullStrategy):
+        def on_new_bar(self, bar_index, indicators, account):
+            return [Order(side="buy", kind="market", volume=1.0, price=None)] if bar_index == 0 else []
+
+    interactor = RunBacktestInteractor(
+        strategy=_BuyOnce(), indicators=_NullIndicators(), tick_model=_OneTickPerBar()
+    )
+    request = RunBacktestRequest(
+        config=_config(**config_overrides),
+        bars=bars,
+        symbol_spec=spec,
+        account=AccountSpec(initial_deposit=10_000.0, leverage=100.0, stop_out_level=50.0),
+    )
+    return interactor, request
+
+
+def _flat_then_crash_bars():
+    return [
+        Bar(time=np.datetime64("2024-01-01T00:00"), open=1.10, high=1.10, low=1.10,
+            close=1.10, volume=1.0, spread=0),
+        Bar(time=np.datetime64("2024-01-01T00:01"), open=1.10, high=1.10, low=1.00,
+            close=1.00, volume=1.0, spread=0),
+    ]
+
+
+def _open_gap_bars():
+    return [
+        Bar(time=np.datetime64("2024-01-01T00:00"), open=1.10, high=1.10, low=1.10,
+            close=1.10, volume=1.0, spread=0),
+        Bar(time=np.datetime64("2024-01-01T00:01"), open=0.50, high=1.10, low=0.50,
+            close=1.05, volume=1.0, spread=0),
+    ]
+
+
+#: 証拠金割れが起こりうる 3 つの評価点（バー open / バー close / ティック）。
+#: 移設前はこの 3 点それぞれに同じ 2 分岐が書き写されていた。
+_BREACH_SITES = [
+    ("bar_open", {"entry_price_basis": "current_open", "stop_out_at_open": True}, _open_gap_bars),
+    ("bar_close", {}, _flat_then_crash_bars),
+    ("tick", {"tick_model": "real_ticks"}, _flat_then_crash_bars),
+]
+
+
+class TestTheMarginCallPayloadIsUnchanged:
+    """送出される MarginCallError の中身を 3 評価点すべてで byte 単位に固定する。
+
+    なぜ中身まで固定するか: この例外は run を捨てる合図であり、外側（CLI の終了コード
+    翻訳・最適化ループの失敗記録）が message と context を読む。決定点を 1 つに束ねる
+    改修で文言や診断値が動くと、外側の分類が静かにずれる。
+    """
+
+    @pytest.mark.parametrize(
+        "site,overrides,make_bars", _BREACH_SITES, ids=[s[0] for s in _BREACH_SITES]
+    )
+    def test_the_default_action_raises_with_the_documented_payload(
+        self, site, overrides, make_bars
+    ):
+        from simulator.domain.exceptions import MarginCallError
+
+        # Arrange: stop_out_action 未指定＝既定 fail_stop。
+        interactor, request = _margin_breach_request(
+            config_overrides=overrides, bars=make_bars()
+        )
+        # Act
+        with pytest.raises(MarginCallError) as excinfo:
+            interactor.execute(request)
+        # Assert: 文言・診断値・バー位置が移設前と同一。
+        err = excinfo.value
+        expected_message = "margin_level が stop_out_level を下回りました" + (
+            "（bar open 評価）" if site == "bar_open" else ""
+        )
+        assert str(err) == expected_message
+        assert set(err.context) == {"margin_level", "stop_out_level"}
+        assert err.context["stop_out_level"] == 50.0
+        assert err.context["margin_level"] < 50.0
+        assert err.bar_index == 1
+
+    @pytest.mark.parametrize(
+        "site,overrides,make_bars", _BREACH_SITES, ids=[s[0] for s in _BREACH_SITES]
+    )
+    def test_close_and_halt_liquidates_instead_of_raising(self, site, overrides, make_bars):
+        # Arrange
+        interactor, request = _margin_breach_request(
+            config_overrides={**overrides, "stop_out_action": "close_and_halt"},
+            bars=make_bars(),
+        )
+        # Act
+        result = interactor.execute(request)
+        # Assert: 送出せず、保有玉が stop_out として確定し run が完走する。
+        assert [t.exit_reason for t in result.trades] == ["stop_out"]
+
+    @pytest.mark.parametrize(
+        "site,overrides,make_bars", _BREACH_SITES, ids=[s[0] for s in _BREACH_SITES]
+    )
+    def test_an_unknown_action_falls_back_to_raising(self, site, overrides, make_bars):
+        """綴り違いの設定が黙って完走しないこと（3 評価点すべてで同じ側へ落ちる）。"""
+        from simulator.domain.exceptions import MarginCallError
+
+        interactor, request = _margin_breach_request(
+            config_overrides={**overrides, "stop_out_action": "clsoe_and_halt"},
+            bars=make_bars(),
+        )
+        with pytest.raises(MarginCallError):
+            interactor.execute(request)
+
+
+class TestTheStopOutDecisionHasOneDefinitionPoint:
+    """実行経路に方針名のリテラルが残っていないこと。"""
+
+    def test_the_engine_holds_no_stop_out_action_literal(self):
+        import ast
+
+        offenders = [
+            (node.lineno, node.value)
+            for node in ast.walk(_run_backtest_tree())
+            if isinstance(node, ast.Constant)
+            and node.value in ("close_and_halt", "fail_stop")
+        ]
+        assert offenders == [], (
+            f"方針名のリテラルが実行経路に残っている: {offenders}。"
+            " 名前から決定への対応は stop_out_policy の表が単一ソースである。"
+        )
+
+    @pytest.mark.parametrize(
+        "site,overrides,make_bars", _BREACH_SITES, ids=[s[0] for s in _BREACH_SITES]
+    )
+    def test_every_breach_site_goes_through_the_single_decision_point(
+        self, site, overrides, make_bars, monkeypatch
+    ):
+        # Arrange: 決定点の呼び出しを記録する。
+        from simulator.usecase import stop_out_policy as sop
+
+        asked: "list[object]" = []
+        original = sop.resolve_stop_out_policy("close_and_halt")
+
+        class _Recording:
+            def on_breach(self, ctx):
+                asked.append(ctx)
+                return original.on_breach(ctx)
+
+        monkeypatch.setattr(rb, "resolve_stop_out_policy", lambda action: _Recording())
+        interactor, request = _margin_breach_request(
+            config_overrides=overrides, bars=make_bars()
+        )
+        # Act
+        interactor.execute(request)
+        # Assert: 割れは決定点へ問われ、その決定（強制決済）が実行された。
+        assert len(asked) >= 1
+        assert asked[0].stop_out_level == 50.0
+        assert asked[0].bar_index == 1
+
+
+class TestTheStopOutDecisionDoesNotWasteWork:
+    """計算量検定（発行 − 使用 = 0）。"""
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_policy_is_resolved_once_per_run_not_once_per_bar(
+        self, path, overrides, monkeypatch
+    ):
+        # Arrange: 方針の解決発行を数える（割れない run でも run につき 1 回）。
+        from simulator.usecase import stop_out_policy as sop
+
+        resolved: "list[str]" = []
+
+        def _spy(action):
+            resolved.append(action)
+            return sop.resolve_stop_out_policy(action)
+
+        monkeypatch.setattr(rb, "resolve_stop_out_policy", _spy)
+        # Act
+        _interactor().execute(_request(_bars(32), config=_config(**overrides)))
+        # Assert: 発行（解決）− 使用（run が使う 1 つの方針）= 0。
+        assert len(resolved) - 1 == 0
+
+    @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_policy_resolution_does_not_grow_with_the_number_of_bars(
+        self, path, overrides, monkeypatch
+    ):
+        """バー数 50 / 200 の 2 点で解決発行が変わらないこと（オーダーの表明）。"""
+        from simulator.usecase import stop_out_policy as sop
+
+        measured = {}
+        for bar_count in (50, 200):
+            resolved: "list[str]" = []
+            monkeypatch.setattr(
+                rb,
+                "resolve_stop_out_policy",
+                lambda action: (resolved.append(action), sop.resolve_stop_out_policy(action))[1],
+            )
+            _interactor().execute(_request(_bars(bar_count), config=_config(**overrides)))
+            measured[bar_count] = len(resolved)
+        assert measured[200] - measured[50] == 0, measured

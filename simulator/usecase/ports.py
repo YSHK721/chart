@@ -152,6 +152,26 @@ class PositionManagerPort(abc.ABC):
         raise NotImplementedError
 
 
+class StopOutPolicyPort(abc.ABC):
+    """証拠金割れ（stop-out）が起きたときに何をするかの隔離（ISSUE-479 Wave2 4-4）。
+
+    Interactor は「割れた」という事実（stop-out の文脈オブジェクト）だけを渡し、決定
+    オブジェクトを受け取る。**例外の送出は Interactor が行う**——run を捨てるかどうかは実行の制御で
+    あって方針オブジェクトの責務ではないため、方針は決定（強制決済するか否か）だけを
+    返す。
+
+    移設前はこの決定が `config.stop_out_action != "close_and_halt"` という比較として
+    実行経路の 3 箇所（バー open 評価・バー close 評価・ティック評価）へ書き写されて
+    いた。方針を増やすには 3 箇所すべてを直す必要があり（OCP 違反）、1 箇所を直し忘れると
+    評価点によって違う方針で走る。本 Port は決定点を 1 つに閉じる。
+    """
+
+    @abc.abstractmethod
+    def on_breach(self, ctx: Any) -> Any:
+        """StopOutContext を受け StopOutDecision を返す。"""
+        raise NotImplementedError
+
+
 class IndicatorPort(abc.ABC):
     """指標の隔離（IndicatorRegistry）。"""
 
