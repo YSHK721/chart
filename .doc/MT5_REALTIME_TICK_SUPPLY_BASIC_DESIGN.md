@@ -7,7 +7,7 @@
 
 ## 1. 実読済みの根拠（設計の拘束条件）
 
-ISSUE-447（T1〜T12・12h ずれ罠・COPY_TICKS_INFO 一択・DST 冬 UTC+2/夏 UTC+3）、ISSUE-446（橋渡し 5 制約・コンテナ→VM 172.16.162.129 疎通・送信元 172.16.162.1）、`tools/capture_mt5_symbol_spec.py`（VM 単体配布の規律）、`tools/live_tick_watch.py`（様式は踏襲・記憶域方式は棄却＝毎ポーリング当日全量再直列化のため）、`marketdata/tick_m1.py`（木レイアウト単一権威・`_TICK_COLUMNS` 3 列。`append_m1_from_ticks` は当日累積比例のため当日 M1 化には使わない）、既存単一権威検定 2 本（`test_tick_tree_layout_authority.py` は marketdata/tools/… を rglob、`test_tools_composition_declaration.py` は tools/*.py 非再帰）、`scratchpad/probe_mt5_ticks.py`（structured array・time_msc・tobytes()）。
+ISSUE-447（T1〜T12・12h ずれ罠・COPY_TICKS_INFO 一択・DST 冬 UTC+2/夏 UTC+3）、ISSUE-446（橋渡し 5 制約・コンテナ→VM 172.16.162.129 疎通・送信元 172.16.162.1）、`tools/capture_mt5_symbol_spec.py`（VM へのファイル単位配布の規律。ISSUE-479 F-1 以降は本体＋`marketdata/path_tokens.py` の写しの **2 ファイル**を同じディレクトリへ置いて配る）、`tools/live_tick_watch.py`（様式は踏襲・記憶域方式は棄却＝毎ポーリング当日全量再直列化のため）、`marketdata/tick_m1.py`（木レイアウト単一権威・`_TICK_COLUMNS` 3 列。`append_m1_from_ticks` は当日累積比例のため当日 M1 化には使わない）、既存単一権威検定 2 本（`test_tick_tree_layout_authority.py` は marketdata/tools/… を rglob、`test_tools_composition_declaration.py` は tools/*.py 非再帰）、`scratchpad/probe_mt5_ticks.py`（structured array・time_msc・tobytes()）。
 
 前提検証の要点:
 - P4 棄却: `live_tick_watch.py:392-399` は rows 到着ごとに当日全量 concat→再直列化＝CX-d 違反の実例。ジャーナル追記＋日次確定を新設する。
@@ -83,7 +83,7 @@ DIP 適用点: `IncrementalTickSource`（http/fake/spy の 3 実装）と `Clock
 - `finalize(day)`：全行→DataFrame（列は `tick_m1._TICK_COLUMNS` import・dtype は timestamp=datetime64[ms, UTC]/float64＝`test_live_tick_watch.py:268-273` と同一）→tmp→`os.replace`。1 UTC 日 1 回。既存と内容一致なら書かない（unchanged）。0 行かつ走査済の日のみ `.empty`。
 - `validate`：非単調・窓外・ask<bid・bid<=0・dtype 不一致 → `Mt5SupplyError`（部分書込を残さない）。
 - `m1_chain.append_m1_for_closed_minutes`：**新着分のみ** `tick_m1.ticks_to_m1` で畳み、`until` で形成中分を除外、書式は `tick_m1._format_m1_for_csv` を import（private 依存は A-5 の承認まで M-3 検定で防波堤）。`update_rollups`：`marketdata.rollup.incremental_update`（`rollups/<ref>/`・ref_prefix=ref）。
-- SymbolToken: `token_for(symbol, server)` = `capture_mt5_symbol_spec.sanitize_path_component` を **import**（ミラー実装禁止）。例 `JP225@OANDA-Japan-MT5-Live`。VM 側はトークンを作らない。
+- SymbolToken: `token_for(symbol, server)` = `marketdata.path_tokens.sanitize_path_component` を **import**（ミラー実装禁止）。例 `JP225@OANDA-Japan-MT5-Live`。VM 側はトークンを作らない。規則が `PathTokenError` で落ちたら `Mt5SupplyError` へ翻訳する（`port.py` の Fail-Stop 契約に載せ、`mt5_tick_watch` の捕捉集合をすり抜けさせない）。ISSUE-479 F-1 以前は実体が `tools` 側にあり、本パッケージが `tools` を import する層の逆流だった。
 
 ### mt5_tick_watch（F・Composition Root）
 - 引数: `--symbol`(JP225)/`--endpoint`(http://172.16.162.129:8771)/`--key-id`/`--interval`(既定 5.0・下限 2.0)/`--data-dir`/`--ref`(既定 jp225_mt5)/`--from`(コールドスタート必須)/`--once`/`--no-publish`/`--quiet`。秘密は `MT5_BRIDGE_SECRET` 環境変数のみ。
@@ -140,7 +140,7 @@ DIP 適用点: `IncrementalTickSource`（http/fake/spy の 3 実装）と `Clock
 - A-8 秘密リテラル 0（`MT5_BRIDGE_SECRET` 以外の 32 文字以上 hex リテラル 0）
 
 ### ミラー／単一権威
-- M-1 sanitize は `capture_mt5_symbol_spec.sanitize_path_component` の呼び出し（`_SAFE_CHARS` 相当の別実装が無いことを AST 確認）
+- M-1 sanitize は `marketdata.path_tokens.sanitize_path_component` の呼び出し（`_SAFE_CHARS` 相当の別実装が `mt5_ticks` にも `tools/capture_mt5_symbol_spec.py` にも無いことを AST 確認。3 者が同一関数オブジェクトを指すことも固定）
 - M-2 ジャーナル/parquet パスが `tick_m1.day_parquet_path` から派生（monkeypatch 反映で実証）
 - M-3 M1 CSV 追記の byte 出力が `tick_m1._format_m1_for_csv` と一致
 - M-4 ジャーナル畳み（intraday）の M1 == 確定 parquet からの M1（同値性）
