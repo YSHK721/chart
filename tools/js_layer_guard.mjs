@@ -43,8 +43,16 @@ export const PUBLIC_URL_RE = new RegExp(
 // 他 core の**モジュール URL**（.js で終わる絶対パス文字列）。API パス（`/live/candles` 等）は
 //   公開契約であって階層の名指しではないため対象外。末尾の否定先読みは `.json` を除くためで、
 //   これが無いと `/live/data/trade_markers.json` を誤検出する（実測 2026-09-04）。
+//
+// 左端の否定後読みは**相対指定子**を除くためである（実測 2026-09-04）。
+//   `import { t } from '../../replay/timing.js';` の指定子は `/replay/timing.js` を部分文字列として
+//   含み、左端を縛らないと「他 core の名指し」に見える。相対指定子を解決して見るのは G-1
+//   （layerDirectionOffenders）の担当で、G-3 の担当は配信 URL（`/` 始まり）だけである。
+//   除くのは直前が「パス断片の続き」に見える文字（英数字・`_`・`.`・`-`）のときのみ。
+//   クォート直後（`'/live/...'`）とテンプレート補間直後（`` `${P}/live/...` ``）は残る
+//   ＝合成された越境 URL を取りこぼさない。
 export const CROSS_CORE_MODULE_URL_RE = new RegExp(
-  `/(?:${CORE_SEGMENTS.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
+  `(?<![A-Za-z0-9_.\\-])/(?:${CORE_SEGMENTS.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
   'g',
 );
 

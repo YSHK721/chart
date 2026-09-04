@@ -136,6 +136,33 @@ test('検出器は public 面の名指しを offender にしない（許可の�
   assert.deepEqual(crossCoreModuleUrlOffenders(sources, root), []);
 });
 
+test('検出器は相対指定子を offender にしない（G-3 が見るのは絶対 URL だけ）', () => {
+  // なぜ在るか（実測 2026-09-04）: `import { t } from '../../replay/timing.js';` の指定子には
+  //   `/replay/timing.js` という**部分文字列**が含まれる。左端を縛らない走査はこれを「他 core の
+  //   モジュール URL」と誤認する。相対指定子は G-1（層方向）が解決して見る担当であり、G-3 の
+  //   担当は配信 URL（`/` 始まり）だけである。誤検出が残る検定は信用されず、いずれ無効化される。
+  const { root, js } = syntheticTree();
+  writeFileSync(
+    path.join(js, 'adapter', 'view.js'),
+    "import { timing } from '../../replay/timing.js';\n"
+    + "import { calendar } from './replay/calendar.js';\nexport const v = [timing, calendar];\n",
+  );
+  const sources = collectSources([js]);
+  assert.deepEqual(crossCoreModuleUrlOffenders(sources, root), []);
+});
+
+test('検出器はテンプレート合成の越境 URL を捕捉する（左端を縛っても取りこぼさない）', () => {
+  // 左端を縛る是正が「クォート直後だけ」に狭まると、`${PREFIX}/js/...` の合成が抜ける。
+  const { root, js } = syntheticTree();
+  writeFileSync(
+    path.join(js, 'adapter', 'root.js'),
+    'const PREFIX = "";\nexport const load = () => import(`${PREFIX}/live/js/usecase/period_presets.js`);\n',
+  );
+  const sources = collectSources([js]);
+  const offenders = crossCoreModuleUrlOffenders(sources, root);
+  assert.equal(offenders.length, 1, `合成された越境 URL を取りこぼしている: ${offenders}`);
+});
+
 test('検出器は API prefix と JSON 資源を offender にしない（公開契約は対象外）', () => {
   const { root, js } = syntheticTree();
   writeFileSync(
