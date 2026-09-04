@@ -13664,3 +13664,25 @@ tmp_path に小さな parquet を書いている。
   既定の CI では常に skip＝錨が効かない）。
 
 いずれも「ケース C」の意味を変えるため、どちらを採るかは承認事項として保留する。
+
+### Wave 2 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2）
+
+- **規模**: 69 コミット・+20,799/−4,081 行・TDD バッチ 8 本（W2T1〜W2T8）＋是正 2 回。全段階 Red 実観測・計算量テスト付き。
+- **完了項目**: common 6 件（C-1〜C-6）／marketdata 4 件（M-1〜M-4）／simulator フェーズ 0〜4 全部
+  （S-4 登録表 3・X-3 隔離 2・X-2 .pth 化＝ISSUE-482 根治込み・S-2 ema_series 移設・X-1 bridge 所有者移転・
+  S-5 ISP 3 面分割・S-3 serve_replay 5 App 分割・**S-1 run_backtest 1 本化＝2 エンジン 798 行→単一 248 行**）／
+  indigators I-1/I-2・J-3/J-4（JS 方向検定 3 本新設・public facade 化）／J-2 chart_renderer 1799→1070 行・
+  J-1 SRP＋OCP-5 S1/S2。
+- **副産物（状態検証では原理的に落ちない潜在浪費の発見・除去）**: bar 経路の毎バー無条件 derive_quotes・
+  tick 経路の保有玉ごと close_price_for（N+1）・評価点の二重クォート解決の 3 件。出力 sha256 不変のまま
+  計算量検定で恒久固定（ISSUE-450 同型）。
+- **レビュー**: Python 側承認（byte 等価 8 項目を独立再現・M-3 は 284,248 件差分 0・アサーション変更
+  25 ファイル全数監査で弱体化 0）／JS 側条件付き承認（symlink 146 本無傷・移設 49 メソッド逐語一致・
+  実 HTTP 200 実測）→ 条件 2 件是正済み（0ded0c1・ee037fa）。
+- **未実施（承認保留・下記）**: J-5（既存 assert 6 本と正面衝突）・J-1 S3・J-6・S2 走査対象追加
+  （※繰延理由を訂正: 「no-op だから」ではなく「実施すると ColorThemeController の ROLES 登録と
+  chart_app_wiring の生 host 注入 3 件の是正が同時に必要になり本 Wave の射程を超える」が正・レビュー実測）。
+- **次リリースまでの対応（レビュー指摘・非ブロッカー）**: tick 経路の指紋錨（ISSUE-483 の代替案裁定後）・
+  ALLOWED 導出集合の RATCHET 化・_mp 名指し 2 箇所の参照点統一・js_layer_guard の replay/sim 展開（自核除外要）。
+
+## ISSUE-483 は同日起票済み（real_ticks 指紋錨の前提不成立・代替案 2 件は承認事項）
