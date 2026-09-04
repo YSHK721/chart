@@ -13812,3 +13812,28 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   G-1 共有スイートの indicator_ui/dashboard_ui 移行・unified_ui の G-1 錨・pre-existing 4 offender（JS 合成根）。
 - **実 UI 確認（マージ後・ユーザー実施）**: レビュー最終版リスト（A: live MP 5 項・B: replay MP 4 項・
   C: unified 7 項・D: 新環境 3 項）に従うこと。サーバ再起動（serve.sh 経由・ポート 8000/8280 固定）が前提。
+
+## ISSUE-485: [不具合] 版面変化を挟んだ後に作られる指標ペインが約 2px へ潰れる（stretch 目盛りの二重系）
+- **ステータス**: RESOLVED（2026-09-04）
+- **報告**: ユーザー報告「指標表示部分が潰れる」（ss2026090540003.jpg: 価格ペインが版面ほぼ全高・
+  指標ペイン群が数 px の帯に潰れて判読不能）。
+- **再現（実 UI・Playwright・port 8000・2026-09-04）**: sim 開閉（版面変化）→ 指標ダイアログから
+  ペイン指標を適用 → 新設ペイン高さ **2px**（stretch 実測 [437, 147, 144, **1**]）。
+  一度潰れると時間足切替でも回復しない（恒久残留）。
+- **根本原因（バンドル計装で確定）**: `setStretchFactor` に **2 つの書き手が別の目盛りで書く**。
+  - `SeriesDrawer._ensurePane` — 設計比の絶対値（メイン 3・指標 1）
+  - `PaneGeometryController._applyGoalRatios`（ISSUE-442 の版面比例伸縮）— 目標 **px 値（数百）** を
+    そのまま stretch へ書く（lwc は比しか見ないため単体では正しい）
+  版面変化が一度でも起きると全ペインの目盛りが px 系（数百）へ移り、以後に生成されるペインの
+  絶対値 1 は比 1:数百 ＝ 約 2px。`MIN_INDICATOR_PANE_PX=40` の床は自前再配分の中でしか効かず、
+  lwc の stretch レイアウトには掛からない。
+- **抜本対策（実施済み）**: 新設ペインの stretch を絶対値でなく**価格ペインの現在 stretch からの相対**
+  （× INDICATOR_PANE_STRETCH / MAIN_PANE_STRETCH）で導出する（`series_drawer.js _newPaneStretch`）。
+  目盛りがどちらの系でも設計比 3:1 が成立する（症状の条件回避ではなく「目盛りの不一致」という原因の除去）。
+  getStretchFactor 非提供（Fake/旧版）は従来の絶対値へ縮退＝既存テスト・既存挙動は不変。
+- **検証**: 新テスト `pane_stretch_scale_consistency.test.js` 4 件（設計比の両目盛り成立・縮退・
+  計算量=stretch 発行回数の無駄不在「発行 − 使用 = 0」と再適用での再発行なし）。
+  indicator_ui web 全 2574 件緑。実 UI 再検証: 同一手順（sim 開閉 → ペイン指標適用）で新設ペインが
+  120px（3:1:1:1 正配分）になることを確認。検証で追加した指標は除去し、ユーザーの適用状態
+  （market_profile / btlm_trail_marod / ma_marod）へ復元済み。
+- **関連**: ISSUE-442（px 値 stretch の導入元）・ISSUE-440(2)（床の由来）。

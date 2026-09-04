@@ -147,7 +147,7 @@ export class SeriesDrawer {
       pane.setPreserveEmptyPane(true);
     }
     if (pane && typeof pane.setStretchFactor === 'function') {
-      pane.setStretchFactor(INDICATOR_PANE_STRETCH);
+      pane.setStretchFactor(this._newPaneStretch());
     }
     slot.pane = pane;
     slot.paneName = opts.name ?? '';
@@ -155,6 +155,25 @@ export class SeriesDrawer {
     //   同じ情報をペイン別凡例の行が持ち、凡例 DOM が canvas 上に載るため互いに重なって
     //   判読不能になっていた（実測 2026-08-06）。表示系統は凡例 1 つに統合する。
     return pane;
+  }
+
+  // 新設 pane に与える stretch。設計比（メイン:指標 = MAIN_PANE_STRETCH:INDICATOR_PANE_STRETCH）を
+  //   **価格 pane の現在値からの相対**で表す。stretch の目盛りは 1 つではない——版面変化時の
+  //   再配分（PaneGeometryController._applyGoalRatios・ISSUE-442）は目標 px（数百）をそのまま
+  //   stretch に書くため、以後の目盛りは px 系になる。そこへ絶対値 1 を書くと 1:数百 の比になり、
+  //   新設 pane が約 2px へ潰れる（実測 2026-09-04: sim 開閉後に指標を適用すると高さ 2px）。
+  //   価格 pane の現在 stretch を基準に導出すれば、目盛りがどちらの系でも設計比が保たれる。
+  //   getStretchFactor 非提供（Fake・旧版）は従来の絶対値へ縮退する。
+  _newPaneStretch() {
+    const panes = this._h._chart.panes ? this._h._chart.panes() : [];
+    const price = panes[0];
+    if (price && typeof price.getStretchFactor === 'function') {
+      const s = price.getStretchFactor();
+      if (Number.isFinite(s) && s > 0) {
+        return s * (INDICATOR_PANE_STRETCH / MAIN_PANE_STRETCH);
+      }
+    }
+    return INDICATOR_PANE_STRETCH;
   }
 
   // line / histogram を共通生成する（upstream API 名 addSeries は本所のみ）。
