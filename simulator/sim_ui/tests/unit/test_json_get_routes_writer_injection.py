@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from simulator.sim_ui.adapter.job_api_controller import ApiResponse
-from simulator.sim_ui.framework.json_get_routes import GetRouteResponder, write_json
+from api_shared.json_get_routes import GetRouteResponder, write_json
 
 
 class _FakeHandler:

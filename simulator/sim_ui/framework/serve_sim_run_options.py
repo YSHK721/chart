@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.sim_ui.adapter.run_options_api_controller import RUN_OPTIONS_PATH
-from simulator.sim_ui.framework.json_get_routes import GetRouteResponder
+from api_shared.json_get_routes import GetRouteResponder
 
 # Handler・サーバ生成・起動は Phase 2 の実体をそのまま使う（複製しない）。
 from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
