@@ -35,6 +35,7 @@ import pandas as pd
 
 from common import event_quantiles as _evq
 from common import marod_bands as _bands
+from common.event_quantiles import normalize_event_agg
 from common_view.lwc_adapter import resolve_times
 from adapter.compute.incremental._emit import tail_points
 
@@ -236,9 +237,13 @@ class MarodIncrementer:
         k_events = int(params.get("k_events", 50))
         if k_events < 1:
             return None
-        event_agg = str(params.get("event_agg", "episode")).lower()
-        if event_agg not in ("episode", "bar"):
-            return None
+        try:
+            # 既知集計単位の集合は共有プリミティブが唯一の宣言。ここで列挙を書き写すと
+            #   集計単位が 1 つ増えた日にここだけ取り残され、新しい単位が「未知値」として
+            #   黙って full 経路へ落ちる（値は正しいまま性能だけ落ちるので検定に映らない）。
+            event_agg = normalize_event_agg(params.get("event_agg", "episode"))
+        except ValueError:
+            return None  # 未知値は増分器が扱えない＝従来経路（full）へ落とす（挙動不変）。
 
         prices = self._resolve_prices(df, str(params.get("source", "close")))
         n = int(prices.size)

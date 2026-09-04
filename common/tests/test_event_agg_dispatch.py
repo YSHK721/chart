@@ -130,3 +130,73 @@ def test_the_stepper_table_is_the_single_source_of_the_known_aggs() -> None:
     """既知集計単位の集合はステッパ表から導出される（第 2 の列挙を作らない）。"""
     assert set(event_quantiles._EVENT_AGGS) == set(event_quantiles._EVENT_STEPPERS)
     assert set(event_quantiles._EVENT_STEPPERS) == {"episode", "bar"}
+
+
+# --------------------------------------------------------------------------- #
+# 5. 既知集計単位の列挙が repo に 1 つだけ（ISSUE-479 Wave2 追随 B）
+#
+# 表を単一情報源にしても、消費者が `event_agg not in ("episode", "bar")` と書き写せば
+# 集計単位が 1 つ増えた日にそこだけ取り残される（＝未知値として黙って別経路へ落ちる）。
+# 列挙の複製そのものを構文で禁じる。
+# --------------------------------------------------------------------------- #
+import ast  # noqa: E402
+import pathlib  # noqa: E402
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_CANONICAL_SOURCE = pathlib.Path(event_quantiles.__file__).resolve()
+#: 走査から外す木（第三者コード・生成物・仮想環境・テスト）。
+_EXCLUDED_PARTS = {".venv", "venv", "node_modules", "__pycache__", ".git", "out", "site-packages"}
+_KNOWN_AGGS = frozenset({"episode", "bar"})
+
+
+def _literal_strings(node: ast.AST) -> set[str]:
+    """コンテナリテラル（tuple/list/set）に直接並ぶ文字列定数の集合。"""
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return set()
+    return {
+        e.value for e in node.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    }
+
+
+def _agg_enumeration_sites(tree: ast.AST) -> list[int]:
+    """既知集計単位の集合をリテラルで書き写している ``in`` / ``not in`` 判定の行番号。"""
+    out: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        ops = {type(op) for op in node.ops}
+        if not ops & {ast.In, ast.NotIn}:
+            continue
+        if any(_KNOWN_AGGS <= _literal_strings(c) for c in node.comparators):
+            out.append(node.lineno)
+    return out
+
+
+def _production_sources() -> list[pathlib.Path]:
+    return [
+        p for p in _REPO_ROOT.rglob("*.py")
+        if not (_EXCLUDED_PARTS & set(p.parts)) and "tests" not in p.parts
+    ]
+
+
+def test_the_known_aggs_are_enumerated_in_exactly_one_place() -> None:
+    """既知集計単位の列挙は正典モジュールの 1 か所だけ（消費者は正規化関数へ委譲する）。"""
+    offenders = [
+        f"{path.relative_to(_REPO_ROOT)}:{lineno}"
+        for path in _production_sources()
+        if path.resolve() != _CANONICAL_SOURCE
+        for lineno in _agg_enumeration_sites(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+    assert offenders == [], (
+        "集計単位の列挙が書き写されている（common.event_quantiles.normalize_event_agg へ"
+        "委譲すること。列挙の複製は集計単位が増えた日に取り残される）:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_enumeration_detector_catches_a_synthetic_copy() -> None:
+    """検出器の自己検定: 書き写しを実際に捕捉し、正規化関数の呼出は捕捉しない。"""
+    copied = ast.parse('def f(a):\n    return a not in ("episode", "bar")\n')
+    delegated = ast.parse('def f(a):\n    return normalize_event_agg(a)\n')
+    assert _agg_enumeration_sites(copied) == [2]
+    assert _agg_enumeration_sites(delegated) == []
