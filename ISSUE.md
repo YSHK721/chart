@@ -13647,7 +13647,7 @@ test_the_installer_that_runs_is_the_one_in_the_main_checkout` が機械的に固
 
 ## ISSUE-483: [検定] Wave2 再レビュー 🟡-1 の「real_ticks ケース C をピン化」は前提不成立 — 採取値が sha256("") になる
 
-- **ステータス**: `OPEN`（着手前に中断。代替案は承認事項）
+- **ステータス**: `RESOLVED`（2026-09-04・案 1 を承認のうえ実施）
 - **重大度**: 中（誤ったピンを入れると後続 Wave を誤誘導するため、入れないことが正）
 - **起票**: 2026-09-04 / ブランチ `fix/issue-479-solid-wave2`
 
@@ -13703,6 +13703,55 @@ tmp_path に小さな parquet を書いている。
   既定の CI では常に skip＝錨が効かない）。
 
 いずれも「ケース C」の意味を変えるため、どちらを採るかは承認事項として保留する。
+
+### 解決: 案 1 を実施（2026-09-04・ISSUE-479 Wave2b 項 3）
+
+`simulator/tests/integration/test_run_backtest_fingerprint.py` へケース C を追加した。
+合成素材（16 バーの comma 形式 CSV ＋ 1 バー 5 ティックの hive layout parquet）を tmp_path に
+書き、`tick_model="real_ticks"` で `run_backtest` を実走して採取した。
+
+**採取値（2 回実行一致・決定的）**:
+
+```
+exit 0  trades 4
+stats_sha256   6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12
+trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
+```
+
+`trades_sha256` は sha256("")＝`e3b0c442...` では**ない**（起票時に棄却した形を脱している）。
+空でないことは検定自身が主張する（`test_the_anchor_is_not_an_empty_result` が
+`trade_count >= 2` と `trades_sha256 != sha256("")` を assert する）。
+
+**設計中に実測で判明した重要な非対称性（ピンの射程）**:
+
+同じバー・同じティックで `tick_model` を `open_only` に替えて比較したところ、
+
+| ダイジェスト | real_ticks vs open_only |
+|---|---|
+| `stats_sha256` | **異なる**（6aeea6e6… vs ef75155e…） |
+| `trades_sha256` | **一致する**（d1d9b1aa…） |
+
+つまり本プロファイルで tick モデルを識別しているのは `stats_sha256` だけである。
+理由: `entry_price_basis="current_open"` では、MT5 の every-tick 意味論どおり新規バーの成行が
+ティック価格ではなく**バー open クォート**で約定するため、確定トレードはバー系列だけで決まる
+（`test_composition_real_ticks.py` が「約定がティック価格に**ならない**こと」を値で固定して
+いるのと同じ性質）。
+
+したがって「`trades_sha256` をピンすれば tick 経路が錨で固定される」という素朴な想定は
+**成立しない**。この非対称性ごと検定に書き、`test_the_tick_model_actually_changes_the_outcome`
+が (1) stats は tick モデルで変わること (2) trades は変わらないこと の両方を assert する。
+これによりケース C が「real_ticks と名乗りながら実は bar 経路の指紋」へ静かに退化したら赤になる
+（起票時に指摘した「偽の被覆」と同型の失敗を、今度は検定が捕まえる）。
+
+**錨の識別力の実証**: `_run_c` の tick モデルを `open_only` へ差し替える変異を注入すると、
+指紋一致検定と識別力検定の 2 件が赤になることを実走で確認した（変異は確認後に戻した）。
+
+**併せて実施**: モジュール全体に掛かっていた `skipif`（MT5 フィクスチャ不在）を、それを要する
+ケース A / B の 2 クラスへ移した。モジュールに掛けたままだと、フィクスチャの無い環境で
+自前素材のケース C まで一緒に消え、錨が効かない（起票時に案 2 の欠点として挙げた事象と同型）。
+ケース A / B の assert は 1 行も変えていない。
+
+**実測**: `pytest simulator/tests/integration -q` → 296 passed。
 
 ### Wave 2 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2）
 
