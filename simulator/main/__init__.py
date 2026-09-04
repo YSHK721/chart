@@ -39,7 +39,11 @@ from simulator.adapter.execution.tick_model_registry import (
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
-from simulator.adapter.indicator.madiff import ema_series, madiff
+# ISSUE-479 Wave2b: 指標 adapter は**モジュールとして**借りる。`from ... import ema_series`
+#   と書くと main に EMA の名前が生え、外側スライスが Composition Root 経由で計算を
+#   借りられてしまう（0-2 層ゲートが禁じている構造）。名前を生やさなければその経路は
+#   書けなくなる。所有者は adapter ただ 1 つである。
+from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
@@ -272,15 +276,15 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     TC24051901 は indicators.get("madiff") と indicators.get("close") を参照する
     （tc24051901.py を Read で実証）。両系列を事前計算して登録する。
     """
-    madiff_series = madiff(df, period=ma_period, method=ma_method)
+    madiff_series = madiff_indicator.madiff(df, period=ma_period, method=ma_method)
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
 
 
-# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2）。ここは **re-export** であり
-# 写しではない（simulator.main.ema_series is madiff.ema_series を検定が固定する）。
-# 新規の参照は adapter から直接借りること。main 経由の借用は
-# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じる。
-_ema_series = ema_series  # 後方互換の旧名（simulator 内部の既存参照・テスト経路を温存）。
+# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2 / Wave2b）。main は re-export も
+# 旧名別名も置かない——置けば外側スライスがそこから借りられる。内部の 3 箇所は
+# madiff_indicator.ema_series として adapter を直接呼ぶ。main 経由の借用は
+# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じ、
+# 名前が生えていないことは simulator/tests/unit/test_ema_series_ownership.py が固定する。
 
 
 def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndicatorRegistry:
@@ -288,7 +292,7 @@ def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndic
 
     MaSlope は indicators.get("ema") を参照する（ma_slope.py を Read で実証）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry({"ema": ema})
 
 
@@ -301,7 +305,7 @@ def _build_ma_slope_pending_registry(
     始値クォート（bid=open / ask=open+spread×point）から算出するため "open"/"spread" 系列を
     参照する（ma_slope_pending.py を Read で実証）。spread は MT5 CSV の <SPREAD>（ポイント）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry(
         {
             "ema": ema,
@@ -327,11 +331,11 @@ def _build_pro_fit_band_registry(
     """EMA(ma_period, close)・ADX(adx_period)/+DI/−DI・close を登録した IndicatorPort。
 
     ProFitBand は indicators.get("ema"/"adx"/"plus_di"/"minus_di"/"close") を参照する
-    （pro_fit_band.py を Read で実証）。EMA は共有 ``_ema_series``、ADX/±DI は
+    （pro_fit_band.py を Read で実証）。EMA は adapter の ``ema_series``、ADX/±DI は
     ``compute_adx_with_di``（原典 iADX 再現・SPEC §3.5）で事前計算して登録する。
     close は df["close"] をそのまま登録する（TC 既定 registry と同形）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     adx, plus_di, minus_di = compute_adx_with_di(
         df["high"], df["low"], df["close"], period=adx_period
     )

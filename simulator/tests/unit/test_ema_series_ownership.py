@@ -96,13 +96,50 @@ class TestTheAdapterOwnsTheEmaSeries:
 
         assert callable(madiff.ema_series)
 
-    def test_the_composition_root_re_exports_the_same_object(self):
-        """main の名前は re-export＝**同一オブジェクト**である（写しではない）。"""
+    @pytest.mark.parametrize("name", ["ema_series", "_ema_series"])
+    def test_the_composition_root_exposes_no_ema_name(self, name):
+        """main に EMA の名前が**生えていない**こと（ISSUE-479 Wave2b）。
+
+        以前は re-export（main の名前が adapter と同一オブジェクト）で単一実体を
+        担保していた。しかし re-export は「main から借りられる」ことを意味し、
+        外側スライスが Composition Root 経由で計算を借りる経路を残す。名前を
+        消せばその経路は**書けなくなる**——同一性より不在の方が強い。
+
+        main 内部の 3 箇所はモジュール越しに adapter を呼ぶ（借用名を生やさない）。
+        """
+        import simulator.main as main
+
+        assert not hasattr(main, name), (
+            f"simulator.main に {name} が生えています。EMA 系列の所有者は "
+            f"{_ADAPTER_REL} であり、外側スライスはそこから直接借りる。"
+        )
+
+    def test_the_composition_root_still_computes_ema_through_the_adapter(self):
+        """空振り防止: 名前を消しただけで EMA を使うのをやめたのではない。
+
+        main が adapter の ema_series を呼んでいることを Spy で実測する
+        （名前が無いことだけを見ると、計算ごと落としても緑になる）。
+        """
+        import pandas as pd
+
         import simulator.main as main
         from simulator.adapter.indicator import madiff
 
-        assert main.ema_series is madiff.ema_series
-        assert main._ema_series is madiff.ema_series
+        calls: "list[int]" = []
+        original = madiff.ema_series
+
+        def spy(price, period):
+            calls.append(period)
+            return original(price, period)
+
+        df = pd.DataFrame({"close": [float(i) for i in range(64)]})
+        madiff.ema_series = spy
+        try:
+            main._build_ma_slope_registry(df, ma_period=21)
+        finally:
+            madiff.ema_series = original
+
+        assert calls == [21]
 
     @pytest.mark.parametrize(("n", "period"), sorted(_FROZEN_DIGESTS))
     def test_the_values_are_byte_identical_to_before_the_move(self, n, period):
