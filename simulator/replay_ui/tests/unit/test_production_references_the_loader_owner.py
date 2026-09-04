@@ -31,7 +31,8 @@ _REPO = Path(__file__).resolve().parents[4]
 #: 所有者（本番はここから借りる）。
 _OWNER = "indigators.indicator_ui.api_loader"
 
-#: 旧位置（再公開層）。本番からの参照は 0 件でなければならない。
+#: 旧位置（再公開層）。ISSUE-479 Wave2b で削除済み。参照は 0 件でなければならない
+#: （検出力の実測は合成ソースで行う——実在しない綴りでも検査が反応することを見る）。
 _SHIM = "simulator.replay_ui.adapter._indicator_ui_bridge"
 
 #: 所有者を指すが**別の module オブジェクト**になる書き方（キャッシュが割れる）。
@@ -95,14 +96,17 @@ class TestProductionBorrowsFromTheOwner:
     """本番の借り先が所有者 1 点であること。"""
 
     def test_no_production_module_references_the_shim(self):
+        """例外なしの 0 件（ISSUE-479 Wave2b で旧位置を削除したので自己参照の免除も不要）。"""
         _, hits = _references(_SHIM)
-        # 再公開層そのものは所有者を参照してよい（それが仕事である）。
-        hits = [h for h in hits if not h.startswith("simulator/replay_ui/adapter/_indicator_ui_bridge.py:")]
         assert hits == [], (
             "本番が再公開層（旧位置）を経由しています:\n  "
             + "\n  ".join(hits)
             + f"\n  所有者 {_OWNER} から直接借りてください。"
         )
+
+    def test_the_shim_file_is_gone(self):
+        """参照 0 件が「使われていないだけ」ではなく「存在しない」ことを固定する。"""
+        assert not (_REPO / "simulator/replay_ui/adapter/_indicator_ui_bridge.py").exists()
 
     def test_the_owner_is_actually_referenced(self):
         """空振り防止: 所有者への参照が本番に実在する。"""

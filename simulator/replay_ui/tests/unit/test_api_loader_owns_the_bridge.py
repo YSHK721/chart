@@ -3,8 +3,8 @@
 固定する仕様:
     indicator_ui の compute / dataset / MP handler を読み出す結線
     （indigators/indicator_ui/api_loader.py）は、**供給側スライスが所有する**。
-    simulator/replay_ui/adapter/_indicator_ui_bridge.py は所有者へ委譲するだけの
-    再公開層（shim）であり、ロジックを 1 行も持たない。
+    旧位置 simulator/replay_ui/adapter/_indicator_ui_bridge.py（再公開層）は
+    ISSUE-479 Wave2b で削除済みであり、経路は所有者ただ 1 本である。
 
 なぜ所有者を移すのか:
     3 つの消費スライス（replay_ui / dashboard_ui / sim_ui）が、他スライスの
@@ -14,12 +14,16 @@
 
 移設で変わってよいのは 1 点だけ:
     リポジトリ根の導出（ファイル位置が変わるので parents の段数が変わる）。それ以外は
-    逐語移設であり、shim にロジックが無いこと・両経路が同一オブジェクトを指すこと・
-    キャッシュが 1 つであることを機械的に固定する。
+    逐語移設である。
+
+「キャッシュが 1 つ」の固定の仕方が変わった:
+    再公開層が在った間は「両経路が同一オブジェクトを指すこと」で 1 つを担保していた。
+    旧位置を消した今は**経路が 1 本しか無いこと**（旧位置が存在せず import も解決しない）
+    で担保する。後者の方が強い——同一性は写しを作れば破れるが、不在は破れない。
 """
 from __future__ import annotations
 
-import ast
+import importlib
 import json
 import subprocess
 import sys
@@ -29,7 +33,10 @@ import pytest
 
 _REPO = Path(__file__).resolve().parents[4]
 _LOADER_REL = "indigators/indicator_ui/api_loader.py"
+_LOADER_MODULE = "indigators.indicator_ui.api_loader"
+#: 旧位置（再公開層）。ISSUE-479 Wave2b で削除済み——存在しないことを固定する。
 _SHIM_REL = "simulator/replay_ui/adapter/_indicator_ui_bridge.py"
+_SHIM_MODULE = "simulator.replay_ui.adapter._indicator_ui_bridge"
 
 #: 所有者が提供するロード面（消費者が使う全アクセサ）。
 _LOAD_FACES = (
@@ -90,54 +97,34 @@ class TestTheSupplyingSliceOwnsTheLoader:
         assert callable(getattr(api_loader, face))
 
 
-class TestTheBridgeIsAPureReExport:
-    """旧所有者はロジックを持たない再公開層であること。"""
+class TestTheOldLocationIsRemoved:
+    """再公開層（旧位置）が**存在しない**こと（ISSUE-479 Wave2b・承認済み削除）。
 
-    def test_the_shim_defines_no_logic(self):
-        """shim に関数 / クラス定義が 1 つも無い（実装の二重化を構文で禁じる）。"""
-        tree = ast.parse((_REPO / _SHIM_REL).read_text(encoding="utf-8"), filename=_SHIM_REL)
-        defined = [
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        ]
-        assert defined == [], (
-            f"{_SHIM_REL} に実装が残っています: {defined}\n"
-            "  shim は所有者への再公開だけを担う（写しを持つと片方だけ腐る）。"
+    以前この class は「shim にロジックが無い」「両経路が同一オブジェクト」「キャッシュが
+    1 つ」を固定していた。旧位置が消えた今、それらは**経路が 1 本しか無い**という、より
+    強い形で成立する。2 経路の同一性を測る代わりに、2 経路目が生まれないことを固定する。
+    """
+
+    def test_the_shim_file_does_not_exist(self):
+        assert not (_REPO / _SHIM_REL).exists(), (
+            f"{_SHIM_REL} が残っています。ロード面の所有者は {_LOADER_REL} ただ 1 つであり、"
+            "再公開層は移行の安全弁として一時的に置かれていたものである。"
         )
 
-    @pytest.mark.parametrize("face", _LOAD_FACES + ("_ensure_paths",))
-    def test_both_routes_expose_the_same_object(self, face):
-        from indigators.indicator_ui import api_loader
-        from simulator.replay_ui.adapter import _indicator_ui_bridge as bridge
+    def test_the_shim_module_is_not_importable(self):
+        """ファイルを消しただけでなく、import 経路としても解決できないこと。"""
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(_SHIM_MODULE)
 
-        assert getattr(bridge, face) is getattr(api_loader, face)
+    def test_the_owner_remains_importable(self):
+        """空振り防止: 消したのは旧位置だけで、所有者は生きている。
 
-    def test_there_is_exactly_one_cache(self):
-        """キャッシュが 2 つあると「同じ引数で違う実体」が生まれる。"""
-        from indigators.indicator_ui import api_loader
-        from simulator.replay_ui.adapter import _indicator_ui_bridge as bridge
+        「import できた」だけでは弱い（別ツリーの同名を掴んでも通る）。解決先の
+        ファイルが所有者そのものであることまで見る。
+        """
+        owner = importlib.import_module(_LOADER_MODULE)
 
-        assert bridge._CACHE is api_loader._CACHE
-
-    def test_both_routes_return_the_same_namespace(self):
-        from indigators.indicator_ui import api_loader
-        from simulator.replay_ui.adapter import _indicator_ui_bridge as bridge
-
-        assert bridge.load_compute() is api_loader.load_compute()
-        assert bridge.load_dataset() is api_loader.load_dataset()
-
-    @pytest.mark.parametrize("face", ["load_compute", "load"], ids=["compute", "all"])
-    def test_the_namespace_attribute_sets_match(self, face):
-        """再公開層が属性を落としていない（面の欠落は呼び出し側で AttributeError になる）。"""
-        from indigators.indicator_ui import api_loader
-        from simulator.replay_ui.adapter import _indicator_ui_bridge as bridge
-
-        via_shim = set(vars(getattr(bridge, face)()))
-        via_owner = set(vars(getattr(api_loader, face)()))
-        assert via_shim - via_owner == set()
-        assert via_owner - via_shim == set()
-        assert via_owner != set()  # 空集合どうしの一致で通らない
+        assert Path(owner.__file__).resolve() == (_REPO / _LOADER_REL)
 
 
 class TestTheLoaderKeepsTheIspSplit:
