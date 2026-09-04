@@ -231,12 +231,14 @@ def test_the_cells_use_the_model_field_names() -> None:
 
     assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
                          "reach", "unavailable_reason", "level_prices",
-                         "instance_key", "value_series", "history"}
+                         "instance_key", "value_series", "history", "cumulative"}
     assert set(cell["level_prices"]) == {"q_high", "q_low"}
-    # 直近区間の読み（依頼者指示 2026-09-04）: 古い順・各要素は {p, tail_unscaled}。
+    # 直近区間の読み（依頼者指示 2026-09-04・同日明確化）: 古い順・各要素は
+    #   {value（下層＝指標ミニ描画）, p, tail_unscaled（上層＝ヒート）}。
     assert isinstance(cell["history"], list)
     for reading in cell["history"]:
-        assert set(reading) == {"p", "tail_unscaled"}
+        assert set(reading) == {"value", "p", "tail_unscaled"}
+    assert isinstance(cell["cumulative"], bool)
     # 各側は {price, level}（level は第 1 表の水準列と同じ分位名・矢印では判断に迷うため）。
     # instance_key / value_series はなめらか再生の宣言（依頼者指示 2026-08-31）。
     #   instance_key の params_key（第 3 要素）は JSON として復元できること（フロントが

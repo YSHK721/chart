@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { fakeDoc, fakeEl, flatten, textOf, sheetResponse, oscCell } from './_fake_dom.js';
 import { createOscillatorSheetView } from '../js/adapter/front/oscillator_sheet_view.js';
 import { colorForP, stripGradient, tailUnscaledColor } from '../js/adapter/front/heat_scale.js';
+import { sparkLayer } from '../js/adapter/front/spark_layer.js';
 
 /** 2026-08-29 12:00:00 UTC を「今」として固定する（実時計に依存させない）。 */
 const NOW_UNIX = Date.UTC(2026, 7, 29, 12, 0, 0) / 1000;
@@ -68,43 +69,79 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.equal(cellAt(host, 'ma_marod', '1m').style.backgroundColor, colorForP(0.31));
   });
 
-  test('a_cell_with_trailing_readings_paints_them_as_a_background_strip', () => {
-    // §5.2 背景ストリップ（依頼者指示 2026-09-04「各パネルの背景に直近の指標 10 区間分」）:
-    //   サーバの history（古い順・確定区間）の右端へ現在区間（`p`）を継ぎ足して塗る。
-    //   値はサーバ計算そのもの＝フロントは数値を再計算しない（arch-spec §9）。
+  test('a_cell_with_trailing_readings_paints_heat_over_the_indicator_spark', () => {
+    // §5.2 背景ストリップ（依頼者指示 2026-09-04・同日明確化）: 背景は 2 層。
+    //   上層＝ヒートストリップ（history[].p の右端へ現在区間の `p` を継ぎ足す）・
+    //   下層＝指標ミニ描画（history[].value ＋ 現在値）。CSS の多層 background は先に
+    //   書いた層が上＝ヒートの下に指標ペインが見える。値はサーバ計算そのもの
+    //   （フロントは数値を再計算しない・arch-spec §9）。
     const history = [
-      { p: 0.1, tail_unscaled: false },
-      { p: null, tail_unscaled: true },
-      { p: 0.85, tail_unscaled: false },
+      { value: 0.5, p: 0.1, tail_unscaled: false },
+      { value: 1.2, p: null, tail_unscaled: true },
+      { value: 0.9, p: 0.85, tail_unscaled: false },
     ];
     const cells = [oscCell({ indicator_id: 'ma_marod', timeframe: '1m', value: 0.8, p: 0.31, history })];
     const { host } = renderInto(sheetResponse({ cells }));
+    const cell = cellAt(host, 'ma_marod', '1m');
+    const heat = stripGradient([...history, { p: 0.31, tail_unscaled: false }]);
+    const spark = sparkLayer([0.5, 1.2, 0.9, 0.8], { bars: false });
+    assert.equal(cell.style.background, `${heat}, ${spark}`);
+    assert.equal(cell.style.backgroundSize, '100% 100%');
+    assert.equal(cell.style.backgroundRepeat, 'no-repeat');
+  });
+
+  test('a_cumulative_cell_draws_its_spark_as_bars_like_the_indicator_pane', () => {
+    // 形は指標ペインと同じ読み（参照実装＝表示ペイン）: 積み上がる量＝棒。どちらを使うかは
+    //   サーバの事実申告 `cumulative` で決まる（フロントは指標名で分岐しない）。
+    const history = [{ value: 40, p: 0.4, tail_unscaled: false }];
+    const cells = [oscCell({
+      indicator_id: 'tickvol', timeframe: '1h', value: 42, p: 0.5,
+      cumulative: true, history,
+    })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const heat = stripGradient([...history, { p: 0.5, tail_unscaled: false }]);
+    const spark = sparkLayer([40, 42], { bars: true });
+    assert.equal(cellAt(host, 'tickvol', '1h').style.background, `${heat}, ${spark}`);
+    assert.notEqual(spark, sparkLayer([40, 42], { bars: false }));   // 棒とラインは別描画
+  });
+
+  test('a_no_level_cell_with_trailing_readings_still_shows_the_past_movement', () => {
+    // 現在区間が水準なしでも過去の動きは隠さない（現在の縞は「色を置かない」＝透明。
+    //   下層の指標ミニ描画には現在値も入る）。
+    const history = [{ value: 40, p: 0.4, tail_unscaled: false }];
+    const cells = [oscCell({
+      indicator_id: 'tickvol', timeframe: '1h', value: 42, p: null,
+      cumulative: true, unavailable_reason: '比較集合なし', history,
+    })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const cell = cellAt(host, 'tickvol', '1h');
+    const heat = stripGradient([...history, { p: null, tail_unscaled: false }]);
+    const spark = sparkLayer([40, 42], { bars: true });
+    assert.equal(cell.style.background, `${heat}, ${spark}`);
+    assert.match(textOf(cell), /水準なし/);
+  });
+
+  test('a_trailing_history_without_values_still_paints_the_heat_strip_alone', () => {
+    // 下層に描ける点が足りない（value 無し）ときはヒートストリップだけを塗る
+    //   （レイヤーを発明しない）。
+    const history = [{ value: null, p: 0.1, tail_unscaled: false }];
+    const cells = [oscCell({ indicator_id: 'ma_marod', timeframe: '5m', value: null, p: 0.31, history })];
+    const { host } = renderInto(sheetResponse({ cells }));
     assert.equal(
-      cellAt(host, 'ma_marod', '1m').style.background,
+      cellAt(host, 'ma_marod', '5m').style.background,
       stripGradient([...history, { p: 0.31, tail_unscaled: false }]),
     );
   });
 
-  test('a_no_level_cell_with_trailing_readings_still_shows_the_past_movement', () => {
-    // 現在区間が水準なしでも過去の動きは隠さない（現在の縞は「色を置かない」＝透明）。
-    const history = [{ p: 0.4, tail_unscaled: false }];
-    const cells = [oscCell({
-      indicator_id: 'tickvol', timeframe: '1h', value: 42, p: null,
-      unavailable_reason: '比較集合なし', history,
-    })];
-    const { host } = renderInto(sheetResponse({ cells }));
-    const cell = cellAt(host, 'tickvol', '1h');
-    assert.equal(cell.style.background, stripGradient([...history, { p: null, tail_unscaled: false }]));
-    assert.match(textOf(cell), /水準なし/);
-  });
-
   test('a_tail_unscaled_cell_with_trailing_readings_keeps_its_marker_class', () => {
     // §5.3.2 の「目盛りが無い」印はストリップでも失わない（右端の縞＝単一色＋class）。
-    const history = [{ p: 0.4, tail_unscaled: false }];
+    const history = [{ value: 800, p: 0.4, tail_unscaled: false }];
     const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1W', value: 812, p: 0.77, tail_unscaled: true, history })];
     const { host } = renderInto(sheetResponse({ cells }));
     const cell = cellAt(host, 'tickvol', '1W');
-    assert.equal(cell.style.background, stripGradient([...history, { p: 0.77, tail_unscaled: true }]));
+    const heat = stripGradient([...history, { p: 0.77, tail_unscaled: true }]);
+    const spark = sparkLayer([800, 812], { bars: false });
+    assert.equal(cell.style.background, `${heat}, ${spark}`);
     assert.equal(cell.classList.contains('dash-osc-tail-unscaled'), true);
   });
 

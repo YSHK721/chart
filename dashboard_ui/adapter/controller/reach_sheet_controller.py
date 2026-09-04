@@ -631,16 +631,21 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
         "unavailable_reason": cell.unavailable_reason,
-        # 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04）。現在区間は `p` /
-        #   `tail_unscaled` が持ち主（重複して持たない）。フロントは history + 現在の
-        #   10 区間をセル背景のストリップとして塗る（数値は再計算しない・arch-spec §9）。
+        # 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04・同日明確化）。現在区間は
+        #   `p` / `tail_unscaled` / `value` が持ち主（重複して持たない）。フロントは history +
+        #   現在の 10 区間ぶんを「指標ミニ描画（下層・value）＋ヒートストリップ（上層・p）」
+        #   としてセル背景へ塗る（数値は再計算しない・arch-spec §9）。
         "history": [
             {
+                "value": None if reading.value is None else float(reading.value),
                 "p": None if reading.p is None else float(reading.p),
                 "tail_unscaled": bool(reading.tail_unscaled),
             }
             for reading in cell.history
         ],
+        # §5.3.3 の積み上がる量か（事実の申告）。フロントは指標ペインと同じ読みで
+        #   ミニ描画の形を選ぶ（積み上がる量＝棒・それ以外＝ライン）。
+        "cumulative": bool(cell.cumulative),
         # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認。§5.5 の係数の
         #   閉形式逆写像＋往復検証。逆算不能＝tickvol 等・検証不成立は None）。各側は
         #   {price, level}（level は第 1 表の水準列と同じ分位名・矢印だけでは判断に迷うため）。

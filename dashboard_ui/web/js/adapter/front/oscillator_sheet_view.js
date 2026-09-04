@@ -16,6 +16,8 @@
 // 時計は注入で受ける（実時計を直接読むと、到達時刻の表記が検定のたびに変わる）。
 
 import { colorForP, stripGradient, tailUnscaledColor } from './heat_scale.js';
+// 背景の下層＝指標ミニ描画（依頼者明確化 2026-09-04: ヒートの下に指標ペインが見える）。
+import { sparkLayer } from './spark_layer.js';
 import { createElementWith } from './dom_element.js';
 // 価格表記の唯一源（第 1 表と共有・写しを持たない）。
 import { formatPrice } from './format.js';
@@ -96,6 +98,27 @@ export function createOscillatorSheetView({ doc, now } = {}) {
 
   const el = (tag, props = {}) => createElementWith(doc, tag, props);
 
+  /**
+   * セル背景の 2 層（依頼者指示 2026-09-04・同日明確化）。
+   * 上層＝ヒートストリップ（p）・下層＝指標ミニ描画（value）。CSS の多層 background は
+   * 先に書いた層が上に載るので、ヒートを先頭・指標を後ろに書く。
+   */
+  function paintStrip(td, trailing, current, currentValue, cumulative) {
+    const heat = stripGradient([...trailing, current]);
+    const spark = sparkLayer(
+      [
+        ...trailing.map((reading) => (reading ? reading.value : null)),
+        currentValue,
+      ],
+      { bars: cumulative === true },
+    );
+    td.style.background = spark ? `${heat}, ${spark}` : heat;
+    if (spark) {
+      td.style.backgroundSize = '100% 100%';
+      td.style.backgroundRepeat = 'no-repeat';
+    }
+  }
+
   function mount(host) {
     if (!doc || typeof doc.createElement !== 'function') {
       return null;
@@ -151,7 +174,8 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       //   現在区間が読めなくても過去の動きは隠さない: 読みがあれば背景ストリップは塗る
       //   （現在区間の縞は「色を置かない」＝透明のまま）。
       if (trailing.length > 0) {
-        td.style.background = stripGradient([...trailing, { p: null, tail_unscaled: false }]);
+        paintStrip(td, trailing, { p: null, tail_unscaled: false },
+          cell ? cell.value : null, cell && cell.cumulative);
       } else {
         td.style.backgroundColor = colorForP(null);
       }
@@ -170,9 +194,9 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       td.title = '帯外は目盛りが無い（本数不足で当てはめ不能）';
     }
     if (trailing.length > 0) {
-      td.style.background = stripGradient(
-        [...trailing, { p: cell.p, tail_unscaled: cell.tail_unscaled === true }],
-      );
+      paintStrip(td, trailing,
+        { p: cell.p, tail_unscaled: cell.tail_unscaled === true },
+        cell.value, cell.cumulative);
     } else if (cell.tail_unscaled === true) {
       td.style.backgroundColor = tailUnscaledColor();
     } else {

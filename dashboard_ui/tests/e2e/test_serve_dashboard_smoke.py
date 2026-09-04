@@ -136,8 +136,12 @@ def test_the_oscillator_cell_carries_its_trailing_history_strip(base: str) -> No
 
     # 実素材は 10 区間ぶんの履歴を必ず持つ（現在区間 + 過去 9 区間 = 10）。
     assert len(history) == 9
-    assert all(set(reading) == {"p", "tail_unscaled"} for reading in history)
+    assert all(
+        set(reading) == {"value", "p", "tail_unscaled"} for reading in history
+    )
     assert any(reading["p"] is not None for reading in history)
+    # 下層（指標ミニ描画）の実値も載る（依頼者明確化 2026-09-04）。
+    assert any(reading["value"] is not None for reading in history)
 
 
 def test_a_repeated_tick_request_issues_no_additional_material(monkeypatch) -> None:

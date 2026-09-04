@@ -43,6 +43,7 @@ from dashboard_ui.usecase.sheet_models import (
     ReachSheetResponse,
     SeriesRole,
     SheetInstance,
+    TrailingReading,
     UpdateGranularity,
 )
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
@@ -155,7 +156,7 @@ class HistoryStripCache:
         *,
         events_cache: ExcessEventCache,
         tails: TailFitCache,
-    ) -> "tuple[_cq.QuantileReading, ...]":
+    ) -> "tuple[TrailingReading, ...]":
         """確定履歴が変わっていなければ、前回の読みをそのまま返す。"""
         history_values, history_bands = observed.history
         signature = (fingerprint_of(history_values), fingerprint_of(history_bands))
@@ -163,7 +164,7 @@ class HistoryStripCache:
         if cached is not None and cached[0] == signature:
             return cached[1]
         if spec.cumulative:
-            strip = _cq.trailing_ranks(
+            readings = _cq.trailing_ranks(
                 history_values, window_n=spec.window_n, n_bars=TRAILING_HISTORY_BARS,
             )
         else:
@@ -172,7 +173,7 @@ class HistoryStripCache:
             events, counts = events_cache.fold_for(
                 key, history_values, history_bands, excess=spec.excess
             )
-            strip = _cq.trailing_readings(
+            readings = _cq.trailing_readings(
                 history_values, history_bands,
                 window_n=spec.window_n, q_high=spec.q_high,
                 events=events, event_counts=counts, k_events=spec.k_events,
@@ -181,6 +182,17 @@ class HistoryStripCache:
                     key, observed_events, spec.k_events
                 ),
             )
+        # 下層（指標ミニ描画）の実値は同じ確定バーの系列値そのもの（依頼者明確化
+        #   2026-09-04: ヒートの下に指標ペインが見えるイメージ）。読みと同じ末尾を添える。
+        tail_values = history_values[len(history_values) - len(readings):]
+        strip = tuple(
+            TrailingReading(
+                value=float(value) if math.isfinite(float(value)) else None,
+                p=reading.p,
+                tail_unscaled=reading.tail_unscaled,
+            )
+            for value, reading in zip(tail_values, readings)
+        )
         self._entries[key] = (signature, strip)
         return strip
 
@@ -418,6 +430,7 @@ def _build_cell(
             unavailable_reason=(
                 f"系列 {spec.value_series!r} が供給されていない（水準なし・§5.2）"
             ),
+            cumulative=spec.cumulative,
         )
 
     # 突き合わせと因果境界は domain の観測が唯一の所有者（背景色の目盛りと同じ観測を使う）。
@@ -460,6 +473,7 @@ def _build_cell(
         tail_unscaled=reading.tail_unscaled,
         reach=reach,
         history=strip,
+        cumulative=spec.cumulative,
     )
 
 
@@ -469,7 +483,7 @@ def _cumulative_cell(
     values: np.ndarray,
     reach: ReachState,
     comparison: "ElapsedComparison | None",
-    strip: "tuple[_cq.QuantileReading, ...]" = (),
+    strip: "tuple[TrailingReading, ...]" = (),
 ) -> OscCell:
     """積み上がる量のセル（§5.3.3: 部分和は**同じ経過**の過去の部分和へ当てる）。
 
@@ -492,6 +506,7 @@ def _cumulative_cell(
                 "同じ経過の比較集合が供給されていない（確定足の分布へは当てない・§5.3.3）"
             ),
             history=strip,
+            cumulative=True,
         )
     window = np.asarray(
         comparison.pool.partial_sums_at(comparison.completed_units)[-spec.window_n:],
@@ -512,6 +527,7 @@ def _cumulative_cell(
             reach=reach,
             unavailable_reason="同じ経過まで進んだ過去の足が足りない（水準なし・§5.2）",
             history=strip,
+            cumulative=True,
         )
     return OscCell(
         indicator_id=instance.indicator_id,
@@ -523,4 +539,5 @@ def _cumulative_cell(
         tail_unscaled=False,
         reach=reach,
         history=strip,
+        cumulative=True,
     )

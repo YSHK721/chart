@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Mapping
 
-from dashboard_ui.domain.continuous_quantile import QuantileReading
 from dashboard_ui.domain.elapsed_fraction_pool import ElapsedFractionPool
 from dashboard_ui.domain.horizon import Horizon
 from dashboard_ui.domain.reach import ReachState
@@ -185,6 +184,23 @@ class ElapsedComparison:
 
 
 @dataclass(frozen=True)
+class TrailingReading:
+    """第 2 表セル背景の 1 区間（依頼者指示 2026-09-04・同日明確化）。
+
+    背景は 2 層である: 下層＝指標そのもののミニ描画（`value`・指標ペインと同じ読み）、
+    上層＝ヒートストリップ（`p` / `tail_unscaled`・§5.3 の連続量）。どちらもサーバ計算で、
+    フロントは数値を再計算しない（arch-spec §9）。
+    """
+
+    #: その区間の指標値（確定バーの値。非有限は None＝描かない）。
+    value: "float | None"
+    #: §5.3 の連続量（定義できない区間は None＝色を置かない）。
+    p: "float | None"
+    #: §5.3.2 の「目盛りが無い」帯外区間。
+    tail_unscaled: bool = False
+
+
+@dataclass(frozen=True)
 class OscCell:
     """第 2 表の 1 セル（§5.2: 色から絶対量は読めないため現在値の数字を必ず併記する）。"""
 
@@ -204,9 +220,13 @@ class OscCell:
     #: 流すか」を選ぶための宣言。表示専用で、無くても版面は成立する（None＝流さない）。
     value_series: "str | None" = None
     #: 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04「各パネルの背景に直近の
-    #: 指標 10 区間分」）。現在区間は `p` / `tail_unscaled` が持ち主で、ここへは含めない
-    #: （同じ量を 2 か所へ持たない）。フロントは history + 現在で 10 区間のストリップを塗る。
-    history: "tuple[QuantileReading, ...]" = ()
+    #: 指標 10 区間分」）。現在区間は `p` / `tail_unscaled` / `value` が持ち主で、ここへは
+    #: 含めない（同じ量を 2 か所へ持たない）。フロントは history + 現在で 10 区間ぶんの
+    #: 「指標ミニ描画（下層）＋ヒートストリップ（上層）」を塗る（同日明確化）。
+    history: "tuple[TrailingReading, ...]" = ()
+    #: §5.3.3 の積み上がる量か（OscillatorSpec.cumulative の事実の申告）。フロントは
+    #: 指標ペインと同じ読みでミニ描画の形を選ぶ（積み上がる量＝棒・それ以外＝ライン）。
+    cumulative: bool = False
 
 
 @dataclass(frozen=True)

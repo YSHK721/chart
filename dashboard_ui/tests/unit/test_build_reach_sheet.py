@@ -326,8 +326,13 @@ class TestOscillatorCells:
             pytest.approx(1.0),      # [10, 20, 30] < 40
             pytest.approx(0.25),     # [10, 20, 30, 40] のうち 15 未満は 1 本
         ]
-        # 現在区間（v=25）は history に居ない（右端はセルの `p` が担う）。
+        # 下層（指標ミニ描画）の実値＝同じ確定バーの系列値（依頼者明確化 2026-09-04）。
+        assert [reading.value for reading in history] == [
+            pytest.approx(v) for v in [10.0, 20.0, 30.0, 40.0, 15.0]
+        ]
+        # 現在区間（v=25）は history に居ない（右端はセルの `p` / `value` が担う）。
         assert sheet.cells[0].p == pytest.approx(3 / 5)
+        assert sheet.cells[0].cumulative is False
 
     def test_the_trailing_readings_are_capped_at_the_declared_bar_count(self) -> None:
         """現在区間と合わせて 10 区間（依頼者指示 2026-09-04）。履歴が長くても増えない。"""
@@ -426,6 +431,10 @@ class TestCumulativeCells:
         assert [reading.p for reading in sheet.cells[0].history] == [
             None, None, pytest.approx(1.0),                    # [100, 200] < 300
         ]
+        assert [reading.value for reading in sheet.cells[0].history] == [
+            pytest.approx(v) for v in [100.0, 200.0, 300.0]
+        ]
+        assert sheet.cells[0].cumulative is True               # 棒描画の事実申告（§5.3.3）
 
 
 class TestTailFitCache:
