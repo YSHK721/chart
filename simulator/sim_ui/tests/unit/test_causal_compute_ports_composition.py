@@ -13,11 +13,10 @@
     本番の結線は「ロード面だけ記憶した実体 ＋ 素の実体 2 面」を合成する。記憶が式にも
     因果規約にも触れないことが、型の上で見えるようになる。
 
-旧名の扱い（コーディネータ裁定 2026-09-03）:
-    ``MemoizedCausalComputePort`` はクラスのまま **deprecated shim** として残す
-    （catch-all 委譲を保持するため既存検定は 1 行も変えずに緑）。記憶規則の実体は
-    MemoizedSourceLoadPort ただ 1 つで、shim はそこへ委譲する（第 2 実装を作らない）。
-    shim の削除は Wave 末尾の承認保留リスト。
+旧名の扱い（ISSUE-479 Wave2b・承認済み削除）:
+    ``MemoizedCausalComputePort``（deprecated shim）は削除した。本番参照 0 件を実測して
+    いる——検定 CLI は合成を組み立てる束縛点の関数を経由する。記憶規則の実体は
+    MemoizedSourceLoadPort ただ 1 つであり、入口も 1 つになった。
 
 計算量検定（絶対命令 2026-08-28）: 同一鍵 (ref, timeframe, mtime) の 2 回目以降は内側への
     発行が 0（発行 − 実際に必要な読込 = 0）。呼び出し 2 回 / 16 回の 2 点で、発行が
@@ -25,6 +24,9 @@
 """
 
 from __future__ import annotations
+
+import importlib
+from pathlib import Path
 
 import pytest
 
@@ -38,9 +40,11 @@ from simulator.sim_ui.adapter.causal_compute_ports import (
     CausalComputePorts,
     MemoizedSourceLoadPort,
 )
-from simulator.sim_ui.adapter.memoized_causal_compute_port import (
-    MemoizedCausalComputePort,
-)
+
+_REPO = Path(__file__).resolve().parents[4]
+#: 旧名 shim（ISSUE-479 Wave2b で削除済み）。復活しないことを固定する。
+_SHIM_REL = "simulator/sim_ui/adapter/memoized_causal_compute_port.py"
+_SHIM_MODULE = "simulator.sim_ui.adapter.memoized_causal_compute_port"
 
 _BARS = [
     {"time": 100, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0},
@@ -146,9 +150,17 @@ def test_the_composition_has_no_catch_all_delegation() -> None:
 
 
 def test_an_undeclared_face_is_not_silently_forwarded() -> None:
-    """対照: 現行 shim は拾うが、合成は拾わずその場で落ちる。"""
+    """宣言していない面は拾われず、その場で落ちる（委譲の書き忘れを実行時まで隠さない）。
+
+    ISSUE-479 Wave2b: 対照側だった旧 shim（catch-all 委譲あり）は削除されたため、
+    「拾ってしまう方」の実測は残せない。拾い先が無いことは
+    test_the_composition_has_no_catch_all_delegation が構造として固定し、
+    ここではその作用（呼び出しが AttributeError になる）を固定する。
+    ``_FakeInner`` は ``extra_face`` を実際に持つので、これは「内側に面が無いから
+    落ちた」のではなく「合成が転送しないから落ちた」ことの実測である。
+    """
     inner = _FakeInner()
-    assert MemoizedCausalComputePort(inner=inner, mtime_of=lambda _r: 1.0).extra_face() == "ok"
+    assert inner.extra_face() == "ok"  # 空振り防止: 内側には面が在る
     with pytest.raises(AttributeError):
         _ports(inner).extra_face()
 
@@ -175,19 +187,25 @@ def test_every_face_is_routed_to_its_own_collaborator() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# 3. 記憶規則の単一ソース（旧 shim は委譲するだけ）
+# 3. 記憶規則の単一ソース（旧名 shim は削除済み）
 # --------------------------------------------------------------------------------------
-def test_the_deprecated_shim_delegates_the_memo_rule_instead_of_copying_it() -> None:
-    """鍵の作り方を 2 箇所に書くと、片方だけが源の更新検知を失う。"""
-    shim = MemoizedCausalComputePort(inner=_FakeInner(), mtime_of=lambda _r: 1.0)
-    assert isinstance(shim._loader, MemoizedSourceLoadPort)
+def test_the_deprecated_shim_module_is_gone() -> None:
+    """鍵の作り方を 2 箇所に書くと、片方だけが源の更新検知を失う。
+
+    旧名 shim（MemoizedCausalComputePort）は委譲するだけの第 2 の入口だった。
+    「委譲していること」を測る代わりに、**入口が 1 つしか無いこと**を固定する
+    （委譲は写しへ書き換えられるが、不在は書き換えられない）。
+    """
+    assert not (_REPO / _SHIM_REL).exists(), f"{_SHIM_REL} が残っています"
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(_SHIM_MODULE)
 
 
-def test_the_deprecated_shim_is_marked_as_deprecated() -> None:
-    """移行先が docstring から辿れること（消し方を知らないまま残らない）。"""
-    doc = MemoizedCausalComputePort.__doc__ or ""
-    assert "deprecated" in doc.lower()
-    assert "CausalComputePorts" in doc
+def test_the_memo_rule_has_exactly_one_implementation() -> None:
+    """空振り防止: 消したのは第 2 の入口だけで、記憶規則の実体は生きている。"""
+    loader = _loader()
+    assert isinstance(loader._cache, dict)
+    assert (loader.hits, loader.misses) == (0, 0)
 
 
 # --------------------------------------------------------------------------------------

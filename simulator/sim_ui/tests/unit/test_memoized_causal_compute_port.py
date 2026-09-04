@@ -1,23 +1,37 @@
-"""MemoizedCausalComputePort（計算源ロードの記憶・adapter）の単体検定。
+"""計算源ロードの記憶（`MemoizedSourceLoadPort`・adapter）の単体検定。
+
+対象の移行（ISSUE-479 Wave2b 削除2）:
+    本ファイルは元々 ``MemoizedCausalComputePort``（全メソッド委譲 Decorator）を対象に
+    していた。旧名クラスは承認済み削除で消えたため、**記憶の振る舞いそのもの**を
+    記憶規則の唯一の実体である `MemoizedSourceLoadPort` へ移した。規則 1・2・4 は
+    そのまま移行できる（記憶は元々こちらが持っており、旧名クラスは委譲していただけ）。
+
+    移行できず撤去した検定と、その性質の行き先:
+      - 「明示していない面も内側へ委譲される」（catch-all 委譲）: 対象消滅。
+        **むしろ逆の性質**が正しい仕様であり、
+        test_causal_compute_ports_composition.py が
+        「宣言していない面は AttributeError で落ちる」として固定する。
+      - 「compute / bar_time 等が委譲される」「CausalComputePort として通る」: 対象消滅。
+        6 面の結線と LSP は同ファイルの合成（CausalComputePorts）側で固定済みである。
 
 固定する規則（契約改訂裁定 B）:
     1. ``load_source`` は (ref, timeframe, csv_mtime) を鍵に記憶する。
     2. **鍵が変われば読み直す**（mtime が動いた＝源が更新された、を見落とさない）。
-    3. **式（compute）にも因果規約（truncate）にも触れない**。他のメソッドはすべて委譲する。
     4. **キャッシュ汚染が起きない**: 消費側（`causal_compute`）は必ず
        `reveal_clock.truncate` を通し、truncate は毎回**新しい dict の新しい list** を
        返す（reveal_clock.py:20-22）。その複製を書き換えても記憶した列は変わらない。
-    5. `CausalComputePort` として差し替え可能（LSP）。
 
 方式: フェイクの内側 Port と参照実装 `reveal_clock.truncate`。実データも
 indicator_ui も触らない。
 """
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
 from simulator.replay_ui.domain.reveal_clock import truncate
-from simulator.sim_ui.adapter.memoized_causal_compute_port import (
-    MemoizedCausalComputePort,
-)
+from simulator.sim_ui.adapter.causal_compute_ports import MemoizedSourceLoadPort
 
 _BARS = [
     {"time": 100, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0},
@@ -26,44 +40,18 @@ _BARS = [
 
 
 class _FakeInner:
-    """内側の `CausalComputePort`（呼ばれ方だけを記録する）。"""
+    """内側のロード面（呼ばれ方だけを記録する）。"""
 
     def __init__(self) -> None:
         self.load_calls: "list[tuple[str, str | None]]" = []
-        self.calls: "list[str]" = []
 
     def load_source(self, ref, timeframe):
         self.load_calls.append((ref, timeframe))
         return [dict(b) for b in _BARS]
 
-    def bar_time(self, timeframe, unix_sec):
-        self.calls.append("bar_time")
-        return int(unix_sec)
 
-    def period_start(self, timeframe, unix_sec):
-        self.calls.append("period_start")
-        return int(unix_sec) - 1
-
-    def causal_series(self, indicator, variant, chart_bars, source_bars, compute_tf,
-                      window_bars, params):
-        self.calls.append("causal_series")
-        return [{"name": indicator}]
-
-    def compute(self, indicator, variant, mode, bars, params):
-        self.calls.append("compute")
-        return [{"name": indicator, "mode": mode, "bars": len(bars)}]
-
-    def compute_latest_seq(self, indicator, variant, prefix_bars, tails, params):
-        self.calls.append("compute_latest_seq")
-        return [[{"name": indicator}] for _ in tails]
-
-    def extra_face(self):
-        self.calls.append("extra_face")
-        return "ok"
-
-
-def _port(inner=None, mtime=1.0) -> MemoizedCausalComputePort:
-    return MemoizedCausalComputePort(
+def _port(inner=None, mtime=1.0) -> MemoizedSourceLoadPort:
+    return MemoizedSourceLoadPort(
         inner=inner or _FakeInner(), mtime_of=lambda _ref: mtime
     )
 
@@ -121,7 +109,7 @@ def test_mtimeが変われば読み直す() -> None:
     # Arrange
     inner = _FakeInner()
     clock = {"mtime": 1.0}
-    port = MemoizedCausalComputePort(inner=inner, mtime_of=lambda _ref: clock["mtime"])
+    port = MemoizedSourceLoadPort(inner=inner, mtime_of=lambda _ref: clock["mtime"])
     # Act
     port.load_source("jp225", "5m")
     clock["mtime"] = 2.0
@@ -134,7 +122,7 @@ def test_mtimeが不明でも記憶はする() -> None:
     """境界値: mtime 解決不能（None）。鍵の一部として「不明」を保持する。"""
     # Arrange
     inner = _FakeInner()
-    port = MemoizedCausalComputePort(inner=inner, mtime_of=lambda _ref: None)
+    port = MemoizedSourceLoadPort(inner=inner, mtime_of=lambda _ref: None)
     # Act
     port.load_source("jp225", "5m")
     port.load_source("jp225", "5m")
@@ -142,52 +130,15 @@ def test_mtimeが不明でも記憶はする() -> None:
     assert len(inner.load_calls) == 1
 
 
-# --- 3. 全メソッド委譲（規則 3・5）----------------------------------------
+# --- 3. 旧名クラスは存在しない（ISSUE-479 Wave2b 削除2）---------------------
 
-def test_computeは委譲される() -> None:
-    """式には触れない（記憶するのは源のロードだけ）。"""
+def test_旧名クラスのモジュールは解決しない() -> None:
+    """記憶規則の実体は 1 つ。第 2 の入口が復活していないことを固定する。"""
     # Arrange
-    inner = _FakeInner()
-    port = _port(inner)
-    # Act
-    first = port.compute("ma", "default", "full", _BARS, {})
-    second = port.compute("ma", "default", "full", _BARS, {})
-    # Assert
-    assert inner.calls == ["compute", "compute"]   # compute は記憶しない
-    assert first == second
-
-
-def test_その他のPort面も委譲される() -> None:
-    # Arrange
-    inner = _FakeInner()
-    port = _port(inner)
-    # Act
-    port.bar_time("1D", 100)
-    port.period_start("1D", 100)
-    port.causal_series("ma", "default", [], [], "1D", [], {})
-    port.compute_latest_seq("ma", "default", [], [[]], {})
-    # Assert
-    assert inner.calls == [
-        "bar_time", "period_start", "causal_series", "compute_latest_seq"
-    ]
-
-
-def test_明示していない面も内側へ委譲される() -> None:
-    """Port が増えても穴を空けない。"""
-    # Arrange
-    inner = _FakeInner()
-    port = _port(inner)
+    module = "simulator.sim_ui.adapter.memoized_causal_compute_port"
     # Act / Assert
-    assert port.extra_face() == "ok"
-
-
-def test_CausalComputePortとして通る() -> None:
-    """LSP: 呼び出し側は記憶の有無を知らない。"""
-    # Arrange
-    from simulator.replay_ui.usecase.replay_ports import CausalComputePort
-
-    # Act / Assert
-    assert isinstance(_port(), CausalComputePort)
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module)
 
 
 # --- 4. キャッシュ汚染なし（規則 4）---------------------------------------
