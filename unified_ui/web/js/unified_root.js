@@ -51,15 +51,17 @@ const DATASET_REF = 'jp225_tick';
 //   帯が残った（依頼者指摘 2026-08-22「下部余白が存在する」）。
 const SIM_PANE_CONTENT_MARGIN_PX = 4;
 
-// 単一 mount の live root と、注入するリプレイ部品の URL（/replay プロキシ経由で取得）。
-const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
+// 単一 mount の live root と、注入するリプレイ部品の URL。名指してよいのは各 core の
+//   **公開面**（`/<core>/js/public/*.js`）だけで、内部階層を名指すと core 側の配置換えで
+//   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に現れない・J-4 の実測）。
+//   symlink ではなく `/live/` プロキシ経由なのは、router.py:326-331 が realpath 解決後に
+//   web_root 外を 404 にするためである（実測 2026-09-01）。
+//   合成根が `live_public_api.js` ではなく専用の面なのは重さの境界で、dashboard core が借りる
+//   軽い面（期間プリセット・tick 再生）へ live のチャートアプリ一式を巻き込まないためである。
+const LIVE_ROOT = '/live/js/public/live_root_api.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
-//   それを参照する（手書き複製の禁止）。symlink ではなく `/live/` プロキシ経由にするのは、
-//   router.py:326-331 が realpath 解決後に web_root 外を 404 にするためである（実測 2026-09-01）。
-//   本経路の形（LIVE_ROOT と同一ディレクトリ・basename）は
-//   tests/dataset_ref_query_override.test.js が固定しているため、live の public 面へ寄せるのは
-//   その検定と併せて動かす回（J-5）で行う。
-const DATASET_REF_QUERY = '/live/js/adapter/front/dataset_ref_query.js';
+//   それを参照する（手書き複製の禁止）。
+const DATASET_REF_QUERY = '/live/js/public/live_public_api.js';
 // リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
 //   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
 //   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
