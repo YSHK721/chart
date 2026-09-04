@@ -475,3 +475,97 @@ def test_a_bridge_without_the_catalog_face_filters_nothing() -> None:
     )
 
     assert spy.full_params == [{"length": 24, "wait_for_close": True}]
+
+
+# ------------------------------------------------- 表示時点への巻き戻し（ISSUE-487）
+class RewindSpy(ComputeSpy):
+    """`forming_bar_module` を持つ bridge（巻き戻し経路を通すための面）。"""
+
+    def __init__(self, frames, *, forming=None) -> None:
+        super().__init__(frames=frames)
+        self._forming = forming
+
+    def is_known_timeframe(self, timeframe) -> bool:
+        return timeframe in {"1m", "5m", "1h", "1M"}
+
+    def namespace(self) -> SimpleNamespace:
+        ns = super().namespace()
+        forming = self._forming
+
+        class FormingModule:
+            @staticmethod
+            def forming_bar(ref, tf, cutoff):
+                return forming
+
+            @staticmethod
+            def apply_forming_bar(df, ref, tf, cutoff, *, synthesize_closed_gaps):
+                return df
+
+        ns.forming_bar_module = FormingModule()
+        return ns
+
+
+def month_end_frame() -> pd.DataFrame:
+    """1M ロールアップの実規約（**月末ラベル**）を再現した素材。
+
+    実測 2026-09-04: jp225_tick の 1M ロールアップ CSV の行ラベルは 2026-07-31 / 2026-09-30 のような
+    月末日付で、形成中の当月バーのラベルは**現在時刻より未来**になる。
+    """
+    index = pd.to_datetime(["2026-06-30", "2026-07-31", "2026-09-30"])
+    return pd.DataFrame(
+        {"open": [1.0] * 3, "high": [2.0] * 3, "low": [0.5] * 3,
+         "close": [1.5, 1.6, 1.7], "volume": [10.0] * 3},
+        index=index,
+    )
+
+
+#: 2026-09-08 12:00:00 UTC（9 月の周期の中・形成中 1M バーのラベルより過去）。
+NOW_IN_SEPTEMBER = 1_788_868_800
+
+
+def test_a_month_end_labelled_forming_bar_survives_the_display_rewind() -> None:
+    """ISSUE-487 の根治: tick fold が None でも、遅延時点の**周期に属する**行は落とさない。
+
+    素の時刻比較（`times <= cutoff`）だと月末ラベルの当月バーが「未来の行」として消え、
+    シートの 1M が前月末の値で止まる（実測: 2026-09-04 に 2026-07-31 の値を表示）。
+    """
+    spy = RewindSpy({"1M": month_end_frame()}, forming=None)
+    gateway = IndicatorUiComputeGateway(
+        bridge=spy.namespace(), now=lambda: NOW_IN_SEPTEMBER,
+    )
+
+    bars = gateway.bars(dataset_ref=REF, timeframe="1M")
+
+    assert len(bars) == 3                       # 当月（09-30 ラベル）を含む全行が残る
+    assert bars[-1].close == pytest.approx(1.7)
+
+
+def test_a_bar_of_a_genuinely_future_period_is_still_dropped() -> None:
+    """落とす規則そのものは残る: 遅延時点より**後の周期**の行は配らない。"""
+    frame_with_future = month_end_frame()
+    future = pd.DataFrame(
+        {"open": [1.0], "high": [2.0], "low": [0.5], "close": [9.9], "volume": [1.0]},
+        index=pd.to_datetime(["2026-10-31"]),   # 10 月の周期（始端 09-30 21:00 > now）
+    )
+    spy = RewindSpy({"1M": pd.concat([frame_with_future, future])}, forming=None)
+    gateway = IndicatorUiComputeGateway(
+        bridge=spy.namespace(), now=lambda: NOW_IN_SEPTEMBER,
+    )
+
+    bars = gateway.bars(dataset_ref=REF, timeframe="1M")
+
+    assert [bar.close for bar in bars][-1] == pytest.approx(1.7)
+    assert len(bars) == 3
+
+
+def test_intraday_rows_newer_than_the_cutoff_are_dropped_as_before() -> None:
+    """日中足（ラベル＝周期始端）の従来挙動は不変: cutoff より新しい行は落ちる。"""
+    rows = frame(6)                              # START から 1m × 6 本
+    spy = RewindSpy({"1m": rows}, forming=None)
+    cutoff_now = START + 3 * 60 + 12             # 4 本目までが遅延時点以前（+12s は遅延分）
+    gateway = IndicatorUiComputeGateway(bridge=spy.namespace(), now=lambda: cutoff_now)
+
+    bars = gateway.bars(dataset_ref=REF, timeframe="1m")
+
+    assert len(bars) == 4
+    assert bars[-1].time == START + 3 * 60

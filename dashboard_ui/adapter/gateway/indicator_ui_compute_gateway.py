@@ -231,8 +231,21 @@ class IndicatorUiComputeGateway:
             return frame
         times = frame.index.values.astype("datetime64[s]").astype("int64")
         if forming is None:
-            # 遅延時点の周期に tick が無い（周期の頭・休場）。未来側の行だけ落とす。
-            kept = frame.iloc[times <= cutoff]
+            # 遅延時点の周期に tick が無い（周期の頭・休場・fold 不能）。落としてよいのは
+            #   「遅延時点より**後の周期**」の行だけである。行ラベルは素材の規約で cutoff より
+            #   未来になりうる（実測 2026-09-04・ISSUE-487: 1M ロールアップは月末ラベル
+            #   `2026-09-30 00:00` で、素の時刻比較 `times <= cutoff` だと**形成中の当月バー
+            #   ごと**消え、シートの 1M が前月末の値で止まる。1D もセッション日ラベルが
+            #   周期始端より未来［21:00〜24:00 UTC］で同型）。周期の判定は
+            #   `marketdata.tf_meta.period_start_unix`（ライブ側と同じ唯一源）。
+            #   評価はラベルが cutoff より未来の行（高々、形成中の 1〜2 行）だけに限る
+            #   （全行へ回すと素材本数に比例した周期計算を毎要求発行する・絶対命令 §4.1）。
+            keep = times <= cutoff
+            cutoff_period = period_start_unix(int(cutoff), tf)
+            for index in (~keep).nonzero()[0]:
+                if period_start_unix(int(times[index]), tf) <= cutoff_period:
+                    keep[index] = True
+            kept = frame.iloc[keep]
             return kept if len(kept) else frame
         forming_time = int(forming["time"])
         kept = frame.iloc[times < forming_time]
