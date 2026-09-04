@@ -25,6 +25,7 @@ from dashboard_ui.adapter.quantile_scale_builder import quantile_scale_of
 from dashboard_ui.domain.horizon import Horizon
 from dashboard_ui.usecase.build_reach_sheet import (
     ExcessEventCache,
+    HistoryStripCache,
     TailFitCache,
     build_reach_sheet,
 )
@@ -68,6 +69,9 @@ class SheetState:
 
     tails: TailFitCache = field(default_factory=TailFitCache)
     events: ExcessEventCache = field(default_factory=ExcessEventCache)
+    #: 直近区間の読み（§5.2 背景ストリップ・依頼者指示 2026-09-04）。確定履歴だけから
+    #: 決まる量なので、帯外イベント履歴と同じ理由で同じ場所に置く。
+    history: HistoryStripCache = field(default_factory=HistoryStripCache)
     projections: "dict[str, ProjectionCache]" = field(default_factory=dict)
     #: 分位水準到達価格の往復検証の持ち越し（instance キー → (epoch, 帯値, 検証済み価格)）。
     #: 検証は前進評価 1 回を要するため、同じ epoch・同じ帯値では再検証しない
@@ -266,6 +270,7 @@ class ReachSheetController:
             elapsed_comparisons=comparisons,
             tail_fit_cache=self._state.tails,
             event_cache=self._state.events,
+            history_cache=self._state.history,
             projected_levels=self._projected_levels(instances, specs, level_prices),
         )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
@@ -626,6 +631,16 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
         "unavailable_reason": cell.unavailable_reason,
+        # 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04）。現在区間は `p` /
+        #   `tail_unscaled` が持ち主（重複して持たない）。フロントは history + 現在の
+        #   10 区間をセル背景のストリップとして塗る（数値は再計算しない・arch-spec §9）。
+        "history": [
+            {
+                "p": None if reading.p is None else float(reading.p),
+                "tail_unscaled": bool(reading.tail_unscaled),
+            }
+            for reading in cell.history
+        ],
         # 分位水準に達する価格（依頼者指示 2026-08-30・上下 2 値は同日承認。§5.5 の係数の
         #   閉形式逆写像＋往復検証。逆算不能＝tickvol 等・検証不成立は None）。各側は
         #   {price, level}（level は第 1 表の水準列と同じ分位名・矢印だけでは判断に迷うため）。

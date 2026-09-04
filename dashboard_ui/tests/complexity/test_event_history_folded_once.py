@@ -43,11 +43,16 @@ _OSC = SheetInstance("profit_rsi", "default", {}, "1m", intrabar_capable=True)
 
 
 class FoldSpy:
-    """`excess_event_history` の Test Spy（履歴の畳み込みはこの面からしか起きない）。"""
+    """`excess_event_fold` の Test Spy（履歴の畳み込みはこの面からしか起きない）。
+
+    `excess_event_history` はこの原始関数への委譲であり、持ち越しの口
+    （`ExcessEventCache`）が畳むのも同じ原始関数である（観測列とプレフィックス長は
+    **同じ 1 回の畳み込み**から出る・§5.2 背景ストリップ）。
+    """
 
     def __init__(self, monkeypatch) -> None:
         self.calls = 0
-        original = _cq.excess_event_history
+        original = _cq.excess_event_fold
 
         def counted(values, band_highs, *, excess=None):
             self.calls += 1
@@ -57,7 +62,7 @@ class FoldSpy:
                 else original(values, band_highs, excess=excess)
             )
 
-        monkeypatch.setattr(_cq, "excess_event_history", counted)
+        monkeypatch.setattr(_cq, "excess_event_fold", counted)
 
 
 @pytest.fixture

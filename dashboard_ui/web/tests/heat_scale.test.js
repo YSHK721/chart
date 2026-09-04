@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { colorForP, alphaForP, tailUnscaledColor, NO_LEVEL_COLOR } from '../js/adapter/front/heat_scale.js';
+import { colorForP, alphaForP, stripGradient, tailUnscaledColor, NO_LEVEL_COLOR } from '../js/adapter/front/heat_scale.js';
 
 /** `rgba(r, g, b, a)` から a を取り出す（色文字列の形も同時に固定する）。 */
 function alphaOf(css) {
@@ -78,6 +78,36 @@ describe('heat_scale — p から色への唯一の写像', () => {
     const single = tailUnscaledColor();
     const onScale = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].map((p) => colorForP(p));
     assert.ok(!onScale.includes(single), `単一色が目盛りの色と衝突しています: ${single}`);
+  });
+
+  // ---- stripGradient（§5.2 背景ストリップ・依頼者指示 2026-09-04） ------------------
+  test('a_strip_paints_each_reading_with_the_same_single_scale', () => {
+    // Arrange: 読み 2 区間（古い順）。色は colorForP そのもの＝第 2 定義を作らない。
+    const css = stripGradient([
+      { p: 0.2, tail_unscaled: false },
+      { p: 0.9, tail_unscaled: false },
+    ]);
+    // Assert: 左＝最古・右＝最新の硬い縞（hard stop）。
+    assert.equal(
+      css,
+      `linear-gradient(to right, ${colorForP(0.2)} 0.0000% 50.0000%, ${colorForP(0.9)} 50.0000% 100.0000%)`,
+    );
+  });
+
+  test('a_tail_unscaled_reading_in_a_strip_uses_the_out_of_band_single_colour', () => {
+    const css = stripGradient([{ p: null, tail_unscaled: true }, { p: 0.5 }]);
+    assert.ok(css.includes(tailUnscaledColor()));
+  });
+
+  test('an_unreadable_reading_in_a_strip_places_no_colour', () => {
+    // 無言で 0.5 を埋めない: p が無い区間は透明（地をそのまま見せる）。
+    const css = stripGradient([{ p: null }, { p: 0.75 }]);
+    assert.ok(css.startsWith('linear-gradient(to right, rgba(0, 0, 0, 0) '));
+  });
+
+  test('an_empty_strip_places_no_colour_at_all', () => {
+    assert.equal(stripGradient([]), NO_LEVEL_COLOR);
+    assert.equal(stripGradient(undefined), NO_LEVEL_COLOR);
   });
 
   test('the_scale_has_no_second_definition_in_the_front_tree', async () => {

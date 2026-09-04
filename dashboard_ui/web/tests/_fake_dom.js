@@ -152,6 +152,8 @@ export function oscCell(overrides = {}) {
     reach: null,
     unavailable_reason: null,
     level_prices: { q_high: null, q_low: null },   // 各側は {price, level} | null
+    history: [],   // 直近の確定区間の読み（古い順・各要素 {p, tail_unscaled}）
+
     // なめらか再生の宣言（依頼者指示 2026-08-31）。instance_key の第 3 要素（params_key）は
     //   JSON として復元できる（サーバの json.dumps と同じ契約）。
     instance_key: ['ma_marod', 'default', '{"length": 50}', '1m'],

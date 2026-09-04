@@ -124,6 +124,22 @@ def test_the_oscillator_cell_comes_back_with_its_reach_state(base: str) -> None:
     assert set(cells[0]["reach"]) == {"reached", "since_time", "truncated"}
 
 
+def test_the_oscillator_cell_carries_its_trailing_history_strip(base: str) -> None:
+    """§5.2 背景ストリップ（依頼者指示 2026-09-04）: 実素材でも直近区間の読みが載る。"""
+    _status, response = post(base, "/reach_sheet", {
+        "dataset_ref": REF, "chart_timeframe": "1m", "mode": "full",
+        "instances": INSTANCES,
+    })
+
+    cells = [cell for cell in response["cells"] if cell["indicator_id"] == "ma_marod"]
+    history = cells[0]["history"]
+
+    # 実素材は 10 区間ぶんの履歴を必ず持つ（現在区間 + 過去 9 区間 = 10）。
+    assert len(history) == 9
+    assert all(set(reading) == {"p", "tail_unscaled"} for reading in history)
+    assert any(reading["p"] is not None for reading in history)
+
+
 def test_a_repeated_tick_request_issues_no_additional_material(monkeypatch) -> None:
     """結線の検査（ISSUE-457）: **実 HTTP を繰り返し叩いて** P-1 の追加発行が 0 であること。
 

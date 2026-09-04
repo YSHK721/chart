@@ -74,11 +74,17 @@ def _issue_and_use(monkeypatch, *, bar_count: int, cell_count: int) -> "tuple[in
         bar_port=BarSpy({"1m": bars([100.0] * bar_count)}),
         roles=Roles(specs),
     )
-    used = [
-        cell for cell in sheet.cells
-        if cell.p is not None and not cell.tail_unscaled
-    ]
-    return rank_spy.calls, len(used)
+    # 出力が使う順位 = 現在区間の `p` ＋ 背景ストリップの直近区間の読み（§5.2・
+    #   依頼者指示 2026-09-04）。どちらも応答へそのまま出る（作って捨てる順位は無い）。
+    used = sum(
+        (1 if cell.p is not None and not cell.tail_unscaled else 0)
+        + sum(
+            1 for reading in cell.history
+            if reading.p is not None and not reading.tail_unscaled
+        )
+        for cell in sheet.cells
+    )
+    return rank_spy.calls, used
 
 
 @pytest.mark.parametrize("cell_count", [1, 3])

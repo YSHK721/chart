@@ -18,11 +18,14 @@ from dashboard_ui.domain.continuous_quantile import (
     MIN_STAT_OBS,
     QuantileReading,
     QuantileScale,
+    excess_event_fold,
     excess_event_history,
     fit_tail,
     in_band_rank_latest,
     in_band_ranks,
     p_at,
+    trailing_ranks,
+    trailing_readings,
 )
 
 
@@ -244,6 +247,150 @@ class TestExcessEventHistory:
     def test_mismatched_lengths_are_rejected(self) -> None:
         with pytest.raises(ValueError):
             excess_event_history(np.array([1.0, 2.0]), np.array([1.0]))
+
+
+class TestExcessEventFold:
+    """§5.2 背景ストリップの因果窓: `counts[i]` はバー i 直前までに確定した件数。"""
+
+    def test_the_counts_are_the_prefix_lengths_of_the_same_fold(self) -> None:
+        """`events[:counts[i]]` ＝「バー 0..i-1 だけを畳んだ観測列」（畳み込みは前方逐次）。
+
+        この一致が崩れると、直近区間の当てはめ窓が当該バーより後に確定した観測を含む
+        （因果境界の破れ）か、確定済みの観測を取りこぼす。
+        """
+        values = np.array([1.0, 12.0, 15.0, 1.0, 11.0, 0.5, 13.0, 1.0])
+        bands = np.array([10.0] * 8)
+
+        events, counts = excess_event_fold(values, bands)
+
+        assert len(counts) == values.size
+        for index in range(values.size):
+            assert events[: counts[index]] == excess_event_history(
+                values[:index], bands[:index]
+            )
+
+    def test_the_events_equal_the_history_version(self) -> None:
+        """`excess_event_history` は本畳み込みへの委譲（第 2 定義を作らない）。"""
+        values = np.array([1.0, 12.0, 15.0, 13.0, 1.0, 11.0, 0.5])
+        bands = np.array([10.0] * 7)
+
+        events, _counts = excess_event_fold(values, bands)
+
+        assert events == excess_event_history(values, bands)
+
+    def test_skipped_bars_still_carry_a_count(self) -> None:
+        """帯の無いバーも `counts` の位置は持つ（系列と同一長＝添字で引ける）。"""
+        values = np.array([1.0, 12.0, 1.0])
+        bands = np.array([10.0, float("nan"), 10.0])
+
+        _events, counts = excess_event_fold(values, bands)
+
+        assert len(counts) == 3
+
+
+class TestTrailingReadings:
+    """§5.2 背景ストリップ: 直近区間の読みは当該バーのセルと同じ式・同じ因果境界。"""
+
+    def test_each_reading_equals_the_single_point_definition(self) -> None:
+        """バー i の読み ＝「系列を i で打ち切ったときの末尾 1 点の読み」。
+
+        この同値が崩れると、ストリップの色とセルの色が**別々の定義**で決まる
+        （出力はどちらもそれらしい色のままなので状態検証では落ちない）。
+        """
+        rng = np.random.default_rng(20260904)
+        values = rng.uniform(0.0, 100.0, size=120)
+        bands = np.full(120, 70.0)
+        events, counts = excess_event_fold(values, bands)
+
+        readings = trailing_readings(
+            values, bands, window_n=30, q_high=0.9,
+            events=events, event_counts=counts, k_events=50, n_bars=9,
+        )
+
+        assert len(readings) == 9
+        for offset, reading in enumerate(readings):
+            index = 120 - 9 + offset
+            expected = p_at(
+                value=float(values[index]),
+                band_high=float(bands[index]),
+                q_high=0.9,
+                in_band_rank=in_band_rank_latest(values[: index + 1], 30),
+                tail=fit_tail(
+                    excess_event_history(values[:index], bands[:index]), k_events=50
+                ),
+            )
+            assert reading == expected
+
+    def test_a_short_series_yields_fewer_readings_not_an_error(self) -> None:
+        values = np.array([10.0, 20.0, 30.0])
+        bands = np.array([90.0] * 3)
+        events, counts = excess_event_fold(values, bands)
+
+        readings = trailing_readings(
+            values, bands, window_n=30, q_high=0.9,
+            events=events, event_counts=counts, k_events=50, n_bars=9,
+        )
+
+        assert len(readings) == 3
+
+    def test_an_in_band_bar_issues_no_tail_fit(self) -> None:
+        """帯内のバーへ当てはめを発行しない（作ってから捨てない・絶対命令 §4.1）。"""
+        values = np.array([10.0, 20.0, 30.0, 25.0])
+        bands = np.array([90.0] * 4)
+        events, counts = excess_event_fold(values, bands)
+        issued: "list[int]" = []
+
+        trailing_readings(
+            values, bands, window_n=30, q_high=0.9,
+            events=events, event_counts=counts, k_events=50, n_bars=9,
+            fit=lambda observed: issued.append(len(observed)),
+        )
+
+        assert issued == []
+
+    def test_an_out_of_band_bar_without_events_is_tail_unscaled(self) -> None:
+        """§5.3.2: 目盛りの無い帯外区間は `p` を発明しない。"""
+        values = np.array([10.0, 20.0, 95.0, 25.0])
+        bands = np.array([90.0] * 4)
+        events, counts = excess_event_fold(values, bands)
+
+        readings = trailing_readings(
+            values, bands, window_n=30, q_high=0.9,
+            events=events, event_counts=counts, k_events=50, n_bars=9,
+        )
+
+        assert readings[2].p is None
+        assert readings[2].tail_unscaled is True
+
+    def test_mismatched_counts_are_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            trailing_readings(
+                np.array([1.0, 2.0]), np.array([10.0, 10.0]),
+                window_n=30, q_high=0.9, events=[], event_counts=(0,),
+                k_events=50, n_bars=9,
+            )
+
+
+class TestTrailingRanks:
+    """§5.3.3 の積み上がる量: 確定バーの全量は経過 100% の部分和＝因果窓の経験順位でよい。"""
+
+    def test_each_rank_uses_only_the_preceding_bars(self) -> None:
+        values = np.array([100.0, 200.0, 300.0, 150.0])
+
+        readings = trailing_ranks(values, window_n=30, n_bars=9)
+
+        assert [reading.p for reading in readings] == [
+            None,                       # 窓が空
+            None,                       # 有限観測 1 本 < MIN_STAT_OBS
+            pytest.approx(1.0),         # [100, 200] < 300
+            pytest.approx(1 / 3),       # [100, 200, 300] のうち 150 未満は 1 本
+        ]
+        assert all(reading.tail_unscaled is False for reading in readings)
+
+    def test_the_result_is_limited_to_the_requested_bars(self) -> None:
+        readings = trailing_ranks(np.arange(50, dtype=np.float64), window_n=10, n_bars=9)
+
+        assert len(readings) == 9
 
 
 class TestQuantileScale:

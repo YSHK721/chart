@@ -306,6 +306,52 @@ class TestOscillatorCells:
         assert sheet.cells[0].p is None
         assert sheet.cells[0].unavailable_reason is not None
 
+    def test_a_cell_carries_the_readings_of_its_trailing_confirmed_bars(self) -> None:
+        """§5.2 背景ストリップ（依頼者指示 2026-09-04）: 直近の確定区間の読みを古い順で持つ。
+
+        現在区間（形成中バー）は `p` が持ち主で history へは含めない（重複して持たない）。
+        各読みは当該バーのセルと同じ因果窓（当該バー除外・window_n）で決まる。
+        """
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 30.0, 40.0, 15.0, 25.0], [90.0] * 6)
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        history = sheet.cells[0].history
+        assert [reading.p for reading in history] == [
+            None,                    # 窓が空
+            None,                    # 有限観測 1 本 < MIN_STAT_OBS
+            pytest.approx(1.0),      # [10, 20] < 30
+            pytest.approx(1.0),      # [10, 20, 30] < 40
+            pytest.approx(0.25),     # [10, 20, 30, 40] のうち 15 未満は 1 本
+        ]
+        # 現在区間（v=25）は history に居ない（右端はセルの `p` が担う）。
+        assert sheet.cells[0].p == pytest.approx(3 / 5)
+
+    def test_the_trailing_readings_are_capped_at_the_declared_bar_count(self) -> None:
+        """現在区間と合わせて 10 区間（依頼者指示 2026-09-04）。履歴が長くても増えない。"""
+        from dashboard_ui.usecase.build_reach_sheet import TRAILING_HISTORY_BARS
+        instance, series, bars, roles = self._rsi_setup(
+            [float(10 + index % 50) for index in range(40)], [90.0] * 40)
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert len(sheet.cells[0].history) == TRAILING_HISTORY_BARS
+        assert TRAILING_HISTORY_BARS + 1 == 10
+
+    def test_a_trailing_bar_outside_the_band_without_a_scale_is_single_coloured(self) -> None:
+        """§5.3.2 はストリップの区間にも同じに効く（`p` を発明しない）。"""
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 95.0, 25.0], [90.0] * 4)
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].history[2].p is None
+        assert sheet.cells[0].history[2].tail_unscaled is True
+
     def test_the_reach_time_of_a_cell_is_the_first_contact(self) -> None:
         """定義 C（依頼者指示 2026-08-31）。定義 A（連続区間の始端）なら _NOW+180 に若返る。"""
         instance, series, bars, roles = self._rsi_setup(
@@ -360,6 +406,26 @@ class TestCumulativeCells:
 
         assert sheet.cells[0].p is None
         assert sheet.cells[0].unavailable_reason is not None
+
+    def test_a_cumulative_cell_still_shows_its_confirmed_past_movement(self) -> None:
+        """§5.2 背景ストリップ: 確定バーの全量は経過 100% の部分和なので、比較集合が
+        無くても（現在区間が水準なしでも）直近区間の読みは出せる（過去の動きを隠さない）。"""
+        instance = SheetInstance("tickvol", "default", {}, "1h", intrabar_capable=True)
+        series = FakeSeriesPort({instance.key: {
+            "tickvol": _points([100.0, 200.0, 300.0, 150.0]),
+            "tickvol_q90": _points([1000.0] * 4)}})
+        bars = FakeBarPort({"1m": _bars([100.0] * 4), "1h": _bars([100.0] * 4)})
+        roles = FakeRoles({"tickvol": OscillatorSpec(
+            value_series="tickvol", band_high_series="tickvol_q90",
+            q_high=0.9, window_n=500, k_events=50, cumulative=True)})
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].p is None                        # 現在区間は水準なしのまま
+        assert [reading.p for reading in sheet.cells[0].history] == [
+            None, None, pytest.approx(1.0),                    # [100, 200] < 300
+        ]
 
 
 class TestTailFitCache:

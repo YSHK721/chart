@@ -272,17 +272,23 @@ class BandObservations:
         return self.values[:-1], self.bands[:-1]
 
 
-def excess_event_history(
+def excess_event_fold(
     values: "np.ndarray | Sequence[float]",
     band_highs: "np.ndarray | Sequence[float]",
     *,
     excess: ExcessDefinition = _default_excess,
-) -> "list[float]":
-    """確定した超過エピソードの極値列を返す（古い順）。
+) -> "tuple[list[float], tuple[int, ...]]":
+    """確定した超過エピソードの極値列と、**各バー直前までに確定した件数**を返す。
 
     イベント検出・エピソード確定は :func:`common.event_quantiles.step_events`（唯一の定義）へ
     委譲する。参照実装 `probe_tailscale.py:139` と同一の呼び方（帯を「超過分 > 0」へ写して
     上側だけを見る）。**閉じていないエピソードは観測にしない**（＝当てはめを増やさない・§7）。
+
+    第 2 戻り値 `counts` は `counts[i] = バー i を処理する**前**に確定していた件数`。
+    畳み込みは前方逐次なので、バー i の因果観測列は `events[:counts[i]]` と一致する
+    （参照実装 `probe_tailscale.py:113-121` が帯超バーごとに `up` の当時の長さを読むのと
+    同じ量）。直近区間の読み（§5.2 背景ストリップ）が各バーの当てはめ窓をこのプレフィックス
+    で引くために使う——**畳み込みは 1 回**で、系列版とプレフィックス版の第 2 定義を作らない。
 
     Raises:
         ValueError: 2 系列の長さが揃っていないとき。
@@ -294,11 +300,112 @@ def excess_event_history(
 
     up: "list[float]" = []
     run_up: "list[float]" = []
+    counts: "list[int]" = []
     for value, band in zip(v, u):
+        counts.append(len(up))
         if not (math.isfinite(value) and math.isfinite(band)):
             continue
         _evq.step_events(
             float(excess(float(value), float(band))),
             float("-inf"), 0.0, "episode", up, [], run_up, [],
         )
-    return [float(x) for x in up]
+    return [float(x) for x in up], tuple(counts)
+
+
+def excess_event_history(
+    values: "np.ndarray | Sequence[float]",
+    band_highs: "np.ndarray | Sequence[float]",
+    *,
+    excess: ExcessDefinition = _default_excess,
+) -> "list[float]":
+    """確定した超過エピソードの極値列を返す（古い順）。実体は :func:`excess_event_fold`。"""
+    return excess_event_fold(values, band_highs, excess=excess)[0]
+
+
+#: 当てはめの注入点。既定は :func:`fit_tail`（呼び出し側が epoch 持ち越しの当てはめ
+#: キャッシュを差せるようにするための口。式の唯一源は fit_tail のまま動かない）。
+TailFitter = Callable[[Sequence[float]], "TailFit | None"]
+
+
+def trailing_readings(
+    values: "np.ndarray | Sequence[float]",
+    bands: "np.ndarray | Sequence[float]",
+    *,
+    window_n: int,
+    q_high: float,
+    events: "Sequence[float]",
+    event_counts: "Sequence[int]",
+    k_events: int,
+    n_bars: int,
+    excess: ExcessDefinition = _default_excess,
+    fit: "TailFitter | None" = None,
+) -> "tuple[QuantileReading, ...]":
+    """直近 `n_bars` 本（**確定バーのみ**を渡すこと）の `p` の読み（古い順）。
+
+    各バー i の読みは当該バーのセルと**同じ式・同じ因果境界**で決める（第 2 定義を作らない）:
+      - 帯内順位: :func:`common.marod_bands.causal_pointwise_latest`（窓 = 当該バー除外）。
+      - 帯外の目盛り: バー i より**前**に確定したイベント（`events[:event_counts[i]]`）の
+        直近 `k_events` 件へ当てはめた GPD。
+    当てはめは**帯外のバーだけ**発行する（帯内のバーへ当てはめても :func:`p_at` は使わない＝
+    「作ってから捨てる」を作らない・CLAUDE.md 絶対命令 §4.1）。
+
+    Raises:
+        ValueError: 系列とプレフィックス列の長さが揃っていないとき。
+    """
+    v = np.asarray(values, dtype=np.float64).ravel()
+    u = np.asarray(bands, dtype=np.float64).ravel()
+    if v.size != u.size or v.size != len(event_counts):
+        raise ValueError(
+            f"values / bands / event_counts は同一長が必要です: "
+            f"{v.size} / {u.size} / {len(event_counts)}"
+        )
+    fitter: TailFitter = (
+        fit if fit is not None
+        else (lambda observed: fit_tail(observed, k_events=k_events))
+    )
+    all_events = list(events)
+    readings: "list[QuantileReading]" = []
+    for index in range(max(0, v.size - int(n_bars)), v.size):
+        rank = _bands.causal_pointwise_latest(
+            v[:index], float(v[index]), window_n, empirical_rank
+        )
+        outside = (
+            math.isfinite(float(v[index])) and math.isfinite(float(u[index]))
+            and float(v[index]) > float(u[index])
+        )
+        tail = fitter(all_events[: int(event_counts[index])]) if outside else None
+        readings.append(p_at(
+            value=float(v[index]),
+            band_high=float(u[index]),
+            q_high=q_high,
+            in_band_rank=rank,
+            tail=tail,
+            excess=excess,
+        ))
+    return tuple(readings)
+
+
+def trailing_ranks(
+    values: "np.ndarray | Sequence[float]",
+    *,
+    window_n: int,
+    n_bars: int,
+) -> "tuple[QuantileReading, ...]":
+    """積み上がる量（§5.3.3）の直近 `n_bars` 本（**確定バーのみ**）の読み（古い順）。
+
+    確定バーの全量は「経過 100% の部分和」なので、比較集合は**先行する確定バーの全量**で
+    よい（§5.3.3 のバイアスは形成中バーだけに生じる）。窓規則は
+    :func:`common.marod_bands.causal_pointwise_latest` へ委譲する（因果窓の唯一の定義。
+    有限観測が :data:`MIN_STAT_OBS` 未満のバーは NaN → p None＝無言で 0.5 を埋めない）。
+    """
+    v = np.asarray(values, dtype=np.float64).ravel()
+    readings: "list[QuantileReading]" = []
+    for index in range(max(0, v.size - int(n_bars)), v.size):
+        rank = _bands.causal_pointwise_latest(
+            v[:index], float(v[index]), window_n, empirical_rank
+        )
+        readings.append(QuantileReading(
+            p=None if not math.isfinite(rank) else float(rank),
+            tail_unscaled=False,
+        ))
+    return tuple(readings)

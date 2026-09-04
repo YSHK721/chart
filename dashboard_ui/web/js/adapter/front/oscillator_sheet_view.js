@@ -15,7 +15,7 @@
 // DOM は View が生成し所有する。色は heat_scale.js が唯一源（第 1 表と同じ目盛り・§5.5.7）。
 // 時計は注入で受ける（実時計を直接読むと、到達時刻の表記が検定のたびに変わる）。
 
-import { colorForP, tailUnscaledColor } from './heat_scale.js';
+import { colorForP, stripGradient, tailUnscaledColor } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
 // 価格表記の唯一源（第 1 表と共有・写しを持たない）。
 import { formatPrice } from './format.js';
@@ -139,11 +139,22 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       className: 'dash-osc-cell',
       dataset: { indicator: indicatorId, timeframe },
     });
+    // 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04「各パネルの背景に直近の
+    //   指標 10 区間分」）。値はサーバ計算そのもの＝フロントは数値を再計算しない
+    //   （arch-spec §9）。現在区間は `p` / `tail_unscaled` が持ち主なので、末尾（右端）へ
+    //   自分で継ぎ足して 10 区間のストリップにする。
+    const trailing = cell && Array.isArray(cell.history) ? cell.history : [];
     // 水準が無い（そのセル自体が無い・`p` が出せない）ことを**隠さない**（§5.2）。
     const hasLevel = cell && cell.p !== null && cell.p !== undefined;
     if (!hasLevel) {
       // 色を置かないことを**明示**する（無言で 0.5 を埋めない・§5.5.5 と同じ規約）。
-      td.style.backgroundColor = colorForP(null);
+      //   現在区間が読めなくても過去の動きは隠さない: 読みがあれば背景ストリップは塗る
+      //   （現在区間の縞は「色を置かない」＝透明のまま）。
+      if (trailing.length > 0) {
+        td.style.background = stripGradient([...trailing, { p: null, tail_unscaled: false }]);
+      } else {
+        td.style.backgroundColor = colorForP(null);
+      }
       td.title = cell && cell.unavailable_reason ? String(cell.unavailable_reason) : '水準なし';
       const noLevelValue = el('span', { className: 'dash-osc-value', textContent: cell ? formatValue(cell.value) : NOT_APPLICABLE });
       td.appendChild(noLevelValue);
@@ -153,11 +164,17 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       td.appendChild(el('span', { className: 'dash-osc-no-level', textContent: '水準なし' }));
       return td;
     }
-    // §5.3.2: 目盛りが当てはまらないセルは単一色（`p` の濃さとして読ませない）。
+    // §5.3.2: 目盛りが当てはまらない区間は単一色（`p` の濃さとして読ませない）。
     if (cell.tail_unscaled === true) {
       td.classList.add('dash-osc-tail-unscaled');
-      td.style.backgroundColor = tailUnscaledColor();
       td.title = '帯外は目盛りが無い（本数不足で当てはめ不能）';
+    }
+    if (trailing.length > 0) {
+      td.style.background = stripGradient(
+        [...trailing, { p: cell.p, tail_unscaled: cell.tail_unscaled === true }],
+      );
+    } else if (cell.tail_unscaled === true) {
+      td.style.backgroundColor = tailUnscaledColor();
     } else {
       td.style.backgroundColor = colorForP(cell.p);
     }

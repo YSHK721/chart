@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Mapping
 
+from dashboard_ui.domain.continuous_quantile import QuantileReading
 from dashboard_ui.domain.elapsed_fraction_pool import ElapsedFractionPool
 from dashboard_ui.domain.horizon import Horizon
 from dashboard_ui.domain.reach import ReachState
@@ -202,6 +203,10 @@ class OscCell:
     #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこのセルへ
     #: 流すか」を選ぶための宣言。表示専用で、無くても版面は成立する（None＝流さない）。
     value_series: "str | None" = None
+    #: 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04「各パネルの背景に直近の
+    #: 指標 10 区間分」）。現在区間は `p` / `tail_unscaled` が持ち主で、ここへは含めない
+    #: （同じ量を 2 か所へ持たない）。フロントは history + 現在で 10 区間のストリップを塗る。
+    history: "tuple[QuantileReading, ...]" = ()
 
 
 @dataclass(frozen=True)

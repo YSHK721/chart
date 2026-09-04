@@ -47,16 +47,26 @@ from dashboard_ui.usecase.sheet_models import (
 )
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
+#: 背景ストリップの「直近の過去区間」の本数。現在区間（セルの `p`）と合わせて
+#: **10 区間**になる（依頼者指示 2026-09-04「各パネルの背景に直近の指標 10 区間分」）。
+TRAILING_HISTORY_BARS: int = 9
+
+
 class TailFitCache:
     """GPD の当てはめを**イベント確定のときだけ**行うためのキャッシュ（§7）。
 
     `p` を求めるたびに当てはめ直さない。エピソードが閉じないバーでは確定観測列が伸びないので、
     当てはめ回数は 0 になる。当てはめ自体は最尤推定（Nelder–Mead）で安くはなく、セル数・行数・
     ティック数に比例して呼ぶと ISSUE-450 と同型の浪費になる。
+
+    key ごとに**署名別**へ持つ（直近区間の読み・§5.2 背景ストリップが同じ key で複数の
+    因果窓［バーごとのイベント・プレフィックス］を引くため。単一スロットだと現在セルと
+    ストリップが互いに押し出し合い、同じ窓を毎要求当てはめ直す）。署名はイベント確定の
+    ときしか変わらないので、エントリはエピソード確定ごとに高々 1 つしか増えない。
     """
 
     def __init__(self) -> None:
-        self._entries: "dict[tuple, tuple[int, object]]" = {}
+        self._entries: "dict[tuple, dict[tuple, object]]" = {}
 
     def tail_for(
         self, key: "tuple[str, str, str, str]", events: "Sequence[float]", k_events: int
@@ -74,11 +84,11 @@ class TailFitCache:
         signature = (
             (len(window), window[-1], window[0]) if window else (0, None, None)
         )
-        cached = self._entries.get(key)
-        if cached is not None and cached[0] == signature:
-            return cached[1]
+        by_signature = self._entries.setdefault(key, {})
+        if signature in by_signature:
+            return by_signature[signature]
         fitted = _cq.fit_tail(events, k_events=k_events)
-        self._entries[key] = (signature, fitted)
+        by_signature[signature] = fitted
         return fitted
 
 
@@ -99,19 +109,80 @@ class ExcessEventCache:
     """
 
     def __init__(self) -> None:
-        self._entries: "dict[tuple, tuple[tuple, list[float]]]" = {}
+        self._entries: "dict[tuple, tuple[tuple, tuple[list[float], tuple[int, ...]]]]" = {}
+
+    def fold_for(
+        self, key: "tuple[str, str, str, str]", values, band_highs, *, excess
+    ) -> "tuple[list[float], tuple[int, ...]]":
+        """確定履歴が変わっていなければ、前回畳んだ (観測列, プレフィックス長) をそのまま返す。
+
+        プレフィックス長（`counts[i]` ＝ バー i 直前までに確定した件数）は直近区間の読み
+        （§5.2 背景ストリップ）の因果窓に使う。**同じ 1 回の畳み込み**から両方を出す
+        （系列版とプレフィックス版を別々に畳むと、片方だけ直したときに無言で食い違う）。
+        """
+        signature = (fingerprint_of(values), fingerprint_of(band_highs))
+        cached = self._entries.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        folded = _cq.excess_event_fold(values, band_highs, excess=excess)
+        self._entries[key] = (signature, folded)
+        return folded
 
     def events_for(
         self, key: "tuple[str, str, str, str]", values, band_highs, *, excess
     ) -> "list[float]":
         """確定履歴が変わっていなければ、前回畳んだ観測列をそのまま返す。"""
-        signature = (fingerprint_of(values), fingerprint_of(band_highs))
+        return self.fold_for(key, values, band_highs, excess=excess)[0]
+
+
+class HistoryStripCache:
+    """直近区間の読み（§5.2 背景ストリップ）を **epoch 単位で持ち越す**（§7）。
+
+    ストリップは**確定した履歴**（当該バーを除いた観測）だけから決まるので、epoch の中では
+    不変である。毎要求（毎秒ポーリング）計算し直すと、出力は正しいまま同じ読みを作り続ける
+    ——状態検証では原理的に落ちない ISSUE-450 / ISSUE-464 と同型の浪費になる。
+    版（署名）の定義は :class:`ExcessEventCache` と同じ `fingerprint_of`（唯一源）。
+    """
+
+    def __init__(self) -> None:
+        self._entries: "dict[tuple, tuple[tuple, tuple]]" = {}
+
+    def strip_for(
+        self,
+        key: "tuple[str, str, str, str]",
+        observed,
+        spec: OscillatorSpec,
+        *,
+        events_cache: ExcessEventCache,
+        tails: TailFitCache,
+    ) -> "tuple[_cq.QuantileReading, ...]":
+        """確定履歴が変わっていなければ、前回の読みをそのまま返す。"""
+        history_values, history_bands = observed.history
+        signature = (fingerprint_of(history_values), fingerprint_of(history_bands))
         cached = self._entries.get(key)
         if cached is not None and cached[0] == signature:
             return cached[1]
-        folded = _cq.excess_event_history(values, band_highs, excess=excess)
-        self._entries[key] = (signature, folded)
-        return folded
+        if spec.cumulative:
+            strip = _cq.trailing_ranks(
+                history_values, window_n=spec.window_n, n_bars=TRAILING_HISTORY_BARS,
+            )
+        else:
+            # 畳み込み・当てはめは既存の持ち越しの口を通す（同じ観測を 2 人が別々に
+            #   畳まない・同じ窓を 2 人が別々に当てはめない）。
+            events, counts = events_cache.fold_for(
+                key, history_values, history_bands, excess=spec.excess
+            )
+            strip = _cq.trailing_readings(
+                history_values, history_bands,
+                window_n=spec.window_n, q_high=spec.q_high,
+                events=events, event_counts=counts, k_events=spec.k_events,
+                n_bars=TRAILING_HISTORY_BARS, excess=spec.excess,
+                fit=lambda observed_events: tails.tail_for(
+                    key, observed_events, spec.k_events
+                ),
+            )
+        self._entries[key] = (signature, strip)
+        return strip
 
 
 def build_reach_sheet(
@@ -123,6 +194,7 @@ def build_reach_sheet(
     elapsed_comparisons: "Mapping[tuple[str, str, str, str], ElapsedComparison] | None" = None,
     tail_fit_cache: "TailFitCache | None" = None,
     event_cache: "ExcessEventCache | None" = None,
+    history_cache: "HistoryStripCache | None" = None,
     projected_levels: "Sequence[ProjectedLevel]" = (),
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
@@ -133,6 +205,7 @@ def build_reach_sheet(
     comparisons = dict(elapsed_comparisons or {})
     tails = tail_fit_cache if tail_fit_cache is not None else TailFitCache()
     events = event_cache if event_cache is not None else ExcessEventCache()
+    history = history_cache if history_cache is not None else HistoryStripCache()
     instances = request.unique_instances()
     bars_by_timeframe = _load_bars(request, instances, bar_port)
 
@@ -187,7 +260,7 @@ def build_reach_sheet(
         if spec is not None:
             cells.append(
                 _build_cell(instance, spec, series, comparisons.get(instance.key),
-                            tails, events)
+                            tails, events, history)
             )
         own_bars = bars_by_timeframe.get(instance.timeframe) or ()
         for series_name, points in series.items():
@@ -328,6 +401,7 @@ def _build_cell(
     comparison: "ElapsedComparison | None",
     tails: TailFitCache,
     events_cache: ExcessEventCache,
+    history_cache: HistoryStripCache,
 ) -> OscCell:
     """第 2 表のセル 1 つ（§5.2 / §5.3 / §5.3.3）。"""
     value_points = tuple(series.get(spec.value_series) or ())
@@ -351,9 +425,14 @@ def _build_cell(
     values, bands = observed.values, observed.bands
     reach = reach_state(list(observed.times), list(values), list(bands),
                         side=LevelSide.ABOVE)
+    # 直近区間の読み（§5.2 背景ストリップ・依頼者指示 2026-09-04）。確定履歴だけから決まる
+    #   量なので epoch 持ち越し。現在区間はセルの `p` が持ち主（重複して持たない）。
+    strip = history_cache.strip_for(
+        instance.key, observed, spec, events_cache=events_cache, tails=tails,
+    )
 
     if spec.cumulative:
-        return _cumulative_cell(instance, spec, values, reach, comparison)
+        return _cumulative_cell(instance, spec, values, reach, comparison, strip)
 
     # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
     rank = _cq.in_band_rank_latest(values, spec.window_n)
@@ -380,6 +459,7 @@ def _build_cell(
         p=reading.p,
         tail_unscaled=reading.tail_unscaled,
         reach=reach,
+        history=strip,
     )
 
 
@@ -389,11 +469,14 @@ def _cumulative_cell(
     values: np.ndarray,
     reach: ReachState,
     comparison: "ElapsedComparison | None",
+    strip: "tuple[_cq.QuantileReading, ...]" = (),
 ) -> OscCell:
     """積み上がる量のセル（§5.3.3: 部分和は**同じ経過**の過去の部分和へ当てる）。
 
     比較集合が無いときに確定足の分布へ当てて済ませない。それが §5.3.3 のバイアスそのもの
     （1 時間足の最初の 20 分がどんなに活況でも最も冷たい色になる）であり、症状の回避は禁止。
+    直近区間の読み（`strip`）は**確定バーの全量**＝経過 100% の部分和なので、このバイアスは
+    生じない（現在区間が水準なしでも過去の動きは出せる・§5.2）。
     """
     if comparison is None:
         return OscCell(
@@ -408,6 +491,7 @@ def _cumulative_cell(
             unavailable_reason=(
                 "同じ経過の比較集合が供給されていない（確定足の分布へは当てない・§5.3.3）"
             ),
+            history=strip,
         )
     window = np.asarray(
         comparison.pool.partial_sums_at(comparison.completed_units)[-spec.window_n:],
@@ -427,6 +511,7 @@ def _cumulative_cell(
             tail_unscaled=False,
             reach=reach,
             unavailable_reason="同じ経過まで進んだ過去の足が足りない（水準なし・§5.2）",
+            history=strip,
         )
     return OscCell(
         indicator_id=instance.indicator_id,
@@ -437,4 +522,5 @@ def _cumulative_cell(
         p=_cq.empirical_rank(window, float(comparison.forming_sum)),
         tail_unscaled=False,
         reach=reach,
+        history=strip,
     )

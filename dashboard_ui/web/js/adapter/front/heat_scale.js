@@ -100,6 +100,35 @@ export function tailUnscaledColor() {
 }
 
 /**
+ * 直近区間の読み列 → セル背景のストリップ（§5.2・依頼者指示 2026-09-04「各パネルの背景に
+ * 直近の指標 10 区間分」）。左＝最古・右端＝現在区間の硬い縞（hard stop）で、各区間の色は
+ * 本モジュールの既存写像そのもの（colorForP / tailUnscaledColor）＝配色の第 2 定義を作らない。
+ *
+ * @param {Array<{p: (number|null|undefined), tail_unscaled?: boolean}>} readings 古い順
+ * @returns {string} `linear-gradient(...)`。読みが無ければ `NO_LEVEL_COLOR`（色を置かない）。
+ */
+export function stripGradient(readings) {
+  if (!Array.isArray(readings) || readings.length === 0) {
+    return NO_LEVEL_COLOR;
+  }
+  const count = readings.length;
+  const stops = readings.map((reading, index) => {
+    // 読めない区間は色を置かない（無言で 0.5 を埋めない）。gradient の中では
+    // 「置かない」＝完全透明（NO_LEVEL_COLOR の空文字は stop として不正）。
+    let color = 'rgba(0, 0, 0, 0)';
+    if (reading && reading.tail_unscaled === true) {
+      color = tailUnscaledColor();
+    } else if (reading && reading.p !== null && reading.p !== undefined) {
+      color = colorForP(reading.p);
+    }
+    const from = ((index / count) * 100).toFixed(4);
+    const to = (((index + 1) / count) * 100).toFixed(4);
+    return `${color} ${from}% ${to}%`;
+  });
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
+
+/**
  * チャート一覧（timeframe_charts_view）の canvas 内配色（ISSUE-452 内容 2）。
  *
  * canvas の内側には CSS トークン（var(--…)）が届かないため、色値をここへ置く。置き場所が
