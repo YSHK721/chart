@@ -26,9 +26,8 @@ import { LocalStorageTemplateGateway } from './local_storage_template_gateway.js
 import { IndicatorCatalogClient } from './catalog_client.js';
 import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { TickvolBandsActor } from './tickvol_bands_actor.js';
-import { TickvolBandsController } from './tickvol_bands_controller.js';
-import { MarketProfileController } from './market_profile_controller.js';
-import { MARKET_PROFILE_HOST_CONTRACT } from './indicator_controller.js';
+import { TICKVOL_BANDS_HOST_CONTRACT, TickvolBandsController } from './tickvol_bands_controller.js';
+import { MARKET_PROFILE_HOST_CONTRACT, MarketProfileController } from './market_profile_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { ChartContextMenu } from './chart_context_menu.js';
 import { ChartToastView } from './chart_toast_view.js';
@@ -43,7 +42,7 @@ import { ScrollToLatestButton } from './scroll_to_latest_button.js';
 import { TimeframeMenu, timeframeLabels } from './timeframe_menu.js';
 import { ChartTemplateMenu } from './chart_template_menu.js';
 import { ChartTemplateDialogs } from './chart_template_dialogs.js';
-import { ChartTemplateController } from './chart_template_controller.js';
+import { TEMPLATE_HOST_CONTRACT, ChartTemplateController } from './chart_template_controller.js';
 import { ColorThemeMenu } from './color_theme_menu.js';
 import { ColorThemeDialogs } from './color_theme_dialogs.js';
 import { TF_BAR_SEC } from '../../domain/tf_meta.js';
@@ -392,9 +391,13 @@ export function wireControllerCollaborators({
   colorThemeMenu = null, colorThemeDialogs = null, now = null,
   positionSizingDialog = null, registerVerticalPanBlocker = null, chartToast = null,
   lwc, mainSeries, chart, container, currentPriceView,
-  // ISSUE-479 Wave2 J-1 OCP-5 S2: MP アクター（live root は実体・replay root は生成順の都合で
-  //   null＝構築後に controller へ差し込む既存経路へ縮退する）。
+  // ISSUE-479 Wave2 J-1 OCP-5 S2/S3: MP アクターとその解決役。**両 root とも実体を渡す**
+  //   （S3 で controller ctor の受け口を撤去したため、ここが唯一の供給経路である）。
+  //   mpModeResolver: (userMode)->effectiveMode（ライブ連動時のみ・present 固有）。
+  //   mpGrowthResolver: ()->boolean（FOLLOW=true / ANALYSIS=false。replay は常時 true）。
   marketProfile = null,
+  mpModeResolver = null,
+  mpGrowthResolver = null,
   onTimeframeChanged = () => {},
 } = {}) {
   // 指標カラーテーマの協働子（§7.1）。host は全体ではなく ThemeHost 契約の射影を渡す
@@ -435,7 +438,9 @@ export function wireControllerCollaborators({
 
   // テンプレート協働子（§7.1）。有効時間足集合は台帳が単一情報源（domain/tf_meta.js の TF_BAR_SEC＝
   //   LAYERING_CONVENTIONS「UI の時間足ボタン集合もこの集合から乖離させない」）。
-  const chartTemplates = new ChartTemplateController(controller, {
+  // host は controller 全体ではなく TemplateHost 契約の射影を渡す（ISP・ISSUE-255 と同一規律）。
+  //   契約は既に宣言されていたのに、ここだけ生 host を渡していた＝宣言が実体を失っていた。
+  const chartTemplates = new ChartTemplateController(createHostView(controller, TEMPLATE_HOST_CONTRACT), {
     gateway: templateStore,
     menu: chartTemplateMenu,
     dialogs: chartTemplateDialogs,
@@ -457,21 +462,22 @@ export function wireControllerCollaborators({
     getTimeframe: () => controller._timeframe,
     getUntil: () => (controller._untilTime != null ? controller._untilTime : null),
   });
-  controller.registerActorController('tickvol_bands', new TickvolBandsController(controller, tickvolBands));
+  //   host は MP と同一規律で契約射影を渡す（同じ登録口を使う協働子が渡され方で非対称にならない）。
+  controller.registerActorController(
+    'tickvol_bands',
+    new TickvolBandsController(createHostView(controller, TICKVOL_BANDS_HOST_CONTRACT), tickvolBands),
+  );
   // Market Profile もアクター駆動型（/compute を持たない）。取引密度帯と**同一行様式**で
   //   レジストリへ登録する（ISSUE-479 Wave2 J-1 OCP-5 S2）。以前は controller の ctor だけが
   //   MP コントローラを組んでおり、「アクター駆動指標を足すときに見る場所」が 2 通りに割れていた。
-  //   アクターは注入があればそれ、無ければ host（controller._marketProfile）を遅延で読む
-  //   ＝replay 合成根の「構築後に差し込む」経路はそのまま効く（挙動は byte 不変）。
+  //   S3: アクターと解決役は**合成根が渡す**（協働子が host のフィールド名で掘り出さない）。
   //   host は controller 全体ではなく MarketProfileHost 契約の射影を渡す（ISP・ISSUE-255 と同一規律）。
-  //   ctor 側（indicator_controller.js）は既に射影を通しており、ここだけ生 host を渡すと
-  //   同じ協働子が渡され方によって広い面へ触れられる＝契約が実体を失う。
-  controller.registerActorController(
-    'market_profile',
-    new MarketProfileController(
-      createHostView(controller, MARKET_PROFILE_HOST_CONTRACT), { actor: marketProfile },
-    ),
+  //   ここが MP コントローラの唯一の構築点である（controller の ctor はもう組まない）。
+  const marketProfileController = new MarketProfileController(
+    createHostView(controller, MARKET_PROFILE_HOST_CONTRACT),
+    { actor: marketProfile, modeResolver: mpModeResolver, growthResolver: mpGrowthResolver },
   );
+  controller.registerActorController('market_profile', marketProfileController);
   // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ
   //   引き直す。テンプレート介入の**内側へ**チェーンする（既存の介入順序を壊さない）。
   controller.setTimeframe = (tf) => {
@@ -565,6 +571,9 @@ export function wireControllerCollaborators({
 
   return {
     chartTemplates, tickvolBands, tradeMarkers, currentPriceView, colorThemes, positionSizing,
+    // S3: MP の再適用（ライブ連動）を root が直接呼ぶための面。以前は controller の委譲メソッド
+    //   （reapplyMarketProfileMode）を経由しており、host に MP 固有の面が 1 つ残る原因だった。
+    marketProfileController,
   };
 }
 

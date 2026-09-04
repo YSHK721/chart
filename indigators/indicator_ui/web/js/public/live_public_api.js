@@ -17,11 +17,16 @@
 // 公開しているもの（＝実際に他 core が借りているものだけ。使われない再輸出は置かない）:
 //   - 期間プリセット換算表（`usecase/period_presets.js`）: 期間 → 本数の唯一源。
 //   - なめらか tick 再生（`adapter/front/live_tick_player.js`）: 再生機構の参照実装。
+//   - 表示対象 ref の解決規則（`adapter/front/dataset_ref_query.js`）: `?dataset=` の解釈の
+//     唯一源（ISSUE-447 A-3 案 U1）。統合層はこれを参照するだけで、複製を持たない。
 //
-// まだここに無いもの:
-//   `adapter/front/dataset_ref_query.js`（統合層が使う）と合成根の `bootstrap` は、経路の形を
-//   既存検定が固定しているため J-5（unified_root の MODES 表駆動化）で一緒に寄せる。
-//   残件は unified_ui/web/tests/js_cross_subsystem_paths.test.js の台帳が機械的に追跡する。
+// ここに合成根の `bootstrap` を置かない理由（実測 2026-09-04）:
+//   本ファイルは dashboard core が動的 import する（`dashboard_ui/.../composition_root_front.js`
+//   の LIVE_PUBLIC_API_PATH）。`bootstrap` を再輸出すると live のチャートアプリ一式
+//   （直接 import だけで 19 本＋その推移閉包）が dashboard の読み込みに巻き込まれる。
+//   借り手が要らないものを運ぶのは浪費なので、合成根は別の公開面 `live_root_api.js` に置く
+//   （公開面は 1 core 1 本という制約は無い。分けるのは重さの境界を切るためである）。
 
 export * from '../usecase/period_presets.js';
 export * from '../adapter/front/live_tick_player.js';
+export { DATASET_REF_QUERY_PARAM, resolveDatasetRef } from '../adapter/front/dataset_ref_query.js';

@@ -55,7 +55,21 @@ _CLI_DIRS = (
 _ENTRY_POINT_MARK = '__name__ == "__main__"'
 
 #: 起動を促す文言（前提が欠けたときに人間が打つべきコマンド）。
-_INSTALL_HINT = "<venv>/bin/python tools/install_dev_paths.py"
+#
+#: **新しいコンテナ・新しい venv では本検定は赤で始まる**（ISSUE-482）。これは仕様であり、
+#: 前提の不在を緑で覆い隠さないための設計である。壊れているのは環境であってコードではない。
+#: 通常は環境構築の 1 コマンド ./tools/setup_worktree.sh が .pth の登録まで済ませるので、
+#: それを実行していないだけのことが多い。
+_INSTALL_HINT = (
+    "./tools/setup_worktree.sh（環境構築の 1 コマンド・.pth の登録まで行う）"
+    " / 個別に打つなら <venv>/bin/python tools/install_dev_paths.py"
+)
+
+#: 赤の意味を取り違えないための説明（環境が壊れたと誤診させない）。
+_FRESH_ENV_NOTE = (
+    "新しい venv・新しいコンテナでは、この検定は .pth を登録するまで赤で始まります"
+    "（前提の不在を緑で隠さない設計）。コードの退行ではありません。"
+)
 
 #: モジュール本体だけを実行する起動形（__main__ ガードの内側へは入らない）。
 #: スクリプト起動と同じく、スクリプトのあるディレクトリを sys.path の先頭へ置く。
@@ -152,6 +166,7 @@ def test_the_ledger_entries_are_visible_to_a_bare_interpreter() -> None:
     missing = [entry for entry in _ledger_entries() if entry not in path]
     assert missing == [], (
         f"台帳のエントリが素の python から見えません: {missing}\n"
+        f"  {_FRESH_ENV_NOTE}\n"
         f"  この環境では次を 1 回実行してください: {_INSTALL_HINT}\n"
         f"  素の sys.path: {path}"
     )

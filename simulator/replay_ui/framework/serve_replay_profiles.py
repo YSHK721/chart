@@ -23,7 +23,7 @@ from simulator.replay_ui.framework.serve_replay import (
     _error_response,
     write_replay_json,
 )
-from simulator.sim_ui.framework.json_get_routes import GetRouteResponder
+from api_shared.json_get_routes import GetRouteResponder
 
 #: 本 App が持つルート。
 MARKET_PROFILE_PATH = "/market_profile"

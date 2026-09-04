@@ -50,7 +50,7 @@ class CausalSeriesProbe(CausalSeriesProbePort):
     ``compute_port``: `CausalComputePort`（既定は `CausalComputeGateway`）。検定では
     フェイクを挿して呼び出しの形だけを固定できる。
 
-    **源ロードの記憶（`MemoizedCausalComputePort`）はここで既定にしない**。裁定 B は
+    **源ロードの記憶（MemoizedSourceLoadPort を挟んだ合成）はここで既定にしない**。裁定 B は
     その寿命を検定 CLI と 1 ジョブ子プロセスに限っており、常駐プロセスへ既定で載せると
     CSV 更新の検知が mtime 1 点に集約されて更新の見落としが古い値の供給になる。
     どの実装を包むかは合成根（`main/verify_indicator_causality_cli._default_probe`）が決める。

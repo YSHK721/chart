@@ -105,7 +105,7 @@ def _error_response(
 def write_replay_json(handler: Any, response: "tuple[int, Any]") -> None:
     """replay の JSON 応答を書き出す（応答 byte の**唯一の定義**・ISSUE-479 Wave2 3-4）。
 
-    ``response`` は ``(status, payload)``。ヘッダは sim 側（json_get_routes の write_json）と
+    ``response`` は ``(status, payload)``。ヘッダは sim 側（api_shared.json_get_routes の write_json）と
     **異なる**——``Content-Type`` に charset を付けず、``json.dumps`` の既定（ensure_ascii=True）で
     符号化する。front と front の検定が見ているのはこの byte 列なので、骨格を共有する
     ついでに統一してはならない。統一が必要になったら、それは応答仕様の変更として別に扱う。

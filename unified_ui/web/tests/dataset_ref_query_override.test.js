@@ -32,10 +32,18 @@ import path from 'node:path';
 import {
   resolveDatasetRef, DATASET_REF_QUERY_PARAM,
 } from '../../../indigators/indicator_ui/web/js/adapter/front/dataset_ref_query.js';
+// 他 core を名指してよい唯一の形（公開面 URL）の判定は、依存方向ゲートと同じ実装を使う。
+import { PUBLIC_URL_RE } from '../../../tools/js_layer_guard.mjs';
 
 const ROOT_JS = readFileSync(
   fileURLToPath(new URL('../js/unified_root.js', import.meta.url)), 'utf8',
 );
+
+//: URL → リポジトリ実体の対応（配信の地形。production の JS は知らない）。
+const REPO_ROOT = path.resolve(
+  path.dirname(path.dirname(fileURLToPath(import.meta.url))), '..', '..',
+);
+const LIVE_WEB_ROOT = 'indigators/indicator_ui/web';
 
 const DEFAULT_REF = 'jp225_tick';
 const MT5_REF = 'jp225_mt5';
@@ -69,20 +77,38 @@ describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）
     );
   });
 
-  test('root_loads_the_resolver_through_the_live_proxy_path', () => {
-    // Arrange: 宣言されている解決関数のモジュール経路を読む。
-    const declared = ROOT_JS.match(
-      /const DATASET_REF_QUERY\s*=\s*'([^']+)';/,
+  test('root_loads_the_resolver_through_the_public_facade_of_the_live_core', async () => {
+    // Arrange（assert 差し替えの記録・ISSUE-479 Wave2b J-5）:
+    //   旧 assert は宣言リテラル（`const DATASET_REF_QUERY = '…'`）を読み、LIVE_ROOT と
+    //   **同一ディレクトリ・basename が dataset_ref_query.js** であることを固定していた。
+    //   固定していた性質は 2 つ——(a) /live プロキシ経路であること（symlink・相対パスにすると
+    //   router.py:326-331 の realpath 検査で 404 になる）、(b) 経路が実在の実装を指すこと。
+    //   ただし (b) は「同じディレクトリ・同じ basename」という**形の一致**でしか見ておらず、
+    //   live core が内部でファイルを動かせば形は合ったまま 404 になる。
+    //   よって両方とも強い形へ移す——(a) は「公開面 URL であること」（内部階層の名指しを
+    //   そもそも禁じる・G-3 と同じ規律）、(b) は「その公開面が単一ソースと**同一の関数**を
+    //   実際に公開していること」（形ではなく到達性）。
+    //
+    //   経路は定数名ではなく**結線**から辿る。resolveDatasetRef を取り出している import の
+    //   引数（識別子）を読み、その識別子の値を URL とする（定数名が変わっても効き続ける）。
+    const wiring = ROOT_JS.match(
+      /\{\s*resolveDatasetRef\s*\}\s*=\s*await import\(\s*(\w+)\s*\)/,
     );
-    const liveRoot = ROOT_JS.match(/const LIVE_ROOT\s*=\s*'([^']+)';/);
+    expect(wiring, 'resolveDatasetRef を動的 import から取り出していない').not.toBeNull();
+    const declared = ROOT_JS.match(new RegExp(`const\\s+${wiring[1]}\\s*=\\s*'([^']+)';`));
+    expect(declared, `${wiring[1]} の宣言が無い`).not.toBeNull();
+    const url = declared[1];
 
-    // Assert: 既存 LIVE_ROOT と**同じディレクトリ**の /live プロキシ経路であること。
-    //   symlink や相対パスにすると router.py:326-331 の realpath 検査で 404 になる。
-    expect(declared, 'DATASET_REF_QUERY の宣言が無い').not.toBeNull();
-    expect(liveRoot).not.toBeNull();
-    expect(declared[1].startsWith('/live/')).toBe(true);
-    expect(path.posix.dirname(declared[1])).toBe(path.posix.dirname(liveRoot[1]));
-    expect(path.posix.basename(declared[1])).toBe('dataset_ref_query.js');
+    // Assert (a): live core の**公開面**だけを名指す（内部階層は配置換えで無言の 404 になる）。
+    expect(url.startsWith('/live/')).toBe(true);
+    expect(PUBLIC_URL_RE.test(url)).toBe(true);
+
+    // Assert (b): その公開面が実在し、単一ソースと同一の関数・同一の定数を公開している。
+    const facade = await import(
+      path.join(REPO_ROOT, LIVE_WEB_ROOT, url.slice('/live/'.length))
+    );
+    expect(facade.resolveDatasetRef).toBe(resolveDatasetRef);
+    expect(facade.DATASET_REF_QUERY_PARAM).toBe(DATASET_REF_QUERY_PARAM);
   });
 
   // --- 単一ソース厳守（手書き複製の禁止） ---

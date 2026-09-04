@@ -86,14 +86,16 @@ test('instance-based legend callbacks resolve the controller through the catalog
   assert.deepEqual(log, ['tvb.toggleVisible', 'mp.removeInstance']);
 });
 
-test('an unregistered actor-driven id falls back to the market-profile controller (pre-refactor behavior)', () => {
-  // 台帳にあるが未結線＝レジストリ化前と同じ経路を辿る（本リファクタで挙動が変わらない）。
+test('an unregistered actor-driven id is routed to a no-op, never to another indicator controller', () => {
+  // ISSUE-479 Wave2b J-1 OCP-5 S3: 旧版はここで「未登録は MP のコントローラへ退避する
+  //   （レジストリ化前と同じ経路）」を固定していた。それは互換の保存に見えて、**誤配送そのもの**
+  //   を仕様として据えていた——台帳にあるが未結線の指標が MP のオーケストレーションを受け取る。
+  //   引き継ぎ先の性質はより強い: 未登録は誰のコントローラへも届かない。
   const c = makeController();
   const log = [];
-  c._mp = spyController('mp', log);
-  c._actorControllers.set('market_profile', c._mp);
+  c.registerActorController('market_profile', spyController('mp', log));
   c._applyMarketProfile(TVB_DEF, 'default', {});
-  assert.deepEqual(log, ['mp.applyMarketProfile']);
+  assert.deepEqual(log, [], '未登録の指標が他指標のコントローラへ誤配送されている');
 });
 
 test('registerActorController is exposed for composition roots to wire new actors', () => {

@@ -43,8 +43,18 @@ export const PUBLIC_URL_RE = new RegExp(
 // 他 core の**モジュール URL**（.js で終わる絶対パス文字列）。API パス（`/live/candles` 等）は
 //   公開契約であって階層の名指しではないため対象外。末尾の否定先読みは `.json` を除くためで、
 //   これが無いと `/live/data/trade_markers.json` を誤検出する（実測 2026-09-04）。
+//
+// 左端の否定後読みは**相対指定子**を除くためである（実測 2026-09-04）。
+//   `import { t } from '../../replay/timing.js';` の指定子は `/replay/timing.js` を部分文字列として
+//   含み、左端を縛らないと「他 core の名指し」に見える。相対指定子を解決して見るのは G-1
+//   （layerDirectionOffenders の isForeignWebJsPath — 他コアの配信根 `web/js` 配下を offender に
+//   する）の担当で、G-3 の担当は配信 URL（`/` 始まり）だけである。宣言だけ置いて G-1 側に実体が
+//   無かった期間（ISSUE-479 Wave2b・JS レビュー 🟡-2）は、この型の越境がどの検査からも漏れていた。
+//   除くのは直前が「パス断片の続き」に見える文字（英数字・`_`・`.`・`-`）のときのみ。
+//   クォート直後（`'/live/...'`）とテンプレート補間直後（`` `${P}/live/...` ``）は残る
+//   ＝合成された越境 URL を取りこぼさない。
 export const CROSS_CORE_MODULE_URL_RE = new RegExp(
-  `/(?:${CORE_SEGMENTS.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
+  `(?<![A-Za-z0-9_.\\-])/(?:${CORE_SEGMENTS.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
   'g',
 );
 
@@ -126,9 +136,37 @@ export function importSpecifiers(source) {
   return out;
 }
 
+/** 配信根を示すパス断片（`.../web/js/...`）。 */
+const WEB_JS_FRAGMENT = `${path.sep}web${path.sep}js${path.sep}`;
+
+/**
+ * 解決先が**他コアの配信根（`web/js`）配下**か。
+ *
+ * 判定はパス文字列だけで行う（fs を触らない）。存在確認を混ぜると検査項目ごとに I/O が増え、
+ * 「検定 1 巡の読取 − 対象ファイル数 = 0」の計算量ゲートが崩れる。
+ *
+ * @param {string} target 解決済みの絶対パス。
+ * @param {string} jsRoot 走査中の core の配信根。
+ */
+function isForeignWebJsPath(target, jsRoot) {
+  if (!path.relative(jsRoot, target).startsWith('..')) {
+    return false; // 自コアの配信根の内側は層の規則（LAYER_RULES）が見る。
+  }
+  return target.includes(WEB_JS_FRAGMENT);
+}
+
 /**
  * G-1: 層の依存方向。内側の層が外側を import している箇所を列挙する。
- * @returns {string[]} `<相対パス>: <層> → <層>（<指定子>）`
+ *
+ * 併せて**他コアの配信根への相対 import**も列挙する（ISSUE-479 Wave2b・JS レビュー 🟡-2）。
+ *   `import { t } from '../../replay/web/js/usecase/timing.js';` は G-3（越境 URL）の担当外である
+ *   ——G-3 は相対指定子を明示的に除いている（CROSS_CORE_MODULE_URL_RE の左端の否定後読み）。
+ *   相対指定子を解決できるのは本関数だけなので、ここで見なければ**どの検査からも漏れる**。
+ *   以前は「解決先が自コアの層でなければ無条件 skip」で、まさにその穴が空いていた。
+ *   自コアの配信根の外（共有ツール等）への相対 import は従来どおり静か＝加法である。
+ *
+ * @returns {string[]} `<相対パス>: <層> → <層>（<指定子>）` /
+ *   `<相対パス>: <層> → 他コアの配信根（<指定子>）`
  */
 export function layerDirectionOffenders(sources, jsRoot, repoRoot) {
   const offenders = [];
@@ -143,7 +181,15 @@ export function layerDirectionOffenders(sources, jsRoot, repoRoot) {
       }
       const target = path.resolve(path.dirname(absPath), spec);
       const to = layerOf(target, jsRoot);
-      if (to === null || LAYER_RULES[from].includes(to)) {
+      if (to === null) {
+        if (isForeignWebJsPath(target, jsRoot)) {
+          offenders.push(
+            `${path.relative(repoRoot, absPath)}: ${from} → 他コアの配信根（${spec}）`,
+          );
+        }
+        continue;
+      }
+      if (LAYER_RULES[from].includes(to)) {
         continue;
       }
       offenders.push(
@@ -171,14 +217,27 @@ export function foreignReferenceOffenders(sources, names, repoRoot) {
   return offenders.sort();
 }
 
+/** URL の第 1 セグメント（`/sim/report-js/chart.js` → `'sim'`）。core 名でなければ null。 */
+export function coreSegmentOf(url) {
+  const head = url.split('/')[1] ?? '';
+  return CORE_SEGMENTS.includes(head) ? head : null;
+}
+
 /**
- * G-3: 他 core のモジュール URL は、その core の `public/` 配下だけを名指してよい。
+ * G-3: **他** core のモジュール URL は、その core の `public/` 配下だけを名指してよい。
  *
  * 識別子渡しの動的 import（`const P = '/live/js/usecase/x.js'; await import(P);`）は import 文の
  * 走査に現れないため、**文字列そのもの**を見るのが唯一の検出手段である。
+ *
+ * @param {Map<string,string>} sources 走査対象（絶対パス → 本文）。
+ * @param {string} repoRoot 報告用の相対化根。
+ * @param {?string} [ownCore] 走査している core 自身の配信名（`'live' | 'replay' | 'sim' | 'dashboard'`）。
+ *   与えると**自 core を名指す URL**を対象外にする。自 core の名指しは越境ではない——配信根が
+ *   同じで、public/ を経由する必要が無い（実測: sim の合成根は `/sim/report-js/chart.js` を
+ *   配信 URL で読み込む）。**省略時の挙動は従来どおり**（core を問わず全て対象＝加法）。
  * @returns {string[]} `<相対パス>:<行>: <URL>`
  */
-export function crossCoreModuleUrlOffenders(sources, repoRoot) {
+export function crossCoreModuleUrlOffenders(sources, repoRoot, ownCore = null) {
   const offenders = [];
   for (const [absPath, source] of sources) {
     const lines = stripComments(source).split('\n');
@@ -186,6 +245,9 @@ export function crossCoreModuleUrlOffenders(sources, repoRoot) {
       for (const m of line.matchAll(CROSS_CORE_MODULE_URL_RE)) {
         const url = m[0];
         if (PUBLIC_URL_RE.test(url)) {
+          continue;
+        }
+        if (ownCore !== null && coreSegmentOf(url) === ownCore) {
           continue;
         }
         offenders.push(`${path.relative(repoRoot, absPath)}:${i + 1}: ${url}`);

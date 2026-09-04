@@ -74,6 +74,6 @@ market_profile api=controller+compute+gateway 構成）に対し、**役割の�
 
 ## 残課題（承認待ち・ISSUE-087 🟡-3）
 
-- 実行時 sys.path insert の残存は entry point のフォールバック（server.py / _indicator_ui_bridge.py 等・
+- 実行時 sys.path insert の残存は entry point のフォールバック（server.py / api_loader.py 等・
   上記「import 解決の前提」参照）のみ（ライブラリ側は ISSUE-087〜092 で撤去済み）。
   正規パッケージ化（pyproject packages）は技術スタック変更＝依頼者承認後に実施する。

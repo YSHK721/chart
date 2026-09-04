@@ -410,9 +410,9 @@ def _default_probe() -> Any:
     )
     from simulator.sim_ui.adapter.causal_series_probe import CausalSeriesProbe
 
-    # ISSUE-479 S-5: ロード面だけを記憶し、時間足グリッド面と指標計算面は素の実体へ委ねる
-    #   明示合成を使う（拾い先となる __getattr__ を持たない）。旧 shim
-    #   MemoizedCausalComputePort は後方互換のためだけに残っており、本番は通さない。
+    # ISSUE-479 S-5 / Wave2b: ロード面だけを記憶し、時間足グリッド面と指標計算面は素の
+    #   実体へ委ねる明示合成を使う（拾い先となる __getattr__ を持たない）。後方互換の
+    #   ためだけに残っていた旧名 shim は削除済みで、記憶の入口はこの合成 1 つである。
     return CausalSeriesProbe(
         compute_port=memoized_causal_compute_ports(inner=CausalComputeGateway())
     )

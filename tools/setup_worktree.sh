@@ -71,8 +71,34 @@ export VENV_PYTHON="${VENV_PY}"
 export MARKETDATA_DATA_DIR="${DATA_DIR}"
 EOF
 
+# 開発パスの .pth を本チェックアウトの venv へ登録する（ISSUE-482 残承認事項 (b)）。
+#
+#   これが無いと、新しいコンテナ・新しい venv では
+#   tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py の前提検査が赤で始まる。
+#
+#   起動するのは **MAIN_ROOT 側の** install_dev_paths.py でなければならない。
+#   install_dev_paths.py は「自分の置かれたチェックアウト」を登録し、書き込み先は起動に
+#   使った python の venv である。worktree 側のスクリプトを本 venv の python で起動すると、
+#   本チェックアウトの .pth が worktree のパスで上書きされ、以後この venv の素の python は
+#   worktree の実装を読む（共有資源の破壊・ISSUE-279 / ISSUE-363 と同型）。
+#   MAIN_ROOT 側を起動すれば「venv とそれを所有するチェックアウト」の対応が保たれる。
+#
+#   .pth は権威ではなくフォールバックである（権威は serve.sh → tools/dev_paths.sh と
+#   pytest → pyproject.toml の pythonpath）。したがって登録に失敗しても環境構築そのものは
+#   完了扱いにし、黙らずに手当てを名指しする。
+INSTALLER="${MAIN_ROOT}/tools/install_dev_paths.py"
+PTH_NOTE="登録しました（.pth）"
+if [ ! -f "$INSTALLER" ]; then
+  PTH_NOTE="未登録: 登録スクリプトがありません: $INSTALLER"
+  echo "警告: $PTH_NOTE" >&2
+elif ! "$VENV_PY" "$INSTALLER"; then
+  PTH_NOTE="未登録: 次を手で実行してください: $VENV_PY $INSTALLER"
+  echo "警告: .pth の登録に失敗しました。$PTH_NOTE" >&2
+fi
+
 echo "生成しました: $OUT"
 echo "  VENV_PYTHON        = $VENV_PY"
 echo "  MARKETDATA_DATA_DIR= $DATA_DIR"
+echo "  開発パス(.pth)     = $PTH_NOTE"
 echo
 echo "以後 ./unified_ui/serve.sh がこの設定を読みます（symlink は不要です）。"

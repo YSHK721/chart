@@ -89,6 +89,7 @@ worktree が展開するのは **git が追跡しているファイルだけ**�
 | ソースコード（追跡済み） | 来る |
 | `data/marketdata`（gitignore） | **来ない** |
 | `lightweight-charts-python-main/.venv`（gitignore） | **来ない** |
+| venv の `.pth`（開発パス登録・venv の中にある） | **来ない**（新しい venv では未登録） |
 
 一方コードはこれらを**ツリー相対**で探す（`indigators/indicator_ui/serve.sh` の `VENV_PY`、
 `marketdata/paths.py` の既定値）。よって worktree を作った直後は core が起動しない。
@@ -108,6 +109,23 @@ git の common-dir から本チェックアウトを特定し、`dev_paths.local
 export VENV_PYTHON="/workspaces/app/lightweight-charts-python-main/.venv/bin/python"
 export MARKETDATA_DATA_DIR="/workspaces/app/data/marketdata"
 ```
+
+同じコマンドが **開発パスの `.pth` 登録**（`tools/install_dev_paths.py`）も済ませる
+（ISSUE-482）。これが無いと、新しいコンテナ・新しい venv では
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` の前提検査が赤で始まる。
+赤の意味は「環境構築が済んでいない」であって、コードの退行ではない。
+
+> **なぜ本チェックアウト側のスクリプトを起動するのか**
+> `install_dev_paths.py` は「自分の置かれたチェックアウト」を登録し、書き込み先は
+> 起動に使った python の venv である。worktree の venv は本チェックアウトのものなので、
+> worktree 側のスクリプトを起動すると**本チェックアウトの `.pth` が worktree のパスで
+> 上書きされ**、以後この venv の素の python は worktree の実装を読む。
+> `setup_worktree.sh` は必ず `MAIN_ROOT` 側を起動してこれを避ける
+> （`tools/tests/test_setup_worktree_installs_dev_paths.py` が固定）。
+>
+> なお `.pth` は**権威ではなくフォールバック**である。権威は
+> `serve.sh` → `tools/dev_paths.sh` と pytest → `pyproject.toml` の `pythonpath`。
+> 登録に失敗しても `setup_worktree.sh` は環境構築を完了扱いにし、手当てを名指しする。
 
 ### 7.3 やってはいけないこと — **symlink を張る**
 

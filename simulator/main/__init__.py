@@ -39,7 +39,11 @@ from simulator.adapter.execution.tick_model_registry import (
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
-from simulator.adapter.indicator.madiff import ema_series, madiff
+# ISSUE-479 Wave2b: 指標 adapter は**モジュールとして**借りる。`from ... import ema_series`
+#   と書くと main に EMA の名前が生え、外側スライスが Composition Root 経由で計算を
+#   借りられてしまう（0-2 層ゲートが禁じている構造）。名前を生やさなければその経路は
+#   書けなくなる。所有者は adapter ただ 1 つである。
+from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
@@ -202,28 +206,6 @@ def _build_real_tick_model(
     return RealTickModel(frame)
 
 
-class _ResultCapturingInteractor(RunBacktestInteractor):
-    """Interactor を継承し最後の BacktestResult を保持する。
-
-    元の役割: `controller.run()` は終了コードのみを返すため、Presenter/compare へ流す
-    result を main 側で拾うための最小ラッパだった。振る舞いは親 execute と同一
-    （result を控えるのみ）。
-
-    ISSUE-398 以降: `run_backtest` は `controller.execute(request)` の**戻り値**を直接
-    使うため、`last_result` を参照する本番コードは 0 件である（実測）。本ラッパは
-    既存公開 API の削除が承認事項であるため**残している**（削除は別途承認）。
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.last_result: Any = None
-
-    def execute(self, request: Any) -> Any:
-        result = super().execute(request)
-        self.last_result = result
-        return result
-
-
 def _load_dataframe(data_path: Any) -> pd.DataFrame:
     """指標 registry の事前計算用に価格 CSV を DataFrame として読み込む。
 
@@ -272,15 +254,15 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     TC24051901 は indicators.get("madiff") と indicators.get("close") を参照する
     （tc24051901.py を Read で実証）。両系列を事前計算して登録する。
     """
-    madiff_series = madiff(df, period=ma_period, method=ma_method)
+    madiff_series = madiff_indicator.madiff(df, period=ma_period, method=ma_method)
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
 
 
-# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2）。ここは **re-export** であり
-# 写しではない（simulator.main.ema_series is madiff.ema_series を検定が固定する）。
-# 新規の参照は adapter から直接借りること。main 経由の借用は
-# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じる。
-_ema_series = ema_series  # 後方互換の旧名（simulator 内部の既存参照・テスト経路を温存）。
+# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2 / Wave2b）。main は re-export も
+# 旧名別名も置かない——置けば外側スライスがそこから借りられる。内部の 3 箇所は
+# madiff_indicator.ema_series として adapter を直接呼ぶ。main 経由の借用は
+# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じ、
+# 名前が生えていないことは simulator/tests/unit/test_ema_series_ownership.py が固定する。
 
 
 def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndicatorRegistry:
@@ -288,7 +270,7 @@ def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndic
 
     MaSlope は indicators.get("ema") を参照する（ma_slope.py を Read で実証）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry({"ema": ema})
 
 
@@ -301,7 +283,7 @@ def _build_ma_slope_pending_registry(
     始値クォート（bid=open / ask=open+spread×point）から算出するため "open"/"spread" 系列を
     参照する（ma_slope_pending.py を Read で実証）。spread は MT5 CSV の <SPREAD>（ポイント）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry(
         {
             "ema": ema,
@@ -327,11 +309,11 @@ def _build_pro_fit_band_registry(
     """EMA(ma_period, close)・ADX(adx_period)/+DI/−DI・close を登録した IndicatorPort。
 
     ProFitBand は indicators.get("ema"/"adx"/"plus_di"/"minus_di"/"close") を参照する
-    （pro_fit_band.py を Read で実証）。EMA は共有 ``_ema_series``、ADX/±DI は
+    （pro_fit_band.py を Read で実証）。EMA は adapter の ``ema_series``、ADX/±DI は
     ``compute_adx_with_di``（原典 iADX 再現・SPEC §3.5）で事前計算して登録する。
     close は df["close"] をそのまま登録する（TC 既定 registry と同形）。
     """
-    ema = _ema_series(df["close"], ma_period)
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     adx, plus_di, minus_di = compute_adx_with_di(
         df["high"], df["low"], df["close"], period=adx_period
     )
@@ -804,7 +786,7 @@ def build_interactor(
     # 市場開閉カレンダー（config gated・既定 broker→NullCalendar で既定経路不変）。
     session_calendar_impl = _make_session_calendar(determinism.session_calendar)
 
-    interactor = _ResultCapturingInteractor(
+    interactor = RunBacktestInteractor(
         strategy=strategy,
         indicators=registry,
         tick_model=tick_model_impl,
@@ -905,7 +887,9 @@ def run_backtest(
     # `exit_code_for`（唯一の宣言場所）へ委譲する。
     # `build_interactor` 段と実行段は同じ翻訳・同じ戻り値（コード, None）を返すため、
     # 1 つのハンドラに畳んでも観測挙動は変わらない（実行段の失敗時、従来拾っていた
-    # `last_result` は execute が値を返す前に例外へ抜けるので常に None だった）。
+    # 結果保持用の属性は execute が値を返す前に例外へ抜けるので常に None だった）。
+    # ISSUE-479 Wave2b: その結果保持ラッパ自体を削除した。結果の取り出し口は
+    # `execute` の戻り値ただ 1 つであり、2 通りの経路という誤読が構造から消える。
     try:
         controller, request = build_interactor(**meta)
         result = controller.execute(request)

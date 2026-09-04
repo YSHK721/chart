@@ -1,75 +1,153 @@
 // 統合ルートが第 4 モード（dashboard）の表示層を **実際に結線している**ことの固定。
 //
-// なぜソースを読むのか（unified_root_toolbar_wiring.test.js と同じ理由）: `main()` は
-//   document/window のあるブラウザでしか起動しないため node からは実行できない。一方で本件は
-//   **受け口だけ作って呼び出し側が送っていない**という壊れ方が実際に起きる箇所である
-//   （ISSUE-291 の実測: サーバ側に分岐を作っても front が送らなければ無言で死ぬ）。
-//   createModeController 側の `layers` は単体検定で覆われているので、ここでは
-//   「合成根がその口へ dashboard の層を実際に流し込んでいるか」だけを固定する。
+// 壊れ方の想定（ISSUE-291 の実測）: **受け口だけ作って呼び出し側が送っていない**。サーバ側に
+//   分岐を作っても front が送らなければ無言で死ぬ。createModeController 側の `layers` は
+//   単体検定で覆われているので、ここでは「合成根がその口へ dashboard の層を実際に流し込んで
+//   いるか」だけを固定する。
 //
-// 参照実装は sim（`SIM_ROOT` → `setupSimDisplay({doc, host: bottomPane.host(), …})` →
-//   ハンドルを controller へ注入）。dashboard はこれに厳密に倣う（新方式を作らない）。
+// 検定の立て方の変更（ISSUE-479 Wave2b J-5・assert 差し替えの記録）:
+//   旧検定は `main()` が node から実行できないことを理由に、**ソース文字列の一致**で結線を
+//   見ていた（`'/dashboard/js/adapter/front/composition_root_front.js' を含む`・
+//   `await setupDashboardDisplay({` を含む・`host: dashboardArea` を含む・
+//   `layers:` の中に `dashboardHandle` という識別子が在る、等）。これは 2 つの意味で弱い:
+//     1. 綴りが合っていても**実際に呼ばれるか**は分からない（文字列は実行されない）。
+//     2. dashboard という 1 モードの手書き行を固定するので、第 5 モードを足したときに
+//        「足し忘れ」を検出できない（検定自体が OCP 違反を保護していた）。
+//   J-5 で読み込み・据付・登録は `loadDisplayLayers`（MODES の走査）に閉じたので、本検定は
+//   **その関数を実際に走らせて**、表の行から導いた入口・器・引数・登録が成立することを見る。
+//   固定していた性質は 1 つも落とさず、いずれも「dashboard 固有の手書き」から
+//   「表の行から導かれる形」へ移してある（＝第 5 モードにも同じ検査が効く）。
 //
 // 構造は AAA。テスト名は「対象_条件_期待結果」。
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { modeOf } from '../js/mode_table.js';
+import { modeOf, MODES } from '../js/mode_table.js';
+import { loadDisplayLayers } from '../js/unified_root.js';
 
 const SRC = readFileSync(fileURLToPath(new URL('../js/unified_root.js', import.meta.url)), 'utf8');
 const SRC_NO_COMMENTS = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
+const DASHBOARD = modeOf('dashboard');
+
+/** 表が宣言した入口 URL に応じた偽 module を返す spy（実際の読込を差し替える）。 */
+function makeHarness() {
+  const setups = new Map();
+  const importModule = vi.fn(async (url) => {
+    const row = MODES.find((m) => m.displayLayerPath === url);
+    const setup = vi.fn(async (args) => ({ args, enable: vi.fn(), disable: vi.fn() }));
+    setups.set(row.id, setup);
+    return { [row.displayLayerExport]: setup };
+  });
+  const bottomPane = {
+    isUserSized: () => false, setHeightPx: vi.fn(), host: () => 'BOTTOM_PANE_HOST',
+  };
+  const context = {
+    doc: 'DOC',
+    hosts: { bottomPane: 'BOTTOM_PANE_HOST', fullArea: 'FULL_AREA_HOST' },
+    lwc: 'LWC',
+    bottomPane,
+    liveStorage: { getItem: (k) => `stored:${k}`, key: () => null, length: 0 },
+  };
+  return { importModule, setups, context };
+}
+
 describe('unified_root — dashboard 表示層の結線（T-4 拡張点の呼び出し側）', () => {
-  test('dashboard_front_root_is_loaded_through_the_mode_prefix', () => {
-    // Assert: 合成根の URL は当該モードの prefix 配下（router が dashboard core へ回す）。
-    //   prefix は定義表から取る（テスト側にも第 2 の定義を持たない）。
-    const prefix = modeOf('dashboard').prefix;
-    expect(SRC_NO_COMMENTS).toContain(`${prefix}/js/adapter/front/composition_root_front.js`);
+  test('dashboard_layer_is_loaded_from_the_entry_point_declared_by_its_own_table_row', async () => {
+    // Arrange: 旧 assert（ソースに `<prefix>/js/adapter/front/composition_root_front.js` が
+    //   在る）が固定していた「合成根の URL は当該モードの prefix 配下」は、表の行が持つ規則へ
+    //   移した（mode_table の `a_declared_display_layer_path_names_only_the_public_facade_of_its_own_core`）。
+    //   ここではさらに強く、**その URL が実際に読み込まれる**ことを見る。
+    const { importModule, context } = makeHarness();
+
+    // Act
+    await loadDisplayLayers({ importModule, context });
+
+    // Assert
+    expect(importModule).toHaveBeenCalledWith(DASHBOARD.displayLayerPath);
+    expect(DASHBOARD.displayLayerPath.startsWith(`${DASHBOARD.prefix}/`)).toBe(true);
+    // 統合層は入口 URL を自前の定数で持たない（表が唯一源＝置き換え忘れを作らない）。
+    expect(SRC_NO_COMMENTS).not.toContain(DASHBOARD.displayLayerPath);
   });
 
-  test('dashboard_display_setup_is_imported_and_called', () => {
-    // Assert: sim の `setupSimDisplay` と同形の入口を import して呼んでいる。
-    expect(SRC_NO_COMMENTS).toMatch(/\{\s*setupDashboardDisplay\s*\}\s*=\s*await import\(/);
-    expect(SRC_NO_COMMENTS).toMatch(/await setupDashboardDisplay\(\{/);
+  test('the_setup_published_under_the_declared_export_name_is_actually_invoked_once', async () => {
+    // Arrange: 旧 assert（`{ setupDashboardDisplay } = await import(` と
+    //   `await setupDashboardDisplay({` がソースに在る）が固定していた「入口を import して
+    //   呼んでいる」は、**実際に 1 回呼ばれる**ことの観測へ移した。
+    const { importModule, setups, context } = makeHarness();
+
+    // Act
+    await loadDisplayLayers({ importModule, context });
+
+    // Assert
+    expect(setups.get(DASHBOARD.id)).toHaveBeenCalledTimes(1);
+    // モードごとの個別 import 文・個別呼出は本体から消えている（表の走査 1 本に閉じた）。
+    expect(SRC_NO_COMMENTS).not.toMatch(/setupDashboardDisplay/);
+    expect(SRC_NO_COMMENTS).not.toMatch(/setupSimDisplay/);
   });
 
-  test('dashboard_display_is_hosted_by_its_own_full_area_not_the_bottom_pane', () => {
-    // Assert: 置き場所を決めるのは統合層（器の所有者）。dashboard 側は渡された host へ挿すだけ。
-    //
-    // 是正の記録（ISSUE-460）: 旧検定は sim と同じ bottom pane（＝チャートと同一画面の下部）を
-    //   固定していたが、設計書 §4.6 の依頼者裁定は「**チャート画面には置かない**」。
-    //   誤った置き場所を固定する検定だったため、正しい置き場所（専用の全面ホスト）へ改める。
-    const call = SRC_NO_COMMENTS.match(/await setupDashboardDisplay\(\{[\s\S]*?\n\s*\}\)/);
-    expect(call).not.toBeNull();
-    expect(call[0]).not.toMatch(/host:\s*bottomPane\.host\(\)/);
-    expect(call[0]).toMatch(/host:\s*dashboardArea/);
-    expect(call[0]).toMatch(/doc:\s*document/);
+  test('dashboard_display_is_hosted_by_its_own_full_area_not_the_bottom_pane', async () => {
+    // Arrange: 旧 assert（`host: dashboardArea` を含み `host: bottomPane.host()` を含まない）が
+    //   固定していた「置き場所は専用の全面ホストであって sim と同じ下部ペインではない」は、
+    //   **据付関数が実際に受け取った host** の観測へ移した（ISSUE-460 の是正内容は不変）。
+    const { importModule, setups, context } = makeHarness();
+
+    // Act
+    await loadDisplayLayers({ importModule, context });
+    const [args] = setups.get(DASHBOARD.id).mock.calls[0];
+
+    // Assert
+    expect(args.host).toBe(context.hosts.fullArea);
+    expect(args.host).not.toBe(context.hosts.bottomPane);
+    expect(args.doc).toBe(context.doc);
     // 器の生成は専用 View（dashboard_area_view.js）が所有する（合成根は DOM を作らない規約）。
     expect(SRC_NO_COMMENTS).toMatch(/mountDashboardArea\(/);
   });
 
-  test('dashboard_display_receives_a_read_only_live_scoped_storage', () => {
-    // Assert: テンプレート束は live スコープの storage を**読み取り専用**で渡す（T-2）。
-    //   書ける口を渡すと第 4 モードの不具合が live の資産を壊す経路になる。
-    const call = SRC_NO_COMMENTS.match(/await setupDashboardDisplay\(\{[\s\S]*?\n\s*\}\)/);
-    expect(call[0]).toMatch(/readOnlyStorage\(/);
+  test('dashboard_display_receives_a_read_only_live_scoped_storage', async () => {
+    // Arrange: 旧 assert（呼出テキストに `readOnlyStorage(` が在る）が固定していた
+    //   「テンプレート束は読み取り専用」は、**渡された束が実際に書き込みを拒む**ことの
+    //   観測へ移した（T-2）。書ける口を渡すと第 4 モードの不具合が live の資産を壊す経路になる。
+    const { importModule, setups, context } = makeHarness();
+
+    // Act
+    await loadDisplayLayers({ importModule, context });
+    const [args] = setups.get(DASHBOARD.id).mock.calls[0];
+
+    // Assert
+    expect(args.templates.getItem('tpl')).toBe('stored:tpl');
+    expect(() => args.templates.setItem('tpl', 'x')).toThrow(TypeError);
+    expect(() => args.templates.removeItem('tpl')).toThrow(TypeError);
     // 読み取り専用ラッパは葉モジュールから import する（合成根が自前で書かない）。
     expect(SRC_NO_COMMENTS).toMatch(/import\s*\{\s*readOnlyStorage\s*\}\s*from\s*'\.\/readonly_storage\.js'/);
     // スコープを選ぶのは合成根（View ではない）。live スコープであることを明示している。
     expect(SRC_NO_COMMENTS).toMatch(/scopedStorage\([^)]*MODE\.LIVE\)/);
   });
 
-  test('dashboard_layer_is_registered_into_the_layers_map_of_the_controller', () => {
-    // Assert: 端から端まで結線（受け口だけ作って渡さない状態を検出する）。
-    // 定義側（`export function createModeController({…})`）ではなく**呼び出し側**を見る。
+  test('every_declaring_mode_is_registered_into_the_layers_map_handed_to_the_controller', async () => {
+    // Arrange: 旧 assert（createModeController 呼出のテキストに `dashboardHandle` と
+    //   `simHandle` という識別子が在る）が固定していた「端から端まで結線されている」は、
+    //   **宣言した全モードが登録される**ことの観測＋「その Map がそのまま渡る」ことの
+    //   構造固定へ移した。旧形は 2 モードの名前を数え上げていたので、第 5 モードの
+    //   足し忘れを検出できなかった（検定が OCP 違反を保護していた）。
+    const { importModule, context } = makeHarness();
+
+    // Act
+    const layers = await loadDisplayLayers({ importModule, context });
+
+    // Assert: 登録は表の宣言と 1:1（欠けも余りも無い）。
+    expect([...layers.keys()])
+      .toEqual(MODES.filter((m) => m.displayLayerPath).map((m) => m.id));
+    expect(layers.has(DASHBOARD.id)).toBe(true);
+    // 呼び出し側は「作った Map をそのまま渡す」形である（受け口だけ作って渡さない状態の検出）。
+    const built = SRC_NO_COMMENTS.match(/(\w+)\s*=\s*await loadDisplayLayers\(/);
+    expect(built, 'loadDisplayLayers の戻り値を束縛していない').not.toBeNull();
+    expect(SRC_NO_COMMENTS).toMatch(new RegExp(`(?:const|let)\\s+${built[1]}\\b`));
     const call = SRC_NO_COMMENTS.match(/modeController = createModeController\(\{[\s\S]*?\n\s*\}\);/);
     expect(call).not.toBeNull();
-    expect(call[0]).toMatch(/layers:/);
-    expect(call[0]).toContain('dashboardHandle');
-    // sim の層も同じ口から渡す（層の受け取り方を 2 通りに分けない）。
-    expect(call[0]).toContain('simHandle');
+    expect(call[0]).toMatch(new RegExp(`layers(:\\s*${built[1]})?,`));
   });
 
   test('the_root_never_builds_the_dashboard_dom_itself', () => {

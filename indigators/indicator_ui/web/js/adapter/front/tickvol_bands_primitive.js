@@ -18,40 +18,29 @@
 //   トップレベル定数は機能名で前置しないと他モジュールと衝突する（PAIR_DIM_ALPHA の前例）。
 
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+// lwc ライフサイクル定型（attach・paneView・再描画要求・_draw フック）の単一ソース
+//   （ISSUE-479 Wave2b J-6）。本ファイルに残るのは帯の状態と塗りだけ。
+import { SeriesPrimitiveLifecycle } from './series_primitive_lifecycle.js';
 
-export class TickvolBandsPrimitive {
+export class TickvolBandsPrimitive extends SeriesPrimitiveLifecycle {
   constructor() {
+    super();
     // 段階 5-E: 帯の色は注入で受ける（canvas は CSS 変数を解決できない）。未注入時の既定だけを
     //   台帳から引くため、テーマなしの見た目は現行と厳密に同一。
     this._fill = CHROME_CURRENT.tickvolBand;
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
     this._ranges = []; // [{from, to}]（バー time・空＝塗らない）
-    this._paneView = {
-      renderer: () => ({ draw: (target) => this._draw(target) }),
-      zOrder: () => 'bottom',
-    };
   }
 
-  attached({ chart, series, requestUpdate }) {
-    this._chart = chart;
-    this._series = series;
-    this._requestUpdate = requestUpdate;
-  }
-
-  detached() {
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
+  // 系列の下＝背景側に塗る宣言（基底の paneView がこの宣言を見て zOrder キーを生やす）。
+  //   宣言しない primitive の paneView には zOrder キー自体が生えない。
+  _zOrder() {
+    return 'bottom';
   }
 
   // 塗る帯（バー time の閉区間）を設定し再描画要求。空配列で消灯。
   setRanges(ranges) {
     this._ranges = Array.isArray(ranges) ? ranges : [];
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
+    this._update();
   }
 
   // 配信されたクロム色から自分の 1 点を取り込む。全域的（§7.3 LSP）: null・非オブジェクト・
@@ -61,13 +50,7 @@ export class TickvolBandsPrimitive {
       return;
     }
     this._fill = slots.tickvolBand;
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
-  }
-
-  paneViews() {
-    return [this._paneView];
+    this._update();
   }
 
   // バー time → media x（バー中心）。解決できなければ null（＝当該帯は描かない）。

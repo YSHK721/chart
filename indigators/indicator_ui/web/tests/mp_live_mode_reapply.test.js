@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 import { get } from '../js/usecase/catalog.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 import { GrowthCoordinator } from '../js/adapter/front/mp_live_mode_coordinator.js';
 
 const noop = () => {};
@@ -43,12 +44,13 @@ function fakeMp() {
 // 実 coordinator を resolver/growthResolver/reapply に結線した controller を組む（MP 適用済み・FOLLOW 初期）。
 async function setupWired({ withMp = true, wireResolver = true } = {}) {
   const mp = withMp ? fakeMp() : null;
-  let controller;
+  // S3: 再適用の呼び先は MP の協働子そのもの（本番の合成根と同型の遅延参照で吸収する）。
+  let mpController;
   const coord = new GrowthCoordinator({
     defaultMode: 'normal',
-    reapply: () => controller.reapplyMarketProfileMode(),
+    reapply: () => mpController.reapplyMode(),
   });
-  controller = new IndicatorController({
+  const controller = new IndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: { compute: async (r) => ({ ok: true, generation: r.generation ?? 0, series: [] }) },
     persistence: {
@@ -57,14 +59,17 @@ async function setupWired({ withMp = true, wireResolver = true } = {}) {
     },
     renderer: { renderLine: noop, renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop },
     document: null,
-    marketProfile: mp,
-    mpModeResolver: wireResolver ? (m) => coord.resolve(m) : null,
-    mpGrowthResolver: wireResolver ? () => coord.isGrowing() : null,
+  });
+  // S3: アクターと解決役は合成根と同じ登録経路で渡す（ctor 引数ではない）。
+  mpController = registerMarketProfile(controller, {
+    actor: mp,
+    modeResolver: wireResolver ? (m) => coord.resolve(m) : null,
+    growthResolver: wireResolver ? () => coord.isGrowing() : null,
   });
   if (withMp) {
     await controller.applyIndicator('market_profile', 'default'); // FOLLOW 初期＝normal+growing で追加。
   }
-  return { controller, coord, mp };
+  return { controller, coord, mp, mpController };
 }
 
 test('FOLLOW 復帰: reapply は growing=true を適用し onLiveTick(forming) を起動、refresh(base累積) しない', async () => {
@@ -111,17 +116,17 @@ test('往復: ANALYSIS(static,refresh)→FOLLOW(growing,onLiveTick) が交互に
   assert.equal(mp._mode, 'normal', '往復しても表示モードは normal のまま（ticklive 化しない）');
 });
 
-test('MP 不在 no-op: marketProfile 未注入でも reapply は例外を出さない', async () => {
-  const { controller } = await setupWired({ withMp: false });
+test('MP 不在 no-op: アクター未注入でも reapply は例外を出さない', async () => {
+  const { mpController } = await setupWired({ withMp: false });
 
-  await assert.doesNotReject(() => controller.reapplyMarketProfileMode());
+  await assert.doesNotReject(() => mpController.reapplyMode());
 });
 
-test('連動未配線 no-op: mpModeResolver 未注入なら reapply はアクターへ触れない', async () => {
-  const { controller, mp } = await setupWired({ wireResolver: false });
+test('連動未配線 no-op: mode 解決役 未注入なら reapply はアクターへ触れない', async () => {
+  const { mpController, mp } = await setupWired({ wireResolver: false });
   mp.calls.length = 0;
 
-  await controller.reapplyMarketProfileMode();
+  await mpController.reapplyMode();
 
-  assert.equal(mp.calls.length, 0, 'resolver 未注入(連動なし)は reapply が no-op＝byte 不変');
+  assert.equal(mp.calls.length, 0, '解決役 未注入(連動なし)は reapply が no-op＝byte 不変');
 });

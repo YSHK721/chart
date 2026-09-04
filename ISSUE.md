@@ -13604,11 +13604,50 @@ TestTheIndigatorsEntryShadowsNothing::test_no_exposed_name_had_a_resolution_befo
 を呼ぶこと。未実施のため、**新しいコンテナ・新しい venv では本検定が赤で始まる**
 （これは仕様＝前提の不在を緑で覆い隠さない設計）。失敗メッセージが打つべきコマンドを示す。
 
+### 補記: 残承認事項 (b) を実施し RESOLVED（2026-09-04・ISSUE-479 Wave2b 項 2）
+
+承認のうえ (b) を実施した。実施内容と、実施中に発見した**事故要因 1 件**を記録する。
+
+**1. 自動化**: `tools/setup_worktree.sh` が環境変数ファイルの生成に続けて `.pth` を登録する。
+
+**2. 発見した事故要因（素直に実装すると共有資源を壊す）**:
+`install_dev_paths.py` は「自分の置かれたチェックアウト」（`__file__` の `parents[1]`）を
+登録し、書き込み先は `site.getsitepackages()[0]`＝**起動に使った python の venv** である。
+一方 `setup_worktree.sh` は worktree から起動され、venv は**本チェックアウトのもの**を指す。
+したがって worktree 側の `install_dev_paths.py` を本 venv の python で起動すると、
+**本チェックアウトの `.pth` が worktree のパスで上書きされる**。以後この venv の素の python は
+worktree の実装を読む——worktree から共有資源を壊す事故であり、ISSUE-279 / ISSUE-363 と同型
+（`pyproject.toml` が「絶対パスを書かないこと」と警告しているのと同じ壊れ方）。
+
+対処: 起動するのは必ず **`MAIN_ROOT` 側の** `install_dev_paths.py` とした。これで
+「venv とそれを所有するチェックアウト」の対応が保たれ、`install_dev_paths.py` の docstring が
+言う位置づけ（＝本チェックアウトでの対話シェル用フォールバック）とも整合する。
+この対応は `tools/tests/test_setup_worktree_installs_dev_paths.py::
+test_the_installer_that_runs_is_the_one_in_the_main_checkout` が機械的に固定する
+（偽の本チェックアウト＋偽の worktree を組み、渡された絶対パスが `MAIN_ROOT` 側であることを検定）。
+
+**3. 失敗時の扱い**: `.pth` は権威ではなくフォールバックであり、権威である 2 経路
+（`serve.sh` → `tools/dev_paths.sh`、pytest → `pyproject.toml` の `pythonpath`）は
+`.pth` の失敗に影響されない。よって登録に失敗しても環境構築は完了扱いとし、打つべき
+コマンドを名指しして警告する（黙って続けない）。これも検定で固定した。
+
+**4. 赤の意味の説明**: 前提検査
+（`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`）の失敗文言に
+「新しい venv・新しいコンテナでは `.pth` を登録するまで赤で始まる／コードの退行ではない」を
+追記し、直し方として `./tools/setup_worktree.sh` を名指しした。文言の内容自体も検定で固定した。
+
+**5. 手順文書**: `docs/git-worktree-workflow.md` §7.1 の「来ないもの」表へ venv の `.pth` を追加し、
+§7.2 へ登録の説明と上記 2 の注意を追記した（文書と手順の食い違いを検定で固定）。
+
+**実測**: `pytest tools/tests -q` 緑。本チェックアウトでの実走は冪等（`最新:` を出力し 1 バイトも書かない）。
+
+- **ステータス更新**: `RESOLVED`（残承認事項なし）
+
 ---
 
 ## ISSUE-483: [検定] Wave2 再レビュー 🟡-1 の「real_ticks ケース C をピン化」は前提不成立 — 採取値が sha256("") になる
 
-- **ステータス**: `OPEN`（着手前に中断。代替案は承認事項）
+- **ステータス**: `RESOLVED`（2026-09-04・案 1 を承認のうえ実施）
 - **重大度**: 中（誤ったピンを入れると後続 Wave を誤誘導するため、入れないことが正）
 - **起票**: 2026-09-04 / ブランチ `fix/issue-479-solid-wave2`
 
@@ -13665,6 +13704,55 @@ tmp_path に小さな parquet を書いている。
 
 いずれも「ケース C」の意味を変えるため、どちらを採るかは承認事項として保留する。
 
+### 解決: 案 1 を実施（2026-09-04・ISSUE-479 Wave2b 項 3）
+
+`simulator/tests/integration/test_run_backtest_fingerprint.py` へケース C を追加した。
+合成素材（16 バーの comma 形式 CSV ＋ 1 バー 5 ティックの hive layout parquet）を tmp_path に
+書き、`tick_model="real_ticks"` で `run_backtest` を実走して採取した。
+
+**採取値（2 回実行一致・決定的）**:
+
+```
+exit 0  trades 4
+stats_sha256   6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12
+trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
+```
+
+`trades_sha256` は sha256("")＝`e3b0c442...` では**ない**（起票時に棄却した形を脱している）。
+空でないことは検定自身が主張する（`test_the_anchor_is_not_an_empty_result` が
+`trade_count >= 2` と `trades_sha256 != sha256("")` を assert する）。
+
+**設計中に実測で判明した重要な非対称性（ピンの射程）**:
+
+同じバー・同じティックで `tick_model` を `open_only` に替えて比較したところ、
+
+| ダイジェスト | real_ticks vs open_only |
+|---|---|
+| `stats_sha256` | **異なる**（6aeea6e6… vs ef75155e…） |
+| `trades_sha256` | **一致する**（d1d9b1aa…） |
+
+つまり本プロファイルで tick モデルを識別しているのは `stats_sha256` だけである。
+理由: `entry_price_basis="current_open"` では、MT5 の every-tick 意味論どおり新規バーの成行が
+ティック価格ではなく**バー open クォート**で約定するため、確定トレードはバー系列だけで決まる
+（`test_composition_real_ticks.py` が「約定がティック価格に**ならない**こと」を値で固定して
+いるのと同じ性質）。
+
+したがって「`trades_sha256` をピンすれば tick 経路が錨で固定される」という素朴な想定は
+**成立しない**。この非対称性ごと検定に書き、`test_the_tick_model_actually_changes_the_outcome`
+が (1) stats は tick モデルで変わること (2) trades は変わらないこと の両方を assert する。
+これによりケース C が「real_ticks と名乗りながら実は bar 経路の指紋」へ静かに退化したら赤になる
+（起票時に指摘した「偽の被覆」と同型の失敗を、今度は検定が捕まえる）。
+
+**錨の識別力の実証**: `_run_c` の tick モデルを `open_only` へ差し替える変異を注入すると、
+指紋一致検定と識別力検定の 2 件が赤になることを実走で確認した（変異は確認後に戻した）。
+
+**併せて実施**: モジュール全体に掛かっていた `skipif`（MT5 フィクスチャ不在）を、それを要する
+ケース A / B の 2 クラスへ移した。モジュールに掛けたままだと、フィクスチャの無い環境で
+自前素材のケース C まで一緒に消え、錨が効かない（起票時に案 2 の欠点として挙げた事象と同型）。
+ケース A / B の assert は 1 行も変えていない。
+
+**実測**: `pytest simulator/tests/integration -q` → 296 passed。
+
 ### Wave 2 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2）
 
 - **規模**: 69 コミット・+20,799/−4,081 行・TDD バッチ 8 本（W2T1〜W2T8）＋是正 2 回。全段階 Red 実観測・計算量テスト付き。
@@ -13686,3 +13774,41 @@ tmp_path に小さな parquet を書いている。
   ALLOWED 導出集合の RATCHET 化・_mp 名指し 2 箇所の参照点統一・js_layer_guard の replay/sim 展開（自核除外要）。
 
 ## ISSUE-483 は同日起票済み（real_ticks 指紋錨の前提不成立・代替案 2 件は承認事項）
+
+## ISSUE-484: [検定] chart_template_persistence_integration の MP 失敗経路（TC-P05 / TC-P08）が MP アクター不在でも緑
+
+- **ステータス**: OPEN
+- **重大度**: 中（検査の空振り。実害は「MP 復元失敗時の構成消失（D-1）」の回帰を検出できないこと）
+- **発見**: ISSUE-479 Wave2b J-1 S3 のテスト移行中（2026-09-04）。
+- **実測**: `registerMarketProfile(controller, { actor: marketProfile })` を
+  `{ actor: null }` へ変異させても 8/8 緑のまま（変異実行で確認）。すなわち
+  `fakeMpActor({ failOnEnable: true })` は当該 2 検定の合否に寄与していない。
+- **S3 以前からの状態である**: 移行前は同じ actor が ctor 経由で届いており、届いても届かなくても
+  同じ結果になっていた。S3 が作った欠陥ではない（移行時の変異検査で露呈しただけ）。
+- **原因（推定・未確定）**: 「MP 復元が失敗しても applied.v1 が空にならない」という assert が、
+  MP 復元の失敗以外の経路（テンプレート適用そのもの）でも成立してしまう。失敗の注入点が
+  結果に効いていない。
+- **対策方針（根治）**: 検定を「MP 復元が実際に失敗したこと」を前提として観測する形へ変える
+  （actor の setEnabled 呼出と例外発生を測ってから applied を見る）。actor 不在の変異で赤に
+  なることを検出力として同時に固定する。
+- **対象外**: 本 Wave の射程（MP 供給経路の是正）ではないため未着手。
+
+### Wave 2b 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2b）
+
+- **完了項目（全てユーザー承認済み）**: 孤児・旧名削除 5 件（参照ゼロ実測→git rm・検査は不在検定へ強化）／
+  J-5 unified_root 表駆動化（第 5 モード＝MODES 1 行を vitest 実証・RATCHET 台帳 0 件・assert 差し替え全数を
+  より強い形へ）／J-1 S3（MP 名指し 0 件・供給は合成根 1 本・テスト移行 52 assert 全数監査で弱体化 0）＋
+  S2 拡張（ColorTheme ROLES 登録・生 host 注入是正・検出器拡張）／J-6 SeriesPrimitiveLifecycle 基底
+  （byte 等価＝paneViews キー集合一致・共有 symlink 1 本追加=mode 120000 相対）／GetRouteResponder の
+  api_shared 中立化（replay_ui→sim_ui 辺 0 件）／.pth 自動化（setup_worktree 組込・worktree 上書き事故要因を
+  検定固定）／ISSUE-483 合成 tick 錨（stats_sha256 が real_ticks を識別・trades_sha256 は識別しない非対称を
+  検定に明記）／hostKind 導出化。
+- **レビュー**: 承認（🔴 0・assert 移行 52 件全数監査・🟡 2 件は同 Wave 内で根治済み f9b10cd/6a80c14＝
+  アクター契約 7 面の実体化施行・G-1 他コア相対 import 検出）。
+- **失敗挙動の裁定**: core 1 つの停止で live が死なない（明示エラー付き縮退）を正とする。
+  「可用モードのみボタン配線」への改善は Wave 3 候補。
+- **残（Wave 3 候補・台帳済み）**: sw_rewrite API_SEGMENTS 申告化・dual-root 縮小・段階 B 2 件・
+  ISSUE-484（既存空振り検定）・simHandle 公開面撤去・live_public_api の named 化＋facade 検定の全公開面適用・
+  G-1 共有スイートの indicator_ui/dashboard_ui 移行・unified_ui の G-1 錨・pre-existing 4 offender（JS 合成根）。
+- **実 UI 確認（マージ後・ユーザー実施）**: レビュー最終版リスト（A: live MP 5 項・B: replay MP 4 項・
+  C: unified 7 項・D: 新環境 3 項）に従うこと。サーバ再起動（serve.sh 経由・ポート 8000/8280 固定）が前提。

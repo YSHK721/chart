@@ -31,9 +31,13 @@ export const STATE_STORE_HOST_CONTRACT = Object.freeze({
     '_isMarketProfile', '_actorControllerFor', '_gatewayAdapter', '_draw',
     '_renderLegend', '_renderDialogList', '_syncTimeframeButtons',
   ]),
+  // ISSUE-479 Wave2b: `_restoreInFlight` を契約から外した。ISSUE-181 で復元中 Promise の所有者は
+  //   本協働子（this._restoreInFlight）へ移っており、host 側の同名面はもう読んでいない。
+  //   契約に残っていたのは移設時の取り残しで、コメント中の記述（旧 host._restoreInFlight）が
+  //   「使用あり」と誤判定されて隠れていた（走査がコメントを剥がすようになって露呈）。
   fields: Object.freeze([
     '_persistence', '_state', '_catalog', '_meta', '_datasetRef', '_renderer',
-    '_timeframe', '_restoreInFlight',
+    '_timeframe',
   ]),
   // 合成時の注入次第で不在/ null になりうる面（fresh インスタンスでは未在席）。
   optionalFields: Object.freeze(['_loadCandles', '_timeframeObserver']),

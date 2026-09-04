@@ -8,12 +8,13 @@
 //   `createPriceLine` を使わないのは、`chart_renderer.js:596-598` の `_createPriceLines` が
 //   **指標スロット紐付け**専用で流用できないため（実測）。
 //
-// lwc ライフサイクル（attached/detached/paneViews）は pair_primitive_base.js にも同型の記述がある。
-//   共通基底へ括り出さなかったのは、pair_primitive_base が `_pairs` / `_highlight` /
-//   `setPairs` / `setHighlight` という**ペア固有の状態**と一体化しており、そのまま継承すると
-//   本 primitive に意味の無い公開面が生えるため（ISP/LSP）。ライフサイクルだけの基底を新設する
-//   案は、既存の共有モジュール（売買マーカーが使用中）の変更＝本スライスの範囲外であり、
-//   承認事項として別途提案する。ここで写しているのは lwc が要求する定型（業務規則ではない）。
+// lwc ライフサイクル（attached/detached/paneViews）の写しは **解消済み**（ISSUE-479 Wave2b J-6）。
+//   かつてここには「pair_primitive_base が `_pairs` / `_highlight` / `setPairs` / `setHighlight`
+//   というペア固有の状態と一体化しており、そのまま継承すると本 primitive に意味の無い公開面が
+//   生える（ISP/LSP）。ライフサイクルだけの基底を新設する案は承認事項として別途提案する」と
+//   書いてあった。その承認が下り、ライフサイクル定型だけを持つ基底
+//   `series_primitive_lifecycle.js` が新設されたため、本 primitive はそれを継承する。
+//   ペア固有の公開面は継承されない（`setPairs` / `setHighlight` は生えない＝ISP/LSP を維持）。
 //
 // なぜ掴み判定（handleAt）を primitive が持つか:
 //   掴める位置は「いま描かれている位置」でなければならない。drag 側で価格→座標を再計算すると
@@ -32,6 +33,8 @@ import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
 //   モーダルの欄・アーム中バー・右クリックの解除項目と同じ表が 4 つ目に増え、
 //   ゴーストと線で価格の書式が割れる（ISSUE-368 で実際に起きた症状と同型）。
 import { priceOnLine, priceTargetLabel } from './price_format.js';
+// lwc ライフサイクル定型（attach・paneView・再描画要求・_draw フック）の単一ソース。
+import { SeriesPrimitiveLifecycle } from './series_primitive_lifecycle.js';
 
 // 掴めない線の種別（読み取り専用）。ロスカットは口座状態から導出される結果であって入力ではない。
 const READ_ONLY_KINDS = new Set(['losscut']);
@@ -75,12 +78,10 @@ const TAG_GAP = 2;                 // タグと線・タグとタグのすき間
 //   1540px で終わり、軸は 1540px から始まる）。幅の内側に収める限り食い込まない。
 const RIGHT_MARGIN_PX = 6;
 
-export class PriceLevelLinesPrimitive {
+export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
   constructor() {
+    super();
     this._levels = null;
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
     // 直近の描画で確定した y 座標表（掴み判定の唯一の根拠）。[{ kind, index, y }]
     this._handleYs = [];
     // 配信済みのクロム色（配信前＝台帳の現行値）。setChromeColors だけが書き換える。
@@ -93,26 +94,21 @@ export class PriceLevelLinesPrimitive {
     this._tagTextColor = CHROME_CURRENT.layoutBackground;
     // 価格の表示桁（銘柄仕様）。解決できないときは undefined＝参照実装どおり整数表示。
     this._digits = undefined;
-    this._paneView = { renderer: () => ({ draw: (target) => this.draw(target) }) };
   }
 
   // ---- lwc ISeriesPrimitive ライフサイクル ----
 
-  attached({ chart, series, requestUpdate }) {
-    this._chart = chart;
-    this._series = series;
-    this._requestUpdate = requestUpdate;
-  }
-
+  // 座標源を手放したら y 表も捨てる（描いていない線を掴めてはならない）。
+  //   ライフサイクルの他の 3 項目（chart/series/requestUpdate の授受）は基底が持つ。
   detached() {
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
+    super.detached();
     this._handleYs = [];
   }
 
-  paneViews() {
-    return [this._paneView];
+  // 基底の paneView が呼ぶ描画フック。実体は公開 `draw(target)` のまま置く——単体検定が
+  //   `primitive.draw(target)` を直接叩いており、これは既存の公開契約である。
+  _draw(target) {
+    this.draw(target);
   }
 
   // ---- 状態 ----
@@ -124,18 +120,14 @@ export class PriceLevelLinesPrimitive {
    */
   setSymbolSpec(spec) {
     this._digits = spec ? spec.digits : undefined;
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
+    this._update();
   }
 
   // 水準を差し替えて再描画を要求する（attach 前は要求だけ no-op）。
   //   levels: { direction, entryPrices[], stopPrice, takePrice|null, losscutPrice|null }
   setLevels(levels) {
     this._levels = levels || null;
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
+    this._update();
   }
 
   // 配信されたクロム色から自分のぶんを取り込む。全域的（§7.3 LSP）: null・非オブジェクト・
@@ -157,9 +149,7 @@ export class PriceLevelLinesPrimitive {
     if (typeof slots.layoutBackground === 'string') {
       this._tagTextColor = slots.layoutBackground;
     }
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
+    this._update();
   }
 
   // ---- 掴み判定 ----

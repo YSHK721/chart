@@ -11,30 +11,20 @@
 //   - setPairs(pairs) / setHighlight(i) は状態を更新し requestUpdate を発火（attach 前は no-op）。
 //   - paneViews() は単一 paneView を返し、その renderer().draw(target) が _draw(target) を呼ぶ。
 //   - _draw(target) はサブクラスが override する描画フック（基底は no-op）。
+//
+// ライフサイクル定型（上記のうち attach・paneView・再描画要求・_draw フック）は
+//   SeriesPrimitiveLifecycle が単一ソースとして持つ（ISSUE-479 Wave2b J-6）。本ファイルに残るのは
+//   **ペア固有の状態**（_pairs / _highlight / setPairs / setHighlight）だけである。
+//   公開契約そのものは 1 つも変わっていない（基底へ移しただけ）。
 
-export class PairPrimitiveBase {
+import { SeriesPrimitiveLifecycle } from './series_primitive_lifecycle.js';
+
+export class PairPrimitiveBase extends SeriesPrimitiveLifecycle {
   // pairs: [{ i, side, win, entry:{time,price}, exit:{time,price} }]
   constructor(pairs = []) {
+    super();
     this._pairs = pairs;
     this._highlight = null; // null=非ハイライト、i=トレード i を強調・他を減光。
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
-    // pane view（renderer を返す）。draw が現在の状態を読むため単一インスタンスで足りる。
-    this._paneView = { renderer: () => ({ draw: (target) => this._draw(target) }) };
-  }
-
-  // lwc が attach 時に chart/series/requestUpdate を供給する。
-  attached({ chart, series, requestUpdate }) {
-    this._chart = chart;
-    this._series = series;
-    this._requestUpdate = requestUpdate;
-  }
-
-  detached() {
-    this._chart = null;
-    this._series = null;
-    this._requestUpdate = null;
   }
 
   // pairs を差し替えて再描画要求（load 時）。
@@ -48,18 +38,4 @@ export class PairPrimitiveBase {
     this._highlight = i;
     this._update();
   }
-
-  // lwc へ再描画を要求（attach 前は no-op）。
-  _update() {
-    if (typeof this._requestUpdate === 'function') {
-      this._requestUpdate();
-    }
-  }
-
-  paneViews() {
-    return [this._paneView];
-  }
-
-  // 描画フック。サブクラスが override する（基底は no-op）。
-  _draw(_target) {}
 }

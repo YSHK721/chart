@@ -7,8 +7,8 @@
     そのまま使う agg.contacts 形状 [{time, price, dir}] へ純変換する。
 
 本モジュールは numpy/pandas を import しない。ma_values（bar_index→MA 値）は上流
-（export_report_payload.py・pandas 許容）が _ema_series から構築して注入する（DIP: 指標計算 IO は
-外側に閉じ、本結線は plain 値のみ受ける）。ticks_fn も同様に注入する（full_scan 時のみ usecase が
+（export_report_payload.py・pandas 許容）が指標 adapter の公開 EMA 系列から構築して注入する
+（DIP: 指標計算 IO は外側に閉じ、本結線は plain 値のみ受ける）。ticks_fn も同様に注入する（full_scan 時のみ usecase が
 呼ぶ）。preview（full_scan=False）は確定足 close クロスのみで tick を一切読まない安全経路。
 """
 from __future__ import annotations

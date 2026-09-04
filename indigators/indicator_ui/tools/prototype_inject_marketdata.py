@@ -19,9 +19,9 @@ catalog.js``）の既定値に一致させる。
     ＋ venv の .pth へ一本化した。本ファイルだけは撤去できない——``_API_DIR``
     （``indicator_ui/api``）が挿すのは adapter / framework / domain という
     **汎用名**であり、スライス間で衝突するため台帳へ載せられない（台帳の規律：載せるのは
-    衝突しない固有名のトップパッケージだけ）。同じ理由で
-    replay_ui/adapter/_indicator_ui_bridge の _ensure_paths も維持されている。
-    つまりこれは撤去漏れではなく、bridge と同一の規律による意図的な例外である。
+    衝突しない固有名のトップパッケージだけ）。同じ理由で、ロード面の所有者
+    （``indigators/indicator_ui/api_loader.py``）のパス準備も維持されている。
+    つまりこれは撤去漏れではなく、ロード面と同一の規律による意図的な例外である。
     例外が 1 件だけであることは
     ``tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`` が固定する。
 """

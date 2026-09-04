@@ -18,7 +18,9 @@ import {
   bodyClassOf,
   nextMode,
   hasChartApi,
+  usesBottomPane,
   CHART_API_BODY_CLASS,
+  BOTTOM_PANE_HOST_KIND,
 } from '../js/mode_table.js';
 
 describe('mode_table — モード定義表', () => {
@@ -86,6 +88,87 @@ describe('mode_table — モード定義表', () => {
     expect(hasChartApi('sim')).toBe(false);
     // 未知モードは「持たない」側へ倒す（持つと誤認して操作させる方が有害）。
     expect(hasChartApi('nope')).toBe(false);
+  });
+
+  // --- ISSUE-479 Wave2 J-5: 表示層の入口も表が持つ（unified_root の表駆動化）------------
+  //
+  // なぜ表へ載せるか: 従来 unified_root は sim / dashboard の合成根 URL を**自分の定数**で持ち、
+  //   `import` 文・destructuring・setup 呼出・layers の 4 箇所へモードごとの行を書いていた。
+  //   モードを 1 つ足すたびに 4 箇所を同時に直す義務が生まれ、1 箇所でも取り残すと
+  //   **無症状で誤動作する**（押しても器が出ない）。入口も表の属性にすれば、第 5 モードの追加は
+  //   表の 1 行で完結し、統合層の本体は 1 行も変わらない（OCP）。
+  //
+  // 属性 3 つ:
+  //   displayLayerPath   … 表示層の入口 module の URL（自 core の公開面のみ・持たないモードは null）
+  //   displayLayerExport … その module が公開する据付関数の名前
+  //   hostKind           … 統合層が渡す器の種別（器の所有者は統合層＝core は id を知らない）
+  test('each_row_declares_a_display_layer_entry_point_or_declares_it_has_none', () => {
+    // Assert: 属性が「在るか無いか」ではなく**全行に在る**こと（欠けた行は無音の失敗になる）。
+    for (const row of MODES) {
+      expect(Object.keys(row)).toEqual(expect.arrayContaining([
+        'displayLayerPath', 'displayLayerExport', 'hostKind',
+      ]));
+    }
+    // 単一 chart の上で働く core（chartApi あり）は自前の表示層を読み込まない。
+    //   live はチャートそのもの、replay の層は live 合成根が boot.replayHandle として返す。
+    for (const row of MODES.filter((m) => m.chartApi)) {
+      expect(row.displayLayerPath).toBe(null);
+      expect(row.displayLayerExport).toBe(null);
+      expect(row.hostKind).toBe(null);
+    }
+  });
+
+  test('a_core_without_the_chart_api_declares_its_own_display_layer', () => {
+    // Assert: 自前の器を出す層（chartApi なし）は入口を必ず宣言する。宣言が無ければ統合層は
+    //   その層を読み込めず、モードへ入っても何も出ない（ISSUE-291 と同型の「無言の死」）。
+    const hosted = MODES.filter((m) => !m.chartApi);
+    expect(hosted.length).toBeGreaterThan(0);
+    for (const row of hosted) {
+      expect(typeof row.displayLayerPath).toBe('string');
+      expect(typeof row.displayLayerExport).toBe('string');
+      expect(row.displayLayerExport.length).toBeGreaterThan(0);
+      expect(typeof row.hostKind).toBe('string');
+      expect(row.hostKind.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('a_declared_display_layer_path_names_only_the_public_facade_of_its_own_core', () => {
+    // Assert: 入口は **自 core の公開面**（`/<prefix>/js/public/*.js`）だけを名指す。内部階層
+    //   （adapter/front/…）を名指すと core 側の配置換えで統合層が無言の 404 になる。これらは
+    //   識別子渡しの動的 import で読まれるため import 走査には原理的に現れない（J-4 の実測）。
+    const declared = MODES.filter((m) => m.displayLayerPath);
+    expect(declared.length).toBeGreaterThan(0); // 空振り（走査 0 件で緑）を塞ぐ。
+    for (const row of declared) {
+      expect(row.displayLayerPath).toMatch(
+        new RegExp(`^${row.prefix}/js/public/[^/]+\\.js$`),
+      );
+    }
+  });
+
+  test('bottom_pane_usage_is_derived_from_host_kind_not_declared_twice', () => {
+    // Assert: 「どの器へ挿すか」と「body へ um-bottom-pane-mode を付けるか」は同じ事実である。
+    //   以前は表が両方を別々に宣言しており、片方だけ直された日に静かにずれるため、突合を
+    //   検定で塞いでいた。ISSUE-479 Wave2b 項 4 で **2 つ目の宣言を撤去**し、hostKind からの
+    //   導出に一本化した。よって突合の検定は「導出であること」の検定へ反転する。
+    //
+    //   弱体化していないことの説明: 旧検定が保証していたのは「属性 ≡ 導出」だった。
+    //   本検定はその等式を `usesBottomPane` の返り値について保証したうえで、さらに
+    //   **第 2 の宣言が存在しない**ことまで保証する（ずれる余地そのものを消す）。
+    for (const row of MODES) {
+      // (1) 第 2 の宣言が無い（ここに属性が復活したら、また 2 箇所を直す羽目になる）。
+      expect(Object.prototype.hasOwnProperty.call(row, 'bottomPane')).toBe(false);
+      // (2) 消費者が見る値は hostKind から導出される。
+      expect(usesBottomPane(row.id)).toBe(row.hostKind === BOTTOM_PANE_HOST_KIND);
+    }
+    // (3) 空振り（全行 false で等式が自明に成立）を塞ぐ。真・偽の両方が実在する。
+    expect(MODES.some((m) => usesBottomPane(m.id))).toBe(true);
+    expect(MODES.some((m) => !usesBottomPane(m.id))).toBe(true);
+  });
+
+  test('unknown_mode_does_not_use_the_bottom_pane', () => {
+    // Assert: 未知値は慎重側（使わない）へ倒す＝導出化で全域性が失われていないこと。
+    expect(usesBottomPane('nope')).toBe(false);
+    expect(usesBottomPane(undefined)).toBe(false);
   });
 
   test('table_and_rows_are_frozen', () => {

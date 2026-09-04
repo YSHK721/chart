@@ -151,7 +151,10 @@ def _fixture_missing() -> bool:
         return True
 
 
-pytestmark = pytest.mark.skipif(
+#: ケース A / B は実 MT5 フィクスチャを要する。ケース C（ISSUE-483 案 1）は tmp_path に
+#: 自前の系列を書くため要さないので、skip はモジュール全体ではなく**当該クラスに掛ける**
+#: （モジュールに掛けるとフィクスチャの無い環境で錨まで一緒に消える）。
+_needs_mt5_fixture = pytest.mark.skipif(
     _fixture_missing(), reason="MT5 突合フィクスチャ（JP225 M1）が無い"
 )
 
@@ -174,6 +177,7 @@ def run_b(tmp_path_factory):
     return _run(tmp_path_factory.mktemp("b"), trading_start=_TRADING_START)
 
 
+@_needs_mt5_fixture
 class TestRunBacktestNumericFingerprint:
     """`run_backtest` の実走結果が既知のダイジェストと一致すること。"""
 
@@ -188,6 +192,7 @@ class TestRunBacktestNumericFingerprint:
         assert run_a["trades_sha256"] == run_a_again["trades_sha256"]
 
 
+@_needs_mt5_fixture
 class TestRunBacktestHonoursTradingStart:
     """`trading_start` が実行へ効くこと（是正前は黙って捨てられていた・ISSUE-398）。
 
@@ -219,3 +224,205 @@ class TestRunBacktestHonoursTradingStart:
         """
         assert run_b["trade_count"] == 1164
         assert run_b["stats"]["profit"] == pytest.approx(-6173.9, abs=0.05)
+
+
+# ======================================================================================
+# ケース C: `tick_model="real_ticks"` の指紋錨（ISSUE-483 案 1・承認のうえ実施）
+# ======================================================================================
+#
+# 起票時に棄却された形（ISSUE-483）:
+#     ケース A/B と同一プロファイル（実 MT5 JP225）で `tick_model` だけを `real_ticks` へ
+#     差し替える案は、tick-store が本チェックアウトに存在しないため実走が
+#     **trades 0 件**になり、`trades_sha256` が sha256("") になった。固定されるのは
+#     空入力のダイジェストであり、`real_ticks` の数値挙動を 1 ビットも拘束しない。
+#
+# 案 1（本ケース）:
+#     `test_composition_real_ticks.py` と同様に tmp_path へ**自前の tick 系列**を書く。
+#     錨は成立するが、MT5 JP225 フィクスチャの指紋ではなくなる（A/B と素材が異なる）。
+#     素材が違うため A/B の値とは比較しない——A/B は「実データの指紋」、C は
+#     「tick 経路が動いていることの指紋」という別々の役目を負う。
+#
+# 実測で確かめた性質（本ケースを設計するにあたって・2026-09-04）:
+#   1. 確定トレードは **4 件**（空ではない）。`trades_sha256` は sha256("") ではない。
+#   2. 同一入力の 2 回実行でダイジェストが一致する（決定的）。
+#   3. **同じバー・同じ tick で `tick_model` を `open_only` に替えると `stats_sha256` が
+#      変わる**。これが「tick 経路を実際に通った」ことの証拠である。
+#
+# 重要な限定（ピンの射程・誤読を防ぐために明記する）:
+#     `trades_sha256` は `open_only` と **一致する**（実測）。本プロファイルは
+#     `entry_price_basis="current_open"` であり、MT5 の every-tick 意味論では新規バーの
+#     成行はティック価格ではなく**バー open クォート**で約定するため、確定トレードは
+#     バー系列だけで決まりティックに依らない（`test_composition_real_ticks.py` が
+#     「約定がティック価格に**ならない**こと」を値で固定しているのと同じ性質）。
+#     したがって tick モデルを識別しているのは `stats_sha256`（ティックごとに評価される
+#     含み損益・ドローダウン）である。この非対称性を検定自身が主張する
+#     （`test_the_tick_model_actually_changes_the_outcome`）ので、将来ケース C が
+#     「実は open_only と同じものを測っていた」状態へ退化したら赤になる。
+
+#: 2024-01-01T00:00:00Z。comma 形式 CSV の time 列は UNIX 秒 int が契約
+#: （CsvOHLCRepository._extract は値をそのまま Bar.time に載せる）。
+_C_EPOCH = 1_704_067_200
+
+#: 合成 M1 バー（open, high, low, close, spread[points]）。
+#: SMA(2) の向きが複数回反転する形にして、確定トレードが**複数**成立するようにした。
+_C_BARS = [
+    (1.1000, 1.1010, 1.0990, 1.0995, 0),
+    (1.1000, 1.1010, 1.0985, 1.0990, 0),
+    (1.0990, 1.1050, 1.0990, 1.1040, 200),
+    (1.1040, 1.1100, 1.1040, 1.1090, 0),
+    (1.1090, 1.1120, 1.1080, 1.1110, 0),
+    (1.1110, 1.1130, 1.0900, 1.0950, 0),
+    (1.0950, 1.0960, 1.0880, 1.0900, 0),
+    (1.0900, 1.0910, 1.0850, 1.0870, 0),
+    (1.0870, 1.1000, 1.0870, 1.0990, 100),
+    (1.0990, 1.1080, 1.0985, 1.1070, 0),
+    (1.1070, 1.1120, 1.1060, 1.1110, 0),
+    (1.1110, 1.1120, 1.0950, 1.0980, 0),
+    (1.0980, 1.0990, 1.0900, 1.0920, 0),
+    (1.0920, 1.0930, 1.0860, 1.0880, 0),
+    (1.0880, 1.1010, 1.0880, 1.1000, 150),
+    (1.1000, 1.1090, 1.0995, 1.1080, 0),
+]
+
+#: 採取値（2026-09-04 実測・2 回実行一致）。空 trades では**ない**ことを検定が主張する。
+_C_STATS_SHA256 = "6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12"
+_C_TRADES_SHA256 = "d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53"
+_C_TRADE_COUNT = 4
+
+#: 空トレードのダイジェスト（ISSUE-483 が棄却した値）。錨がここへ退化したら赤にする。
+_EMPTY_TRADES_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _write_c_bars(path: Path) -> Path:
+    lines = ["time,open,high,low,close,volume,spread"]
+    for i, (o, h, low, c, spread) in enumerate(_C_BARS):
+        lines.append(f"{_C_EPOCH + 60 * i},{o},{h},{low},{c},1.0,{spread}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_c_ticks(root: Path, symbol: str = "EURUSD") -> Path:
+    """hive layout（<root>/<symbol>/year=/month=/day=）へ日別 parquet を書く。
+
+    1 バーにつき 5 ティック（open→high→low→中間→close）。timestamp は naive UTC・昇順
+    （`simulator/adapter/repository/_tick_frame.py` の TICK_COLUMNS 契約）。
+    """
+    import pandas as pd
+
+    part = root / symbol / "year=2024" / "month=01" / "day=01" / "part.parquet"
+    part.parent.mkdir(parents=True, exist_ok=True)
+    base = pd.Timestamp("2024-01-01T00:00:00")
+    rows = []
+    for i, (o, h, low, c, _spread) in enumerate(_C_BARS):
+        bar_start = base + pd.Timedelta(seconds=60 * i)
+        for offset, price in ((5, o), (17, h), (29, low), (41, (h + low) / 2), (53, c)):
+            rows.append(
+                {
+                    "timestamp": bar_start + pd.Timedelta(seconds=offset),
+                    "bid": round(price - 0.0001, 5),
+                    "ask": round(price + 0.0001, 5),
+                    "last": round(price, 5),
+                    "volume": 1.0,
+                }
+            )
+    pd.DataFrame(rows).to_parquet(part, index=False)
+    return root
+
+
+def _run_c(tmp_path: Path, *, tick_model: str = "real_ticks", tag: str = "c") -> dict:
+    """合成素材で `run_backtest` を実走してダイジェストを採る。"""
+    bars_csv = _write_c_bars(tmp_path / "synth_m1.csv")
+    tick_root = _write_c_ticks(tmp_path / "ticks")
+    out = tmp_path / tag
+    exit_code, result = run_backtest(
+        output_dir=out,
+        data_path=bars_csv,
+        symbol="EURUSD",
+        period="M1",
+        ea_name="TC24051901",
+        initial_deposit=10_000.0,
+        contract_size=1.0,
+        volume_min=0.01,
+        volume_max=100.0,
+        volume_step=0.01,
+        stops_level=0,
+        digits=5,
+        point_size=0.0001,
+        leverage=100.0,
+        ma_period=2,
+        ma_method="sma",
+        lot_size=1.0,
+        stop_loss_points=500,
+        take_profit_points=3000,
+        config_overrides={
+            "tick_model": tick_model,
+            "entry_price_basis": "current_open",
+        },
+        tick_store_root=tick_root,
+    )
+    assert exit_code == 0
+    assert result is not None, "run_backtest が成功時に result を返していない"
+    digest = _digest(result, out / "stats.json")
+    digest["exit_code"] = exit_code
+    return digest
+
+
+@pytest.fixture(scope="module")
+def run_c(tmp_path_factory):
+    return _run_c(tmp_path_factory.mktemp("c"))
+
+
+@pytest.fixture(scope="module")
+def run_c_again(tmp_path_factory):
+    return _run_c(tmp_path_factory.mktemp("c2"))
+
+
+@pytest.fixture(scope="module")
+def run_c_open_only(tmp_path_factory):
+    return _run_c(tmp_path_factory.mktemp("c_oo"), tick_model="open_only", tag="oo")
+
+
+class TestRealTicksFingerprint:
+    """`tick_model="real_ticks"` 経路の指紋錨（ISSUE-483 案 1）。"""
+
+    def test_the_real_ticks_run_matches_the_known_fingerprint(self, run_c):
+        assert run_c["trade_count"] == _C_TRADE_COUNT
+        assert run_c["stats_sha256"] == _C_STATS_SHA256
+        assert run_c["trades_sha256"] == _C_TRADES_SHA256
+
+    def test_the_anchor_is_not_an_empty_result(self, run_c):
+        """ISSUE-483 が棄却した「空 trades の指紋」へ退化していないこと。
+
+        検定自身がこれを主張することが本ケースの存在条件である。件数が 0 になれば
+        `trades_sha256` は sha256("") になり、ピンは緑のまま何も拘束しなくなる。
+        """
+        assert run_c["trade_count"] >= 2, "複数トレードが成立していない（錨が痩せている）"
+        assert run_c["trades_sha256"] != _EMPTY_TRADES_SHA256, (
+            "trades_sha256 が sha256('') です。tick-store が空で実走が 0 トレードに"
+            " なっています（ISSUE-483 で棄却された形）。"
+        )
+
+    def test_the_run_is_deterministic_across_invocations(self, run_c, run_c_again):
+        """2 回実行で一致しないなら、上の固定値は無意味（ゲートが不安定）。"""
+        assert run_c["stats_sha256"] == run_c_again["stats_sha256"]
+        assert run_c["trades_sha256"] == run_c_again["trades_sha256"]
+
+    def test_the_tick_model_actually_changes_the_outcome(self, run_c, run_c_open_only):
+        """同じ素材で `open_only` に替えると結果が変わる（tick 経路を通った証拠）。
+
+        これが無いと、ケース C は「real_ticks と名乗っているが実は bar 経路の指紋」へ
+        静かに退化しうる（ISSUE-483 の「偽の被覆」と同型の失敗）。
+
+        識別しているのは `stats_sha256` である。`trades_sha256` は open_only と一致する
+        ——本プロファイルは entry_price_basis="current_open" で、新規バーの成行は
+        バー open クォートで約定するため確定トレードがティックに依らないからである
+        （実測。この非対称性ごと固定して、将来どちらが動いても気づけるようにする）。
+        """
+        assert run_c["stats_sha256"] != run_c_open_only["stats_sha256"], (
+            "tick_model を替えても stats が変わりません。real_ticks 経路を実際には"
+            " 通っていない可能性があります（錨が bar 経路の指紋に退化）。"
+        )
+        assert run_c["trades_sha256"] == run_c_open_only["trades_sha256"], (
+            "確定トレードが tick 依存になりました。current_open のバー open クォート"
+            " 約定という前提が変わっています（退行の可能性・要調査）。"
+        )

@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 import { ChartTemplateController } from '../js/adapter/front/chart_template_controller.js';
 import { get, list } from '../js/usecase/catalog.js';
 import { timeframeLabels } from '../js/adapter/front/timeframe_menu.js';
@@ -119,8 +120,11 @@ async function buildWiring({
     datasetRef: 'jp225_tick',
     timeframe: '5m',
     loadCandles,
-    marketProfile,
   });
+  // S3: MP は ctor 引数ではなく**合成根と同じ登録経路**で結線する。ctor へ渡し続けると
+  //   キーは黙って無視され、fakeMpActor({ failOnEnable: true }) が一度も発火しない
+  //   （「注入したつもりで何も届いていない」テストになる）。
+  registerMarketProfile(controller, { actor: marketProfile });
   const gateway = fakeGateway(templateSet ? { bindings, templates: templateSet } : { bindings });
   const templates = new ChartTemplateController(controller, {
     gateway, validTimeframes: VALID_TIMEFRAMES, now: () => 2000,

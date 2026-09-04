@@ -6,13 +6,13 @@
 
 既存 indicator_ui コードは無改変（import して呼ぶのみ）。
 
-所有者について（ISSUE-479 Wave2 X-1）: 本モジュールは
-``simulator/replay_ui/adapter/_indicator_ui_bridge.py`` からの逐語移設である。
-消費スライスは 3 つ（replay_ui / dashboard_ui / sim_ui）あり、所有者がその 1 人だと
-他の 2 人が私有名（先頭がアンダースコアのモジュール）を越境 import することになる。供給している
-ものの置き場所は供給側である。旧位置は所有者へ委譲するだけの再公開層として残す
-（削除は承認事項）。移設で変えたのは根の導出（ファイル位置に応じた parents の段数）
-1 点のみで、それは simulator/replay_ui/tests/unit/test_api_loader_owns_the_bridge.py が固定する。
+所有者について（ISSUE-479 Wave2 X-1 / Wave2b）: 本モジュールは replay_ui の adapter 配下に
+あった私有モジュールからの逐語移設である。消費スライスは 3 つ（replay_ui / dashboard_ui /
+sim_ui）あり、所有者がその 1 人だと他の 2 人が私有名（先頭がアンダースコアのモジュール）を
+越境 import することになる。供給しているものの置き場所は供給側である。移行中は旧位置を
+再公開層として残していたが、Wave2b で削除した——経路は本モジュールただ 1 本である。
+移設で変えたのは根の導出（ファイル位置に応じた parents の段数）1 点のみで、それは
+simulator/replay_ui/tests/unit/test_api_loader_owns_the_bridge.py が固定する。
 
 なぜ _ensure_paths の insert を台帳（tools/dev_paths.txt）へ移さないのか:
     ここが挿すのは indicator_ui api の**汎用名**（adapter / framework / domain）を含む
@@ -60,7 +60,7 @@ def _ensure_paths(api_path: Any, repo_root: Any) -> "tuple[Path, Path]":
     mp_api = root / "indigators" / "market_profile" / "api"
 
     # ISSUE-087 🟡-3: 固有名（marketdata / market_profile_api）は venv の .pth（tools/
-    #   install_dev_paths.py）が恒久解決する。本 bridge は結線点として汎用名パッケージ
+    #   install_dev_paths.py）が恒久解決する。本 loader は結線点として汎用名パッケージ
     #   ``adapter``（indicator_ui api）のみを追加する。.pth 未登録環境はフォールバックで従来どおり。
     paths = [str(api)]
     try:
