@@ -27,6 +27,7 @@ import { SERIES_RENDER_HOST_CONTRACT } from '../js/adapter/front/series_render_r
 import { STATE_STORE_HOST_CONTRACT } from '../js/adapter/front/indicator_state_store.js';
 import { DIALOG_HOST_CONTRACT } from '../js/adapter/front/indicator_dialog_controller.js';
 import { STYLE_HOST_CONTRACT } from '../js/adapter/front/series_style_applier.js';
+import { MIN_BARS_HOST_CONTRACT } from '../js/adapter/front/min_bars_ledger.js';
 import { get } from '../js/usecase/catalog.js';
 
 const noop = () => {};
@@ -98,6 +99,12 @@ const ROLES = [
     source: '../js/adapter/front/series_style_applier.js',
     contract: STYLE_HOST_CONTRACT,
     slot: '_style',
+  },
+  {
+    name: 'MinBarsLedger',
+    source: '../js/adapter/front/min_bars_ledger.js',
+    contract: MIN_BARS_HOST_CONTRACT,
+    slot: '_minBarsLedger',
   },
 ];
 

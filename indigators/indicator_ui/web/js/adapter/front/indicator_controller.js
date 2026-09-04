@@ -36,6 +36,9 @@ import {
 // 色の決定（基本設計_指標カラーテーマ.md §4.5・§4.8・§5.8）と、その適用は
 //   SeriesStyleApplier（協働子・ISSUE-479 Wave2 J-1 SRP）が担う。
 import { STYLE_HOST_CONTRACT, SeriesStyleApplier } from './series_style_applier.js';
+// ISSUE-283 の学習台帳（必要バー数）と、その読み取り規則（usecase の純関数）。
+import { MIN_BARS_HOST_CONTRACT, MinBarsLedger } from './min_bars_ledger.js';
+import { requiredBarsOf } from '../../usecase/required_bars.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
@@ -131,19 +134,12 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   optionalFields: Object.freeze(['_untilTime']),
 });
 
-// ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す（未申告は null）。
-//   文言は解析しない（error.violations の構造化面だけを見る）。指標名で分岐しない＝
-//   申告する指標が増えても本関数は無改変（OCP）。
-export function requiredBarsOf(error) {
-  const list = error && Array.isArray(error.violations) ? error.violations : [];
-  for (const v of list) {
-    const n = v && Number(v.requiredBars);
-    if (Number.isFinite(n) && n > 0) {
-      return n;
-    }
-  }
-  return null;
-}
+// ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す純関数の単一ソースは
+//   usecase/required_bars.js（ISSUE-479 Wave2 J-1 SRP で adapter から移した）。既存の import 面
+//   （本モジュールからの取り出し）を壊さないため再エクスポートする。
+//   ※ 「export { X } from モジュール」の再 export 構文は build.mjs の stripModuleSyntax
+//     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export にする。
+export { requiredBarsOf };
 
 export class IndicatorController {
   constructor({
@@ -195,11 +191,9 @@ export class IndicatorController {
     this._state = emptyState();
     // instanceId -> { def } 描画済みメタ（凡例再描画・recompute 用）。
     this._meta = new Map();
-    // ISSUE-283: instanceId -> その指標が計算に要する最小バー数（サーバが violations で申告）。
-    //   リプレイは計算窓を limit=bar+1 に絞るため、要件に届かない間は**必ず失敗する**。
-    //   結果が捨てられると分かっている要求は発行しない（回数を間引くのではなく、要求そのものを消す）。
-    //   窓が要件に達すれば自動的に再開する。params/variant 変更時は忘れる（別の要件になりうる）。
-    this._minBars = new Map();
+    // ISSUE-283: 最小バー数の学習台帳（instanceId -> 必要バー数）を委譲する協働子。
+    //   学習内容は協働子が所有する（ISSUE-479 Wave2 J-1 SRP・ISSUE-181「状態も一緒に移す」）。
+    this._minBarsLedger = new MinBarsLedger(createHostView(this, MIN_BARS_HOST_CONTRACT));
     // 再計算バッチの競合ガード（深さカウンタ＋時限）は RecomputeGate が所有する
     //   （ISSUE-181: 状態も一緒に移す。TimeframeController の host フィールド直接代入も解消）。
     //   ライブ更新（LiveUpdater）は独自フラグを持たず isRecomputing() を参照し、再計算中の
@@ -775,22 +769,25 @@ export class IndicatorController {
   //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
   //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
   // ISSUE-283: 学習済みの最小バー数（未学習・未初期化は null＝知識なし）。
+  //   台帳未構築（`Object.create(prototype)` で ctor を通さない既存テスト構成）でも安全に
+  //   縮退する＝抽出前の `this._minBars ? … : null` と同じ防御を保つ（byte 挙動不変）。
   _knownMinBars(instanceId) {
-    return this._minBars ? (this._minBars.get(instanceId) ?? null) : null;
+    return this._minBarsLedger ? this._minBarsLedger.known(instanceId) : null;
   }
 
   // ISSUE-283: 学習を忘れる（計算成功・params/variant 変更）。未初期化でも安全に no-op。
   _forgetMinBars(instanceId) {
-    if (this._minBars) {
-      this._minBars.delete(instanceId);
-    }
+    this._minBarsLedger?.forget(instanceId);
   }
 
   // ISSUE-283: 次に送る計算窓の本数（不明なら null＝スキップ判定に使わない）。
   _computeWindowBars() {
-    const tf = this._tf;
-    const n = tf && typeof tf.limit === 'function' ? tf.limit() : null;
-    return Number.isFinite(n) ? n : null;
+    return this._minBarsLedger ? this._minBarsLedger.windowBars() : null;
+  }
+
+  // ISSUE-283: この instance の要求を見送るべきか（実体は MinBarsLedger.shouldDefer）。
+  _shouldDeferCompute(instanceId) {
+    return this._minBarsLedger ? this._minBarsLedger.shouldDefer(instanceId) : null;
   }
 
   async recomputeAllApplied({ mode = 'full', preRender = null, skip = null } = {}) {
@@ -820,10 +817,12 @@ export class IndicatorController {
       }
       // ISSUE-283: 要件（最小バー数）が分かっており、現在の窓がそれに満たないなら発行しない。
       //   知識が無い（未学習・窓が不明）なら**必ず送る**＝安全側（誤ってスキップしない）。
-      const need = this._knownMinBars(inst.instanceId);
-      const windowBars = this._computeWindowBars();
-      if (need != null && windowBars != null && windowBars < need) {
-        deferred.push({ instanceId: inst.instanceId, indicatorId: inst.indicatorId, requiredBars: need, windowBars });
+      const defer = this._shouldDeferCompute(inst.instanceId);
+      if (defer) {
+        deferred.push({
+          instanceId: inst.instanceId, indicatorId: inst.indicatorId,
+          requiredBars: defer.requiredBars, windowBars: defer.windowBars,
+        });
         continue;
       }
       targets.push(inst);
@@ -847,8 +846,8 @@ export class IndicatorController {
       if (s.status === 'rejected') {
         // ISSUE-283: サーバが申告した必要バー数を学習し、以後は満たすまで発行しない。
         const required = requiredBarsOf(s.reason);
-        if (required != null && this._minBars) {
-          this._minBars.set(inst.instanceId, required);
+        if (required != null && this._minBarsLedger) {
+          this._minBarsLedger.learn(inst.instanceId, required);
         }
         failures.push({
           instanceId: inst.instanceId, indicatorId: inst.indicatorId, error: s.reason,
