@@ -61,7 +61,7 @@ const SIM_PANE_CONTENT_MARGIN_PX = 4;
 const LIVE_ROOT = '/live/js/public/live_root_api.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
 //   それを参照する（手書き複製の禁止）。
-const DATASET_REF_QUERY = '/live/js/public/live_public_api.js';
+const LIVE_PUBLIC_API = '/live/js/public/live_public_api.js';
 // リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
 //   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
 //   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
@@ -308,6 +308,7 @@ export async function loadDisplayLayers({
   context = {},
 } = {}) {
   const layers = new Map();
+  const hosts = context.hosts || {};
   for (const row of MODES) {
     if (!row.displayLayerPath) {
       continue; // 単一 chart の上で働く core（chartApi あり）は別 module を読まない。
@@ -322,7 +323,6 @@ export async function loadDisplayLayers({
     }
     const extrasOf = LAYER_EXTRAS[row.id];
     const extras = typeof extrasOf === 'function' ? extrasOf(context) : {};
-    const hosts = context.hosts || {};
     layers.set(row.id, await setup({ doc: context.doc, host: hosts[row.hostKind], ...extras }));
   }
   return layers;
@@ -367,7 +367,7 @@ async function main() {
   let resolveDatasetRef;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
-    ({ resolveDatasetRef } = await import(DATASET_REF_QUERY));
+    ({ resolveDatasetRef } = await import(LIVE_PUBLIC_API));
     ({ ReplayIndicatorController, setupReplay, ReplayMarketProfileActor, installReplayBar } =
       await import(REPLAY_PUBLIC_API));
   } catch (err) {
