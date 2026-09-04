@@ -26,6 +26,7 @@ from simulator.adapter.controller import BacktestController
 from simulator.usecase.models import AccountSpec
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import ConfigError, DataError
+from simulator.usecase.run_backtest import RunBacktestInteractor
 
 
 #: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
@@ -125,6 +126,55 @@ class TestTheResultComesFromExecute:
         exit_code, result = simulator_main.run_backtest(data_path="-", output_dir=None)
         assert exit_code == SUCCESS_EXIT_CODE
         assert result is sentinel
+
+    def test_the_result_capturing_wrapper_is_gone(self):
+        """結果を控えるためだけのラッパが残っていないこと（ISSUE-479 Wave2b 削除4）。
+
+        `execute` の戻り値を使う形になった時点で `last_result` を控える理由は消えた。
+        ラッパを残すと「結果は 2 通りの経路で取れる」という誤読を招き、いずれ
+        `last_result` を読む呼出が生えて (a)(b) の欠陥が再発する。
+        """
+        assert not hasattr(simulator_main, "_ResultCapturingInteractor")
+
+    def test_build_interactor_wires_the_plain_interactor(self, tmp_path):
+        """`build_interactor` が組む Interactor が素の `RunBacktestInteractor` であること。
+
+        型だけでなく `last_result` を持たないことまで見る（サブクラス化して属性を
+        足し直しても緑にならないようにする）。
+        """
+        # TC24051901 は comma 形式（CsvOHLCRepository・COMMA_SPEC の 7 列）を読む。
+        csv = tmp_path / "bars.csv"
+        csv.write_text(
+            # time は epoch 秒 int（domain.Bar の時刻表現契約）。
+            "time,open,high,low,close,volume,spread\n"
+            "1735779600,39400.5,39400.5,39400.5,39400.5,1,480\n"
+            "1735779660,39402.0,39447.0,39402.0,39447.0,9,100\n",
+            encoding="utf-8",
+        )
+        controller, _request = simulator_main.build_interactor(
+            data_path=str(csv),
+            symbol="JP225",
+            period="M1",
+            ea_name="TC24051901",
+            initial_deposit=100000.0,
+            contract_size=1.0,
+            volume_min=0.1,
+            volume_max=100.0,
+            volume_step=0.1,
+            stops_level=0,
+            digits=1,
+            point_size=0.1,
+            leverage=100.0,
+            ma_period=2,
+            ma_method="ema",
+            lot_size=0.1,
+            stop_loss_points=100,
+            take_profit_points=100,
+        )
+
+        interactor = controller._interactor
+        assert type(interactor) is RunBacktestInteractor
+        assert not hasattr(interactor, "last_result")
 
     def test_the_request_built_by_build_interactor_is_the_one_executed(self, monkeypatch):
         """検証した request と実行する request が同一インスタンスであること。

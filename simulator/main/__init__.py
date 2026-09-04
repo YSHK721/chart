@@ -206,28 +206,6 @@ def _build_real_tick_model(
     return RealTickModel(frame)
 
 
-class _ResultCapturingInteractor(RunBacktestInteractor):
-    """Interactor を継承し最後の BacktestResult を保持する。
-
-    元の役割: `controller.run()` は終了コードのみを返すため、Presenter/compare へ流す
-    result を main 側で拾うための最小ラッパだった。振る舞いは親 execute と同一
-    （result を控えるのみ）。
-
-    ISSUE-398 以降: `run_backtest` は `controller.execute(request)` の**戻り値**を直接
-    使うため、`last_result` を参照する本番コードは 0 件である（実測）。本ラッパは
-    既存公開 API の削除が承認事項であるため**残している**（削除は別途承認）。
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.last_result: Any = None
-
-    def execute(self, request: Any) -> Any:
-        result = super().execute(request)
-        self.last_result = result
-        return result
-
-
 def _load_dataframe(data_path: Any) -> pd.DataFrame:
     """指標 registry の事前計算用に価格 CSV を DataFrame として読み込む。
 
@@ -808,7 +786,7 @@ def build_interactor(
     # 市場開閉カレンダー（config gated・既定 broker→NullCalendar で既定経路不変）。
     session_calendar_impl = _make_session_calendar(determinism.session_calendar)
 
-    interactor = _ResultCapturingInteractor(
+    interactor = RunBacktestInteractor(
         strategy=strategy,
         indicators=registry,
         tick_model=tick_model_impl,
@@ -909,7 +887,9 @@ def run_backtest(
     # `exit_code_for`（唯一の宣言場所）へ委譲する。
     # `build_interactor` 段と実行段は同じ翻訳・同じ戻り値（コード, None）を返すため、
     # 1 つのハンドラに畳んでも観測挙動は変わらない（実行段の失敗時、従来拾っていた
-    # `last_result` は execute が値を返す前に例外へ抜けるので常に None だった）。
+    # 結果保持用の属性は execute が値を返す前に例外へ抜けるので常に None だった）。
+    # ISSUE-479 Wave2b: その結果保持ラッパ自体を削除した。結果の取り出し口は
+    # `execute` の戻り値ただ 1 つであり、2 通りの経路という誤読が構造から消える。
     try:
         controller, request = build_interactor(**meta)
         result = controller.execute(request)

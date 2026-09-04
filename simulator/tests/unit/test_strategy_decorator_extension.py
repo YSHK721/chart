@@ -2,8 +2,8 @@
 
 背景（基本設計書 §12.4 E-2・依頼者承認済み）:
     「既存ファイル無改変」（§12.3-2）に対する承認済み例外の 1 つ。`build_interactor` は
-    戦略を `_EA_FACTORIES` で選んで `_ResultCapturingInteractor` へ直接渡しており、
-    **外から包む拡張点が無い**（OCP 違反）。承認された最小改変は任意引数
+    戦略を `_EA_FACTORIES` で選んで Interactor へ直接渡しており、**外から包む拡張点が
+    無い**（OCP 違反）。承認された最小改変は任意引数
     `strategy_decorator`（既定 None）の追加のみ。
 
 固定する不変条件:
