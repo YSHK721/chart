@@ -13604,6 +13604,45 @@ TestTheIndigatorsEntryShadowsNothing::test_no_exposed_name_had_a_resolution_befo
 を呼ぶこと。未実施のため、**新しいコンテナ・新しい venv では本検定が赤で始まる**
 （これは仕様＝前提の不在を緑で覆い隠さない設計）。失敗メッセージが打つべきコマンドを示す。
 
+### 補記: 残承認事項 (b) を実施し RESOLVED（2026-09-04・ISSUE-479 Wave2b 項 2）
+
+承認のうえ (b) を実施した。実施内容と、実施中に発見した**事故要因 1 件**を記録する。
+
+**1. 自動化**: `tools/setup_worktree.sh` が環境変数ファイルの生成に続けて `.pth` を登録する。
+
+**2. 発見した事故要因（素直に実装すると共有資源を壊す）**:
+`install_dev_paths.py` は「自分の置かれたチェックアウト」（`__file__` の `parents[1]`）を
+登録し、書き込み先は `site.getsitepackages()[0]`＝**起動に使った python の venv** である。
+一方 `setup_worktree.sh` は worktree から起動され、venv は**本チェックアウトのもの**を指す。
+したがって worktree 側の `install_dev_paths.py` を本 venv の python で起動すると、
+**本チェックアウトの `.pth` が worktree のパスで上書きされる**。以後この venv の素の python は
+worktree の実装を読む——worktree から共有資源を壊す事故であり、ISSUE-279 / ISSUE-363 と同型
+（`pyproject.toml` が「絶対パスを書かないこと」と警告しているのと同じ壊れ方）。
+
+対処: 起動するのは必ず **`MAIN_ROOT` 側の** `install_dev_paths.py` とした。これで
+「venv とそれを所有するチェックアウト」の対応が保たれ、`install_dev_paths.py` の docstring が
+言う位置づけ（＝本チェックアウトでの対話シェル用フォールバック）とも整合する。
+この対応は `tools/tests/test_setup_worktree_installs_dev_paths.py::
+test_the_installer_that_runs_is_the_one_in_the_main_checkout` が機械的に固定する
+（偽の本チェックアウト＋偽の worktree を組み、渡された絶対パスが `MAIN_ROOT` 側であることを検定）。
+
+**3. 失敗時の扱い**: `.pth` は権威ではなくフォールバックであり、権威である 2 経路
+（`serve.sh` → `tools/dev_paths.sh`、pytest → `pyproject.toml` の `pythonpath`）は
+`.pth` の失敗に影響されない。よって登録に失敗しても環境構築は完了扱いとし、打つべき
+コマンドを名指しして警告する（黙って続けない）。これも検定で固定した。
+
+**4. 赤の意味の説明**: 前提検査
+（`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`）の失敗文言に
+「新しい venv・新しいコンテナでは `.pth` を登録するまで赤で始まる／コードの退行ではない」を
+追記し、直し方として `./tools/setup_worktree.sh` を名指しした。文言の内容自体も検定で固定した。
+
+**5. 手順文書**: `docs/git-worktree-workflow.md` §7.1 の「来ないもの」表へ venv の `.pth` を追加し、
+§7.2 へ登録の説明と上記 2 の注意を追記した（文書と手順の食い違いを検定で固定）。
+
+**実測**: `pytest tools/tests -q` 緑。本チェックアウトでの実走は冪等（`最新:` を出力し 1 バイトも書かない）。
+
+- **ステータス更新**: `RESOLVED`（残承認事項なし）
+
 ---
 
 ## ISSUE-483: [検定] Wave2 再レビュー 🟡-1 の「real_ticks ケース C をピン化」は前提不成立 — 採取値が sha256("") になる
