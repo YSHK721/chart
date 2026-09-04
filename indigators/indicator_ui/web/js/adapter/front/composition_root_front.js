@@ -311,9 +311,13 @@ export async function bootstrap({
   //   ANALYSIS→growing=false（static）。defaultMode は catalog の MP mode 既定（catalog_entry の 'mode' 既定
   //   ＝'normal'）。reapply は controller の MP 再適用（mode 維持＋growing トグル）へ遅延束縛する（controller は
   //   直後に代入されるため () => controller で吸収）。
+  //   ISSUE-479 Wave2b J-1 OCP-5 S3: 再適用の呼び先は MP の協働子そのもの（controller の委譲面を
+  //   経由しない）。協働子は下の wireControllerCollaborators が組むため、`() => mpController` の
+  //   遅延参照で吸収する（controller を遅延参照していたのと同じ規約）。
+  let mpController = null;
   const mpLiveModeCoordinator = new GrowthCoordinator({
     defaultMode: 'normal',
-    reapply: () => (controller ? controller.reapplyMarketProfileMode() : undefined),
+    reapply: () => (mpController ? mpController.reapplyMode() : undefined),
   });
 
   // 未注入（スタンドアロン）は IndicatorController（既存経路・runtime byte 不変）。統合レイヤ注入時のみ
@@ -321,11 +325,7 @@ export async function bootstrap({
   const IndicatorControllerCtor = (replay && replay.ReplayIndicatorController) || IndicatorController;
   controller = new IndicatorControllerCtor({
     catalog, compute, persistence, renderer, document: doc, datasetRef,
-    timeframe, recentBars, loadCandles, marketProfile,
-    // 連動配線時のみ resolver を注入（未注入＝MP へ渡す mode をそのまま＝byte 不変）。
-    //   mode 解決役: 選択表示モードを返す（'ticklive' 置換なし）。growth 解決役: FOLLOW/ANALYSIS→growing 信号。
-    mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
-    mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
+    timeframe, recentBars, loadCandles,
   });
   // ISSUE-276: ペイン別凡例へ行（ラベル・可視・操作）を供給する。生成直後に結線するため、
   //   restore()/bind() の初回描画から新しい凡例に載る。
@@ -337,17 +337,22 @@ export async function bootstrap({
   //   旧 tf の列が残留し「週間隔÷7 の細い列」に見える実機バグが起きた。
   const {
     chartTemplates: templates, tickvolBands, tradeMarkers, colorThemes: themes,
-    positionSizing: sizing,
+    positionSizing: sizing, marketProfileController,
   } = wireControllerCollaborators({
     controller, renderer, doc, fetch, datasetRef, timeframe, recentBars,
     templateStore, chartTemplateMenu, chartTemplateDialogs,
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
-    // ISSUE-479 Wave2 J-1 OCP-5 S2: MP をアクター駆動指標の共通登録口へ渡す。
+    // ISSUE-479 Wave2 J-1 OCP-5 S2/S3: MP のアクターと解決役は共通登録口へ渡す（唯一の供給経路）。
+    //   連動配線時のみ resolver を渡す（未渡し＝MP へ渡す mode をそのまま＝byte 不変）。
+    //   mode 解決役: 選択表示モードを返す（'ticklive' 置換なし）。growth 解決役: FOLLOW/ANALYSIS→growing 信号。
     marketProfile,
+    mpModeResolver: mpLiveModeCoordinator ? (m) => mpLiveModeCoordinator.resolve(m) : null,
+    mpGrowthResolver: mpLiveModeCoordinator ? () => mpLiveModeCoordinator.isGrowing() : null,
     onTimeframeChanged: () => refreshTfPeriodNow(),
   });
+  mpController = marketProfileController;
   chartTemplates = templates;
   colorThemes = themes;
   // 遅延参照の解決（ここで初めてメニュー・モーダル・右クリック項目が生きる）。

@@ -58,7 +58,9 @@ export const TEMPLATE_HOST_CONTRACT = Object.freeze({
     '_isMarketProfile', '_removeMarketProfile', 'removeInstance',
     '_commitState', '_persistAll', '_renderLegend',
   ]),
-  fields: Object.freeze(['_state', '_catalog', '_meta', '_store', '_datasetRef', '_timeframe']),
+  // ISSUE-479 Wave2b: `_meta` / `_datasetRef` を外した（本協働子は 1 度も読んでいない＝ISP 違反）。
+  fields: Object.freeze(['_state', '_catalog', '_store', '_timeframe']),
+  optionalFields: Object.freeze([]),
 });
 
 export class ChartTemplateController {

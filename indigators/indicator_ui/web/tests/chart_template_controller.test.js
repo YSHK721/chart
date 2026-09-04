@@ -117,7 +117,10 @@ const TPL_A = {
 // ホスト契約（§7.1・U9）
 // ---------------------------------------------------------------------------
 
-test('TC-C01 契約: TEMPLATE_HOST_CONTRACT は凍結され、既存 host が構造的に満たす 12 面を列挙する（§7.1）', () => {
+test('TC-C01 契約: TEMPLATE_HOST_CONTRACT は凍結され、既存 host が構造的に満たす 10 面を列挙する（§7.1）', () => {
+  // ISSUE-479 Wave2b: fields から `_meta` / `_datasetRef` を外した（本協働子は 1 度も読んでいない）。
+  //   host_role_contract.test.js の「契約が過大でない（ISP: 最小面）」がコメントを剥がして走査する
+  //   ようになり、契約に載っているだけの 2 面が露呈した。面の縮小＝射影が狭まる方向の変更である。
   // Arrange / Act
   const host = fakeHost();
   // Assert
@@ -128,7 +131,7 @@ test('TC-C01 契約: TEMPLATE_HOST_CONTRACT は凍結され、既存 host が構
   );
   assert.deepEqual(
     [...TEMPLATE_HOST_CONTRACT.fields].sort(),
-    ['_catalog', '_datasetRef', '_meta', '_state', '_store', '_timeframe'].sort(),
+    ['_catalog', '_state', '_store', '_timeframe'].sort(),
   );
   for (const m of TEMPLATE_HOST_CONTRACT.methods) {
     assert.equal(typeof host[m], 'function', `${m} は host のメソッド面`);

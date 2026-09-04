@@ -19,34 +19,86 @@ import {
 } from '../../usecase/facade.js';
 import { PropertiesDialog } from './properties_dialog.js';
 
+/**
+ * MarketProfileController（MP アクター駆動オーケストレーションロール・A7）が host に要求する最小契約。
+ *
+ * ISSUE-479 Wave2b J-1 OCP-5 S3: 契約の宣言は **協働子自身のファイル**に置く（他の協働子契約
+ *   —— STYLE / MIN_BARS / DIALOG / STATE_STORE / SERIES_RENDER —— と同じ置き場所）。
+ *   以前は indicator_controller.js が宣言していたが、それは同ファイルが MP を構築していた
+ *   時代の名残であり、構築点が合成根へ移った後は「host が協働子の名前を知っている」だけの
+ *   逆向きの依存になる。
+ *
+ * S3 で契約から外したもの（協働子が host 経由で自分の依存を取りに行くのをやめた）:
+ *   `_marketProfile`（MP アクター）/ `_mpModeResolver` / `_mpGrowthResolver`。
+ *   いずれも「MP が何を使って仕事をするか」であって「host が満たすべき面」ではない。
+ *   合成根が ctor の opts で直接渡す（DIP: 依存は注入され、host から掘り出さない）。
+ *
+ * @typedef {object} MarketProfileHost
+ * @property {{applied: Array}} _state       適用済みインスタンスを保持する純状態オブジェクト（read/write）。
+ * @property {{get: function}} _catalog      指標定義カタログ（read: get）。
+ * @property {Map} _meta                     instanceId -> { def } 描画済みメタ。
+ * @property {string} _datasetRef            計算対象データセット参照（read）。
+ * @property {?object} _document             プロパティダイアログ構築用 document（null 可）。
+ * @property {string} _timeframe             現在の表示時間足（gear ダイアログ context 用・read）。
+ * @property {function} _mpParams            MP params 組み立て（subclass override を host 経由で尊重）。
+ * @property {function} _isMarketProfile     def が MP 指標か判定する。
+ * @property {function} _paramsObject        params（配列/オブジェクト）を平坦オブジェクトへ正規化する。
+ * @property {function} _renderLegend        凡例を再描画する。
+ * @property {function} _defaultVariant      def の既定 variant を返す。
+ * @property {function} _withParams          state の instance params を差し替える。
+ * @property {function} _defaultParams       def の既定 params を返す。
+ * @property {function} _persistAll          applied/favorites/uiState を永続化する。
+ * @property {function} _commitState         協働子が算出した次 state を確定する（直接代入の代替）。
+ * @property {?number} [_untilTime]          reveal（replay）の現在バー T。present は非在席（optional）。
+ */
+
+// MarketProfileHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
+export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
+  role: 'MarketProfileHost',
+  methods: Object.freeze([
+    '_mpParams', '_isMarketProfile', '_paramsObject', '_renderLegend',
+    '_defaultVariant', '_withParams', '_defaultParams', '_persistAll',
+    // ISSUE-181: state 更新は host のフィールドへ直接代入せず本メソッド経由で依頼する。
+    '_commitState',
+  ]),
+  fields: Object.freeze([
+    '_state', '_catalog', '_meta', '_datasetRef', '_document', '_timeframe',
+  ]),
+  // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
+  optionalFields: Object.freeze(['_untilTime']),
+});
+
 export class MarketProfileController {
   // 依存契約（ISP・ISSUE-099 🟡-4）: 本協働子は host（IndicatorController）の広い公開面ではなく、
-  //   MP ロール専用の狭い契約 MarketProfileHost にのみ依存する。契約の単一ソースは
-  //   indicator_controller.js（@typedef MarketProfileHost ＋ MARKET_PROFILE_HOST_CONTRACT）で明文化し、
+  //   MP ロール専用の狭い契約 MarketProfileHost（本ファイル冒頭）にのみ依存する。
   //   IndicatorController（present）/ ReplayIndicatorController（replay・symlink 継承）が
   //   メンバー名・挙動不変のまま構造的に本契約を満たす。reveal seam の _untilTime は replay subclass
   //   のみ在席する optional 面（present は != null guard で no-op）。
   /**
-   * @param {import('./indicator_controller.js').MarketProfileHost} host MP ロール契約を満たすホスト。
-   * @param {{actor?: ?object}} [opts] アクターの直接注入（ISSUE-479 Wave2 J-1 OCP-5 S1）。
+   * @param {MarketProfileHost} host MP ロール契約を満たすホスト（合成根が射影を渡す）。
+   * @param {{actor?: ?object, modeResolver?: ?function, growthResolver?: ?function}} [opts]
+   *   本協働子が仕事に使う依存。**合成根が渡す**（ISSUE-479 Wave2b J-1 OCP-5 S3）。
    *
-   *   なぜ口を開けるか: 本協働子はアクターを host の**フィールド名**（`_marketProfile`）で
-   *   引いており、「誰がアクターを持っているか」を協働子が知っている状態だった。合成根が
-   *   注入できる口があれば、フィールド名に依存しない登録（registerActorController）へ移せる。
-   *   **加法**である: `opts` を省略すると従来どおり host を読む（既定の挙動は byte 不変）。
-   *   注入した場合は host 側の後付け差し替え（replay 合成根が構築後に代入する経路）に
-   *   引きずられない＝注入した合成根が所有者であることを明示する。
+   *   なぜ host から取らないか: 以前はアクターを host のフィールド名（`_marketProfile`）で、
+   *   解決役を `host._mpModeResolver` / `host._mpGrowthResolver` で掘り出していた。これは
+   *   「host が MP の持ち物を保管している」状態であり、(a) host の契約に MP 固有の 3 面が
+   *   居座る、(b) 誰がアクターの所有者かがコードから読めない、(c) 2 つ目のアクター駆動指標が
+   *   同じ形を要求できない、という 3 つの歪みを生んでいた。依存は注入で受ける（DIP）。
+   *
+   *   - actor: MP アクター（GET /market_profile → primitive）。未注入なら全経路が no-op。
+   *   - modeResolver: (userMode)->effectiveMode。ライブ連動時のみ注入（present 固有）。
+   *   - growthResolver: ()->boolean。成長状態（FOLLOW=true / ANALYSIS=false）。
    */
-  constructor(host, { actor = null } = {}) {
+  constructor(host, { actor = null, modeResolver = null, growthResolver = null } = {}) {
     this._host = host;
     this._injectedActor = actor;
+    this._modeResolver = typeof modeResolver === 'function' ? modeResolver : null;
+    this._growthResolver = typeof growthResolver === 'function' ? growthResolver : null;
   }
 
-  // MP アクター（注入があればそれ、無ければ host のフィールドを遅延で読む）。
-  //   host 読みを遅延にしているのは、合成根が構築後にアクターを差し込む既存経路
-  //   （replay: `controller._marketProfile = marketProfile`）を温存するためである。
+  // MP アクター（合成根が注入した実体）。未注入なら null＝全経路 no-op。
   _actor() {
-    return this._injectedActor ?? this._host._marketProfile;
+    return this._injectedActor;
   }
 
   // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
@@ -62,8 +114,8 @@ export class MarketProfileController {
       return;
     }
     const params = host._mpParams(p);
-    if (params.mode != null && host._mpModeResolver) {
-      params.mode = host._mpModeResolver(params.mode);
+    if (params.mode != null && this._modeResolver) {
+      params.mode = this._modeResolver(params.mode);
     }
     this._actor().setParams(params);
     this.applyMpGrowth();
@@ -73,11 +125,10 @@ export class MarketProfileController {
   //   setParams（mode 遷移で _exitTicklive→growing リセット）の後に呼び、mode を維持したまま growing を確定する。
   //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
   applyMpGrowth() {
-    const host = this._host;
-    if (!host._mpGrowthResolver || !this._actor()) {
+    if (!this._growthResolver || !this._actor()) {
       return false;
     }
-    const growing = !!host._mpGrowthResolver();
+    const growing = !!this._growthResolver();
     if (typeof this._actor().applyGrowthState === 'function') {
       this._actor().applyGrowthState({ growing });
     }
@@ -91,7 +142,7 @@ export class MarketProfileController {
   //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
   async reapplyMode() {
     const host = this._host;
-    if (!this._actor() || !host._mpModeResolver) {
+    if (!this._actor() || !this._modeResolver) {
       return;
     }
     if (typeof this._actor().isEnabled === 'function' && !this._actor().isEnabled()) {
@@ -104,7 +155,7 @@ export class MarketProfileController {
       return; // 表示中 MP インスタンスが無い。
     }
     const params = host._mpParams(host._paramsObject(inst.params));
-    params.mode = host._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
+    params.mode = this._modeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
     this._actor().setParams(params);
     // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
     const growing = this.applyMpGrowth();

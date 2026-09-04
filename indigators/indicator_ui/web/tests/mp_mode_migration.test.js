@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 
 import { get } from '../js/usecase/catalog.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 
 function fakeMarketProfile() {
   return {
@@ -26,9 +27,10 @@ function fakeMarketProfile() {
   };
 }
 
+// S3: MP は ctor 引数ではなく**合成根と同じ登録経路**（registerActorController）で結線する。
 function makeController({ marketProfile, applied = [] } = {}) {
   const noop = () => {};
-  return new IndicatorController({
+  const ctrl = new IndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: { compute: async (req) => ({ ok: true, generation: req.generation ?? 0, series: [] }) },
     persistence: {
@@ -37,8 +39,9 @@ function makeController({ marketProfile, applied = [] } = {}) {
     },
     renderer: { renderLine: noop, renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
     document: null,
-    marketProfile,
   });
+  registerMarketProfile(ctrl, { actor: marketProfile });
+  return ctrl;
 }
 
 // --- mode の転送（新規/現行インスタンス）--------------------------------------

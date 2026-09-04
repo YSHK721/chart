@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { list, get } from '../js/usecase/catalog.js';
 import { ParamType, ConstraintKind } from '../js/domain/constraint_eval.js';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
 
 function paramOf(def, name) {
@@ -61,9 +62,10 @@ function fakeMarketProfile() {
   };
 }
 
+// S3: MP は ctor 引数ではなく**合成根と同じ登録経路**（registerActorController）で結線する。
 function makeController({ marketProfile, computeCalls }) {
   const noop = () => {};
-  return new IndicatorController({
+  const ctrl = new IndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: {
       compute: async (req) => { computeCalls.push(req); return { ok: true, generation: req.generation ?? 0, series: [] }; },
@@ -74,8 +76,9 @@ function makeController({ marketProfile, computeCalls }) {
     },
     renderer: { renderLine: noop, renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop },
     document: null,
-    marketProfile,
   });
+  registerMarketProfile(ctrl, { actor: marketProfile });
+  return ctrl;
 }
 
 test('applyIndicator(market_profile) delegates to the actor and does NOT call /compute', async () => {
@@ -144,8 +147,8 @@ test('restore() re-hydrates a saved market_profile via the actor and does NOT ca
     },
     renderer: { renderLine: noop, renderHistogram: noop, renderHorizontal: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
     document: null,
-    marketProfile,
   });
+  registerMarketProfile(ctrl, { actor: marketProfile });
   // Act
   await ctrl.restore();
   // Assert: MP は /compute を介さず actor へ復元される（保存 params で setParams、可視なので setEnabled(true)）。
@@ -166,7 +169,7 @@ test('restore() re-hydrates a saved market_profile via the actor and does NOT ca
 //   throwOnMp=true のとき market_profile の /compute は例外（backend に compute 無しを模擬）。
 function makeControllerB({ marketProfile, computeCalls, setCandlesCalls, loadCandles, throwOnMp }) {
   const noop = () => {};
-  return new IndicatorController({
+  const ctrl = new IndicatorController({
     catalog: { listIndicators: () => [], get },
     compute: {
       compute: async (req) => {
@@ -188,8 +191,9 @@ function makeControllerB({ marketProfile, computeCalls, setCandlesCalls, loadCan
     document: null,
     mode: 'b',
     loadCandles,
-    marketProfile,
   });
+  registerMarketProfile(ctrl, { actor: marketProfile });
+  return ctrl;
 }
 
 test('recomputeAllApplied does NOT route market_profile to /compute and refreshes the actor', async () => {

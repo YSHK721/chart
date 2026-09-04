@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 import { get } from '../js/usecase/catalog.js';
 
 function fakeElement(tagName = 'div') {
@@ -87,9 +88,10 @@ function spyRenderer() {
   };
 }
 
+// S3: MP は ctor 引数ではなく**合成根と同じ登録経路**（registerActorController）で結線する。
 function makeController({ doc, renderer, marketProfile = null }) {
   const noop = () => {};
-  return new IndicatorController({
+  const ctrl = new IndicatorController({
     catalog: { get },
     compute: { compute: async () => ({ ok: true, generation: 0, series: [] }) },
     persistence: {
@@ -99,8 +101,9 @@ function makeController({ doc, renderer, marketProfile = null }) {
     },
     renderer,
     document: doc,
-    marketProfile,
   });
+  registerMarketProfile(ctrl, { actor: marketProfile });
+  return ctrl;
 }
 
 // ===========================================================================

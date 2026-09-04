@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
+import { registerMarketProfile } from './helpers/market_profile_rig.js';
 import { get } from '../js/usecase/catalog.js';
 import { bootstrap } from '../js/adapter/front/composition_root_front.js';
 import { MarketProfileActor } from '../js/adapter/front/market_profile_actor.js';
@@ -38,10 +39,13 @@ test('recomputeAllApplied routes the MP branch to actor.onLiveTick (not refresh)
   // Arrange: 可視の MP インスタンスを 1 件・fake actor（onLiveTick/refresh を計測）。
   const ctrl = controller();
   const calls = { onLiveTick: 0, refresh: 0 };
-  ctrl._marketProfile = {
-    onLiveTick: async () => { calls.onLiveTick += 1; },
-    refresh: async () => { calls.refresh += 1; },
-  };
+  // S3: アクターは host のフィールドではなく、合成根と同じ登録経路で協働子へ渡す。
+  registerMarketProfile(ctrl, {
+    actor: {
+      onLiveTick: async () => { calls.onLiveTick += 1; },
+      refresh: async () => { calls.refresh += 1; },
+    },
+  });
   ctrl._state.applied = [{ instanceId: 'mp1', visible: true, params: {} }];
   ctrl._meta.set('mp1', { def: { compute: { computeId: 'market_profile' } } });
   // Act
@@ -55,7 +59,9 @@ test('recomputeAllApplied skips the MP branch when the MP instance is hidden', a
   // Arrange
   const ctrl = controller();
   const calls = { onLiveTick: 0 };
-  ctrl._marketProfile = { onLiveTick: async () => { calls.onLiveTick += 1; }, refresh: async () => {} };
+  registerMarketProfile(ctrl, {
+    actor: { onLiveTick: async () => { calls.onLiveTick += 1; }, refresh: async () => {} },
+  });
   ctrl._state.applied = [{ instanceId: 'mp1', visible: false, params: {} }];
   ctrl._meta.set('mp1', { def: { compute: { computeId: 'market_profile' } } });
   // Act

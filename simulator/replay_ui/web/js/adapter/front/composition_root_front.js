@@ -121,14 +121,45 @@ export async function bootstrap({
   controller = new ReplayIndicatorController({
     catalog, compute, persistence, renderer, document: doc, datasetRef,
     timeframe, recentBars, loadCandles,
-    // Phase5（統一成長）: reveal は常に成長状態＝growing=true。旧 'ticklive' 表示モードが担っていた成長
-    //   活性化を成長軸へ移行し、mpGrowthResolver で常時 growing を注入する（setParams 後に _applyMpGrowth が
-    //   適用）。normal/replay+growing は push 成長（enterBar/growTo/feedTick）、sessions+growing は
-    //   refresh(to) 成長（機構A）。mode 解決役は注入しない＝gear 選択モードをそのまま維持（present と同型）。
-    mpGrowthResolver: () => true,
   });
   // ペイン別凡例へ行（ラベル・可視・操作）を供給する（ライブと同一配線・ISSUE-276）。
   controller.setPaneLegendView(paneLegendView);
+
+  // Market Profile 全モード（MP DI 集約点）。共有 present MarketProfileActor を extends した
+  //   ReplayMarketProfileActor を組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は
+  //   new せず受け取るだけ＝DI 集約）。基底の normal/sessions/replay 駆動を再利用し、reveal 差（因果 as-of /
+  //   push 駆動 ticklive）は subclass の override/追加で吸収する（present 無改変）。
+  //   バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、不在時は container。
+  const mpReplayHost = (doc && typeof doc.getElementById === 'function'
+    ? doc.getElementById('mp-replay-bar-host') : null) || container;
+  const replayBar = new MarketProfileReplayBar({
+    document: doc,
+    container: mpReplayHost,
+    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
+    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
+  });
+  const marketProfile = new ReplayMarketProfileActor({
+    client: new MarketProfileClient({ fetch }),
+    formingClient: new MarketProfileFormingClient({ fetch }),
+    makeAccumulator: () => new DwellAccumulator(),
+    primitive: new MarketProfileHistogramPrimitive(),
+    mainSeries,
+    replayBar,
+    renderer,
+    getCandles: () => renderer.getCandles(),
+    // to（=controller._untilTime＝リビール T）を遅延読み取りし、全モードで as-seen-at-t（因果）を成立させる。
+    getContext: () => ({ datasetRef, timeframe: controller._timeframe, to: controller._untilTime }),
+  });
+  // 同一 actor を controller へも渡す（メニュー一本化）。controller.applyIndicator('market_profile')
+  //   が本 actor を有効化（setEnabled）し、setupReplay 側の駆動フック（render→enterBar / animateForming→
+  //   feedTick）が isEnabled()=true を観測して育てる。
+  //
+  //   ISSUE-479 Wave2b J-1 OCP-5 S3: 本代入は **reveal 固有の経路**（ReplayIndicatorController の
+  //   _recomputeMarketProfile が enterBar / refresh を直に駆動する）のためだけに残る。MP 協働子への
+  //   供給は下の wireControllerCollaborators が担う（協働子は host のフィールド名を見ない）。
+  //   actor の生成は controller の直後へ前倒しした（getContext は controller を遅延参照するため
+  //   生成順の制約は無い）。これでライブ root と同じく「共有配線へ実体を渡す」形に揃う。
+  controller._marketProfile = marketProfile;
 
   // controller 生成後の協働子（テンプレート・取引密度帯・売買マーカー・現在値）は共有配線が結ぶ。
   const {
@@ -140,8 +171,13 @@ export async function bootstrap({
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
-    // ISSUE-479 Wave2 J-1 OCP-5 S2: MP をアクター駆動指標の共通登録口へ渡す。
-    marketProfile: null,
+    // ISSUE-479 Wave2 J-1 OCP-5 S2/S3: MP のアクターと成長解決役を共通登録口へ渡す（唯一の供給経路）。
+    //   Phase5（統一成長）: reveal は常に成長状態＝growing=true。旧 'ticklive' 表示モードが担っていた
+    //   成長活性化を成長軸へ移行し、常時 growing を注入する（setParams 後に applyMpGrowth が適用）。
+    //   normal/replay+growing は push 成長（enterBar/growTo/feedTick）、sessions+growing は
+    //   refresh(to) 成長（機構A）。mode 解決役は渡さない＝gear 選択モードをそのまま維持（present と同型）。
+    marketProfile,
+    mpGrowthResolver: () => true,
   });
   chartTemplates = templates;
   colorThemes = themes;
@@ -170,36 +206,6 @@ export async function bootstrap({
     intervalMs: liveIntervalMs,
   });
 
-  // Market Profile 全モード（MP DI 集約点）。共有 present MarketProfileActor を extends した
-  //   ReplayMarketProfileActor を組み立て、戻り値に marketProfile として公開する（replay.js/setupReplay は
-  //   new せず受け取るだけ＝DI 集約）。基底の normal/sessions/replay 駆動を再利用し、reveal 差（因果 as-of /
-  //   push 駆動 ticklive）は subclass の override/追加で吸収する（present 無改変）。
-  //   バーのホストは index.html の #mp-replay-bar-host（チャート下部・sibling）を優先し、不在時は container。
-  const mpReplayHost = (doc && typeof doc.getElementById === 'function'
-    ? doc.getElementById('mp-replay-bar-host') : null) || container;
-  const replayBar = new MarketProfileReplayBar({
-    document: doc,
-    container: mpReplayHost,
-    onScrub: (time) => { if (controller && controller._marketProfile) { controller._marketProfile.setReplayCursor(time); } },
-    onChange: () => { if (controller && controller._marketProfile) { controller._marketProfile.onReplayControlsChange(); } },
-  });
-  const marketProfile = new ReplayMarketProfileActor({
-    client: new MarketProfileClient({ fetch }),
-    formingClient: new MarketProfileFormingClient({ fetch }),
-    makeAccumulator: () => new DwellAccumulator(),
-    primitive: new MarketProfileHistogramPrimitive(),
-    mainSeries,
-    replayBar,
-    renderer,
-    getCandles: () => renderer.getCandles(),
-    // to（=controller._untilTime＝リビール T）を遅延読み取りし、全モードで as-seen-at-t（因果）を成立させる。
-    getContext: () => ({ datasetRef, timeframe: controller._timeframe, to: controller._untilTime }),
-  });
-  // 同一 actor を controller へも注入する（メニュー一本化）。controller.applyIndicator('market_profile')
-  //   が本 actor を有効化（setEnabled）し、setupReplay 側の駆動フック（render→enterBar / animateForming→
-  //   feedTick）が isEnabled()=true を観測して育てる。controller は getContext で controller._timeframe を
-  //   遅延参照するため marketProfile を後に生成しており、ここで後注入する（同一実体の共有）。
-  controller._marketProfile = marketProfile;
 
   return {
     chart, mainSeries, renderer, controller, ready, tickvolBands, liveUpdater,

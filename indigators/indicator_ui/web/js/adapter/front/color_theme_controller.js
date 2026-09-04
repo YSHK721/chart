@@ -62,6 +62,7 @@ export const COLOR_THEME_HOST_CONTRACT = Object.freeze({
   role: 'ThemeHost',
   methods: Object.freeze(['_applyStoredStyles', '_renderLegend']),
   fields: Object.freeze(['_state', '_meta']),
+  optionalFields: Object.freeze([]),
 });
 
 function warn(msg) {

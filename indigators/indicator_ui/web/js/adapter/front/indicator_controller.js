@@ -24,7 +24,6 @@ import { categories as catalogCategories, scopedParams } from '../../usecase/cat
 import { PropertiesDialog } from './properties_dialog.js';
 import { IndicatorLegendView } from './indicator_legend_view.js';
 import { buildMpParams, deriveMpMode, deriveMpResmode } from './market_profile_params.js';
-import { MarketProfileController } from './market_profile_controller.js';
 import { TimeframeController } from './timeframe_controller.js';
 import { DIALOG_HOST_CONTRACT, IndicatorDialogController } from './indicator_dialog_controller.js';
 // F3 系列名照合（§3.3.6）の純ロジック（ISSUE-181・SRP で外出し）。
@@ -57,9 +56,10 @@ export { STALL_DEADLINE_MS };
 // =========================================================================
 // フロントロール契約（ISP・ISSUE-099 🟡-3/🟡-4）
 // -------------------------------------------------------------------------
-// TimeframeController / MarketProfileController は host（IndicatorController インスタンス）の
-// 広い公開面（約40メソッド＋20超フィールド）ではなく、ロール専用の狭い契約にのみ依存する。その
-// 契約（各 controller が実際に読む/呼ぶ最小メンバー集合）を本ファイルへ単一ソースで明文化する:
+// 協働子は host（IndicatorController インスタンス）の広い公開面（約40メソッド＋20超フィールド）
+// ではなく、ロール専用の狭い契約にのみ依存する。契約（各 controller が実際に読む/呼ぶ最小メンバー
+// 集合）の単一ソースは **協働子自身のファイル**である。本ファイルが宣言するのは、本ファイルが
+// 構築する協働子（TimeframeController）の契約だけに限る:
 //   - @typedef で「ロール型」を宣言（各 controller は JSDoc import 型でこの契約に依存宣言・実行時 import 無し）
 //   - 凍結ロール記述オブジェクトで「必須 method / 必須 field / optional field」を列挙（構造充足テストの固定点）
 // IndicatorController（present 共有ベース）はメンバー名・挙動を一切変えず、既存構造のまま本契約を
@@ -79,31 +79,6 @@ export { STALL_DEADLINE_MS };
  * @property {{timeframeBtns?: Iterable}} [_el]  時間足ボタン DOM（bind() 後のみ在席・optional）。
  */
 
-/**
- * MarketProfileController（MP アクター駆動オーケストレーションロール・A7）が host に要求する最小契約。
- *
- * @typedef {object} MarketProfileHost
- * @property {?object} _marketProfile        MP アクター（任意注入・未注入時は MP 分岐 no-op）。
- * @property {?function} _mpModeResolver     MP 表示モードの実効解決役（present 固有・任意注入）。
- * @property {?function} _mpGrowthResolver   MP 成長状態の解決役（present 固有・任意注入）。
- * @property {{applied: Array}} _state       適用済みインスタンスを保持する純状態オブジェクト（read/write）。
- * @property {{get: function}} _catalog      指標定義カタログ（read: get）。
- * @property {Map} _meta                     instanceId -> { def } 描画済みメタ。
- * @property {string} _datasetRef            計算対象データセット参照（read）。
- * @property {?object} _document             プロパティダイアログ構築用 document（null 可）。
- * @property {string} _timeframe             現在の表示時間足（gear ダイアログ context 用・read）。
- * @property {function} _mpParams            MP params 組み立て（subclass override を host 経由で尊重）。
- * @property {function} _isMarketProfile     def が MP 指標か判定する。
- * @property {function} _paramsObject        params（配列/オブジェクト）を平坦オブジェクトへ正規化する。
- * @property {function} _renderLegend        凡例を再描画する。
- * @property {function} _defaultVariant      def の既定 variant を返す。
- * @property {function} _withParams          state の instance params を差し替える。
- * @property {function} _defaultParams       def の既定 params を返す。
- * @property {function} _persistAll          applied/favorites/uiState を永続化する。
- * @property {function} _commitState         協働子が算出した次 state を確定する（直接代入の代替）。
- * @property {?number} [_untilTime]          reveal（replay）の現在バー T。present は非在席（optional）。
- */
-
 // TimeframeHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
 export const TIMEFRAME_HOST_CONTRACT = Object.freeze({
   role: 'TimeframeHost',
@@ -117,23 +92,6 @@ export const TIMEFRAME_HOST_CONTRACT = Object.freeze({
   optionalFields: Object.freeze(['_el']),
 });
 
-// MarketProfileHost 契約の実体列挙（構造充足テスト・依存面部分集合テストの固定点）。
-export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
-  role: 'MarketProfileHost',
-  methods: Object.freeze([
-    '_mpParams', '_isMarketProfile', '_paramsObject', '_renderLegend',
-    '_defaultVariant', '_withParams', '_defaultParams', '_persistAll',
-    // ISSUE-181: state 更新は host のフィールドへ直接代入せず本メソッド経由で依頼する。
-    '_commitState',
-  ]),
-  fields: Object.freeze([
-    '_marketProfile', '_mpModeResolver', '_mpGrowthResolver', '_state',
-    '_catalog', '_meta', '_datasetRef', '_document', '_timeframe',
-  ]),
-  // reveal seam: replay subclass のみ在席（present base では非在席・controller は != null で許容）。
-  optionalFields: Object.freeze(['_untilTime']),
-});
-
 // ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す純関数の単一ソースは
 //   usecase/required_bars.js（ISSUE-479 Wave2 J-1 SRP で adapter から移した）。既存の import 面
 //   （本モジュールからの取り出し）を壊さないため再エクスポートする。
@@ -141,11 +99,34 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
 //     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export にする。
 export { requiredBarsOf };
 
+// アクター駆動指標の**未登録時**の解決先（ISSUE-479 Wave2b J-1 OCP-5 S3）。
+//
+//   台帳（actor_driven_ids.js）に載っているが合成根がまだ結線していない指標を、どこへ流すか。
+//   以前は MP のコントローラへ退避させていたが、それは「2 つ目のアクター駆動指標を足した日に
+//   MP のオーケストレーションが黙って走る」という誤配送そのものだった。何もしない実体へ流す。
+//
+//   null を返さない理由: 呼び出し側（本 controller・IndicatorStateStore）に null 分岐を作らせない
+//   ため。返り値は Promise.resolve で包める値であればよく、全メソッドが undefined を返す。
+//   共有の凍結シングルトンである（解決のたびに作らない＝浪費を作らない・計算量検定で固定）。
+//
+//   面はアクターコントローラの規約（tickvol_bands_controller.js 冒頭に明文）と同一に保つ。
+//   規約へメソッドを足したら、ここにも足す（足し忘れは未登録経路でのみ TypeError になる）。
+const NULL_ACTOR_CONTROLLER = Object.freeze({
+  applyMarketProfile() {},
+  toggleVisible() {},
+  removeInstance() {},
+  onGear() {},
+  restoreInstance() {},
+  onLiveRecompute() {},
+  applyMpParams() {},
+  applyMpGrowth() { return false; },
+  reapplyMode() {},
+});
+
 export class IndicatorController {
   constructor({
     catalog, compute, persistence, renderer, document: doc = null,
     datasetRef = 'sample', timeframe = '1D', recentBars = null, loadCandles = null,
-    marketProfile = null, mpModeResolver = null, mpGrowthResolver = null,
     colorThemeProvider = null,
   }) {
     this._catalog = catalog;
@@ -161,18 +142,6 @@ export class IndicatorController {
     this._router = new SeriesRenderRouter(createHostView(this, SERIES_RENDER_HOST_CONTRACT), renderer);
     // 永続化・復元（UC-07・A10・ISSUE-181）を委譲する協働子。復元中 Promise は協働子が所有する。
     this._store = new IndicatorStateStore(createHostView(this, STATE_STORE_HOST_CONTRACT));
-    // Market Profile アクター（任意注入）。computeId==='market_profile' の指標を
-    //   /compute 経由でなく本アクター（GET /market_profile → primitive）へ委譲する。
-    //   既存トグル（#market-profile-toggle）とは別導線（二重導線）。未注入時は MP 分岐が no-op。
-    this._marketProfile = marketProfile;
-    // ライブ連動: MP 表示モードの実効解決役（present 固有・任意注入）。(userMode)->effectiveMode。
-    //   注入時のみ MP へ渡す mode を実効モード（FOLLOW→ticklive / ANALYSIS→記憶モード）へ解決する。
-    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は mode をそのまま渡す＝byte 不変。
-    this._mpModeResolver = typeof mpModeResolver === 'function' ? mpModeResolver : null;
-    // Model A 直交化: MP 成長状態の解決役（present 固有・任意注入）。()->boolean（FOLLOW=true / ANALYSIS=false）。
-    //   注入時のみ MP へ growing 信号（applyGrowthState）を適用し、growing 時のみ onLiveTick で成長させる。
-    //   未注入（連動なし＝A方式・MP 不在・連動未配線）は growing を適用しない＝byte 不変。
-    this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
     // 系列スタイル適用（保存済み styles ＋ 選択中テーマ → renderer）を委譲する協働子
     //   （ISSUE-479 Wave2 J-1 SRP）。テーマ供給ポートは協働子が所有する（状態も一緒に移す）。
     this._style = new SeriesStyleApplier(
@@ -208,17 +177,12 @@ export class IndicatorController {
       runFull: () => this.recomputeAllApplied({ mode: 'full' }),
       isBlocked: () => this.isRecomputing(),
     });
-    // MP（A7）アクター駆動のオーケストレーションを委譲する協働子（ISSUE-094 🔴-4）。
-    //   host=this を渡し、apply/enable/toggle/remove/gear/reapply/restore/live-recompute を委譲する。
-    //   subclass の inherited メソッド呼出（this._toggleMarketProfileVisible 等）・_mpParams override を
-    //   温存するため base の各 MP メソッドは本協働子への薄いラッパへ縮退する（byte 挙動不変）。
-    this._mp = new MarketProfileController(createHostView(this, MARKET_PROFILE_HOST_CONTRACT));
     // アクター駆動指標（/compute を持たない）の computeId → アクターコントローラ。
     //   台帳（actor_driven_ids.js）が「どの指標がアクター駆動か」を、本レジストリが「誰が処理するか」を
-    //   持つ。以前は台帳で分岐した後に必ず this._mp（MP 専用）へ委譲しており、2 つ目のアクター駆動
-    //   指標を足すと MP のコントローラへ誤配送された（「台帳への 1 行追記で完結」という本 controller の
-    //   主張が成立していなかった）。追加は composition root からの registerActorController で完結する。
-    this._actorControllers = new Map([['market_profile', this._mp]]);
+    //   持つ。**空で始まる**（ISSUE-479 Wave2b J-1 OCP-5 S3）: 以前は ctor が MarketProfile の
+    //   コントローラを自分で組んで初期値に入れており、「アクター駆動指標を足すときに見る場所」が
+    //   controller と合成根の 2 通りに割れていた。構築点は合成根の registerActorController だけである。
+    this._actorControllers = new Map();
     // 指標追加ダイアログ（一覧・絞り込み・開閉）を委譲する協働子（ISSUE-181・A8）。
     //   絞り込み UI 状態（旧 this._filter）は協働子が所有する（状態も一緒に移す）。
     this._dialog = new IndicatorDialogController(createHostView(this, DIALOG_HOST_CONTRACT));
@@ -408,7 +372,7 @@ export class IndicatorController {
   // アクター駆動型（/compute を持たない）指標かの判定。具体名分岐は usecase の能力台帳
   //   （actor_driven_ids.js）へ移譲した（SOLID 是正 🔴-4・OCP: 新しいアクター駆動指標の追加は
   //   台帳への 1 行追記で完結し本 controller は不変）。メソッド名は host 契約
-  //   （MARKET_PROFILE_HOST_CONTRACT）・subclass override 互換のため温存する。
+  //   （協働子側が宣言する host 契約）・subclass override 互換のため温存する。
   _isMarketProfile(def) {
     return isActorDriven(def);
   }
@@ -419,11 +383,14 @@ export class IndicatorController {
     this._actorControllers.set(computeId, controller);
   }
 
-  // def に対応するアクターコントローラ。未登録は this._mp（レジストリ化前の挙動）へ退避する
-  //   ＝台帳にあるが未結線の指標は従来どおり MP 経路を辿る（本リファクタで挙動が変わらない）。
+  // def に対応するアクターコントローラ。未登録は共有の no-op（NULL_ACTOR_CONTROLLER）を返す。
+  //   なぜ no-op か: 以前は未登録を MP のコントローラへ退避させており、台帳にあるが未結線の指標が
+  //   MP のオーケストレーションを受け取っていた（2 つ目のアクター駆動指標を足した日に静かに
+  //   誤配送される形）。呼び出し側に null 分岐を作らせないため null は返さず、何もしない実体を返す。
+  //   共有の凍結シングルトンであり、解決のたびに作らない（計算量検定で固定）。
   _actorControllerFor(def) {
     const id = def && def.compute && def.compute.computeId;
-    return this._actorControllers.get(id) || this._mp;
+    return this._actorControllers.get(id) || NULL_ACTOR_CONTROLLER;
   }
 
   // instance からアクターコントローラを解決する（凡例の eye/close は def を持たないため）。
@@ -438,18 +405,6 @@ export class IndicatorController {
     return buildMpParams(p);
   }
 
-  // MP 委譲一式（apply/enable/toggle/remove/gear/reapply/restore/live-recompute）は
-  //   market_profile_controller.js（MarketProfileController）へ外出しした（ISSUE-094 🔴-4）。
-  //   以下は subclass の inherited 呼出（this._applyMpGrowth 等）・既存テスト・composition root 配線を
-  //   温存するための薄い委譲ラッパ（挙動は抽出前と byte 等価）。_mpParams override は host 経由で尊重される。
-  _applyMpGrowth() {
-    return this._mp.applyMpGrowth();
-  }
-
-  reapplyMarketProfileMode() {
-    return this._mp.reapplyMode();
-  }
-
   // resmode/mode（表示・解像度モード）の後方互換ヘルパは market_profile_params.js（純関数）へ外出しした
   //   （ISSUE-094 🔴-4）。本メソッドは薄い委譲のみ（内部呼出・既存呼出の互換温存）。
   _deriveResmode(p = {}) {
@@ -461,7 +416,8 @@ export class IndicatorController {
   }
 
   // UC-02 指標追加: seq 採番→compute（gen=0）→F3→描画→persist。
-  //   MP 種別（computeId==='market_profile'）は /compute をバイパスし MarketProfileActor へ委譲する。
+  //   アクター駆動型（台帳 actor_driven_ids.js）は /compute をバイパスし、登録済みのアクター
+  //   コントローラ（_actorControllerFor）へ委譲する。
   // 指標の適用/削除の**完了**を購読する（任意・1 個）。ISSUE-037。
   //
   //   リプレイ層（`replay.js`）は「適用/削除のあとに減光境界を再同期する」必要があるが、
@@ -518,9 +474,10 @@ export class IndicatorController {
     return instance;
   }
 
-  // MP 委譲ラッパ（実体は MarketProfileController・ISSUE-094 🔴-4）。subclass の inherited 呼出
-  //   （this._toggleMarketProfileVisible / this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）を
-  //   温存するための薄い委譲（挙動は抽出前と byte 等価）。
+  // アクター駆動指標への委譲ラッパ。実体は合成根が登録したアクターコントローラで、本 controller は
+  //   どれが登録されているかを知らない。subclass の inherited 呼出（this._toggleMarketProfileVisible /
+  //   this._removeMarketProfile）と既存テスト（ctrl._onGearMarketProfile）の呼び口を温存するため
+  //   メソッド名は MP 時代のまま残す（改名は別の変更）。
   _applyMarketProfile(def, variant, params) {
     return this._actorControllerFor(def).applyMarketProfile(def, variant, params);
   }

@@ -491,9 +491,11 @@ export class ReplayIndicatorController extends IndicatorController {
         this._marketProfile.setParams(this._mpParams(params));
       }
       // Phase5（統一成長）: reveal は常に成長状態（growing=true）。setParams（mode 遷移で growing リセット）の
-      //   後に growing を再適用し、mode を維持したまま成長軸を確定する（present の _applyMpGrowth と同型）。
-      //   mpGrowthResolver（composition root で ()=>true 注入）未注入時は no-op（byte 不変）。
-      this._applyMpGrowth();
+      //   後に growing を再適用し、mode を維持したまま成長軸を確定する。
+      //   ISSUE-479 Wave2b J-1 OCP-5 S3: 呼び先は登録済みのアクターコントローラそのもの
+      //   （base の委譲メソッド _applyMpGrowth は撤去した＝host に MP 固有の面を残さない）。
+      //   成長解決役（合成根が ()=>true を渡す）が無ければ協働子側で no-op（byte 不変）。
+      this._actorControllerFor(meta.def).applyMpGrowth();
       // 成長軸ゲート（isGrowingPush＝normal/replay+growing）で push 系（enterBar）へ、sessions/非成長は
       //   refresh へ振り分ける（Phase5: 旧 isTicklive() 表示モードゲートから成長軸へ移行）。
       const push = typeof this._marketProfile.isGrowingPush === 'function'

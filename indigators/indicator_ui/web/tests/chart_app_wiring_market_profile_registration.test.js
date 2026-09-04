@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { wireControllerCollaborators } from '../js/adapter/front/chart_app_wiring.js';
-import { MARKET_PROFILE_HOST_CONTRACT } from '../js/adapter/front/indicator_controller.js';
+import { MARKET_PROFILE_HOST_CONTRACT } from '../js/adapter/front/market_profile_controller.js';
 
 const noop = () => {};
 
@@ -37,14 +37,11 @@ function contractMembers(contract) {
 function makeRig({ marketProfile } = {}) {
   const registered = [];
   const controller = {
-    _marketProfile: { setParams: () => {}, applyGrowthState: () => {} },
     _timeframe: '1D',
     _untilTime: undefined,
     setTimeframe: () => {},
     setAppliedObserver: noop,
     _mpParams: (p) => ({ ...p }),
-    _mpModeResolver: null,
-    _mpGrowthResolver: null,
     // --- MarketProfileHost 契約の残余（fake の拡張のみ・呼ばれない面は no-op） ---
     _isMarketProfile: () => true,
     _paramsObject: (p) => ({ ...p }),
@@ -121,16 +118,25 @@ test('S2: 登録された MP コントローラは注入されたアクターを
   assert.ok(controller._marketProfile !== actor, '測定の前提（host 側は別実体）が崩れている');
 });
 
-test('S2: marketProfile 未注入でも登録し、アクターは host 読みへ縮退する（replay 無改変）', () => {
+test('S3: marketProfile 未注入でも登録はされ、全経路が no-op になる（登録を条件付きにしない）', () => {
+  // 旧検定は「未注入なら host のフィールド（controller._marketProfile）へ縮退する」を固定して
+  //   いた。それは replay 合成根が **構築後に** アクターを差し込む形への追従であり、協働子が
+  //   host のフィールド名を知っている状態を必要としていた。S3 で replay 側の生成順を前倒しし、
+  //   両 root とも実体を共有配線へ渡す形へ揃えたため、この縮退は不要になった。
+  //   引き継ぐ性質は 2 つ:
+  //     (a) 未注入でも**登録はされる**（登録が注入の有無に依存しない）→ 本検定。
+  //     (b) replay 合成根が実体を渡している → 下の「両合成根が実体を転送する」検定。
   // Arrange
-  const { registered, controller } = makeRig();   // 注入なし＝replay 合成根と同じ形
+  const { registered, controller } = makeRig();   // 注入なし
   const entry = registered.find(([id]) => id === 'market_profile');
+  // Assert (a): 登録されている。
+  assert.ok(entry, 'アクター未注入だと登録そのものが起きていない');
+  // host にアクターらしき面があっても読まない（S3: 供給経路は opts 1 本）。
   const calls = [];
   controller._marketProfile = { setParams: (p) => calls.push(p), applyGrowthState: () => {} };
-  // Act
-  entry[1].applyMpParams({ va: 0.7 });
-  // Assert: 構築後に host へ差し込む既存経路（replay 合成根）がそのまま効く。
-  assert.equal(calls.length, 1, 'host 読みへ縮退していない');
+  // Act / Assert: 例外にならず、host のフィールドにも触れない。
+  assert.doesNotThrow(() => entry[1].applyMpParams({ va: 0.7 }));
+  assert.equal(calls.length, 0, 'host のフィールドを読んでいる（S3 で断ち切った経路）');
 });
 
 // ---- 🟡-1: 登録実体の host は契約射影であること（生 host を渡さない・ISSUE-479 Wave2 再レビュー）----
@@ -185,7 +191,7 @@ test('🟡-1 前提: rig の host は MarketProfileHost 契約を構造的に満
   }
 });
 
-test('S2 前提: 両合成根が marketProfile を共有配線へ明示的に転送する（暗黙チャネルを持たない）', () => {
+test('S3: 両合成根が marketProfile の**実体**を共有配線へ転送する（null 縮退を残さない）', () => {
   // Arrange: 受け口だけ作って呼び出し側が送らない壊れ方（ISSUE-291）を静的に塞ぐ。
   const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
   const roots = {
@@ -204,7 +210,12 @@ test('S2 前提: 両合成根が marketProfile を共有配線へ明示的に転
   };
   // Act / Assert
   for (const [name, src] of Object.entries(roots)) {
-    assert.match(argsOf(src), /\bmarketProfile\b/,
+    const args = argsOf(src);
+    assert.match(args, /\bmarketProfile\b/,
       `${name} root が marketProfile を共有配線へ転送していない（登録が無言で死ぬ）`);
+    // S3: `marketProfile: null` は「後で host へ差し込む」旧経路の名残であり、その経路はもう無い。
+    //   null のまま転送されると MP は永久に no-op になる（無言で死ぬ形が戻る）。
+    assert.doesNotMatch(args, /\bmarketProfile\s*:\s*null\b/,
+      `${name} root が marketProfile を null で転送している（MP が無言で no-op になる）`);
   }
 });

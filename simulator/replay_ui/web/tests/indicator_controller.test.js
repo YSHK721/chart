@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { IndicatorController } from '../js/adapter/front/indicator_controller.js';
 import { ReplayIndicatorController } from '../js/adapter/front/replay_indicator_controller.js';
 import { get } from '../js/usecase/catalog.js';
+// MP の登録 rig（合成根と同じ形）。実体は indicator_ui 側にあり replay へ symlink されていない。
+import { registerMarketProfile } from '../../../../indigators/indicator_ui/web/tests/helpers/market_profile_rig.js';
 
 // DOM/port を使わない純ロジック検証のため、ports は最小スタブで生成。
 function controller() {
@@ -425,11 +427,15 @@ function mpController({ untilTime } = {}) {
       setVisible: (...a) => { computeCalls.setVisibleCalled = true; ctrl._rendererSetVisible = a; },
       remove: () => { ctrl._rendererRemoveCalled = true; },
     },
-    marketProfile,
     document: null,
-    // Phase5（統一成長）: reveal は常に growing（production の replay composition root と同型注入）。
-    mpGrowthResolver: () => true,
   });
+  // ISSUE-479 Wave2b J-1 OCP-5 S3: アクターと成長解決役は ctor 引数ではなく、合成根と同じ
+  //   登録経路（registerActorController + 契約射影）で渡す。
+  //   Phase5（統一成長）: reveal は常に growing（production の replay composition root と同型）。
+  registerMarketProfile(ctrl, { actor: marketProfile, growthResolver: () => true });
+  //   reveal 固有の駆動（_recomputeMarketProfile の enterBar / refresh）は subclass が自分の
+  //   `_marketProfile` を直に叩く経路であり、replay 合成根も同じ代入を行う（本番と同型）。
+  ctrl._marketProfile = marketProfile;
   if (untilTime != null) ctrl.setUntilTime(untilTime);
   return { ctrl, marketProfile, computeCalls };
 }
@@ -593,10 +599,12 @@ test('MP restore: re-enables actor from saved params/visibility without touching
       loadFavorites: () => [], saveFavorites: noop, loadUiState: () => ({}), saveUiState: noop, nextSeq: () => 2,
     },
     renderer: { renderLine: noop, renderHorizontal: noop, renderHistogram: noop, setData: noop, setVisible: noop, remove: noop, setCandles: noop },
-    marketProfile,
     document: null,
     timeframe: '1D',
   });
+  // S3: アクターは合成根と同じ登録経路で渡す（reveal 固有の駆動用に host 側へも本番同型で代入）。
+  registerMarketProfile(ctrl, { actor: marketProfile, growthResolver: () => true });
+  ctrl._marketProfile = marketProfile;
   // Act
   await ctrl.restore();
   // Assert: MP は /compute へ流さず、保存 params/可視で actor を復元する。
