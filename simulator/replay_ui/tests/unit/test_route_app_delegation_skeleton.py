@@ -3,7 +3,7 @@
 固定する規則:
     5 本のルート App（candles / compute / intraday / profiles / catalog）は、内側 App を
     包んで「自分が持たない属性は内側へ委譲する」という同一の骨格を持つ。その骨格——
-    ``inner`` プロパティと ``__getattr__``——の**コードが 5 本で 1 文字も食い違わない**
+    「inner」 プロパティと 「__getattr__」——の**コードが 5 本で 1 文字も食い違わない**
     ことを AST で突き合わせる。
 
 なぜ基底クラスを抽出しないのか（レビュー提示の代替案の採用理由）:
@@ -13,14 +13,14 @@
     消すのではなく、食い違いを機械的に検出する。規約は宣言でなく検査で強制する。
 
 なぜ docstring を比較から外すのか（実測に基づく）:
-    5 本の ``__getattr__`` のうち ``serve_replay_candles`` だけが長い docstring を持つ
+    5 本の 「__getattr__」 のうち ``serve_replay_candles`` だけが長い docstring を持つ
     （「Handler と他のルート App は compute / _heavy_worker / 各 *_enabled を属性で引く」）。
     つまり「完全一致」が成り立つのは**コード**であって散文ではない。散文まで固定すると、
     その 1 本の説明を消す圧力になる（説明を消すのは是正ではない）。畳むのは docstring だけで、
     文・式・引数・デコレータ・注釈はすべて比較対象に残す。
 
 検出力の実測（本ガードが空振りでないことの証拠・2026-09-04）:
-    ``serve_replay_intraday`` の ``__getattr__`` へ無害な差異（``probe = inner`` の 1 文を挟む・
+    ``serve_replay_intraday`` の 「__getattr__」 へ無害な差異（``probe = inner`` の 1 文を挟む・
     振る舞いは不変）を注入すると **2 failed / 5 passed**——落ちたのは
     ``...shares_the_identical_delegation_skeleton[__getattr__]`` と
     ``...docstring_is_outside_the_comparison``。Edit で戻すと **7 passed**。差異の注入は git の
@@ -57,7 +57,7 @@ _ROUTE_APP_MODULES = (
     (serve_replay_catalog, "ReplayCatalogApp"),
 )
 
-#: 同一であることを要求する骨格メンバー。``__init__`` は App ごとにルート表が違うので**入れない**
+#: 同一であることを要求する骨格メンバー。「__init__」 は App ごとにルート表が違うので**入れない**
 #: （そこは同一でなく、同一を要求すると誤検出になる）。
 _SKELETON_MEMBERS = ("inner", "__getattr__")
 
@@ -118,7 +118,7 @@ def skeletons() -> "dict[str, dict[str, str]]":
 # --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("member", _SKELETON_MEMBERS)
 def test_every_route_app_shares_the_identical_delegation_skeleton(skeletons, member) -> None:
-    """5 本の ``inner`` / ``__getattr__`` のコードが 1 つの実体へ畳まれる。
+    """5 本の 「inner」 / 「__getattr__」 のコードが 1 つの実体へ畳まれる。
 
     片方だけが書き換わると、委譲が App ごとに食い違って「受け口はあるのに結線が死ぬ」
     （ISSUE-291 の形）が 1 本だけで起きる。差分は読み手に見える形で提示する。
@@ -176,7 +176,7 @@ def test_the_skeleton_comparison_can_see_a_difference(skeletons) -> None:
 
 
 def test_the_docstring_is_outside_the_comparison(skeletons) -> None:
-    """散文の差は比較対象外（実測: candles の ``__getattr__`` だけ docstring が長い）。
+    """散文の差は比較対象外（実測: candles の 「__getattr__」 だけ docstring が長い）。
 
     この前提が崩れる（5 本の docstring が揃う）と、上の「docstring を外す」という
     設計判断の根拠が消える。根拠が消えたことに気付けるよう、前提そのものを固定する。
