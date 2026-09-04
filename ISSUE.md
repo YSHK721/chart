@@ -13686,3 +13686,21 @@ tmp_path に小さな parquet を書いている。
   ALLOWED 導出集合の RATCHET 化・_mp 名指し 2 箇所の参照点統一・js_layer_guard の replay/sim 展開（自核除外要）。
 
 ## ISSUE-483 は同日起票済み（real_ticks 指紋錨の前提不成立・代替案 2 件は承認事項）
+
+## ISSUE-484: [検定] chart_template_persistence_integration の MP 失敗経路（TC-P05 / TC-P08）が MP アクター不在でも緑
+
+- **ステータス**: OPEN
+- **重大度**: 中（検査の空振り。実害は「MP 復元失敗時の構成消失（D-1）」の回帰を検出できないこと）
+- **発見**: ISSUE-479 Wave2b J-1 S3 のテスト移行中（2026-09-04）。
+- **実測**: `registerMarketProfile(controller, { actor: marketProfile })` を
+  `{ actor: null }` へ変異させても 8/8 緑のまま（変異実行で確認）。すなわち
+  `fakeMpActor({ failOnEnable: true })` は当該 2 検定の合否に寄与していない。
+- **S3 以前からの状態である**: 移行前は同じ actor が ctor 経由で届いており、届いても届かなくても
+  同じ結果になっていた。S3 が作った欠陥ではない（移行時の変異検査で露呈しただけ）。
+- **原因（推定・未確定）**: 「MP 復元が失敗しても applied.v1 が空にならない」という assert が、
+  MP 復元の失敗以外の経路（テンプレート適用そのもの）でも成立してしまう。失敗の注入点が
+  結果に効いていない。
+- **対策方針（根治）**: 検定を「MP 復元が実際に失敗したこと」を前提として観測する形へ変える
+  （actor の setEnabled 呼出と例外発生を測ってから applied を見る）。actor 不在の変異で赤に
+  なることを検出力として同時に固定する。
+- **対象外**: 本 Wave の射程（MP 供給経路の是正）ではないため未着手。
