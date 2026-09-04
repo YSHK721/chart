@@ -47,6 +47,9 @@ import { enforceAscendingTimes } from './series_time_guard.js';
 // クロム色の保持・導出・押し出し（配線点の単一情報源 chrome_tokens.js の消費）は
 //   ChromeColorController（協働子・ISSUE-479 Wave2 J-2b）が担う。
 import { ChromeColorController } from './chrome_color_controller.js';
+// 読み取り（クロスヘア DTO・足の情報・スナップ候補）は CrosshairReadoutBuilder（協働子・
+//   ISSUE-479 Wave2 J-2c）が担う。点列の探索（pointAtTime / pointValueAt）も同居する。
+import { CrosshairReadoutBuilder } from './crosshair_readout_builder.js';
 
 // zoomedPriceRange/clampPriceRange の単一ソースは scale_controller.js（SOLID 是正 🔴-2 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -59,47 +62,6 @@ export { zoomedPriceRange, clampPriceRange };
 //   クロム配線点の単一情報源（CHROME_CURRENT.dimCandle）へ移し、実際に使う値は配信された
 //   `this._chromeSlots.dimCandle` から読む（テーマで変えられる／書き手が 1 箇所に保たれる）。
 //   ここに定数を戻すと、テーマが配った色と描画に使う色が再び食い違う（ISSUE-357 の再発）。
-
-// time 昇順の点列から time が一致する点を返す（無ければ undefined）。ローソク・指標系列とも
-//   lightweight-charts のデータ規約で time 昇順のため二分探索で引く（右クリック 1 回あたり
-//   系列数ぶんの探索になるので線形走査にしない）。time は UTCTimestamp（数値）を前提とし、
-//   business day 形式など数値でない時刻表現は「引けない」（undefined）＝黙って別の足を返さない。
-function pointAtTime(points, time) {
-  if (!Array.isArray(points) || typeof time !== 'number') {
-    return undefined;
-  }
-  let lo = 0;
-  let hi = points.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const t = points[mid] ? points[mid].time : undefined;
-    if (typeof t !== 'number') {
-      return undefined;
-    }
-    if (t === time) {
-      return points[mid];
-    }
-    if (t < time) {
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return undefined;
-}
-
-// 系列の指定 time の値（線・ヒストグラム＝value / ローソク＝close）。無ければ undefined。
-//   series.data() は upstream API のため呼び出しは本モジュールに閉じる（隔離維持）。
-function pointValueAt(series, time) {
-  if (!series || typeof series.data !== 'function') {
-    return undefined;
-  }
-  const p = pointAtTime(series.data(), time);
-  if (p === undefined || p === null) {
-    return undefined;
-  }
-  return (typeof p === 'object') ? (p.value ?? p.close) : p;
-}
 
 // ペイン配分の下限（MIN_*）と合計保存の丸め（roundKeepingSum）は PaneGeometryController、
 //   クロム色の透明色・初期保持値・部分マージ（TRANSPARENT_COLOR / INITIAL_CHROME_SLOTS /
@@ -121,7 +83,6 @@ export class ChartRenderer {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
-    this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
     this._onPaneLegend = typeof onPaneLegend === 'function' ? onPaneLegend : () => {};
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
@@ -149,8 +110,8 @@ export class ChartRenderer {
     this._profileMarginFraction = 0;
     // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
     this._replayViewSpan = null;
-    // sessions（日別プロファイル）の time→{poc,vah,val} Map（読み取り欄で当日 MP を出す）。null=非表示。
-    this._sessionMP = null;
+    // 読み取りロールの状態（読み取り欄コールバック・tf-period ホバーハンドラ・sessions の
+    //   当日 MP）は CrosshairReadoutBuilder が所有する（ISSUE-181「状態も一緒に移す」）。
     // 価格軸ホイールズームは lwc v5.2 の priceScale ネイティブ API
     //   （getVisibleRange/setVisibleRange/autoScale）で実現する＝軸ドラッグと同一の内部状態。
     //   自前の override 状態は持たない（手動スケールの保持・解除は lwc が所有する）。
@@ -186,6 +147,9 @@ export class ChartRenderer {
     //   ChromeColorController（協働子）へ委譲する。色ロールの状態は協働子が所有し、本クラスの
     //   公開面・挙動は不変（薄い委譲だけが残る）。
     this._chrome = new ChromeColorController(this);
+    // ISSUE-479 Wave2 J-2c: 読み取り（クロスヘア DTO・足の情報・スナップ候補）は
+    //   CrosshairReadoutBuilder（協働子）へ委譲する。読み取りロールの状態は協働子が所有する。
+    this._readout = new CrosshairReadoutBuilder(this, { onCrosshairReadout });
     this._syncRightOffset();
     // ISSUE-164（ユーザー裁定 2026-07-23）: ズーム/ドラッグ（可視範囲変化）に反応して右余白を
     //   再適用する購読は撤去した。ユーザーの拡大縮小操作と無関係に rightOffset を適用し直すのは
@@ -615,33 +579,17 @@ export class ChartRenderer {
   //   ISSUE-276: 旧「ペイン左上ウォーターマークへ指標名＋値を焼く」経路は撤去した。同じ情報を
   //   凡例行が持つため 2 系統になっており、凡例 DOM がウォーターマークの上に載って判読不能だった。
   _onCrosshairMove(param) {
-    this._emitPaneLegend(param);
-    // クロスヘア価格読み取り欄（左上オーバーレイ）への DTO 発火。
-    this._emitReadout(param);
-    // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: カーソル位置の座標 DTO
-    //   { x, y, time, price } を配線先（composition root）へ渡す。lwc 型は渡さない（隔離維持）。
-    //   カーソルがチャート外（point 無し）は null＝ツールチップ hide。ハンドラ未設定は no-op。
-    if (typeof this._onTfPeriodHover === 'function') {
-      const pt = param && param.point;
-      if (pt && param.time != null && typeof this._mainSeries.coordinateToPrice === 'function') {
-        const price = this._mainSeries.coordinateToPrice(pt.y);
-        this._onTfPeriodHover(price != null
-          ? { x: pt.x, y: pt.y, time: Number(param.time), price: Number(price) }
-          : null);
-      } else {
-        this._onTfPeriodHover(null);
-      }
-    }
+    this._readout._onCrosshairMove(param);
   }
 
-  // tf-period ホバー座標ハンドラを設定する（composition root が配線・null で解除）。
+  // tf-period ホバー座標ハンドラを設定する（実体は CrosshairReadoutBuilder.setTfPeriodHoverHandler）。
   setTfPeriodHoverHandler(fn) {
-    this._onTfPeriodHover = typeof fn === 'function' ? fn : null;
+    this._readout.setTfPeriodHoverHandler(fn);
   }
 
-  // 読み取り DTO を構築してコールバックへ渡す。param=null（ライブ更新由来）は hover 解除扱い。
+  // 読み取り DTO の発火（実体は CrosshairReadoutBuilder._emitReadout）。
   _emitReadout(param) {
-    this._onCrosshairReadout(this._buildReadoutDto(param));
+    this._readout._emitReadout(param);
   }
 
   // ペイン別凡例 DTO の発行（実体は PaneGeometryController._emitPaneLegend・ISSUE-479 Wave2 J-2）。
@@ -744,138 +692,29 @@ export class ChartRenderer {
     return this._paneGeom._isPaneMovable(paneIndex, paneCount);
   }
 
-  // slot の各系列の表示値。**どの値を取るか**は picker（Strategy）が決め、本メソッドは
-  //   「どの系列を出すか（可視の扱い）」と「名前・色をどう付けるか」だけを担う。
-  //   系列単位で非表示（styleMeta.visible=false）のものは出さない（凡例と描画を一致させる）。
-  //   picker: (series, key) => value|undefined。
+  // slot の各系列の表示値（実体は CrosshairReadoutBuilder._slotValues・ISSUE-479 Wave2 J-2c）。
   _slotValues(slot, pick) {
-    const out = [];
-    if (slot.visible === false) {
-      return out;   // インスタンスごと非表示（eye OFF）＝値は出さない（行は残す＝再表示できる）。
-    }
-    for (const [key, series] of slot.lines) {
-      const meta = slot.styleMeta ? slot.styleMeta.get(key) : null;
-      if (meta && meta.visible === false) {
-        continue;
-      }
-      out.push({ name: meta ? meta.name : key, value: pick(series, key), color: meta ? meta.color : undefined });
-    }
-    return out;
+    return this._readout._slotValues(slot, pick);
   }
 
-  // 既定の値取り出し（凡例の規約）: クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  // 既定の値取り出し（実体は CrosshairReadoutBuilder._crosshairValue）。
   _crosshairValue(slot, series, key, seriesData) {
-    const d = seriesData ? seriesData.get(series) : undefined;
-    let value;
-    if (d !== undefined && d !== null) {
-      value = (typeof d === 'object') ? (d.value ?? d.close) : d;
-    }
-    if (value === undefined || value === null) {
-      value = slot.lastValues ? slot.lastValues.get(key) : undefined;
-    }
-    return value;
+    return this._readout._crosshairValue(slot, series, key, seriesData);
   }
 
-  // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
-  //   { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
+  // 読み取り DTO の構築（実体は CrosshairReadoutBuilder._buildReadoutDto）。
   _buildReadoutDto(param) {
-    const seriesData = (param && param.seriesData) || null;
-    // main OHLC: seriesData に main があればそれ、無ければ（hover 解除）最新足 _lastBar へフォールバック。
-    const mainData = seriesData ? seriesData.get(this._mainSeries) : undefined;
-    const src = (mainData !== undefined && mainData !== null) ? mainData : this._lastBar;
-    const ohlc = (src && src.open !== undefined)
-      ? { open: src.open, high: src.high, low: src.low, close: src.close }
-      : null;
-    // ISSUE-276: overlay 各系列の値は**ペイン別凡例の行**が持つ（読み取り欄からは外す）。
-    //   同じ値を 2 系統に出していたため、指標が増えるほど読み取り欄が伸びて凡例と重なっていた
-    //   （実測: 指標 11 件で読み取り欄 229px＋凡例 295px）。読み取り欄は OHLC と時刻だけを担う。
-    //   overlays は空配列で残す（View・既存呼出の形を壊さない）。
-    const overlays = [];
-    const time = (param && param.time !== undefined) ? param.time
-      : (this._lastBar ? this._lastBar.time : undefined);
-    // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
-    const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
-    return { time, ohlc, overlays, sessionMP };
+    return this._readout._buildReadoutDto(param);
   }
 
-  /**
-   * チャート要素の左上を原点とする x 座標が指す足の情報を返す（ユーザー指示 2026-08-09・右クリックコピー）。
-   *
-   * 返すのは情報ウィンド（クロスヘア読み取り欄＋ペイン別凡例）と**同じ材料**で、
-   *   { time, ohlc:{open,high,low,close}|null, sessionMP:{poc,vah,val}|null,
-   *     indicators: [{ instanceId, values: [{ name, value, color }] }] }
-   * 座標→足の解決は upstream（timeScale().coordinateToTime）に触れる本 class に閉じる。
-   *
-   * クロスヘア経路との違いは **値が無い足で最新値へ落ちない**ことだけ（凡例は「クロスヘアが
-   * 無ければ最新値」という表示規約を持つが、足を名指しでコピーする場面でその足に無い値を
-   * 最新値で埋めると、別の足の値を「その足の値」として配ってしまう）。
-   *
-   * @param {number} x  チャート要素の左上基準の x（px）。
-   * @returns {object|null} 足が無い座標（データ範囲外・時間軸未確定）は null。
-   */
+  // x 座標が指す足の情報（実体は CrosshairReadoutBuilder.barInfoAt）。
   barInfoAt(x) {
-    const time = this._timeAtCoordinate(x);
-    if (time == null) {
-      return null;
-    }
-    const candle = pointAtTime(this.getCandles(), time);
-    const ohlc = (candle && candle.open !== undefined)
-      ? { open: candle.open, high: candle.high, low: candle.low, close: candle.close }
-      : null;
-    const model = this.paneLegendModel(null, () => (series) => pointValueAt(series, time));
-    const indicators = [];
-    for (const g of model.groups) {
-      for (const r of g.rows ?? []) {
-        indicators.push({ instanceId: r.instanceId, values: r.values ?? [] });
-      }
-    }
-    const sessionMP = this._sessionMP ? (this._sessionMP.get(time) || null) : null;
-    return { time, ohlc, sessionMP, indicators };
+    return this._readout.barInfoAt(x);
   }
 
-  /**
-   * ISSUE-368 スライス 8-b: x 座標が指す足の**スナップ候補**をプレーンデータで列挙する。
-   *
-   * @param {number} x チャート要素の左上基準の x（px）。
-   * @returns {Array<{kind:string,label:string,price:number}>|null}
-   *   足が無い座標（データ範囲外・時間軸未確定）は null。
-   */
+  // x 座標が指す足のスナップ候補（実体は CrosshairReadoutBuilder.snapCandidatesAt）。
   snapCandidatesAt(x) {
-    const time = this._timeAtCoordinate(x);
-    if (time == null) {
-      return null;
-    }
-    const series = [];
-    const levels = [];
-    const pricePane = this._pricePaneIndex();
-    for (const slot of this._instances.values()) {
-      if (this._slotPaneIndex(slot) !== pricePane) {
-        continue;   // オシレーターペインの値は価格ではない（55 を価格として吸うと桁が変わる）。
-      }
-      for (const v of this._slotValues(slot, (s) => pointValueAt(s, time))) {
-        if (Number.isFinite(v.value)) {
-          series.push({ kind: 'series', label: v.name, price: v.value });
-        }
-      }
-      if (slot.visible === false) {
-        continue;   // 水準線は _slotValues を通らない＝可視の判定をここでも行う（描画と一致させる）。
-      }
-      for (const h of slot.hlinePayloads ?? []) {
-        if (h && Number.isFinite(h.price)) {
-          levels.push({ kind: 'level', label: h.text ?? '', price: h.price });
-        }
-      }
-    }
-    const ohlc = [];
-    const candle = pointAtTime(this.getCandles(), time);
-    if (candle && candle.open !== undefined) {
-      for (const label of ['open', 'high', 'low', 'close']) {
-        ohlc.push({ kind: 'ohlc', label, price: candle[label] });
-      }
-    }
-    // 並びが解決の優先順（スナップ解決器は同距離で先頭を採る）。指標系列＝クリックの狙い、
-    //   水準線＝明示的に置かれた参照、OHLC＝常に在る背景、の順に置く。
-    return [...series, ...levels, ...ohlc];
+    return this._readout.snapCandidatesAt(x);
   }
 
   // y 座標が属するペイン番号（実体は PaneGeometryController.paneIndexAtCoordinate）。
@@ -883,25 +722,14 @@ export class ChartRenderer {
     return this._paneGeom.paneIndexAtCoordinate(y);
   }
 
-  // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。
-  //   バンドル実測（v5.2.0）: `coordinateToTime` は座標→バー index（Math.ceil）→ 元の time
-  //   （originalTime）へ写す。データ範囲外の index は null を返す＝足の無い所では開かない。
+  // x 座標が指す足の time（実体は CrosshairReadoutBuilder._timeAtCoordinate）。
   _timeAtCoordinate(x) {
-    if (!Number.isFinite(x) || typeof this._chart.timeScale !== 'function') {
-      return null;
-    }
-    const ts = this._chart.timeScale();
-    if (!ts || typeof ts.coordinateToTime !== 'function') {
-      return null;
-    }
-    const t = ts.coordinateToTime(x);
-    return t == null ? null : t;
+    return this._readout._timeAtCoordinate(x);
   }
 
-  // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。
-  //   lwc へは触れない純データ受け渡し（actor が sessions 応答から構築して渡す）。
+  // sessions の time→{poc,vah,val} Map の供給口（実体は CrosshairReadoutBuilder.setSessionMP）。
   setSessionMP(map) {
-    this._sessionMP = (map && typeof map.get === 'function') ? map : null;
+    this._readout.setSessionMP(map);
   }
 
   // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの
