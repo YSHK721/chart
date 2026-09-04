@@ -106,6 +106,34 @@ export function registerLayerDirectionSuite({
     assert.match(offenders[0] ?? '', /domain → usecase/);
   });
 
+  test(`[${label}] 検出器は他コアの配信根（web/js）への相対 import を捕捉する（G-1 が相対指定子の担当）`, () => {
+    // なぜ在るか（ISSUE-479 Wave2b・JS レビュー 🟡-2）:
+    //   G-3（越境 URL）は左端の否定後読みで**相対指定子を対象外にしている**ため、
+    //   `import { t } from '../../replay/web/js/usecase/timing.js';` 型の越境は原理的に見えない。
+    //   その担当は G-1 である、と js_layer_guard.mjs のコメントが宣言していたが、実体は
+    //   「解決先が自 core の層に属さなければ無条件 skip」であり、宣言が実体を伴っていなかった。
+    //   ここは**捕捉する側**と**許可向きは静かなままである側**を同じケースで固定する。
+    const { root, js } = syntheticTree();
+    // (1) 捕捉する側: 他コアの配信根の内部階層を相対で名指す。
+    writeFileSync(
+      path.join(js, 'adapter', 'view.js'),
+      `import { t } from '../../${otherCore}/web/js/usecase/timing.js';\nexport const v = t;\n`,
+    );
+    // (2) 許可向き（静かなままであるべき側）: 層規則が許す相対 import と、
+    //     配信根の外だが他コアでもない相対 import（共有ツール等）。
+    writeFileSync(path.join(js, 'usecase', 'rule.js'), 'export const rule = 1;\n');
+    writeFileSync(
+      path.join(js, 'adapter', 'ok.js'),
+      "import { rule } from '../usecase/rule.js';\n"
+      + "import { u } from '../../shared/util.js';\nexport const v = [rule, u];\n",
+    );
+    const offenders = layerDirectionOffenders(collectSources([js]), js, root);
+    assert.equal(offenders.length, 1,
+      `他コアの web/js への相対 import の捕捉が 1 件でない（許可向きを巻き込んだ可能性）: ${offenders}`);
+    assert.match(offenders[0], /view\.js/);
+    assert.match(offenders[0], new RegExp(`${otherCore}/web/js/usecase/timing\\.js`));
+  });
+
   test(`[${label}] 検出器は他 core の内部階層の名指しを捕捉する（自 core 除外が全体を緩めていない）`, () => {
     // 自 core 除外の最大の危険は「除外が広すぎて全部通る」ことである。他 core は必ず落ちる。
     const { root, js } = syntheticTree();
