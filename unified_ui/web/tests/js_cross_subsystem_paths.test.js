@@ -11,13 +11,13 @@
 //     名指しではない。モジュール URL（`.js` で終わる絶対パス）だけを見る。
 //
 // 残件台帳（RATCHET）:
-//   本バッチ（J-4b）で解消したのは replay core の 4 経路（公開面 1 本へ集約）である。
-//   残る 4 件は本バッチの射程外であり、理由も別々である:
-//     - モード合成根 3 本（live / sim / dashboard）: J-5（unified_root の MODES 表駆動化）が
-//       触る定数であり、そこで一緒に動かす。
-//     - dataset_ref_query: 経路の形（LIVE_ROOT と同一ディレクトリ・basename）を
-//       tests/dataset_ref_query_override.test.js が既存アサーションで固定している。
-//       public 面へ寄せるにはその検定を同時に動かす必要があり、J-5 と併せて行う。
+//   J-4b で replay core の 4 経路を、J-5 段階 3 で sim / dashboard の合成根 2 経路を、それぞれ
+//   公開面へ集約した（sim / dashboard の入口 URL は `mode_table.js` の displayLayerPath が持ち、
+//   統合層は表を走査して読む＝unified_root には定数が残らない）。
+//   残る 2 件は live core の 2 経路で、いずれも `main()` が直接読む:
+//     - 合成根 `bootstrap`     : J-5 段階 5 で公開面へ寄せる。
+//     - dataset_ref_query      : 経路の形（LIVE_ROOT と同一ディレクトリ・basename）を
+//       tests/dataset_ref_query_override.test.js が固定しているため、その検定と同時に動かす。
 //   **増やさない／直したら台帳から消す**ことを 2 本目の検定が機械的に強制する。
 //   台帳は「今の違反を許す」ためのものであって、増やしてよいという意味ではない。
 
@@ -37,11 +37,9 @@ function withoutLineNumber(offender) {
   return `${file}: ${rest.join(':').trim()}`;
 }
 
-//: 未解消の越境（J-5 の射程）。各モードの合成根の入口と、既存アサーションが形を固定している 1 本。
+//: 未解消の越境（J-5 段階 5 の射程）。live core を `main()` が直接読む 2 本。
 const KNOWN_REMAINING = [
   'unified_ui/web/js/unified_root.js: /live/js/adapter/front/composition_root_front.js',
-  'unified_ui/web/js/unified_root.js: /sim/js/adapter/front/composition_root_front.js',
-  'unified_ui/web/js/unified_root.js: /dashboard/js/adapter/front/composition_root_front.js',
   'unified_ui/web/js/unified_root.js: /live/js/adapter/front/dataset_ref_query.js',
 ];
 

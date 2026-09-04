@@ -27,7 +27,14 @@ import { readOnlyStorage } from './readonly_storage.js';
 import { registerServiceWorker, notifySwMode } from './sw_client.js';
 import { createRoutedFetch } from './routed_fetch.js';
 // モード集合・巡回・ツールバー構成の単一ソース（基本設計書 §3.5.6・§11.2）。
-import { DEFAULT_MODE, nextMode, MODE_TOGGLE_BUTTONS, MODES } from './mode_table.js';
+import {
+  DEFAULT_MODE,
+  nextMode,
+  MODE_TOGGLE_BUTTONS,
+  MODES,
+  BOTTOM_PANE_HOST_KIND,
+  FULL_AREA_HOST_KIND,
+} from './mode_table.js';
 import {
   MODE,
   loadVendor,
@@ -58,11 +65,11 @@ const DATASET_REF_QUERY = '/live/js/adapter/front/dataset_ref_query.js';
 //   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
 //   操作バーの DOM は replay 層の View が所有する（ISSUE-278 #16: 2 ページ複製をやめた）。
 const REPLAY_PUBLIC_API = '/replay/js/public/replay_public_api.js';
-// sim 表示層の合成根（器・3 窓・取引明細を所有する。live root へは注入しない＝独立した層）。
-const SIM_ROOT = '/sim/js/adapter/front/composition_root_front.js';
-// dashboard 表示層の合成根（価格ラダー・各時間足の一覧を所有する。sim と同形の独立した層）。
-//   ISSUE-452 / 設計書 §4.6。live root へは注入しない（チャート画面は無改変で広く保つ）。
-const DASHBOARD_ROOT = '/dashboard/js/adapter/front/composition_root_front.js';
+// 各モードの表示層（sim: 器・3 窓・取引明細／dashboard: 価格ラダー・各時間足の一覧）の入口 URL は
+//   **定義表が持つ**（mode_table.js の displayLayerPath・ISSUE-479 Wave2b J-5）。ここへ定数として
+//   並べていた形は、モードを 1 つ足すたびに定数・destructuring・setup 呼出・layers の 4 箇所を
+//   同時に直す義務を作り、1 箇所でも取り残すと無症状で誤動作した。層はどれも live root へは
+//   注入しない独立した層である（チャート画面は無改変で広く保つ）。
 
 let modeController = null; // createModeController の実体（トグルボタンが参照）。
 
@@ -249,6 +256,76 @@ export function createModeController({
   };
 }
 
+// ---- 表示層の読み込み（モード定義表の走査）--------------------------------------
+//
+// モードごとの差は 2 か所にしか置かない:
+//   1. 定義表の行（displayLayerPath / displayLayerExport / hostKind）… core 側の事実
+//   2. 本 LAYER_EXTRAS                                              … 統合層側の事実
+// これ以外（読み込み・据付・登録の手順）はモードを 1 つも見ない。第 5 モードの追加は表の
+// 1 行で完結し、追加注入が要るときだけ本表へ 1 行足す。
+//
+// なぜ追加注入を core 側へ渡さず統合層が持つのか（DIP・ISSUE-460 / T-2）:
+//   `onContentHeight` はペインの高さを決める口である。決めるのは**ペインの所有者**（統合層）で、
+//   sim は測って渡すだけ。`templates` は live スコープの storage をどう見せるかの判断であり、
+//   これも束の出所とスコープを決める統合層の責務である。core にこの判断を持たせると、
+//   統合ページの器の事情が core 側へ漏れる。
+export const LAYER_EXTRAS = Object.freeze({
+  [MODE.SIM]: ({ lwc, bottomPane }) => ({
+    lwc,
+    // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
+    //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
+    //   削られ、指標ペインが狭くなって手で広げる作業が要った。
+    //   利用者が一度でも分割線を掴んでいたら**触らない**（ビュー自動介入の禁止・ISSUE-164）。
+    onContentHeight: (px) => {
+      if (bottomPane && !bottomPane.isUserSized()) {
+        bottomPane.setHeightPx(px + SIM_PANE_CONTENT_MARGIN_PX);
+      }
+    },
+  }),
+  // テンプレート束（live スコープの chart テンプレート）は**読み取り専用**で渡す。束をどう
+  //   消費するかは dashboard 側の責務で、統合層は出所とスコープだけを固定する（arch-spec §0 T-2）。
+  //   書ける口を渡すと、第 4 モードの不具合が live の資産を壊す経路になる。
+  [MODE.DASHBOARD]: ({ liveStorage }) => ({ templates: readOnlyStorage(liveStorage) }),
+});
+
+/**
+ * 定義表が宣言した表示層をすべて読み込み、据え付けて「モード名 → ハンドル」の 1 枚にする。
+ *
+ * 読み込みは**宣言した行のぶんだけ**発行する（作って捨てる読込を 1 件も出さない）。切替では
+ * 一切読み直さない——ハンドルは起動時の 1 回だけ作り、以降は enable/disable するだけである。
+ *
+ * @param {object}   [opts]
+ * @param {Function} [opts.importModule] module の読込（既定は動的 import。検定は spy を注入）
+ * @param {object}   [opts.context]      層へ渡す材料（`doc` / `hosts`（hostKind → 器）/ `lwc` /
+ *                                       `bottomPane` / `liveStorage`）。器の所有者は統合層であり、
+ *                                       core は統合ページの id を知らない。
+ * @returns {Promise<Map<string, {enable: Function, disable: Function}>>}
+ */
+export async function loadDisplayLayers({
+  importModule = (url) => import(url),
+  context = {},
+} = {}) {
+  const layers = new Map();
+  for (const row of MODES) {
+    if (!row.displayLayerPath) {
+      continue; // 単一 chart の上で働く core（chartApi あり）は別 module を読まない。
+    }
+    const mod = await importModule(row.displayLayerPath);
+    const setup = mod[row.displayLayerExport];
+    if (typeof setup !== 'function') {
+      // 黙って層無しで起動しない。公開面が名前を変えた状態は、押しても器が出ない無音の失敗になる。
+      throw new Error(
+        `${row.displayLayerPath} が ${row.displayLayerExport} を公開していません`,
+      );
+    }
+    const extrasOf = LAYER_EXTRAS[row.id];
+    const extras = typeof extrasOf === 'function' ? extrasOf(context) : {};
+    const hosts = context.hosts || {};
+    layers.set(row.id, await setup({ doc: context.doc, host: hosts[row.hostKind], ...extras }));
+  }
+  return layers;
+}
+
 // ---- 単一 mount 起動 ----------------------------------------------------------
 async function main() {
   // [ISSUE-298] 操作ログを**最初に**仕掛ける（以降の動的 import・fetch・クリックをすべて記録する）。
@@ -285,16 +362,12 @@ async function main() {
   let setupReplay;
   let ReplayMarketProfileActor;
   let installReplayBar;
-  let setupSimDisplay;
-  let setupDashboardDisplay;
   let resolveDatasetRef;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ resolveDatasetRef } = await import(DATASET_REF_QUERY));
     ({ ReplayIndicatorController, setupReplay, ReplayMarketProfileActor, installReplayBar } =
       await import(REPLAY_PUBLIC_API));
-    ({ setupSimDisplay } = await import(SIM_ROOT));
-    ({ setupDashboardDisplay } = await import(DASHBOARD_ROOT));
   } catch (err) {
     showModeError(`モジュール読込に失敗しました: ${err && err.message ? err.message : err}`);
     return;
@@ -376,39 +449,35 @@ async function main() {
   const bottomPane = createBottomPaneView({ doc: document });
   bottomPane.mount(document.getElementById('app'), { above: document.querySelector('.chart-wrap') });
 
-  // sim 表示層のハンドル（enable/disable のみ）。器・CSS・3 窓・明細は sim 側が所有する。
-  //   置き場所は**統合層が決める**（sim 側は渡された host へ挿すだけ＝統合ページの id を知らない）。
-  //   job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
-  const simHandle = await setupSimDisplay({
-    doc: document,
-    lwc: window.LightweightCharts,
-    host: bottomPane.host(),
-    // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
-    //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
-    //   削られ、指標ペインが狭くなって手で広げる作業が要った。決めるのは統合層（ペインの所有者）で、
-    //   sim は測って渡すだけ。利用者が一度でも分割線を掴んでいたら**触らない**（自動介入の禁止）。
-    onContentHeight: (px) => {
-      if (!bottomPane.isUserSized()) {
-        bottomPane.setHeightPx(px + SIM_PANE_CONTENT_MARGIN_PX);
-      }
-    },
-  });
+  // 表示層の器を用意する。**置き場所を決めるのは統合層**（器の所有者）であり、各 core は
+  //   渡された host へ挿すだけで統合ページの id を知らない（DIP）。
+  //   - 下部ドックペイン（sim）… チャートは上に残す縦 2 分割（裁定 2026-08-21・MT5 と同形）。
+  //   - 専用の全面ホスト（dashboard）… **チャート画面ではない**（設計書 §4.6 依頼者裁定・
+  //     ISSUE-460）。表示・非表示はモード CSS（index.html）が body クラスで切り替えるので、
+  //     enable/disable はスタイルを触らない。
+  const displayHosts = {
+    [BOTTOM_PANE_HOST_KIND]: bottomPane.host(),
+    [FULL_AREA_HOST_KIND]: mountDashboardArea(document),
+  };
 
-  // dashboard 表示層のハンドル（enable/disable のみ）。器・CSS・価格ラダー・時間足一覧は
-  //   dashboard 側が所有する（表示要素は View が生成し所有する＝ISSUE-452 禁止事項）。
-  //   置き場所は統合層が決め、dashboard 側は渡された host へ挿すだけ。
-  //   置き場所は**チャート画面ではない**（設計書 §4.6 依頼者裁定・ISSUE-460）: sim の
-  //   bottom pane（チャートと同一画面の下部）ではなく、dashboard モードで版面全体を使う
-  //   専用の器（#um-dashboard-area）を #app 配下へ統合層が生成する。表示・非表示は
-  //   モード CSS（index.html）が body クラスで切り替える＝enable/disable でスタイルを触らない。
-  //   テンプレート束（live スコープの chart テンプレート）は**読み取り専用**で渡す。束を
-  //   どう消費するかは dashboard 側の責務で、統合層は出所とスコープだけを固定する（T-2）。
-  const dashboardArea = mountDashboardArea(document);
-  const dashboardHandle = await setupDashboardDisplay({
-    doc: document,
-    host: dashboardArea,
-    templates: readOnlyStorage(liveStorage),
-  });
+  // 表示層のハンドル（enable/disable のみ）。どの層を読み・どの器へ挿すかは定義表が持つので、
+  //   ここはモード名を 1 つも見ない。器・CSS・中身は各 core が所有する（ISSUE-452 禁止事項）。
+  //   sim の job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
+  let layers;
+  try {
+    layers = await loadDisplayLayers({
+      context: {
+        doc: document,
+        hosts: displayHosts,
+        lwc: window.LightweightCharts,
+        bottomPane,
+        liveStorage,
+      },
+    });
+  } catch (err) {
+    showModeError(`表示層の読込に失敗しました: ${err && err.message ? err.message : err}`);
+    return;
+  }
 
   modeController = createModeController({
     controller: boot.controller,
@@ -416,10 +485,7 @@ async function main() {
     // 表示層は「モード名 → {enable, disable}」の 1 枚で渡す（arch-spec §0 T-4）。モードごとの
     //   名前付き引数を足していく形だと、増えるたびに本呼び出しと controller の両方を直す義務が
     //   残り、取り残しが無音の失敗になる。
-    layers: new Map([
-      [MODE.SIM, simHandle],
-      [MODE.DASHBOARD, dashboardHandle],
-    ]),
+    layers,
     pollers: [boot.liveUpdater, boot.formingBarUpdater, boot.liveTickPlayer],
     setSwMode: notifySwMode,
     applyMode: applyModeUi,
