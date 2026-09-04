@@ -13792,3 +13792,23 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   （actor の setEnabled 呼出と例外発生を測ってから applied を見る）。actor 不在の変異で赤に
   なることを検出力として同時に固定する。
 - **対象外**: 本 Wave の射程（MP 供給経路の是正）ではないため未着手。
+
+### Wave 2b 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2b）
+
+- **完了項目（全てユーザー承認済み）**: 孤児・旧名削除 5 件（参照ゼロ実測→git rm・検査は不在検定へ強化）／
+  J-5 unified_root 表駆動化（第 5 モード＝MODES 1 行を vitest 実証・RATCHET 台帳 0 件・assert 差し替え全数を
+  より強い形へ）／J-1 S3（MP 名指し 0 件・供給は合成根 1 本・テスト移行 52 assert 全数監査で弱体化 0）＋
+  S2 拡張（ColorTheme ROLES 登録・生 host 注入是正・検出器拡張）／J-6 SeriesPrimitiveLifecycle 基底
+  （byte 等価＝paneViews キー集合一致・共有 symlink 1 本追加=mode 120000 相対）／GetRouteResponder の
+  api_shared 中立化（replay_ui→sim_ui 辺 0 件）／.pth 自動化（setup_worktree 組込・worktree 上書き事故要因を
+  検定固定）／ISSUE-483 合成 tick 錨（stats_sha256 が real_ticks を識別・trades_sha256 は識別しない非対称を
+  検定に明記）／hostKind 導出化。
+- **レビュー**: 承認（🔴 0・assert 移行 52 件全数監査・🟡 2 件は同 Wave 内で根治済み f9b10cd/6a80c14＝
+  アクター契約 7 面の実体化施行・G-1 他コア相対 import 検出）。
+- **失敗挙動の裁定**: core 1 つの停止で live が死なない（明示エラー付き縮退）を正とする。
+  「可用モードのみボタン配線」への改善は Wave 3 候補。
+- **残（Wave 3 候補・台帳済み）**: sw_rewrite API_SEGMENTS 申告化・dual-root 縮小・段階 B 2 件・
+  ISSUE-484（既存空振り検定）・simHandle 公開面撤去・live_public_api の named 化＋facade 検定の全公開面適用・
+  G-1 共有スイートの indicator_ui/dashboard_ui 移行・unified_ui の G-1 錨・pre-existing 4 offender（JS 合成根）。
+- **実 UI 確認（マージ後・ユーザー実施）**: レビュー最終版リスト（A: live MP 5 項・B: replay MP 4 項・
+  C: unified 7 項・D: 新環境 3 項）に従うこと。サーバ再起動（serve.sh 経由・ポート 8000/8280 固定）が前提。
