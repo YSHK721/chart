@@ -140,6 +140,8 @@ export async function bootstrap({
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
+    // ISSUE-479 Wave2 J-1 OCP-5 S2: MP をアクター駆動指標の共通登録口へ渡す。
+    marketProfile: null,
   });
   chartTemplates = templates;
   colorThemes = themes;
