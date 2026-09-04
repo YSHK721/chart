@@ -36,7 +36,6 @@ const FIFTH_ROW = Object.freeze({
   label: '第 5 モード',
   buttonTitle: '第 5 モードのオン・オフ',
   chartApi: false,
-  bottomPane: false,
   displayLayerPath: '/fake5/js/public/fake5_public_api.js',
   displayLayerExport: 'setupFake5Display',
   hostKind: FULL_AREA_HOST_KIND,

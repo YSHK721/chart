@@ -58,7 +58,7 @@
     body:not(.um-chart-api) #tpl-menu,
     body:not(.um-chart-api) #indicator-open-btn,
     body:not(.um-chart-api) .pane-legend-gear { opacity: .4; pointer-events: none; }
-    /* 表示層が**下部ペイン**を使うモード（表の bottomPane=true・sim）では、その表示層
+    /* 表示層が**下部ペイン**を使うモード（表の hostKind==='bottomPane'・sim）では、その表示層
        （#sim-display）を下部ペインへ出し、チャートは畳まない（裁定 2026-08-21・依頼者指示）。
        判定はモード名ではなく body の状態クラス um-bottom-pane-mode（applyModeUi が表から
        付け外し）で行う: um-chart-api の裏返しで書くと、chart API を持たない第 4 モード

@@ -138,7 +138,7 @@ describe('index.html — モード別 CSS の 3 値化', () => {
   });
 
   test('the_empty_bottom_pane_does_not_appear_in_dashboard_mode', () => {
-    // Assert: bottom pane の出し入れは能力クラス（um-bottom-pane-mode・表の bottomPane 属性
+    // Assert: bottom pane の出し入れは能力クラス（um-bottom-pane-mode・表の hostKind から導出
     //   から applyModeUi が付け外し）で駆動する。旧規則（um-chart-api の裏返し）のままだと
     //   chart API を持たない dashboard で**空のペイン**が出る（ISSUE-460 で実発生）。
     expect(HTML).toMatch(/body\.um-bottom-pane-mode\s+#um-bottom-splitter\s*\{\s*display:\s*block;?\s*\}/);
@@ -147,7 +147,7 @@ describe('index.html — モード別 CSS の 3 値化', () => {
   });
 
   test('bottom_pane_is_hidden_by_default_and_shown_only_in_bottom_pane_modes', () => {
-    // Assert: 既定は非表示。表示層が下部ペインを使うモード（表の bottomPane=true）のときだけ出す。
+    // Assert: 既定は非表示。表示層が下部ペインを使うモード（hostKind==='bottomPane'）のときだけ出す。
     //
     // 是正の記録（ISSUE-460）: 旧規則は「chart API を持たないとき出す」（um-chart-api の
     //   裏返し）だった。chart API の有無とペイン使用は別の性質で、chart API を持たない

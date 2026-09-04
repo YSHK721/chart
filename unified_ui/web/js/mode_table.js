@@ -54,7 +54,6 @@ export const MODES = Object.freeze([
     label: null,
     buttonTitle: null,
     chartApi: true,          // indicator_ui core が /candles・/compute を持つ。
-    bottomPane: false,       // 表示層を持たない（チャートのみ）。
     displayLayerPath: null,  // チャートそのもの＝統合層が別に読み込む表示層を持たない。
     displayLayerExport: null,
     hostKind: null,
@@ -67,7 +66,6 @@ export const MODES = Object.freeze([
     label: 'リプレイ',
     buttonTitle: 'リプレイ表示のオン・オフ',
     chartApi: true,          // replay_ui core が /candles・/compute を持つ。
-    bottomPane: false,       // 表示層を持たない（チャートのみ）。
     // リプレイ層は live 合成根が `boot.replayHandle` として返す（単一 chart の上で働く）。
     //   統合層が別 module として読み込む表示層ではないので null。
     displayLayerPath: null,
@@ -84,9 +82,6 @@ export const MODES = Object.freeze([
     // Phase 1 の sim core は静的配信のみ（simulator/sim_ui/framework/serve_sim.py）。
     //   ジョブ API を持つ Phase 2 以降も /candles・/compute は持たない設計（§6.1）。
     chartApi: false,
-    // MT5 のストラテジーテスターと同形: 表示層は**下部ドックペイン**に出し、チャートは
-    //   上に残す（縦 2 分割・裁定 2026-08-21）。
-    bottomPane: true,
     displayLayerPath: '/sim/js/public/sim_public_api.js',
     displayLayerExport: 'setupSimDisplay',
     hostKind: BOTTOM_PANE_HOST_KIND,
@@ -106,7 +101,6 @@ export const MODES = Object.freeze([
     chartApi: false,
     // 設計書 §4.6（依頼者裁定 2026-08-29・sim の縦 2 分割裁定より後）: **チャート画面には
     //   置かない**。下部ペインではなく専用の全面ホスト（#um-dashboard-area）を使う（ISSUE-460）。
-    bottomPane: false,
     displayLayerPath: '/dashboard/js/public/dashboard_public_api.js',
     displayLayerExport: 'setupDashboardDisplay',
     hostKind: FULL_AREA_HOST_KIND,
@@ -169,10 +163,19 @@ export function hasChartApi(id) {
   return !!(row && row.chartApi);
 }
 
-/** そのモードの表示層が下部ドックペインを使うか（表が唯一源）。 */
+/**
+ * そのモードの表示層が下部ドックペインを使うか。
+ *
+ * **`hostKind` から導出する**（ISSUE-479 Wave2b 項 4）。以前は表が `bottomPane` 属性を
+ * 別に持っていたが、「どの器へ挿すか」と「下部ペインを使うか」は同じ 1 つの事実であり、
+ * 2 箇所に書くと片方だけ直された日に静かにずれる（突合の検定でずれを塞いでいた＝
+ * ずれうる形のままだった）。宣言を 1 つに減らせば、ずれる余地そのものが消える。
+ *
+ * 未知は false へ倒す（全域性）。「使う」と誤認すると空の器が出るため、慎重側は「使わない」。
+ */
 export function usesBottomPane(id) {
-  const row = MODES.find((mode) => mode.id === id);
-  return !!(row && row.bottomPane);
+  const row = modeOf(id);
+  return !!(row && row.hostKind === BOTTOM_PANE_HOST_KIND);
 }
 
 /** モードの body クラス（未知は null）。 */
