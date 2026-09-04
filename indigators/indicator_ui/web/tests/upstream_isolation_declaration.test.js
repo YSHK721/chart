@@ -10,13 +10,18 @@
 //   （ISeriesPrimitive 実装＝chart を受け取るのが仕様）の 3 グループ。
 //   これ以外のファイルが upstream API を呼んだら落とす。
 //
-// 隔離単位を広げたい場合は ALLOWED へ追加し、その理由をここに書く（宣言と施行を同時に更新する）。
+// 隔離単位の広げ方（陳腐化していた記述の是正・JS レビュー 🔵-4）:
+//   許可は**ファイル自身の自己申告**である（`// @upstream-isolation: <自分のファイル名>` を 1 行）。
+//   本ファイルに「許可リスト」は無い——ALLOWED は申告を走査した導出集合である。
+//   広げるときは (1) 対象ファイルへ申告行を足し、(2) その理由を本ファイルの
+//   EXPECTED_ISOLATION_UNITS（台帳）へ分類とともに書き足す。台帳との双方向一致を検定しているため、
+//   (1) だけでは通らない＝無審査の拡大ができない（ratchet）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const WEB = dirname(dirname(fileURLToPath(import.meta.url)));
 const FRONT = join(WEB, 'js', 'adapter', 'front');
@@ -80,15 +85,86 @@ function declaredIsolationUnits(sourcesByName) {
   return names;
 }
 
-function frontSources() {
+// ソース集合から「申告はあるが名前が自分と違う」行を導く（純関数＝検出器自身を検定できる）。
+//   declaredIsolationUnits が黙って捨てる行を、ここでは理由付きで可視化する。
+function mismatchedDeclarations(sourcesByName) {
+  const out = [];
+  for (const [name, src] of Object.entries(sourcesByName)) {
+    for (const line of src.split('\n')) {
+      const m = line.match(ISOLATION_DECLARATION_RE);
+      if (m && m[1] !== name) {
+        out.push(`${name}: 申告=${m[1]}`);
+      }
+    }
+  }
+  return out.sort();
+}
+
+// chart 型（IChartApi）を直接 import している「隔離単位の外」のファイルを導く（純関数）。
+//   allowed は隔離単位の集合そのものを受け取る（第 2 の列挙を作らないための引数化）。
+function chartTypeImportOffenders(sourcesByName, allowed) {
+  const out = [];
+  for (const [name, src] of Object.entries(sourcesByName)) {
+    if (allowed.has(name)) {
+      continue;
+    }
+    src.split('\n').forEach((line, i) => {
+      const code = line.trim();
+      if (code.startsWith('//')) {
+        return;
+      }
+      if (/^import .*\bIChartApi\b/.test(code)) {
+        out.push(`${name}:${i + 1}`);
+      }
+    });
+  }
+  return out.sort();
+}
+
+// front の全ソースを **1 ファイル 1 回だけ** 読む単一の読取点（計算量テストがこの発行を数える）。
+//   読取は注入可能（発行回数を外から観測するため）。走査対象も差し替え可能（2 点でオーダーを測る）。
+function frontSources(read = (p) => readFileSync(p, 'utf8'), files = frontFiles()) {
   const out = {};
-  for (const name of frontFiles()) {
-    out[name] = readFileSync(join(FRONT, name), 'utf8');
+  for (const name of files) {
+    out[name] = read(join(FRONT, name));
   }
   return out;
 }
 
-const ALLOWED = declaredIsolationUnits(frontSources());
+// 全検定が共有する唯一の読取結果。項目ごとに front を読み直さない（ISSUE-450 型の浪費を作らない）。
+const SOURCES = frontSources();
+
+const ALLOWED = declaredIsolationUnits(SOURCES);
+
+// 隔離単位の**台帳**（JS レビュー 🟡-2 の ratchet）。
+//
+//   自己申告への移行で「宣言と実体がずれる」失敗型は消えたが、同時に「隔離単位を広げるときに
+//   立ち止まる摩擦」も消えた——新しいファイルへ 1 行足すだけで、誰にも見えないまま許可が増える。
+//   ここに現在の単位を書き出し、導出集合との**双方向一致**を検定する。拡大にはテスト編集が要る。
+//
+//   3 グループの内訳（本ファイル冒頭の宣言と対応する）:
+//     (a) ChartRenderer とその内部協働子（描画の実装本体・状態の所有者）
+//     (b) チャート生成の bootstrap／レイアウト（upstream の生成 API を呼ぶのが仕事）
+//     (c) lwc プラグイン契約（ISeriesPrimitive 実装＝chart を受け取るのが upstream 仕様）
+const EXPECTED_ISOLATION_UNITS = Object.freeze([
+  // (a) ChartRenderer とその内部協働子
+  'chart_renderer.js',
+  'candle_feed.js',
+  'series_drawer.js',
+  'scale_controller.js',
+  'pane_geometry_controller.js',
+  'chrome_color_controller.js',
+  'crosshair_readout_builder.js',
+  // (b) チャート生成の bootstrap／レイアウト／合成根
+  'chart_bootstrap.js',
+  'mp_chart_layout.js',
+  'composition_root_front.js',
+  // (c) lwc プラグイン契約（primitive 実装・描画器）
+  'market_profile_primitive.js',
+  'tickvol_bands_primitive.js',
+  'pair_lines_primitive.js',
+  'trade_markers_renderer.js',
+]);
 
 // 1 行のコードが upstream API を呼んでいるか。名前だけで判定するものと、受け手を見るものの 2 系統。
 function lineCallsUpstream(code) {
@@ -115,9 +191,31 @@ function callsUpstream(source) {
   return hits;
 }
 
+// 隔離単位の**外**で upstream API を呼んでいるファイルを導く（純関数）。
+function upstreamCallOffenders(sourcesByName, allowed) {
+  const out = [];
+  for (const [name, src] of Object.entries(sourcesByName)) {
+    if (allowed.has(name)) {
+      continue;
+    }
+    const hits = callsUpstream(src);
+    if (hits.length) {
+      out.push(`${name}\n    ${hits.join('\n    ')}`);
+    }
+  }
+  return out.sort();
+}
+
+// 隔離単位を申告しているのに upstream API を 1 つも呼ばないファイルを導く（純関数）。
+function staleIsolationUnits(sourcesByName, allowed) {
+  return [...allowed]
+    .filter((name) => (name in sourcesByName) && callsUpstream(sourcesByName[name]).length === 0)
+    .sort();
+}
+
 // chart_renderer.js 冒頭が宣言している API 名（「JS API 名（… / … / …）を」の括弧内）。
 function declaredApiNames() {
-  const src = readFileSync(join(FRONT, 'chart_renderer.js'), 'utf8');
+  const src = SOURCES['chart_renderer.js'];
   const m = src.match(/JS API 名（([\s\S]*?)）を/);
   assert.ok(m, 'chart_renderer.js 冒頭の API 名宣言が見つからない（宣言の書式を変えたら本検定も直す）');
   return m[1].replace(/\/\//g, ' ').split('/').map((s) => s.trim()).filter(Boolean);
@@ -137,6 +235,18 @@ test('受け手つき判定は upstream の moveTo だけを拾う（canvas の�
   assert.equal(lineCallsUpstream('const idx = slot.pane.paneIndex();'), true);
   // 同名の**プロパティ参照**は呼び出しではない（凡例 DTO の g.paneIndex を誤検出しない）。
   assert.equal(lineCallsUpstream('const target = g.paneIndex;'), false);
+});
+
+test('隔離単位の台帳（EXPECTED_ISOLATION_UNITS）と実際の申告集合が双方向に一致する', () => {
+  // なぜ在るか（JS レビュー 🟡-2）: 許可を**自己申告**へ移した結果、隔離単位を広げるのに
+  //   テストを 1 文字も触らなくてよくなった。宣言の二重管理（ISSUE-262 の失敗型）は消えた
+  //   代わりに、「広げるときに必ず立ち止まる摩擦」まで一緒に消えている。ここへ台帳を置き、
+  //   拡大に**テスト編集を要する**状態（ratchet）を復元する。
+  //   双方向で測る: 台帳にあって申告が無い（＝申告の外し忘れ）／申告があって台帳に無い
+  //   （＝無審査の拡大）のどちらも落とす。
+  assert.deepEqual([...ALLOWED].sort(), [...EXPECTED_ISOLATION_UNITS].sort(),
+    '隔離単位が台帳と食い違っています。単位を広げる/狭めるときは、その理由を本ファイルへ'
+    + '書いた上で EXPECTED_ISOLATION_UNITS も更新してください。');
 });
 
 test('隔離単位は自己申告マーカーから導かれる（申告を外したファイルは許可から外れる）', () => {
@@ -163,12 +273,7 @@ test('宣言（chart_renderer.js 冒頭）と施行（本検定の API 名）が
 });
 
 test('upstream(lightweight-charts) API を呼ぶのは宣言した隔離単位だけ', () => {
-  const offenders = [];
-  for (const name of frontFiles()) {
-    if (ALLOWED.has(name)) continue;
-    const hits = callsUpstream(readFileSync(join(FRONT, name), 'utf8'));
-    if (hits.length) offenders.push(`${name}\n    ${hits.join('\n    ')}`);
-  }
+  const offenders = upstreamCallOffenders(SOURCES, ALLOWED);
   assert.deepEqual(offenders, [],
     `隔離単位の外で upstream API を呼んでいます:\n  ${offenders.join('\n  ')}\n`
     + '  ChartRenderer 経由へ寄せるか、隔離単位を広げる理由を本テストへ書いてください。');
@@ -176,40 +281,118 @@ test('upstream(lightweight-charts) API を呼ぶのは宣言した隔離単位�
 
 test('隔離単位の許可リストに、実際には upstream を呼ばないファイルが残っていない', () => {
   // 許可を過剰に広げたまま放置すると、宣言が再び形骸化する（今回の再発源）。
-  const stale = [...ALLOWED].filter((name) => {
-    try {
-      return callsUpstream(readFileSync(join(FRONT, name), 'utf8')).length === 0;
-    } catch { return false; }   // 存在しない名前は次のテストで落とす
-  });
+  const stale = staleIsolationUnits(SOURCES, ALLOWED);
   assert.deepEqual(stale, [],
     `許可リストに不要なエントリが残っています: ${stale.join(', ')}。隔離単位を狭めてください。`);
 });
 
-test('許可リストのファイルはすべて実在する（リネーム時に穴を残さない）', () => {
-  const missing = [...ALLOWED].filter((name) => {
-    try { statSync(join(FRONT, name)); return false; } catch { return true; }
-  });
-  assert.deepEqual(missing, [], `許可リストに実在しないファイルがあります: ${missing.join(', ')}`);
+// 旧「許可リストのファイルはすべて実在する」検定は **恒真**だったため置換した（JS レビュー 🟡-2）。
+//   理由: ALLOWED は frontFiles()（実在ファイル名）を走査し、`申告名 === 自ファイル名` の行だけを
+//   採る導出集合である。実在しない名前は構造上 1 つも入り得ず、missing は常に空だった。
+//   ハードコード列挙の時代（実在しない名前が残り得た）の検定が、導出化のあとも残っていた。
+//
+// 代わりに置くのは、導出方式で**実際に起こり得る**穴である: 申告名が自ファイル名と食い違う行
+//   （リネームの直し漏れ・複製時の書き換え忘れ）。この行は静かに無視されるため、書いた本人は
+//   「隔離単位に入れた」と思い込むのに許可は付いていない。upstream API を呼んだ瞬間に別検定が
+//   落ちるが、原因（申告名の食い違い）はメッセージに出ない。ここで名指しで落とす。
+
+test('申告名が自ファイル名と食い違う宣言が無い（静かに無視される申告を残さない）', () => {
+  const mismatched = mismatchedDeclarations(SOURCES);
+  assert.deepEqual(mismatched, [],
+    `申告名がファイル名と食い違っています（この申告は無視されます）: ${mismatched.join(', ')}`);
+});
+
+test('食い違い検出器そのものの検定（空振りしていない）', () => {
+  assert.deepEqual(
+    mismatchedDeclarations({ 'a.js': '// @upstream-isolation: b.js\n' }),
+    ['a.js: 申告=b.js'], 'リネーム漏れの申告を見逃している');
+  assert.deepEqual(
+    mismatchedDeclarations({ 'a.js': '// @upstream-isolation: a.js\n' }),
+    [], '正しい申告を食い違いと誤判定している');
+  assert.deepEqual(
+    mismatchedDeclarations({ 'a.js': 'export const a = 1;\n' }),
+    [], '申告の無いファイルを食い違いと誤判定している');
 });
 
 test('隔離単位の外から chart インスタンスを直接受け取っていない（間接的な迂回の検出）', () => {
-  // upstream API を呼ばずとも chart を握れば将来の迂回口になる。primitive は upstream 仕様上
-  //   chart を受け取るため除外する。
-  const primitives = new Set([
-    'market_profile_primitive.js', 'tickvol_bands_primitive.js', 'pair_lines_primitive.js',
-    'trade_markers_renderer.js', 'mp_chart_layout.js', 'chart_bootstrap.js',
-    'chart_renderer.js', 'series_drawer.js', 'candle_feed.js', 'scale_controller.js',
-    'composition_root_front.js',
-  ]);
-  const offenders = [];
-  for (const name of frontFiles()) {
-    if (primitives.has(name)) continue;
-    const src = readFileSync(join(FRONT, name), 'utf8');
-    src.split('\n').forEach((line, i) => {
-      const code = line.trim();
-      if (code.startsWith('//')) return;
-      if (/^import .*\bIChartApi\b/.test(code)) offenders.push(`${name}:${i + 1}`);
-    });
-  }
+  // upstream API を呼ばずとも chart を握れば将来の迂回口になる。「握ってよいのは誰か」は
+  //   隔離単位そのもの（ALLOWED）であり、**第 2 の列挙を持たない**（JS レビュー 🔵-4）。
+  //   かつてここには 11 件のハードコード集合があり、隔離単位 14 件とずれていた——協働子を
+  //   抽出して単位へ入れても、この集合に足し忘れれば「単位の中なのに違反」と誤って落ちる。
+  const offenders = chartTypeImportOffenders(SOURCES, ALLOWED);
   assert.deepEqual(offenders, [], `chart 型を直接 import しています: ${offenders.join(', ')}`);
+});
+
+test('chart 型 import 検出器そのものの検定（空振りせず、単位の中を誤検出しない）', () => {
+  const line = "import { IChartApi } from 'lightweight-charts';\n";
+  assert.deepEqual(
+    chartTypeImportOffenders({ 'outsider.js': line }, new Set()),
+    ['outsider.js:1'], '隔離単位の外の chart 型 import を見逃している');
+  assert.deepEqual(
+    chartTypeImportOffenders({ 'unit.js': line }, new Set(['unit.js'])),
+    [], '隔離単位の中を誤検出している');
+  assert.deepEqual(
+    chartTypeImportOffenders({ 'doc.js': `// ${line}` }, new Set()),
+    [], 'コメント内の記述を誤検出している');
+  // 現に隔離単位である協働子（旧ハードコード集合には無かった）が除外側に入ること。
+  assert.ok(ALLOWED.has('pane_geometry_controller.js'),
+    '測定の前提（当該協働子が隔離単位である）が崩れている');
+  assert.deepEqual(
+    chartTypeImportOffenders({ 'pane_geometry_controller.js': line }, ALLOWED),
+    [], '隔離単位の協働子を chart 型 import の違反として落としている');
+});
+
+// --------------------------------------------------------------------------- //
+// 計算量: 検定 1 巡の front 読取 − 対象ファイル数 = 0（項目ごとに読み直さない）
+// --------------------------------------------------------------------------- //
+// なぜ在るか（絶対命令 2026-08-28）: 出力（offender 一覧）が正しいままでも、項目ごとに front を
+//   丸ごと読み直す実装は「作ってから捨てる」浪費であり、状態検証では原理的に落ちない。
+//   発行回数そのものは期待値に焼き込まず、**無駄の不在**（発行 − 使用 = 0）だけを固定する。
+
+function countingRead(reads) {
+  return (p) => { reads.push(p); return readFileSync(p, 'utf8'); };
+}
+
+for (const fileCount of [5, 12]) {
+  test(`計算量: 検定 1 巡の読取 − 対象ファイル数 = 0（対象 ${fileCount} 本）`, () => {
+    const files = frontFiles().slice(0, fileCount);
+    const reads = [];
+    const sources = frontSources(countingRead(reads), files);
+
+    // 全項目を**同じ集合**の上で走らせる（項目ごとに読み直さない）。
+    const allowed = declaredIsolationUnits(sources);
+    mismatchedDeclarations(sources);
+    chartTypeImportOffenders(sources, allowed);
+    upstreamCallOffenders(sources, allowed);
+    staleIsolationUnits(sources, allowed);
+
+    assert.equal(reads.length - Object.keys(sources).length, 0,
+      `同じファイルを読み直している: reads=${reads.length} files=${Object.keys(sources).length}`);
+    assert.equal(Object.keys(sources).length, fileCount);
+  });
+}
+
+for (const itemCount of [2, 5]) {
+  test(`計算量: 検査項目を ${itemCount} 件に増やしても読取は増えない（オーダーの表明）`, () => {
+    const files = frontFiles().slice(0, 12);
+    const reads = [];
+    const sources = frontSources(countingRead(reads), files);
+    const allowed = declaredIsolationUnits(sources);
+    for (let i = 0; i < itemCount; i += 1) {
+      mismatchedDeclarations(sources);
+      chartTypeImportOffenders(sources, allowed);
+      upstreamCallOffenders(sources, allowed);
+    }
+    assert.equal(reads.length - Object.keys(sources).length, 0);
+  });
+}
+
+test('計算量ゲートの検出力: 項目ごとに読み直す変異で赤になる', () => {
+  const files = frontFiles().slice(0, 12);
+  const reads = [];
+  const read = countingRead(reads);
+  const first = frontSources(read, files);
+  frontSources(read, files);          // 捨てられる読取（項目ごとの読み直しの再現）。
+  assert.notEqual(reads.length - Object.keys(first).length, 0,
+    '変異を検出できていない（検査が空振り）');
 });
