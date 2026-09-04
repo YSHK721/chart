@@ -13470,3 +13470,219 @@ Wave 1 で「要承認」として保留した 2 系統を、依頼者承認の�
      差分 772 行の PR 分割（F 番号ごと）／`test_composition_root_arg_parity` の pre-existing 赤（JS 合成根 4 件・
      基点 438d56e から赤と実証済み・別途起票対象）。
   3. VM 実機動作（MT5 端末での 2 ファイル配布完走）は ISSUE-448 V-1〜V-7 の実疎通時に確認。
+
+---
+
+## ISSUE-482: [設計] Wave2 2-7 の前提「venv 経由起動」が成立しない — .pth を書く運用手順がリポジトリに無い
+
+- **ステータス**: RESOLVED（2026-09-03・コーディネータ承認のうえ根治）
+- **重大度**: 中（本番実行時ではなく、文書化された CLI 再生成手順が壊れる）
+- **起票**: 2026-09-03（ISSUE-479 Wave2 フェーズ 2-7 着手時）
+
+### 何を止めたか
+
+Wave2 設計書のフェーズ 2-7「`simulator/tools/` 4 本・`indigators/indicator_ui/tools/` 4 本の
+repo 根 insert 撤去（venv 経由起動前提を docstring 明記）」を、前提が実測で否定されたため
+**着手せず中断**した。2-1〜2-6 は完了・コミット済み。
+
+### 実測（証拠）
+
+1. **venv に `.pth` が無い**
+   `ls lightweight-charts-python-main/.venv/lib/python3.13/site-packages/*.pth`
+   → `__editable__.lightweight_charts-2.1.pth` のみ。`jp225_chart_paths.pth`
+   （`tools/install_dev_paths.py` が書くもの）は存在しない。
+
+2. **insert を外すと文書化された起動手順が死ぬ**
+   `export_account_engine_fixtures.py` から repo 根 insert だけを外した複製を
+   `PYTHONPATH` 無し・venv python で実行 →
+   `ModuleNotFoundError: No module named 'simulator'`（rc=1）。
+   当該ファイルの docstring は `再生成: <venv python> simulator/tools/export_account_engine_fixtures.py`
+   と明記しており、これが動かなくなる。
+
+3. **`.pth` を入れる運用手順がどこにも無い**
+   `install_dev_paths` の grep 結果に、`tools/setup_worktree.sh`・`docs/**` からの
+   呼び出しは 1 件も無い。ISSUE.md:2190 は「真の供給源は venv の .pth」と記録しているが、
+   その .pth を作る手順は人手の暗黙知であり、現に失われている。
+
+4. **テストでは落ちない**
+   当該 8 本をスクリプトとして起動するテストは 0 件（`indigators/indicator_ui/tools/tests/`・
+   `tools/tests/` の subprocess 起動を全数確認）。つまり撤去してもスイートは緑のまま、
+   人間が手順どおり叩いたときだけ壊れる——本 Wave が消そうとしている欠陥と同型である。
+
+### 設計書との数の食い違い（併せて報告）
+
+設計書は `indigators/indicator_ui/tools/` を「4 本」とするが、実測は **6 本**:
+`export_jp225_m1.py` / `export_jp225_csv.py` / `jp225_chart.py` / `prototype_swap_data.py` /
+`period_presets_measure.py`（以上 repo 根のみ）＋ `prototype_inject_marketdata.py`
+（repo 根 **と** api ディレクトリの 2 つを挿す）。
+`prototype_inject_marketdata.py` の api 側は汎用名（adapter/framework/domain）を含むため
+台帳へ載せられず、撤去対象にできない（bridge の `_ensure_paths` と同じ規律）。
+`simulator/tools/` は設計どおり 4 本で一致。
+
+### 対策案（根本解決・応急処置なし）
+
+前提を作ってから撤去する。順序は次のとおり:
+
+1. `.pth` の設置を運用手順として明文化・自動化する（`tools/setup_worktree.sh` から
+   `tools/install_dev_paths.py` を呼ぶ／README に環境構築手順として記載）。
+   検定は「台帳の全エントリが素の venv python から解決できる」ことを実測する形にする。
+2. それが緑になってはじめて 8 本（実測 10 本）の repo 根 insert を撤去する。
+3. 撤去後は、当該 CLI を**スクリプトとして起動する**検定を最低 1 本置く
+   （置かないと今回と同じく「テストは緑だが手順は死ぬ」が再発する）。
+
+段階 1 は venv（git 管理外）への書き込みを伴うため、実施可否の承認が要る。
+
+### 付記（本調査中の副作用・実害なし）
+
+調査で `export_account_engine_fixtures.py` を `--help` 付きで起動したところ、当該 CLI は
+引数を解釈せず fixture を再生成した（`simulator/tests/fixtures/account_engine/js_golden_cases.json`）。
+`git diff` で byte 不変を確認済み（決定的生成のため内容は同一）。
+副次的な発見として、この CLI は `--help` を受け付けず必ず書き込む。
+
+### 解決（2026-09-03・対策案 3 段すべてを実施）
+
+**段階 1: `.pth` の正規インストール**（加法・可逆＝当該ファイルを消せば元に戻る）
+
+    実行: <venv>/bin/python tools/install_dev_paths.py
+    書き込み先:
+      lightweight-charts-python-main/.venv/lib/python3.13/site-packages/jp225_chart_paths.pth
+    内容（3 行・台帳 tools/dev_paths.txt から導出。値は書き写していない）:
+      /workspaces/app
+      /workspaces/app/indigators/market_profile/api
+      /workspaces/app/indigators
+
+`tools/setup_worktree.sh` は worktree をメインチェックアウトの venv に向けるため、
+本 .pth は worktree からも効く。
+
+**段階 3 を段階 2 より先に実施**（検査が無い状態で撤去しないため）:
+新設 `tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`。対象ディレクトリ
+（`simulator/tools`・`indigators/indicator_ui/tools`）の `__main__` ガードを持つ入口を
+**表を手書きせずに走査**し、PYTHONPATH を落とした素の venv python で 1 本ずつ起動して
+ModuleNotFoundError にならないことを固定する。`--help` は使えない（起票時の付記のとおり
+`export_account_engine_fixtures.py` は引数を解釈せず書き込む）ため、モジュール本体だけを
+実行し `__main__` ガードの内側へは入らない起動形にした（起動形自体も自己検査で固定）。
+`.pth` 依存は skipif にせず、`test_the_ledger_entries_are_visible_to_a_bare_interpreter`
+が前提として名指しで検査し、失敗時に打つべきコマンドを出す。
+
+**起票時の実測より状況は悪かった（本作業での新実測）**: 撤去以前から、`simulator/tools` の
+**6 本**（`optimize_cli` / `run_is_oos_cli` / `run_scan_contacts_cli` / `walk_forward_cli` /
+`regenerate_account_engine_fixtures` / `export_trade_markers`）が既に素の python で
+ModuleNotFoundError になっていた。`.pth` の導入はこの 6 本も同時に直している。
+
+**段階 2: repo 根 insert の撤去**（実測 9 本）
+`simulator/tools/` 4 本＋`indigators/indicator_ui/tools/` 5 本。各ファイルの docstring に
+「venv 経由起動が前提・解決は台帳＋.pth」を明記した。`prototype_inject_marketdata.py` は
+**維持**する——`indicator_ui/api` が挿すのは汎用名（adapter/framework/domain）で台帳へ
+載せられないため（`_indicator_ui_bridge._ensure_paths` と同一規律）。例外がこの 1 件だけで
+あることは同検定の AST ゲートが固定する（識別力: 撤去した insert を 1 本戻すと Red を実測）。
+
+### .pth 導入の副作用 1 件（検出・是正済み）
+
+`.pth` を入れた直後、`tools/tests/test_dev_paths_indigators_entry.py::
+TestTheIndigatorsEntryShadowsNothing::test_no_exposed_name_had_a_resolution_before_the_entry`
+が赤になった。原因は当該検定の**対照条件**である。同検定は「PYTHONPATH から `indigators` を
+外した構成」を作って衝突不在を測るが、素の起動は site を読むため .pth が同じ entry を
+裏口から入れてしまい、「外した構成」が作れなくなった（実測: `PYTHONPATH=<repo>` だけでも
+`moving_averages` が解決した）。
+
+**壊れたのは検定の対照であって性質ではない**——報告された「衝突」の解決先は全件
+`<repo>/indigators/...`（すなわち当の entry 自身）であり、別ツリーによる覆い隠しは 0 件。
+是正は対照の隔離のみ: 探索用 subprocess を `-S`（site を読まない＝.pth 非適用。`-E` では
+ないので PYTHONPATH は従来どおり効く）で起動する。**アサーションは 1 行も変えていない**。
+検出力は正の対照で確認済み（別ツリーに `moving_averages` を置くと `-S` でも検出される）。
+
+### 起票時の記述の訂正
+
+起票時の実測 3「`.pth` を入れる運用手順がどこにも無い」は `docs/**` を見ての判断だったが、
+**`.doc/LAYERING_CONVENTIONS.md:62` に `<venv>/bin/python tools/install_dev_paths.py` を
+1 回実行する旨が明記されていた**。欠けていたのは文書ではなく (a) 実行されていたことの保証と
+(b) 自動化である。(a) は本検定が機械的に強制するようになった。
+
+### 残る承認事項（本作業では実施しない）
+
+(b) 自動化: `tools/setup_worktree.sh` または環境構築手順から `tools/install_dev_paths.py`
+を呼ぶこと。未実施のため、**新しいコンテナ・新しい venv では本検定が赤で始まる**
+（これは仕様＝前提の不在を緑で覆い隠さない設計）。失敗メッセージが打つべきコマンドを示す。
+
+---
+
+## ISSUE-483: [検定] Wave2 再レビュー 🟡-1 の「real_ticks ケース C をピン化」は前提不成立 — 採取値が sha256("") になる
+
+- **ステータス**: `OPEN`（着手前に中断。代替案は承認事項）
+- **重大度**: 中（誤ったピンを入れると後続 Wave を誤誘導するため、入れないことが正）
+- **起票**: 2026-09-04 / ブランチ `fix/issue-479-solid-wave2`
+
+### 指摘の内容（上流入力）
+
+`simulator/tests/integration/test_run_backtest_fingerprint.py` に `tick_model="real_ticks"`
+のケース C を追加し、現行実装で `stats_sha256` / `trades_sha256` を採取してピン化して
+以後の Wave への錨とする（既存ケース A/B と同形式）。
+
+### 前提検証の実測（採用せず＝棄却の根拠）
+
+ケース C は既存 A/B と同一プロファイル（JP225 M1 2025-01・MA_Slope_EA）で
+`config_overrides.tick_model` のみ `real_ticks` へ差し替える形になる。この構成を実走した:
+
+```
+exit 0  trades 0
+stats_sha256   61873b9108646652f1a9075488ae74da53db0ee28905445139acc808e70c9ff5
+trades_sha256  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+profit 0.0
+```
+
+`trades_sha256` は **sha256("")**（空文字列のダイジェスト・`python3 -c "import hashlib;
+print(hashlib.sha256(b'').hexdigest())"` と一致）。原因は tick-store が空であること:
+
+```
+ParquetTickRepository("marketdata/ticks").load_ticks("JP225", 2025-01-02, 2025-01-03)
+  -> OK rows 0
+```
+
+`_DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"`（`simulator/main/__init__.py:120`）は
+canonical hive layout（`<root>/<symbol>/year=YYYY/month=MM/day=DD`）を期待するが、本
+チェックアウトに `marketdata/ticks` は存在せず、`year=*` ディレクトリも 0 件である
+（`data/marketdata/ticks` は raw 段で layout が異なる）。tick-store は gitignore・大容量で
+あり、`simulator/tests/integration/test_composition_real_ticks.py` も実データを読まず
+tmp_path に小さな parquet を書いている。
+
+### なぜ「ピンを入れない」が正しいか
+
+1. **錨として機能しない**: 固定されるのは空入力のダイジェストであり、`real_ticks` の
+   数値挙動を 1 ビットも拘束しない。緑であることが「real_ticks に回帰が無い」ことを
+   意味しないのに、テスト名はそう読める（偽の被覆）。
+2. **環境依存で壊れる**: tick-store が投入された環境では即座に赤になり、実際には
+   退行でないものを退行として報告する。
+3. 上流の「レビューで byte 等価実証済み」は、空結果でも自明に成立する（2 回走らせれば
+   必ず一致する）ため、ケースが有意味であることの証拠になっていない。
+
+### 承認を要する代替案（本作業では未実施）
+
+- 案 1: `test_composition_real_ticks.py` と同様に tmp_path へ自前の tick 系列を書き、
+  その上で `run_backtest` 経路の指紋を採る。錨は成立するが、**MT5 JP225 フィクスチャの
+  指紋ではなくなる**（A/B と同形式という前提が変わる）。
+- 案 2: tick-store の投入を前提とし、未投入時は skip する（A/B と同形式を保つが、
+  既定の CI では常に skip＝錨が効かない）。
+
+いずれも「ケース C」の意味を変えるため、どちらを採るかは承認事項として保留する。
+
+### Wave 2 完了記録（2026-09-04・レビュー承認済み・ブランチ fix/issue-479-solid-wave2）
+
+- **規模**: 69 コミット・+20,799/−4,081 行・TDD バッチ 8 本（W2T1〜W2T8）＋是正 2 回。全段階 Red 実観測・計算量テスト付き。
+- **完了項目**: common 6 件（C-1〜C-6）／marketdata 4 件（M-1〜M-4）／simulator フェーズ 0〜4 全部
+  （S-4 登録表 3・X-3 隔離 2・X-2 .pth 化＝ISSUE-482 根治込み・S-2 ema_series 移設・X-1 bridge 所有者移転・
+  S-5 ISP 3 面分割・S-3 serve_replay 5 App 分割・**S-1 run_backtest 1 本化＝2 エンジン 798 行→単一 248 行**）／
+  indigators I-1/I-2・J-3/J-4（JS 方向検定 3 本新設・public facade 化）／J-2 chart_renderer 1799→1070 行・
+  J-1 SRP＋OCP-5 S1/S2。
+- **副産物（状態検証では原理的に落ちない潜在浪費の発見・除去）**: bar 経路の毎バー無条件 derive_quotes・
+  tick 経路の保有玉ごと close_price_for（N+1）・評価点の二重クォート解決の 3 件。出力 sha256 不変のまま
+  計算量検定で恒久固定（ISSUE-450 同型）。
+- **レビュー**: Python 側承認（byte 等価 8 項目を独立再現・M-3 は 284,248 件差分 0・アサーション変更
+  25 ファイル全数監査で弱体化 0）／JS 側条件付き承認（symlink 146 本無傷・移設 49 メソッド逐語一致・
+  実 HTTP 200 実測）→ 条件 2 件是正済み（0ded0c1・ee037fa）。
+- **未実施（承認保留・下記）**: J-5（既存 assert 6 本と正面衝突）・J-1 S3・J-6・S2 走査対象追加
+  （※繰延理由を訂正: 「no-op だから」ではなく「実施すると ColorThemeController の ROLES 登録と
+  chart_app_wiring の生 host 注入 3 件の是正が同時に必要になり本 Wave の射程を超える」が正・レビュー実測）。
+- **次リリースまでの対応（レビュー指摘・非ブロッカー）**: tick 経路の指紋錨（ISSUE-483 の代替案裁定後）・
+  ALLOWED 導出集合の RATCHET 化・_mp 名指し 2 箇所の参照点統一・js_layer_guard の replay/sim 展開（自核除外要）。
+
+## ISSUE-483 は同日起票済み（real_ticks 指紋錨の前提不成立・代替案 2 件は承認事項）

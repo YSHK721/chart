@@ -73,7 +73,7 @@ def test_outer_band_encloses_inner_band():
 
 def test_outlier_levels_use_the_shared_primitive_keys():
     """外れ値水準のキーが共有プリミティブと同一（表示規約の単一情報源に載る）。"""
-    from common.event_quantiles import EVQ_LINE_SPECS
+    from common_view.event_quantile_view import EVQ_LINE_SPECS
 
     rng = np.random.default_rng(3)
     n = 900
@@ -287,7 +287,7 @@ def test_falls_back_to_create_line_when_level_dash_is_unsupported():
 
 def test_scale_alpha_halves_opacity_without_touching_shared_constants():
     """共有定数を書き換えず、薄い派生色を作る（rgba/rgb 両対応・未知書式は素通し）。"""
-    from common.event_quantiles import EVQ_COLOR
+    from common_view.event_quantile_view import EVQ_COLOR
     from src.lwc_chart import scale_alpha
 
     before = EVQ_COLOR

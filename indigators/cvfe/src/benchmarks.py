@@ -16,15 +16,19 @@
 | M3 | HAR（ジャンプ・レバレッジ項なし） | :func:`forecast_har_plain` |
 | M4 | HAR-CJ-L（本仕様） | :mod:`.engine` の ``compute_cvfe`` |
 
-M2 の最尤推定は ``scipy`` を使わず、Nelder–Mead 法（:func:`_nelder_mead`）を
-本モジュールに実装する（仕様 §6「依存: numpy のみ」）。
+M2 の最尤推定は ``scipy`` を使わず Nelder–Mead 法で行う（仕様 §6「依存: numpy のみ」）。
+単体法そのものは共有プリミティブ :func:`common.nelder_mead` が唯一の実装であり、本モジュールは
+GARCH 当てはめ固有の方針（初期単体の刻み・タイブレーク）だけを与えて委譲する
+（ISSUE-479 Wave2 追随 C。複製は片方だけ直された日に当てはめ結果を静かに食い違わせる）。
 
-依存: 外部 numpy / プロジェクト内 dto, har。
+依存: 外部 numpy / 共有 common.nelder_mead / プロジェクト内 dto, har。
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+from common.nelder_mead import nelder_mead
 
 from .dto import HAR_LAG_MONTH, HAR_LAG_WEEK
 from .har import C_FLOOR, ols_with_intercept, sigma_oc_from_log_variance
@@ -182,36 +186,26 @@ def _fit_garch11(r: np.ndarray) -> tuple[float, float, float]:
     return omega, alpha, beta
 
 
+#: 初期単体の刻み（GARCH パラメータのスケールに合わせた本モジュールのドメイン知識）。
+#:   ω は分散のスケール（1e-6 オーダー）で始まるため、0 のときの既定刻みは十分小さく取る。
+_GARCH_ZERO_STEP = 0.00025
+_GARCH_STEP_RATIO = 0.05
+
+
 def _nelder_mead(f, x0: np.ndarray, *, max_iter: int = 2000, tol: float = 1e-10) -> np.ndarray:
-    """Nelder–Mead 単体法（Nelder & Mead 1965）。乱数を使わず決定論的に動く。"""
-    n = x0.size
-    simplex = np.tile(x0.astype(np.float64), (n + 1, 1))
-    for i in range(n):
-        step = 0.05 * abs(x0[i]) if x0[i] != 0.0 else 0.00025
-        simplex[i + 1, i] += step
-    fx = np.array([f(p) for p in simplex], dtype=np.float64)
+    """Nelder–Mead 単体法（Nelder & Mead 1965）— 実装は共有 :func:`common.nelder_mead` 1 本。
 
-    for _ in range(max_iter):
-        order = np.argsort(fx, kind="stable")
-        simplex, fx = simplex[order], fx[order]
-        if abs(fx[-1] - fx[0]) <= tol * (abs(fx[0]) + tol):
-            break
-        centroid = simplex[:-1].mean(axis=0)
+    単体法そのもの（反射・拡大・収縮・縮小の 30 行）を本モジュールに持たない。片方だけ直された
+    日に当てはめ結果が指標間で静かに食い違うためである（出力は「それらしい値」のままなので
+    状態検証では落ちない）。本関数が与えるのは **GARCH 当てはめ固有の方針**だけ:
 
-        xr = centroid + 1.0 * (centroid - simplex[-1])          # 反射
-        fr = f(xr)
-        if fr < fx[0]:
-            xe = centroid + 2.0 * (centroid - simplex[-1])      # 拡張
-            fe = f(xe)
-            simplex[-1], fx[-1] = (xe, fe) if fe < fr else (xr, fr)
-        elif fr < fx[-2]:
-            simplex[-1], fx[-1] = xr, fr
-        else:
-            xc = centroid + 0.5 * (simplex[-1] - centroid)      # 収縮
-            fc = f(xc)
-            if fc < fx[-1]:
-                simplex[-1], fx[-1] = xc, fc
-            else:                                               # 縮小
-                simplex[1:] = simplex[0] + 0.5 * (simplex[1:] - simplex[0])
-                fx[1:] = np.array([f(p) for p in simplex[1:]], dtype=np.float64)
-    return simplex[int(np.argmin(fx))]
+      - 初期単体の刻み: 0 の軸は ``_GARCH_ZERO_STEP``、それ以外は ``|x0|`` の 5%。
+        汎用既定（0 の軸に 0.05）はここでは粗すぎる（ω は 1e-6 オーダー）。
+      - タイブレーク: ``kind="stable"``（同値時の並びを固定＝決定論性）。
+
+    これらは委譲前の私有実装と同一であり、数値は bit 一致する
+    （``cvfe/tests/test_benchmarks.py`` が凍結 digest で固定する）。
+    """
+    x0 = np.asarray(x0, dtype=np.float64)
+    step = np.where(x0 != 0.0, _GARCH_STEP_RATIO * np.abs(x0), _GARCH_ZERO_STEP)
+    return nelder_mead(f, x0, max_iter=max_iter, tol=tol, initial_step=step, sort_kind="stable")

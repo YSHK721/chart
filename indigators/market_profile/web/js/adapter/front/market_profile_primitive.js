@@ -1,4 +1,5 @@
 // market_profile_primitive.js — Market Profile の TPO ヒストグラムを描くカスタム ISeriesPrimitive。
+// @upstream-isolation: market_profile_primitive.js
 //
 // 設計入力: pair_primitive_base.js（attach/paneViews/_update ライフサイクルの土台）・
 //   pair_lines_primitive.js（v5 描画作法の手本）。CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。

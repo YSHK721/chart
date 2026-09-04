@@ -99,3 +99,50 @@ test('reapplyMode: mpModeResolver 未注入なら no-op', async () => {
   await mpc.reapplyMode();
   assert.equal(calls.length, 0);
 });
+
+// ---- OCP-5 S1: アクターの受け取り口（ISSUE-479 Wave2 J-1）--------------------
+//
+// なぜ要るか: 本協働子は MP アクターを host のフィールド名（`_marketProfile`）で引いており、
+//   「誰がアクターを持っているか」を協働子が知っている状態だった。合成根が注入できる口を
+//   **加法で**開けば、host のフィールド名に依存しない登録（registerActorController）へ移せる。
+//   既定（opts 省略）は従来どおり host 読み＝挙動 byte 不変。
+
+test('ctor opts.actor: 注入したアクターを host のフィールドより優先して使う', () => {
+  // Arrange: host には別のアクターが居るが、注入した方が使われること。
+  const injectedCalls = [];
+  const injected = {
+    setParams: (p) => injectedCalls.push(['setParams', p]),
+    applyGrowthState: () => {},
+  };
+  const { host, calls } = makeHost();
+  // Act
+  const mpc = new MarketProfileController(host, { actor: injected });
+  mpc.applyMpParams({ va: 0.7 });
+  // Assert
+  assert.equal(injectedCalls.some((c) => c[0] === 'setParams'), true, '注入したアクターへ渡していない');
+  assert.equal(calls.some((c) => c[0] === 'setParams'), false, 'host のアクターへ渡してしまっている');
+});
+
+test('ctor opts 省略: 従来どおり host のアクターを読む（既定は byte 不変）', () => {
+  // Arrange
+  const { host, calls } = makeHost();
+  // Act
+  const mpc = new MarketProfileController(host);
+  mpc.applyMpParams({ va: 0.7 });
+  // Assert
+  assert.equal(calls.some((c) => c[0] === 'setParams'), true);
+});
+
+test('ctor opts.actor: 注入後も host 側の後付け差し替えに引きずられない', () => {
+  // Arrange: 合成根が後から host._marketProfile を差し替えても、注入した口が優先される
+  //   （replay 合成根は構築後に controller._marketProfile へ代入する経路を持つ）。
+  const injectedCalls = [];
+  const injected = { setParams: () => injectedCalls.push('injected'), applyGrowthState: () => {} };
+  const { host } = makeHost();
+  const mpc = new MarketProfileController(host, { actor: injected });
+  // Act
+  host._marketProfile = { setParams: () => injectedCalls.push('host'), applyGrowthState: () => {} };
+  mpc.applyMpParams({ va: 0.7 });
+  // Assert
+  assert.deepEqual(injectedCalls, ['injected']);
+});

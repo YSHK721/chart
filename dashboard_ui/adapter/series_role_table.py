@@ -93,12 +93,12 @@ _OSCILLATORS: "Mapping[str, OscillatorDeclaration]" = {
 def _indicator_module(indicator_id: str, submodule: str):
     """指標 src の公開モジュールを read-only で解決する（写しを持たない）。
 
-    探索パスの用意は `simulator.replay_ui.adapter._indicator_ui_bridge` が唯一源
+    探索パスの用意は `indigators.indicator_ui.api_loader` が唯一源
     （replay / sim と同形の read-only 再利用）。
     """
-    from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+    from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-    _indicator_ui_bridge.load_compute()
+    api_loader.load_compute()
     from adapter.compute.call_binding import indicator_src  # 遅延: 技術隔離を本層に閉じる
 
     src = indicator_src(indicator_id)
@@ -126,9 +126,9 @@ def reset_core_constants() -> None:
 
 def _catalog_defaults() -> "Mapping[str, Mapping[str, object]]":
     """指標カタログの既定パラメータ（`GET /catalog` が配るものと同一の唯一源）。"""
-    from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+    from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-    _indicator_ui_bridge.load_compute()
+    api_loader.load_compute()
     from adapter.compute.catalog_schema import catalog_defaults  # 遅延: 技術隔離
 
     return catalog_defaults()

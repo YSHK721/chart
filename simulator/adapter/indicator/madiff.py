@@ -11,18 +11,15 @@ adapter 層は pandas を内部利用してよい（CLEAN_ARCH §7）。入力�
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-# moving_averages を名前付き共有ライブラリとして読み込む（indigators/ を sys.path へ）。
-_INDIGATORS = str(Path(__file__).resolve().parents[3] / "indigators")
-if _INDIGATORS not in sys.path:
-    sys.path.insert(0, _INDIGATORS)
-
-from moving_averages import (  # noqa: E402
+# moving_averages（MQL 忠実 MA の共有実装）は indigators/ に住む固有名トップパッケージ。
+# 解決は tools/dev_paths.txt（唯一源）が済ませている＝本モジュールは sys.path を書き換えない。
+# 実行時に書き換えると解決先が import 順に依存し、起動経路ごとに別ツリーを掴み得る
+# （ISSUE-279 と同型）。この不変条件は
+# simulator/tests/unit/test_adapter_path_resolution_comes_from_the_ledger.py が固定する。
+from moving_averages import (
     exponential_ma_on_buffer,
     simple_ma_on_buffer,
 )
@@ -53,6 +50,22 @@ def _ma_series(price: np.ndarray, period: int, method: str) -> np.ndarray:
         # を防ぐ。EMA は index0 から定義（warmup NaN 無し・MQL 忠実）。
         exponential_ma_on_buffer(n, 0, 0, period, price, out)
     return out
+
+
+def ema_series(price: pd.Series, period: int) -> pd.Series:
+    """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
+
+    MADiff と同じ共有実装 exponential_ma_on_buffer（α=2/(period+1)・index0 シード）を
+    :func:`_ma_series` 経由で再利用する。MaSlope が indicators.get("ema") で参照する
+    確定足 EMA を供給し、report_ui（別スライス）が EA 同一 EMA の再現に用いる。
+
+    所有者が指標 adapter である理由（ISSUE-479 Wave2 S-2）: これは計算であって組み立て
+    ではない。Composition Root（simulator.main）に置くと、外側スライスは 1 本の関数を
+    借りるために EA レジストリも Interactor 構築も引き連れることになる。main 側は
+    後方互換のため同一オブジェクトを re-export するだけである。
+    """
+    values = price.to_numpy(dtype=float)
+    return pd.Series(_ma_series(values, period, "ema"), index=price.index)
 
 
 def madiff(df: pd.DataFrame, period: int, method: str = "sma") -> pd.Series:

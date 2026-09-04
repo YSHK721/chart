@@ -26,10 +26,14 @@ Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC �
     既存 candle CSV（``jp225_m1.csv`` 等）には触れず、新規 ref を新規出力するのみ
     （読み取り＋新規追加・既存データへ波及させない）。
 
+CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュールに置かない・ISSUE-479 M-2）。
+
 依存方向: 本モジュールは pandas と marketdata 内の下位部品
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
-:mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last`）にのみ依存する（indicator_ui を逆 import しない・
-marketdata の循環依存禁止）。
+:mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree`）にのみ
+依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
+:mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
+する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
 
 この宣言は ``marketdata/tests/test_module_dependency_declarations.py`` が **AST 走査で強制**する
 （関数内の遅延 import も対象）。かつて本 docstring は「pandas + paths にのみ依存」と述べていたが
@@ -40,15 +44,14 @@ marketdata の循環依存禁止）。
 from __future__ import annotations
 
 import re
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Protocol, runtime_checkable
 
 import pandas as pd
 
 from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
+from marketdata import tick_tree as _tick_tree
 from marketdata.paths import DATA_DIR
 
 # ロールアップ互換の M1 CSV 列・date 書式は marketdata.csv_schema が唯一の規則源
@@ -59,7 +62,10 @@ _HEADER = _csv_schema.HEADER
 _OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた値列。
 _DATE_FMT = _csv_schema.DATE_FMT
 # 集計に要する生ティックの必須列（ingest.RAW_COLUMNS の price 部分集合）。
-_TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
+#   ISSUE-479 M-4: 外部（tools の検証スクリプト）が読む列の唯一源なので公開名を与えた。
+#   private 名は**同一オブジェクトのまま**温存する（既存参照は 1 箇所も変わらない）。
+TICK_COLUMNS = ["timestamp", "bidPrice", "askPrice"]
+_TICK_COLUMNS = TICK_COLUMNS
 # 価格基準（price basis）— 生ティックのどの気配を「価格」とするか。
 #   既定は mid（従来の唯一の規則）。bid は MT5 端末チャートが描いている系列であり、
 #   同じティックから mid で M1 を作ると端末表示と系統的にずれる（ISSUE.md 段階 0 実測 T5:
@@ -69,7 +75,7 @@ PRICE_BASIS_MID = "mid"
 PRICE_BASIS_BID = "bid"
 _PRICE_BASES = (PRICE_BASIS_MID, PRICE_BASIS_BID)
 # 既定の銘柄・出力 ref（試作 prep_tick_rollup と一致: <ref>_m1.csv = jp225_tick_m1.csv）。
-_DEFAULT_SYMBOL = "JP225"
+_DEFAULT_SYMBOL = _tick_tree._DEFAULT_SYMBOL
 _DEFAULT_REF = "jp225_tick"
 
 # M1 バー date の実装可能下限（ISSUE-455 再発防止・意味的健全性の下界）。
@@ -252,67 +258,21 @@ def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
     return _keep_last.dedupe_index_keep_last(m1)
 
 
-def tick_root(data_dir: Any = DATA_DIR) -> Path:
-    """ティック parquet の基点（``<DATA_DIR>/ticks``）。"""
-    return Path(data_dir) / "ticks"
-
-
 def m1_csv_path(ref: str = _DEFAULT_REF, data_dir: Any = DATA_DIR) -> Path:
     """M1 出力 CSV の解決パス（``<DATA_DIR>/<ref>_m1.csv``・rollup の ref_prefix と整合）。"""
     return Path(data_dir) / f"{ref}_m1.csv"
 
 
-def day_parquet_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any = DATA_DIR) -> Path:
-    """``day`` の日別ティック parquet の正準パスを返す（実在チェックはしない）。
-
-    tick tree レイアウト ``<DATA_DIR>/ticks/YYYY/MM/DD/<symbol>_ticks.parquet`` の単一権威
-    （reader: :func:`day_parquet_files` / writer: tools.live_tick_watch が共用し、レイアウト
-    変更を本所 1 箇所に閉じる）。
-
-    この「単一権威」は ``marketdata/tests/test_tick_tree_layout_authority.py`` が
-    **リポジトリ走査で強制**する（ISSUE-262）。かつて宣言だけがあり、実際は tools 3 本と
-    replay adapter がレイアウトを自前で組んでいた。
-    """
-    d = pd.Timestamp(day)
-    return (
-        tick_root(data_dir)
-        / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}"
-        / f"{symbol}_ticks.parquet"
-    )
-
-
-def day_empty_marker_path(day: Any, *, symbol: str = _DEFAULT_SYMBOL,
-                          data_dir: Any = DATA_DIR) -> Path:
-    """``day`` の「取得したがティック 0 件」マーカー（``<symbol>_ticks.empty``）の正準パス。
-
-    parquet と同じ tick tree に属するため、レイアウト権威は本モジュールに閉じる（ISSUE-262）。
-    かつて ``.empty`` の名前は 4 箇所（tools 2・simulator 1・with_suffix 導出 1）に散っていた。
-    """
-    return day_parquet_path(day, symbol=symbol, data_dir=data_dir).with_suffix(".empty")
-
-
-def day_parquet_name(symbol: str = _DEFAULT_SYMBOL) -> str:
-    """日別ティック parquet のファイル名（tick tree レイアウトの一部・単一権威）。"""
-    return f"{symbol}_ticks.parquet"
-
-
-def day_parquet_files(
-    start: Any, end: Any, *, symbol: str = _DEFAULT_SYMBOL, data_dir: Any = DATA_DIR
-) -> List[Path]:
-    """``[start, end]``（両端含む・日次）の実在する日別ティック parquet を昇順で列挙する。
-
-    パスは :func:`day_parquet_path`（レイアウト単一権威）で解決し、実在するものだけ
-    返す（欠損日はスキップ・休場日対応）。
-    """
-    s, e = pd.Timestamp(start), pd.Timestamp(end)
-    out: List[Path] = []
-    d = s
-    while d <= e:
-        p = day_parquet_path(d, symbol=symbol, data_dir=data_dir)
-        if p.is_file():
-            out.append(p)
-        d += pd.Timedelta(days=1)
-    return out
+# tick 木レイアウトの権威（tick_root / day_parquet_path / day_empty_marker_path /
+# day_parquet_name / day_parquet_files）は :mod:`marketdata.tick_tree` が唯一源である
+# （ISSUE-479 M-2）。本モジュールは**同一オブジェクトを再輸出**するだけで実装を持たない。
+# 既存の 44 ファイル 164 箇所の参照（``tick_m1.day_parquet_path`` / ``from ... import ...``）は
+# 1 箇所も変わらず、``tick_m1.day_parquet_path`` の monkeypatch も従来どおり効く。
+tick_root = _tick_tree.tick_root
+day_parquet_path = _tick_tree.day_parquet_path
+day_empty_marker_path = _tick_tree.day_empty_marker_path
+day_parquet_name = _tick_tree.day_parquet_name
+day_parquet_files = _tick_tree.day_parquet_files
 
 
 def _format_m1_for_csv(m1: pd.DataFrame) -> pd.DataFrame:
@@ -353,6 +313,37 @@ def _write_m1_csv(m1: pd.DataFrame, path: Path) -> None:
         raise
 
 
+@runtime_checkable
+class M1Writer(Protocol):
+    """M1 バーの永続化境界（素材化の結果をどこへ落とすかの抽象・ISSUE-479 M-2）。
+
+    :func:`build_m1_from_ticks` / :func:`append_m1_from_ticks` の責務は「日別ティックから
+    確定 M1 を組み立てる」ことであり、落とし先が CSV かどうかは関知しない。具象を本体が直接
+    呼んでいた間、その責務はファイル出力なしには観測できなかった（DIP 違反）。
+
+    - :meth:`write_whole`: 全構築の結果で確定パスを置き換える（原子的であること）。
+    - :meth:`append`: 既存の確定パスの末尾へ新規行だけを足す。
+    """
+
+    def write_whole(self, m1: pd.DataFrame, path: Any) -> None: ...
+
+    def append(self, m1_new: pd.DataFrame, path: Any) -> None: ...
+
+
+class CsvM1Writer:
+    """既定の :class:`M1Writer`＝loader 互換 CSV（既存の書き出し実装をそのまま束ねる）。
+
+    書式・原子性・追記の規約は :func:`_write_m1_csv` / :func:`_append_m1_csv` が持つ唯一源で
+    あり、本クラスはそれらを 1 つの境界にまとめるだけで規則を持たない（出力は byte 不変）。
+    """
+
+    def write_whole(self, m1: pd.DataFrame, path: Any) -> None:
+        _write_m1_csv(m1, Path(path))
+
+    def append(self, m1_new: pd.DataFrame, path: Any) -> None:
+        _append_m1_csv(m1_new, Path(path))
+
+
 def _drop_forming_bars(m1: pd.DataFrame, until: Any) -> pd.DataFrame:
     """``until`` 指定時、``index >= until`` の分バー（形成中）を除外する共通フィルタ。
 
@@ -374,6 +365,7 @@ def build_m1_from_ticks(
     data_dir: Any = DATA_DIR,
     until: Any = None,
     price_basis: str = PRICE_BASIS_MID,
+    writer: "M1Writer | None" = None,
 ) -> Path:
     """``[start, end]`` の日別ティック parquet を読み、M1 CSV を生成して出力パスを返す。
 
@@ -416,7 +408,7 @@ def build_m1_from_ticks(
         )
     m1 = _drop_forming_bars(m1, until)  # 形成中分バー（>= until）を確定値として書かない。
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
-    _write_m1_csv(m1, out_path)
+    (writer or CsvM1Writer()).write_whole(m1, out_path)
     return out_path
 
 
@@ -572,6 +564,7 @@ def append_m1_from_ticks(
     data_dir: Any = DATA_DIR,
     until: Any = None,
     price_basis: str = PRICE_BASIS_MID,
+    writer: "M1Writer | None" = None,
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
@@ -590,6 +583,7 @@ def append_m1_from_ticks(
     欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
     """
     _validate_ref(ref)
+    writer = writer or CsvM1Writer()
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     try:
         tail = _read_last_m1_row(out_path)
@@ -602,7 +596,7 @@ def append_m1_from_ticks(
         # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
         return build_m1_from_ticks(
             start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis,
+            price_basis=price_basis, writer=writer,
         )
 
     last_date = pd.Timestamp(tail.index[-1])
@@ -629,13 +623,13 @@ def append_m1_from_ticks(
     if m1_new.empty:
         return out_path
     try:
-        _append_m1_csv(m1_new, out_path)
+        writer.append(m1_new, out_path)
     except ValueError:
         # 既存ヘッダと追記行の列が食い違う（旧 6 列 CSV に up/dn 付き 8 列を積もうとした等）。
         # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
         return build_m1_from_ticks(
             start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis,
+            price_basis=price_basis, writer=writer,
         )
     return out_path
 
@@ -682,34 +676,3 @@ def forming_bar_from_ticks(
         "close": float(m.iloc[-1]),
         "volume": float(len(m)),
     }
-
-
-def main(argv: List[str] | None = None) -> None:
-    """CLI: ``python -m marketdata.tick_m1 [START] [END] [SYMBOL] [REF]``。
-
-    START 既定 ``2025-01-01``、END 既定は本日（UTC）。試作 prep_tick_rollup の CLI を踏襲する。
-    """
-    args = sys.argv[1:] if argv is None else list(argv)
-    start = args[0] if len(args) > 0 else "2025-01-01"
-    end = args[1] if len(args) > 1 else datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    symbol = args[2] if len(args) > 2 else _DEFAULT_SYMBOL
-    ref = args[3] if len(args) > 3 else _DEFAULT_REF
-
-    files = day_parquet_files(start, end, symbol=symbol)
-    print(f"範囲 {start}..{end}  symbol={symbol}  ティック日数: {len(files)}", flush=True)
-    if not files:
-        print(f"ティック parquet が見つかりません（{tick_root()}）", flush=True)
-        return
-    out_path = build_m1_from_ticks(start, end, symbol=symbol, ref=ref)
-    m1 = pd.read_csv(out_path)
-    if len(m1):
-        print(
-            f"M1バー: {len(m1):,}  ({m1['date'].iloc[0]} .. {m1['date'].iloc[-1]})  -> {out_path}",
-            flush=True,
-        )
-    else:
-        print(f"M1バー: 0  -> {out_path}", flush=True)
-
-
-if __name__ == "__main__":
-    main()

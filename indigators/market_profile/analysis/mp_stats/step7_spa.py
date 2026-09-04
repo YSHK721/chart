@@ -35,7 +35,7 @@ from .report import StepResult
 from .step3_incremental_r2 import HAR_LAGS, _rolling_mean
 
 # ISSUE-091 A1: simulator.adapter への側方依存を廃し、中立共有核から取得。
-from common.stats_boot import HansenSpa  # noqa: E402
+from common.hansen_spa import HansenSpa  # noqa: E402
 
 N_ROWS_CHOICES = (20, 40, 80)
 VA_CHOICES = (0.60, 0.70, 0.80)

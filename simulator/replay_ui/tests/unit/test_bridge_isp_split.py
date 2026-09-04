@@ -13,7 +13,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge as bridge
+from indigators.indicator_ui import api_loader as bridge
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -77,7 +77,7 @@ def test_load_dataset_does_not_eager_import_mp_controllers():
     code = textwrap.dedent(
         """
         import sys
-        from simulator.replay_ui.adapter import _indicator_ui_bridge as b
+        from indigators.indicator_ui import api_loader as b
         ns = b.load_dataset()
         assert hasattr(ns, "dataset")
         leaked = [m for m in sys.modules if m.startswith("market_profile_api.controller")]

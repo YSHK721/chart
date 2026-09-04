@@ -3,7 +3,7 @@
 なぜ 1 箇所に閉じるのか:
     「同一キーの重複を後勝ちで畳む」規則は本 repo に 5 箇所へ手書き複製されていた
     （tick_m1._dedupe_minutes / dataset._clamp_outlier_bars /
-    ``tools/verify_pseudo_vwap._load_m1`` / ``marketdata/tools/dedupe_tick_m1._collect_last`` /
+    ``tools/verify_pseudo_vwap.build_m1`` / ``marketdata/tools/dedupe_tick_m1._collect_last`` /
     ``tools/measure/issue449/probe_forming_long.load``）。複製は必ず取り残しを生む。
     規則を変えるときに触るべき箇所を本モジュール 1 つに固定する。
     この単一権威は ``marketdata/tests/test_keep_last.py`` が AST 走査で **強制**する。

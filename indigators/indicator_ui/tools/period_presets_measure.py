@@ -23,19 +23,23 @@
 補足 2（実装上の落とし穴）: ロールアップ CSV の ``date`` 列は pandas が ``datetime64[us]`` で
 読むため、秒への変換は ``astype("datetime64[s]").astype("int64")`` を使う。
 ``astype("int64") // 10**9`` はマイクロ秒を秒として扱う誤りで、日切りが全滅する。
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。トップレベル
+``marketdata`` を含む import パスの解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは
+`tools/install_dev_paths.py` が書く .pth が届ける。本ファイルは実行時に sys.path を書き換え
+ない（解決先が起動位置に依存しなくなる・ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO))
+from marketdata.session_day import session_date_label, session_day_starts
 
-from marketdata.session_day import session_date_label, session_day_starts  # noqa: E402
+REPO = Path(__file__).resolve().parents[3]
 
 ROLL = REPO / "data" / "marketdata" / "rollups" / "jp225_tick"
 M1 = REPO / "data" / "marketdata" / "jp225_tick_m1.csv"

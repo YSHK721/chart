@@ -40,12 +40,12 @@ def _apply_to_price(apply: int):
     """指標 core の apply 写像を read-only で解決する（写しを持たない）。
 
     指標 src の読み込みは indicator_ui の唯一の入口（`indicator_src`）へ委譲する。探索パスの
-    用意は `simulator.replay_ui.adapter._indicator_ui_bridge` が唯一源（replay / sim と同形の
+    用意は `indigators.indicator_ui.api_loader` が唯一源（replay / sim と同形の
     read-only 再利用。第 2 の sys.path 操作を書かない）。
     """
-    from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+    from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-    _indicator_ui_bridge.load_compute()
+    api_loader.load_compute()
     from adapter.compute.call_binding import indicator_src  # 遅延: 技術隔離を本層に閉じる
 
     src = indicator_src("profit_rsi")

@@ -7,8 +7,8 @@ monkeypatch 経路を不変に保つ。numpy は共有核に局所化。
 """
 from __future__ import annotations
 
+from common.hansen_spa import HansenSpa  # noqa: F401
 from common.stats_boot import (  # noqa: F401
-    HansenSpa,
     autocorr as _autocorr,
     bootstrap_std as _bootstrap_std,
     flat_top_weight as _flat_top_weight,

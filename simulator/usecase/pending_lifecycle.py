@@ -1,6 +1,6 @@
 """PendingLifecycleEngine: ペンディング注文ライフサイクルの純ロジック（ISSUE-094 🔴-1）。
 
-RunBacktestInteractor._execute_every_tick に散在していたペンディング注文（指値/逆指値）の
+RunBacktestInteractor の実行経路に散在していたペンディング注文（指値/逆指値）の
 「トリガ評価 + OCO 取消」判定と、実 MT5 OHLC クォート規約（bid=価格 / ask=価格+spread×point）
 を単一モジュールへ抽出する。本エンジンは純ロジック（副作用なし・account/trade 状態を持たない）。
 

@@ -27,6 +27,13 @@ OOM 回避（ISSUE-017 と同方針）:
 
     # 全 15 年（バックグラウンド・完了まで数時間）
     python tools/export_jp225_m1.py --start 2011-06-01 --end 2026-06-08
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。時系列データの
+単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を含む import パスの解決は台帳
+（tools/dev_paths.txt）が唯一源であり、venv へは `tools/install_dev_paths.py` が書く .pth が
+届ける。本ファイルは実行時に sys.path を書き換えない（解決先が起動位置に依存しなくなる・
+ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 from __future__ import annotations
 
@@ -35,25 +42,19 @@ import csv
 import datetime as dt
 import logging
 import os
-import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, List, Optional, Tuple
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-# 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を import するため
-# repo 根を sys.path へ。
-if str(_WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_ROOT))
-import pandas as pd  # noqa: E402（取得部 DataFrame 形の復元・marketdata 委譲後の整形）
+import pandas as pd  # 取得部 DataFrame 形の復元・marketdata 委譲後の整形
 
-from marketdata import (  # noqa: E402（sys.path 設定後に import・ベンダは marketdata で隔離）
+from marketdata import (  # ベンダは marketdata で隔離
     JP225,
     DukascopyCandleSource,
 )
-from marketdata.paths import DATA_DIR  # noqa: E402
+from marketdata.paths import DATA_DIR
 
 _DEFAULT_OUTPUT = DATA_DIR / "jp225_m1.csv"
 # 上位足ロールアップ CSV の既定出力先（rollup_store.path と整合）。
@@ -408,7 +409,7 @@ def build_rollup_hook(
     def _hook(csv_path: Path, added: int) -> None:
         # 絶対 import（局所・CLI 起動コストを増やさない）。兄弟名 `import rollup_builder` は
         # スクリプト実行時しか解決せず、パイプライン等からの module import 時に
-        # ModuleNotFoundError になるため絶対 import で両経路を解決する（repo 根は上で sys.path 済）。
+        # ModuleNotFoundError になるため絶対 import で両経路を解決する（解決は台帳＝.pth が持つ）。
         from indigators.indicator_ui.tools import rollup_builder as _rb
 
         state = _rb.RollupState.load(out_dir)
@@ -421,7 +422,7 @@ def build_rollup_hook(
 # の汎用抽象＝本アクターが所有する理由が無いため）。tools 配下から参照すると本アクター →
 # tools アクターの依存辺ができ循環になるため、どちらにも属さない common を参照する（ISSUE-479 F-3）。
 # 既存 API（本モジュール経由の run_watch 参照・--watch 経路・テスト）互換のため re-export する
-# （repo 根は上で sys.path 済）。
+# （解決は台帳＝.pth が持つ）。
 from common.watch_loop import run_watch  # noqa: E402,F401
 
 

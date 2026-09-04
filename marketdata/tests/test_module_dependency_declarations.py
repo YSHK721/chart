@@ -25,9 +25,14 @@ _PKG = Path(__file__).resolve().parents[1]
 #: 値は **docstring の宣言と一致していなければならない**。宣言を広げるなら、その理由を
 #: 当該モジュールの docstring へ書いたうえで本表も広げる（片方だけの更新を許さない）。
 _ALLOWED: "dict[str, set[str]]" = {
-    # 時間足台帳（唯一源）。**依存ゼロ**＝stdlib すら型注釈用の typing のみ。pandas を持ち込むと
-    # 「pandas を使えない純層も同じ台帳から導出する」という分離目的（ISSUE-261）が崩れる。
+    # 時間足台帳（唯一源）。**依存ゼロ**＝stdlib（typing と、期間先頭日の暦算術に使う datetime）
+    # のみ。pandas を持ち込むと「pandas を使えない純層も同じ台帳から導出する」という分離目的
+    # （ISSUE-261）が崩れる。
     "tf_ledger.py": set(),
+    # セッション日境界の唯一源。週/月ラベル規則は resample、暦ラベル tf 集合と期間先頭日の
+    # 暦算術は tf_ledger（いずれも唯一源）へ委譲する。この 2 エントリを消すと、同じ暦算術の
+    # 手書き複製が本モジュールへ復活する（ISSUE-479 M-3）。
+    "session_day.py": {"numpy", "pandas", "marketdata.resample", "marketdata.tf_ledger"},
     # 純規則層。csv_schema / tf_ledger はいずれも依存ゼロの定数モジュール
     # （前者は集約対象列の唯一源・後者は時間足台帳の唯一源）。
     "resample.py": {"pandas", "marketdata.csv_schema", "marketdata.tf_ledger"},
@@ -37,6 +42,9 @@ _ALLOWED: "dict[str, set[str]]" = {
     # Bar 段（UTC 解釈）と食い違う（実測 32400 秒差）。**この 1 エントリを消すと複製が復活する**
     # ため、依存として明示し検定で固定する。
     "csv_source.py": {"pandas", "datawindow.half_open", "marketdata.port"},
+    # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
+    # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
+    "tick_tree.py": {"pandas", "marketdata.paths"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
     # ``marketdata.keep_last`` は「同一キーの最終出現を採る」規則の唯一の実体（依存ゼロの中立核・
     # ISSUE-479 F-6）。この 1 エントリを消すと _dedupe_minutes に同じ式の複製が復活する。
@@ -47,6 +55,9 @@ _ALLOWED: "dict[str, set[str]]" = {
         "marketdata.csv_schema",
         "marketdata.tail_reader",
         "marketdata.keep_last",
+        # tick 木レイアウトの唯一権威（ISSUE-479 M-2）。この 1 エントリを消すと、木の形を
+        # 組む式が本モジュールへ復活し、レイアウト権威が 2 箇所になる。
+        "marketdata.tick_tree",
     },
 }
 
@@ -54,6 +65,7 @@ _STDLIB_PREFIXES = {
     "__future__", "typing", "pathlib", "datetime", "os", "sys", "re", "json", "csv",
     "time", "math", "logging", "tempfile", "collections", "dataclasses", "functools",
     "itertools", "hashlib", "zlib", "queue", "threading", "urllib", "shutil", "glob",
+    "zoneinfo",
 }
 
 

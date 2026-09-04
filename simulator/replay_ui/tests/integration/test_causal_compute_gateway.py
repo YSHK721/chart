@@ -42,7 +42,7 @@ def test_roundtrip_df_bars_df_does_not_change_compute_output():
          "volume": [1.0, 1.0, 1.0, 1.0, 1.0]},
         index=idx,
     ).astype(float)
-    from simulator.replay_ui.adapter._indicator_ui_bridge import load
+    from indigators.indicator_ui.api_loader import load
     bridge = load()
     direct = bridge.full_compute(bridge.adapter, "moving_averages", "default", df, {"ma_type": "sma", "length": 3})
     # Act — round-trip 経由。

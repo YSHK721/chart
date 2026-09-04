@@ -108,12 +108,16 @@ def _default_df_loader(args: Any) -> LoadedBars:
 
 
 def _default_ma_computer(source_prices: "list[float]", length: int) -> "dict[int, float]":
-    """simulator 既存 EMA（MQL 忠実 _ema_series）で bar_index → MA 値の写像を得る。"""
+    """simulator 既存 EMA（MQL 忠実）で bar_index → MA 値の写像を得る。
+
+    借り先は所有者である指標 adapter（ISSUE-479 Wave2 S-2）。Composition Root 経由の
+    借用は、1 本の関数のために EA レジストリも Interactor 構築も引き連れる。
+    """
     import pandas as pd
 
-    from simulator.main import _ema_series
+    from simulator.adapter.indicator.madiff import ema_series
 
-    ema = _ema_series(pd.Series([float(v) for v in source_prices], dtype=float), length)
+    ema = ema_series(pd.Series([float(v) for v in source_prices], dtype=float), length)
     return {i: float(v) for i, v in enumerate(ema.tolist())}
 
 

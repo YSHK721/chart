@@ -1,6 +1,6 @@
 """MarketProfileGateway: bridge 委譲の検証（fake bridge 注入）＋ 実 bridge export 到達性。
 
-Gateway は ``_indicator_ui_bridge`` の ``handle_market_profile``（indicator_ui controller の純ロジック）
+Gateway は ``api_loader`` の ``handle_market_profile``（indicator_ui controller の純ロジック）
 へ委譲し、(status, body) を返す。serve は本 gateway を Port として注入し、bridge を直 import しない
 （DIP）。実 bridge が当該シンボルを export していることも到達性テストで固定する。
 
@@ -90,6 +90,6 @@ def test_gateway_passes_through_validation_status():
 
 
 def test_real_bridge_exports_handle_market_profile():
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
-    ns = _indicator_ui_bridge.load()
+    from indigators.indicator_ui import api_loader
+    ns = api_loader.load()
     assert callable(getattr(ns, "handle_market_profile", None))

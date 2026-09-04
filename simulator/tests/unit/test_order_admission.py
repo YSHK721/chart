@@ -15,8 +15,8 @@ SL/TP の stops_level 距離）を定義していたが、**本番の実行経�
 2. **RC-2（`MaSlope` の `NormalizeLot` 欠落）が本門で捕まること**——実 JP225 の供給元
    スナップショット（`volume_min=1.0`）に対し `volume=0.1` の発注が棄却される。すなわち
    本門が最初から結線されていれば、ISSUE-445 は 2 か月ではなく初回実行で露見していた。
-3. 戦略が発注を返す**全ての呼出点**が門を通っていること（AST 検査）。呼出点は
-   `run_backtest.py` に 3 箇所あり、将来 4 箇所目が増えたときに規約ではなく機械が止める。
+3. 戦略が発注を返す**全ての呼出点**が門を通っていること（AST 検査）。呼出点が
+   `run_backtest.py` に増えたとき、規約ではなく機械が止める。
 """
 from __future__ import annotations
 
@@ -211,7 +211,17 @@ class TestEveryStrategySignalGoesThroughAdmission:
         assert signals == frozenset({"on_new_bar", "on_tick"})
 
     def test_the_interactor_actually_calls_the_strategy(self, source, signals):
-        """**負の対照の前提**: 検査対象の呼出点が実在すること。"""
+        """**負の対照の前提**: 検査対象の呼出点が実在すること。
+
+        測るのは「宣言された発注フックのどれもが実行経路から呼ばれている」ことであって、
+        呼出点の**総数**ではない。総数は実行経路の実装の重複度を映すだけの数であり、
+        エンジンが 1 本化されれば当然減る（ISSUE-479 Wave2 4-10 で bar 用・tick 用の
+        2 エンジンが 1 本になり、新規バーのシグナル評価の写しが 2 つから 1 つになった）。
+        総数を期待値に焼き込むと、重複の解消が退行として赤くなり、検定が
+        「重複を保護する装置」に化ける。フックごとの実在を見れば、この負の対照が
+        空振りしていないことを重複度に依らず固定できる（かつ、どれか 1 つのフックが
+        実行経路から消える退行は、総数を見るより厳しく捉えられる）。
+        """
         tree = ast.parse(source)
         found = [
             n
@@ -222,7 +232,7 @@ class TestEveryStrategySignalGoesThroughAdmission:
             and isinstance(n.func.value, ast.Attribute)
             and n.func.value.attr == "_strategy"
         ]
-        assert len(found) >= 3
+        assert {n.func.attr for n in found} == signals
 
     def test_no_signal_call_bypasses_admission(self, source, signals):
         offenders = _unadmitted_signal_calls(source, signals=signals)

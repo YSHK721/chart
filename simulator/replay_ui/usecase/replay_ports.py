@@ -56,8 +56,13 @@ class AvailableDaysPort(Protocol):
 
 
 @runtime_checkable
-class CausalComputePort(Protocol):
-    """/compute 用の計算源ロード + 指標計算（dataset.load_dataframe + full/latest_compute）。"""
+class SourceLoadPort(Protocol):
+    """/compute の**計算源ロード面**（dataset.load_dataframe 相当・ISSUE-479 S-5）。
+
+    client の多くはこの面しか要らない（窓を採るだけのヘルパ・源ロードだけを記憶する
+    Decorator）。広い型で受けると「何を必要としているか」が型に現れず、Decorator が
+    落とした面の欠落が実行時まで露見しない（ISP）。
+    """
 
     def load_source(self, ref: str, timeframe: "str | None") -> "list[dict]":
         """計算源のバー列を plain dict の昇順 list で返す。
@@ -66,6 +71,14 @@ class CausalComputePort(Protocol):
         validation error へ翻訳する）。
         """
         ...
+
+
+@runtime_checkable
+class TimeframeGridPort(Protocol):
+    """時間足グリッド面（バーの**ラベル**と期間の**始端**・ISSUE-479 S-5）。
+
+    どちらも「時間足の刻み方」の知識であり、源のロードとも指標の計算とも別の役割である。
+    """
 
     def bar_time(self, timeframe: str, unix_sec: int) -> int:
         """その時刻が属するバーの time を返す（ISSUE-290）。
@@ -85,6 +98,15 @@ class CausalComputePort(Protocol):
         前半に属する足が 1 本も選ばれず、進行中期間の形成足が作られない）。
         """
         ...
+
+
+@runtime_checkable
+class IndicatorComputePort(Protocol):
+    """指標計算面（full / latest / 因果系列・ISSUE-479 S-5）。
+
+    式そのものを持つ面。源のロードを記憶する Decorator は**この面に触れない**ことを、
+    型の上でも表明できるようにするために分けている。
+    """
 
     def causal_series(
         self, indicator: str, variant: str, chart_bars: "list[dict]",
@@ -133,6 +155,20 @@ class CausalComputePort(Protocol):
         毎回行うと 1 ステップ 2.1ms・指標計算は 0.36ms）。
         """
         ...
+
+
+@runtime_checkable
+class CausalComputePort(
+    SourceLoadPort, TimeframeGridPort, IndicatorComputePort, Protocol
+):
+    """/compute 用の**合併** Protocol（3 面の和・ISSUE-479 S-5）。
+
+    面を 1 つも増やさない宣言である（本体はすべて上の 3 面が持つ）。新しいメソッドを
+    足すときは、まず**どの役割の面に属するか**を決めてその面へ足す。ここへ直接足すと
+    分割が形骸化し、client は再び全面を要求する型で受けることになる。
+    分割の網羅（3 面の和 == 本 Protocol の面）は
+    ``replay_ui/tests/unit/test_causal_compute_port_faces.py`` が機械的に固定する。
+    """
 
 
 @runtime_checkable

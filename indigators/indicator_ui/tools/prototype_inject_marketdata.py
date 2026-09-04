@@ -13,6 +13,17 @@ meta}`` を、Dukascopy 実データ（``marketdata``）で全面再構築する
 既存資産（``sample_data.js`` / ``dataset.py`` / 指標 src / build / サーバ）は **無改変**。
 変更対象は ``out/prototype.html`` のみ。指標の既定 params は UI catalog（``web/js/usecase/
 catalog.js``）の既定値に一致させる。
+
+実行時 sys.path 書き換えを**維持する理由**（ISSUE-479 Wave2 2-7 / ISSUE-482・重要）:
+    同ディレクトリの他の CLI は repo 根の insert を撤去し、解決を台帳（tools/dev_paths.txt）
+    ＋ venv の .pth へ一本化した。本ファイルだけは撤去できない——``_API_DIR``
+    （``indicator_ui/api``）が挿すのは adapter / framework / domain という
+    **汎用名**であり、スライス間で衝突するため台帳へ載せられない（台帳の規律：載せるのは
+    衝突しない固有名のトップパッケージだけ）。同じ理由で
+    replay_ui/adapter/_indicator_ui_bridge の _ensure_paths も維持されている。
+    つまりこれは撤去漏れではなく、bridge と同一の規律による意図的な例外である。
+    例外が 1 件だけであることは
+    ``tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py`` が固定する。
 """
 from __future__ import annotations
 
@@ -46,6 +57,7 @@ from marketdata import (  # noqa: E402
 from adapter.compute.indicator_compute_adapter import (  # noqa: E402
     IndicatorComputeAdapter,
 )
+from adapter.compute.bindings.price_range_power import nice_step  # noqa: E402
 
 logger = logging.getLogger("prototype_inject_marketdata")
 
@@ -94,16 +106,9 @@ def _prp_interval(df: pd.DataFrame, override: float | None) -> float:
     if override is not None:
         return override
     price_range = float(df["high"].max() - df["low"].min())
-    step = price_range / _PRP_TARGET_BANDS
-    # 1,2,5×10^n の見やすい刻みへ丸める（最低 0.1）。
-    import math
-
-    if step <= 0:
-        return 0.1
-    exp = math.floor(math.log10(step))
-    base = step / (10 ** exp)
-    nice = 1.0 if base <= 1 else 2.0 if base <= 2 else 5.0 if base <= 5 else 10.0
-    return max(round(nice * (10 ** exp), 4), 0.1)
+    # 1,2,5×10^n の見やすい刻みへの丸めは計算層の協働子が単一ソースで持つ
+    #   （逐語第 2 実装は取り残しを生む・ISSUE-479 Wave2 I-1）。
+    return nice_step(price_range / _PRP_TARGET_BANDS)
 
 
 def _candles_to_df(candles: List[dict]) -> pd.DataFrame:

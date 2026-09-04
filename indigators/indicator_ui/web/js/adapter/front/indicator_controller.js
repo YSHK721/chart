@@ -19,7 +19,6 @@ import {
   toggleFavorite as facadeToggleFavorite,
   reorderApplied,
   setSeriesStyles,
-  reconcileSeriesStyles,
 } from '../../usecase/facade.js';
 import { categories as catalogCategories, scopedParams } from '../../usecase/catalog.js';
 import { PropertiesDialog } from './properties_dialog.js';
@@ -34,12 +33,12 @@ import {
   expectedSeriesNames,
   validateSeriesNames,
 } from './series_name_matcher.js';
-// 色の決定（基本設計_指標カラーテーマ.md §4.5・§4.8・§5.8）。純関数群であり、controller は
-//   「どの入力を集めて誰へ渡すか」だけを担う（決定そのものは持たない＝SRP）。
-import {
-  resolveSeriesColor, resolveInstanceTimeframe, buildColorRoleIndex,
-} from '../../usecase/color_resolver.js';
-import { ColorRole } from '../../domain/color_roles.js';
+// 色の決定（基本設計_指標カラーテーマ.md §4.5・§4.8・§5.8）と、その適用は
+//   SeriesStyleApplier（協働子・ISSUE-479 Wave2 J-1 SRP）が担う。
+import { STYLE_HOST_CONTRACT, SeriesStyleApplier } from './series_style_applier.js';
+// ISSUE-283 の学習台帳（必要バー数）と、その読み取り規則（usecase の純関数）。
+import { MIN_BARS_HOST_CONTRACT, MinBarsLedger } from './min_bars_ledger.js';
+import { requiredBarsOf } from '../../usecase/required_bars.js';
 import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
 import { isActorDriven } from '../../usecase/actor_driven_ids.js';
 import { STALL_DEADLINE_MS, UpdateScheduler } from './update_scheduler.js';
@@ -135,19 +134,12 @@ export const MARKET_PROFILE_HOST_CONTRACT = Object.freeze({
   optionalFields: Object.freeze(['_untilTime']),
 });
 
-// ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す（未申告は null）。
-//   文言は解析しない（error.violations の構造化面だけを見る）。指標名で分岐しない＝
-//   申告する指標が増えても本関数は無改変（OCP）。
-export function requiredBarsOf(error) {
-  const list = error && Array.isArray(error.violations) ? error.violations : [];
-  for (const v of list) {
-    const n = v && Number(v.requiredBars);
-    if (Number.isFinite(n) && n > 0) {
-      return n;
-    }
-  }
-  return null;
-}
+// ISSUE-283: サーバが申告した「計算に要する最小バー数」を取り出す純関数の単一ソースは
+//   usecase/required_bars.js（ISSUE-479 Wave2 J-1 SRP で adapter から移した）。既存の import 面
+//   （本モジュールからの取り出し）を壊さないため再エクスポートする。
+//   ※ 「export { X } from モジュール」の再 export 構文は build.mjs の stripModuleSyntax
+//     （import 行剥がし）で壊れるため、import 済みシンボルの別行 export にする。
+export { requiredBarsOf };
 
 export class IndicatorController {
   constructor({
@@ -181,11 +173,11 @@ export class IndicatorController {
     //   注入時のみ MP へ growing 信号（applyGrowthState）を適用し、growing 時のみ onLiveTick で成長させる。
     //   未注入（連動なし＝A方式・MP 不在・連動未配線）は growing を適用しない＝byte 不変。
     this._mpGrowthResolver = typeof mpGrowthResolver === 'function' ? mpGrowthResolver : null;
-    // 選択中の指標カラーテーマを供給するポート（基本設計_指標カラーテーマ.md §7.3 ISP）。
-    //   ()->COLOR_THEME|null。controller はテーマの保存・採番・UI を一切知らず、色を解決する
-    //   その瞬間の値だけを受け取る。未注入は「テーマなし」＝恒等（既定状態の見た目は不変）。
-    //   段階 3 の色テーマ協働子はこのポートへ差し込むだけで済む（controller 無改変＝OCP）。
-    this._colorThemeProvider = typeof colorThemeProvider === 'function' ? colorThemeProvider : null;
+    // 系列スタイル適用（保存済み styles ＋ 選択中テーマ → renderer）を委譲する協働子
+    //   （ISSUE-479 Wave2 J-1 SRP）。テーマ供給ポートは協働子が所有する（状態も一緒に移す）。
+    this._style = new SeriesStyleApplier(
+      createHostView(this, STYLE_HOST_CONTRACT), { colorThemeProvider },
+    );
     // 計算対象データセット（B方式の /compute で使用）。既定 'sample'（後方互換・単体テスト互換）。
     this._datasetRef = datasetRef;
     // 時間足取得・切替（A3）を委譲する協働子（ISSUE-094 🔴-4 / ISSUE-181）。setTimeframe /
@@ -199,11 +191,9 @@ export class IndicatorController {
     this._state = emptyState();
     // instanceId -> { def } 描画済みメタ（凡例再描画・recompute 用）。
     this._meta = new Map();
-    // ISSUE-283: instanceId -> その指標が計算に要する最小バー数（サーバが violations で申告）。
-    //   リプレイは計算窓を limit=bar+1 に絞るため、要件に届かない間は**必ず失敗する**。
-    //   結果が捨てられると分かっている要求は発行しない（回数を間引くのではなく、要求そのものを消す）。
-    //   窓が要件に達すれば自動的に再開する。params/variant 変更時は忘れる（別の要件になりうる）。
-    this._minBars = new Map();
+    // ISSUE-283: 最小バー数の学習台帳（instanceId -> 必要バー数）を委譲する協働子。
+    //   学習内容は協働子が所有する（ISSUE-479 Wave2 J-1 SRP・ISSUE-181「状態も一緒に移す」）。
+    this._minBarsLedger = new MinBarsLedger(createHostView(this, MIN_BARS_HOST_CONTRACT));
     // 再計算バッチの競合ガード（深さカウンタ＋時限）は RecomputeGate が所有する
     //   （ISSUE-181: 状態も一緒に移す。TimeframeController の host フィールド直接代入も解消）。
     //   ライブ更新（LiveUpdater）は独自フラグを持たず isRecomputing() を参照し、再計算中の
@@ -384,133 +374,30 @@ export class IndicatorController {
     return this._router.draw(instanceId, def, series, params);
   }
 
-  // AppliedInstance.styles（系列名 -> {color?,width?,style?,visible?}）を renderer へ適用する。
-  //   未保存（null/空）や renderer 非対応（後方互換 Fake/SSR）は no-op。
-  //   ISSUE-110 🔴-1: 適用前に現在の実系列名集合と突合し、実系列に存在しない stale キー
-  //   （tgp の q_low/q_high や profit_band の probabilities 変更で系列が改名された等）を
-  //   state から剪定する（無反映キーの永続蓄積と params 復帰時の意図せぬ復活を遮断）。
-  //   実系列集合が取得不能・空のときは判定不能のため剪定しない（reconcile 側で防御）。
-  //   基本設計_指標カラーテーマ.md §7.2 S2(a)（A-6）: **色の決定だけ**を resolver 経由へ差し替える。
-  //   適用点を新設せず本メソッドに相乗りする理由は、描画完了の後段が既にここ 1 点へ集約済みで
-  //   （E-9・series_render_router.js:103）、再計算・復元・時間足切替のどの経路からも必ず通るため。
-  //   協働子が独自に完了時点を検知する方式（S1）は検知漏れの経路で色が戻る。
-  //
-  //   色の書き手はここ 1 箇所（R-1）。width / style / visible / display は従来どおり styles から
-  //   そのまま流し、色だけを resolver の結果で上書きする。
-  //   テーマ未設定・個別上書き無しのとき resolver は payload 色（baseColor）を返すため、
-  //   既定状態の描画色は本差し替えの前後で完全に一致する（段階 2 通過条件 1）。
+  // 系列スタイルの適用（保存済み styles ＋ 選択中テーマ → renderer）は SeriesStyleApplier
+  //   （協働子・ISSUE-479 Wave2 J-1 SRP）へ外出しした。以下は subclass の inherited 呼出・
+  //   既存テスト・composition root 配線を温存する薄い委譲ラッパ（挙動は抽出前と byte 等価）。
   _applyStoredStyles(instanceId) {
-    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
-    if (!inst || typeof this._renderer.applySeriesStyle !== 'function') {
-      return;
-    }
-    // 実描画系列のメタ（name と不変の baseColor）。後方互換 Fake/SSR は空配列で、その場合は
-    //   色を解決する材料が無いため保存済み patch を従来どおり逐語で適用する。
-    const metas = typeof this._renderer.getSeriesStyles === 'function'
-      ? (this._renderer.getSeriesStyles(instanceId) ?? [])
-      : [];
-    if (metas.length > 0) {
-      // ISSUE-110 🔴-1: 実系列に存在しない stale キーを剪定する（実系列集合が空のときは判定
-      //   不能のため剪定しない＝従来の防御を維持）。
-      this._state = reconcileSeriesStyles(this._state, instanceId, metas.map((m) => m.name));
-    }
-    const reconciled = this._state.applied.find((i) => i.instanceId === instanceId);
-    const styles = (reconciled && reconciled.styles) || null;
-    const theme = this._activeColorTheme();
-    if (!styles && !theme && metas.length === 0) {
-      return; // 適用すべき上書きもテーマも無く、解決の材料も無い＝従来どおり no-op。
-    }
-
-    const def = this._meta.get(instanceId)?.def ?? this._catalog.get(inst.indicatorId);
-    const params = this._paramsObject(reconciled ? reconciled.params : inst.params);
-    const timeframe = resolveInstanceTimeframe(params, this._timeframe);
-    const roleIndex = buildColorRoleIndex({ def, params, expandPattern: expandSeriesNamePattern });
-
-    // 1. 実描画系列: 解決色（色のみ）＋ 保存済み patch の色以外。
-    const applied = new Set();
-    for (const meta of metas) {
-      const name = meta.name;
-      applied.add(name);
-      const patch = (styles && styles[name]) || null;
-      // defaultColor: null＝解決順ステップ 5 へ落ちたら色を書かない。ロック色・意味色・個別色・
-      //   payload 色のどれも無い系列は「色を決める材料が無い」のであって既定色ではない。
-      //   ここで既定色を書くと、payload が色を持たない系列（lwc 既定色で描かれている）の色を
-      //   捏造して変えてしまう。色以外の patch は従来どおり適用する。
-      const color = resolveSeriesColor({
-        styles,
-        seriesName: name,
-        role: roleIndex.get(name) ?? null,
-        theme,
-        timeframe,
-        payloadColor: meta.baseColor,
-        defaultColor: null,
-      });
-      const next = { ...(patch ?? {}) };
-      if (color != null) {
-        next.color = color;
-      }
-      if (patch == null && color == null) {
-        continue; // 書くべきものが何も無い。
-      }
-      this._renderer.applySeriesStyle(instanceId, name, next);
-    }
-    // 2. renderer が知らない系列に保存された patch は従来どおり逐語で適用する。
-    //    baseColor が取れない＝解決順ステップ 4 の入力が存在しないため、色を捏造しない。
-    for (const [name, patch] of Object.entries(styles ?? {})) {
-      if (!applied.has(name)) {
-        this._renderer.applySeriesStyle(instanceId, name, patch);
-      }
-    }
-    // 3. 水準線（horizontal_line）は applySeriesStyle に到達しない（E-10）ため専用入口へ渡す。
-    //    R-3: テーマが level を宣言していないときは null＝現行経路（pane は schemeColor /
-    //    overlay は backend 色）のまま。
-    this._applyLevelLineColor(instanceId, theme, timeframe);
+    this._style._applyStoredStyles(instanceId);
   }
 
-  // 選択中テーマの供給ポートを後から結ぶ（基本設計_指標カラーテーマ.md §7.3 ISP・DIP）。
-  //   constructor 引数 `colorThemeProvider` と同じ席へ書くだけで、挙動は完全に同一（加法）。
+  // 選択中テーマの供給ポートを後から結ぶ（実体は SeriesStyleApplier.setColorThemeProvider）。
   //   setter を持つ理由: `new IndicatorController(...)` は両 composition_root_front.js が各々
   //   書いており、constructor 引数のままだと同一 1 行を 2 か所へ手書き複製することになる
   //   （ISSUE-278 #4 で潰した複製の再生産）。setter なら共有配線（chart_app_wiring.js）の
   //   1 箇所だけで両モードを結線できる。
-  //   非関数（null 含む）を渡すと「テーマなし」＝恒等へ戻る（_activeColorTheme と同じ規約）。
   setColorThemeProvider(provider) {
-    this._colorThemeProvider = typeof provider === 'function' ? provider : null;
+    this._style.setColorThemeProvider(provider);
   }
 
-  // 選択中のテーマ（未注入・供給不能は null＝恒等）。例外を外へ出さない（F-C4 の縮退と同旨）。
+  // 選択中のテーマ（実体は SeriesStyleApplier._activeColorTheme）。
   _activeColorTheme() {
-    if (!this._colorThemeProvider) {
-      return null;
-    }
-    try {
-      return this._colorThemeProvider() ?? null;
-    } catch {
-      return null;
-    }
+    return this._style._activeColorTheme();
   }
 
-  // 水準線ポートへ level トークンの解決色を渡す（未宣言・ポート非対応は no-op）。
+  // 水準線ポートへ level トークンの解決色を渡す（実体は SeriesStyleApplier._applyLevelLineColor）。
   _applyLevelLineColor(instanceId, theme, timeframe) {
-    if (typeof this._renderer.applyLevelLineColor !== 'function') {
-      return;
-    }
-    // 宣言の有無を**ここで判定しない**（判定源を 2 つ作らない）。resolver の解決順に委ね、
-    //   材料（ロック色・意味色・個別色・payload 色）がどれも無ければ null を返させる（R-7）。
-    //   ここに `roleColors.level == null` のような別の判定を置くと、resolver 側の判定
-    //   （isHex6）とずれた瞬間に既定色 #2962ff が書き込まれ、全水準線が青一色になる
-    //   （schemeColor を潰す＝N-5 の破壊的変更）。水準線は styles も payload も持たないため、
-    //   本呼び出しでは「意味色が決まったか否か」だけが結果を分ける。
-    const color = resolveSeriesColor({
-      styles: null,
-      seriesName: null,
-      role: ColorRole.LEVEL,
-      theme,
-      timeframe,
-      payloadColor: null,
-      defaultColor: null,
-    });
-    this._renderer.applyLevelLineColor(instanceId, color);
+    this._style._applyLevelLineColor(instanceId, theme, timeframe);
   }
 
   // =========================================================================
@@ -882,22 +769,25 @@ export class IndicatorController {
   //     メイン系列（opts.preRender＝setCandles）と全指標が同時に更新される（ISSUE-023）。
   //   persist/legend は描画後に1回だけ。適用 0 でも preRender（候補：メイン系列差し替え）は実行する。
   // ISSUE-283: 学習済みの最小バー数（未学習・未初期化は null＝知識なし）。
+  //   台帳未構築（`Object.create(prototype)` で ctor を通さない既存テスト構成）でも安全に
+  //   縮退する＝抽出前の `this._minBars ? … : null` と同じ防御を保つ（byte 挙動不変）。
   _knownMinBars(instanceId) {
-    return this._minBars ? (this._minBars.get(instanceId) ?? null) : null;
+    return this._minBarsLedger ? this._minBarsLedger.known(instanceId) : null;
   }
 
   // ISSUE-283: 学習を忘れる（計算成功・params/variant 変更）。未初期化でも安全に no-op。
   _forgetMinBars(instanceId) {
-    if (this._minBars) {
-      this._minBars.delete(instanceId);
-    }
+    this._minBarsLedger?.forget(instanceId);
   }
 
   // ISSUE-283: 次に送る計算窓の本数（不明なら null＝スキップ判定に使わない）。
   _computeWindowBars() {
-    const tf = this._tf;
-    const n = tf && typeof tf.limit === 'function' ? tf.limit() : null;
-    return Number.isFinite(n) ? n : null;
+    return this._minBarsLedger ? this._minBarsLedger.windowBars() : null;
+  }
+
+  // ISSUE-283: この instance の要求を見送るべきか（実体は MinBarsLedger.shouldDefer）。
+  _shouldDeferCompute(instanceId) {
+    return this._minBarsLedger ? this._minBarsLedger.shouldDefer(instanceId) : null;
   }
 
   async recomputeAllApplied({ mode = 'full', preRender = null, skip = null } = {}) {
@@ -927,10 +817,12 @@ export class IndicatorController {
       }
       // ISSUE-283: 要件（最小バー数）が分かっており、現在の窓がそれに満たないなら発行しない。
       //   知識が無い（未学習・窓が不明）なら**必ず送る**＝安全側（誤ってスキップしない）。
-      const need = this._knownMinBars(inst.instanceId);
-      const windowBars = this._computeWindowBars();
-      if (need != null && windowBars != null && windowBars < need) {
-        deferred.push({ instanceId: inst.instanceId, indicatorId: inst.indicatorId, requiredBars: need, windowBars });
+      const defer = this._shouldDeferCompute(inst.instanceId);
+      if (defer) {
+        deferred.push({
+          instanceId: inst.instanceId, indicatorId: inst.indicatorId,
+          requiredBars: defer.requiredBars, windowBars: defer.windowBars,
+        });
         continue;
       }
       targets.push(inst);
@@ -954,8 +846,8 @@ export class IndicatorController {
       if (s.status === 'rejected') {
         // ISSUE-283: サーバが申告した必要バー数を学習し、以後は満たすまで発行しない。
         const required = requiredBarsOf(s.reason);
-        if (required != null && this._minBars) {
-          this._minBars.set(inst.instanceId, required);
+        if (required != null && this._minBarsLedger) {
+          this._minBarsLedger.learn(inst.instanceId, required);
         }
         failures.push({
           instanceId: inst.instanceId, indicatorId: inst.indicatorId, error: s.reason,

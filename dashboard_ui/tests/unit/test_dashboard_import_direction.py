@@ -273,6 +273,10 @@ _ADAPTER_ONLY_ROOTS = (
     "pandas",
     "marketdata",
     "adapter.compute",
+    # ISSUE-479 Wave2 2-6: ロード面の所有者は供給側スライスへ移った。旧位置は再公開層
+    #   として当面残る（削除は承認事項）ので、両方を技術として塞ぐ——新形式だけにすると
+    #   旧位置経由の越境が素通りする。
+    "indigators.indicator_ui.api_loader",
     "simulator.replay_ui.adapter._indicator_ui_bridge",
 )
 
@@ -291,6 +295,7 @@ def technology_offenders(modules: "frozenset[str]") -> "frozenset[str]":
     "form",
     [
         "import pandas as pd\n",
+        "from indigators.indicator_ui import api_loader\n",
         "from simulator.replay_ui.adapter import _indicator_ui_bridge\n",
         "from adapter.compute import full_compute\n",
         "from marketdata.tf_meta import period_start_unix\n",

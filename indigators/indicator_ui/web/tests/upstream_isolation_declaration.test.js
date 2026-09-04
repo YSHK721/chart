@@ -48,25 +48,47 @@ const RECEIVER_QUALIFIED_API = [
   { api: 'moveTo', notUpstreamReceiver: /(?:ctx|context)$/i },
 ];
 
-// 隔離単位（このグループ内でのみ upstream API を呼んでよい）。
-const ALLOWED = new Set([
-  // (a) ChartRenderer 本体と、その内部協働子（host 経由で同一隔離単位に属する）。
-  'chart_renderer.js', 'series_drawer.js', 'candle_feed.js', 'scale_controller.js',
-  // (b) チャート生成の bootstrap（自ファイル冒頭で隔離役を宣言している）。
-  'chart_bootstrap.js',
-  // (c) lwc プラグイン契約（ISeriesPrimitive）の実装。chart を受け取るのが upstream 仕様。
-  'market_profile_primitive.js', 'tickvol_bands_primitive.js', 'pair_lines_primitive.js',
-  'trade_markers_renderer.js', 'mp_chart_layout.js',
-  // (d) 合成根。可視範囲の購読のみ upstream を触る（ChartRenderer へ寄せるのが望ましいが、
-  //     現状は隔離単位として明示する。狭めるときは本行を消して落ちる箇所を直す）。
-  'composition_root_front.js',
-]);
-
 function frontFiles() {
   return readdirSync(FRONT)
     .filter((n) => n.endsWith('.js'))
     .filter((n) => statSync(join(FRONT, n)).isFile());
 }
+
+// 隔離単位（このグループ内でのみ upstream API を呼んでよい）の**自己申告マーカー**。
+//
+//   かつてここは 11 行のハードコード列挙だった。隔離単位に属する協働子を新設するたびに
+//   「実体（新ファイル）」と「宣言（本ファイルの列挙）」の 2 か所を同時に直す必要があり、
+//   片方だけ更新される形になっていた——これは ISSUE-262 で潰したはずの失敗型そのものである
+//   （宣言と施行が別々に手書きされ、片方だけ更新される）。宣言はファイル自身が持ち、
+//   本検定は走査するだけにする（宣言と実体が同じ場所にある＝ずれ得ない）。
+//
+//   書式: ファイル冒頭付近のコメント行に `// @upstream-isolation: <自分のファイル名>` を 1 行。
+//   自分のファイル名と一致する申告だけを受理する（他ファイルの名前を騙って許可を横取りできない）。
+const ISOLATION_DECLARATION_RE = /^\s*\/\/\s*@upstream-isolation:\s*(\S+)\s*$/;
+
+// ソース集合（ファイル名 -> ソース）から自己申告の集合を導く（純関数＝検出器自身を検定できる）。
+function declaredIsolationUnits(sourcesByName) {
+  const names = new Set();
+  for (const [name, src] of Object.entries(sourcesByName)) {
+    for (const line of src.split('\n')) {
+      const m = line.match(ISOLATION_DECLARATION_RE);
+      if (m && m[1] === name) {
+        names.add(name);
+      }
+    }
+  }
+  return names;
+}
+
+function frontSources() {
+  const out = {};
+  for (const name of frontFiles()) {
+    out[name] = readFileSync(join(FRONT, name), 'utf8');
+  }
+  return out;
+}
+
+const ALLOWED = declaredIsolationUnits(frontSources());
 
 // 1 行のコードが upstream API を呼んでいるか。名前だけで判定するものと、受け手を見るものの 2 系統。
 function lineCallsUpstream(code) {
@@ -115,6 +137,19 @@ test('受け手つき判定は upstream の moveTo だけを拾う（canvas の�
   assert.equal(lineCallsUpstream('const idx = slot.pane.paneIndex();'), true);
   // 同名の**プロパティ参照**は呼び出しではない（凡例 DTO の g.paneIndex を誤検出しない）。
   assert.equal(lineCallsUpstream('const target = g.paneIndex;'), false);
+});
+
+test('隔離単位は自己申告マーカーから導かれる（申告を外したファイルは許可から外れる）', () => {
+  // 検出器そのものの検定（ここが空振りすると、許可集合が静かに全件 or 0 件になる）。
+  assert.deepEqual(
+    [...declaredIsolationUnits({ 'a.js': '// @upstream-isolation: a.js\nchart.addSeries();' })],
+    ['a.js'], '自己申告を拾えていない');
+  assert.deepEqual(
+    [...declaredIsolationUnits({ 'a.js': 'chart.addSeries();' })],
+    [], '申告の無いファイルを許可している');
+  assert.deepEqual(
+    [...declaredIsolationUnits({ 'a.js': '// @upstream-isolation: b.js\nchart.addSeries();' })],
+    [], '他ファイルの名前を騙る申告を受理している');
 });
 
 test('宣言（chart_renderer.js 冒頭）と施行（本検定の API 名）が一致する', () => {

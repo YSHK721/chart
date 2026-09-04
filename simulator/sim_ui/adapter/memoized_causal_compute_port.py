@@ -1,8 +1,17 @@
-"""MemoizedCausalComputePort — 計算源ロードの記憶（adapter 層・Phase 3 F-5・裁定 B）。
+"""MemoizedCausalComputePort — **deprecated shim**（adapter 層・Phase 3 F-5・裁定 B）。
+
+**deprecated（ISSUE-479 Wave2 3-2・コーディネータ裁定 2026-09-03）**:
+移行先は `simulator/sim_ui/adapter/causal_compute_ports.py` の CausalComputePorts
+（3 面を明示委譲で合成し、拾い先となる ``__getattr__`` を持たない）。本番の結線は
+そちらへ移した。本クラスは ``__getattr__`` の後方互換のためだけに残っている
+（削除は Wave 末尾の承認事項であり、本 Wave では行わない）。
 
 `CausalComputePort`（リプレイ core の Port）の**全メソッド委譲 Decorator**。差は 1 点だけ:
 
     load_source(ref, timeframe) を (ref, timeframe, csv_mtime) 鍵で記憶する
+
+記憶規則そのものは持たない: 鍵の作り方と記憶の実体は MemoizedSourceLoadPort ただ 1 つで、
+本クラスはそこへ委譲する。2 箇所に書くと片方だけが源の更新検知（mtime）を失う。
 
 **式（compute）にも因果規約（truncate）にも触れない**。案 i は 1 バーにつき 1 回
 `causal_compute` を呼ぶため、記憶が無いと「毎回同じ CSV を DataFrame から plain dict へ
@@ -27,9 +36,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from simulator.sim_ui.adapter.causal_compute_ports import MemoizedSourceLoadPort
+
 
 class MemoizedCausalComputePort:
-    """`CausalComputePort` の委譲 Decorator（``load_source`` のみ記憶する）。
+    """**deprecated**: `CausalComputePort` の委譲 Decorator（``load_source`` のみ記憶する）。
+
+    移行先は CausalComputePorts（`simulator/sim_ui/adapter/causal_compute_ports.py`）。
 
     ``inner``: 委譲先の `CausalComputePort`（実体は `CausalComputeGateway`）。
     ``mtime_of``: ``(ref) -> float | None``。源 CSV の更新時刻。既定はデータセット
@@ -40,24 +53,28 @@ class MemoizedCausalComputePort:
 
     def __init__(self, *, inner: Any, mtime_of: "Callable[[str], float | None] | None" = None) -> None:
         self._inner = inner
-        self._mtime_of = mtime_of if mtime_of is not None else _dataset_mtime
-        self._cache: "dict[tuple[str, str | None, float | None], list[dict]]" = {}
-        #: 記憶が効いたか（実測の証拠として検定・CLI が読む）。
-        self.hits = 0
-        self.misses = 0
+        #: 記憶規則の唯一の実体（鍵の作り方をここへ書き写さない）。
+        self._loader = MemoizedSourceLoadPort(inner=inner, mtime_of=mtime_of)
 
-    # --- 記憶するメソッド -------------------------------------------------
+    # --- 記憶するメソッド（規則は _loader が持つ）--------------------------
 
     def load_source(self, ref: str, timeframe: "str | None") -> "list[dict]":
-        key = (ref, timeframe, self._mtime_of(ref))
-        cached = self._cache.get(key)
-        if cached is not None:
-            self.hits += 1
-            return cached
-        self.misses += 1
-        bars = self._inner.load_source(ref, timeframe)
-        self._cache[key] = bars
-        return bars
+        return self._loader.load_source(ref, timeframe)
+
+    @property
+    def hits(self) -> int:
+        """記憶が効いた回数（実測の証拠として検定・CLI が読む）。"""
+        return self._loader.hits
+
+    @property
+    def misses(self) -> int:
+        """内側へ読みに行った回数。"""
+        return self._loader.misses
+
+    @property
+    def _cache(self) -> "dict[tuple[str, str | None, float | None], list[dict]]":
+        """記憶表（後方互換の読み口。実体は _loader が持つ）。"""
+        return self._loader._cache
 
     # --- 委譲するメソッド（`CausalComputePort` の面を欠かさない）-----------
 
@@ -94,17 +111,3 @@ class MemoizedCausalComputePort:
         if inner is None:  # __init__ 完了前・複製時の再帰防止
             raise AttributeError(name)
         return getattr(inner, name)
-
-
-def _dataset_mtime(ref: str) -> "float | None":
-    """源 CSV の更新時刻（解決できないときは ``None``）。
-
-    データセット → ファイルの対応はライブ側 `marketdata.dataset` のホワイトリストが
-    唯一源であり、ここに写さない。
-    """
-    try:
-        from marketdata.dataset import DATASET_WHITELIST
-
-        return DATASET_WHITELIST[ref].stat().st_mtime
-    except Exception:  # noqa: BLE001 — 未知 ref・不在ファイルは「不明」として扱う
-        return None

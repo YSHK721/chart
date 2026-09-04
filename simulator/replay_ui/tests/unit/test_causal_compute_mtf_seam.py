@@ -61,9 +61,9 @@ class _Port:
     def causal_series(self, indicator, variant, chart_bars, source_bars, compute_tf,
                       window_bars, params):
         """規約の実体はライブ core と同一の唯一源（写しを持たない）。"""
-        from simulator.replay_ui.adapter import _indicator_ui_bridge
+        from indigators.indicator_ui import api_loader
 
-        causal_mtf_series = _indicator_ui_bridge.load_compute().causal_mtf_series
+        causal_mtf_series = api_loader.load_compute().causal_mtf_series
         return causal_mtf_series(
             chart_bars=chart_bars, source_bars=source_bars, compute_tf=compute_tf,
             bar_time_unix=self.bar_time,

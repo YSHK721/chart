@@ -24,7 +24,11 @@ import pandas as pd
 
 from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 # ISSUE-091 #3: 主スライスの公開 API のみ参照する（private 名 _ema_series の越境 import を解消）。
-from simulator.main import build_interactor, ema_series
+# ISSUE-479 Wave2 S-2: EMA は計算なので所有者（指標 adapter）から直接借りる。
+#   Composition Root へ借りに行くと、1 本の関数のために EA レジストリも Interactor 構築も
+#   引き連れることになる。main から借りてよいのは組み立て・実行・設定変換だけ。
+from simulator.adapter.indicator.madiff import ema_series
+from simulator.main import build_interactor
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
 from simulator.report_ui.tools.contacts_export import compute_segment_contacts
 # int 時刻ビューは単一ソース（H-D1）。as 束縛で以降の参照名は変えない

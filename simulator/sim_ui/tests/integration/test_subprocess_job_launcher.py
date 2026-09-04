@@ -25,6 +25,15 @@ import pytest
 
 from simulator.sim_ui.adapter.subprocess_job_launcher import SubprocessJobLauncher
 
+
+def _no_ledger_paths(_root: Path) -> "list[Path]":
+    """本検定の子は stdlib しか使わないため、台帳の import パスは注入しない。
+
+    launcher は import パスの供給を注入で受ける（既定値を持たない・ISSUE-479 是正 1）。
+    ここで空を渡すのは「起動器そのものの振る舞い」を見る検定に台帳を持ち込まないため。
+    """
+    return []
+
 # 起動されたことと SIGTERM の受け取りが観測できる最小の子プロセス。
 _CHILD = textwrap.dedent(
     """
@@ -91,7 +100,7 @@ def test_起動すると子プロセスが動き出す(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act
     sut.launch("j1")
@@ -107,7 +116,7 @@ def test_job_dirは絶対パスで渡される(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act
     sut.launch("j1")
@@ -126,7 +135,7 @@ def test_venv_pythonで起動する(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act / Assert
     assert sut.python_executable == sys.executable
@@ -137,7 +146,7 @@ def test_子プロセスは同一プロセスグループで動く(workspace) ->
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act
     sut.launch("j1")
@@ -157,7 +166,7 @@ def test_複数ジョブが同時に走る(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act
     sut.launch("j1")
@@ -181,7 +190,7 @@ def test_取消はSIGTERMを送る(workspace) -> None:
 
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     sut.launch("j1")
     assert _wait_for(job_dir_of("j1") / "started.txt")
@@ -197,7 +206,7 @@ def test_未知のジョブの取消は何も壊さない(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     # Act / Assert（例外が出れば失敗）
     sut.terminate("never-launched")
@@ -209,7 +218,7 @@ def test_実行中はpollがNoneを返す(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     sut.launch("j1")
     try:
@@ -226,7 +235,7 @@ def test_終了後は終了コードを返す(workspace, monkeypatch, rc: int) -
     monkeypatch.setenv("PROBE_RC", str(rc))
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, f"exit{rc}.py", _EXIT_NOW)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, f"exit{rc}.py", _EXIT_NOW)
     )
     # Act
     sut.launch("j1")
@@ -240,7 +249,7 @@ def test_終了後は終了コードを返す(workspace, monkeypatch, rc: int) -
 def test_未起動のジョブのpollはNone(workspace) -> None:
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     assert sut.poll("never-launched") is None
 
@@ -259,7 +268,7 @@ def test_取消した子プロセスを回収する(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     sut.launch("j-reap")
     assert _wait_for(job_dir_of("j-reap") / "started.txt")
@@ -275,7 +284,7 @@ def test_回収した子は追跡表から外れる(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     sut.launch("j-drop")
     assert _wait_for(job_dir_of("j-drop") / "started.txt")
@@ -290,7 +299,7 @@ def test_回収後の再取消は何も壊さない(workspace) -> None:
     # Arrange
     job_dir_of, tmp_path = workspace
     sut = SubprocessJobLauncher(
-        job_dir_of=job_dir_of, script=_script(tmp_path, "child.py", _CHILD)
+        job_dir_of=job_dir_of, path_entries=_no_ledger_paths, script=_script(tmp_path, "child.py", _CHILD)
     )
     sut.launch("j-twice")
     assert _wait_for(job_dir_of("j-twice") / "started.txt")

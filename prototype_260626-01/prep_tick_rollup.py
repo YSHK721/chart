@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-"""ティック parquet → M1 原子 CSV（上位足ロールアップ用・A案プロト）。
+"""ティック parquet → M1 原子 CSV（上位足ロールアップ用・A案プロト）。**実行不可**。
 
 Dukascopy ティック（生 parquet）を mid 基準・UTC で 1 分足へ集計し、jp225_tick_m1.csv を出力する。
 以降の上位足は proto_server が marketdata.resample.resample_ohlc で生成する（既存基盤を流用）。
 これでチャートの足も足内更新も「同じティック（mid・UTC）」由来＝書き変わり無し・整合。
 
 既存 jp225_m1.csv は触らない（新 ref `jp225_tick` の専用ファイルを新規出力）。
+
+fail-stop（ISSUE-479 Wave2 フェーズ 1-E）:
+    本ファイルは本番 M1 CSV を**絶対パスで無条件に上書き**する。試作はレビューも
+    回帰ゲートも通らない使い捨ての実行なので、その実行が本番データの破壊になり得る
+    状態を残せない。後継 `tools/build_tick_rollup.py` が実在し、こちらが正規の経路で
+    ある（差分追記・原子的書き出し・列数検査を備える）。
+
+    そこで本モジュールは読み込まれた時点で SystemExit を送出する。以降の定義・
+    書き込みはすべて到達不能であり、`tools/tests/test_prototype_write_isolation.py`
+    がその不到達性を構文木で確認する。ファイル自体は試作の記録として残す
+    （削除は承認事項）。
 """
 from __future__ import annotations
 
@@ -13,6 +24,14 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+
+#: 後継（正規の経路）。案内と検定の単一の出所。
+SUCCESSOR = "tools/build_tick_rollup.py"
+
+raise SystemExit(
+    f"prep_tick_rollup.py は実行できません（本番 M1 CSV を無条件に上書きするため）。"
+    f"後継 {SUCCESSOR} を使ってください。"
+)
 
 TICK_ROOT = Path("/workspaces/app/data/marketdata/ticks")
 OUT = Path("/workspaces/app/data/marketdata/jp225_tick_m1.csv")

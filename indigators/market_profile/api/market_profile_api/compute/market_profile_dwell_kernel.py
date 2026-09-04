@@ -5,8 +5,12 @@ ISSUE-133（SRP）: :mod:`market_profile_dwell` に同居していた「統計�
 本モジュールは I/O・キャッシュ・serving オーケストレーションを持たない純関数と固定グリッド定数のみを持つ
 （numpy とセッション認識カーネル :mod:`session_activity` のみに依存）。
 
-``market_profile_dwell`` は本モジュールの公開シンボル（``GRID_W`` / ``_session_dwell`` / ``_rollup_ticks``）
+``market_profile_dwell`` は本モジュールのシンボル（``GRID_W`` / ``session_dwell`` / ``_rollup_ticks``）
 を再エクスポートし、既存の呼出面・数値を完全に温存する。
+
+ISSUE-479 M-4: 滞在秒の積分は外部（時間加重平均を測る検証スクリプト）が同じ式を必要とする。
+式を写させないため ``session_dwell`` を公開名にした。旧名 ``_session_dwell`` は**同一オブジェクト**
+のまま残るので、既存参照は 1 箇所も変わらない。
 """
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ from market_profile_api.compute.rollup_dto import DayRollup
 GRID_W = 10.0         # 固定価格グリッド幅(pt)。日別集計→窓合算→表示 bin へ再集計する中間解像度。
 
 
-def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
+def session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
     """各隣接ティック間ギャップの「活発秒」を返す（``len = len(secs)-1``）。
 
     同一時内は活発なら ``gap``/休場なら 0。時境界を跨ぐギャップのみ
@@ -45,6 +49,10 @@ def _session_dwell(secs: np.ndarray, table: np.ndarray) -> np.ndarray:
     return dwell
 
 
+#: 旧 private 名（**同一オブジェクト**）。既存参照を 1 箇所も変えないために温存する。
+_session_dwell = session_dwell
+
+
 def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "DayRollup | None":
     """ティック配列を固定グリッド :class:`DayRollup`（k=floor(mid/GRID_W)）へ集約する。空なら None。
 
@@ -56,7 +64,7 @@ def _rollup_ticks(secs: np.ndarray, mids: np.ndarray, table: np.ndarray) -> "Day
     """
     if len(secs) == 0:
         return None
-    dwell = _session_dwell(secs, table)  # len = len(secs)-1
+    dwell = session_dwell(secs, table)  # len = len(secs)-1
     k = np.floor(mids / GRID_W).astype(np.int64)
     kmin = int(k.min())
     size = int(k.max()) - kmin + 1

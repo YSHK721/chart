@@ -144,3 +144,36 @@ export function createPriceLevels(spec) {
   }
   return new PriceLevels(direction, entryPrices, spec.stopPrice, takePrice, tick);
 }
+
+// --- 水準種別 → 更新経路（ISSUE-479 Wave2 J-3・OCP）------------------------------------
+//
+// 「どの水準が掴めて、掴んだら何が変わるか」は**水準そのものの性質**であって、ドラッグ殻の
+// 都合ではない。従来この対応は adapter（price_level_drag_controller）の if 連鎖にあり、掴める
+// 水準を 1 種増やすたびに殻が伸びていた。宣言を水準の所有者である本モジュールへ置く。
+//
+// 読み取り専用の水準（`losscut` の自動線など）と未知種別は**表に載らない**＝掴んでも更新しない。
+// 「掴めない」を表の不在で表すので、禁止リストを別に持たない（規則が 1 つで実装が 2 つある状態を
+// 作らない）。線プリミティブ側の読み取り専用宣言と交わらないことは web/tests が固定する。
+
+/** 種別 → 「その種別の価格を差し替えた新しい水準」を返す更新経路。 */
+const WITH_PRICE = Object.freeze({
+  entry: (levels, index, price) => levels.withEntry(index, price),
+  stop: (levels, _index, price) => levels.withStop(price),
+  take: (levels, _index, price) => levels.withTake(price),
+});
+
+/** ドラッグで価格を変更できる水準種別（表の鍵集合＝唯一の宣言）。 */
+export const DRAGGABLE_KINDS = Object.freeze(new Set(Object.keys(WITH_PRICE)));
+
+/**
+ * 掴んだ水準へ価格を反映した新しい水準を返す（非破壊）。
+ * @param {PriceLevels} levels 現在の水準。
+ * @param {string} kind 水準種別（`entry` / `stop` / `take`）。
+ * @param {number|null} index `entry` のときの建玉番号（他の種別では無視される）。
+ * @param {number} price 新しい価格。
+ * @returns {PriceLevels|null} 更新後の水準。表に無い種別（読み取り専用・未知）は `null`＝更新しない。
+ */
+export function withPriceAt(levels, kind, index, price) {
+  const update = WITH_PRICE[kind];
+  return update ? update(levels, index, price) : null;
+}

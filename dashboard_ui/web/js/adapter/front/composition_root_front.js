@@ -46,10 +46,14 @@ const TICK_INTERVAL_MS = 1_000;
 /** CSS の置き場所（配信位置から導く＝prefix を書き写さない）。 */
 const STYLE_PATH = '/css/dashboard.css';
 
-/** 期間プリセット換算表の唯一源（indicator_ui の period_presets.js）。統合ページでは
- *  live モードの配信パスから実行時に import して借りる（表を写して持たない）。
- *  取得できない環境（単体テスト・live 停止）では注記なし＝本数のみ表示に縮退する。 */
-const PERIOD_PRESETS_PATH = '/live/js/usecase/period_presets.js';
+/** live core の公開面（ISSUE-479 Wave2 J-4b）。dashboard が live から借りるものは
+ *  すべてこの 1 本の URL から取る。live core の内部階層（usecase/... や adapter/front/...）を
+ *  名指すと、live 側の配置換えで dashboard が無言で 404 になる（識別子渡しの動的 import は
+ *  import 走査に映らないため、壊れたことが検定にも型にも現れない）。
+ *
+ *  借りているもの: 期間プリセット換算表（期間 → 本数の唯一源。取得できない環境では注記なし
+ *  ＝本数のみ表示に縮退）と、なめらか tick 再生の参照実装（LiveTickPlayer）。 */
+const LIVE_PUBLIC_API_PATH = '/live/js/public/live_public_api.js';
 
 /** ローソクの供給元（live core の /candles・T-10: live と同一データセット）。dashboard core は
  *  配信面を複製しない（ISSUE-348 と同型の取り違えを作らない）。period_presets と同じ
@@ -59,13 +63,6 @@ const CANDLES_API_PREFIX = '/live';
 /** チャート一覧のローソク本数（末尾から）。水準の照合ではなく文脈の表示が目的なので、
  *  タイル幅で読める程度に留める（増やすほど live core の I/O を 8 面ぶん引く）。 */
 const CANDLE_LIMIT = 180;
-
-/** なめらか tick 再生の唯一の実装（live フロントの LiveTickPlayer・依頼者指示 2026-08-31
- *  「ライブチャート仕様に合わせて滑らかに再生」）。再生機構（12 秒固定遅延・100ms 粒度・
- *  カーソル増分・clockOffset）はこの参照実装が正であり、写しを持たず実行時 import で借りる
- *  （period_presets / candles と同じ規約）。取得できない環境（単体テスト・live 停止）では
- *  従来どおり 1s 応答の価格表示に縮退する（失敗容認・現在値が消えることはない）。 */
-const LIVE_TICK_PLAYER_PATH = '/live/js/adapter/front/live_tick_player.js';
 
 /** 第 2 表のなめらか再生（依頼者指示 2026-08-31）で `/live_ticks` の tails に使う窓長。
  *  規約は `/compute` と同一（表示範囲＝計算足の本数・付けないとサーバ 1 ステップの費用が
@@ -87,7 +84,7 @@ const OSC_TAILS_LIMIT = 1500;
  *                                       戻り値は停止する関数。注入すると検定が実時間を待たない。
  * @param {Function} [opts.barCloseTimeOf] 最新の確定バー時刻を返す（段の切り替えの契機）
  * @param {Function} [opts.loadPeriodPresets] 期間プリセット module の読み込み
- *                                       （既定は PERIOD_PRESETS_PATH の動的 import。検定は fake を注入）
+ *                                       （既定は live 公開面の動的 import。検定は fake を注入）
  * @param {object}   [opts.lwc]          lightweight-charts（既定は global LightweightCharts。
  *                                       unified_root が live vendor の読込後に dashboard を
  *                                       import するため、統合ページでは既定で解決できる）
@@ -103,8 +100,8 @@ export async function setupDashboardDisplay({
   now,
   schedule,
   barCloseTimeOf,
-  loadPeriodPresets = () => import(PERIOD_PRESETS_PATH),
-  loadLiveTickPlayer = () => import(LIVE_TICK_PLAYER_PATH),
+  loadPeriodPresets = () => import(LIVE_PUBLIC_API_PATH),
+  loadLiveTickPlayer = () => import(LIVE_PUBLIC_API_PATH),
   lwc,
   candlesApiPrefix = CANDLES_API_PREFIX,
 } = {}) {

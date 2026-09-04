@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 
@@ -28,7 +28,7 @@ class CausalComputeGateway:
 
     def _bridge(self):
         # ISSUE-136 ISP: /compute は dataset ＋ 計算 Facade のみを要する（MP controller を import しない）。
-        return _indicator_ui_bridge.load_compute(self._api_path, self._repo_root)
+        return api_loader.load_compute(self._api_path, self._repo_root)
 
     # ---- CausalComputePort ----
 

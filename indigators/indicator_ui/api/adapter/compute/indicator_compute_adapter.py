@@ -9,12 +9,14 @@ FakeChart を生成 → CallBinding で実 add_* を呼出 → FakeChart 収集�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Callable
 
 from adapter.compute.call_binding import (
     CallBinding,
-    profit_band_empty_bucket_error,
     requires_time,
+    value_error_declarations,
+    value_error_types,
 )
 from adapter.compute.fake_chart import FakeChart
 
@@ -55,36 +57,36 @@ def _has_columns(df: Any) -> bool:
 
 
 # =========================================================================== #
-# profit_band 専用の例外翻訳境界（ISSUE-098 🟡-5・LSP 是正 LSP-3）
+# 宣言駆動の ValueError 翻訳境界（ISSUE-098 🟡-5・LSP 是正 LSP-3 → SOLID 是正 OCP-3）
 #
-# profit_band は「必須バケット空」(empty_series) と「normalize 不正等」(validation) を区別して
-# 翻訳する必要がある。従来は双方が素の ``ValueError`` だったため日本語メッセージ片 "バケット" を
-# 照合していたが、profit_band src に専用型 ``EmptyBucketError``（ValueError サブクラス・後方互換）
-# を導入し、本境界は *型* で識別する（bands.build_bands(require_full=True)→EmptyBucketError・
-# profit_band/src/bands.py／normalize 不正は素の ValueError・robust_bands.py:140）。
-# メッセージ片への依存を排し、送出条件・ユーザ向けメッセージ・HTTP ステータスは従来と同一。
+# ある指標は「必須バケット空」(empty_series) と「検証失敗」(validation) のように、同じ
+# ``ValueError`` を二意味で送出する。従来は日本語メッセージ片を照合していたが、指標 src が専用型
+# （ValueError サブクラス・後方互換）を持つならそれで *型* 識別できる。
 #
-# LSP 是正: この profit_band 固有知識（指標名 "profit_band"・型 EmptyBucketError）を本境界 1 箇所に
-# 閉じ込め、汎用計算経路（compute / _translate_value_error）からは指標名も型も参照しない。汎用経路は
-# _VALUE_ERROR_TRANSLATORS への登録有無だけで一様に扱う。なお「空入力」由来の ValueError（core.py の
-# "空です"）は compute 冒頭の ``len(df) == 0`` pre-check で確定済みのため invoke 後には到達しない。
+# OCP-3: どの型をどの error.type へ翻訳するかは **_TABLE の ``value_error_types`` 宣言**が唯一の
+# 真実源であり、本 adapter には指標名も専用例外型も現れない（``requires_time`` と同型）。
+# 二意味 ValueError を持つ指標が増えても本ファイルは改変しない。なお「空入力」由来の ValueError
+# （core.py の "空です"）は compute 冒頭の ``len(df) == 0`` pre-check で確定済みのため
+# invoke 後には到達しない。
 
 
-def _translate_profit_band_value_error(exc: ValueError) -> ComputeError:
-    """profit_band の ValueError を二意味（empty_series / validation）へ翻訳する。
+def _translate_declared_value_error(compute_id: str, exc: ValueError) -> ComputeError:
+    """宣言された「ValueError 下位型 → error.type」で翻訳する（未一致は validation）。
 
-    型識別（``EmptyBucketError``）はこの境界の内側にのみ存在する。EmptyBucketError は
-    ValueError サブクラスのため、既存の except ValueError 経路（compute）はそのまま捕捉する。
+    型ローダは遅延評価（指標 src は翻訳が要るときだけロードされる）。宣言された型は
+    ValueError のサブクラスであるため、既存の ``except ValueError`` 経路はそのまま捕捉する。
     """
-    if isinstance(exc, profit_band_empty_bucket_error()):
-        return ComputeError("empty_series", str(exc))
+    for error_type, type_loader in value_error_types(compute_id).items():
+        if isinstance(exc, type_loader()):
+            return ComputeError(error_type, str(exc))
     return ComputeError("validation", str(exc))
 
 
-# compute_id → ValueError 専用翻訳器。「型で識別不能な二意味 ValueError」を持つ指標のみを
-# 登録する（現状 profit_band のみ）。未登録指標は汎用 validation へ一様翻訳される。
+#: compute_id → ValueError 専用翻訳器。_TABLE の ``value_error_types`` 宣言からの**導出値**で
+#: あり、独立した定義（指標名リテラル）を持たない。未登録指標は汎用 validation へ一様翻訳される。
 _VALUE_ERROR_TRANSLATORS: dict[str, Callable[[ValueError], ComputeError]] = {
-    "profit_band": _translate_profit_band_value_error,
+    compute_id: partial(_translate_declared_value_error, compute_id)
+    for compute_id in value_error_declarations()
 }
 
 

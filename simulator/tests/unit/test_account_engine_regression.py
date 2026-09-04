@@ -5,7 +5,7 @@
 このテストが固定する回帰: prototype → simulator/ への移設（git mv ＋ import retarget）の
     前後で、実 tick 断片（2026-08-06 00:00–01:10 UTC・14,648 件）に対するエンジン出力が
     byte 一致で不変であること。イベント・summary は全量比較、状態時系列は全配列 JSON の
-    SHA-256 で固定する（fixture 生成: prototype_260811-01/make_regression_fixture.py）。
+    SHA-256 で固定する（fixture 生成: simulator/tools/regenerate_account_engine_fixtures.py）。
 
 ゲートシナリオ: G1 ロスカット到達 / G2 損切り到達 / G3 難平部分約定のまま終端。
 """
@@ -18,9 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from simulator.usecase.account_engine import (
-    AccountConfig, AccountEngine, EntryOrder, OrderPlan,
-)
+from simulator.tools.regenerate_account_engine_fixtures import gate_scenarios as _scenarios
+from simulator.usecase.account_engine import AccountEngine
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "account_engine"
 
@@ -44,23 +43,6 @@ def _series_sha256(series) -> str:
         "open_units": series.open_units,
     }, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _scenarios() -> dict[str, tuple[OrderPlan, AccountConfig]]:
-    # make_regression_fixture.gate_scenarios と同一定義（fixture の由来を本テストにも明記）
-    return {
-        "G1_long_losscut": (
-            OrderPlan(direction="long", entries=[EntryOrder(units=25.0)]),
-            AccountConfig(balance=172000.0)),
-        "G2_long_stop": (
-            OrderPlan(direction="long", entries=[EntryOrder(units=20.0)], stop_price=65100.0),
-            AccountConfig(balance=172000.0)),
-        "G3_split_partial": (
-            OrderPlan(direction="long", entries=[EntryOrder(units=6.0),
-                                                 EntryOrder(units=8.0, price=65300.0),
-                                                 EntryOrder(units=10.0, price=65000.0)]),
-            AccountConfig(balance=172000.0)),
-    }
 
 
 @pytest.fixture(scope="module")

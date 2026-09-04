@@ -405,13 +405,16 @@ def _default_probe() -> Any:
     案 i 0.25 秒/バーのうち load_source が 242ms＝97%）。常駐へは注入しない。
     """
     from simulator.replay_ui.adapter.causal_compute_gateway import CausalComputeGateway
-    from simulator.sim_ui.adapter.causal_series_probe import CausalSeriesProbe
-    from simulator.sim_ui.adapter.memoized_causal_compute_port import (
-        MemoizedCausalComputePort,
+    from simulator.sim_ui.adapter.causal_compute_ports import (
+        memoized_causal_compute_ports,
     )
+    from simulator.sim_ui.adapter.causal_series_probe import CausalSeriesProbe
 
+    # ISSUE-479 S-5: ロード面だけを記憶し、時間足グリッド面と指標計算面は素の実体へ委ねる
+    #   明示合成を使う（拾い先となる __getattr__ を持たない）。旧 shim
+    #   MemoizedCausalComputePort は後方互換のためだけに残っており、本番は通さない。
     return CausalSeriesProbe(
-        compute_port=MemoizedCausalComputePort(inner=CausalComputeGateway())
+        compute_port=memoized_causal_compute_ports(inner=CausalComputeGateway())
     )
 
 

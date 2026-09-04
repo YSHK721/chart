@@ -92,60 +92,16 @@ def _bind_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
     return dict(params)
 
 
-# price_range_power の interval（絶対価格刻み）バンド爆発を防ぐ上限/目標。
-# 指数等の高価格帯で catalog 既定 0.1 のままだとバンド数（価格レンジ/interval）が
-# 数十万に達し計算が事実上停止する。catalog/src の選択肢（core.py INTERVAL_CHOICES）は
-# 変更せず（パリティ契約を保つ）、バンド数が上限超過の場合のみ価格規模へ自動適応する。
-_PRP_MAX_BANDS = 20000
-_PRP_TARGET_BANDS = 3000
-
-
-def _nice_step(value: float) -> float:
-    """1/2/5×10^n の見やすい刻みへ丸める（最低 0.1）。"""
-    import math
-
-    if value <= 0:
-        return 0.1
-    exp = math.floor(math.log10(value))
-    base = value / (10 ** exp)
-    nice = 1.0 if base <= 1 else 2.0 if base <= 2 else 5.0 if base <= 5 else 10.0
-    return max(round(nice * (10 ** exp), 4), 0.1)
-
-
-def _adapt_prp_interval(df: Any, kw: dict[str, Any]) -> float:
-    """price_range_power の interval を価格規模へ適応させる（爆発時のみ粗刻み化）。
-
-    バンド数 = 価格レンジ / interval が ``_PRP_MAX_BANDS`` を超える場合のみ、目標バンド数に
-    収まる見やすい刻みへ置換する。低価格帯（sample 等）では元の interval をそのまま保つ。
-    レンジは add_price_range_power と同じく range_from/range_to 優先・無指定時は df の low/high。
-    """
-    interval = kw.get("interval")
-    if interval is None or interval <= 0:
-        return interval  # 0/None は core 側の検証へ委ねる（挙動を変えない）。
-    cols = {str(c).lower(): c for c in df.columns}
-    if "low" not in cols or "high" not in cols:
-        return interval
-    rf, rt = kw.get("range_from"), kw.get("range_to")
-    lo = float(rf) if rf is not None else float(df[cols["low"]].min())
-    hi = float(rt) if rt is not None else float(df[cols["high"]].max())
-    rng = hi - lo
-    if rng > 0 and rng / interval > _PRP_MAX_BANDS:
-        return _nice_step(rng / _PRP_TARGET_BANDS)
-    return interval
-
-
-def _prp_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
-    """price_range_power 専用 invoke 前処理フック（ISSUE-097 🟡-7 / ISSUE-098 🟡-6・LSP）。
-
-    従来 ``invoke`` 内に直書きされていた ``if compute_id == "price_range_power" and
-    "interval" in kw`` の指標名判定を _BindingSpec の宣言的フックへ昇格し、invoke から
-    compute_id 直判定を排除する。挙動は従来と同一（interval があるときのみバンド爆発を
-    防ぐ自動適応を行い、無いときは触らない）。
-    """
-    if "interval" in kw:
-        # 高価格帯でのバンド爆発（ハング）を防ぐ自動適応（catalog/src は不変）。
-        kw["interval"] = _adapt_prp_interval(df, kw)
-    return kw
+# price_range_power 固有の interval 適応（バンド爆発対策）は協働子
+#   ``adapter.compute.bindings.price_range_power`` が所有する（ISSUE-479 Wave2 I-1・SRP）。
+#   本モジュールは上限/目標バンド数も丸め規則も持たず、_TABLE の ``preprocess`` 宣言で参照するだけ。
+#   既存の参照面（``call_binding._nice_step`` / ``_adapt_prp_interval`` / ``_prp_preprocess``）は
+#   以下の再エクスポートで維持する（呼出側・既存テストの import 面は不変）。
+from adapter.compute.bindings.price_range_power import (  # noqa: E402
+    adapt_interval as _adapt_prp_interval,
+    nice_step as _nice_step,
+    preprocess as _prp_preprocess,
+)
 
 
 # --- Latest 増分計算メタ（archetype/min_window/trailing_k）の宣言（ISSUE-097 🟡-6・OCP）---
@@ -331,6 +287,13 @@ class _BindingSpec(TypedDict):
                   params → (archetype, min_window, trailing_k)。未宣言は安全既定へ落ちる。
     preprocess  : invoke 前の kw 変換フック（任意・ISSUE-097 🟡-7）。(df, kw) → kw。
                   未宣言（既定 None）は変換なし。invoke から指標名直判定を排するための昇格点。
+    value_error_types : ValueError の下位型 → error.type の宣言（任意・SOLID 是正 OCP-3）。
+                  ``{error_type: 型ローダ}``。指標 src が専用例外型を持ち、素の ValueError と
+                  区別して翻訳させたいときだけ宣言する（例: profit_band の EmptyBucketError →
+                  ``empty_series``）。型は遅延ロード（指標 src の import を宣言時に強制しない）。
+                  未宣言の指標は一様に ``validation`` へ翻訳される。``requires_time`` と同型に、
+                  adapter のハードコードを廃して本宣言を唯一の真実源とする（指標名リテラルが
+                  adapter から消える）。
     time_required : time 列（time/date/DatetimeIndex）が必須か（任意・SOLID 是正 OCP-1）。
                   True の指標で時刻解決に失敗した KeyError は missing_time へ翻訳される。
                   未宣言（既定 False）の指標は missing_column 扱い。adapter のハードコード集合を
@@ -356,6 +319,7 @@ class _BindingSpec(TypedDict):
     preprocess: NotRequired[Callable[[Any, dict[str, Any]], dict[str, Any]]]
     thread_affinity: NotRequired[str]
     time_required: NotRequired[bool]
+    value_error_types: NotRequired[dict[str, Callable[[], type]]]
     params_defaults: NotRequired[dict[str, Any]]
 
 
@@ -474,6 +438,9 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "output_kind": "line", "kind": "kw",
         # line 系（始値基準バンド）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
         "time_required": True,
+        # SOLID 是正 OCP-3: 「必須バケット空」は専用型 EmptyBucketError（ValueError サブクラス）で
+        #   送出される。素の ValueError（normalize 不正等）と区別して empty_series へ翻訳する。
+        "value_error_types": {"empty_series": profit_band_empty_bucket_error},
         # ISSUE-278 #8: global が受理するのは共有 3 件＋ require_full。robust 専用
         #   （normalize/window/atr_period/min_obs）は add_profit_band のシグネチャに無い。
         "params_defaults": {
@@ -485,6 +452,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("profit_band", "add_robust_profit_band"),
         "output_kind": "line", "kind": "kw",
         "time_required": True,
+        "value_error_types": {"empty_series": profit_band_empty_bucket_error},
         # ISSUE-278 #8: robust が受理するのは共有 3 件＋因果窓/正規化の 4 件。
         #   ``require_full`` は add_robust_profit_band のシグネチャに無い（global 専用）。
         "params_defaults": {
@@ -744,11 +712,66 @@ def indicator_param_defaults() -> dict[str, dict[str, Any]]:
 #: 全 variant の受理集合に含まれ、``invoke`` が add_* 呼出前に取り除く。
 LAYER_CONSUMED_PARAMS: frozenset[str] = frozenset({"timeframe"})
 
+# --- kind（引数渡し規約）ごとの呼出器（SOLID 是正 OCP-2）------------------------------
+# ``kind`` は _BindingSpec の宣言として残す（catalog / scope 検定が読む面）。従来 ``invoke`` が
+# ``if self._kind == "btlm"`` で分岐していた部分だけを表 ``_INVOKERS`` へ移し、invoke は分岐を
+# 持たない（新しい引数渡し規約は本表へ 1 行足すだけで足りる＝invoke 本体を改変しない）。
+
+
+@dataclass(frozen=True)
+class _Invoker:
+    """1 つの ``kind``（引数渡し規約）の実体。
+
+    consumes : ``invoke`` 自身が消費する param 名（add_* の kwarg ではない）。
+    call     : ``(spec, callable_, chart, df, kw, consumed) -> None``。
+    """
+
+    consumes: frozenset[str]
+    call: Callable[..., None]
+
+
+def _call_btlm(spec, callable_, chart, df, kw, consumed) -> None:
+    """add_btlm(chart, df, <fitter実体>, **kw)（fitter は第 3 位置・§5.5.4.1）。
+
+    ``_fitter_factory`` は**モジュール globals 経由**で呼ぶ（既存テストの monkeypatch 面を維持する
+    ため。属性束縛にすると差し替えが効かなくなる）。
+    """
+    del spec
+    fitter = _fitter_factory(consumed["fitter"], consumed.get("mcmc_samples", _DEFAULT_SAMPLES))
+    # ソース 8 択化: 合成ソースは applied_price で列合成し price を差し替える（src 無改変）。
+    df, kw["price"] = _resolve_btlm_price(df, kw.get("price", "open"))
+    callable_(chart, df, fitter, **_bind_kwargs(callable_, kw))
+
+
+def _identity_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
+    """preprocess 未宣言の指標が使う既定フック（変換なし）。"""
+    del df
+    return kw
+
+
+def _call_kw(spec, callable_, chart, df, kw, consumed) -> None:
+    """add_*(chart, df, **kw)（df 以降キーワード専用）。
+
+    指標固有の前処理は _BindingSpec の ``preprocess`` 宣言へ委譲する（compute_id 直判定は
+    どこにも無い・ISSUE-097 🟡-7）。未宣言の指標は恒等フックへ落ちる＝変換なし。
+    """
+    del consumed
+    kw = _bind_kwargs(callable_, kw)
+    kw = (spec.get("preprocess") or _identity_preprocess)(df, kw)
+    callable_(chart, df, **kw)
+
+
+#: ``kind`` → 呼出器。``invoke`` はこの表を引くだけで分岐を持たない。
+_INVOKERS: dict[str, _Invoker] = {
+    # btlm は fitter を第 3 位置引数へ、mcmc_samples を fitter 構築のプリセットへ変換する。
+    "btlm": _Invoker(frozenset({"fitter", "mcmc_samples"}), _call_btlm),
+    "kw": _Invoker(frozenset(), _call_kw),
+}
+
 #: ``kind`` ごとに ``invoke`` 自身が消費する param（add_* の kwarg ではない）。
-#: btlm は fitter を第 3 位置引数へ、mcmc_samples を fitter 構築のプリセットへ変換する。
+#: _INVOKERS からの**導出値**であり独立した宣言を持たない（scope 検定が読む面は不変）。
 _KIND_CONSUMED_PARAMS: dict[str, frozenset[str]] = {
-    "btlm": frozenset({"fitter", "mcmc_samples"}),
-    "kw": frozenset(),
+    kind: invoker.consumes for kind, invoker in _INVOKERS.items()
 }
 
 
@@ -796,22 +819,43 @@ _BTE_PRESETS: dict[str, tuple[int, int, int]] = {
 _DEFAULT_SAMPLES = _TABLE[("tgp_btlm", "default")]["params_defaults"]["mcmc_samples"]
 
 
-def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
-    """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory）。
+def _make_ols_fitter(src: ModuleType, samples: str) -> Any:
+    """解析解の OLS fitter（``samples`` は無関係＝MCMC を持たない）。"""
+    del samples
+    return src.OlsBtlmFitter()
 
-    "ols" → OlsBtlmFitter()、"tgp" → TgpBtlmFitter(seed=_TGP_SEED, bte=preset)。
+
+def _make_tgp_fitter(src: ModuleType, samples: str) -> Any:
+    """MCMC の tgp fitter。seed 固定（再現性）＋ ``samples`` で BTE プリセットを選ぶ。
+
+    未知の ``samples`` は standard へフォールバックする（従来不変）。
+    """
+    return src.TgpBtlmFitter(
+        seed=_TGP_SEED, bte=_BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
+    )
+
+
+#: fitter enum 文字列 → 実体化（SOLID 是正 OCP-1）。fitter を 1 種増やす手順は本表へ 1 行足すこと
+#: だけであり、``_fitter_factory`` 本体は改変しない（本体に比較が 0 件であることを
+#: ``api/tests/test_call_binding_open_closed.py`` が AST で固定する）。
+_FITTERS: dict[str, Callable[[ModuleType, str], Any]] = {
+    "ols": _make_ols_fitter,
+    "tgp": _make_tgp_fitter,
+}
+
+
+def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
+    """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory・_FITTERS 表引き）。
+
     rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
-    tgp は MCMC のため seed を固定し（再現性確保）、``samples`` で BTE プリセットを選んで
-    分位帯の安定性を調整する。未知の ``samples`` は standard へフォールバック。``ols`` は
-    解析解のため ``samples`` を無視する。
+    未知の fitter 名は ValueError（文言は従来と同一）。
     """
     src = _load_src_package("tgp_btlm")
-    if name == "ols":
-        return src.OlsBtlmFitter()
-    if name == "tgp":
-        bte = _BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
-        return src.TgpBtlmFitter(seed=_TGP_SEED, bte=bte)
-    raise ValueError(f"未知の fitter です: {name}")
+    try:
+        make = _FITTERS[name]
+    except KeyError:
+        raise ValueError(f"未知の fitter です: {name}") from None
+    return make(src, samples)
 
 
 def requires_dedicated_worker(indicator_id: "str | None") -> bool:
@@ -843,6 +887,31 @@ def requires_time(compute_id: "str | None") -> bool:
         for (cid, _variant), spec in _TABLE.items()
         if cid == compute_id
     )
+
+
+def value_error_declarations() -> dict[str, dict[str, Callable[[], type]]]:
+    """_TABLE の ``value_error_types`` 宣言を compute_id 単位へ導出する（SOLID 是正 OCP-3）。
+
+    同一 compute_id の複数 variant が宣言する場合は和を取る（profit_band の global/robust は
+    どちらも EmptyBucketError を送出しうるため同一宣言を持つ）。宣言を持たない指標は本 dict に
+    現れない＝汎用 ``validation`` へ一様翻訳される。
+    """
+    out: dict[str, dict[str, Callable[[], type]]] = {}
+    for (compute_id, _variant), spec in _TABLE.items():
+        declared = spec.get("value_error_types")
+        if declared:
+            out.setdefault(compute_id, {}).update(declared)
+    return out
+
+
+def value_error_types(compute_id: "str | None") -> dict[str, Callable[[], type]]:
+    """指標が宣言する「ValueError 下位型 → error.type」（未宣言・未知 id は空 dict）。
+
+    adapter はこの宣言だけを見て翻訳する（指標名も専用例外型も adapter には現れない）。
+    """
+    if not compute_id:
+        return {}
+    return value_error_declarations().get(compute_id, {})
 
 
 def latest_meta_fields(
@@ -879,8 +948,8 @@ class CallBinding:
     def invoke(self, chart: Any, df: Any, params: dict[str, Any]) -> None:
         """既存 add_* を CALL_BINDING に従い呼ぶ（描画せず chart へ収集）。
 
-        btlm: ``add_btlm(chart, df, <fitter実体>, **kw)``（fitter は第3位置・§5.5.4.1）。
-        kw  : ``add_*(chart, df, **kw)``（df 以降キーワード専用）。
+        引数渡しの規約（``kind``）ごとの差は ``_INVOKERS`` 表が持ち、本メソッドは分岐しない
+        （btlm: fitter を第 3 位置・§5.5.4.1／kw: df 以降キーワード専用）。
         """
         spec = _TABLE[(self.compute_id, self.variant)]
         callable_ = spec["loader"]()
@@ -888,21 +957,8 @@ class CallBinding:
         #   _accepted_kwargs の無言破棄に頼っていたが、無言破棄を廃した（ISSUE-278 #8）ため
         #   ここで明示的に取り除く（mcmc_samples の pop と同じ規律）。
         kw = {k: v for k, v in params.items() if k not in LAYER_CONSUMED_PARAMS}
-        if self._kind == "btlm":
-            # fitter/mcmc_samples は invoke 自身が消費する（add_btlm の kwarg ではない）。
-            #   消費集合は _KIND_CONSUMED_PARAMS が唯一の宣言（scope 検定も同じ宣言を読む）。
-            consumed = {k: kw.pop(k) for k in _KIND_CONSUMED_PARAMS[self._kind] if k in kw}
-            fitter = _fitter_factory(
-                consumed["fitter"], consumed.get("mcmc_samples", _DEFAULT_SAMPLES)
-            )
-            # ソース 8 択化: 合成ソースは applied_price で列合成し price を差し替える（src 無改変）。
-            df, kw["price"] = _resolve_btlm_price(df, kw.get("price", "open"))
-            callable_(chart, df, fitter, **_bind_kwargs(callable_, kw))
-        else:
-            kw = _bind_kwargs(callable_, kw)
-            # 指標固有の前処理は _BindingSpec の preprocess フックへ委譲（compute_id 直判定を
-            # invoke から排除・ISSUE-097 🟡-7）。未宣言指標はフック無し＝変換なし。
-            preprocess = spec.get("preprocess")
-            if preprocess is not None:
-                kw = preprocess(df, kw)
-            callable_(chart, df, **kw)
+        invoker = _INVOKERS[self._kind]
+        # kind ごとに invoke 自身が消費する param（add_* の kwarg ではない）を取り除く。
+        #   消費集合は _INVOKERS が唯一の宣言（scope 検定は導出値 _KIND_CONSUMED_PARAMS を読む）。
+        consumed = {k: kw.pop(k) for k in invoker.consumes if k in kw}
+        invoker.call(spec, callable_, chart, df, kw, consumed)

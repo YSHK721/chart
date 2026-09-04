@@ -2,7 +2,7 @@
 
 CLEAN_ARCH §6: MP forming の計算（forming_bar / market_profile_forming / market_profile_dwell）は
 indicator_ui の ``handle_market_profile_forming`` 純ロジックに一元化されている。本 gateway はそれを
-``_indicator_ui_bridge`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す（DRY・無改変）。
+``api_loader`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す（DRY・無改変）。
 serve は本 gateway を Port として注入し、bridge を直 import しない（DIP）。
 
 ``now`` は必ずリビール T を渡す（因果＝T 以前のみ・未来リーク防止）。base は controller が
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 
 
 class MarketProfileFormingGateway:
@@ -29,7 +29,7 @@ class MarketProfileFormingGateway:
         # 既定は MP handlers のみのアクセサ（ISSUE-136 ISP: dataset/compute Facade を import しない）。
         # テストは fake loader を注入して indicator_ui 実体に依存しない。
         self._loader = (
-            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_mp_handlers
+            bridge_loader if bridge_loader is not None else api_loader.load_mp_handlers
         )
 
     def forming(

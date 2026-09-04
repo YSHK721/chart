@@ -1,6 +1,6 @@
 """P-1 IndicatorSeriesPort / P-2 BarSupplyPort の実装（既存 `/compute` を read-only で読む）。
 
-計算供給は `simulator.replay_ui.adapter._indicator_ui_bridge` の `full_compute` を
+計算供給は `indigators.indicator_ui.api_loader` の `full_compute` を
 **in-process で読むだけ**である（replay / sim の前例と同形。HTTP でライブ core を叩かない
 ＝計算プールを奪わない・arch-spec §3）。指標の core は 1 行も変えない。
 
@@ -50,7 +50,7 @@ _VALUE = "value"
 
 
 class IndicatorUiComputeGateway:
-    """P-1 / P-2 の実装。`bridge` は `_indicator_ui_bridge.load_compute()` の namespace。
+    """P-1 / P-2 の実装。`bridge` は `api_loader.load_compute()` の namespace。
 
     Args:
         bridge: dataset ＋ 計算面の namespace（None なら既定の bridge を遅延で解決する）。
@@ -187,9 +187,9 @@ class IndicatorUiComputeGateway:
     # ------------------------------------------------------------------ 内部
     def _resolve_bridge(self) -> Any:
         if self._bridge is None:
-            from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+            from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-            self._bridge = _indicator_ui_bridge.load_compute()
+            self._bridge = api_loader.load_compute()
         return self._bridge
 
     def _frame(self, dataset_ref: str, timeframe: str) -> Any:

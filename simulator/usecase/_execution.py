@@ -8,6 +8,8 @@ usecase 層は domain のみ依存可。
 """
 from __future__ import annotations
 
+from typing import Callable
+
 from simulator.domain.order import Order
 from simulator.domain.position import Position
 
@@ -146,6 +148,19 @@ def fill_buy_limit(
     return None
 
 
+#: ペンディング種別 → トリガ条件（実 MT5・約定価格＝注文価格・スリッページ 0）。
+#:
+#: トリガ条件の**唯一の宣言**である。種別を増やす作業は行の追加で閉じ、if/elif の
+#: 順序という無関係な性質を持ち込まない（OCP）。種別の文字列がこの表の外に現れて
+#: いないことは `test_pending_trigger_table.py` が構文木で固定する。
+PENDING_TRIGGERS: dict[str, Callable[[float, float, float], bool]] = {
+    "buy_limit":  lambda bid, ask, price: ask <= price,   # 現値が指値まで下落して買い
+    "sell_limit": lambda bid, ask, price: bid >= price,   # 現値が指値まで上昇して売り
+    "buy_stop":   lambda bid, ask, price: ask >= price,   # 現値が逆指値まで上昇して買い
+    "sell_stop":  lambda bid, ask, price: bid <= price,   # 現値が逆指値まで下落して売り
+}
+
+
 def fill_pending_order(
     order: Order, *, bid: float, ask: float
 ) -> "Position | None":
@@ -165,18 +180,10 @@ def fill_pending_order(
     fill_buy_limit（既存・expire 付き）とは別関数として並存させる（既存経路は不変）。
     """
     price = order.price
-    kind = order.kind
-    if kind == "buy_limit":
-        triggered = ask <= price
-    elif kind == "sell_limit":
-        triggered = bid >= price
-    elif kind == "buy_stop":
-        triggered = ask >= price
-    elif kind == "sell_stop":
-        triggered = bid <= price
-    else:
+    trigger = PENDING_TRIGGERS.get(order.kind)
+    if trigger is None:          # 表に無い種別（成行など）は約定しない。
         return None
-    if not triggered:
+    if not trigger(bid, ask, price):
         return None
     return Position(side=order.side, volume=order.volume, entry_price=price)
 

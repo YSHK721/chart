@@ -1,4 +1,5 @@
 // composition_root_front.js（フロント側 Composition Root）。
+// @upstream-isolation: composition_root_front.js
 //
 // 設計入力: 内部設計書 §2.1（framework/front/composition_root_front.js）、§3.3.5（ComputeHttpClient）、
 //   §6.3（/candles）、内部設計_パラメータ設定ダイアログ §9（B方式 params 実反映）。
@@ -343,6 +344,8 @@ export async function bootstrap({
     themeStore, themeState, chromeThemeApplier, colorThemeMenu, colorThemeDialogs,
     positionSizingDialog, registerVerticalPanBlocker, chartToast,
     lwc, mainSeries, chart, container, currentPriceView,
+    // ISSUE-479 Wave2 J-1 OCP-5 S2: MP をアクター駆動指標の共通登録口へ渡す。
+    marketProfile,
     onTimeframeChanged: () => refreshTfPeriodNow(),
   });
   chartTemplates = templates;

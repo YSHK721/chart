@@ -49,12 +49,15 @@ const LIVE_ROOT = '/live/js/adapter/front/composition_root_front.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
 //   それを参照する（手書き複製の禁止）。symlink ではなく `/live/` プロキシ経由にするのは、
 //   router.py:326-331 が realpath 解決後に web_root 外を 404 にするためである（実測 2026-09-01）。
+//   本経路の形（LIVE_ROOT と同一ディレクトリ・basename）は
+//   tests/dataset_ref_query_override.test.js が固定しているため、live の public 面へ寄せるのは
+//   その検定と併せて動かす回（J-5）で行う。
 const DATASET_REF_QUERY = '/live/js/adapter/front/dataset_ref_query.js';
-const REPLAY_CONTROLLER = '/replay/js/adapter/front/replay_indicator_controller.js';
-const REPLAY_DRIVER = '/replay/js/replay.js';
-const REPLAY_MP_ACTOR = '/replay/js/adapter/front/replay_market_profile_actor.js';
-// リプレイ操作バーの DOM は replay 層の View が所有する（ISSUE-278 #16: 2 ページ複製をやめた）。
-const REPLAY_BAR_VIEW = '/replay/js/adapter/front/replay_bar_view.js';
+// リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
+//   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
+//   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
+//   操作バーの DOM は replay 層の View が所有する（ISSUE-278 #16: 2 ページ複製をやめた）。
+const REPLAY_PUBLIC_API = '/replay/js/public/replay_public_api.js';
 // sim 表示層の合成根（器・3 窓・取引明細を所有する。live root へは注入しない＝独立した層）。
 const SIM_ROOT = '/sim/js/adapter/front/composition_root_front.js';
 // dashboard 表示層の合成根（価格ラダー・各時間足の一覧を所有する。sim と同形の独立した層）。
@@ -288,10 +291,8 @@ async function main() {
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
     ({ resolveDatasetRef } = await import(DATASET_REF_QUERY));
-    ({ ReplayIndicatorController } = await import(REPLAY_CONTROLLER));
-    ({ setupReplay } = await import(REPLAY_DRIVER));
-    ({ ReplayMarketProfileActor } = await import(REPLAY_MP_ACTOR));
-    ({ installReplayBar } = await import(REPLAY_BAR_VIEW));
+    ({ ReplayIndicatorController, setupReplay, ReplayMarketProfileActor, installReplayBar } =
+      await import(REPLAY_PUBLIC_API));
     ({ setupSimDisplay } = await import(SIM_ROOT));
     ({ setupDashboardDisplay } = await import(DASHBOARD_ROOT));
   } catch (err) {

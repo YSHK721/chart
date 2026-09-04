@@ -23,6 +23,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from marketdata.tf_ledger import TF_BAR_SEC
+from simulator.adapter.calendar.session_calendar import (
+    Jp225SessionCalendar,
+    NullCalendar,
+)
 from simulator.adapter.controller import BacktestController
 from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
@@ -35,7 +39,7 @@ from simulator.adapter.execution.tick_model_registry import (
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
-from simulator.adapter.indicator.madiff import madiff
+from simulator.adapter.indicator.madiff import ema_series, madiff
 from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
@@ -85,6 +89,18 @@ def _make_tick_model(tick_model_key: str, ohlc_order: str = "ohlc") -> Any:
     return _DEFAULT_TICK_MODEL()
 
 
+# SessionCalendarPort 実装の単一レジストリ（_make_tick_model / TICK_MODEL_REGISTRY と
+# 対称の形）。キーから実装を選ぶ判断は本表だけが持ち、キーの文字列を条件式で比較する
+# 箇所は 0 である。**モジュール定数**なのは、呼び出しのたびに表を組み直さないため
+# （`test_session_calendar_registry.py` が発行回数で固定する）。
+SESSION_CALENDAR_REGISTRY: dict[str, Any] = {
+    "jp225": Jp225SessionCalendar,
+}
+# 列挙外キー時の既定（config_loader の既定 "broker"/"none"/未知値）。常時開場＝既定経路を
+# byte-identical に保つ（_DEFAULT_TICK_MODEL と同じ役割）。
+_DEFAULT_SESSION_CALENDAR = NullCalendar
+
+
 def _make_session_calendar(session_calendar_key: str) -> Any:
     """config.session_calendar キーから SessionCalendarPort 実装を生成する。
 
@@ -93,14 +109,10 @@ def _make_session_calendar(session_calendar_key: str) -> Any:
     それ以外（既定 "broker"/"none"/未知値）は NullCalendar＝常時開場で既定経路を
     byte-identical に保つ（config_loader の既定 "broker" を変更しないためのフォールバック）。
     """
-    from simulator.adapter.calendar.session_calendar import (
-        Jp225SessionCalendar,
-        NullCalendar,
+    factory = SESSION_CALENDAR_REGISTRY.get(
+        session_calendar_key, _DEFAULT_SESSION_CALENDAR
     )
-
-    if session_calendar_key == "jp225":
-        return Jp225SessionCalendar()
-    return NullCalendar()
+    return factory()
 
 
 # 本番 tick-store のルート（実 marketdata は gitignore・大容量）。テストは
@@ -264,25 +276,10 @@ def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> Pand
     return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
 
 
-def ema_series(price: pd.Series, period: int) -> pd.Series:
-    """MQL 忠実 EMA(period) を price 系列へ適用して返す（seed=price[0]）。
-
-    madiff.py と同じ共有実装 ``exponential_ma_on_buffer``（α=2/(period+1)・index0 シード）
-    を再利用する。MaSlope が indicators.get("ema") で参照する確定足 EMA を供給する。
-    report_ui（別スライス）が EA 同一 EMA の再現に用いるため公開 API とする（ISSUE-091 #3:
-    private 名の越境 import を解消）。
-    """
-    import numpy as np
-
-    from simulator.adapter.indicator.madiff import (  # 共有 moving_averages を sys.path 登録済
-        _ma_series,
-    )
-
-    values = price.to_numpy(dtype=float)
-    ema = _ma_series(values, period, "ema")
-    return pd.Series(ema, index=price.index)
-
-
+# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2）。ここは **re-export** であり
+# 写しではない（simulator.main.ema_series is madiff.ema_series を検定が固定する）。
+# 新規の参照は adapter から直接借りること。main 経由の借用は
+# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じる。
 _ema_series = ema_series  # 後方互換の旧名（simulator 内部の既存参照・テスト経路を温存）。
 
 

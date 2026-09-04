@@ -21,8 +21,14 @@
 //   pointerdown の発火順に関係なく縦パンが始まらないようにする。
 //
 // 依存: renderer（priceAtCoordinate / setUserInteraction）・primitive（handleAt）・
-//   PriceLevels 実体（withEntry / withStop / withTake）。lwc も DOM API も直に触らない
+//   domain の withPriceAt（掴んだ種別 → 非破壊更新）。lwc も DOM API も直に触らない
 //   （container のイベントと矩形だけ）。
+//
+// 水準種別の知識を持たない理由（ISSUE-479 Wave2 J-3）: 「どの水準が掴めて、掴んだら何が
+//   変わるか」は水準そのものの性質であり、ドラッグ殻の都合ではない。種別ごとの if 連鎖を
+//   本ファイルに置くと、掴める水準が 1 種増えるたびに殻が伸びる。宣言は domain の表が持つ。
+
+import { withPriceAt } from '../../domain/price_levels.js';
 
 // 掴み許容（px）。既定は線の視認幅より広く取る（細い線をピクセル単位で狙わせない）。
 const DEFAULT_GRAB_TOLERANCE_PX = 6;
@@ -175,14 +181,9 @@ export class PriceLevelDragController {
     if (!levels) {
       return;
     }
-    let next = null;
-    if (handle.kind === 'entry') {
-      next = levels.withEntry(handle.index, price);
-    } else if (handle.kind === 'stop') {
-      next = levels.withStop(price);
-    } else if (handle.kind === 'take') {
-      next = levels.withTake(price);
-    }
+    // どの種別がどう更新されるかは水準の所有者（domain の withPriceAt）が宣言する。
+    //   掴めない種別（読み取り専用・未知）は null が返る＝更新しない。
+    const next = withPriceAt(levels, handle.kind, handle.index, price);
     if (next) {
       this._onLevelsChange(next);
     }

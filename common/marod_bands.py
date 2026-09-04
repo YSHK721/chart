@@ -132,14 +132,32 @@ def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarra
     return out
 
 
-# 因果統計の種別 → reducer（rolling_causal_fast の kind と同一定義・単一情報源）。
+# 因果統計の種別 → (逐次 reducer factory, ベクトル化集約) の **単一表**。
+# 逐次（:func:`rolling_causal` 用）とベクトル化（:func:`rolling_causal_fast` 用）は同じ kind
+# 集合の 2 実装だったため、片方にだけ kind を足すと取り残しが生じていた（ISSUE-479 C-4）。
+# 種別の追加・削除は本表 1 箇所で完結する。
+_KIND_AGGREGATORS: "dict[str, tuple]" = {
+    "quantile": (
+        (lambda q: (lambda f: np.quantile(f, q))),
+        (lambda win, q: np.nanquantile(win, q, axis=1)),
+    ),
+    "mean": (
+        (lambda q: (lambda f: f.mean())),
+        (lambda win, q: np.nanmean(win, axis=1)),
+    ),
+    "std": (
+        (lambda q: (lambda f: f.std(ddof=1))),
+        (lambda win, q: np.nanstd(win, axis=1, ddof=1)),
+    ),
+}
+
+
 def stat_reducer(kind: str, q: "float | None" = None):
-    """kind（quantile/mean/std）→ reducer 関数（``rolling_causal_fast`` と同一）。"""
-    return {
-        "quantile": (lambda f: np.quantile(f, q)),
-        "mean": (lambda f: f.mean()),
-        "std": (lambda f: f.std(ddof=1)),
-    }[kind]
+    """kind（quantile/mean/std）→ reducer 関数（``rolling_causal_fast`` と同一）。
+
+    未知 kind は :data:`_KIND_AGGREGATORS` の表引きで ``KeyError``（従来と同一）。
+    """
+    return _KIND_AGGREGATORS[kind][0](q)
 
 
 def rolling_causal_fast(
@@ -154,7 +172,9 @@ def rolling_causal_fast(
     """
     vals = np.asarray(values, dtype=np.float64).ravel()
     n = vals.size
-    reducer = stat_reducer(kind, q)
+    # 表引きは 1 呼び出しあたり 1 回（逐次・ベクトル化の両方を一度に解決する）。
+    seq_factory, vectorized = _KIND_AGGREGATORS[kind]
+    reducer = seq_factory(q)
     head = min(n, window_n)
     out = np.full(n, np.nan)
     # 先頭の部分窓（t < window_n）は従来ループ（最大 window_n 本＝コスト一定）。
@@ -166,12 +186,7 @@ def rolling_causal_fast(
     finite_cnt = np.sum(np.isfinite(win), axis=1)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # 全 NaN 行の nan 集約警告（結果は下の mask で NaN 化）
-        if kind == "quantile":
-            agg = np.nanquantile(win, q, axis=1)
-        elif kind == "mean":
-            agg = np.nanmean(win, axis=1)
-        else:
-            agg = np.nanstd(win, axis=1, ddof=1)
+        agg = vectorized(win, q)
     agg[finite_cnt < MIN_STAT_OBS] = np.nan
     out[window_n:] = agg
     return out

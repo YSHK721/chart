@@ -28,6 +28,8 @@ const COLLABORATORS = [
   'indicator_dialog_controller.js',
   'series_render_router.js',
   'indicator_state_store.js',
+  'series_style_applier.js',
+  'min_bars_ledger.js',
 ];
 
 // `host._x = ...` / `host._x += ...` / `host._x -= ...`（フィールド再代入）を抽出する。

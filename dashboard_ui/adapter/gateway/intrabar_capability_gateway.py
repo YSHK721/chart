@@ -28,9 +28,9 @@ class IntrabarCapabilityGateway:
     def _resolve(self):
         if self._is_incremental is None:
             if self._bridge is None:
-                from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+                from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-                self._bridge = _indicator_ui_bridge.load_compute()
+                self._bridge = api_loader.load_compute()
             from adapter.compute.live_tick_tails import is_incremental  # 遅延: 技術隔離
 
             self._is_incremental = is_incremental

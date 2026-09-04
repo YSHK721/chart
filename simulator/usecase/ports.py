@@ -152,6 +152,56 @@ class PositionManagerPort(abc.ABC):
         raise NotImplementedError
 
 
+class EvaluationSchedulePort(abc.ABC):
+    """「どこで口座を再評価するか」の隔離（ISSUE-479 Wave2 4-8）。
+
+    Interactor は 1 バーぶんの材料（位置・バー・前足終値）を渡し、そのバーで評価すべき
+    点の列を受け取る。点で**何をするか**（SL/TP 到達判定・建玉変更・口座再評価）は
+    Interactor が 1 箇所で持ち、**どこで評価するか**だけが実装ごとに違う。
+
+    移設前はこの 2 つが混ざっていた。バー用エンジンは「1 バー 1 回・bar.close で」、
+    ティック用エンジンは「1 ティック 1 回・ティック価格で」を、それぞれ手続きごと写して
+    持っていたため、同じ手続きの 2 つの写しが並存していた。
+
+    `prev_close` はティックを合成する実装だけが使う（バー粒度は無視する）。入口の形を
+    粒度に依らず同じにして、呼出側が粒度で分岐しなくて済むようにするためである。
+    """
+
+    #: 粒度の名前（どのスケジュールで走った run かを辿れるようにする）。
+    id: str = ""
+
+    @abc.abstractmethod
+    def points(
+        self, bar_index: int, bar: Any, prev_close: "float | None"
+    ) -> Iterable[Any]:
+        """当該バーで評価すべき EvaluationPoint の列を返す（空列を許容する）。
+
+        空列は「そのバーには評価する点が無い」を意味する（実ティックが 0 件のバー）。
+        呼出側は非空を前提にしない。
+        """
+        raise NotImplementedError
+
+
+class StopOutPolicyPort(abc.ABC):
+    """証拠金割れ（stop-out）が起きたときに何をするかの隔離（ISSUE-479 Wave2 4-4）。
+
+    Interactor は「割れた」という事実（stop-out の文脈オブジェクト）だけを渡し、決定
+    オブジェクトを受け取る。**例外の送出は Interactor が行う**——run を捨てるかどうかは実行の制御で
+    あって方針オブジェクトの責務ではないため、方針は決定（強制決済するか否か）だけを
+    返す。
+
+    移設前はこの決定が `config.stop_out_action != "close_and_halt"` という比較として
+    実行経路の 3 箇所（バー open 評価・バー close 評価・ティック評価）へ書き写されて
+    いた。方針を増やすには 3 箇所すべてを直す必要があり（OCP 違反）、1 箇所を直し忘れると
+    評価点によって違う方針で走る。本 Port は決定点を 1 つに閉じる。
+    """
+
+    @abc.abstractmethod
+    def on_breach(self, ctx: Any) -> Any:
+        """StopOutContext を受け StopOutDecision を返す。"""
+        raise NotImplementedError
+
+
 class IndicatorPort(abc.ABC):
     """指標の隔離（IndicatorRegistry）。"""
 

@@ -42,9 +42,9 @@ class IndicatorCatalogSource(IndicatorCatalogSourcePort):
     def _handler(self) -> Any:
         if self._catalog_handler is None:
             # 遅延解決: indicator_ui の import を実際に使うときまで起こさない。
-            from simulator.replay_ui.adapter import _indicator_ui_bridge
+            from indigators.indicator_ui import api_loader
 
-            bridge = _indicator_ui_bridge.load_catalog_handler(
+            bridge = api_loader.load_catalog_handler(
                 self._api_path, self._repo_root
             )
             self._catalog_handler = bridge.handle_catalog

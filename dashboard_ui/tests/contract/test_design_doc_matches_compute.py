@@ -43,15 +43,15 @@ def open_live_core() -> None:
     """ライブ core を in-process で読めるようにする（import 境界はプロダクト側が所有）。
 
     ライブ core の import パス準備は
-    `simulator.replay_ui.adapter._indicator_ui_bridge` が唯一の所有者であり、
+    `indigators.indicator_ui.api_loader` が唯一の所有者であり、
     dashboard core（`dashboard_ui.adapter.gateway.indicator_ui_compute_gateway`）も
     replay / sim も同じ入口を通る（arch-spec §3）。テスト側で sys.path を触ると
     「テストが読むモジュール」と「プロダクトが読むモジュール」の同一性が食い違いうるので、
     第 2 の準備を書かない。
     """
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
+    from indigators.indicator_ui import api_loader
 
-    _indicator_ui_bridge.load_compute()
+    api_loader.load_compute()
 
 #: 素材。名前の集合は素材に依らない（module docstring の実測）。
 DATASET_REF = "sample"
@@ -433,9 +433,9 @@ FORWARD_BARS = 600
 
 @pytest.fixture(scope="module")
 def forward_window():
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
+    from indigators.indicator_ui import api_loader
 
-    bridge = _indicator_ui_bridge.load_compute()
+    bridge = api_loader.load_compute()
     return bridge.dataset.load_dataframe(FORWARD_REF, FORWARD_TIMEFRAME).tail(FORWARD_BARS)
 
 

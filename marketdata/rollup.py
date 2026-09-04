@@ -32,10 +32,11 @@ import json
 import logging
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional, Protocol, TextIO, runtime_checkable
 
 import pandas as pd
 
@@ -192,33 +193,108 @@ def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
     return row
 
 
+class _AtomicCsvSwap:
+    """確定パスと同一ディレクトリの一時ファイルへ書き、:meth:`commit` で原子スワップする実体。
+
+    原子化（🔴）の**唯一の実装**（ISSUE-479 M-1）。かつては同じ tmp→``os.replace`` の手順が
+    ``_write_rollup`` / ``_write_rollup_df`` / :class:`_RollupWriter` の 3 箇所に手書きされており、
+    1 箇所を直しても残り 2 箇所が古いまま残る形だった（先例: mt5_ticks の取込側にある同型の原子化）。
+
+    なぜ原子化が要るか: ``--watch`` は毎分ロールアップの全書き直しを行うため、書込中の
+    crash/OOM-kill で確定パスに部分 CSV が残ると、cold-start の server が torn-read
+    フォールバック不能のまま不完全データを配信する。tmp→replace により確定パスは
+    「完全な新 CSV」か「旧 CSV」のいずれかに限定される。
+
+    :meth:`commit` されないまま :meth:`abort` されたときは tmp を破棄し確定パスを汚さない（冪等）。
+    """
+
+    def __init__(self, final: Path) -> None:
+        final = Path(final)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        self.final = final
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(final.parent), prefix=final.name + ".", suffix=".tmp"
+        )
+        self._tmp: Optional[Path] = Path(tmp_name)
+        self.file: TextIO = os.fdopen(fd, "w", newline="", encoding="utf-8")
+        self._committed = False
+
+    @property
+    def committed(self) -> bool:
+        return self._committed
+
+    def commit(self) -> None:
+        """tmp を閉じ確定パスへ原子スワップする（成功時のみ呼ぶ・冪等）。"""
+        if self._committed:
+            return
+        self.file.close()
+        os.replace(self._tmp, self.final)
+        self._committed = True
+        self._tmp = None
+
+    def abort(self) -> None:
+        """tmp を閉じて破棄する（未 commit 時のみ実効・冪等）。確定パスは触らない。"""
+        if not self.file.closed:
+            self.file.close()
+        if not self._committed and self._tmp is not None:
+            self._tmp.unlink(missing_ok=True)
+            self._tmp = None
+
+
+@contextmanager
+def _atomic_csv(final: Path) -> "Iterator[TextIO]":
+    """一度に書き切る経路のための原子スワップ（正常終了で commit・例外で tmp 破棄）。"""
+    swap = _AtomicCsvSwap(final)
+    try:
+        yield swap.file
+    except BaseException:
+        swap.abort()
+        raise
+    swap.commit()
+
+
+@runtime_checkable
+class RollupWriter(Protocol):
+    """確定 period バーの永続化境界（:func:`stream_build` が依存する抽象・ISSUE-479 M-1）。
+
+    ``stream_build`` の責務は「チャンク跨ぎ carry-over を解いて、確定したバーを確定順に
+    ちょうど 1 回ずつ渡す」ことであり、渡した先が CSV かどうかは関知しない。具象を本体が
+    直接生成していた間、この責務はファイル出力なしには観測できなかった（DIP 違反）。
+
+    - :meth:`write`: 確定済み 1 バーを渡す（呼び出しは date 昇順であること）。
+    - :meth:`commit`: 成功確定（永続化を可視化する）。
+    - :meth:`close`: 後始末（未 commit なら中断として扱う・冪等）。
+    """
+
+    def write(self, period: Any, bar: "dict[str, Any]") -> None: ...
+
+    def commit(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+#: 出力ディレクトリ・TF・ref_prefix から :class:`RollupWriter` を作る生成関数の型。
+RollupWriterFactory = Callable[[Path, str, str], RollupWriter]
+
+
 def _write_rollup(
     out_dir: Path, tf: str, bars: dict[Any, dict[str, Any]], ref_prefix: str = _REF_PREFIX
 ) -> None:
     """period→bar の辞書を date 昇順でロールアップ CSV へ**原子的に**書き出す（loader 互換形式）。
 
-    原子化（🔴）: 同一ディレクトリの一時ファイルへ書き切ってから ``os.replace`` で確定パスへ
-    swap する。``--watch`` が毎分この全書き直しを行うため、書込中の crash/OOM-kill で確定パスに
-    部分 CSV が残ると、cold-start の server が torn-read フォールバック不能のまま不完全データを
-    配信する。tmp→replace で確定パスは「完全な新 CSV」か「旧 CSV」のいずれかに限定する。
+    書き出しの実体は :class:`_RollupWriter`（逐次 flush）を date 昇順で回すだけであり、行整形・
+    ヘッダ決定・原子化を持たない（ISSUE-479 M-1: 出力規則の第 2 実装を作らない）。ヘッダは
+    従来どおり **bars の反復順先頭**を見本に決める（``_header_for_bars`` と同一の見本選択）。
     """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    import csv as _csv
-
-    final = _rollup_path(out_dir, tf, ref_prefix)
-    fd, tmp_name = tempfile.mkstemp(dir=str(out_dir), prefix=final.name + ".", suffix=".tmp")
-    tmp = Path(tmp_name)
+    bars = dict(bars)
+    writer = _RollupWriter(out_dir, tf, ref_prefix)
     try:
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-            w = _csv.writer(fh)
-            w.writerow(_header_for_bars(bars))
-            for period in sorted(bars):
-                w.writerow(_bar_to_csv_row(period, bars[period]))
-        os.replace(tmp, final)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+        writer._ensure_header(next(iter(bars.values()), None))
+        for period in sorted(bars):
+            writer.write(period, bars[period])
+        writer.commit()
+    finally:
+        writer.close()
 
 
 def _write_rollup_df(
@@ -226,8 +302,8 @@ def _write_rollup_df(
 ) -> None:
     """date-index OHLCV DataFrame を date 昇順でロールアップ CSV へ**原子的に**書く（増分経路）。
 
-    増分更新（ISSUE-012）の memory-bounded 経路。``_write_rollup``（辞書版）と同じ tmp→``os.replace``
-    の原子化で確定パスを「完全な新 CSV」か「旧 CSV」のいずれかに限定する。出力列・date 書式
+    増分更新（ISSUE-012）の memory-bounded 経路。原子化は :func:`_atomic_csv`（唯一の実装）へ
+    委譲し、確定パスを「完全な新 CSV」か「旧 CSV」のいずれかに限定する。出力列・date 書式
     （``_DATE_FMT``）・ヘッダは loader 互換（:mod:`marketdata.csv_schema`）で揃える。90 万件規模でも
     辞書化せず pandas の to_csv をストリーム書きするため RSS は DataFrame 1〜2 個分に有界化する。
 
@@ -237,24 +313,15 @@ def _write_rollup_df(
     rewrite へ落ちるため自己修復せず、方向内訳が恒久的に失われる（消費側の tickvol_updown は値を
     捏造せず KeyError で落ちる）。列の決定は csv_schema 1 点に閉じること。
     """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    final = _rollup_path(out_dir, tf, ref_prefix)
-    fd, tmp_name = tempfile.mkstemp(dir=str(out_dir), prefix=final.name + ".", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
+    final = _rollup_path(Path(out_dir), tf, ref_prefix)
+    with _atomic_csv(final) as fh:
         cols = [c for c in (*_csv_schema.OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)
                 if c in df.columns]
         out = df[cols].sort_index()
         out = out.copy()
         out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
         out.index.name = "date"
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-            out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
-        os.replace(tmp, final)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+        out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
 
 
 class _RollupWriter:
@@ -264,24 +331,22 @@ class _RollupWriter:
     ヘッダを最初に 1 行書き、以後 :meth:`write` を確定順（＝昇順）に呼ぶ。出力 CSV の内容・行順序は
     ``_write_rollup`` と完全一致する（行整形は :func:`_bar_to_csv_row` で共用・バイト一致）。
 
-    原子化（🔴）: 一時ファイルへ逐次 flush し、:meth:`commit`（成功時）で ``os.replace`` で確定
-    パスへ swap する。:meth:`close` は未 commit なら tmp を破棄し確定パスを汚さない。これにより
-    書込中 crash でも確定パスは「完全な新 CSV」か「旧 CSV」のいずれかに限定される。
+    原子化（🔴）は :class:`_AtomicCsvSwap`（唯一の実装）へ委譲する。一時ファイルへ逐次 flush し、
+    :meth:`commit`（成功時）で確定パスへスワップする。:meth:`close` は未 commit なら tmp を破棄し
+    確定パスを汚さない。これにより書込中 crash でも確定パスは「完全な新 CSV」か「旧 CSV」の
+    いずれかに限定される。
 
     §10.3 M-3: ``ref_prefix``（既定 ``"jp225_m1"``）を ``__init__`` に追加し確定パス名へ反映する。
+    本クラスは :class:`RollupWriter` プロトコルの既定の具象であり、``stream_build`` は
+    ``writer_factory`` 未指定時にこれを使う（ISSUE-479 M-1）。
     """
 
     def __init__(self, out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> None:
         import csv as _csv
 
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        self._final = _rollup_path(out_dir, tf, ref_prefix)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(out_dir), prefix=self._final.name + ".", suffix=".tmp"
-        )
-        self._tmp: Optional[Path] = Path(tmp_name)
-        self._fh = os.fdopen(fd, "w", newline="", encoding="utf-8")
+        self._final = _rollup_path(Path(out_dir), tf, ref_prefix)
+        self._swap = _AtomicCsvSwap(self._final)
+        self._fh = self._swap.file
         self._w = _csv.writer(self._fh)
         # ヘッダは最初の bar が来るまで書かない（up/dn を持つ素材かは bar を見ないと決まらない）。
         #   1 行も書かれなければ commit 時に既定ヘッダを書く＝従来の空 CSV と同一。
@@ -304,18 +369,12 @@ class _RollupWriter:
         if self._committed:
             return
         self._ensure_header(None)
-        self._fh.close()
-        os.replace(self._tmp, self._final)
+        self._swap.commit()
         self._committed = True
-        self._tmp = None
 
     def close(self) -> None:
         """fh を閉じる。未 commit なら tmp を破棄して確定パスを汚さない（冪等）。"""
-        if not self._fh.closed:
-            self._fh.close()
-        if not self._committed and self._tmp is not None:
-            self._tmp.unlink(missing_ok=True)
-            self._tmp = None
+        self._swap.abort()
 
     def __enter__(self) -> "_RollupWriter":
         return self
@@ -427,21 +486,29 @@ def stream_build(
     out_dir: Path,
     ref_prefix: str = _REF_PREFIX,
     chunk_rows: int = 500_000,
+    *,
+    writer_factory: "RollupWriterFactory | None" = None,
 ) -> "RollupState":
     """1 分足を chunk 単位でストリーム読みし、各 TF をロールアップ CSV へ書き出す（メモリ有界）。
 
     チャンク跨ぎの未確定（最終）period は carry-over し、確定するまで書き出さない（D-1）。
     全行を同時に DataFrame 化しない（``pd.read_csv(chunksize=chunk_rows)``）。
 
-    §10.3 M-3: ``ref_prefix``（既定 ``"jp225_m1"``）を ``_RollupWriter`` へ伝播し出力ファイル名を
+    §10.3 M-3: ``ref_prefix``（既定 ``"jp225_m1"``）を writer へ伝播し出力ファイル名を
     銘柄汎用化する（既定値で全既存呼出は不変）。
+
+    ISSUE-479 M-1（DIP）: 永続化先は ``writer_factory``（:data:`RollupWriterFactory`）から受け取る。
+    未指定なら既定の具象 :class:`_RollupWriter` を使うため、既存呼出は 1 文字も変わらない。
+    本関数の責務は「確定したバーを確定順にちょうど 1 回ずつ writer へ渡す」ことであり、
+    渡した先が CSV かどうかは関知しない（この分離により、その責務をファイル出力なしに観測できる）。
     """
     tf_list = list(tf_list)
     m1_csv_path = Path(m1_csv_path)
+    factory: "RollupWriterFactory" = writer_factory or _RollupWriter
     # TF ごとに確定済み period バーを逐次 flush する writer（確定バーを蓄積しない＝メモリ有界化）。
     #   常駐は 1 chunk ＋ TF ごとの carry-over 境界バー 1 本のみ（巨大期間でも確定バーが嵩まない）。
-    writer_by_tf: dict[str, _RollupWriter] = {
-        tf: _RollupWriter(out_dir, tf, ref_prefix) for tf in tf_list
+    writer_by_tf: "dict[str, RollupWriter]" = {
+        tf: factory(out_dir, tf, ref_prefix) for tf in tf_list
     }
     # TF ごとに「未確定（carry-over 中）の最終 period→bar」を 1 本だけ保持する。
     pending_by_tf: dict[str, Optional[tuple[Any, dict[str, Any]]]] = {tf: None for tf in tf_list}

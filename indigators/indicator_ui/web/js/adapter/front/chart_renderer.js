@@ -1,4 +1,5 @@
 // ChartRenderer（adapter/front/chart_renderer.js）— ChartRendererPort 実装・upstream 隔離点（唯一）。
+// @upstream-isolation: chart_renderer.js
 //
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
@@ -41,11 +42,14 @@ import { seriesKind } from '../../domain/series_kind.js';
 import { ScaleController, zoomedPriceRange, clampPriceRange } from './scale_controller.js';
 import { CandleFeed } from './candle_feed.js';
 import { SeriesDrawer, lastPointValue } from './series_drawer.js';
+import { PaneGeometryController } from './pane_geometry_controller.js';
 import { enforceAscendingTimes } from './series_time_guard.js';
-// クロム配線点の単一情報源（基本設計_指標カラーテーマ.md §4.2・A-9）。本ファイルが持っていた
-//   5 つの色定数（減光ローソク・ローソク復元色 up/down・分析 tint・背景フォールバック）は、
-//   chart_bootstrap.js / replay_boundary_dim.js の同値リテラルと事実上の二重定義だった。
-import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+// クロム色の保持・導出・押し出し（配線点の単一情報源 chrome_tokens.js の消費）は
+//   ChromeColorController（協働子・ISSUE-479 Wave2 J-2b）が担う。
+import { ChromeColorController } from './chrome_color_controller.js';
+// 読み取り（クロスヘア DTO・足の情報・スナップ候補）は CrosshairReadoutBuilder（協働子・
+//   ISSUE-479 Wave2 J-2c）が担う。点列の探索（pointAtTime / pointValueAt）も同居する。
+import { CrosshairReadoutBuilder } from './crosshair_readout_builder.js';
 
 // zoomedPriceRange/clampPriceRange の単一ソースは scale_controller.js（SOLID 是正 🔴-2 で抽出）。
 //   既存 import（テスト・他ファイル）を壊さないため本モジュールからも再 export する。
@@ -59,97 +63,9 @@ export { zoomedPriceRange, clampPriceRange };
 //   `this._chromeSlots.dimCandle` から読む（テーマで変えられる／書き手が 1 箇所に保たれる）。
 //   ここに定数を戻すと、テーマが配った色と描画に使う色が再び食い違う（ISSUE-357 の再発）。
 
-// time 昇順の点列から time が一致する点を返す（無ければ undefined）。ローソク・指標系列とも
-//   lightweight-charts のデータ規約で time 昇順のため二分探索で引く（右クリック 1 回あたり
-//   系列数ぶんの探索になるので線形走査にしない）。time は UTCTimestamp（数値）を前提とし、
-//   business day 形式など数値でない時刻表現は「引けない」（undefined）＝黙って別の足を返さない。
-function pointAtTime(points, time) {
-  if (!Array.isArray(points) || typeof time !== 'number') {
-    return undefined;
-  }
-  let lo = 0;
-  let hi = points.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const t = points[mid] ? points[mid].time : undefined;
-    if (typeof t !== 'number') {
-      return undefined;
-    }
-    if (t === time) {
-      return points[mid];
-    }
-    if (t < time) {
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return undefined;
-}
-
-// 系列の指定 time の値（線・ヒストグラム＝value / ローソク＝close）。無ければ undefined。
-//   series.data() は upstream API のため呼び出しは本モジュールに閉じる（隔離維持）。
-function pointValueAt(series, time) {
-  if (!series || typeof series.data !== 'function') {
-    return undefined;
-  }
-  const p = pointAtTime(series.data(), time);
-  if (p === undefined || p === null) {
-    return undefined;
-  }
-  return (typeof p === 'object') ? (p.value ?? p.close) : p;
-}
-
-// sessions（日別プロファイル分割）: ローソク透明化用の色。透明＝価格軸は残しローソクだけ消す。
-//   透明でないときの色は「配信済みのクロム色」から導出する（_deriveCandleOptions）。
-const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
-
-// クロム色の保持（FR-C13・§7.8「クロムの色の書き手は 1 箇所」）。
-//   派生クロム（減光ローソク #18 / 分析 tint #19 / リプレイ減光境界 #20）とローソク復元色
-//   （#12/#13）・背景フォールバック（#2）は、いずれもモジュール定数として読むと**配信された
-//   テーマ色に追随しない**（旧実装の欠陥: 20 点を受け取って 11 点しか読んでいなかった）。
-//   よって値は 1 つの保持状態に集約し、各利用点はそこから読む。CHROME_CURRENT は
-//   「配信前の初期値」＝現行リテラルとしてのみ使う（未配信時の挙動は不変・D-11）。
-const INITIAL_CHROME_SLOTS = Object.freeze({ ...CHROME_CURRENT });
-
-// 版面の増減を指標ペインで吸収するときの下限（ISSUE-440(2)・依頼者裁定 2026-08-21）。
-//   これ未満へ詰めると軸ラベルも凡例も読めなくなるので、指標側で吸収し切れないぶんだけ
-//   価格ペインが譲る（版面が極端に低いときに価格ペインを 0 にしないための床）。
-const MIN_INDICATOR_PANE_PX = 40;
-const MIN_PRICE_PANE_PX = 60;
-
-/**
- * 小数の配分を**合計を保ったまま**整数へ丸める（最大剰余法・ISSUE-442）。
- *
- * 単純な四捨五入だと合計が版面とずれ、ずれたぶんだけ lwc の実高が小数になって、そこから
- * 派生する凡例の位置と 1px 食い違う（実測 2026-08-22: ペイン上端 373 に対しラベル 374）。
- */
-function roundKeepingSum(values, total) {
-  const floors = values.map((v) => Math.floor(v));
-  let rest = total - floors.reduce((a, b) => a + b, 0);
-  // 端数の大きい順に 1px ずつ配る（同値なら添字の若い方＝上のペインから）。
-  const order = values
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
-  for (const { i } of order) {
-    if (rest <= 0) break;
-    floors[i] += 1;
-    rest -= 1;
-  }
-  return floors;
-}
-
-// 受け取った配線点だけを上書きした新しい保持値を返す（未指定＝undefined の配線点は現状維持）。
-//   lightweight-charts の applyOptions が部分マージであることと同じ規約にする。
-function mergeChromeSlots(held, patch) {
-  const next = { ...held };
-  for (const [id, color] of Object.entries(patch ?? {})) {
-    if (color !== undefined) {
-      next[id] = color;
-    }
-  }
-  return next;
-}
+// ペイン配分の下限（MIN_*）と合計保存の丸め（roundKeepingSum）は PaneGeometryController、
+//   クロム色の透明色・初期保持値・部分マージ（TRANSPARENT_COLOR / INITIAL_CHROME_SLOTS /
+//   mergeChromeSlots）は ChromeColorController が所有する（ISSUE-479 Wave2 J-2）。
 
 export class ChartRenderer {
   // chart: LightweightCharts.createChart(...) の戻り（addSeries/addPane/panes/removePane を持つ）。
@@ -167,25 +83,14 @@ export class ChartRenderer {
     this._chart = chart;
     this._mainSeries = mainSeries;
     this._lwc = lwc ?? {};
-    this._onCrosshairReadout = typeof onCrosshairReadout === 'function' ? onCrosshairReadout : () => {};
     this._onPaneLegend = typeof onPaneLegend === 'function' ? onPaneLegend : () => {};
     // v6: 基準 candles の単一所有者（setCandles 全置換・updateLastCandle 差分で更新）。
     //   per-bar 減光（dimCandlesOutsidePair）・基準復元（restoreCandles）はこの基準から導出する。
     this._baseCandles = null;
     // 背景プリミティブ（用途 key -> primitive）。attachBackgroundPrimitive が所有し、メイン系列へ 1 度だけ装着する。
     this._backgroundPrimitives = new Map();
-    // 配信済みクロム色の保持（FR-C13）。初期値＝現行リテラル（配信前＝テーマなしと同じ見た目）。
-    //   applyChromeColors が更新し、派生・復元の各利用点はここだけを読む（色の出所を 1 つにする）。
-    this._chromeSlots = { ...INITIAL_CHROME_SLOTS };
-    // 表示モード（クロム出力のもう 1 つの入力）。出力は _derive* が保持色と併せて導出する。
-    //   ここに状態として置くことで「テーマを適用したらモードが無かったことにされる」
-    //   （透明ローソクが不透明へ戻る・分析 tint が消える・減光色だけ旧色で残る）が起き得なくなる。
-    this._candlesTransparent = false;  // sessions / tf-period 列によるローソク透明化。
-    this._analysisTintOn = false;      // 分析モードの背景 tint。
-    this._dimRange = null;             // ペア hover 中の減光レンジ {from,to}（null=減光なし）。
-    // 保持値の購読者（自分では色を決めず、配られた色を自分の描画へ適用する側）。
-    //   本 class の外にある描画（リプレイ減光境界の lwc プリミティブ）へ同じ保持値を届ける。
-    this._chromeObservers = new Set();
+    // クロム色ロールの状態（保持色・表示モード 3 種・購読者・背景 type の捕捉）は
+    //   ChromeColorController が所有する（ISSUE-181「状態も一緒に移す」）。
     // v6: candle 変更 observer（後方互換 no-op）。setCandleObserver で後から差し替え可能（生成順序吸収）。
     this._onCandlesChanged = typeof onCandlesChanged === 'function' ? onCandlesChanged : () => {};
     // 読み取り欄の最新足の単一源（lightweight-charts から逆引きしない＝upstream API 名を増やさない）。
@@ -197,16 +102,6 @@ export class ChartRenderer {
     // instanceId -> { lines, priceLines, hlinePayloads, visible, scaleHost, priceLineHost,
     //                 pane, watermark, paneName }
     this._instances = new Map();
-    // ペインの**位置に依らない安定 ID**（ISSUE-341）。並べ替えを入れた結果 paneIndex は
-    //   「今どこに居るか（位置）」しか表さなくなったため、「どのペインか（同一性）」を別に持つ。
-    //   pane オブジェクトを鍵にした WeakMap＝ペインが消えれば採番も一緒に消える（後始末が要らない）。
-    //   実測（vendor/lightweight-charts.js v5.2.0）: chart.panes() は内部ペインごとに生成した
-    //   ラッパを `fb()` がキャッシュして返すため、同じペインには毎回同じオブジェクトが返る。
-    //   moveTo（並べ替え）は内部配列の順序だけを変えるのでラッパの同一性は保たれる。
-    this._paneKeys = new WeakMap();
-    this._paneKeySeq = 0;
-    // ペイン並び順の変化を受け取る購読者（既定 no-op＝後方互換）。setPaneOrderObserver で結ぶ。
-    this._onPaneOrder = () => {};
     this._mainStretchSet = false;
     // 増分2: setCandleTrim の直近トリム末尾 index（位置不変時の再 setData 回避＝プロト lastTrimIdx）。
     //   null=未トリム。setCandles で候補が変わるためリセットする。
@@ -215,28 +110,16 @@ export class ChartRenderer {
     this._profileMarginFraction = 0;
     // スクラブ追従で保持するズーム倍率（可視論理幅）のキャッシュ。getVisibleLogicalRange 一時失敗時に使う。
     this._replayViewSpan = null;
-    // sessions（日別プロファイル）の time→{poc,vah,val} Map（読み取り欄で当日 MP を出す）。null=非表示。
-    this._sessionMP = null;
+    // 読み取りロールの状態（読み取り欄コールバック・tf-period ホバーハンドラ・sessions の
+    //   当日 MP）は CrosshairReadoutBuilder が所有する（ISSUE-181「状態も一緒に移す」）。
     // 価格軸ホイールズームは lwc v5.2 の priceScale ネイティブ API
     //   （getVisibleRange/setVisibleRange/autoScale）で実現する＝軸ドラッグと同一の内部状態。
     //   自前の override 状態は持たない（手動スケールの保持・解除は lwc が所有する）。
     // 価格パンの px→価格換算に使う pane 高（container 高 - timeScale().height() 相当）。
     //   composition root が setPaneHeight で供給する。
     this._paneHeight = null;
-    // ペイン領域の総高を「その場で測る」関数（setPaneAreaHeightProvider で供給・ISSUE-440）。
-    //   未供給なら _paneHeight へ縮退する（既存の呼び出しは不変）。
-    this._paneAreaHeightProvider = null;
-    // 最後に凡例 DTO を配ったときのペイン幾何の指紋（refreshPaneLegendIfGeometryChanged 用）。
-    this._lastPaneGeometrySig = null;
-    // 次フレームでの幾何突き合わせを予約済みか（多重予約を作らない・_scheduleGeometryRecheck）。
-    this._geometryRecheckPending = false;
-    // 利用者が最後に決めたペイン配分（総高が変わらないあいだの実測）。総高が変わったとき、
-    //   価格ペインをこの高さへ戻すための目標にする（ISSUE-440(2)）。
-    this._paneGoal = null;
-    // 目標を控えた時点の版面総高。これと違う総高を観測したら「利用者以外の要因」と判定する。
-    this._lastPaneArea = null;
-    // 自分が配り直した高さ（利用者の意思と区別するための印）。
-    this._appliedPaneHeights = null;
+    // ペイン幾何ロールの状態（安定採番・並び順購読者・総高の測定関数・幾何指紋・再確認予約・
+    //   目標配分）は PaneGeometryController が所有する（ISSUE-181「状態も一緒に移す」）。
     // lwc 操作可否の合成（suppressInteraction 参照）。明示フラグ AND 抑止者ゼロ で有効。
     this._interactionEnabled = true;
     this._interactionSuppressors = new Set();
@@ -256,6 +139,17 @@ export class ChartRenderer {
     // SOLID 是正 🔴-2: 系列生成・スタイル（_renderSeries/applySeriesStyle/_swapSeriesType/
     //   setVisible の実体）は SeriesDrawer（協働子）へ委譲する（公開面・挙動は不変）。
     this._drawer = new SeriesDrawer(this);
+    // ISSUE-479 Wave2 J-2: ペイン幾何（何面あるか・どこからどこまでか・どれが動かせるか）と、
+    //   その従属変数である凡例 DTO の発行は PaneGeometryController（協働子）へ委譲する。
+    //   幾何ロールの状態は協働子が所有し、本クラスの公開面・挙動は不変（薄い委譲だけが残る）。
+    this._paneGeom = new PaneGeometryController(this);
+    // ISSUE-479 Wave2 J-2b: クロムの色（保持・表示モードとの合成・upstream への押し出し・配信）は
+    //   ChromeColorController（協働子）へ委譲する。色ロールの状態は協働子が所有し、本クラスの
+    //   公開面・挙動は不変（薄い委譲だけが残る）。
+    this._chrome = new ChromeColorController(this);
+    // ISSUE-479 Wave2 J-2c: 読み取り（クロスヘア DTO・足の情報・スナップ候補）は
+    //   CrosshairReadoutBuilder（協働子）へ委譲する。読み取りロールの状態は協働子が所有する。
+    this._readout = new CrosshairReadoutBuilder(this, { onCrosshairReadout });
     this._syncRightOffset();
     // ISSUE-164（ユーザー裁定 2026-07-23）: ズーム/ドラッグ（可視範囲変化）に反応して右余白を
     //   再適用する購読は撤去した。ユーザーの拡大縮小操作と無関係に rightOffset を適用し直すのは
@@ -330,9 +224,7 @@ export class ChartRenderer {
   // 背景プリミティブ 1 つへ保持色を渡す。受け口を持たないプリミティブ（既存・後方互換）は
   //   素通りする（全域的・例外を投げない）。
   _pushChromeToBackgroundPrimitive(primitive) {
-    if (primitive && typeof primitive.setChromeColors === 'function') {
-      primitive.setChromeColors(this._chromeSlots);
-    }
+    this._chrome._pushChromeToBackgroundPrimitive(primitive);
   }
 
   // 増分2: チャートの通常操作（スクロール/ズーム）を停止/復元する（リプレイスワイプ捕捉用）。
@@ -404,8 +296,7 @@ export class ChartRenderer {
   //   本メソッドは**入力（モード）を更新して導出結果を押し出すだけ**で、色は 1 つも決めない
   //   （決めるのは _deriveCandleOptions）。applyOptions 非提供時は no-op（後方互換）。冪等。
   setCandleTransparency(on) {
-    this._candlesTransparent = !!on;
-    this._pushCandleOptions();
+    this._chrome.setCandleTransparency(on);
   }
 
   // 縦パンの px→価格換算に使う pane 高の設定（実体は ScaleController・SOLID 是正 🔴-2）。
@@ -629,22 +520,14 @@ export class ChartRenderer {
   //   （データ非改変・背景ピクセルも不変）。基準 candles 未供給時は no-op（候補据え置き・後方互換）。
   //   mainSeries.setData を呼ぶのは本所のみ（upstream 隔離・grep0件規約維持）。
   dimCandlesOutsidePair({ from, to }) {
-    if (!this._baseCandles) {
-      return; // 塗る対象が無い＝要求は保持しない（基準供給後に勝手に減光しない・後方互換）。
-    }
-    this._dimRange = { from, to };
-    this._pushDimmedCandles();
+    this._chrome.dimCandlesOutsidePair({ from, to });
   }
 
   // v6（§12）: per-bar 減光を解除し基準 candles（色上書きなし）を復元する。基準未供給なら no-op。
   //   減光オーバーレイの解除＝データの所有権を基準（CandleFeed）へ返す操作なので、ここだけは
   //   導出（_deriveDimmedCandles）ではなく基準そのものを書き戻す。
   restoreCandles() {
-    this._dimRange = null;
-    if (!this._baseCandles) {
-      return;
-    }
-    this._mainSeries.setData(this._baseCandles);
+    this._chrome.restoreCandles();
   }
 
   // instanceId の描画スロット取得/生成（実体は SeriesDrawer._slot・SOLID 是正 🔴-2）。
@@ -696,653 +579,157 @@ export class ChartRenderer {
   //   ISSUE-276: 旧「ペイン左上ウォーターマークへ指標名＋値を焼く」経路は撤去した。同じ情報を
   //   凡例行が持つため 2 系統になっており、凡例 DOM がウォーターマークの上に載って判読不能だった。
   _onCrosshairMove(param) {
-    this._emitPaneLegend(param);
-    // クロスヘア価格読み取り欄（左上オーバーレイ）への DTO 発火。
-    this._emitReadout(param);
-    // tf-period ホバー読取（依頼者指示 2026-07-13・a案ツールチップ）: カーソル位置の座標 DTO
-    //   { x, y, time, price } を配線先（composition root）へ渡す。lwc 型は渡さない（隔離維持）。
-    //   カーソルがチャート外（point 無し）は null＝ツールチップ hide。ハンドラ未設定は no-op。
-    if (typeof this._onTfPeriodHover === 'function') {
-      const pt = param && param.point;
-      if (pt && param.time != null && typeof this._mainSeries.coordinateToPrice === 'function') {
-        const price = this._mainSeries.coordinateToPrice(pt.y);
-        this._onTfPeriodHover(price != null
-          ? { x: pt.x, y: pt.y, time: Number(param.time), price: Number(price) }
-          : null);
-      } else {
-        this._onTfPeriodHover(null);
-      }
-    }
+    this._readout._onCrosshairMove(param);
   }
 
-  // tf-period ホバー座標ハンドラを設定する（composition root が配線・null で解除）。
+  // tf-period ホバー座標ハンドラを設定する（実体は CrosshairReadoutBuilder.setTfPeriodHoverHandler）。
   setTfPeriodHoverHandler(fn) {
-    this._onTfPeriodHover = typeof fn === 'function' ? fn : null;
+    this._readout.setTfPeriodHoverHandler(fn);
   }
 
-  // 読み取り DTO を構築してコールバックへ渡す。param=null（ライブ更新由来）は hover 解除扱い。
+  // 読み取り DTO の発火（実体は CrosshairReadoutBuilder._emitReadout）。
   _emitReadout(param) {
-    this._onCrosshairReadout(this._buildReadoutDto(param));
+    this._readout._emitReadout(param);
   }
 
-  // ペイン別凡例 DTO を構築してコールバックへ渡す（ISSUE-276）。
-  //   発行のたびに幾何の指紋を控える。どの経路で発行されても「最後に配った幾何」が 1 つに
-  //   決まるので、refreshPaneLegendIfGeometryChanged が二重発行にならない（ISSUE-440）。
+  // ペイン別凡例 DTO の発行（実体は PaneGeometryController._emitPaneLegend・ISSUE-479 Wave2 J-2）。
   _emitPaneLegend(param = null) {
-    this._lastPaneGeometrySig = this._paneGeometrySignature();
-    this._onPaneLegend(this.paneLegendModel(param));
-    this._scheduleGeometryRecheck();
+    this._paneGeom._emitPaneLegend(param);
   }
 
-  // 配った直後の幾何は**まだ確定していないことがある**（ISSUE-440）。ペインの増減は
-  //   lightweight-charts が次の描画で高さを配り直すため、指標を適用した瞬間に発行した DTO は
-  //   古い高さで組まれている。実測 2026-08-21: 起動直後（マウス操作なし）の凡例が
-  //   ペイン上端 558/745px に対し 698/930px に出たまま動かなかった（マウスを動かすと直る
-  //   ＝発行の契機が無いだけで、位置の規則は正しい）。
-  //   よって発行のたびに**次フレームで突き合わせ**、変わっていれば配り直す。変わっていなければ
-  //   何も起きないので、通常のクロスヘア移動で余計な再描画は生まれない（多重予約もしない）。
+  // 次フレームでの幾何突き合わせ予約（実体は PaneGeometryController._scheduleGeometryRecheck）。
   _scheduleGeometryRecheck() {
-    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
-    if (!raf || this._geometryRecheckPending) {
-      return;
-    }
-    this._geometryRecheckPending = true;
-    raf(() => {
-      this._geometryRecheckPending = false;
-      // 幾何の突き合わせと同時に「利用者が決めた配分」の控えも更新する（ISSUE-440(2)）。
-      //   起動直後はペインが増えるたびに高さが確定し直すので、ここで控えないと最初の
-      //   版面変化のときに目標が無い（＝lwc の比率保持のまま価格ペインが縮む）。
-      this.syncPaneGeometry();
-    });
+    this._paneGeom._scheduleGeometryRecheck();
   }
 
-  // 指標ペインの並べ替え（ドラッグ&ドロップの着地点・ユーザー指示 2026-08-09）。
-  //
-  //   upstream の並べ替え API（IPaneApi.moveTo）を呼ぶ唯一の点。バンドル実測（v5.2.0）で
-  //   `moveTo(to)` は `splice(from,1)` → `splice(to,0,pane)` の **抜いて差し込む** 意味であり、
-  //   上下どちらへ動かしても「to 番の位置へ入る」で一意に決まる（swapPanes＝単純交換とは別物）。
-  //
-  //   価格ペイン（メイン系列が居るペイン）は移動元にも移動先にもしない。overlay 指標の系列は
-  //   `chart.addSeries(...)`（既定 paneIndex=0）で追加されるため、価格ペインを 0 番から動かすと
-  //   以後の overlay 指標が別ペインへ落ちる（実装上の前提が崩れる）。指示の対象は指標ペインで
-  //   あり、価格ペインを固定しておけば前提と指示の双方を満たす。
-  //
-  //   @returns {boolean} 実際に並べ替えたら true（不正な指定・移動不能は false＝呼び出し側は無視してよい）。
+  // 指標ペインの並べ替え（実体は PaneGeometryController.movePane・ISSUE-479 Wave2 J-2）。
   movePane(fromIndex, toIndex) {
-    if (typeof this._chart.panes !== 'function') {
-      return false;
-    }
-    const panes = this._chart.panes() ?? [];
-    const from = Number(fromIndex);
-    const to = Number(toIndex);
-    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) {
-      return false;
-    }
-    if (from < 0 || from >= panes.length || to < 0 || to >= panes.length) {
-      return false;
-    }
-    if (!this._isPaneMovable(from, panes.length) || !this._isPaneMovable(to, panes.length)) {
-      return false;
-    }
-    const pane = panes[from];
-    if (!pane || typeof pane.moveTo !== 'function') {
-      return false;
-    }
-    pane.moveTo(to);
-    // ペイン構成が変わる（index と top がずれる）ため凡例を引き直す（remove() と同じ規律）。
-    this._emitPaneLegend(null);
-    // 並び順の変化を購読者（＝状態を持つ controller）へ通知する。並び順の保存は state 側の
-    //   関心であり、本 class は「いまこの順である」という事実を渡すだけ（永続化は知らない）。
-    this._onPaneOrder(this.paneOrderInstanceIds());
-    return true;
+    return this._paneGeom.movePane(fromIndex, toIndex);
   }
 
-  // ペイン並び順の変化を購読する（composition が controller の永続化へ結ぶ・省略時 no-op）。
+  // ペイン並び順の変化の購読口（実体は PaneGeometryController.setPaneOrderObserver）。
   setPaneOrderObserver(fn) {
-    this._onPaneOrder = typeof fn === 'function' ? fn : () => {};
+    this._paneGeom.setPaneOrderObserver(fn);
   }
 
-  // ペイン別凡例の DTO（幾何＋値）を返す。**upstream に触れるのはここだけ**で、View へは
-  //   数値・文字列だけを渡す（§2.2 隔離）。
-  //
-  //   { groups: [{ paneIndex, top, height, movable, rows: [{ instanceId, values: [{name,value,color}] }] }] }
-  //
-  //   top はチャート要素上端からの px。lightweight-charts は各ペインを 1px の区切りで縦に積むため
-  //   （実測 2026-08-06: paneSize=[497,166,165] / チャート高 858 / 時間軸 28 → 残り 2px が区切り 2 本）、
-  //   区切り高は「チャート高 − 時間軸 − ペイン高合計」をペイン間の数で割って求める。値を定数で
-  //   持たない（upstream のスタイル変更で静かにずれるのを避ける）。
-  //
-  //   valuePickerFor（任意・ユーザー指示 2026-08-09）: slot ごとの値取り出し方（Strategy）。既定は
-  //   「クロスヘア位置の値・無ければ保持した最新値」＝従来の凡例規約。指定した足の情報を
-  //   取り出す `barInfoAt` は、ここへ「その足の値だけを返す（最新値へ落ちない）」picker を渡す。
-  //   在席集合・ペイン分類・並び・可視の扱いは本メソッド 1 か所に保つ（値の出所だけを差し替える）。
+  // ペイン別凡例の DTO（幾何＋値・実体は PaneGeometryController.paneLegendModel）。
   paneLegendModel(param = null, valuePickerFor = null) {
-    const seriesData = (param && param.seriesData) || null;
-    const heights = this._paneHeights();
-    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
-    const byPane = new Map();
-    for (const [instanceId, slot] of this._instances) {
-      const paneIndex = this._slotPaneIndex(slot);
-      if (!byPane.has(paneIndex)) {
-        byPane.set(paneIndex, []);
-      }
-      const pick = typeof valuePickerFor === 'function'
-        ? valuePickerFor(slot)
-        : (series, key) => this._crosshairValue(slot, series, key, seriesData);
-      byPane.get(paneIndex).push({ instanceId, values: this._slotValues(slot, pick) });
-    }
-    const paneKeys = this._paneKeysOrdered();
-    const groups = [];
-    for (const [paneIndex, rows] of byPane) {
-      groups.push({
-        paneIndex,
-        // 位置に依らないペインの同一性（ISSUE-341）。折りたたみ状態など「ペインについて回る」
-        //   ものはこちらを鍵にする。位置の情報（top/height/movable）は paneIndex 側のまま。
-        paneKey: paneKeys[paneIndex] ?? null,
-        top: tops[paneIndex] ?? 0,
-        height: heights[paneIndex] ?? 0,
-        // 掴んで動かせるか（凡例の見た目＝掴める合図はこの 1 値だけで決まる）。判定の単一情報源は
-        //   _isPaneMovable で、movePane の受理判定と同じものを使う（affordance と実際の可否を割らない）。
-        movable: this._isPaneMovable(paneIndex, heights.length),
-        rows,
-      });
-    }
-    groups.sort((a, b) => a.paneIndex - b.paneIndex);
-    return { groups };
+    return this._paneGeom.paneLegendModel(param, valuePickerFor);
   }
 
-  // ペインの安定 ID を paneIndex 順の配列で返す（ISSUE-341）。価格ペインも含めて全ペインへ採番する。
-  //   初めて見たペインに 'p1','p2',… を振り、以後そのペインには同じ ID を返す。番号は**採番順**
-  //   であって位置ではない（並べ替えても振り直さない＝それが「位置に依らない」の意味）。
-  //   panes() 非提供の環境（Fake/SSR）は空配列＝ID なしで縮退し、View 側が paneIndex へ退避する。
+  // ペインの安定 ID（実体は PaneGeometryController._paneKeysOrdered）。
   _paneKeysOrdered() {
-    if (typeof this._chart.panes !== 'function') {
-      return [];
-    }
-    const panes = this._chart.panes() ?? [];
-    return panes.map((pane) => {
-      if (!pane || typeof pane !== 'object') {
-        return null;
-      }
-      let key = this._paneKeys.get(pane);
-      if (!key) {
-        this._paneKeySeq += 1;
-        key = `p${this._paneKeySeq}`;
-        this._paneKeys.set(pane, key);
-      }
-      return key;
-    });
+    return this._paneGeom._paneKeysOrdered();
   }
 
-  // 各ペインの高さ（px・ペイン順）。非提供環境（Fake/SSR）は空配列＝幾何なしで縮退する。
-  //
-  //   高さは **pane オブジェクトの getHeight()** から採る。`chart.paneSize(index)` は
-  //   ペインの追加・削除の直後に内部状態が過渡的になると `Value is undefined` を投げ、その例外が
-  //   凡例の更新経路ごと中断させた（実測 2026-08-06: 指標 7 件の連続適用で 6 回発生し、
-  //   凡例が 1 ペインぶんしか描かれなかった）。index を介した逆引きをやめれば過渡状態に依存しない。
+  // 各ペインの高さ（実体は PaneGeometryController._paneHeights）。
   _paneHeights() {
-    if (typeof this._chart.panes !== 'function') {
-      return [];
-    }
-    const panes = this._chart.panes() ?? [];
-    return panes.map((pane) => {
-      const h = (pane && typeof pane.getHeight === 'function') ? pane.getHeight() : 0;
-      return Number.isFinite(h) ? h : 0;
-    });
+    return this._paneGeom._paneHeights();
   }
 
-  // ペイン領域の総高（container 高 − 時間軸高）。**測れるなら必ず測り直す**（ISSUE-440）。
-  //   保持値（_paneHeight・setPaneHeight で push される）は、push しない経路（起動直後・
-  //   ペイン区切りのドラッグ・版面のリサイズ）で古いままになる。総高がずれると下の区切り高が
-  //   ずれ、凡例の位置とクリック→ペイン判定が同じだけ狂う（実測 2026-08-21: 起動直後の凡例が
-  //   正位置より 42px 下、区切りドラッグ後は 100px 下）。供給者（composition root）が測る関数を
-  //   渡していればそれを毎回呼ぶ＝幾何は「使う時点の実測」だけを根拠にする。
+  // ペイン領域の総高（実体は PaneGeometryController._paneAreaHeight）。
   _paneAreaHeight() {
-    if (typeof this._paneAreaHeightProvider === 'function') {
-      const measured = this._paneAreaHeightProvider();
-      if (Number.isFinite(measured) && measured > 0) {
-        return measured;
-      }
-    }
-    return this._paneHeight > 0 ? this._paneHeight : 0;
+    return this._paneGeom._paneAreaHeight();
   }
 
-  /**
-   * ペイン領域の総高を「その場で測る」関数を供給する（composition root が結ぶ）。
-   * 未供給なら従来どおり保持値（setPaneHeight）を使う＝既存の呼び出しは 1 バイトも変わらない。
-   */
+  // ペイン領域の総高を測る関数の供給口（実体は PaneGeometryController.setPaneAreaHeightProvider）。
   setPaneAreaHeightProvider(fn) {
-    this._paneAreaHeightProvider = typeof fn === 'function' ? fn : null;
+    this._paneGeom.setPaneAreaHeightProvider(fn);
   }
 
-  // ペイン間の区切り高（px）。lightweight-charts はペインを 1px 前後の区切りで積むが、その値は
-  //   upstream のスタイル由来なので定数で持たない。「ペイン領域の総高 − 各ペイン高の合計」を
-  //   ペイン間の数で割って実測から求める。総高は _paneAreaHeight()（実測優先）から取る。
-  //   求まらない環境では 0（数 px のズレはチップ位置として無害・例外を出す側へは倒さない）。
+  // ペイン間の区切り高（実体は PaneGeometryController._paneSeparatorPx）。
   _paneSeparatorPx(heights) {
-    const area = this._paneAreaHeight();
-    if (heights.length < 2 || !(area > 0)) {
-      return 0;
-    }
-    const sum = heights.reduce((a, b) => a + b, 0);
-    const rest = area - sum;
-    // **切り捨てる**（ISSUE-442）。差分には区切り以外の 1px（枠線など）も混じり得るので、
-    //   割り切って四捨五入すると区切りを実際より厚く見積もり、凡例の上端が 1px 下へずれる
-    //   （実測 2026-08-22: 区切りの実測 1px に対し推定 1.5px → ラベル 374 / ペイン上端 373）。
-    //   薄く見積もる側へ倒せば、ずれても内側（ペインの中）に留まる。
-    return rest > 0 ? Math.floor(rest / (heights.length - 1)) : 0;
+    return this._paneGeom._paneSeparatorPx(heights);
   }
 
-  // いまのペイン幾何を表す指紋（高さの並び＋領域総高）。値が変わったときだけ凡例を引き直す
-  //   ための比較用で、DTO の再構築より桁違いに安い（数値の連結だけ）。
+  // ペイン幾何の指紋（実体は PaneGeometryController._paneGeometrySignature）。
   _paneGeometrySignature() {
-    return `${this._paneHeights().join('/')}|${Math.round(this._paneAreaHeight())}`;
+    return this._paneGeom._paneGeometrySignature();
   }
 
-  /**
-   * 版面の総高が変わったとき、**利用者が決めた配分の比を保ったまま**全ペインを伸縮させる
-   * （ISSUE-442・依頼者裁定 2026-08-22）。
-   *
-   * 経緯: 前の規則（価格ペインの px を保ち、差分を指標ペインへ配る・ISSUE-440(2)）は、
-   *   面積が大きく減る場面（sim を開くと版面 928→472px）で**指標ペインを下限 40px まで潰した**。
-   *   価格 557px を保つと指標側に 80px しか残らないためで、開くたびに手で広げる作業が要った。
-   *   比で伸縮すれば全ペインが同じ割合で譲るので調整作業が要らず、面積が戻れば元の px へ戻る。
-   *
-   * 下限は安全弁として残す（版面が極端に低いときに 0 へ潰さない）。下限に当たったペインは
-   *   その高さで固定し、残りを他のペインへ**同じ比**で配り直す。
-   *
-   * @returns {boolean} 高さの割り当てを変えたか
-   */
+  // 目標配分の比で全ペインを伸縮（実体は PaneGeometryController._applyGoalRatios）。
   _applyGoalRatios(area, heights, goal) {
-    const sum = (xs) => xs.reduce((a, b) => a + b, 0);
-    // 区切りの総高は「総高 − 各ペイン高の合計」。ペインへ配れるのは残りだけ。
-    const avail = sum(heights);
-    const goalSum = sum(goal);
-    if (!(avail > 0) || !(goalSum > 0)) {
-      return false;
-    }
-    const priceIdx = this._pricePaneIndex();
-    const floorOf = (i) => (i === priceIdx ? MIN_PRICE_PANE_PX : MIN_INDICATOR_PANE_PX);
-    // 比で配る → 下限を割ったペインを固定 → 残りを未固定のペインへ同じ比で配り直す。
-    //   固定は 1 回増えるごとに配れる量が減るので、変化が無くなるまで（高々ペイン数）繰り返す。
-    const targets = goal.map(() => 0);
-    const fixed = goal.map(() => false);
-    for (let pass = 0; pass <= goal.length; pass += 1) {
-      const freeIdx = goal.map((_, i) => i).filter((i) => !fixed[i]);
-      const freeSpace = avail - goal.reduce((acc, _h, i) => acc + (fixed[i] ? targets[i] : 0), 0);
-      const freeGoal = sum(freeIdx.map((i) => goal[i]));
-      let changed = false;
-      for (const i of freeIdx) {
-        const share = freeGoal > 0 ? freeSpace * (goal[i] / freeGoal) : freeSpace / freeIdx.length;
-        if (share < floorOf(i)) {
-          targets[i] = floorOf(i);
-          fixed[i] = true;
-          changed = true;
-        } else {
-          targets[i] = share;
-        }
-      }
-      if (!changed) break;
-    }
-    // 整数へ丸める（合計は保つ・最大剰余法）。小数のまま配ると lwc の実高も小数になり、
-    //   凡例の上端（丸めた整数）と 1px ずれる（実測 2026-08-22: ペイン上端 373 に対し
-    //   ラベル 374）。配る側で整数にしておけば、派生する位置も一致する。
-    const rounded = roundKeepingSum(targets, Math.round(avail));
-    // 1px 未満の差で毎フレーム書き換えない（描画のばたつきを作らない）。
-    if (rounded.every((h, i) => Math.abs(h - heights[i]) < 1)) {
-      return false;
-    }
-    // 高さの比＝ストレッチ比。lightweight-charts はペインを比で配るので、目標高をそのまま
-    //   比として与えれば（合計が版面と一致するため）目標どおりの px になる。
-    const panes = typeof this._chart.panes === 'function' ? this._chart.panes() : [];
-    let applied = false;
-    panes.forEach((pane, i) => {
-      if (pane && typeof pane.setStretchFactor === 'function' && rounded[i] > 0) {
-        pane.setStretchFactor(rounded[i]);
-        applied = true;
-      }
-    });
-    // 自分が配った値の印（次の観測でこれと一致する高さは「利用者の意思」ではない）。
-    this._appliedPaneHeights = applied ? rounded : null;
-    return applied;
+    return this._paneGeom._applyGoalRatios(area, heights, goal);
   }
 
-  /**
-   * 幾何を実測へ揃える（総高が変わっていれば再配分し、変わっていれば凡例を配り直す）。
-   *
-   * 呼ぶのは版面の寸法変化の観測点（installPaneGeometryFollow）。区切りドラッグのように
-   *   総高が変わらない変更では再配分せず、利用者が決めた高さを**目標として控える**だけにする。
-   *
-   * @returns {boolean} 凡例を配り直したか
-   */
+  // 幾何を実測へ揃える（実体は PaneGeometryController.syncPaneGeometry）。
   syncPaneGeometry() {
-    const area = this._paneAreaHeight();
-    const heights = this._paneHeights();
-    if (area > 0 && heights.length > 0) {
-      const areaChanged = this._lastPaneArea !== null && this._lastPaneArea !== area;
-      if (areaChanged && this._paneGoal && this._paneGoal.length === heights.length && heights.length >= 2) {
-        // 総高が変わった＝利用者以外の要因（下部ペイン・ウィンドウ）。目標の**比**へ寄せ直す。
-        //   目標そのものは書き換えない（面積が戻ったときに元の px へ戻すため）。
-        this._applyGoalRatios(area, heights, this._paneGoal);
-        this._lastPaneArea = area;
-      } else {
-        this._notePaneGeometry();
-      }
-    }
-    return this.refreshPaneLegendIfGeometryChanged();
+    return this._paneGeom.syncPaneGeometry();
   }
 
-  // 総高が変わっていないあいだの高さ＝**利用者が決めた配分**として控える（ISSUE-440(2)）。
-  //   自分が配り直した直後の値は控えない（それは利用者の意思ではない）。控えてしまうと、
-  //   版面が戻ったときに「詰められた高さ」が正解として復元され、元の配分へ戻らなくなる。
+  // 利用者が決めた配分の控え（実体は PaneGeometryController._notePaneGeometry）。
   _notePaneGeometry() {
-    const area = this._paneAreaHeight();
-    if (!(area > 0)) {
-      return;
-    }
-    const heights = this._paneHeights();
-    if (heights.length === 0) {
-      return;
-    }
-    // 自分が配った状態のままなら控えない（詰めた高さを「利用者が決めた配分」にしない）。
-    const isOurs = this._appliedPaneHeights
-      && this._appliedPaneHeights.length === heights.length
-      && this._appliedPaneHeights.every((h, i) => Math.abs(h - heights[i]) <= 2);
-    if (isOurs) {
-      this._lastPaneArea = area;
-      return;
-    }
-    if (this._lastPaneArea === null || this._lastPaneArea === area) {
-      this._paneGoal = heights;
-      this._appliedPaneHeights = null;
-    }
-    this._lastPaneArea = area;
+    this._paneGeom._notePaneGeometry();
   }
 
-  /**
-   * ペイン幾何が前回発行時から変わっていれば、凡例 DTO を作り直す（変わっていなければ何もしない）。
-   *
-   * なぜ要るか（実測 2026-08-21・ISSUE-440）: 凡例の位置はペイン幾何の従属変数なのに、
-   *   再発行の契機が「データ・構成・クロスヘア」しか無かった。ペイン区切りのドラッグと版面の
-   *   リサイズはそのどれでもないため、**ラベルだけが古い位置に取り残される**（実測: 区切りを
-   *   100px 上へ引いてもラベルは動かず、ペイン上端 458px に対しラベル 558px）。
-   *   「幾何が動いたら引き直す」を成立させる呼び出し口がこれである。
-   *
-   * @returns {boolean} 引き直したか
-   */
+  // 幾何が動いていたら凡例を引き直す（実体は PaneGeometryController.refreshPaneLegendIfGeometryChanged）。
   refreshPaneLegendIfGeometryChanged() {
-    const sig = this._paneGeometrySignature();
-    if (sig === this._lastPaneGeometrySig) {
-      return false;
-    }
-    this._emitPaneLegend(null);
-    return true;
+    return this._paneGeom.refreshPaneLegendIfGeometryChanged();
   }
 
-
-  // 各ペインの上端 y（チャート要素基準）を paneIndex 順で返す。
-  //   ペイン幾何の派生規則（上端＝それより上のペイン高と区切り高の累積）を持つのは**ここだけ**。
-  //   凡例のチップ位置（paneLegendModel の group.top）と、座標→ペイン判定
-  //   （paneIndexAtCoordinate）は同じ幾何を見る必要がある。累積の式を各所に書くと、
-  //   区切り高の扱いが片方だけ変わったときに「凡例は正しいのにクリック判定だけずれる」
-  //   （＝下段ペインのクリックを価格として受けてしまう）状態を作れてしまう。
+  // 各ペインの上端 y（実体は PaneGeometryController._paneTops）。
   _paneTops(heights, separator) {
-    const tops = [];
-    let acc = 0;
-    for (let i = 0; i < heights.length; i += 1) {
-      tops.push(acc);
-      acc += heights[i] + separator;
-    }
-    return tops;
+    return this._paneGeom._paneTops(heights, separator);
   }
 
-  /**
-   * 現在のペイン順に並んだ **pane 指標の instanceId** を返す（ユーザー指示「永続化しろ」2026-08-09）。
-   *
-   * 並び順を保存する側（usecase）は、それを applied 配列の順序として持つ。その入力となる
-   * 「いまの実際の並び」を答えるのが本メソッドで、upstream（pane.paneIndex）に触れるのは
-   * 従来どおり本 class に閉じる。
-   *
-   * overlay 指標（専用 pane を持たない＝価格ペイン）は含めない（並べ替えの対象外）。
-   * 既に外されたペイン（paneIndex() が -1）も含めない。除去途中の slot を混ぜると、
-   * 存在しない並びを保存して次回復元を壊す（`_pricePaneIndex` の -1 除外と同じ理由）。
-   */
+  // 現在のペイン順に並んだ pane 指標の instanceId（実体は PaneGeometryController.paneOrderInstanceIds）。
   paneOrderInstanceIds() {
-    const withPane = [];
-    for (const [instanceId, slot] of this._instances) {
-      if (!slot || !slot.pane || typeof slot.pane.paneIndex !== 'function') {
-        continue;
-      }
-      const idx = slot.pane.paneIndex();
-      if (Number.isInteger(idx) && idx >= 0) {
-        withPane.push({ instanceId, idx });
-      }
-    }
-    return withPane.sort((a, b) => a.idx - b.idx).map((e) => e.instanceId);
+    return this._paneGeom.paneOrderInstanceIds();
   }
 
-  // slot が属するペイン番号（overlay＝専用 pane を持たない指標は 0＝価格ペイン）。
+  // slot が属するペイン番号（実体は PaneGeometryController._slotPaneIndex）。
   _slotPaneIndex(slot) {
-    if (slot.pane && typeof slot.pane.paneIndex === 'function') {
-      const idx = slot.pane.paneIndex();
-      return Number.isFinite(idx) ? idx : 0;
-    }
-    return 0;
+    return this._paneGeom._slotPaneIndex(slot);
   }
 
-  // メイン系列（ローソク）が居るペインの番号。価格ペインは並べ替えの対象外（movePane 参照）。
-  //   番号を 0 と決め打たず upstream へ問う（将来 addPane 順が変わっても判定がずれない）。
-  //   getPane 非提供の環境（Fake・旧版）は 0（生成時の既定ペイン）へ縮退する。
-  //
-  //   受理するのは **0 以上の整数だけ**（🟡-3 是正 2026-08-09）。バンドル実測（v5.2.0）で
-  //   `paneIndex()` は `hf(t){return this.od.indexOf(t)}` 由来であり、内部配列に無いペインでは
-  //   **-1** を返す。-1 は Number.isFinite を通ってしまい、価格ペイン番号として受理すると
-  //   `_isPaneMovable` の `paneIndex !== this._pricePaneIndex()` が全ペインで真になる
-  //   ＝禁じているはずの価格ペイン移動が通る（ガードがフェイルオープンする）。
+  // メイン系列が居るペインの番号（実体は PaneGeometryController._pricePaneIndex）。
   _pricePaneIndex() {
-    const ms = this._mainSeries;
-    if (ms && typeof ms.getPane === 'function') {
-      const pane = ms.getPane();
-      if (pane && typeof pane.paneIndex === 'function') {
-        const idx = pane.paneIndex();
-        if (Number.isInteger(idx) && idx >= 0) {
-          return idx;
-        }
-      }
-    }
-    return 0;   // 範囲外（-1＝未登録）・非整数は既定ペインへ縮退する。
+    return this._paneGeom._pricePaneIndex();
   }
 
-  // 当該ペインを並べ替えられるか。価格ペインは対象外、指標ペインが 1 つだけなら動かす先が無い。
-  //   paneCount 未指定時は upstream へ問い直す（凡例 DTO は算出済みの本数を渡して二度引きを避ける）。
+  // 当該ペインを並べ替えられるか（実体は PaneGeometryController._isPaneMovable）。
   _isPaneMovable(paneIndex, paneCount = null) {
-    const total = paneCount == null ? this._paneHeights().length : paneCount;
-    if (total < 3) {
-      return false;   // 価格ペイン＋指標ペイン 1 つ以下＝入れ替える相手が居ない。
-    }
-    return paneIndex !== this._pricePaneIndex();
+    return this._paneGeom._isPaneMovable(paneIndex, paneCount);
   }
 
-  // slot の各系列の表示値。**どの値を取るか**は picker（Strategy）が決め、本メソッドは
-  //   「どの系列を出すか（可視の扱い）」と「名前・色をどう付けるか」だけを担う。
-  //   系列単位で非表示（styleMeta.visible=false）のものは出さない（凡例と描画を一致させる）。
-  //   picker: (series, key) => value|undefined。
+  // slot の各系列の表示値（実体は CrosshairReadoutBuilder._slotValues・ISSUE-479 Wave2 J-2c）。
   _slotValues(slot, pick) {
-    const out = [];
-    if (slot.visible === false) {
-      return out;   // インスタンスごと非表示（eye OFF）＝値は出さない（行は残す＝再表示できる）。
-    }
-    for (const [key, series] of slot.lines) {
-      const meta = slot.styleMeta ? slot.styleMeta.get(key) : null;
-      if (meta && meta.visible === false) {
-        continue;
-      }
-      out.push({ name: meta ? meta.name : key, value: pick(series, key), color: meta ? meta.color : undefined });
-    }
-    return out;
+    return this._readout._slotValues(slot, pick);
   }
 
-  // 既定の値取り出し（凡例の規約）: クロスヘア位置に値があればそれ、無ければ保持した最新値。
+  // 既定の値取り出し（実体は CrosshairReadoutBuilder._crosshairValue）。
   _crosshairValue(slot, series, key, seriesData) {
-    const d = seriesData ? seriesData.get(series) : undefined;
-    let value;
-    if (d !== undefined && d !== null) {
-      value = (typeof d === 'object') ? (d.value ?? d.close) : d;
-    }
-    if (value === undefined || value === null) {
-      value = slot.lastValues ? slot.lastValues.get(key) : undefined;
-    }
-    return value;
+    return this._readout._crosshairValue(slot, series, key, seriesData);
   }
 
-  // 読み取り DTO を構築する（プレーンなデータ構造・series 実体や lwc 型は含めない＝隔離維持）。
-  //   { time, ohlc:{open,high,low,close}|null, overlays:[{name,value,color}] }。
+  // 読み取り DTO の構築（実体は CrosshairReadoutBuilder._buildReadoutDto）。
   _buildReadoutDto(param) {
-    const seriesData = (param && param.seriesData) || null;
-    // main OHLC: seriesData に main があればそれ、無ければ（hover 解除）最新足 _lastBar へフォールバック。
-    const mainData = seriesData ? seriesData.get(this._mainSeries) : undefined;
-    const src = (mainData !== undefined && mainData !== null) ? mainData : this._lastBar;
-    const ohlc = (src && src.open !== undefined)
-      ? { open: src.open, high: src.high, low: src.low, close: src.close }
-      : null;
-    // ISSUE-276: overlay 各系列の値は**ペイン別凡例の行**が持つ（読み取り欄からは外す）。
-    //   同じ値を 2 系統に出していたため、指標が増えるほど読み取り欄が伸びて凡例と重なっていた
-    //   （実測: 指標 11 件で読み取り欄 229px＋凡例 295px）。読み取り欄は OHLC と時刻だけを担う。
-    //   overlays は空配列で残す（View・既存呼出の形を壊さない）。
-    const overlays = [];
-    const time = (param && param.time !== undefined) ? param.time
-      : (this._lastBar ? this._lastBar.time : undefined);
-    // sessions: 当日 MP（POC/VAH/VAL）を time で引いて DTO に載せる（供給時のみ・sessions 表示中）。
-    const sessionMP = (this._sessionMP && time != null) ? (this._sessionMP.get(time) || null) : null;
-    return { time, ohlc, overlays, sessionMP };
+    return this._readout._buildReadoutDto(param);
   }
 
-  /**
-   * チャート要素の左上を原点とする x 座標が指す足の情報を返す（ユーザー指示 2026-08-09・右クリックコピー）。
-   *
-   * 返すのは情報ウィンド（クロスヘア読み取り欄＋ペイン別凡例）と**同じ材料**で、
-   *   { time, ohlc:{open,high,low,close}|null, sessionMP:{poc,vah,val}|null,
-   *     indicators: [{ instanceId, values: [{ name, value, color }] }] }
-   * 座標→足の解決は upstream（timeScale().coordinateToTime）に触れる本 class に閉じる。
-   *
-   * クロスヘア経路との違いは **値が無い足で最新値へ落ちない**ことだけ（凡例は「クロスヘアが
-   * 無ければ最新値」という表示規約を持つが、足を名指しでコピーする場面でその足に無い値を
-   * 最新値で埋めると、別の足の値を「その足の値」として配ってしまう）。
-   *
-   * @param {number} x  チャート要素の左上基準の x（px）。
-   * @returns {object|null} 足が無い座標（データ範囲外・時間軸未確定）は null。
-   */
+  // x 座標が指す足の情報（実体は CrosshairReadoutBuilder.barInfoAt）。
   barInfoAt(x) {
-    const time = this._timeAtCoordinate(x);
-    if (time == null) {
-      return null;
-    }
-    const candle = pointAtTime(this.getCandles(), time);
-    const ohlc = (candle && candle.open !== undefined)
-      ? { open: candle.open, high: candle.high, low: candle.low, close: candle.close }
-      : null;
-    const model = this.paneLegendModel(null, () => (series) => pointValueAt(series, time));
-    const indicators = [];
-    for (const g of model.groups) {
-      for (const r of g.rows ?? []) {
-        indicators.push({ instanceId: r.instanceId, values: r.values ?? [] });
-      }
-    }
-    const sessionMP = this._sessionMP ? (this._sessionMP.get(time) || null) : null;
-    return { time, ohlc, sessionMP, indicators };
+    return this._readout.barInfoAt(x);
   }
 
-  /**
-   * ISSUE-368 スライス 8-b: x 座標が指す足の**スナップ候補**をプレーンデータで列挙する。
-   *
-   * @param {number} x チャート要素の左上基準の x（px）。
-   * @returns {Array<{kind:string,label:string,price:number}>|null}
-   *   足が無い座標（データ範囲外・時間軸未確定）は null。
-   */
+  // x 座標が指す足のスナップ候補（実体は CrosshairReadoutBuilder.snapCandidatesAt）。
   snapCandidatesAt(x) {
-    const time = this._timeAtCoordinate(x);
-    if (time == null) {
-      return null;
-    }
-    const series = [];
-    const levels = [];
-    const pricePane = this._pricePaneIndex();
-    for (const slot of this._instances.values()) {
-      if (this._slotPaneIndex(slot) !== pricePane) {
-        continue;   // オシレーターペインの値は価格ではない（55 を価格として吸うと桁が変わる）。
-      }
-      for (const v of this._slotValues(slot, (s) => pointValueAt(s, time))) {
-        if (Number.isFinite(v.value)) {
-          series.push({ kind: 'series', label: v.name, price: v.value });
-        }
-      }
-      if (slot.visible === false) {
-        continue;   // 水準線は _slotValues を通らない＝可視の判定をここでも行う（描画と一致させる）。
-      }
-      for (const h of slot.hlinePayloads ?? []) {
-        if (h && Number.isFinite(h.price)) {
-          levels.push({ kind: 'level', label: h.text ?? '', price: h.price });
-        }
-      }
-    }
-    const ohlc = [];
-    const candle = pointAtTime(this.getCandles(), time);
-    if (candle && candle.open !== undefined) {
-      for (const label of ['open', 'high', 'low', 'close']) {
-        ohlc.push({ kind: 'ohlc', label, price: candle[label] });
-      }
-    }
-    // 並びが解決の優先順（スナップ解決器は同距離で先頭を採る）。指標系列＝クリックの狙い、
-    //   水準線＝明示的に置かれた参照、OHLC＝常に在る背景、の順に置く。
-    return [...series, ...levels, ...ohlc];
+    return this._readout.snapCandidatesAt(x);
   }
 
-  /**
-   * ISSUE-368 スライス 8-b: y 座標が属するペイン番号（**必須のガード**）。
-   *
-   * なぜ要るか（設計書「ピッカー経路の実測検証」2）: vendor 実測で `coordinateToPrice` は
-   *   クランプ無しの線形外挿であり、オシレーターペインを押しても「価格」が返る（異常値）。
-   *   ピッカーは「価格ペインを押したときだけ」価格を受け取る必要がある。
-   *
-   * 幾何の出所はペイン別凡例と同一にする（上端の算出は `_paneTops` 1 か所）。ここで
-   *   累積を書き直すと、凡例の座標系と食い違う第 2 実装になる。
-   *
-   * @param {number} y チャート要素の左上基準の y（px）。
-   * @returns {number|null} ペイン領域の外（時間軸・負値）と非対応環境（panes 非提供）は null。
-   */
+  // y 座標が属するペイン番号（実体は PaneGeometryController.paneIndexAtCoordinate）。
   paneIndexAtCoordinate(y) {
-    if (!Number.isFinite(y)) {
-      return null;
-    }
-    const heights = this._paneHeights();
-    const tops = this._paneTops(heights, this._paneSeparatorPx(heights));
-    for (let i = 0; i < heights.length; i += 1) {
-      if (y >= tops[i] && y < tops[i] + heights[i]) {
-        return i;
-      }
-    }
-    return null;   // 区切り上・時間軸・領域外は「どのペインでもない」（価格を作らない）。
+    return this._paneGeom.paneIndexAtCoordinate(y);
   }
 
-  // x 座標（チャート要素基準）が指す足の time。範囲外・非対応環境（Fake/SSR）は null。
-  //   バンドル実測（v5.2.0）: `coordinateToTime` は座標→バー index（Math.ceil）→ 元の time
-  //   （originalTime）へ写す。データ範囲外の index は null を返す＝足の無い所では開かない。
+  // x 座標が指す足の time（実体は CrosshairReadoutBuilder._timeAtCoordinate）。
   _timeAtCoordinate(x) {
-    if (!Number.isFinite(x) || typeof this._chart.timeScale !== 'function') {
-      return null;
-    }
-    const ts = this._chart.timeScale();
-    if (!ts || typeof ts.coordinateToTime !== 'function') {
-      return null;
-    }
-    const t = ts.coordinateToTime(x);
-    return t == null ? null : t;
+    return this._readout._timeAtCoordinate(x);
   }
 
-  // sessions の time→{poc,vah,val} Map を供給する（読み取り欄で当日 MP を出す）。null で非表示。
-  //   lwc へは触れない純データ受け渡し（actor が sessions 応答から構築して渡す）。
+  // sessions の time→{poc,vah,val} Map の供給口（実体は CrosshairReadoutBuilder.setSessionMP）。
   setSessionMP(map) {
-    this._sessionMP = (map && typeof map.get === 'function') ? map : null;
+    this._readout.setSessionMP(map);
   }
 
   // seriesKey の系列を全 instance から引き当て apply(series) を実行し、overlay 読み取りの
@@ -1476,169 +863,54 @@ export class ChartRenderer {
   //     per-bar 色の塗り直し）で、トリム・ライブ末尾には介入しない。
   //   F-C10: applyOptions 非提供（SSR・後方互換 Fake）は no-op（setAnalysisTint と同一方針）。
   //
-  //   受け取った 20 点は**すべて保持する**。lwc のオプションへ即書けるのは 11 点だけで、
-  //   6 点（派生 3＝#18/#19/#20・ローソク復元 2＝#12/#13・背景フォールバック 1＝#2）は
-  //   「あとで別の経路（減光・透明化復元・分析 tint・リプレイ減光境界）が読む値」である。
-  //   保持しないとこの 6 点は受け取った瞬間に捨てられる（FR-C13 が死ぬ＝旧実装の欠陥）。
-  //   残る 3 点（現在値表示・CSS 機構）は本 class の管轄外だが、保持値の形を配線点表と同一に
-  //   保つため素通しで持つ（表と保持値がずれると「どの id が届くか」が 2 通りになる）。
+  //   クロム色の保持・導出・押し出しの実体は ChromeColorController（ISSUE-479 Wave2 J-2b）。
   applyChromeColors(slots = {}) {
-    this._chromeSlots = mergeChromeSlots(this._chromeSlots, slots);
-    // 色はクロム 3 出力すべての入力なので、3 出力すべてを導出し直す（モードは保たれる）。
-    this._pushChartOptions();
-    this._pushCandleOptions();
-    this._pushDimmedCandles();
-    // 装着済みの背景プリミティブ（取引密度帯など）へも同じ保持値を配る。ここを落とすと
-    //   帯だけ旧色で残る（減光ローソクで実際に起きた欠陥と同型）。
-    for (const primitive of this._backgroundPrimitives.values()) {
-      this._pushChromeToBackgroundPrimitive(primitive);
-    }
-    this._notifyChromeObservers();
+    this._chrome.applyChromeColors(slots);
   }
 
-  // ─── クロム出力の導出（§7.8「クロムの色の書き手は 1 箇所」）────────────────
-  //
-  // 「今の見え方」を決める入力は 2 系統ある: 配信済みのクロム色（_chromeSlots・20 点）と、
-  // 表示モード（ローソク透明化 / ペア外減光 / 分析 tint）。かつては出力を書く場所が
-  // applyChromeColors / setCandleTransparency / dimCandlesOutsidePair / setAnalysisTint の
-  // 4 つに分かれ、互いの状態を知らないまま同じ出力へ書いていた。そのため片方の入力を変えると
-  // もう片方の入力が無かったことにされた（実測: 透明ローソクがテーマ適用で不透明へ戻る /
-  // 分析 tint がテーマ適用で消える / ペア外の減光色だけ旧色で残る）。
-  //
-  // よって出力ごとに導出関数を 1 本だけ置き、入力から毎回作り直す。上記 4 メソッドは
-  // 「自分が持つ入力を更新し、その入力が効く出力を押し出す」だけで、色を 1 つも決めない。
-  // どの入力が変わっても同じ規則で出力が決まるため、入力の適用順序は結果に影響しない。
-
-  // 出力 1: メイン系列のローソクオプション（入力: 保持色 + 透明化モード）。
-  //   #10/#11 は 1 配線点＝3 オプションずつ。同一トークンから配るため 3 経路が食い違わない。
-  //   透明化からの復元色（#12/#13）は #10/#11 と同一トークン（bullish / bearish）に束ねられて
-  //   おり（chrome_tokens.js）、書き手が 1 つになった今は同じ導出結果そのものである。
+  // ローソクオプションの導出（実体は ChromeColorController._deriveCandleOptions）。
   _deriveCandleOptions() {
-    const held = this._chromeSlots;
-    const up = this._candlesTransparent ? TRANSPARENT_COLOR : held.candleUp;
-    const down = this._candlesTransparent ? TRANSPARENT_COLOR : held.candleDown;
-    return {
-      upColor: up, borderUpColor: up, wickUpColor: up,
-      downColor: down, borderDownColor: down, wickDownColor: down,
-      // 現在値ライン（#14）は値の上下と無関係な固定色（ISSUE-084）＝透明化に従属しない。
-      priceLineColor: held.priceLine,
-    };
+    return this._chrome._deriveCandleOptions();
   }
 
-  // 出力 2: チャート全体のオプション（入力: 保持色 + 分析 tint モード）。
+  // チャートオプションの導出（実体は ChromeColorController._deriveChartOptions）。
   _deriveChartOptions() {
-    const held = this._chromeSlots;
-    return {
-      layout: {
-        background: this._deriveBackground(),
-        textColor: held.layoutTextColor,
-        panes: {
-          separatorColor: held.paneSeparator,
-          separatorHoverColor: held.paneSeparatorHover,
-        },
-      },
-      grid: {
-        vertLines: { color: held.gridVertLines },
-        horzLines: { color: held.gridHorzLines },
-      },
-      rightPriceScale: { borderColor: held.rightPriceScaleBorder },
-      timeScale: { borderColor: held.timeScaleBorder },
-    };
+    return this._chrome._deriveChartOptions();
   }
 
-  // 背景（#1 layoutBackground / #2 backgroundFallback / #19 analysisTint）は 1 つの出力。
-  //   分析モード中は tint 色、それ以外は面の色（#1 と #2 は同一トークン surface＝同値）。
-  //   type は生成時の値を保つ: lwc は background を部分マージするため、色だけ渡せば type は
-  //   温存されるが、捕捉できているときは明示して「地の型」を書き換えないことを構造で示す。
+  // 背景（面の色 / 分析 tint）の導出（実体は ChromeColorController._deriveBackground）。
   _deriveBackground() {
-    const held = this._chromeSlots;
-    const color = this._analysisTintOn ? held.analysisTint : held.layoutBackground;
-    // ISSUE-119: 背景オプションの **type** だけを一度捕捉する（構築子外・遅延初期化）。
-    //   options() が返す background は lwc 内部 options への参照でありうる。applyOptions は
-    //   内部オブジェクトへの in-place マージのため、参照のまま保持すると tint ON で基準色まで
-    //   tint 色に書き換わり復元が無変化になる。浅いコピーで snapshot 化して内部と切り離す。
-    if (this._analysisTintBase === undefined) {
-      let base = null;
-      if (this._chart && typeof this._chart.options === 'function') {
-        const o = this._chart.options();
-        base = (o && o.layout && o.layout.background) ? { ...o.layout.background } : null;
-      }
-      this._analysisTintBase = base;
-    }
-    const type = this._analysisTintBase ? this._analysisTintBase.type : undefined;
-    return (type !== undefined) ? { type, color } : { color };
+    return this._chrome._deriveBackground();
   }
 
-  // 出力 3: メイン系列の per-bar 減光色（入力: 保持色 + 減光レンジ + 基準 candles）。
-  //   減光が無効なら null を返す＝**データの書き手は名乗り出ない**。ローソクデータの所有者は
-  //   CandleFeed（setCandles / updateLastCandle）と setCandleTrim であり、色の都合でトリムや
-  //   ライブ末尾を巻き戻さない（§3.4: 触れてよいのは自分が所有する per-bar 色だけ）。
+  // per-bar 減光色の導出（実体は ChromeColorController._deriveDimmedCandles）。
   _deriveDimmedCandles() {
-    const range = this._dimRange;
-    if (!range || !this._baseCandles) {
-      return null;
-    }
-    // 入力は「**現在所有されている**ローソク集合」であって基準の全件ではない。
-    //   トリム中（MP スナップショット・リプレイの as-of）に全件を書き戻すと、色を塗り直したつもりで
-    //   「どのバーが存在するか」まで変えてしまい、T より後のバーが再表示される（§3.4 が許すのは
-    //   自分が所有する per-bar 色の塗り直しだけで、バー集合の変更は含まれない）。
-    //   トリム状態の単一情報源は _lastTrimIdx（null＝未トリム）。
-    const owned = this._lastTrimIdx === null
-      ? this._baseCandles
-      : this._baseCandles.slice(0, this._lastTrimIdx + 1);
-    // 減光色は配信済みの保持値から引く（#18 は surface 派生＝テーマの背景に追随する・FR-C13）。
-    const dim = this._chromeSlots.dimCandle;
-    return owned.map((bar) => {
-      if (bar.time >= range.from && bar.time <= range.to) {
-        return bar; // ペア内は原色維持（色上書きしない）。
-      }
-      return {
-        ...bar, color: dim, borderColor: dim, wickColor: dim,
-      };
-    });
+    return this._chrome._deriveDimmedCandles();
   }
 
-  // 導出結果の押し出し（upstream への書き込みはこの 3 つだけ）。
-  //   F-C10: applyOptions 非提供（SSR・後方互換 Fake）は no-op。
+  // チャートオプションの押し出し（実体は ChromeColorController._pushChartOptions）。
   _pushChartOptions() {
-    if (!this._chart || typeof this._chart.applyOptions !== 'function') {
-      return;
-    }
-    this._chart.applyOptions(this._deriveChartOptions());
+    this._chrome._pushChartOptions();
   }
 
+  // ローソクオプションの押し出し（実体は ChromeColorController._pushCandleOptions）。
   _pushCandleOptions() {
-    if (!this._mainSeries || typeof this._mainSeries.applyOptions !== 'function') {
-      return;
-    }
-    this._mainSeries.applyOptions(this._deriveCandleOptions());
+    this._chrome._pushCandleOptions();
   }
 
+  // per-bar 減光の押し出し（実体は ChromeColorController._pushDimmedCandles）。
   _pushDimmedCandles() {
-    const dimmed = this._deriveDimmedCandles();
-    if (dimmed) {
-      this._mainSeries.setData(dimmed);
-    }
+    this._chrome._pushDimmedCandles();
   }
 
-  // クロム保持値の購読口。本 class の外にある描画（リプレイ減光境界の lwc プリミティブ）へ、
-  //   同じ保持値を届けるための唯一の経路（購読者は色を決めず、受け取った色を塗るだけ）。
-  //   登録直後に現在の保持値を 1 回配るため、購読の開始順序で結果が変わらない
-  //   （起動時配信 → 後からリプレイ層を組み立てる、という実際の順序で色が古いまま残らない）。
-  //   戻り値は購読解除関数。非関数の要求は無視する（全域的・例外を投げない）。
+  // クロム保持値の購読口（実体は ChromeColorController.addChromeObserver）。
   addChromeObserver(observer) {
-    if (typeof observer !== 'function') {
-      return () => {};
-    }
-    this._chromeObservers.add(observer);
-    observer(this._chromeSlots);
-    return () => this._chromeObservers.delete(observer);
+    return this._chrome.addChromeObserver(observer);
   }
 
+  // 購読者への配信（実体は ChromeColorController._notifyChromeObservers）。
   _notifyChromeObservers() {
-    for (const observer of this._chromeObservers) {
-      observer(this._chromeSlots);
-    }
+    this._chrome._notifyChromeObservers();
   }
 
   // 水準線（horizontal_line）へ色を届ける入口（実体は SeriesDrawer.applyLevelLineColor・
@@ -1793,7 +1065,6 @@ export class ChartRenderer {
   //   本メソッドは入力（モード）を更新して導出結果を押し出すだけで、色は 1 つも決めない
   //   （決めるのは _deriveBackground）。applyOptions 非提供時は no-op。
   setAnalysisTint(on) {
-    this._analysisTintOn = !!on;
-    this._pushChartOptions();
+    this._chrome.setAnalysisTint(on);
   }
 }

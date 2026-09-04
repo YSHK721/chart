@@ -18,7 +18,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from simulator.replay_ui.adapter import _indicator_ui_bridge
+from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 class CausalCandleRepository:
@@ -39,7 +39,7 @@ class CausalCandleRepository:
         # 既定は dataset のみのアクセサ（ISSUE-136 ISP: MP controller を eager import しない）。
         # テストは fake loader を注入して indicator_ui 実体に依存しない（MarketProfileGateway と同型）。
         self._loader = (
-            bridge_loader if bridge_loader is not None else _indicator_ui_bridge.load_dataset
+            bridge_loader if bridge_loader is not None else api_loader.load_dataset
         )
 
     # ---- 供給路（全 Port 共通の単一入口） ----

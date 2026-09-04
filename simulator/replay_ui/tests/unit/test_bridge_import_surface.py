@@ -1,11 +1,15 @@
-"""アーキ回帰（ISSUE-092 ②）: replay bridge の indicator_ui import 面を安定公開 Facade へ縮約。
+"""アーキ回帰（ISSUE-092 ②）: ロード面の indicator_ui import 面を安定公開 Facade へ縮約。
 
-bridge（``simulator/replay_ui/adapter/_indicator_ui_bridge.py``）は indicator_ui の compute を
+ロード面（``indigators/indicator_ui/api_loader.py``）は indicator_ui の compute を
 安定公開 Facade ``adapter.compute``（``adapter/compute/__init__.py``）1 点からのみ参照し、
 内部モジュール（``latest_dispatch`` / ``indicator_compute_adapter``）へは直接 import しない。
 内部構成（モジュール名・配置）への密結合を構造的に禁止する回帰ガード。
 
 test_replay_purity.py 流儀（ソースをファイルとして走査し構造を固定する）に合わせる。
+
+走査先について（ISSUE-479 Wave2 2-6）: 実体は供給側スライスへ移設された。旧位置
+（replay_ui の再公開層）を見続けると、そこには compute の import がもう無いので本ゲートは
+無条件に緑になる——検査が空振りする。走査先を実体へ追随させる。
 """
 from __future__ import annotations
 
@@ -14,7 +18,8 @@ from pathlib import Path
 import pytest
 
 _BRIDGE = (
-    Path(__file__).resolve().parents[2] / "adapter" / "_indicator_ui_bridge.py"
+    Path(__file__).resolve().parents[4]
+    / "indigators" / "indicator_ui" / "api_loader.py"
 )
 
 # indicator_ui の compute 内部モジュール名。Facade 経由（adapter.compute）に縮約後は

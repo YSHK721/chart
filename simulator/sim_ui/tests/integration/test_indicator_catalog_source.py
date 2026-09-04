@@ -21,9 +21,9 @@ from simulator.sim_ui.usecase.indicator_models import IndicatorCatalogUnavailabl
 
 def _real_catalog() -> "tuple[dict, dict]":
     """検定側でも**同じ単一情報源**から期待値を作る（手書きの表を作らない）。"""
-    from simulator.replay_ui.adapter import _indicator_ui_bridge
+    from indigators.indicator_ui import api_loader
 
-    status, body = _indicator_ui_bridge.load_catalog_handler().handle_catalog()
+    status, body = api_loader.load_catalog_handler().handle_catalog()
     assert status == 200 and body.get("ok") is True
     return body["catalog"], body["paramScopes"]
 

@@ -34,9 +34,9 @@ ParamScopeTable = "Mapping[str, Mapping[str, object]]"
 
 def _bridge_source() -> "Mapping[str, Mapping[str, object]]":
     """既定の取得元（ライブ core の単一ソースを bridge 越しに読むだけ）。"""
-    from simulator.replay_ui.adapter import _indicator_ui_bridge  # 遅延: 技術隔離
+    from indigators.indicator_ui import api_loader  # 遅延: 技術隔離
 
-    return scopes_of(_indicator_ui_bridge.load_compute())
+    return scopes_of(api_loader.load_compute())
 
 
 def scopes_of(bridge: Any) -> "Mapping[str, Mapping[str, object]]":

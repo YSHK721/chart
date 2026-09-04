@@ -24,7 +24,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # 正典エラー契約（ISSUE-091 A2 / ISSUE-094 🔵-11）: status 翻訳・nested ボディとも中立共有
 #   パッケージ api_shared.http_contract の単一定義を直参照する。
@@ -100,6 +100,52 @@ def _error_response(
     if message is None:
         message = str(exc)[:200]
     return nested_error(error_type, message, generation=generation)
+
+
+def write_replay_json(handler: Any, response: "tuple[int, Any]") -> None:
+    """replay の JSON 応答を書き出す（応答 byte の**唯一の定義**・ISSUE-479 Wave2 3-4）。
+
+    ``response`` は ``(status, payload)``。ヘッダは sim 側（json_get_routes の write_json）と
+    **異なる**——``Content-Type`` に charset を付けず、``json.dumps`` の既定（ensure_ascii=True）で
+    符号化する。front と front の検定が見ているのはこの byte 列なので、骨格を共有する
+    ついでに統一してはならない。統一が必要になったら、それは応答仕様の変更として別に扱う。
+
+    機能別 App へ分割しても応答が 1 バイトも変わらないよう、書き出しは本関数 1 箇所に閉じる
+    （Handler の ``_json`` も本関数へ委譲する）。
+    """
+    status, payload = response
+    body = json.dumps(payload).encode()
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+class _QueryStrippingStatic:
+    """静的配信の直前でクエリを落とす終端層（ISSUE-479 Wave2 3-4）。
+
+    ルート応答器は「転送する値を書き換えない」——数珠つなぎにしたとき内側のルートが
+    クエリを失うためである（実測: ``/intraday?start=..&end=..`` が 400 になった）。
+    そのぶん、クエリを落とす責務をここ 1 箇所に置く。`StaticFileServer` は ``?`` を
+    含む path を解決できず、渡せば静かに 404 になる。
+
+    `StaticFileServer` そのものは触らない（応答 byte・許可根・CWE-22 防御は単一ソースのまま）。
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def serve(self, handler: Any, path: str) -> None:
+        return self._inner.serve(handler, path.split("?", 1)[0])
+
+    def __getattr__(self, name: str) -> Any:
+        """解決・許可根などの面は内側の単一ソースへ委譲する。"""
+        inner = self.__dict__.get("_inner")
+        if inner is None:  # __init__ 完了前・複製時の再帰防止
+            raise AttributeError(name)
+        return getattr(inner, name)
 
 
 class _HeavyWorker:
@@ -198,6 +244,14 @@ class ReplayApp:
         #   ライブ側 back のフェイルクローズで validation エラーになる。
         self._catalog_port = catalog_port
         self.catalog_enabled = catalog_port is not None
+        # クエリを落とす終端層（ルート応答器は転送値を書き換えないため・上の理由参照）。
+        self.static_server = _QueryStrippingStatic(self.static_server)
+        # ISSUE-479 Wave2 3-4（S-3）: GET のルーティングは機能別 App が持つ。ここで組み立てた
+        #   ルート表を自分の配信面に据えることで、Handler は分岐を 1 つも持たなくなる。
+        #   どのルートが存在するかは `build_replay_routes` だけが決める（上の *_enabled を読む）。
+        #   フォールバックの末端は上で作った `StaticFileServer` そのもので、静的配信の
+        #   応答 byte・許可根・CWE-22 防御は単一ソースのまま変わらない。
+        self.static_server = build_replay_routes(self).static_server
 
     def candles(
         self,
@@ -380,169 +434,74 @@ class ReplayApp:
         return self._catalog_port.catalog()
 
 
+def build_replay_routes(inner: Any) -> Any:
+    """機能別ルート App を連結して返す（ISSUE-479 Wave2 3-4・ルート構成の唯一の宣言）。
+
+    各 App は内側を包み、自分のルートを JSON 経路として ``static_server`` の前へ挟む。
+    外れた path は内側の ``static_server`` へ落ち、最終的に `StaticFileServer` に着く。
+    どのルートが存在するかは**この関数だけ**が決める（Handler は分岐を持たない）。
+
+    import を関数内に置くのは、各ルート App が本モジュールの `write_replay_json` /
+    `_error_response` を参照するためである（module-level import にすると循環になる）。
+
+    呼ぶのは `ReplayApp.__init__` の末尾 1 箇所である。ルート構成を外（合成根）へ出さないのは、
+    ``ReplayApp`` を組んだだけで API ルートを持たない殻ができてしまうと、結線し忘れが
+    「受け口はあるのに無言で 404」という形で表に出るからである（ISSUE-291 と同型の壊れ方）。
+    差し替えたいときは本関数を差し替える（ルートの宣言は依然としてここ 1 箇所だけ）。
+
+    重い処理のワーカーとロックは ``inner`` の**単一インスタンスを全 App が共有**する。
+    各 App は自前で作らず属性委譲で内側のものを引く——rpy2/R はスレッド親和で、App ごとに
+    ワーカーを持つと「常に同一スレッドで実行する」という前提が壊れるからである（絶対条件）。
+    """
+    from simulator.replay_ui.framework.serve_replay_candles import ReplayCandlesApp
+    from simulator.replay_ui.framework.serve_replay_catalog import ReplayCatalogApp
+    from simulator.replay_ui.framework.serve_replay_intraday import ReplayIntradayApp
+    from simulator.replay_ui.framework.serve_replay_profiles import ReplayProfilesApp
+
+    app = ReplayCandlesApp(inner=inner)
+    app = ReplayIntradayApp(inner=app)
+    app = ReplayProfilesApp(inner=app)
+    return ReplayCatalogApp(inner=app)
+
+
 def make_handler(app: ReplayApp):
     """``app`` を束ねた BaseHTTPRequestHandler サブクラスを返す（proto H 忠実）。"""
+    # import を関数内に置くのは、本モジュールの `_error_response` を参照するためである
+    #   （module-level import にすると循環になる）。
+    from simulator.replay_ui.framework.serve_replay_compute import ReplayComputeApp
+
+    compute_app = ReplayComputeApp(inner=app)
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, code: int, obj: Any) -> None:
-            body = json.dumps(obj).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            """応答の書き出しは `write_replay_json` の単一定義へ委譲する（byte 不変）。"""
+            write_replay_json(self, (code, obj))
 
         def log_message(self, *a):  # noqa: D401 — アクセスログ抑制（proto と同一）
             pass
 
         def do_GET(self):  # noqa: N802
-            u = urlparse(self.path)
-            q = parse_qs(u.query)
-            if u.path == "/candles":
-                ref = (q.get("datasetRef") or ["jp225_m1"])[0]
-                tf = (q.get("timeframe") or [None])[0]
-                lim = int(q["limit"][0]) if "limit" in q else None
-                # カレンダー選択（再生開始日）用の窓指定。未指定は従来の tail(limit)＝挙動不変。
-                try:
-                    start = int(q["from"][0]) if "from" in q else None
-                    pre = int(q["pre"][0]) if "pre" in q else 0
-                except Exception:  # noqa: BLE001
-                    return self._json(*nested_error("validation", "from/pre must be int"))
-                try:
-                    candles = app.candles(ref, tf, lim, start=start, pre=pre)
-                    return self._json(200, {"ok": True, "candles": candles})
-                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/available_days" and app.available_days_enabled:
-                ref = (q.get("datasetRef") or ["jp225_m1"])[0]
-                tf = (q.get("timeframe") or [None])[0]
-                try:
-                    return self._json(200, {"ok": True, "days": app.available_days(ref, tf)})
-                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/intraday":
-                ref = (q.get("datasetRef") or ["jp225_m1"])[0]
-                try:
-                    start = int(q["start"][0])
-                    end = int(q["end"][0])
-                except Exception:  # noqa: BLE001
-                    return self._json(*nested_error("validation", "start/end required"))
-                mode = (q.get("mode") or ["real_ticks"])[0]
-                want_secs = (q.get("secs") or [None])[0] == "1"  # MP tick-live gate（secs=1 のみ）
-                try:
-                    payload = app.intraday(ref, start, end, mode, want_secs=want_secs)
-                    return self._json(200, payload)
-                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/catalog" and app.catalog_enabled:
-                # 指標 param の既定値＋variant ごとの受理 param（ISSUE-278 #8/#4）。front は
-                #   これで表示コントロールと送信 params を決める。実体はライブ側 controller。
-                try:
-                    return self._json(*app.catalog())
-                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/tickvol_profile" and app.tickvol_profile_enabled:
-                # 取引密度ハイライト（時刻帯の背景色）の帯定義。until はリビール T（単一時計 to）。
-                #   until が属するセッション日は集計に含めない（当日非参照＝因果）。
-                ref = (q.get("datasetRef") or [None])[0]
-                sessions = (q.get("sessions") or [None])[0]
-                pct = (q.get("pct") or [None])[0]
-                until = (q.get("until") or [None])[0]
-                try:
-                    return self._json(*app.tickvol_profile(ref, sessions, pct, until))
-                except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/market_profile" and app.market_profile_enabled:
-                ref = (q.get("datasetRef") or [None])[0]
-                tf = (q.get("timeframe") or [None])[0]
-                limit = (q.get("limit") or [None])[0]
-                bins = (q.get("bins") or [None])[0]
-                va = (q.get("va") or [None])[0]
-                src = (q.get("src") or [None])[0]
-                barw = (q.get("barw") or [None])[0]
-                # to は必ずリビール T（as-seen-at-t）。省略時 None＝全期間（後方互換）。
-                to = (q.get("to") or [None])[0]
-                # from（ローリング窓下限）／today（スナップショット）／sessions（日別分割）。省略時 None。
-                frm = (q.get("from") or [None])[0]
-                today = (q.get("today") or [None])[0]
-                sessions = (q.get("sessions") or [None])[0]
-                try:
-                    status, payload = app.market_profile(
-                        ref, tf, limit, bins, va, src, barw, to,
-                        frm=frm, today=today, sessions=sessions)
-                    return self._json(status, payload)
-                except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            if u.path == "/market_profile_forming" and app.forming_enabled:
-                ref = (q.get("datasetRef") or [None])[0]
-                tf = (q.get("timeframe") or [None])[0]
-                since = (q.get("since") or [None])[0]
-                base = (q.get("base") or [None])[0]
-                now_raw = (q.get("now") or [None])[0]
-                # now は必ずリビール T（因果）。数値でなければ None（controller が実時刻へフォールバックするが
-                #   フロントは常に T を送るため実運用では常に T が入る）。
-                now = int(now_raw) if (now_raw and now_raw.lstrip("-").isdigit()) else None
-                bins = (q.get("bins") or [None])[0]
-                va = (q.get("va") or [None])[0]
-                barw = (q.get("barw") or [None])[0]
-                # from（セッション窓 base 下限・当日始まり）。省略時 None＝従来全期間 base（後方互換）。
-                frm = (q.get("from") or [None])[0]
-                try:
-                    status, payload = app.market_profile_forming(
-                        ref, tf, now, base, since, bins, va, barw, frm)
-                    return self._json(status, payload)
-                except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
-                    return self._json(*_error_response(e))
-            # 静的配信＋トラバーサル防御は StaticFileServer へ委譲（Handler は API ルーティング＋
-            #   委譲のみ・ISSUE-094 🟡-8）。許可根の導出・dual-root ガード・応答 byte は不変。
-            return app.static_server.serve(self, u.path)
+            """ルーティングは ``app.static_server`` が唯一決める（ISSUE-479 Wave2 3-4）。
+
+            JSON ルート列（機能別 App が前置きしたもの）→ 静的配信、の順で解決される。
+            クエリ付きの path をそのまま渡す: ルートはクエリを読み、静的配信へ落とす前に
+            ルート応答器がクエリを落とす（静的解決へクエリは届かない）。
+            """
+            return app.static_server.serve(self, self.path)
 
         def do_POST(self):  # noqa: N802
+            """/compute だけを受ける。モードの差と例外分類は `ReplayComputeApp` が持つ。
+
+            分割前はここに 3 モード × 3 分類＝9 つの except ブロックが並んでいた
+            （ISSUE-479 Wave2 3-5）。
+            """
             if urlparse(self.path).path != "/compute":
                 self.send_response(404)
                 self.end_headers()
                 return
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            gen = body.get("generation", 0)
-            # ISSUE-232: 足内一括計算（mode='latest_seq'）。応答キーは steps（series とは別キー＝
-            #   既存クライアントの読み取り面に影響しない）。エラー翻訳は既存と同一の中央経路。
-            # ISSUE-300: 複数指標の足内一括計算。応答キーは results（instanceId → steps）。
-            if body.get("mode") == "latest_seq_multi":
-                try:
-                    results = app.compute_seq_multi(body)
-                except MemoryError as e:
-                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
-                except ValueError as e:
-                    return self._json(*_error_response(e, generation=gen))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*_error_response(
-                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-                return self._json(200, {"ok": True, "generation": gen, "results": results})
-            if body.get("mode") == "latest_seq":
-                try:
-                    steps = app.compute_seq(body)
-                except MemoryError as e:
-                    return self._json(*_error_response(e, generation=gen, message="memory limit"))
-                except ValueError as e:
-                    return self._json(*_error_response(e, generation=gen))
-                except Exception as e:  # noqa: BLE001
-                    return self._json(*_error_response(
-                        e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-                return self._json(200, {"ok": True, "generation": gen, "steps": steps})
-            try:
-                series = app.compute(body)
-            # 分類（status/type）は _error_response へ集約（ISSUE-097 🟡-4）。except ブロックは
-            #   compute 固有のメッセージ（MemoryError→"memory limit"・generic→"Name: msg"）供給のみ。
-            except MemoryError as e:
-                return self._json(*_error_response(e, generation=gen, message="memory limit"))
-            except ValueError as e:
-                return self._json(*_error_response(e, generation=gen))
-            except Exception as e:  # noqa: BLE001
-                return self._json(*_error_response(
-                    e, generation=gen, message=f"{type(e).__name__}: {str(e)[:200]}"))
-            self._json(200, {"ok": True, "generation": gen, "series": series})
+            return self._json(*compute_app.respond(body))
 
     return Handler
 

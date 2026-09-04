@@ -18,6 +18,7 @@ import pandas as pd
 from marketdata import dataset_registry
 from marketdata.resample import (
     CALENDAR_LABEL_TFS,
+    SESSION_TFS,
     TF_DESCRIPTORS,
     TIMEFRAME_RULES,
     period_utc_start,
@@ -89,7 +90,7 @@ def bar_time_unix(tf: str, unix_sec: int) -> int:
     if tf in CALENDAR_LABEL_TFS:
         label = session_period_label(tf, unix_sec)          # 'YYYY-MM-DD'（右端ラベル）
         return int(pd.Timestamp(label).value // 1_000_000_000)
-    if tf == "1D":
+    if tf in SESSION_TFS:                                   # 暦ラベル tf は上で返済み＝残余は 1D。
         return session_bar_time(unix_sec)
     return period_start_unix(unix_sec, tf)
 
@@ -106,7 +107,7 @@ def period_start_unix(now_unix: int, tf: str) -> int:
         label = session_period_label(tf, now_unix)
         start = period_utc_start(tf, pd.Timestamp(label))
         return int(start.value // 1_000_000_000)
-    if tf == "1D":
+    if tf in SESSION_TFS:                                   # 暦ラベル tf は上で返済み＝残余は 1D。
         return session_day_start(now_unix)
     start = pd.Timestamp(now_unix, unit="s").floor(floor_freq(tf))  # naive UTC
     return int(start.value // 1_000_000_000)

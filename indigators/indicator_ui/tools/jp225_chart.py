@@ -12,34 +12,34 @@
 使用例:
     python tools/jp225_chart.py                              # 既定: 2022-01-01〜今日, 日足
     python tools/jp225_chart.py --interval hour_1 --start 2025-01-01 --end 2025-06-01
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。トップレベル
+``marketdata`` を含む import パスの解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは
+`tools/install_dev_paths.py` が書く .pth が届ける。本ファイルは実行時に sys.path を書き換え
+ない（解決先が起動位置に依存しなくなる・ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
 import dukascopy_python
 
-# このファイル: indicator_ui/tools/ → 親が indicator_ui/、ワークスペース根は parents[3]。
-_UI_ROOT = Path(__file__).resolve().parent.parent
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-_VENDOR_JS = _UI_ROOT / "web" / "vendor" / "lightweight-charts.js"
-_DEFAULT_OUTPUT = _UI_ROOT / "out" / "jp225_chart.html"
-
-# トップレベル marketdata パッケージを import 可能にする（合成点でのみ path を解決）。
-if str(_WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_ROOT))
-
-from marketdata import (  # noqa: E402  （sys.path 設定後に import）
+from marketdata import (
     INTERVALS,
     DukascopyCandleSource,
     repair_ohlc_outliers,
 )
+
+# このファイル: indicator_ui/tools/ → 親が indicator_ui/。
+_UI_ROOT = Path(__file__).resolve().parent.parent
+_VENDOR_JS = _UI_ROOT / "web" / "vendor" / "lightweight-charts.js"
+_DEFAULT_OUTPUT = _UI_ROOT / "out" / "jp225_chart.html"
 
 logger = logging.getLogger("jp225_chart")
 

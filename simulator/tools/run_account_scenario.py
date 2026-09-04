@@ -22,24 +22,25 @@
       "stop_price": 65800.0,          // 省略可
       "tp_price": 67000.0             // 省略可
     }
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。import パスの
+解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは `tools/install_dev_paths.py`
+が書く .pth が届ける。本ファイルは実行時に sys.path を書き換えない（解決先が起動位置に
+依存しなくなる・ISSUE-279）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parents[2]   # simulator/tools/ → リポジトリ直下
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
+import pandas as pd  # venv python で実行する（prototype_260811-01/README.md 参照）
 
-import pandas as pd  # noqa: E402  (venv python で実行する・prototype_260811-01/README.md 参照)
+from marketdata import tick_m1  # tick tree レイアウトの単一権威（ISSUE-262）
 
-from marketdata import tick_m1  # noqa: E402  tick tree レイアウトの単一権威（ISSUE-262）
-
-from simulator.usecase.account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (
     AccountConfig, AccountEngine, EntryOrder, OrderPlan,
 )
 

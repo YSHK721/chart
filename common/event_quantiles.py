@@ -10,8 +10,8 @@
     DEFAULT_Q_OUT / DEFAULT_K_EVENTS / DEFAULT_EVENT_AGG : 既定値（単一情報源）。
     q_out_valid              : 極端分位の有効判定（btlm_trail q_out 前例と同規約）。
     outlier_event_quantiles  : 本体（バンド超過イベントの因果分位水準）。
-    emit_event_quantile_lines: 表示層ヘルパー（4 本の水準線を定型 emit。色・線種・系列名
-                               サフィックスの単一情報源。emit 実体は呼び出し側から注入）。
+    水準線の表示仕様（色・線種・系列名サフィックスと定型 emit）は本モジュールにはない。
+    表示仕様層（common_view の event_quantile_view）が単一情報源である（ISSUE-479 C-1）。
 
 ③設計の経緯（ユーザー裁定 2026-07-21・実測根拠は .doc/MA_MAROD_BASIC_DESIGN.md）:
     バンド線（因果分位バンドでは新記録スパイクを原理的に含められない）→ 超過点マーク
@@ -32,14 +32,6 @@ DEFAULT_Q_OUT: float = 0.99            # イベントの極端分位（上側 q_
 DEFAULT_K_EVENTS: int = 50             # ローリング側の直近観測件数（分散非定常対策・実測 2026-07-20）
 DEFAULT_EVENT_AGG: str = "episode"     # episode＝エピソード極値（既定）／bar＝旧方式（復帰用）
 _MIN_EVENTS: int = 5                   # 分位を計算する最小観測数（未満は NaN＝描画除外）
-_EVENT_AGGS: frozenset[str] = frozenset({"episode", "bar"})
-
-# 表示規約（単一情報源）: 系列名サフィックス＝評価キー、中央値＝実線・極端分位＝破線・赤系。
-EVQ_COLOR: str = "rgba(210, 67, 58, 1)"    # btlm_trail _COLOR_OFFSET と同系（外れ値系の赤）
-EVQ_LINE_SPECS: tuple[tuple[str, str], ...] = (
-    ("med_hi", "solid"), ("med_lo", "solid"),
-    ("ext_hi", "dashed"), ("ext_lo", "dashed"),
-)
 
 
 def q_out_valid(q_out, q_high: float) -> bool:
@@ -54,28 +46,32 @@ def q_out_valid(q_out, q_high: float) -> bool:
     return max(float(q_high), 0.5) < float(q_out) < 1.0
 
 
-def step_events(
-    value: float, band_lo: float, band_hi: float, event_agg: str,
-    up: list, dn: list, run_up: list, run_dn: list,
-) -> None:
-    """1 バーぶんのイベント検出・エピソード確定を行う（**唯一の定義**・リストを更新する）。
-
-    呼び出し前に当該バーの水準を計算しておくこと（本バーの観測は次バー以降に効く＝因果）。
-    ``run_up`` / ``run_dn`` は進行中のエピソード（in-place で更新する）。
-
-    ISSUE-233: 増分計算が確定バーぶんだけ状態を進めるための公開入口。
-    :func:`outlier_event_quantiles` のバー走査は本関数を各バーで呼ぶループである。
-    """
+def _event_flags(value: float, band_lo: float, band_hi: float) -> "tuple[bool, bool]":
+    """当該バーがバンド外に出たか（上側・下側）を判定する（イベント定義の唯一の実装）。"""
     finite = np.isfinite(value)
     is_up = bool(finite and np.isfinite(band_hi) and value > band_hi)
     is_dn = bool((not is_up) and finite and np.isfinite(band_lo) and value < band_lo)
-    if str(event_agg).lower() == "bar":
-        if is_up:
-            up.append(float(value))
-        elif is_dn:
-            dn.append(float(value))
-        return
-    # episode: 超過が途切れたバーでエピソード確定（極値を観測として登録）。
+    return is_up, is_dn
+
+
+def _step_bar(
+    value: float, band_lo: float, band_hi: float,
+    up: list, dn: list, run_up: list, run_dn: list,
+) -> None:
+    """bar 集計の 1 バーぶん（超過バーの値をそのまま 1 観測とする。旧方式・復帰用）。"""
+    is_up, is_dn = _event_flags(value, band_lo, band_hi)
+    if is_up:
+        up.append(float(value))
+    elif is_dn:
+        dn.append(float(value))
+
+
+def _step_episode(
+    value: float, band_lo: float, band_hi: float,
+    up: list, dn: list, run_up: list, run_dn: list,
+) -> None:
+    """episode 集計の 1 バーぶん（超過が途切れたバーでエピソード確定・極値を 1 観測とする）。"""
+    is_up, is_dn = _event_flags(value, band_lo, band_hi)
     if not is_up and run_up:
         up.append(max(run_up))
         run_up.clear()
@@ -86,6 +82,56 @@ def step_events(
         run_up.append(float(value))
     elif is_dn:
         run_dn.append(float(value))
+
+
+# 集計単位 → 1 バーぶんのステッパの **単一表**（ISSUE-479 Wave2 C-6）。
+# 集計単位の追加・削除は本表 1 箇所で完結する。既知集合も本表から導出する。
+_EVENT_STEPPERS: "dict[str, object]" = {
+    "episode": _step_episode,
+    "bar": _step_bar,
+}
+_EVENT_AGGS: frozenset[str] = frozenset(_EVENT_STEPPERS)
+
+
+def normalize_event_agg(event_agg) -> str:
+    """集計単位を正規化する（**検証の唯一の実装**）。未知値は ValueError。
+
+    従来は outlier_event_quantiles だけが検証しており、step_events は
+    ``str(event_agg).lower() == "bar"`` の比較のみで**未知値を黙って episode へ縮退**
+    させていた（タイプミスが無言で別の集計になる）。本関数へ一本化して封鎖する。
+    """
+    agg = str(event_agg).lower()
+    if agg not in _EVENT_STEPPERS:
+        raise ValueError(f"未知の event_agg です: {event_agg}（episode/bar）")
+    return agg
+
+
+def event_stepper(event_agg):
+    """集計単位に対応する 1 バーぶんのステッパを返す（未知値は ValueError）。
+
+    走査ループを持つ呼び出し側は、**ループの外で 1 回だけ**本関数を呼ぶこと
+    （バーごとに解決すると n 回の正規化を発行して捨てることになる）。
+    """
+    return _EVENT_STEPPERS[normalize_event_agg(event_agg)]
+
+
+def step_events(
+    value: float, band_lo: float, band_hi: float, event_agg: str,
+    up: list, dn: list, run_up: list, run_dn: list,
+) -> None:
+    """1 バーぶんのイベント検出・エピソード確定を行う（**唯一の定義**・リストを更新する）。
+
+    呼び出し前に当該バーの水準を計算しておくこと（本バーの観測は次バー以降に効く＝因果）。
+    ``run_up`` / ``run_dn`` は進行中のエピソード（in-place で更新する）。
+
+    ISSUE-233: 増分計算が確定バーぶんだけ状態を進めるための公開入口。
+    :func:`outlier_event_quantiles` のバー走査は :func:`event_stepper` で解決した
+    ステッパを各バーで呼ぶループである。
+
+    Raises:
+        ValueError: ``event_agg`` が episode/bar のいずれでもないとき。
+    """
+    event_stepper(event_agg)(value, band_lo, band_hi, up, dn, run_up, run_dn)
 
 
 def levels_at(
@@ -175,9 +221,8 @@ def outlier_event_quantiles(
     k = int(k_events)
     if k < 1:
         raise ValueError(f"k_events は 1 以上が必要です: k_events={k_events}")
-    agg = str(event_agg).lower()
-    if agg not in _EVENT_AGGS:
-        raise ValueError(f"未知の event_agg です: {event_agg}（episode/bar）")
+    # 集計単位の解決は **ループの外で 1 回**（n=0 でも未知値はここで ValueError＝挙動不変）。
+    stepper = event_stepper(event_agg)
     v = np.asarray(values, dtype=np.float64).ravel()
     lo = np.asarray(band_lo, dtype=np.float64).ravel()
     hi = np.asarray(band_hi, dtype=np.float64).ravel()
@@ -204,7 +249,7 @@ def outlier_event_quantiles(
     for t in range(n):
         up_cnt[t] = len(up)
         dn_cnt[t] = len(dn)
-        step_events(v[t], lo[t], hi[t], agg, up, dn, run_up, run_dn)
+        stepper(v[t], lo[t], hi[t], up, dn, run_up, run_dn)
     # データ末尾で進行中のエピソード（run_up/run_dn 残）は未確定のため破棄（非リペイント）。
 
     def _tables(events: list[float], ext_q: float | None):
@@ -236,20 +281,3 @@ def outlier_event_quantiles(
             out[med_key + "_all"] = med_a[cnt]
             out[ext_key + "_all"] = ext_a[cnt]
     return out
-
-
-def emit_event_quantile_lines(prefix: str, times, evq: dict, emit_line) -> list:
-    """イベント分位水準線 4 本を定型 emit する表示層ヘルパー（採用指標間の表示規約の単一情報源）。
-
-    系列名は ``{prefix}_evq_{med|ext}_{hi|lo}``、色は ``EVQ_COLOR``、中央値＝実線・極端分位
-    ＝破線（``EVQ_LINE_SPECS``）。emit の実体（chart への追加・NaN 除外）は呼び出し側の
-    ``emit_line(name, times, values, color, style)`` に注入する（本モジュールは描画 API に
-    依存しない）。全履歴（_all）系列は描画しない（認知負荷削減・ユーザー裁定 2026-07-21）。
-
-    Returns:
-        emit_line の戻り値のリスト（4 要素・EVQ_LINE_SPECS 順）。
-    """
-    return [
-        emit_line(f"{prefix}_evq_{key}", times, evq[key], EVQ_COLOR, style)
-        for key, style in EVQ_LINE_SPECS
-    ]

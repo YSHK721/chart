@@ -12,21 +12,25 @@
 
 再生成: <venv python> simulator/tools/export_account_engine_fixtures.py
 （決定論＝いつ再生成しても同一。乱数・実データ非依存）
+
+起動前提（ISSUE-479 Wave2 2-7 / ISSUE-482）: **venv の python で起動する**。import パスの
+解決は台帳（tools/dev_paths.txt）が唯一源であり、venv へは `tools/install_dev_paths.py`
+が書く .pth が届ける。本ファイルは実行時に sys.path を書き換えない——書き換えると
+解決先が「どこから起動したか」に依存し、worktree と本チェックアウトが混ざる
+（ISSUE-279 の壊れ方）。起動できることは
+`tools/tests/test_cli_entrypoints_resolve_without_pythonpath.py` が実測で固定する。
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parents[2]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-
-from simulator.usecase.account_engine import (  # noqa: E402
+from simulator.usecase.account_engine import (
     official_losscut_price, official_required_margin,
 )
+
+_REPO = Path(__file__).resolve().parents[2]
 
 OUT = _REPO / "simulator" / "tests" / "fixtures" / "account_engine" / "js_golden_cases.json"
 
