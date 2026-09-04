@@ -28,9 +28,25 @@ export class MarketProfileController {
   //   のみ在席する optional 面（present は != null guard で no-op）。
   /**
    * @param {import('./indicator_controller.js').MarketProfileHost} host MP ロール契約を満たすホスト。
+   * @param {{actor?: ?object}} [opts] アクターの直接注入（ISSUE-479 Wave2 J-1 OCP-5 S1）。
+   *
+   *   なぜ口を開けるか: 本協働子はアクターを host の**フィールド名**（`_marketProfile`）で
+   *   引いており、「誰がアクターを持っているか」を協働子が知っている状態だった。合成根が
+   *   注入できる口があれば、フィールド名に依存しない登録（registerActorController）へ移せる。
+   *   **加法**である: `opts` を省略すると従来どおり host を読む（既定の挙動は byte 不変）。
+   *   注入した場合は host 側の後付け差し替え（replay 合成根が構築後に代入する経路）に
+   *   引きずられない＝注入した合成根が所有者であることを明示する。
    */
-  constructor(host) {
+  constructor(host, { actor = null } = {}) {
     this._host = host;
+    this._injectedActor = actor;
+  }
+
+  // MP アクター（注入があればそれ、無ければ host のフィールドを遅延で読む）。
+  //   host 読みを遅延にしているのは、合成根が構築後にアクターを差し込む既存経路
+  //   （replay: `controller._marketProfile = marketProfile`）を温存するためである。
+  _actor() {
+    return this._injectedActor ?? this._host._marketProfile;
   }
 
   // MP アクターへ params を渡す共通経路（apply/gear/restore/連動 再適用で共用）。
@@ -42,14 +58,14 @@ export class MarketProfileController {
   //   marketProfile 未注入時は no-op（呼び出し側の guard と二重防御）。
   applyMpParams(p) {
     const host = this._host;
-    if (!host._marketProfile) {
+    if (!this._actor()) {
       return;
     }
     const params = host._mpParams(p);
     if (params.mode != null && host._mpModeResolver) {
       params.mode = host._mpModeResolver(params.mode);
     }
-    host._marketProfile.setParams(params);
+    this._actor().setParams(params);
     this.applyMpGrowth();
   }
 
@@ -58,12 +74,12 @@ export class MarketProfileController {
   //   解決役未注入 or actor が applyGrowthState 非所持なら no-op（byte 不変）。返り値 growing を呼び出し側が使う。
   applyMpGrowth() {
     const host = this._host;
-    if (!host._mpGrowthResolver || !host._marketProfile) {
+    if (!host._mpGrowthResolver || !this._actor()) {
       return false;
     }
     const growing = !!host._mpGrowthResolver();
-    if (typeof host._marketProfile.applyGrowthState === 'function') {
-      host._marketProfile.applyGrowthState({ growing });
+    if (typeof this._actor().applyGrowthState === 'function') {
+      this._actor().applyGrowthState({ growing });
     }
     return growing;
   }
@@ -75,10 +91,10 @@ export class MarketProfileController {
   //   維持したまま mode だけ差し替えて refresh する（既存 setParams→refresh 経路を再利用・actor 不変）。
   async reapplyMode() {
     const host = this._host;
-    if (!host._marketProfile || !host._mpModeResolver) {
+    if (!this._actor() || !host._mpModeResolver) {
       return;
     }
-    if (typeof host._marketProfile.isEnabled === 'function' && !host._marketProfile.isEnabled()) {
+    if (typeof this._actor().isEnabled === 'function' && !this._actor().isEnabled()) {
       return; // MP 未表示（enabled=false）は再適用不要。
     }
     const inst = host._state.applied.find(
@@ -89,16 +105,16 @@ export class MarketProfileController {
     }
     const params = host._mpParams(host._paramsObject(inst.params));
     params.mode = host._mpModeResolver(null); // 選択表示モード（gear 記憶／未選択は既定）を維持（'ticklive' 置換なし）。
-    host._marketProfile.setParams(params);
+    this._actor().setParams(params);
     // 直交化: mode を維持したまま growing だけをトグルする（applyGrowthState）。FOLLOW=growing=true / ANALYSIS=false。
     const growing = this.applyMpGrowth();
     // growing 時のみ成長エンジンを起動する。present の成長は forming を onLiveTick（→_enterTicklive）で取得する
     //   （live loop(recomputeAllApplied)/初期 add と同一経路）。refresh は /market_profile の base 累積を描くだけで
     //   forming を発火しないため、growing では onLiveTick を呼ぶ。非成長（static＝ANALYSIS）は refresh で選択モードを反映。
-    if (growing && typeof host._marketProfile.onLiveTick === 'function') {
-      await host._marketProfile.onLiveTick();
-    } else if (typeof host._marketProfile.refresh === 'function') {
-      await host._marketProfile.refresh();
+    if (growing && typeof this._actor().onLiveTick === 'function') {
+      await this._actor().onLiveTick();
+    } else if (typeof this._actor().refresh === 'function') {
+      await this._actor().refresh();
     }
   }
 
@@ -134,15 +150,15 @@ export class MarketProfileController {
   //   setEnabled(true) は内部で refresh も行う。未注入時は no-op。
   async enableMarketProfile(params) {
     const host = this._host;
-    if (!host._marketProfile) {
+    if (!this._actor()) {
       return;
     }
     this.applyMpParams(params);
-    await host._marketProfile.setEnabled(true);
+    await this._actor().setEnabled(true);
     // [reveal seam] reveal（replay）では現在バー T（_untilTime）が確定していれば即 enterBar で base を
     //   描画する。present は _untilTime を持たない（undefined）ため常に skip（byte 挙動不変）。
-    if (host._untilTime != null && typeof host._marketProfile.enterBar === 'function') {
-      await host._marketProfile.enterBar(host._untilTime);
+    if (host._untilTime != null && typeof this._actor().enterBar === 'function') {
+      await this._actor().enterBar(host._untilTime);
     }
   }
 
@@ -151,8 +167,8 @@ export class MarketProfileController {
     const host = this._host;
     host._commitState(mpFacadeToggleVisible(host._state, inst.instanceId));
     const updated = host._state.applied.find((i) => i.instanceId === inst.instanceId);
-    if (host._marketProfile && updated) {
-      await host._marketProfile.setEnabled(updated.visible);
+    if (this._actor() && updated) {
+      await this._actor().setEnabled(updated.visible);
     }
     host._persistAll();
     host._renderLegend();
@@ -162,10 +178,10 @@ export class MarketProfileController {
   //   MP は renderer に系列を持たない）。
   async removeInstance(inst) {
     const host = this._host;
-    if (host._marketProfile) {
-      await host._marketProfile.setEnabled(false);
-      if (typeof host._marketProfile.detach === 'function') {
-        host._marketProfile.detach();
+    if (this._actor()) {
+      await this._actor().setEnabled(false);
+      if (typeof this._actor().detach === 'function') {
+        this._actor().detach();
       }
     }
     host._commitState(mpFacadeRemove(host._state, inst.instanceId));
@@ -185,18 +201,18 @@ export class MarketProfileController {
       : host._defaultParams(def);
     const applyParams = async (values) => {
       host._commitState(host._withParams(host._state, inst.instanceId, values));
-      if (host._marketProfile) {
+      if (this._actor()) {
         this.applyMpParams(values);
         // [reveal seam] reveal（replay）かつ **push 成長中**（isGrowingPush＝growing かつ非 sessions）のときだけ
         //   現在バー T で enterBar（forming push で base 取り直し）。sessions+growing / 非成長は refresh(as-of-T)
         //   へ落とす（成長軸 aware）。present は _untilTime 未設定ゆえ常に refresh＝従来どおり（byte 挙動不変）。
         //   Phase5: 旧 isTicklive()（表示モード）ゲートから isGrowingPush()（成長軸）へ移行（ticklive 撤去）。
-        if (host._untilTime != null && typeof host._marketProfile.enterBar === 'function'
-            && typeof host._marketProfile.isGrowingPush === 'function'
-            && host._marketProfile.isGrowingPush()) {
-          await host._marketProfile.enterBar(host._untilTime);
-        } else if (typeof host._marketProfile.refresh === 'function') {
-          await host._marketProfile.refresh();
+        if (host._untilTime != null && typeof this._actor().enterBar === 'function'
+            && typeof this._actor().isGrowingPush === 'function'
+            && this._actor().isGrowingPush()) {
+          await this._actor().enterBar(host._untilTime);
+        } else if (typeof this._actor().refresh === 'function') {
+          await this._actor().refresh();
         }
       }
       host._persistAll();
@@ -236,10 +252,10 @@ export class MarketProfileController {
   async restoreInstance(inst) {
     const host = this._host;
     const rp = host._paramsObject(inst.params);
-    if (host._marketProfile) {
+    if (this._actor()) {
       this.applyMpParams(rp);
       if (inst.visible) {
-        await host._marketProfile.setEnabled(true);
+        await this._actor().setEnabled(true);
       }
     }
   }
@@ -250,8 +266,8 @@ export class MarketProfileController {
   //   slim actor は skip（render seam の enterBar/feedTick が MP を駆動する）。
   async onLiveRecompute(inst) {
     const host = this._host;
-    if (host._marketProfile && inst.visible && typeof host._marketProfile.onLiveTick === 'function') {
-      await host._marketProfile.onLiveTick();
+    if (this._actor() && inst.visible && typeof this._actor().onLiveTick === 'function') {
+      await this._actor().onLiveTick();
     }
   }
 }
