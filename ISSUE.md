@@ -13603,3 +13603,64 @@ TestTheIndigatorsEntryShadowsNothing::test_no_exposed_name_had_a_resolution_befo
 (b) 自動化: `tools/setup_worktree.sh` または環境構築手順から `tools/install_dev_paths.py`
 を呼ぶこと。未実施のため、**新しいコンテナ・新しい venv では本検定が赤で始まる**
 （これは仕様＝前提の不在を緑で覆い隠さない設計）。失敗メッセージが打つべきコマンドを示す。
+
+---
+
+## ISSUE-483: [検定] Wave2 再レビュー 🟡-1 の「real_ticks ケース C をピン化」は前提不成立 — 採取値が sha256("") になる
+
+- **ステータス**: `OPEN`（着手前に中断。代替案は承認事項）
+- **重大度**: 中（誤ったピンを入れると後続 Wave を誤誘導するため、入れないことが正）
+- **起票**: 2026-09-04 / ブランチ `fix/issue-479-solid-wave2`
+
+### 指摘の内容（上流入力）
+
+`simulator/tests/integration/test_run_backtest_fingerprint.py` に `tick_model="real_ticks"`
+のケース C を追加し、現行実装で `stats_sha256` / `trades_sha256` を採取してピン化して
+以後の Wave への錨とする（既存ケース A/B と同形式）。
+
+### 前提検証の実測（採用せず＝棄却の根拠）
+
+ケース C は既存 A/B と同一プロファイル（JP225 M1 2025-01・MA_Slope_EA）で
+`config_overrides.tick_model` のみ `real_ticks` へ差し替える形になる。この構成を実走した:
+
+```
+exit 0  trades 0
+stats_sha256   61873b9108646652f1a9075488ae74da53db0ee28905445139acc808e70c9ff5
+trades_sha256  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+profit 0.0
+```
+
+`trades_sha256` は **sha256("")**（空文字列のダイジェスト・`python3 -c "import hashlib;
+print(hashlib.sha256(b'').hexdigest())"` と一致）。原因は tick-store が空であること:
+
+```
+ParquetTickRepository("marketdata/ticks").load_ticks("JP225", 2025-01-02, 2025-01-03)
+  -> OK rows 0
+```
+
+`_DEFAULT_TICK_STORE_ROOT = "marketdata/ticks"`（`simulator/main/__init__.py:120`）は
+canonical hive layout（`<root>/<symbol>/year=YYYY/month=MM/day=DD`）を期待するが、本
+チェックアウトに `marketdata/ticks` は存在せず、`year=*` ディレクトリも 0 件である
+（`data/marketdata/ticks` は raw 段で layout が異なる）。tick-store は gitignore・大容量で
+あり、`simulator/tests/integration/test_composition_real_ticks.py` も実データを読まず
+tmp_path に小さな parquet を書いている。
+
+### なぜ「ピンを入れない」が正しいか
+
+1. **錨として機能しない**: 固定されるのは空入力のダイジェストであり、`real_ticks` の
+   数値挙動を 1 ビットも拘束しない。緑であることが「real_ticks に回帰が無い」ことを
+   意味しないのに、テスト名はそう読める（偽の被覆）。
+2. **環境依存で壊れる**: tick-store が投入された環境では即座に赤になり、実際には
+   退行でないものを退行として報告する。
+3. 上流の「レビューで byte 等価実証済み」は、空結果でも自明に成立する（2 回走らせれば
+   必ず一致する）ため、ケースが有意味であることの証拠になっていない。
+
+### 承認を要する代替案（本作業では未実施）
+
+- 案 1: `test_composition_real_ticks.py` と同様に tmp_path へ自前の tick 系列を書き、
+  その上で `run_backtest` 経路の指紋を採る。錨は成立するが、**MT5 JP225 フィクスチャの
+  指紋ではなくなる**（A/B と同形式という前提が変わる）。
+- 案 2: tick-store の投入を前提とし、未投入時は skip する（A/B と同形式を保つが、
+  既定の CI では常に skip＝錨が効かない）。
+
+いずれも「ケース C」の意味を変えるため、どちらを採るかは承認事項として保留する。
