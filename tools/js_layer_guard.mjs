@@ -179,14 +179,27 @@ export function foreignReferenceOffenders(sources, names, repoRoot) {
   return offenders.sort();
 }
 
+/** URL の第 1 セグメント（`/sim/report-js/chart.js` → `'sim'`）。core 名でなければ null。 */
+export function coreSegmentOf(url) {
+  const head = url.split('/')[1] ?? '';
+  return CORE_SEGMENTS.includes(head) ? head : null;
+}
+
 /**
- * G-3: 他 core のモジュール URL は、その core の `public/` 配下だけを名指してよい。
+ * G-3: **他** core のモジュール URL は、その core の `public/` 配下だけを名指してよい。
  *
  * 識別子渡しの動的 import（`const P = '/live/js/usecase/x.js'; await import(P);`）は import 文の
  * 走査に現れないため、**文字列そのもの**を見るのが唯一の検出手段である。
+ *
+ * @param {Map<string,string>} sources 走査対象（絶対パス → 本文）。
+ * @param {string} repoRoot 報告用の相対化根。
+ * @param {?string} [ownCore] 走査している core 自身の配信名（`'live' | 'replay' | 'sim' | 'dashboard'`）。
+ *   与えると**自 core を名指す URL**を対象外にする。自 core の名指しは越境ではない——配信根が
+ *   同じで、public/ を経由する必要が無い（実測: sim の合成根は `/sim/report-js/chart.js` を
+ *   配信 URL で読み込む）。**省略時の挙動は従来どおり**（core を問わず全て対象＝加法）。
  * @returns {string[]} `<相対パス>:<行>: <URL>`
  */
-export function crossCoreModuleUrlOffenders(sources, repoRoot) {
+export function crossCoreModuleUrlOffenders(sources, repoRoot, ownCore = null) {
   const offenders = [];
   for (const [absPath, source] of sources) {
     const lines = stripComments(source).split('\n');
@@ -194,6 +207,9 @@ export function crossCoreModuleUrlOffenders(sources, repoRoot) {
       for (const m of line.matchAll(CROSS_CORE_MODULE_URL_RE)) {
         const url = m[0];
         if (PUBLIC_URL_RE.test(url)) {
+          continue;
+        }
+        if (ownCore !== null && coreSegmentOf(url) === ownCore) {
           continue;
         }
         offenders.push(`${path.relative(repoRoot, absPath)}:${i + 1}: ${url}`);
