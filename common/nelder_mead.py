@@ -24,14 +24,42 @@ from __future__ import annotations
 import numpy as np
 
 
-def nelder_mead(f, x0: "np.ndarray", *, max_iter: int = 2000, tol: float = 1e-10) -> "np.ndarray":
-    """Nelder–Mead 法（scipy 非依存）。cvfe の benchmarks と同型の最小実装。"""
+def nelder_mead(
+    f,
+    x0: "np.ndarray",
+    *,
+    max_iter: int = 2000,
+    tol: float = 1e-10,
+    initial_step: "np.ndarray | None" = None,
+    sort_kind: str = "quicksort",
+) -> "np.ndarray":
+    """Nelder–Mead 法（scipy 非依存）。
+
+    Args:
+        f: 目的関数（点 → スカラー）。
+        x0: 初期点。
+        max_iter: 反復上限。
+        tol: 収束判定（最良値と最悪値の相対差）。
+        initial_step: 初期単体の各軸の刻み（``x0`` と同長）。**呼び出し側のドメイン知識**で
+            あり（当てはめる量のスケールに依存する）、未指定なら汎用の既定
+            ``0.05·|x0|``（ただし ``|x0| ≤ 1e-8`` の軸は 0.05）を使う。
+        sort_kind: 目的値の順序付けに使う ``numpy.argsort`` の kind。同値が出たときの
+            並びが変わると単体の更新順が変わるため、タイブレークを固定したい呼び出し側は
+            ``"stable"`` を渡す。
+
+    ``initial_step`` / ``sort_kind`` は既定値が従来の挙動と一致する加法拡張である
+    （既存の呼び出し側の数値は不変）。
+    """
     n = x0.size
-    step = np.where(np.abs(x0) > 1e-8, 0.05 * np.abs(x0), 0.05)
+    step = (
+        np.where(np.abs(x0) > 1e-8, 0.05 * np.abs(x0), 0.05)
+        if initial_step is None
+        else np.asarray(initial_step, dtype=np.float64)
+    )
     simplex = np.vstack([x0] + [x0 + np.eye(n)[i] * step[i] for i in range(n)])
     fx = np.array([f(p) for p in simplex])
     for _ in range(max_iter):
-        order = np.argsort(fx)
+        order = np.argsort(fx, kind=sort_kind)
         simplex, fx = simplex[order], fx[order]
         if abs(fx[-1] - fx[0]) <= tol * (abs(fx[0]) + tol):
             break
