@@ -109,22 +109,41 @@ export { requiredBarsOf };
 //   ため。返り値は Promise.resolve で包める値であればよく、全メソッドが undefined を返す。
 //   共有の凍結シングルトンである（解決のたびに作らない＝浪費を作らない・計算量検定で固定）。
 //
-//   面の導出規則: **レジストリ経由で呼ばれる面の全数**と一致させる。すなわち
-//   `_actorControllerFor` / `_actorControllerForInstance` の戻り値に対して呼ばれるメソッドの
-//   集合であり、現在は下の 7 本（本 controller の 6 本 ＋ replay subclass の applyMpGrowth）。
-//   協働子の公開面すべてではない——協働子が自分の内部からだけ呼ぶメソッド（MP の
-//   applyMpParams / reapplyMode / enableMarketProfile）や、合成根が具象を掴んで直接呼ぶメソッドは
-//   レジストリを通らないので、ここに置いても未登録経路から到達しない＝使われない面が増えるだけ。
-//   呼び出し口を足したら、ここにも足す（足し忘れは未登録経路でのみ TypeError になる）。
-const NULL_ACTOR_CONTROLLER = Object.freeze({
-  applyMarketProfile() {},
-  toggleVisible() {},
-  removeInstance() {},
-  onGear() {},
-  restoreInstance() {},
-  onLiveRecompute() {},
-  applyMpGrowth() { return false; },
-});
+/**
+ * アクター駆動指標のコントローラが実装すべき面の**唯一の表**（ISSUE-479 Wave2b・JS レビュー 🟡-1）。
+ *
+ * 導出規則: **レジストリ経由で呼ばれる面の全数**と一致する。すなわち `_actorControllerFor` /
+ *   `_actorControllerForInstance` の戻り値に対して呼ばれるメソッドの集合であり、現在は下の 7 本
+ *   （本 controller の 6 本 ＋ replay subclass の applyMpGrowth）。
+ *   協働子の公開面すべてではない——協働子が自分の内部からだけ呼ぶメソッド（MP の
+ *   applyMpParams / reapplyMode / enableMarketProfile）や、合成根が具象を掴んで直接呼ぶメソッドは
+ *   レジストリを通らないので、ここに置いても未登録経路から到達しない＝使われない面が増えるだけ。
+ *
+ * なぜ表なのか（レビュー実測）: 以前は下のフォールバックのオブジェクトリテラルが唯一の記述で、
+ *   「呼び出し口を足したら、ここにも足す」という**散文**だけが契約を守っていた。実際に食い違い、
+ *   TickvolBandsController は applyMpGrowth を持たない 6 面のままだった（レジストリ経由の呼出が
+ *   TypeError になる形）。表・フォールバック・呼出口の 3 点一致は
+ *   tests/actor_controller_faces.test.js が固定する。
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const ACTOR_CONTROLLER_FACES = Object.freeze([
+  'applyMarketProfile',
+  'toggleVisible',
+  'removeInstance',
+  'onGear',
+  'restoreInstance',
+  'onLiveRecompute',
+  'applyMpGrowth',
+]);
+
+//   面は上の表から**導出**する（2 箇所に書かない）。全メソッドが undefined を返す no-op である。
+const NULL_ACTOR_CONTROLLER = Object.freeze(
+  ACTOR_CONTROLLER_FACES.reduce((obj, face) => {
+    obj[face] = () => {};
+    return obj;
+  }, {}),
+);
 
 export class IndicatorController {
   constructor({

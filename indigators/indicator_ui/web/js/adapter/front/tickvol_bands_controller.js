@@ -1,8 +1,10 @@
 // tickvol_bands_controller.js — 取引密度帯（時刻帯の背景色）のアクター駆動オーケストレーション協働子。
 //
 // IndicatorController が computeId → アクターコントローラのレジストリで本協働子へ委譲する
-// （registerActorController）。面は MarketProfileController と同一（applyMarketProfile / toggleVisible /
-// removeInstance / onGear / restoreInstance / onLiveRecompute）＝host 側に種別分岐を増やさない。
+// （registerActorController）。面は MarketProfileController と同一——列挙の唯一源は
+// indicator_controller.js の ACTOR_CONTROLLER_FACES であり、ここに書き写さない（写せば古びる。
+// 実際に applyMpGrowth を取り残していた）。全面を実装することは
+// tests/actor_controller_faces.test.js が固定する＝host 側に種別分岐を増やさない。
 //
 // MP と同じく /compute はバイパスし、no-op gateway で state へ instance を登録する（凡例・永続化・
 // 復元の対象に含める）。描画はアクター（/tickvol_profile → 背景プリミティブ）へ委譲する。
@@ -158,4 +160,12 @@ export class TickvolBandsController {
       this._actor.onCandlesChanged();
     }
   }
+
+  // 成長状態の適用: 帯には成長軸が無いため no-op（ISSUE-479 Wave2b・JS レビュー 🟡-1）。
+  //
+  //   なぜ持つのか: 本面はアクターコントローラ契約（ACTOR_CONTROLLER_FACES）の 1 本であり、
+  //   レジストリ（`_actorControllerFor`）の戻り値に対して呼ばれ得る。MP 固有の概念だからと
+  //   欠かすと、登録済みの協働子であっても呼出が TypeError になる（レビューが node で実測した形）。
+  //   帯は 1 分足原子の集計をそのまま塗る＝成長中/確定の区別を持たないので、何もしない。
+  applyMpGrowth() {}
 }
