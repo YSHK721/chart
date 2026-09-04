@@ -1,0 +1,11 @@
+# unified_ui 自己完結ハーネスのビルド/依存成果物（コミット対象外）。
+# 既存ルート .gitignore は無編集。本ファイルは unified_ui スコープ限定。
+# 末尾スラッシュを付けない（ISSUE-280）: `web/node_modules/` は**ディレクトリだけ**を無視するため、
+#   同名の symlink が無視から漏れて実際にコミットされた（自分自身を指す壊れた symlink が
+#   d8abde6 で混入し、clone/worktree のどこでも `npm test` が exit 216 になっていた）。
+web/node_modules
+.pytest_cache/
+__pycache__/
+
+# manifest / lockfile の追跡はルート .gitignore の `!**/web/package*.json` が担う（ISSUE-280）。
+#   ここに同じ除外を書くと第 2 定義になるため置かない。

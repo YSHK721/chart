@@ -1,0 +1,77 @@
+"""UC-R3 intrabar_window — /intraday の usecase 結線（proto do_intraday 忠実）。
+
+m1 は常に取得する（失敗は m1_error へ翻訳し計算全体は落とさない）。ticks は
+mode=='real_ticks' のときのみ取得（他モードは tick 読込スキップ＝軽量維持）。
+ISSUE-031: **domain E-4（mid 算出・窓フィルタ・外れ値除去）は本 usecase が適用する**。
+以前は adapter の ``load_ticks`` が済ませて返していたが、それでは tick 源を差し替えるたびに
+各 adapter が ``mid_series`` を再結線する必要があり、結線漏れが静かに「外れ値除去なしの mid 列」を
+生む。Port は素の観測値 ``(sec, bid, ask)`` を運ぶだけにし、本質ルールの適用点を 1 か所に固定した。
+``mode=='real_ticks'`` のときだけ tick を読む軽量性は従来どおり（ゲートは本 usecase に既存）。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
+
+if TYPE_CHECKING:
+    from simulator.replay_ui.usecase.replay_ports import IntrabarWindowPort
+
+
+@dataclass
+class IntrabarWindowRequest:
+    """/intraday の入力。
+
+    ``want_secs``: MP tick-live 用に tick の秒（sec）を並行配列で欲しいときのみ True。既定 False で
+    従来と完全一致（ticks=[mid...] のみ・tick_secs は載せない）＝forming MA/OHLC アニメ回帰ゼロ。
+    """
+    ref: str
+    start: int
+    end: int
+    mode: str = "real_ticks"
+    want_secs: bool = False
+    #: tick mid 系列の中央値外れ値除去のしきい値（domain E-4）。既定は domain の定数。
+    #:   ISSUE-031 で adapter のコンストラクタ引数から要求パラメータへ移した（本質ルールの
+    #:   パラメータは本質を適用する層が持つ）。
+    outlier_threshold: float = OUTLIER_THRESHOLD
+
+
+@dataclass
+class IntrabarWindowResult:
+    """do_intraday の payload（ok/m1/ticks・任意の *_error）。
+
+    ``tick_secs``: ``want_secs=True`` かつ real_ticks のときだけ [sec...] を並行配列で持つ
+    （ticks=[mid...] と同順・同長）。既定は空（従来 payload 不変）。
+    """
+    ok: bool = True
+    m1: list = field(default_factory=list)
+    ticks: list = field(default_factory=list)
+    m1_error: "str | None" = None
+    ticks_error: "str | None" = None
+    tick_secs: list = field(default_factory=list)
+
+
+def intrabar_window(
+    *, request: IntrabarWindowRequest, window_port: "IntrabarWindowPort"
+) -> IntrabarWindowResult:
+    """足内データ（m1 OHLC 行 / 実ティック mid 列）を返す。"""
+    result = IntrabarWindowResult(ok=True, m1=[], ticks=[])
+    try:
+        result.m1 = window_port.load_m1_rows(request.ref, request.start, request.end)
+    except Exception as exc:  # noqa: BLE001 — proto 同様 m1_error へ翻訳（計算を落とさない）
+        result.m1_error = str(exc)[:120]
+    if request.mode != "real_ticks":
+        return result  # 他モードは m1 のみで足りる＝tick 読込スキップ（軽量維持）
+    try:
+        raw = window_port.load_raw_ticks(request.start, request.end)
+        # domain E-4: mid 算出＋窓フィルタ＋外れ値除去（適用点はここ 1 か所・ISSUE-031）。
+        rows = mid_series(raw, request.start, request.end,
+                          threshold=request.outlier_threshold)
+        result.ticks = [mid for _sec, mid in rows]  # 既存契約不変（mid のみ）
+        # MP tick-live 用: want_secs のときだけ sec 並行配列を追加（ticks と同順・同長）。
+        if request.want_secs:
+            result.tick_secs = [sec for sec, _mid in rows]
+    except Exception as exc:  # noqa: BLE001 — proto 同様 ticks_error へ翻訳
+        result.ticks_error = str(exc)[:120]
+    return result

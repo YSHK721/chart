@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_ui/web/js/domain/tickvol_bands.js

@@ -1,0 +1,144 @@
+/* replay_bar.css — リプレイバー（チャート下端）とそのドロップダウンのスタイル。単一ソース。
+   統合 UI（unified_ui）は /replay/css/replay_bar.css を link して同一定義を使う（複製しない）。
+
+   仕様（依頼者確定 2026-07-26）: チャート下端に 1 本の細いバーを中央寄せで置く。
+     [ 期間 ][∨] ｜ ‖◁ |◁ ▷ ▷| ▷‖ ｜ x1.00  [最新足更新]  完了予想 …        （右端）✕ */
+
+.replay-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 12px;
+  background: var(--ct-uiReplayWell, #0c0e15);
+  border-top: 1px solid var(--ct-uiBorder, #2a2e39);
+  font-size: 13px;
+  color: var(--ct-uiTextLabel, #b2b5be);
+}
+
+.replay-bar .rp-group { display: flex; align-items: center; gap: 2px; }
+
+.replay-bar button {
+  background: transparent;
+  color: var(--ct-uiTextLabel, #b2b5be);
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.replay-bar button:hover:not(:disabled) { background: var(--ct-uiReplayTrack, #1f2431); color: var(--ct-uiReplayText, #e6e8ea); }
+
+/* 送り・再生系のアイコンボタン（‖◁ |◁ ▷ ▷| ▷‖）。 */
+.replay-bar .rp-icon { min-width: 30px; font-size: 15px; text-align: center; }
+.replay-bar #rp-play { min-width: 34px; }
+/* 再生中は色で状態を明示（停止中＝既定色 / 再生中＝緑）。 */
+.replay-bar #rp-play.rp-playing { color: var(--ct-uiBullish, #26a69a); }
+/* 未来足が無いとき再生不可＝減光＋クリック不可（理由は title 属性でホバー表示）。 */
+.replay-bar button.rp-disabled { opacity: .35; cursor: not-allowed; }
+
+.replay-bar .rp-sep { width: 1px; height: 18px; background: var(--ct-uiBorder, #2a2e39); margin: 0 6px; }
+
+.replay-bar #rp-range { font-weight: 500; color: var(--ct-uiText, #d1d4dc); }
+.replay-bar #rp-range-caret { min-width: 18px; padding: 4px 4px; }
+
+.replay-bar .rp-select {
+  background: transparent;
+  color: var(--ct-uiTextLabel, #b2b5be);
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.replay-bar .rp-eta { margin-left: 8px; color: var(--ct-uiTextWeak, #787b86); white-space: nowrap; }
+
+.replay-bar #rp-close {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 15px;
+}
+
+/* ---- ドロップダウン（期間メニュー / カレンダー / 速度メニュー） ---- */
+
+.rp-pop {
+  position: fixed;
+  z-index: 60;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--ct-uiReplaySurface, #161a25);
+  border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+  color: var(--ct-uiText, #d1d4dc);
+  font-size: 13px;
+}
+.rp-pop-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--ct-uiText, #d1d4dc);
+  border: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.rp-pop-item:hover { background: var(--ct-uiReplayPanel, #222735); }
+.rp-pop-item.on { color: var(--ct-uiAccent, #2962ff); }
+.rp-pop-msg { padding: 8px 10px; color: var(--ct-uiTextWeak, #787b86); }
+.rp-pop-input { padding: 4px; }
+.rp-pop-input input {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--ct-uiReplayWell, #0c0e15);
+  color: var(--ct-uiText, #d1d4dc);
+  border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.rp-cal { padding: 4px; }
+.rp-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 6px; }
+.rp-cal-title { font-weight: 600; }
+.rp-cal-nav {
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--ct-uiText, #d1d4dc);
+  border: 0;
+  border-radius: 4px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.rp-cal-nav:hover { background: var(--ct-uiReplayPanel, #222735); }
+.rp-cal-grid { display: grid; grid-template-columns: repeat(7, 30px); gap: 2px; }
+.rp-cal-w {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  color: var(--ct-uiTextWeak, #787b86);
+  font-size: 11px;
+}
+.rp-cal-day {
+  height: 28px;
+  background: transparent;
+  color: var(--ct-uiText, #d1d4dc);
+  border: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rp-cal-day:hover:not(:disabled) { background: var(--ct-uiAccent, #2962ff); color: var(--ct-uiTextStrong, #ffffff); }
+/* データが無い日はグレーアウトで選択できない。 */
+.rp-cal-day.off { color: var(--ct-uiReplayThumb, #4a4e5a); cursor: not-allowed; }
+/* 前後月のセルは枠だけ確保して見せない。 */
+.rp-cal-day.out { visibility: hidden; }

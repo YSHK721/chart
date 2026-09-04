@@ -1,0 +1,1 @@
+../../../../../indigators/market_profile/web/js/domain/mp_capability_generated.js

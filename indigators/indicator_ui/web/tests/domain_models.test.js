@@ -1,0 +1,164 @@
+// domain_models.js の仕様検証（node:test / node:assert）。
+//
+// 対象: SeriesDef / AppliedInstance / IndicatorDef（純ロジック）。
+// 設計入力: 内部設計書 §3.1.2（series）、§3.1.3（IndicatorDef matches）、
+//   §3.1.4（generation 不変ルール）、§4.6（検索）、§6.6（accepts）。
+// 移植元 Python: series_def.py / applied_instance.py / indicator_def.py。
+// 構造: Arrange-Act-Assert（AAA）。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  SeriesKind,
+  SeriesDef,
+  AppliedInstance,
+  IndicatorDef,
+} from '../js/domain/domain_models.js';
+
+// ===========================================================================
+// SeriesDef（§3.1.2 — source_column と series_name を別保持）
+// ===========================================================================
+
+test('SeriesDef: holds source_column and series_name separately', () => {
+  // Arrange / Act（profit_band: pOL_99 ↔ pOL 99%）
+  const s = new SeriesDef({
+    kind: SeriesKind.LINE,
+    sourceColumn: 'pOL_99',
+    seriesName: 'pOL 99%',
+    dynamic: false,
+  });
+  // Assert
+  assert.equal(s.sourceColumn, 'pOL_99');
+  assert.equal(s.seriesName, 'pOL 99%');
+  assert.equal(s.kind, SeriesKind.LINE);
+});
+
+test('SeriesDef: horizontal_line kind supported', () => {
+  const s = new SeriesDef({
+    kind: SeriesKind.HORIZONTAL_LINE,
+    sourceColumn: null,
+    seriesName: 'BULL',
+    dynamic: false,
+  });
+  assert.equal(s.kind, SeriesKind.HORIZONTAL_LINE);
+});
+
+// ===========================================================================
+// AppliedInstance（§3.1.4 / §6.6 — generation 不変ルール）
+// ===========================================================================
+
+function makeInstance(overrides = {}) {
+  return new AppliedInstance({
+    indicatorId: 'profit_band',
+    variant: 'global',
+    params: [['probabilities', [0.95, 0.99]]],
+    visible: true,
+    generation: 0,
+    seq: 3,
+    createdAt: '2026-06-07T00:00:00Z',
+    ...overrides,
+  });
+}
+
+test('AppliedInstance: instanceId is indicatorId#seq', () => {
+  // Arrange / Act
+  const inst = makeInstance({ seq: 3 });
+  // Assert（§5.7）
+  assert.equal(inst.instanceId, 'profit_band#3');
+});
+
+test('AppliedInstance: holds identity and generation state', () => {
+  const inst = makeInstance({ generation: 2, seq: 3 });
+  assert.equal(inst.indicatorId, 'profit_band');
+  assert.equal(inst.variant, 'global');
+  assert.equal(inst.visible, true);
+  assert.equal(inst.generation, 2);
+  assert.equal(inst.seq, 3);
+  assert.equal(inst.createdAt, '2026-06-07T00:00:00Z');
+});
+
+test('AppliedInstance: nextGeneration increments by one', () => {
+  const inst = makeInstance({ generation: 0 });
+  const nxt = inst.nextGeneration();
+  assert.equal(nxt.generation, 1);
+});
+
+test('AppliedInstance: nextGeneration returns new instance without mutating', () => {
+  // Arrange（元は不変）
+  const inst = makeInstance({ generation: 5 });
+  // Act
+  const nxt = inst.nextGeneration();
+  // Assert
+  assert.equal(inst.generation, 5);
+  assert.notEqual(nxt, inst);
+});
+
+test('AppliedInstance: accepts is equality (current generation only)', () => {
+  // Arrange（generation=2）
+  const inst = makeInstance({ generation: 2 });
+  // Act / Assert（等値のみ採用＝§6.6 レース対策）
+  assert.equal(inst.accepts(2), true);
+});
+
+test('AppliedInstance: accepts discards older response generation', () => {
+  const inst = makeInstance({ generation: 3 });
+  // 古い応答 (2 < 3) は破棄
+  assert.equal(inst.accepts(2), false);
+});
+
+test('AppliedInstance: accepts discards future response generation', () => {
+  const inst = makeInstance({ generation: 3 });
+  // 未来の応答 (4 > 3) も破棄（範囲比較でない＝核心）
+  assert.equal(inst.accepts(4), false);
+});
+
+// ===========================================================================
+// IndicatorDef（§3.1.3 — matches / series>=1 不変条件）
+// ===========================================================================
+
+function makeIndicatorDef(overrides = {}) {
+  return new IndicatorDef({
+    id: 'tgp_btlm',
+    displayNameKey: 'ind.tgp_btlm',
+    category: { group: 'builtin', nameKey: 'cat.technical' },
+    tab: 'indicator',
+    placement: 'overlay',
+    params: [],
+    series: [new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: 'btlm_mean', seriesName: 'btlm_mean', dynamic: false })],
+    compute: { computeId: 'tgp_btlm', requiredColumns: ['open', 'high', 'low', 'close'], timeRequired: true },
+    ...overrides,
+  });
+}
+
+test('IndicatorDef: throws when series is empty (>=1 invariant)', () => {
+  // Arrange / Act / Assert（§3.1.3 series>=1）
+  assert.throws(() => makeIndicatorDef({ series: [] }), /series/);
+});
+
+test('IndicatorDef: matches empty query passes all', () => {
+  // Arrange（空クエリは論理積真＝全件通過）
+  const d = makeIndicatorDef();
+  // Act / Assert
+  assert.equal(d.matches('', 'TGP BTLM'), true);
+});
+
+test('IndicatorDef: matches is case-insensitive partial on display name', () => {
+  const d = makeIndicatorDef();
+  // "btlm" は display_name "TGP BTLM" の部分一致（小文字化）
+  assert.equal(d.matches('btlm', 'TGP BTLM'), true);
+});
+
+test('IndicatorDef: matches on id as well as display name', () => {
+  const d = makeIndicatorDef();
+  // id "tgp_btlm" 部分一致（display_name に無くても id で一致）
+  assert.equal(d.matches('tgp_', 'Regression Channel'), true);
+});
+
+test('IndicatorDef: matches multiple terms conjunctively (AND)', () => {
+  const d = makeIndicatorDef();
+  // "tgp" AND "channel" 両方 haystack（display+id）に含まれる必要
+  assert.equal(d.matches('tgp channel', 'Regression Channel'), true);
+  // 片方しか無ければ false
+  assert.equal(d.matches('tgp missingword', 'Regression Channel'), false);
+});

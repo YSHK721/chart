@@ -1,0 +1,155 @@
+/* position_sizing.css — ポジションサイズ計算機とアーム式ピッカーの見た目（ISSUE-368）。
+
+   器・項目 DOM は JS（app_chrome_view / position_sizing_menu / position_sizing_dialog /
+   price_pick_controller）が生成する。ここは**その見た目だけ**を持つ。
+
+   色の規約（テーマ恒等）: 生の色を書かず、必ず既存のクロムトークン `var(--ct-*, fallback)` を
+   通す。fallback は現行の既定色と同値にする（テーマ未選択時の見えを動かさない）。専用スロットの
+   新設＝配色の変更は別途承認事項のため行わない。
+
+/* ツールバー入口（器はツールバーが生成・トリガーは position_sizing_menu.js）。 */
+.position-sizing-menu { position: relative; display: inline-flex; }
+.position-sizing-menu-trigger { display: inline-flex; align-items: center; gap: 4px; }
+
+/* モーダル（同型元: .theme-dialog-*）。背景クリックでは閉じない＝誤操作防止は JS 側。 */
+.ps-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .45);
+  display: none; align-items: center; justify-content: center;
+}
+.ps-dialog-backdrop.is-open { display: flex; }
+/* アーム式ピッカー中（is-picking）は**非モーダル**にする（実 UI 実測 2026-08-20 の是正）。
+   backdrop は inset:0 のビューポート全面のため、そのままだとチャートをホバーもクリックも
+   できず R-P1（クロスヘア追従 → クリック確定）が成立しない。面だけ透過し、モーダル本体は
+   操作可能なまま残す（閉じない＝入力値が DOM に残る＝アーム解除後も状態が消えない）。
+   暗幕も外す（チャートを見ながら価格を選ぶため）。 */
+.ps-dialog-backdrop.is-picking { pointer-events: none; background: transparent; }
+.ps-dialog-backdrop.is-picking .ps-dialog { pointer-events: auto; }
+/* アーム中はパネルを**畳む**（裁定 2026-08-20・実測スクショ根拠）。
+   幅を詰める案（320px）は入力欄の値が切れ（「38」→「3」）ラベルが 3 行折り返しで読めなかった。
+   パネルは display:none にし、細いバーだけを上端へ出す＝チャートを最大限見せる。
+   パネルは**消さずに隠すだけ**なので、解除で入力値がそのまま復帰する。 */
+.ps-dialog-backdrop.is-picking { align-items: flex-start; justify-content: center; }
+.ps-dialog-backdrop.is-picking .ps-dialog { display: none; }
+.ps-picking-bar { display: none; }
+.ps-dialog-backdrop.is-picking .ps-picking-bar {
+  display: flex; align-items: center; gap: 10px; pointer-events: auto;
+  margin-top: 6px; padding: 4px 10px; border-radius: 5px;
+  background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiAccent, #2962ff);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+}
+.ps-picking-text { color: var(--ct-uiTextStrong, #ffffff); font-size: 11px; white-space: nowrap; }
+.ps-picking-cancel {
+  background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 4px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px;
+  padding: 2px 8px; cursor: pointer;
+}
+.ps-dialog {
+  width: 720px; max-width: 94vw; max-height: 88vh;
+  background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiBorder, #2a2e39); border-radius: 8px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.ps-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid var(--ct-uiBorder, #2a2e39); user-select: none;
+}
+.ps-dialog-title { font-size: 14px; font-weight: 600; color: var(--ct-uiTextStrong, #ffffff); }
+.ps-dialog-close {
+  background: transparent; border: none; color: var(--ct-uiTextAux, #9aa0ad); font-size: 18px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.ps-dialog-close:hover { color: var(--ct-uiTextStrong, #ffffff); background: var(--ct-uiBorder, #2a2e39); }
+.ps-dialog-body {
+  padding: 12px 14px; overflow-y: auto; color: var(--ct-uiText, #d1d4dc); font-size: 13px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+}
+.ps-dialog-section { min-width: 0; }
+.ps-dialog-section-title {
+  font-size: 12px; font-weight: 600; color: var(--ct-uiTextStrong, #ffffff);
+  border-bottom: 1px solid var(--ct-uiBorder, #2a2e39); padding-bottom: 5px; margin-bottom: 8px;
+}
+.ps-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ps-row-label { flex: 0 0 46%; color: var(--ct-uiTextLabel, #b2b5be); font-size: 12px; }
+.ps-row input, .ps-row select {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiText, #d1d4dc); font-size: 12px; padding: 4px 6px;
+}
+/* 価格行だけ 2 段にする（裁定 2026-08-20・ISSUE-434）。
+   実ブラウザ実測（1600x1000・ダイアログ 720px の 3 カラム＝1 列 221px。上の .ps-dialog-body の
+   padding 14px・gap 14px から (720−28−28)/3 = 221.3px と一致する）:
+     ラベル（flex: 0 0 46% ＝縮まない・102px）＋ gap 8px×2 ＋「チャートで指定」
+     （flex: 0 0 auto ＝縮まない・約 90px）が列を先取りし、入力欄（flex: 1 1 auto;
+     min-width: 0）に **14px** しか残らなかった＝建値が打てない。
+     通常行の入力欄は同じ列で 111px。入力欄に 111px を残すにはボタン幅が 221−102−16−111
+     ＝ **−8px** ＝負になるため、文字を短くする・padding を削る調整では原理的に届かない
+     （幅予算そのものが足りない）。
+   ラベルを上段へ出すと入力欄は 列 − ボタン − gap ＝ 約 121〜124px（通常行の 111px より広い）。
+   縦積みにすると `.ps-row` の `align-items: center` と `.ps-row-label` の `flex: 0 0 46%` は
+   **主軸が縦になるため高さの指定として効いてしまう**。価格行に限って両方を打ち消す。 */
+.ps-price-row { flex-direction: column; align-items: stretch; gap: 4px; }
+.ps-price-row .ps-row-label { flex: 0 0 auto; }
+.ps-price-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* `.ps-row input` の `min-width: 0` は「flex 既定の auto を打ち消して縮ませる」ための指定で、
+   縮まないボタンと同じ段に置くと入力欄を 0 まで潰す。価格行では読める下限（7em ＝ 84px）を戻し、
+   列がさらに狭まったときはボタンを次の段へ逃がす（wrap）＝入力欄は下限を割らない。
+   基準幅は **0**（`flex: 1 1 0`）にする。`auto` だと基準幅が `<input type=number>` の内容由来の
+   intrinsic 幅（実測 169px）になり、169 ＋ gap 8 ＋ ボタン 92 ＝ 269 > 列 221 で wrap が発動して
+   ボタンが 3 段目へ落ちた（実 UI 実測 2026-08-20: rowH 78px・入力欄が段を独占して 221px）。
+   0 なら折り返し判定に使う仮サイズは min-width の 84px まで下がり、84 ＋ 8 ＋ 92 ＝ 184 ≦ 221 で
+   同じ段に収まり、残り幅を取って 221 − 92 − 8 ＝ 121px になる（実測 120.6px・sameLine true）。 */
+.ps-price-row input { flex: 1 1 0; min-width: 7em; }
+.ps-pick {
+  flex: 0 0 auto; background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; padding: 4px 6px; cursor: pointer;
+}
+.ps-pick:hover { color: var(--ct-uiTextStrong, #ffffff); border-color: var(--ct-uiAccent, #2962ff); }
+.ps-out { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.ps-out-label { color: var(--ct-uiTextLabel, #b2b5be); font-size: 11px; }
+.ps-out-value { white-space: normal; text-align: right; color: var(--ct-uiTextStrong, #ffffff); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ps-choice {
+  background: var(--ct-uiSurface, #131722); border: 1px solid var(--ct-uiBorder, #2a2e39);
+  border-radius: 5px; color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px;
+  padding: 4px 8px; margin: 0 4px 8px 0; cursor: pointer;
+}
+.ps-choice.is-active {
+  background: var(--ct-uiAccent, #2962ff); border-color: var(--ct-uiAccent, #2962ff);
+  color: var(--ct-uiTextStrong, #ffffff);
+}
+.ps-dialog-run {
+  width: 100%; margin-top: 8px; padding: 6px 10px; cursor: pointer;
+  background: var(--ct-uiAccent, #2962ff); border: 1px solid var(--ct-uiAccent, #2962ff);
+  border-radius: 5px; color: var(--ct-uiTextStrong, #ffffff); font-size: 12px;
+}
+/* MC 進捗（NFR-09「進捗が進む」）。走っていない間は textContent が空＝高さを占めるだけで
+   何も見えない。数字が伸び縮みしても行が揺れないよう等幅数字にする。 */
+.ps-progress {
+  color: var(--ct-uiTextAux, #9aa0ad); font-size: 11px; min-height: 14px;
+  margin-top: 4px; text-align: center; font-variant-numeric: tabular-nums;
+}
+/* 重みカスタムの入力欄（参照実装 renderCustomInputs）。#1..#K を横に並べる。 */
+.ps-custom-weights { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.ps-custom-note { flex: 1 0 100%; color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; line-height: 1.5; }
+.ps-custom-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ps-custom-label { color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; }
+.ps-custom-cell input { width: 56px; }
+
+/* 決済方式で出し分ける表示群（参照実装 :1064 と同じ切り替え）。 */
+.ps-exit-group { border-top: 1px solid var(--ct-uiBorder, #2a2e39); margin-top: 6px; padding-top: 6px; }
+.ps-exit-group.is-hidden { display: none; }
+.ps-exit-note { color: var(--ct-uiTextAux, #9aa0ad); font-size: 10px; line-height: 1.5; margin-top: 4px; }
+
+/* アーム式ピッカーのゴースト（版面配下・price_pick_controller.js が所有）。
+   ホストは「採用予定の価格の高さ」に置かれ、線は版面いっぱいに水平に伸びる。 */
+.price-pick-ghost { position: absolute; left: 0; right: 0; z-index: 12; pointer-events: none; }
+.price-pick-ghost.is-hidden { display: none; }
+.price-pick-line {
+  height: 0; border-top: 1px dashed var(--ct-uiAccent, #2962ff);
+}
+.price-pick-label {
+  position: absolute; right: 6px; top: -9px;
+  background: var(--ct-uiPanel, #1e222d); border: 1px solid var(--ct-uiAccent, #2962ff);
+  border-radius: 4px; color: var(--ct-uiTextStrong, #ffffff);
+  font-size: 11px; padding: 1px 6px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}

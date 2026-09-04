@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_ui/web/js/usecase/intrabar_forming_ids.js

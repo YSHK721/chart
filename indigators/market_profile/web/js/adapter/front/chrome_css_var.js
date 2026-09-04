@@ -1,0 +1,1 @@
+../../../../../indicator_ui/web/js/adapter/front/chrome_css_var.js

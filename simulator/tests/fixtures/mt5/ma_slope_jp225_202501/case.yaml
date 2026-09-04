@@ -1,0 +1,67 @@
+# MT5 突合ケース: MA_Slope_EA / JP225 / 2025年1月 (M1, 1 minute OHLC)
+#
+# 出所:
+#   実 MT5 ストラテジーテスター (ReportTester-900005560.xlsx / tester.log) の確定出力。
+#   パース済み正解は expected/report.json の `settings` / `results` / `deals` を「正」とする。
+#   本 case.yaml は人が読むためのメタ要約であり、数値の最終オラクルは report.json 側。
+
+name: ma_slope_jp225_202501
+description: >-
+  MA_Slope_EA を JP225 (日経225 CFD) の 2025年1月 M1 データで MT5 ストラテジーテスター
+  にかけた結果。バックテスト計算ロジック(compute_stats 等)の golden 突合に用いる。
+
+# --- 銘柄の同一性 ---
+# 銘柄仕様の値 (point_size / digits / contract_size / leverage / currency 等) はここに
+# 持たない。権威は marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json
+# (MT5 端末から機械取得したスナップショット) ただ 1 つである。
+# name はその供給元を引くための鍵であり、銘柄の同一性そのもの。
+# 由来: ISSUE-445 段階 3-E2 (同じ値を 2 箇所に持つ状態＝RC-1 の温床を撤去した)。
+symbol:
+  name: JP225
+
+# --- 口座 ---
+account:
+  initial_deposit: 10000
+
+# --- EA 入力 (MT5 inputs) ---
+expert:
+  name: MA_Slope_EA
+  ma_period: 20
+  ma_method: ema      # EMA(1)
+  ma_price: close     # CLOSE(1)
+  slope_shift: 1
+  slope_min_points: 1.0
+  lot: 0.1
+  stop_loss: 0
+  take_profit: 0
+  magic: 20260618
+
+# --- テスター実行条件 ---
+run:
+  period: M1
+  date_range: "2025.01.01 - 2025.01.31"
+  modelling: "1 minute OHLC"
+  delays_ms: 50
+  entry_price_basis: current_open
+  spread_model: from_bar
+  # 約定ルール (report.json settings.derived.fill_rule より):
+  #   buy = bid + spread*point (ask), sell = bid
+  # 損益: profit = (exit-entry) * lot * contract_size
+  #   実態 (是正 2026-08-25・ISSUE-445): 実約定 1.0 lot * contract_size 1.0 = 1 JPY / price unit。
+  #   上記 expert.lot: 0.1 は MT5 の EA 入力値であって約定ロットではない。原典
+  #   MA_Slope_EA.mq5:NormalizeLot() が volume_min=1.0 まで持ち上げるため実約定は 1.00 になる
+  #   (tester.log の全 deal 行 `deal #N buy/sell 1 JP225` / report.json deals[].vol は
+  #    2327 件すべて "1"・実測)。旧記載 `0.1lot * 10 = 1 JPY / price unit` は
+  #   「約定ロット = 入力 0.1」という誤前提から contract_size を 10 と逆算したものだった。
+
+# --- 期待サマリー ---
+# 注記: 最終的な正(オラクル)は expected/report.json の `results` を用いること。
+#       本ブロックは可読性のための要約。sharpe_ratio はバー別 equity 系列が
+#       report.json の deals に無いため compute_stats では再現不能(golden 対象外)。
+expected_summary:
+  net_profit: -6169
+  trades: 1163
+  profit_factor: 0.630045
+  final_balance: 3831      # initial_deposit + net_profit = 10000 - 6169
+  stop_out: true
+  sharpe_ratio: -5.0       # 要バー別 equity (deals に無いため再現不能 / golden 対象外)

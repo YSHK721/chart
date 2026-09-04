@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>シミュレーション core (sim)</title>
+</head>
+<body>
+  <!-- Phase 1 の sim コアは疎通確認用の最小エントリだけを持つ。
+       統合 UI（8000）は単一ページであり、シミュレーションモードでもこのページへは遷移しない
+       （モード切替はページ遷移を伴わない・基本設計書 §6.2）。本ページが要るのは、
+       ルータの /sim/* 振り分けと sim コアの生存を **実 HTTP で** 確かめられるようにするため。
+       画面本体（実行指示パネル・多窓チャート・取引履歴）は Phase 2 以降で足す。 -->
+  <main id="sim-root">
+    <h1>sim core</h1>
+    <p>シミュレーション core は起動しています（Phase 1: 疎通確認用の最小エントリ）。</p>
+  </main>
+</body>
+</html>

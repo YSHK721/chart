@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>インジケーター管理 UI（プロトタイプ）</title>
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ツールバー（シンボル / 時間足 / ライブ追従 / テンプレート / インジケーター）の DOM は
+         app_chrome_view.js が生成し所有する（ISSUE-278 #16: 配信 3 ページの手書き複製を撤去）。
+         ページに要求されるのはアンカー #app だけ。 -->
+
+    <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <!-- 左上オーバーレイ（現在値 → クロスヘア読み取り欄）の器は各 View が版面配下へ自分で
+           生成し所有する（ISSUE-277 の残: 3 ページ手書き複製の撤去）。DOM の並びは合成根の
+           構築順（現在値 → 読み取り欄）で決まる。 -->
+      <!-- チャートに重ねる表示系統（ペイン別凡例など）の器はここへ書かない。描画する View が
+           自分で .chart-wrap 直下に生成し所有する（overlay_host.js）。HTML へ直書きすると
+           配信 3 ページへ手書き複製する義務が生まれ、取り残しで表示が全滅する（実害: ISSUE-276）。 -->
+    </div>
+    <!-- Market Profile リプレイバーのホスト（既定空＝バーは replay=ON で動的生成・表示）。
+         チャート下部に配置し、MP のリプレイ ON 時に ◀リプレイ ラベル + スライダ + 日時ラベルを差し込む。 -->
+  </div>
+
+  <!-- 指標追加ダイアログ（#indicator-dialog）の DOM は app_chrome_view.js が生成し所有する
+       （ISSUE-278 #16: 3 ページで 1440 文字が byte 一致の複製だった）。 -->
+
+  <!-- bundled lightweight-charts v5.2.0（global LightweightCharts を公開・ネイティブ panes 対応） -->
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script type="module">
+    import { bootstrap } from './js/adapter/front/composition_root_front.js';
+    // ISSUE-166 の vendor 読込ガード（cache-bust 再試行）は共有モジュールが所有する。
+    //   ISSUE-278 #11: 手順を各ページへ inline で書いていたため、実際に配信される統合ページ
+    //   （:8000）にだけ入っておらず、承認済みの防御が本番から抜けていた。
+    import { ensureLightweightCharts } from './js/adapter/front/vendor_loader.js';
+    // 表示対象 ref の上書き口（ISSUE-447・A-3 案 U1）。既定はクエリ無し時の値で不変。
+    import { resolveDatasetRef } from './js/adapter/front/dataset_ref_query.js';
+    const lwc = await ensureLightweightCharts();
+    if (!lwc) {
+      console.error('ISSUE-166: lightweight-charts.js の読込に 3 回失敗しました。ページを再読込してください。');
+    }
+    // served（http://localhost:8000/）なら B方式（ライブ API・params 実反映）、file:// なら A方式。
+    //   protocol / fetch は composition root が location/globalThis から既定取得する。
+    // bootstrap は async（A方式のみ SAMPLE_DATA を動的 import。B方式は 635KB を読み込まない）。
+    lwc && bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+      // B方式の対象データセット。JP225 ティック由来 1分足原子（dataset.py の whitelist
+      // 'jp225_tick'＝mid・UTC 集計）をライブ計算し、時間足セレクタで resample 表示する
+      // （上位足は rollups/jp225_tick/ を読む・既定 1D・直近 RECENT_BARS 本）。
+      // `?dataset=<ref>` を付けたときだけ上書きする（ISSUE-447 A-3 案 U1・承認済み）。
+      // クエリ無し＝従来どおり 'jp225_tick'（既定挙動・既定表示は不変）。
+      datasetRef: resolveDatasetRef(location.search, 'jp225_tick'),
+    }).then(({ controller, ready, liveUpdater, formingBarUpdater, liveTickPlayer, tradeMarkers, marketProfile }) => {
+      controller.bind();
+      // B方式は /candles のローソク取得（ready）を待ってから復元・再計算する。
+      ready.then(() => {
+        controller.restore();
+        // ライブ更新（1 分間隔）。served（B方式）のみ liveUpdater が組み立てられる
+        //   （file:// は null）。復元後に開始し、以降 60 秒ごとに再計算＋最新足を反映する。
+        if (liveUpdater) {
+          liveUpdater.start();
+        }
+        // 形成中バー（最新足の足内更新・5 秒間隔・ティック由来）。served のみ。インジ再計算とは
+        //   分離し、価格の最新足だけを高頻度に差分反映する（負荷分離）。
+        if (formingBarUpdater) {
+          formingBarUpdater.start();
+        }
+        // ライブ tick 再生（12 秒固定遅延のなめらか再生・ISSUE-049）。served のみ。/live_ticks を
+        //   増分取得し 100ms 粒度で現在 tf の形成中バーへ累積する（価格の唯一の書き手＝上 2 者は
+        //   suppressPriceUpdate で価格を書かない）。file:// は liveTickPlayer=null（既存挙動 byte 不変）。
+        if (liveTickPlayer) {
+          liveTickPlayer.start();
+        }
+        // 売買マーカー（Trade Markers）の初回 load トリガ（入口に置く＝bootstrap に副作用 fetch を
+        //   足さない）。失敗は renderer 内で warn+0 件（既存 candles 描画に非干渉＝M-3）。
+        if (tradeMarkers) {
+          tradeMarkers.load('/data/trade_markers.json');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

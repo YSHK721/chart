@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>因果リビール再生 UI（INC-F2 再生層）</title>
+  <link rel="stylesheet" href="./css/app.css" />
+  <link rel="stylesheet" href="./css/replay_bar.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ツールバー（シンボル / 時間足 / テンプレート / インジケーター）の DOM は
+         app_chrome_view.js が生成し所有する（ISSUE-278 #16: 配信 3 ページの手書き複製を撤去）。
+         standalone replay はライブ追従トグルもリプレイトグルも持たない（root がフラグで表す）。 -->
+
+    <!-- チャート + クロスヘア価格読み取り欄 + 凡例 -->
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <!-- 左上オーバーレイ（現在値 → クロスヘア読み取り欄）の器は各 View が版面配下へ自分で
+           生成し所有する（ISSUE-277 の残: 3 ページ手書き複製の撤去）。DOM の並びは合成根の
+           構築順（現在値 → 読み取り欄）で決まる。 -->
+      <!-- チャートに重ねる表示系統（ペイン別凡例など）の器はここへ書かない。描画する View が
+           自分で .chart-wrap 直下に生成し所有する（overlay_host.js・ライブと同一実装）。 -->
+    </div>
+    <!-- Market Profile リプレイモードの scrub バーのホスト（チャート下部・sibling）。
+         MarketProfileReplayBar が replay モード ON 時のみ内部で表示する（既定は空・非表示）。
+         #chart 内へ差し込まない（lightweight-charts が canvas を専有するため sibling へ置く）。
+         これは MP replay モード専用の第 2 カーソルで、上部のリビール再生バーとは独立（二重カーソル許容）。 -->
+    <div id="mp-replay-bar-host"></div>
+
+    <!-- リプレイ操作バー（#replay-bar）の DOM は replay_bar_view.js が生成し所有する
+         （ISSUE-278 #16: 統合 UI と 2 ページ複製で rp-speed の title が実際にドリフトしていた）。 -->
+  </div>
+
+  <!-- 指標追加ダイアログ（#indicator-dialog）の DOM は app_chrome_view.js が生成し所有する
+       （ISSUE-278 #16: 3 ページで 1440 文字が byte 一致の複製だった）。 -->
+
+  <!-- bundled lightweight-charts v5.2.0（global LightweightCharts を公開・ネイティブ panes 対応） -->
+  <script src="./vendor/lightweight-charts.js"></script>
+  <script type="module">
+    // [INC-F2] 再生層結線。本番フロントをそのまま使い、データ駆動だけ「ライブ→再生」に差し替える。
+    //   唯一の違い: LiveUpdater.start()（present 60秒ポーリング）の代わりに setupReplay()＝
+    //   untilTime をフレーム駆動し controller.recomputeAllApplied で「その時点」を因果計算する。
+    import { bootstrap, RECENT_BARS } from './js/adapter/front/composition_root_front.js';
+    import { setupReplay } from './js/replay.js';
+    // ISSUE-166 の vendor 読込ガード（cache-bust 再試行）は共有モジュール（ライブ実体を
+    //   symlink 参照）が所有する。ISSUE-278 #11: inline の手書き複製をやめる。
+    import { ensureLightweightCharts } from './js/adapter/front/vendor_loader.js';
+    const lwc = await ensureLightweightCharts();
+    if (!lwc) {
+      console.error('ISSUE-166: lightweight-charts.js の読込に 3 回失敗しました。ページを再読込してください。');
+    }
+    lwc && bootstrap({
+      lwc: window.LightweightCharts,
+      container: document.getElementById('chart'),
+      doc: document,
+      datasetRef: 'jp225_tick',
+    }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile, tickvolBands }) => {
+      controller.bind();
+      window.__rpTickvolBands = tickvolBands; // E2E フック（__rpChart と同規約・描画には不使用）
+      ready.then(() => {
+        controller.restore();
+        // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
+        //   marketProfile（slim actor・composition root が controller と同一実体を注入）を渡し、
+        //   indicator メニュー（market_profile）で有効化された actor の足内 tick 逐次成長を駆動する。
+        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_tick', recentBars: RECENT_BARS, document, marketProfile });
+      });
+    });
+  </script>
+</body>
+</html>

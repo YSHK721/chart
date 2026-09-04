@@ -1,0 +1,287 @@
+"""dataset — datasetRef ホワイトリスト解決と OHLC/candles 供給（§7.3 / §6.3）。
+
+datasetRef 識別子 → 実 CSV パスのホワイトリスト解決を単一定義し、生パス直送・パス
+トラバーサルを防ぐ（外から組み立てたパスは解決しない・基本設計 §7.3）。
+
+- ``DATASET_WHITELIST`` : 識別子 → 実 CSV パス（唯一の定義）。
+- ``is_known(ref)``     : ホワイトリストに存在するか。
+- ``load_dataframe(ref)``: 既存 loader で DataFrame 化（time 列を index に解決・キャッシュ）。
+- ``load_candles(ref)`` : candles JSON（``[{time(UNIX秒),open,high,low,close}]``）へ変換。
+
+時刻は **解像度非依存** に ``int(pd.Timestamp(v).timestamp())`` で UNIX 秒へ変換する
+（pandas3 で ``astype // 10**9`` は誤り）。既存 loader / 指標 src は read-only。
+
+依存方向（厳守）: marketdata は最下層＝indicator_ui / simulator / MP / indigators を一切 import
+しない（逆依存ゼロ）。CSV ローダは marketdata.ohlc_csv_loader（byte 一致移設）を直接使い、
+module_loader 経由の profit_band 到達を断つ。
+"""
+
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+from marketdata import keep_last, material_identity, rollup_store, tail_reader
+
+# datasetRef 台帳は marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）から
+# 導出する。従来 4 断片（DATASET_WHITELIST・_OUTLIER_CLAMP_REFS_SET・_ROLLUP_REFS・
+# tf_meta.TICK_REFS）は同一 ref 台帳の分割で、新銘柄追加時に整合が必要だった。実 CSV パスの解決
+# （DATA_DIR 単一基点・workspace ルート）は registry 側に集約した。
+from marketdata import dataset_registry
+
+# datasetRef ホワイトリスト（§7.3）。識別子 → 実 CSV パス。生パス直送・パストラバーサルを
+# 防ぐため、ここに無いキーはすべて拒否する（外から組み立てたパスは解決しない）。registry から
+# 導出した新規 mutable dict（monkeypatch.setitem で一時 ref を追加できる・利用側は無変更）。
+DATASET_WHITELIST: dict[str, Path] = dataset_registry.whitelist()
+
+# サンプル CSV の時刻列（解像度非依存に UNIX 秒へ変換する起点）。
+_SAMPLE_TIME_COLUMN = "date"
+
+# candles の必須 OHLC 列（小文字正規化後）。
+_OHLC_COLUMNS = ("open", "high", "low", "close")
+
+# 読み取り時 外れ値バー補正（per-bar OHLC クランプ）の許容相対乖離（既定 0.3=±30%）。
+# 閾値の唯一の規約源は marketdata.outlier_policy.OUTLIER_THRESHOLD（ISSUE-094 🔴-3・書込側
+# cleaning と単一化）。旧名 OUTLIER_CLAMP_THRESHOLD は再エクスポートで温存する。
+from marketdata import outlier_policy
+
+OUTLIER_CLAMP_THRESHOLD = outlier_policy.OUTLIER_THRESHOLD
+
+# 外れ値クランプを適用する ref（実市場の JP225 系のみ）。sample 等の合成データセットは
+# 対象外（正常な ±30% 超ヒゲを持つ golden を壊さないため・読み取り時補正は市場データ限定）。
+# registry から導出した新規 mutable dict（monkeypatch.setitem で一時追加できる）。
+_OUTLIER_CLAMP_REFS_SET: dict[str, bool] = dataset_registry.clamp_refs()
+
+
+def _clamp_outlier_bars(df: pd.DataFrame, ref: str) -> pd.DataFrame:
+    """各行(バー)の OHLC を読み取り時クランプして返す（供給側 ref ゲート＋エンベロープ委譲）。
+
+    intraday の atomic 不良値（例 jp225_tick 2025-08-26 の low ~15,099）が集約バーの
+    安値を異常に引き下げる問題を、返却直前に補正する。ソース（CSV/ロールアップ生成物）は
+    改変せず、補正が必要なときのみコピー上で書き換える（不変・副作用なし）。
+
+    「どの ref を補正対象とするか」（``_OUTLIER_CLAMP_REFS_SET`` の実市場 ref 限定）は供給側の
+    ポリシーとして本関数が担い、エンベロープ判定/補正の式（min/max(open,close) 基準・±30%）は
+    :func:`marketdata.outlier_policy.clamp_ohlc_envelope`（単一補正コア・唯一の定義）へ委譲する
+    （ISSUE-094 🔴-3: 書込側 cleaning と閾値を単一化／ISSUE-095 項目1: 補正式をエンベロープへ一本化・
+    acquisition/serving の両経路が本コアへ委譲）。非対象 ref は素通し。
+
+    ISSUE-167（重複 time の serving 無害化）: 全 ref・全返却経路が通る本 hygiene 漏斗で、
+    同一 time（index 重複）を keep-last で畳み「厳密増加 time」を保証する。素材 CSV
+    （jp225_tick_m1）に日境界の二重分バーが既に残っていても、serving でチャート/指標へ渡る前に
+    無害化される（フロントの lwc 厳密増加不変条件違反＝毎フレーム "Value is null" クラッシュを遮断）。
+    冪等・純粋（正常データは has_duplicates 偽で素通し＝挙動不変）。発生源（tick_m1._dedupe_minutes）と
+    多重防御（本所）の二段構え。keep-last の規則そのものは :mod:`marketdata.keep_last`
+    （唯一の実体・ISSUE-479 F-6）へ委譲する。
+    """
+    df = keep_last.dedupe_index_keep_last(df)
+    if ref not in _OUTLIER_CLAMP_REFS_SET:
+        return df
+    return outlier_policy.clamp_ohlc_envelope(df, threshold=OUTLIER_CLAMP_THRESHOLD)
+
+# resample 規則源は marketdata.resample（enabler③・Sd 後の単一基点と同様に唯一化）。
+# dataset は薄い再エクスポートへ降格し、resample_ohlc / TIMEFRAME_RULES / is_known_timeframe を
+# marketdata から再公開する（既存 import 元の後方互換維持）。規則の二重実装を禁ずる（§4）。
+from marketdata.resample import (  # noqa: E402  (再エクスポート)
+    TIMEFRAME_RULES,
+    is_known_timeframe,
+    resample_ohlc,
+)
+
+# 1 分足原子を全ロードせず末尾だけ読む datasetRef（メモリ有界化・D-2）。1m は tail_reader、
+# 上位足は事前生成のロールアップ CSV（rollup_store）から読む。それ以外の ref（sample/jp225 日足等・
+# 小データ）は従来経路（_load_base_dataframe + resample_ohlc）据置。
+_ROLLUP_REFS = dataset_registry.rollup_refs()
+# 1m（原子）tail の安全上限（D-2）。表示 limit + 指標ルックバックぶんに十分な有界行数。
+# 1m 全件 tail（4.5M 行）で OOM を復活させないための上限（全件読みではない有限値）。
+_ATOMIC_TAIL_LOOKBACK_ROWS = 50_000
+
+
+def is_known(ref: Any) -> bool:
+    """datasetRef がホワイトリストに存在するか（未知・生パスは False）。"""
+    return ref in DATASET_WHITELIST
+
+
+# is_known_timeframe / resample_ohlc / TIMEFRAME_RULES は marketdata.resample から再エクスポート
+# （ファイル冒頭の import 参照）。dataset 固有の規則実装は持たない（規則源は marketdata・§4）。
+
+
+def _to_unix_seconds(value: Any) -> int:
+    """時刻値を UNIX 秒（整数・解像度非依存）へ変換する（fake_chart と同一式）。"""
+    return int(pd.Timestamp(value).timestamp())
+
+
+def _index_unix_seconds(index: Any) -> "list[int]":
+    """時刻列を UNIX 秒（整数）の list へ変換する。規則は ``_to_unix_seconds`` と同一。
+
+    ISSUE-301: 時刻の変換規則は ``_to_unix_seconds`` 1 か所のままにしつつ、DatetimeIndex の
+    ときだけ numpy で **一括**変換する（1 点ずつ ``pd.Timestamp`` を作らない）。値は 1 点ずつ
+    変換したものと一致する（同値は ``marketdata/tests/test_dataset_candles_conversion.py`` で固定）。
+    DatetimeIndex でない場合は従来どおり 1 点ずつ変換する（フェイルセーフ）。
+    """
+    values = getattr(index, "values", None)
+    dtype = getattr(values, "dtype", None)
+    if values is not None and dtype is not None and str(dtype).startswith("datetime64"):
+        return values.astype("datetime64[s]").astype("int64").tolist()
+    return [_to_unix_seconds(v) for v in index]
+
+
+# 供給時 mtime キャッシュ＋ロールアップ経路（性能アクター）は marketdata.serving_cache へ分離した
+# （ISSUE-094 🟡-7）。キャッシュ状態（_BASE_CACHE / _RESAMPLE_CACHE）は serving_cache の実体を
+# **同一オブジェクトで再エクスポート**する（利用側・既存テストの .clear()/len()/[] が単一真実源に
+# 効くよう温存）。dataset は ref 解決＋供給オーケストレーション＋candles JSON 整形へ縮退する。
+from marketdata import serving_cache
+
+_BASE_CACHE = serving_cache._BASE_CACHE
+_RESAMPLE_CACHE = serving_cache._RESAMPLE_CACHE
+# 1m 末尾読みキャッシュ（ISSUE-450）。上と同じく serving_cache の実体を指す別名。
+_TAIL_CACHE = serving_cache._TAIL_CACHE
+
+
+def _csv_mtime(ref: str) -> int | None:
+    """ref の実 CSV の最終更新時刻（ns・serving_cache へ委譲）。取得不能は None。旧 API 温存。"""
+    return serving_cache.csv_mtime(DATASET_WHITELIST[ref])
+
+
+def _load_base_dataframe(ref: str) -> pd.DataFrame:
+    """原子 CSV を DataFrame 化する（mtime キャッシュ＋torn-read フォールバックは serving_cache）。
+
+    ローダ生成は ``_load_loader``（本モジュール属性）を注入する。これにより
+    ``monkeypatch.setattr(dataset, "_load_loader", ...)`` が serving_cache 経由でも有効に働く。
+    """
+    return serving_cache.load_base_dataframe(
+        ref,
+        path=DATASET_WHITELIST[ref],
+        loader_factory=_load_loader,
+        time_column=_SAMPLE_TIME_COLUMN,
+    )
+
+
+def load_dataframe(ref: str, timeframe: str | None = None) -> pd.DataFrame:
+    """ホワイトリスト解決済みキーの DataFrame を指定時間足へ再集計して返す（無キャッシュ純変換）。
+
+    キャッシュは最内 ``_load_base_dataframe``（mtime 検知）の1段のみ。本関数は毎回 base を
+    取得し resample する純変換へ降格（mtime 無効化を全段へ貫通させるため・公開シグネチャ不変）。
+    ``timeframe=None`` は原子（再集計なし）をそのまま返す（既存挙動・後方互換）。指定時は
+    ``TIMEFRAME_RULES`` の rule で resample する。未知 timeframe は呼び出し側（controller/server）
+    が事前に ``is_known_timeframe`` で拒否する前提（ここでは rule 解決のみ）。
+
+    ★メモリ有界化（D-2）: ``jp225_m1`` は 1 分足原子（4.5M 行 / 284MB）を二度と全ロードしない。
+    1m（None/'1m'）は末尾安全上限ぶんを ``tail_reader.read_tail`` で逆シーク読み、上位足（5m..1M）は
+    事前生成のロールアップ CSV を ``rollup_store.read`` で読む。それ以外の ref（sample/jp225 日足等・
+    小データ）は従来経路（base + resample）据置（A' resample キャッシュも sample 経路のみ通る・D-3）。
+
+    ★素材の識別（ISSUE-465）: 返す素材へ ``(ref, timeframe)`` を載せる
+    （:func:`marketdata.material_identity.label`）。「どの素材か」を知っているのは供給側だけ
+    であり、受け取る側（増分計算の状態キャッシュ）は素材の由来を推測しない。載せるのは
+    ``DataFrame.attrs`` だけで、値・列・index は変わらない。
+    """
+    # ★読み取り時 外れ値バー補正（_clamp_outlier_bars）は全返却経路の最終返却前に一様適用する
+    #   （原子1m / rollup_store / resample のいずれも通過）。市場 ref 以外・正常バーは no-op。
+    #   serving_cache は常に生（未クランプ）を返し、ここでクランプする（不変条件・§7-1）。
+    if ref in _ROLLUP_REFS:
+        # ロールアップ経路（1m tail / 上位足 rollup_store）の分岐は serving_cache が担う（D-2）。
+        df = serving_cache.resolve_rollup_dataframe(
+            ref, timeframe,
+            path=DATASET_WHITELIST[ref],
+            atomic_tail_rows=_ATOMIC_TAIL_LOOKBACK_ROWS,
+        )
+        return material_identity.label(
+            _clamp_outlier_bars(df, ref), ref=ref, timeframe=timeframe)
+
+    base = _load_base_dataframe(ref)
+    if timeframe is None:
+        # 原子（1m）は resample せず base を直接返す（resample キャッシュ非経由・従来どおり）。
+        return material_identity.label(
+            _clamp_outlier_bars(base, ref), ref=ref, timeframe=timeframe)
+    # resample キャッシュ（P-1 base 世代 mtime キー・P-2 有界）は serving_cache が担う。resample_ohlc は
+    # 本モジュール属性を注入する（monkeypatch.setattr(dataset, "resample_ohlc", ...) が有効に働く）。
+    resampled = serving_cache.resample_cached(
+        ref, timeframe, base,
+        resample_fn=resample_ohlc,
+        rule=TIMEFRAME_RULES.get(timeframe),
+    )
+    return material_identity.label(
+        _clamp_outlier_bars(resampled, ref), ref=ref, timeframe=timeframe)
+
+
+# 原子窓読みの clamp 済み全期間 DataFrame キャッシュ（ref → (csv mtime, clamped df)）。
+#   replay /intraday の任意過去窓アクセス用（ISSUE-132）。live サーバは本経路を呼ばない
+#   （メモリ有界化 D-2 は load_dataframe 経路の不変条件のまま＝呼んだプロセスだけが全期間を保持）。
+_ATOM_WINDOW_CACHE: dict[str, tuple[Any, pd.DataFrame]] = {}
+
+
+def load_atom_window(ref: str, start: int, end: int) -> pd.DataFrame:
+    """原子（1m）CSV の任意時間窓 ``[start, end)``（UNIX 秒）を返す（ISSUE-132・additive）。
+
+    リプレイの /intraday（足内再生の m1 素材）用: 末尾有界の ``load_dataframe`` と異なり
+    全期間の任意窓へアクセスできる。供給・補正・キャッシュとも本モジュールが単一権威:
+    全期間原子は ``_load_base_dataframe``（mtime キャッシュ）、外れ値補正は
+    ``_clamp_outlier_bars``（clamp 単一定義）を一様適用し、clamp 済み全期間を
+    csv mtime キーでキャッシュする（窓スライスのみ毎回）。未知 ref は KeyError。
+    """
+    mt = _csv_mtime(ref)  # 未知 ref はここで KeyError（ホワイトリスト外拒否）。
+    ent = _ATOM_WINDOW_CACHE.get(ref)
+    if ent is None or ent[0] != mt:
+        clamped = _clamp_outlier_bars(_load_base_dataframe(ref), ref)
+        _ATOM_WINDOW_CACHE[ref] = (mt, clamped)
+    df = _ATOM_WINDOW_CACHE[ref][1]
+    secs = df.index.values.astype("datetime64[s]").astype("int64")
+    return df[(secs >= int(start)) & (secs < int(end))]
+
+
+def load_candles(
+    ref: str, timeframe: str | None = None, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """ホワイトリスト解決済みキーを candles JSON へ変換する（§6.3・lightweight-charts 形）。
+
+    無キャッシュ純変換（mtime キャッシュは最内 ``_load_base_dataframe`` の1段のみ）。毎回
+    base を取得→resample/format するため CSV 更新（mtime 変化）が即座に反映される。
+
+    Args:
+        ref: datasetRef（ホワイトリスト済み）。
+        timeframe: 時間足コード（None=原子）。指定時は resample 後に変換する。
+        limit: 直近 N 本に制限する（None=全件）。1 分足原子の全期間（数百万点）を直接
+            配信しないための表示範囲制限（§配信設計: リサンプル＋直近 N 本）。
+
+    Returns:
+        ``[{time: UNIX秒, open, high, low, close}, ...]``（time 昇順・直近 limit 本）。
+    """
+    df = load_dataframe(ref, timeframe)
+    if limit is not None and limit > 0:
+        df = df.tail(limit)
+    lower_map = {str(c).lower(): c for c in df.columns}
+    cols = {k: lower_map[k] for k in _OHLC_COLUMNS}
+    # ISSUE-301: 列ごとに一括で取り出してから組み立てる（``DataFrame.iterrows`` を使わない）。
+    #   iterrows は 1 行ごとに Series を構築するため、5 万行で 1.20 秒かかっていた（一括化で
+    #   0.029 秒・41 倍・出力は完全一致。実測 2026-08-08）。本関数は /candles と MP の窓解決が
+    #   通る共有ホットパスで、リプレイ再生では **毎バー・毎リクエスト** 呼ばれる。
+    #   返す形（キー順・型・値）は従来と 1 ビットも変えない。
+    times = _index_unix_seconds(df.index)
+    o = df[cols["open"]].to_numpy(dtype="float64").tolist()
+    h = df[cols["high"]].to_numpy(dtype="float64").tolist()
+    low = df[cols["low"]].to_numpy(dtype="float64").tolist()
+    c = df[cols["close"]].to_numpy(dtype="float64").tolist()
+    return [
+        {"time": t, "open": oo, "high": hh, "low": ll, "close": cc}
+        for t, oo, hh, ll, cc in zip(times, o, h, low, c)
+    ]
+
+
+@lru_cache(maxsize=None)
+def _load_loader():
+    """OHLC CSV ローダ（marketdata.ohlc_csv_loader）を返す（module_loader/profit_band 非経由）。
+
+    旧実装は module_loader 経由で ``indigators/profit_band/src/loader.py`` を借用していたが、
+    marketdata→indigators の逆依存を断つため、実体を **byte 一致**で移した
+    marketdata.ohlc_csv_loader を直接使う。呼び出し面 ``loader.load_ohlc_csv(path, time_column=...)``
+    は不変（返す module は ``load_ohlc_csv`` を持つ）。既存 loader ロジックは read-only（改変しない）。
+    """
+    from marketdata import ohlc_csv_loader
+    return ohlc_csv_loader

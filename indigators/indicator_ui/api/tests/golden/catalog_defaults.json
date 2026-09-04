@@ -1,0 +1,203 @@
+{
+  "btlm_trail": {
+    "band_method": "ols",
+    "color": "rgba(123, 104, 238, 1)",
+    "empirical_n": 500,
+    "maxbars": 100,
+    "n_cov": 250,
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": null,
+    "show_metrics": true,
+    "source": "close",
+    "timeframe": "chart"
+  },
+  "btlm_trail_marod": {
+    "color": "rgba(123, 104, 238, 1)",
+    "event_agg": "episode",
+    "k_events": 50,
+    "maxbars": 100,
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": 0.99,
+    "source": "close",
+    "timeframe": "chart",
+    "window_n": 500
+  },
+  "cvfe": {
+    "dash_opacity": 0.5,
+    "display_mode": "dashes",
+    "n_har": 500,
+    "show_outliers": true,
+    "sigma_inner": 1.0,
+    "sigma_outer": 2.0,
+    "timeframe": "chart"
+  },
+  "ma_marod": {
+    "color": "rgba(255, 152, 0, 1)",
+    "event_agg": "episode",
+    "k_events": 50,
+    "length": 50,
+    "ma_type": "ema",
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "q_out": 0.99,
+    "source": "close",
+    "timeframe": "chart",
+    "window_n": 500
+  },
+  "moving_averages": {
+    "bb_stddev": 2.0,
+    "length": 9,
+    "ma_type": "ema",
+    "offset": 0,
+    "smoothing_length": 9,
+    "smoothing_type": "none",
+    "source": "close",
+    "timeframe": "chart"
+  },
+  "price_range_power": {
+    "bear_color": "rgba(210, 67, 58, 0.9)",
+    "bull_color": "rgba(46, 158, 91, 0.9)",
+    "interval": 0.1,
+    "range_from": null,
+    "range_to": null,
+    "timeframe": "chart",
+    "top_n": 5,
+    "width": 2
+  },
+  "profit_adx_needle": {
+    "period": 6,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_arctan": {
+    "bar_width": 0.1,
+    "ma_method": 1,
+    "period": 6,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_band": {
+    "atr_period": 14,
+    "buckets": [
+      "nOH",
+      "pOL",
+      "pOH",
+      "nOL"
+    ],
+    "legend": false,
+    "min_obs": 30,
+    "normalize": "return",
+    "probabilities": [
+      0.51,
+      0.8,
+      0.85,
+      0.9,
+      0.95,
+      0.98,
+      0.99
+    ],
+    "require_full": true,
+    "timeframe": "chart",
+    "window": "expanding"
+  },
+  "profit_hl_band": {
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_hlband": {
+    "draw_levels": true,
+    "timeframe": "chart"
+  },
+  "profit_mfi": {
+    "ma_period": 5,
+    "mfi_period": 14,
+    "timeframe": "chart"
+  },
+  "profit_mfi_macd": {
+    "fast": 4,
+    "mfi_period": 13,
+    "signal": 4,
+    "slow": 8,
+    "timeframe": "chart"
+  },
+  "profit_oscillator": {
+    "period_a": 6,
+    "period_b": 60,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_oscillator2": {
+    "direction": false,
+    "ma_period": 60,
+    "osc_period": 6,
+    "rci_period": 12,
+    "stc_slow": 6,
+    "timeframe": "chart"
+  },
+  "profit_osi_ma": {
+    "ma_mode": 1,
+    "ma_period": 21,
+    "timeframe": "chart"
+  },
+  "profit_rmm": {
+    "ma_period": 6,
+    "osc_period": 6,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_rmm_macd": {
+    "fast": 4,
+    "ma_period": 6,
+    "osc_period": 6,
+    "signal": 4,
+    "slow": 8,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "profit_rsi": {
+    "apply": 5,
+    "k_events": 50,
+    "q_high": 0.9,
+    "q_low": 0.1,
+    "q_out": 0.99,
+    "rsi_period": 6,
+    "timeframe": "chart",
+    "window_n": 500
+  },
+  "profit_rsi_macd": {
+    "fast": 4,
+    "rsi_period": 13,
+    "signal": 4,
+    "slow": 8,
+    "timeframe": "chart"
+  },
+  "profit_stc": {
+    "period": 70,
+    "timeframe": "chart"
+  },
+  "profit_volatility": {
+    "period": 6,
+    "timeframe": "chart",
+    "window": 120
+  },
+  "tgp_btlm": {
+    "color": "rgba(123, 104, 238, 1)",
+    "fitter": "ols",
+    "maxbars": 100,
+    "mcmc_samples": "standard",
+    "price": "open",
+    "q_high": 0.95,
+    "q_low": 0.05,
+    "timeframe": "chart"
+  },
+  "tickvol": {
+    "k_events": 50,
+    "q_high": 0.9,
+    "q_low": 0.1,
+    "q_out": 0.99,
+    "timeframe": "chart",
+    "window_n": 500
+  }
+}
