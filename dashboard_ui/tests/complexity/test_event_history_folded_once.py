@@ -1,6 +1,6 @@
 """計算量 11（ISSUE-464 ③）: 帯外イベント履歴は epoch の中で 1 回しか畳まない。
 
-超過エピソードの極値列（`excess_event_history`）は**確定した履歴**（当該バーを除いた観測）
+超過エピソードの極値列（`excess_event_fold`）は**確定した履歴**（当該バーを除いた観測）
 だけから決まる。したがって epoch の中では不変である。にもかかわらず、第 2 表のセルと
 §5.5.5 の背景の目盛りが**それぞれ**毎要求畳み直していた（実測 2026-08-30・8 足束 1 要求:
 48 回 / 366 ms ＝ 24 instance × 2 消費者）。畳み込みは 1 点ずつの Python ループなので
@@ -45,7 +45,7 @@ _OSC = SheetInstance("profit_rsi", "default", {}, "1m", intrabar_capable=True)
 class FoldSpy:
     """`excess_event_fold` の Test Spy（履歴の畳み込みはこの面からしか起きない）。
 
-    `excess_event_history` はこの原始関数への委譲であり、持ち越しの口
+    系列版（history）はこの原始関数への委譲であり、持ち越しの口
     （`ExcessEventCache`）が畳むのも同じ原始関数である（観測列とプレフィックス長は
     **同じ 1 回の畳み込み**から出る・§5.2 背景ストリップ）。
     """

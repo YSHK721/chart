@@ -297,8 +297,9 @@ class TestTrailingReadings:
         この同値が崩れると、ストリップの色とセルの色が**別々の定義**で決まる
         （出力はどちらもそれらしい色のままなので状態検証では落ちない）。
         """
-        rng = np.random.default_rng(20260904)
-        values = rng.uniform(0.0, 100.0, size=120)
+        # 決定的な値列（帯 70 を出入りし、エピソードが閉じてイベントが積み上がる形）。
+        values = np.array([(index * 37) % 100 for index in range(120)],
+                          dtype=np.float64)
         bands = np.full(120, 70.0)
         events, counts = excess_event_fold(values, bands)
 
