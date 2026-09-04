@@ -28,6 +28,7 @@ import { TradeMarkersRenderer } from './trade_markers_renderer.js';
 import { TickvolBandsActor } from './tickvol_bands_actor.js';
 import { TickvolBandsController } from './tickvol_bands_controller.js';
 import { MarketProfileController } from './market_profile_controller.js';
+import { MARKET_PROFILE_HOST_CONTRACT } from './indicator_controller.js';
 import { ChartInteractionController } from './chart_interaction_controller.js';
 import { ChartContextMenu } from './chart_context_menu.js';
 import { ChartToastView } from './chart_toast_view.js';
@@ -462,8 +463,14 @@ export function wireControllerCollaborators({
   //   MP コントローラを組んでおり、「アクター駆動指標を足すときに見る場所」が 2 通りに割れていた。
   //   アクターは注入があればそれ、無ければ host（controller._marketProfile）を遅延で読む
   //   ＝replay 合成根の「構築後に差し込む」経路はそのまま効く（挙動は byte 不変）。
+  //   host は controller 全体ではなく MarketProfileHost 契約の射影を渡す（ISP・ISSUE-255 と同一規律）。
+  //   ctor 側（indicator_controller.js）は既に射影を通しており、ここだけ生 host を渡すと
+  //   同じ協働子が渡され方によって広い面へ触れられる＝契約が実体を失う。
   controller.registerActorController(
-    'market_profile', new MarketProfileController(controller, { actor: marketProfile }),
+    'market_profile',
+    new MarketProfileController(
+      createHostView(controller, MARKET_PROFILE_HOST_CONTRACT), { actor: marketProfile },
+    ),
   );
   // 時間足切替: 帯は時間足に依存しない（サーバは常に 1 分足原子で集計）ので再取得せず、塗る足だけ
   //   引き直す。テンプレート介入の**内側へ**チェーンする（既存の介入順序を壊さない）。
