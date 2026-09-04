@@ -271,7 +271,9 @@ export function createModeController({
 //   sim は測って渡すだけ。`templates` は live スコープの storage をどう見せるかの判断であり、
 //   これも束の出所とスコープを決める統合層の責務である。core にこの判断を持たせると、
 //   統合ページの器の事情が core 側へ漏れる。
-export const LAYER_EXTRAS = Object.freeze({
+//   公開しない: 借り手は `loadDisplayLayers` だけで、外から差し替える口を作る理由が無い
+//   （使われない公開面は、消えたことに誰も気付けない依存を育てる）。
+const LAYER_EXTRAS = Object.freeze({
   [MODE.SIM]: ({ lwc, bottomPane }) => ({
     lwc,
     // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
