@@ -1,4 +1,5 @@
 // CandleFeed（adapter/front/candle_feed.js）— ローソクデータ所有と更新の協働クラス
+// @upstream-isolation: candle_feed.js
 //   （SOLID 是正 🔴-2: chart_renderer.js から 1:1 抽出）。
 //
 // ChartRenderer（ファサード）の内部協働子。共有状態（_chart / _mainSeries / _baseCandles /

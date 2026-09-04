@@ -1,4 +1,5 @@
 // ChartRenderer（adapter/front/chart_renderer.js）— ChartRendererPort 実装・upstream 隔離点（唯一）。
+// @upstream-isolation: chart_renderer.js
 //
 // 設計入力: 内部設計書 §3.3.4 / §7.1.2。
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /

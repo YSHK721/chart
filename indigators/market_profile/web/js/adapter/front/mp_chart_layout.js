@@ -1,4 +1,5 @@
 // mp_chart_layout.js — チャートレイアウト（primitive の attach／右マージン確保）ロール（ISSUE-181・SRP）。
+// @upstream-isolation: mp_chart_layout.js
 //
 // 設計入力（ISSUE-181）: MarketProfileActor は 6 アクター同居の神クラスで、その 1 つが
 //   「チャートレイアウト」（旧 market_profile_actor.js の _applyProfileMargin / _attachTarget /

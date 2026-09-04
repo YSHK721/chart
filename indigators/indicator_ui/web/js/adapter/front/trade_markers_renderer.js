@@ -1,4 +1,5 @@
 // trade_markers_renderer.js — 上流 lwc API（createSeriesMarkers）を隔離する adapter。
+// @upstream-isolation: trade_markers_renderer.js
 //
 // 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §3.1、
 //   CHART_TRADE_MARKERS_BASIC_DESIGN.md §12.5（C-3 v5 ハンドル方式）、§12.7（M-2 lwc サブセット・M-3 失敗時挙動）。

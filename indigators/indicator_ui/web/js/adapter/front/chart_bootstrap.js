@@ -1,4 +1,5 @@
 // chart_bootstrap.js — チャート土台の共有生成ヘルパ（ISSUE-123・present/replay 両アプリ共有）。
+// @upstream-isolation: chart_bootstrap.js
 //
 // 設計入力（値渡し是正）: composition root（present 622 行 / replay 293 行）に、lwc チャート生成
 //   （createChart オプション一式＋メインローソク系列）と pane 高供給（updatePaneHeight）が

@@ -1,4 +1,5 @@
 // SeriesDrawer（adapter/front/series_drawer.js）— 系列生成・スタイルの協働クラス
+// @upstream-isolation: series_drawer.js
 //   （SOLID 是正 🔴-2: chart_renderer.js から 1:1 抽出）。
 //
 // ChartRenderer（ファサード）の内部協働子。共有状態（_instances スロット Map / _chart / _lwc /

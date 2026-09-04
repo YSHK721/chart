@@ -1,4 +1,5 @@
 // ScaleController（adapter/front/scale_controller.js）— 価格軸ズーム/パン数学の協働クラス
+// @upstream-isolation: scale_controller.js
 //   （SOLID 是正 🔴-2: chart_renderer.js から 1:1 抽出）。
 //
 // ChartRenderer（ファサード）の内部協働子。共有状態（_chart / _mainSeries / _paneHeight /

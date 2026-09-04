@@ -1,4 +1,5 @@
 // pair_lines_primitive.js — 売買ペアを線分で結ぶカスタム ISeriesPrimitive（v4・§10.1/§10.2）。
+// @upstream-isolation: pair_lines_primitive.js
 //
 // 設計入力: CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。フェーズ2 実証済 v5 API:
 //   mainSeries.attachPrimitive(primitive)・primitive.attached({chart,series,requestUpdate})・

@@ -1,4 +1,5 @@
 // tickvol_bands_primitive.js — 取引密度が濃い時刻帯のチャートパネル背景を塗る lwc プリミティブ。
+// @upstream-isolation: tickvol_bands_primitive.js
 //
 // 装着規約は既存プリミティブと同一（attached/detached/paneViews/_draw）。`zOrder='bottom'` で
 //   系列の下＝背景側に塗るため、ローソク・指標線は原色のまま上に残る（replay_boundary_dim と同じ）。
