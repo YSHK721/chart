@@ -73,6 +73,88 @@ def _rollup_timeframes() -> Tuple[str, ...]:
 
 
 # --------------------------------------------------------------------------- #
+# 単一書き手ロック（ISSUE-488 根治）
+# --------------------------------------------------------------------------- #
+#: ロックファイル名（data_dir 直下）。flock の実体はカーネルが持ち、プロセス死で自動解放される
+#: （stale PID ファイル問題を作らない）。ファイル内容（PID・起動時刻）は診断表示用。
+_WRITER_LOCK_FILENAME = "live_tick_watch.lock"
+
+#: --takeover で先行プロセスへ SIGTERM を送った後、ロック解放を待つ上限秒。
+_TAKEOVER_WAIT_SECONDS = 15.0
+
+
+class WriterLockHeld(RuntimeError):
+    """同一 data_dir への書き手が既に居る（二重起動）。"""
+
+
+def acquire_writer_lock(data_dir: Path, *, takeover: bool = False):
+    """jp225_tick 派生物（tick parquet・M1・rollups・state）の単一書き手ロックを獲得する。
+
+    ISSUE-488 の根本原因は「二重起動を機械的に禁止する仕組みが無い」ことだった（残存
+    watcher と serve.sh 起動分が同一 CSV へ非原子的 truncate+append を競合実行し、1M の
+    8 月バー・1D の 3 日ぶんが恒久欠落した・実測 2026-09-04）。宣言でなく flock で強制する。
+
+    - 既定: 先行プロセスが居れば **即時失敗**（:class:`WriterLockHeld`・PID を名指す）。
+    - ``takeover=True``: 先行プロセスへ SIGTERM を送り、ロック解放を待って引き継ぐ
+      （serve.sh 経由の正規起動が、出所不明の残存 watcher を確実に退去させるための口）。
+
+    Returns:
+        獲得済みロックのファイルオブジェクト。**プロセス存命中は参照を保持すること**
+        （閉じると解放される）。
+    """
+    import fcntl
+
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / _WRITER_LOCK_FILENAME
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        holder = _lock_holder_pid(handle)
+        if not takeover:
+            handle.close()
+            raise WriterLockHeld(
+                f"live_tick_watch は既に稼働中です（PID {holder if holder else '不明'}・"
+                f"lock={path}）。引き継ぐ場合は --takeover を付けて起動してください。"
+            )
+        if holder:
+            LOG.warning("先行の live_tick_watch (PID %s) を停止して引き継ぎます。", holder)
+            try:
+                os.kill(holder, 15)   # SIGTERM
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + _TAKEOVER_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    handle.close()
+                    raise WriterLockHeld(
+                        f"先行プロセス（PID {holder if holder else '不明'}）が"
+                        f" {_TAKEOVER_WAIT_SECONDS:.0f} 秒以内にロックを解放しませんでした。"
+                    )
+                time.sleep(0.2)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()} {dt.datetime.now(dt.timezone.utc).isoformat()}\n")
+    handle.flush()
+    return handle
+
+
+def _lock_holder_pid(handle) -> "int | None":
+    """ロックファイルの先頭フィールド（保持者 PID）を読む（壊れていれば None）。"""
+    try:
+        handle.seek(0)
+        first = handle.read(64).split()
+        return int(first[0]) if first else None
+    except (ValueError, OSError):
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # 「現在時刻」の隔離（テストで monkeypatch）
 # --------------------------------------------------------------------------- #
 def _utc_now() -> dt.datetime:
@@ -131,11 +213,50 @@ def _append_m1(start: str, end: str, until: pd.Timestamp, *, data_dir: Path) -> 
     return append_m1_from_ticks(start, end, until=until, ref=REF, data_dir=data_dir)
 
 
+#: 末尾整合の自己修復（ISSUE-488）の実行周期（秒）。検査は M1 末尾 probe（固定行数）に有界
+#: だが、毎ループ（60s/分確定）に回す必要は無い量なので、当日全量再取得の自己修復周期
+#: （_STREAM_RECONCILE_SECONDS）と同じ考え方で 30 分ごとに回す。起動直後の 1 回目は必ず実行
+#: （前回稼働中に作られた欠落を持ち越さない）。
+_HEAL_EVERY_SECONDS = 1800.0
+_heal_next_monotonic = 0.0
+
+
+def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
+    """ロールアップ末尾整合の機械的検査＋自己修復（周期実行・ISSUE-488 根治）。
+
+    検査・修復の実体は :func:`marketdata.rollup.heal_tail_gaps`（唯一の定義）。ここは周期の
+    持ち主であるだけ。修復した TF はログに残す（無言で直さない）。
+    """
+    global _heal_next_monotonic
+    now = time.monotonic()
+    if not force and now < _heal_next_monotonic:
+        return []
+    _heal_next_monotonic = now + _HEAL_EVERY_SECONDS
+    from marketdata.rollup import heal_tail_gaps
+    from marketdata.tick_m1 import m1_csv_path
+
+    out_dir = Path(data_dir) / "rollups" / REF
+    out_dir.mkdir(parents=True, exist_ok=True)
+    healed = heal_tail_gaps(
+        m1_csv_path(ref=REF, data_dir=data_dir), _rollup_timeframes(), out_dir,
+        ref_prefix=REF,
+    )
+    if healed:
+        LOG.warning("rollup 自己修復を実施: %s", ", ".join(healed))
+    return healed
+
+
 def _rollup_update(data_dir: Path):
-    """tick 由来 M1 を上位足へ差分更新する（ref_prefix=jp225_tick・専用サブ dir へ隔離）。"""
+    """tick 由来 M1 を上位足へ差分更新する（ref_prefix=jp225_tick・専用サブ dir へ隔離）。
+
+    差分更新の前に、周期条件つきで末尾整合の検査＋自己修復（ISSUE-488）を通す。修復が先なのは
+    増分（速い経路）が「既存末尾は正しい」前提で末尾 1 行しか触らないため（壊れた土台の上に
+    差分を積まない）。
+    """
     from marketdata.rollup import RollupState, incremental_update
     from marketdata.tick_m1 import m1_csv_path
 
+    _heal_if_due(data_dir)
     out_dir = Path(data_dir) / "rollups" / REF
     out_dir.mkdir(parents=True, exist_ok=True)
     m1_path = m1_csv_path(ref=REF, data_dir=data_dir)
@@ -481,6 +602,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=f"ストリーミング取得間隔秒（既定 {STREAM_DEFAULT_INTERVAL} / 下限 {STREAM_MIN_INTERVAL}）",
     )
     p.add_argument("--quiet", action="store_true", help="ログを抑制する")
+    p.add_argument(
+        "--takeover",
+        action="store_true",
+        help="先行の live_tick_watch が居れば SIGTERM で停止してから引き継ぐ"
+        "（単一書き手ロック・ISSUE-488。既定は二重起動を即時拒否）",
+    )
     return p
 
 
@@ -489,6 +616,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
 
     data_dir = args.data_dir if args.data_dir is not None else _data_dir()
+    # 単一書き手ロック（ISSUE-488 根治）: 派生物へ書くどのモードよりも先に獲得する。
+    #   返り値の参照をプロセス存命中保持する（GC で閉じるとロックが外れる）。
+    try:
+        _writer_lock = acquire_writer_lock(data_dir, takeover=args.takeover)  # noqa: F841
+    except WriterLockHeld as error:
+        LOG.error("%s", error)
+        return 2
     today = _utc_now().date()
 
     # 起動時 1 回の丸日追い付き（昨日まで）。

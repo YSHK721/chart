@@ -38,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional, Protocol, TextIO, runtime_checkable
 
+import numpy as np
 import pandas as pd
 
 # marketdata の resample 規則を再利用する（再実装しない・indicator_ui を逆 import しない）。
@@ -488,6 +489,7 @@ def stream_build(
     chunk_rows: int = 500_000,
     *,
     writer_factory: "RollupWriterFactory | None" = None,
+    save_state: bool = True,
 ) -> "RollupState":
     """1 分足を chunk 単位でストリーム読みし、各 TF をロールアップ CSV へ書き出す（メモリ有界）。
 
@@ -559,8 +561,92 @@ def stream_build(
     state = RollupState(
         last_processed_ts=(last_ts.to_pydatetime() if last_ts is not None else datetime.min)
     )
-    state.save(out_dir)
+    if save_state:
+        # 自己修復（heal_tail_gaps）が **1 TF だけ**を再構築する経路では state を進めない。
+        #   state は全 TF 共通の増分カーソルであり、ここで M1 末尾まで進めると、同じ呼び出しの
+        #   中でまだ増分処理していない他 TF の新規行が「処理済み」と見なされて恒久欠落する
+        #   （ISSUE-488 と同型の穴を自己修復自身が作る）。
+        state.save(out_dir)
     return state
+
+
+# --------------------------------------------------------------------------- #
+# 末尾整合の機械的検査と自己修復（ISSUE-488 根治）
+# --------------------------------------------------------------------------- #
+#: 検査 probe の行数（1 分足 ~2 か月）。1M の**確定した前周期**を必ず 1 本以上覆う長さにする
+#: （20k=約 14 日では月周期の完全被覆が作れず、8 月バー消失のような欠落を検査できない）。
+VERIFY_TAIL_ROWS = 90_000
+
+
+def tail_gap_report(probe: pd.DataFrame, tf: str, path: Path) -> "str | None":
+    """M1 末尾 probe から再集計した**確定 period** とロールアップ実体を突合する。
+
+    返り値は不一致の説明（欠落 period・値不一致 period）。一致なら ``None``。
+    probe で完全に覆えない period（先頭＝probe で切れている可能性・末尾＝形成中）は比較しない
+    （断定できないものを不一致と呼ばない）。probe の被覆が確定 period 1 本に満たない TF も
+    判定しない（``None``＝検査不能であって合格ではない。probe を伸ばせば検査できる）。
+
+    なぜ必要か（ISSUE-488 実測 2026-09-04）: 増分更新は state より古い行を二度と読まないため、
+    競合書込等でバーが消えると**出力は正しげなまま恒久欠落**する（1D: 9/1〜9/3・1M: 8 月バー）。
+    宣言でなく機械的検査で担保する（CLAUDE.md）。
+    """
+    expected = _resample.resample_ohlc_tf(probe, tf)
+    if len(expected) < 3:
+        return None
+    confirmed = expected.iloc[1:-1]
+    if not path.exists():
+        return f"ロールアップ CSV が存在しない: {path.name}"
+    actual = tail_reader.read_tail(path, len(expected) + 2)
+    missing = confirmed.index.difference(actual.index)
+    if len(missing) > 0:
+        return "欠落 period: " + ", ".join(str(p) for p in missing[:5])
+    joined = actual.loc[confirmed.index]
+    for col in ("open", "high", "low", "close", "volume"):
+        if col not in joined.columns:
+            return f"列が無い: {col}"
+        bad = ~np.isclose(
+            joined[col].to_numpy(dtype="float64"),
+            confirmed[col].to_numpy(dtype="float64"),
+            rtol=1e-9, atol=1e-6,
+        )
+        if bad.any():
+            first = confirmed.index[bad.argmax()]
+            return f"値不一致: {col} @ {first}"
+    return None
+
+
+def heal_tail_gaps(
+    m1_csv_path: Path,
+    tf_list: Iterable[str],
+    out_dir: Path,
+    ref_prefix: str = _REF_PREFIX,
+    *,
+    probe_rows: int = VERIFY_TAIL_ROWS,
+) -> "list[str]":
+    """末尾整合の検査に落ちた TF を M1 から**全件再構築**して自己修復する（ISSUE-488 根治）。
+
+    probe は 1 回だけ読み、全 TF の検査で共有する（同じ末尾を TF ごとに読み直さない）。
+    再構築（``stream_build``）は当該 TF のみ・``save_state=False``（state は増分カーソルの
+    持ち主が保存する）。返り値は再構築した TF のリスト（空＝全 TF 一致）。
+    """
+    m1_csv_path = Path(m1_csv_path)
+    if not m1_csv_path.is_file():
+        return []
+    probe = tail_reader.read_tail(m1_csv_path, int(probe_rows))
+    if probe.empty:
+        return []
+    healed: "list[str]" = []
+    for tf in tf_list:
+        report = tail_gap_report(probe, tf, _rollup_path(out_dir, tf, ref_prefix))
+        if report is None:
+            continue
+        logger.warning(
+            "ロールアップ末尾の欠落/不一致を検出（%s: %s）。M1 から全件再構築して自己修復します。",
+            tf, report,
+        )
+        stream_build(m1_csv_path, [tf], out_dir, ref_prefix, save_state=False)
+        healed.append(tf)
+    return healed
 
 
 def incremental_update(

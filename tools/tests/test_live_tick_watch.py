@@ -288,3 +288,110 @@ def test_cursor_ms_uses_last_tick_or_30min_window():
     expected = int((_pd.Timestamp(now, tz="UTC").timestamp() - 1800) * 1000)
     assert _cursor_ms_of(None, now) == expected
     assert _cursor_ms_of(df.iloc[0:0], now) == expected
+
+
+# --------------------------------------------------------------------------- #
+# 単一書き手ロック（ISSUE-488 根治）
+# --------------------------------------------------------------------------- #
+def test_writer_lock_refuses_a_second_writer(tmp_path: Path) -> None:
+    """二重起動は宣言でなく flock で機械的に拒否する（ISSUE-488 の根本原因の除去）。"""
+    first = ltw.acquire_writer_lock(tmp_path)
+    try:
+        with pytest.raises(ltw.WriterLockHeld, match="既に稼働中"):
+            ltw.acquire_writer_lock(tmp_path)
+    finally:
+        first.close()
+
+
+def test_writer_lock_is_released_when_the_holder_closes(tmp_path: Path) -> None:
+    """保持者の終了（クローズ）で自動解放される＝stale ロックを作らない。"""
+    import os
+
+    first = ltw.acquire_writer_lock(tmp_path)
+    first.close()
+
+    second = ltw.acquire_writer_lock(tmp_path)
+    content = (tmp_path / "live_tick_watch.lock").read_text()
+    second.close()
+
+    assert content.split()[0] == str(os.getpid())   # 再獲得が成立し保持者が書き換わっている
+
+
+def test_writer_lock_records_the_holder_pid(tmp_path: Path) -> None:
+    """ロックファイルは保持者 PID を名指す（拒否メッセージ・takeover の宛先）。"""
+    import os
+
+    handle = ltw.acquire_writer_lock(tmp_path)
+    try:
+        content = (tmp_path / "live_tick_watch.lock").read_text()
+        assert content.split()[0] == str(os.getpid())
+    finally:
+        handle.close()
+
+
+def test_takeover_stops_the_prior_holder_and_acquires(tmp_path: Path) -> None:
+    """--takeover: 先行保持者（別プロセス）を SIGTERM で退去させて引き継ぐ。
+
+    serve.sh 経由の正規起動が、出所不明の残存 watcher（ISSUE-488 で実在）を確実に
+    止めるための経路。子プロセスに実ロックを握らせて実挙動で検証する。
+    """
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", (
+            "import sys, time; sys.path.insert(0, sys.argv[1]);"
+            "from tools.live_tick_watch import acquire_writer_lock;"
+            "h = acquire_writer_lock(sys.argv[2]);"
+            "print('locked', flush=True); time.sleep(60)"
+        ), str(Path(__file__).resolve().parents[2]), str(tmp_path)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        handle = ltw.acquire_writer_lock(tmp_path, takeover=True)
+        handle.close()
+        assert child.wait(timeout=10) != 0        # SIGTERM で終了している
+    finally:
+        child.kill()                              # 既終了なら no-op（Popen.send_signal の仕様）
+
+
+def test_cli_has_the_takeover_flag() -> None:
+    args = ltw.build_arg_parser().parse_args(["--stream", "--takeover"])
+    assert args.takeover is True
+    assert ltw.build_arg_parser().parse_args([]).takeover is False
+
+
+# --------------------------------------------------------------------------- #
+# 自己修復の周期実行（ISSUE-488・検査は有界でも毎ループには回さない）
+# --------------------------------------------------------------------------- #
+def test_heal_runs_on_the_first_call_and_then_waits_for_the_period(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """発行の抑え込み: 起動直後は必ず 1 回・以後は周期が来るまで 0 回（回数は焼き込まない）。"""
+    from marketdata import rollup as rb
+
+    calls = []
+    monkeypatch.setattr(rb, "heal_tail_gaps", lambda *a, **k: calls.append(a) or [])
+    monkeypatch.setattr(ltw, "_heal_next_monotonic", 0.0)
+
+    ltw._heal_if_due(tmp_path)
+    after_first = len(calls)
+    for _ in range(5):
+        ltw._heal_if_due(tmp_path)
+
+    assert after_first == 1
+    assert len(calls) == after_first              # 周期内の追加発行は 0
+
+
+def test_heal_force_bypasses_the_period(monkeypatch, tmp_path: Path) -> None:
+    from marketdata import rollup as rb
+
+    calls = []
+    monkeypatch.setattr(rb, "heal_tail_gaps", lambda *a, **k: calls.append(a) or [])
+    monkeypatch.setattr(ltw, "_heal_next_monotonic", 0.0)
+
+    ltw._heal_if_due(tmp_path)
+    ltw._heal_if_due(tmp_path, force=True)
+
+    assert len(calls) == 2

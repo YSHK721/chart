@@ -69,7 +69,9 @@ if [ "$NO_UPDATE" -eq 0 ]; then
   # jp225_tick_m1.csv + rollups/jp225_tick へ増分更新し続ける（これが無いと tick 系が凍結し
   # /forming_bar が当日 parquet 不在で null・/candles も新規足なしとなり価格が更新されない）。
   echo "▶ tick ライブ更新を開始（毎分 当日tick全量再取得・ログ: $TICK_WATCH_LOG）"
-  "$VENV_PY" "$TICK_WATCH_TOOL" --stream >"$TICK_WATCH_LOG" 2>&1 &
+  # --takeover: 出所不明の残存 watcher（別ツリー・過去セッションの取り残し）が同一 CSV へ
+  #   競合書込しないよう、単一書き手ロックの先行保持者を停止してから引き継ぐ（ISSUE-488）。
+  "$VENV_PY" "$TICK_WATCH_TOOL" --stream --takeover >"$TICK_WATCH_LOG" 2>&1 &
   TICK_WATCH_PID=$!
   # MT5 増分ティックの供給（ISSUE-447 段階 1・承認事項 A-4）。VM 側 feed から
   #   「最後に保存したティック以降」を引き続け、jp225_mt5 系列（M1 + rollups）へ供給する。
