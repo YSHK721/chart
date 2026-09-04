@@ -29,10 +29,11 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 
@@ -415,6 +416,68 @@ def _compute_tf_period_profile(query: dict[str, list[str]]) -> tuple[int, dict[s
     return status, payload
 
 
+# --------------------------------------------------------------------------- #
+# GET 経路表（SOLID 是正 OCP・ISSUE-479 Wave2 I-2）
+#
+#   従来 ``do_GET`` は ``if parsed.path == "..."`` を 8 連ねており、経路が増えるたびに殻が伸び、
+#   殻の中へ経路固有の知識（クエリを取るか否か・どの計算へ送るか）が散っていた。経路の宣言を
+#   本表へ移し、``do_GET`` は表を引くだけにする（経路追加＝表へ 1 行）。
+#
+#   ``argument`` を持つのは、経路ごとに「殻へ渡すもの」が違うためである。クエリを使う経路は
+#   ``parse_qs`` の結果、``/catalog`` は何も要らず、静的配信は URL パスを要る。これを表側の
+#   宣言にすると ``do_GET`` から分岐が消え、同時に **使わないクエリ解析を発行しない**
+#   （``/catalog`` と静的配信で parse_qs を呼ばない）ことが構造的に保たれる。
+# --------------------------------------------------------------------------- #
+def _query_of(parsed: Any) -> dict[str, list[str]]:
+    """クエリ文字列を解析する（``parse_qs`` の呼出点は source 上ここ 1 か所）。"""
+    return parse_qs(parsed.query)
+
+
+def _no_query(parsed: Any) -> None:
+    """クエリを使わない経路の引数（解析を発行しない）。"""
+    del parsed
+    return None
+
+
+def _url_path_of(parsed: Any) -> str:
+    """静的配信が要るのは URL パスだけ。"""
+    return parsed.path
+
+
+@dataclass(frozen=True)
+class _GetRoute:
+    """1 つの GET 経路の宣言。
+
+    argument : ``urlparse`` 結果 → 殻へ渡す引数（クエリ解析の要否もここで決まる）。
+    call     : ``(handler, argument) -> None``。応答書き出しまでを行う。
+    """
+
+    argument: Callable[[Any], Any]
+    call: Callable[..., None]
+
+
+#: URL パス → 経路。表に無いパスは ``_STATIC_ROUTE`` へ落ちる。
+#:   MP 3 経路は共通殻 ``_respond_mp_via_worker`` へ **module 関数名のまま** 渡す
+#:   （ワーカーへ渡す計算が handler／ソケットを捕獲しない不変条件・ISSUE-259。
+#:   MP 経路の I/O 分離検定が、第 1 引数は識別子であることを AST で固定する）。
+_GET_ROUTES: dict[str, _GetRoute] = {
+    "/candles": _GetRoute(_query_of, lambda h, q: h._handle_candles(q)),
+    "/forming_bar": _GetRoute(_query_of, lambda h, q: h._handle_forming_bar(q)),
+    "/market_profile": _GetRoute(
+        _query_of, lambda h, q: h._respond_mp_via_worker(_compute_market_profile, q)),
+    "/market_profile_forming": _GetRoute(
+        _query_of, lambda h, q: h._respond_mp_via_worker(_compute_market_profile_forming, q)),
+    "/tf_period_profile": _GetRoute(
+        _query_of, lambda h, q: h._respond_mp_via_worker(_compute_tf_period_profile, q)),
+    "/live_ticks": _GetRoute(_query_of, lambda h, q: h._handle_live_ticks(q)),
+    "/tickvol_profile": _GetRoute(_query_of, lambda h, q: h._handle_tickvol_profile(q)),
+    "/catalog": _GetRoute(_no_query, lambda h, _q: h._handle_catalog()),
+}
+
+#: 表に無いパスの既定行（web/ 配下の静的配信・無い資源は 404）。
+_STATIC_ROUTE = _GetRoute(_url_path_of, lambda h, p: h._handle_static(p))
+
+
 class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
     """/compute・/candles・静的配信を捌くハンドラ（薄殻）。"""
 
@@ -489,32 +552,15 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
 
     # ---- GET /candles・静的配信 -------------------------------------------- #
     def do_GET(self) -> None:  # noqa: N802
+        """GET の経路解決（``_GET_ROUTES`` の表引き・分岐を持たない）。
+
+        経路名の知識は本メソッドに無く、すべて表側の宣言にある。経路を 1 本足す手順は表へ
+        1 行足すことだけで、殻（本メソッド）は改変しない（SOLID 是正 OCP・ISSUE-479 Wave2 I-2）。
+        表に無いパスは静的配信へ落ちる（既定行 ``_STATIC_ROUTE``）。
+        """
         parsed = urlparse(self.path)
-        if parsed.path == "/candles":
-            self._handle_candles(parse_qs(parsed.query))
-            return
-        if parsed.path == "/forming_bar":
-            self._handle_forming_bar(parse_qs(parsed.query))
-            return
-        if parsed.path == "/market_profile":
-            self._respond_mp_via_worker(_compute_market_profile, parse_qs(parsed.query))
-            return
-        if parsed.path == "/market_profile_forming":
-            self._respond_mp_via_worker(_compute_market_profile_forming, parse_qs(parsed.query))
-            return
-        if parsed.path == "/tf_period_profile":
-            self._respond_mp_via_worker(_compute_tf_period_profile, parse_qs(parsed.query))
-            return
-        if parsed.path == "/live_ticks":
-            self._handle_live_ticks(parse_qs(parsed.query))
-            return
-        if parsed.path == "/tickvol_profile":
-            self._handle_tickvol_profile(parse_qs(parsed.query))
-            return
-        if parsed.path == "/catalog":
-            self._handle_catalog()
-            return
-        self._handle_static(parsed.path)
+        route = _GET_ROUTES.get(parsed.path, _STATIC_ROUTE)
+        route.call(self, route.argument(parsed))
 
     def _handle_tickvol_profile(self, query: dict[str, list[str]]) -> None:
         """GET /tickvol_profile — 取引密度の時刻帯プロファイル（背景色帯の唯一源）を配信する薄殻。
