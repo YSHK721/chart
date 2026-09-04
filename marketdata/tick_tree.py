@@ -26,7 +26,7 @@ import pandas as pd
 
 from marketdata.paths import DATA_DIR
 
-# 既定の銘柄トークン（試作 prep_tick_rollup と一致）。木のファイル名の語彙であり本所が持つ。
+# 既定の銘柄トークン（tools/build_tick_rollup.py と一致）。木のファイル名の語彙であり本所が持つ。
 _DEFAULT_SYMBOL = "JP225"
 
 

@@ -74,7 +74,7 @@ _TICK_COLUMNS = TICK_COLUMNS
 PRICE_BASIS_MID = "mid"
 PRICE_BASIS_BID = "bid"
 _PRICE_BASES = (PRICE_BASIS_MID, PRICE_BASIS_BID)
-# 既定の銘柄・出力 ref（試作 prep_tick_rollup と一致: <ref>_m1.csv = jp225_tick_m1.csv）。
+# 既定の銘柄・出力 ref（tools/build_tick_rollup.py と一致: <ref>_m1.csv = jp225_tick_m1.csv）。
 _DEFAULT_SYMBOL = _tick_tree._DEFAULT_SYMBOL
 _DEFAULT_REF = "jp225_tick"
 

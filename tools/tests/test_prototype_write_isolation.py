@@ -8,8 +8,9 @@
 なぜ禁じるか（構造的理由）:
     試作は「使い捨ての実験」であり、レビューも回帰ゲートも通っていない。その試作が
     本番データや fixture を上書きできる状態は、実験の失敗がそのまま共有資産の破壊に
-    なるということである。実際 `prototype_260626-01/prep_tick_rollup.py` は本番 M1 CSV
-    を絶対パスで無条件に上書きし、`prototype_260811-01/make_regression_fixture.py` は
+    なるということである。実際 prototype_260626-01 の M1 ロールアップ試作（ISSUE-479
+    Wave2b で削除済み）は本番 M1 CSV を絶対パスで無条件に上書きし、
+    `prototype_260811-01/make_regression_fixture.py` は
     回帰ゲートが読む fixture の生成器そのものだった（＝ゲートの期待値を試作が
     作っていた）。
 
@@ -76,7 +77,8 @@ _WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
 #: いる」場合だけであり、恒久的な免除リストではない。
 #:
 #: 経緯（本ゲート新設時の実測: 試作 2 本・書き込み 5 点）:
-#:   prototype_260626-01/prep_tick_rollup.py:49,50          → 1-E で fail-stop（解消）
+#:   prototype_260626-01 の M1 ロールアップ試作:49,50       → 1-E で fail-stop、
+#:                                                            Wave2b でファイルごと削除（解消）
 #:   prototype_260811-01/make_regression_fixture.py:69,73,93 → 1-D で本体へ移設（解消）
 _FROZEN_OFFENDERS: "tuple[str, ...]" = ()
 

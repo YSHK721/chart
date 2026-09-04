@@ -35,7 +35,9 @@ from marketdata.resample import resample_ohlc, TIMEFRAME_RULES          # noqa: 
 ADAPTER = IndicatorComputeAdapter()
 
 # ---- ティック由来データ（ref="jp225_tick"）: 足も足内更新も同一ティック(mid・UTC)由来に一本化 ----
-#   prep_tick_rollup.py が生成した M1 原子を読み、上位足は resample_ohlc で生成（既存基盤流用）。
+#   tools/build_tick_rollup.py が生成した M1 原子を読み、上位足は resample_ohlc で生成
+#   （既存基盤流用）。当初の生成器だった試作 prep_tick_rollup.py は ISSUE-479 Wave2b で
+#   削除済み——本番 M1 CSV を絶対パスで無条件に上書きしたため。当時の実装は git 履歴にある。
 #   日足の高安 = 当日 UTC ティックの最大/最小 = /intraday のティックと一致 ⇒ 書き変わり無し。
 TICK_M1_CSV = HERE.parent / "data" / "marketdata" / "jp225_tick_m1.csv"
 _tick_m1: dict = {}

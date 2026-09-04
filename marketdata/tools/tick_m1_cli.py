@@ -4,7 +4,8 @@
 使い方: ``python -m marketdata.tools.tick_m1_cli [START] [END] [SYMBOL] [REF]``
 （旧: ``python -m marketdata.tick_m1``。素材化の権威モジュールに CLI を同居させないため移した。）
 
-START 既定 ``2025-01-01``、END 既定は本日（UTC）。試作 prep_tick_rollup の CLI を踏襲する。
+START 既定 ``2025-01-01``、END 既定は本日（UTC）。この既定は当初の試作 CLI を踏襲したもので、
+当該試作は ISSUE-479 Wave2b で削除済みである（当時の実装は git 履歴にある）。
 
 なぜ分けたか: CLI は引数解釈と進捗表示を担う**合成点**であり、素材化の規則
 （:mod:`marketdata.tick_m1`）とも tick 木レイアウト（:mod:`marketdata.tick_tree`）とも
