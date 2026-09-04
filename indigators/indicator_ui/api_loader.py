@@ -60,7 +60,7 @@ def _ensure_paths(api_path: Any, repo_root: Any) -> "tuple[Path, Path]":
     mp_api = root / "indigators" / "market_profile" / "api"
 
     # ISSUE-087 🟡-3: 固有名（marketdata / market_profile_api）は venv の .pth（tools/
-    #   install_dev_paths.py）が恒久解決する。本 bridge は結線点として汎用名パッケージ
+    #   install_dev_paths.py）が恒久解決する。本 loader は結線点として汎用名パッケージ
     #   ``adapter``（indicator_ui api）のみを追加する。.pth 未登録環境はフォールバックで従来どおり。
     paths = [str(api)]
     try:

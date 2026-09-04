@@ -109,8 +109,13 @@ export { requiredBarsOf };
 //   ため。返り値は Promise.resolve で包める値であればよく、全メソッドが undefined を返す。
 //   共有の凍結シングルトンである（解決のたびに作らない＝浪費を作らない・計算量検定で固定）。
 //
-//   面はアクターコントローラの規約（tickvol_bands_controller.js 冒頭に明文）と同一に保つ。
-//   規約へメソッドを足したら、ここにも足す（足し忘れは未登録経路でのみ TypeError になる）。
+//   面の導出規則: **レジストリ経由で呼ばれる面の全数**と一致させる。すなわち
+//   `_actorControllerFor` / `_actorControllerForInstance` の戻り値に対して呼ばれるメソッドの
+//   集合であり、現在は下の 7 本（本 controller の 6 本 ＋ replay subclass の applyMpGrowth）。
+//   協働子の公開面すべてではない——協働子が自分の内部からだけ呼ぶメソッド（MP の
+//   applyMpParams / reapplyMode / enableMarketProfile）や、合成根が具象を掴んで直接呼ぶメソッドは
+//   レジストリを通らないので、ここに置いても未登録経路から到達しない＝使われない面が増えるだけ。
+//   呼び出し口を足したら、ここにも足す（足し忘れは未登録経路でのみ TypeError になる）。
 const NULL_ACTOR_CONTROLLER = Object.freeze({
   applyMarketProfile() {},
   toggleVisible() {},
@@ -118,9 +123,7 @@ const NULL_ACTOR_CONTROLLER = Object.freeze({
   onGear() {},
   restoreInstance() {},
   onLiveRecompute() {},
-  applyMpParams() {},
   applyMpGrowth() { return false; },
-  reapplyMode() {},
 });
 
 export class IndicatorController {
