@@ -18,10 +18,28 @@
 //               時間足や指標を操作すると要求は飛ぶが 404 で、画面には何も起きない（無音の失敗）。
 //               UI は本属性を見て操作を閉じる（モード名で分岐しない）
 //
+// 表示層の入口も表が持つ（ISSUE-479 Wave2 J-5）:
+//   displayLayerPath   … 表示層の入口 module の URL。名指してよいのは**自 core の公開面**
+//                        （`/<prefix>/js/public/*.js`）だけで、内部階層を名指すと core 側の
+//                        配置換えで統合層が無言の 404 になる（識別子渡しの動的 import は
+//                        import 走査に現れない・J-4 の実測）。単一 chart の上で働く core
+//                        （chartApi あり）は自前の表示層を読み込まないので null
+//   displayLayerExport … その module が公開する据付関数の名前（`setup*Display`）
+//   hostKind           … 統合層が渡す器の種別。器の所有者は統合層であり、core は統合ページの
+//                        id を知らない（DIP）。core 側は渡された host へ挿すだけ
+//
 // 依存なし（DOM / fetch / SW に非依存の純データ＋純関数）。sw.js からも import される。
 
 /** 既定モード。未知値のフォールバック先であり、トグルの「オフ」状態でもある。 */
 export const DEFAULT_MODE = 'live';
+
+/**
+ * 器の種別（`hostKind`）。統合層はこの値で「どの器を渡すか」を引く。
+ * 値そのものはモード名ではないので、モードを増やしても増えない（器の種類が増えたときだけ増える）。
+ */
+export const BOTTOM_PANE_HOST_KIND = 'bottomPane';
+/** 版面全体を使う専用の器（ISSUE-460: dashboard はチャート画面へ置かない）。 */
+export const FULL_AREA_HOST_KIND = 'fullArea';
 
 /**
  * モード定義表。配列の順序が「表の巡回順」（`nextMode`）を決める。
@@ -37,6 +55,9 @@ export const MODES = Object.freeze([
     buttonTitle: null,
     chartApi: true,          // indicator_ui core が /candles・/compute を持つ。
     bottomPane: false,       // 表示層を持たない（チャートのみ）。
+    displayLayerPath: null,  // チャートそのもの＝統合層が別に読み込む表示層を持たない。
+    displayLayerExport: null,
+    hostKind: null,
   }),
   Object.freeze({
     id: 'replay',
@@ -47,6 +68,11 @@ export const MODES = Object.freeze([
     buttonTitle: 'リプレイ表示のオン・オフ',
     chartApi: true,          // replay_ui core が /candles・/compute を持つ。
     bottomPane: false,       // 表示層を持たない（チャートのみ）。
+    // リプレイ層は live 合成根が `boot.replayHandle` として返す（単一 chart の上で働く）。
+    //   統合層が別 module として読み込む表示層ではないので null。
+    displayLayerPath: null,
+    displayLayerExport: null,
+    hostKind: null,
   }),
   Object.freeze({
     id: 'sim',
@@ -61,6 +87,9 @@ export const MODES = Object.freeze([
     // MT5 のストラテジーテスターと同形: 表示層は**下部ドックペイン**に出し、チャートは
     //   上に残す（縦 2 分割・裁定 2026-08-21）。
     bottomPane: true,
+    displayLayerPath: '/sim/js/public/sim_public_api.js',
+    displayLayerExport: 'setupSimDisplay',
+    hostKind: BOTTOM_PANE_HOST_KIND,
   }),
   Object.freeze({
     id: 'dashboard',
@@ -78,6 +107,9 @@ export const MODES = Object.freeze([
     // 設計書 §4.6（依頼者裁定 2026-08-29・sim の縦 2 分割裁定より後）: **チャート画面には
     //   置かない**。下部ペインではなく専用の全面ホスト（#um-dashboard-area）を使う（ISSUE-460）。
     bottomPane: false,
+    displayLayerPath: '/dashboard/js/public/dashboard_public_api.js',
+    displayLayerExport: 'setupDashboardDisplay',
+    hostKind: FULL_AREA_HOST_KIND,
   }),
 ]);
 
