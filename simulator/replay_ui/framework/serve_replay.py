@@ -24,7 +24,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # 正典エラー契約（ISSUE-091 A2 / ISSUE-094 🔵-11）: status 翻訳・nested ボディとも中立共有
 #   パッケージ api_shared.http_contract の単一定義を直参照する。
