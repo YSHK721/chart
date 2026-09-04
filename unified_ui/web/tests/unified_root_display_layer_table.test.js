@@ -284,6 +284,30 @@ describe('unified_root — 表示層の読み込み（MODES 走査）', () => {
     expect(new Set(urls).size).toBe(urls.length);
   });
 
+  test('C3_switching_modes_issues_no_module_load_at_all', async () => {
+    // Arrange: 層は起動時の 1 回だけ作る。切替は enable/disable であって作り直しではない
+    //   （単一 mount の要）。切替のたびに読み直す形は出力が正しいまま浪費だけが増えるので、
+    //   状態検証では原理的に落ちない——発行回数でしか捕まえられない。
+    const { loadDisplayLayers, createModeController } = await loadRoot();
+    const { importModule } = makeImportSpy(MODES);
+    const layers = await loadDisplayLayers({ importModule, context: makeContext() });
+    const atBoot = importModule.mock.calls.length;
+    const mc = createModeController({
+      controller: {}, layers, setSwMode: () => Promise.resolve(true), initialMode: 'live',
+    });
+
+    // Act / Assert: 1 回の切替で 0 回。
+    await mc.toggle('sim');
+    expect(importModule.mock.calls.length - atBoot).toBe(0);
+
+    // Act / Assert: 8 回の切替でも 0 回（入力を増やしても発行が増えない＝オーダーの表明）。
+    const tour = ['dashboard', 'live', 'replay', 'sim', 'dashboard', 'live', 'sim', 'live'];
+    for (const id of tour) {
+      await mc.toggle(id);
+    }
+    expect(importModule.mock.calls.length - atBoot).toBe(0);
+  });
+
   test('C2_declaring_one_more_row_issues_exactly_one_more_module_load', async () => {
     // Arrange: 入力（表の行数）を 2 点で変え、発行が**出力量だけで決まる**ことを表明する。
     const four = await loadRoot();
