@@ -23,12 +23,14 @@ from .core import (
 from .trail import (
     TrailResult,
     build_btlm_trail,
+    containment_latest,
     coverage_latest,
     deviation_ratio,
     empirical_band,
     empirical_quantile_latest,
     ols_band,
     realized_coverage_latest,
+    rolling_containment,
     rolling_coverage,
 )
 
@@ -42,6 +44,7 @@ __all__ = [
     "build_btlm_trail",
     # ISSUE-233（B-2 承認）: 増分計算が「末尾 1 点だけ」を計算するための公開入口。
     #   計算式・分岐・境界は非公開時から変えていない（ローリング版が本入口を呼ぶ構成）。
+    "containment_latest",
     "coverage_latest",
     "deviation_ratio",
     "empirical_band",
@@ -51,6 +54,7 @@ __all__ = [
     "norm_ppf",
     "realized_coverage_latest",
     "resolve_source",
+    "rolling_containment",
     "rolling_coverage",
     "rolling_ols_window_end",
 ]

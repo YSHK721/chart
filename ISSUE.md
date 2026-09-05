@@ -14113,3 +14113,24 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   実UI（Playwright・http://127.0.0.1:8000/live/）で btlm_trail ダイアログの 11 項目全てに ⓘ 在席、
   クリックで全文表示（「既定 0.05」を含む q_low 本文が切り詰めなし）・再クリックで閉じることを実測。
   スクリーンショット: btlm-trail-tooltip-click.png。
+
+## ISSUE-495: [機能追加] btlm_trail 経験分位バンドの高安較正（band_basis=hl・下側=安値/上側=高値の乖離分布）
+- **ステータス**: RESOLVED（2026-09-05・実装・検査完了）
+- **依頼**: 「close ではなく、下方は安値、上方は高値で計算することは可能か?」→ 実装承認
+  （AskUserQuestion 2026-09-05。実績率の定義＝**ヒゲ非貫通率**も同時に裁定）。
+- **実装**（既定 close＝現行 byte 不変・追加オプション・OCP）:
+  - `trail.py` 正本仕様 §2(b'): `band_basis="hl"` で下側は安値乖離 `(low-mean)/mean`・上側は
+    高値乖離 `(high-mean)/mean` の分布へ**同一の因果機構**（当該バー除外・emp_n 窓）を適用。
+    「ヒゲすら届かない確率 q」の帯＝ストップ設計に整合。外れ値分位線も同基準。
+    `ols`+`hl` は ValueError（UI は経験分位時のみ有効化）。
+  - 実績率: `hl` 時は `rolling_containment`（low>=下帯 かつ high<=上帯）＝帯の較正対象と同じ量。
+  - 増分器（ISSUE-233）対応: dev_low/dev_high の授受・containment_latest。full と bit 一致。
+  - 結線: call_binding 既定値・golden・catalog.js（較正基準 select＋チップ・経験分位のみ有効）・
+    設計書 v1.0.8（FR-15）。
+- **検査**: btlm_trail 44（既定 byte 不変・帯の外側性・非リペイント・ヒゲ非貫通率定義・
+  計算量 Spy〔乖離/分位の発行回数が入力長に非依存・2 点固定〕）／増分パリティ 45（hl の
+  latest==full bit 一致・足内非破壊・バー前進・ols+hl は validation へ翻訳）／
+  api+契約 1,171・front 2,574 すべて green。
+- **実測（jp225_tick 1h・1500 本・empirical/q5-q95/q_out=0.99）**: mean/β/σ は close と完全一致
+  （回帰は不変）。帯は外側へ（q5: 63,031→62,842・q95: 65,491→65,617）。実績率 close=0.909 /
+  hl=0.911（名目 0.90 付近で自己較正）。

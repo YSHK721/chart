@@ -28,8 +28,10 @@
   | v1.0.5 | 2026-07-19 | **MA 参考線をユーザー指示で削除**。設定「MA 参考線／種別／期間」（`ma_reference`/`ma_type`/`ma_length`）・系列 `btlm_trail_ma`・MA 配管（`ma_reference.py`・adapter 生成・`moving_averages.core` 動的ロード結線）をテストごと撤去（catalog/schema/golden 同期）。`moving_averages` 本体・`applied_price` は無改変。他機能（ドット/ライン・バンド 2 方式・q_out・β/バンド内実績率/σ・単一ペア・8 択ソース）は byte 不変 |
   | v1.0.6 | 2026-07-19 | **「系列表示（ドット/ライン）」をパラメーター（`display_mode`）から設定ダイアログ「スタイル」タブへ移設**（ユーザー確定・案A＝系列単位・既定ドット）。ゲート = SeriesDef 新フラグ `pointStyleEditable`（btlm_trail の mean/分位線のみ付与＝他指標のスタイルタブ挙動は不変）。永続化は既存 per-series style patch へ `display` 属性を追加（schema 変更不要）。`applySeriesStyle` に `display→pointMarkersVisible/lineVisible` 写像を追加（display 未指定系列は不変）。adapter は `display_mode` 撤去・常にドット既定 emit（計算 byte 不変）。catalog/schema/golden 同期 |
   | v1.0.7 | 2026-07-19 | **スタイルタブの「線種」と「ドット/ライン」を 1 つの 4 択（`dot`／`solid`／`dotted`／`dashed`・既定 `dot`）へ統合**（ユーザー確定）。対象系列（pointStyleEditable）の行は 色・線幅・統合 4 択 の 1 行構成（折返し解消）。`dot`＝サークル（`display=dots`）、線種＝ライン描画＋当該 `lineStyle`（`display=line`＋`style`）へ分解し既存 per-series patch へ整合保存（`{display, style}` スキーマ不変・移行不要・往復整合）。未付与系列（補助線・読取・全他指標）は従来 3 択（solid/dotted/dashed）で byte 不変。UI（properties_dialog）のみ変更・renderer/form_model/adapter/catalog は不変 |
+  | v1.0.8 | 2026-09-05 | **経験分位バンドの較正基準 `band_basis` を追加**（依頼者承認 2026-09-05・ISSUE-495）。`close`（既定・現行 byte 不変）／`hl`＝下側は安値乖離 `(low-mean)/mean`・上側は高値乖離 `(high-mean)/mean` の分布へ同一の因果機構（当該バー除外・emp_n 窓）を当てる「ヒゲ較正」。外れ値分位線も同基準（上=高値分布の `q_out`・下=安値分布の `1-q_out`）。`hl` 時のバンド内実績率は**ヒゲ非貫通率**（low>=下帯 かつ high<=上帯・`rolling_containment`）。`ols`+`hl` は ValueError（UI は経験分位時のみ有効化）。増分器（ISSUE-233）も対応＝full と bit 一致 |
 
 - 確定仕様の正本：`/root/.claude/plans/kind-twirling-hollerith.md`（全項目を本書に反映）。
+  v1.0.8 の較正基準 `band_basis` は本書と `src/trail.py` docstring §2(b') を正本とする（plan は不変）。
 - 実証知見の正本：`.doc/BTLM_TRACK_ANALYSIS_FINDINGS.md`（結論 A〜E。非保証事項・数値は本書 §9.4／§10.1 に出典付き引用）。
 
 ## 2. プロジェクト概要
@@ -83,6 +85,7 @@
 | FR-12 | 窓幅 `maxbars` をパラメータとして持つ（既定 100・動的変更可） | plan §2 |
 | FR-13 | 経験分位バンドの参照本数 N をパラメータとして持つ（既定 500） | plan §2（バンド方式）・要件（経験分位仕様） |
 | FR-14 | `tgp_btlm` 本体のソースを 8 択へ拡張する（既存 4 択・既定 `open`・出力不変の追加拡張） | plan §4（同梱変更） |
+| FR-15 | 経験分位バンドの較正基準 `band_basis` を持つ（既定 `close`＝終値乖離・現行不変／`hl`＝下側は安値乖離・上側は高値乖離の分布＝ヒゲ較正。外れ値分位線・バンド内実績率〔`hl` 時はヒゲ非貫通率〕も同基準。`ols` では不可＝ValueError） | v1.0.8 改訂（依頼者承認 2026-09-05・ISSUE-495） |
 
 #### 非機能要件サマリー（数値目標）
 

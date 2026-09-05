@@ -315,3 +315,135 @@ def test_empirical_current_bar_deviation_does_not_affect_same_bar():
     assert res2.off_high[t0] == res.off_high[t0]
     # ただし後続バー（t0 の乖離が窓に入る）では変化する＝伝播は起きる（除外が「窓から常に落とす」ではない）。
     assert res2.band_high[t0 + 1] != res.band_high[t0 + 1]
+
+
+# --- 高安較正（band_basis="hl"・正本仕様 §2(b')・ISSUE-495） ----------------
+from src import containment_latest, rolling_containment  # noqa: E402
+from src import trail as _trail_mod  # noqa: E402  （計算量テストの Spy を差す縫い目）
+
+
+def _build_hl(df=None, **overrides):
+    kw = dict(band_method="empirical", maxbars=20, empirical_n=50, band_basis="hl")
+    kw.update(overrides)
+    return build_btlm_trail(df if df is not None else _df(), **kw)
+
+
+def test_hl_basis_requires_empirical():
+    with pytest.raises(ValueError):
+        build_btlm_trail(_df(), band_method="ols", band_basis="hl")
+
+
+def test_unknown_basis_raises():
+    with pytest.raises(ValueError):
+        build_btlm_trail(_df(), band_method="empirical", band_basis="wick")
+
+
+def test_hl_basis_requires_high_low_columns():
+    with pytest.raises(ValueError):
+        _build_hl(_df().drop(columns=["low"]))
+
+
+def test_default_basis_is_close_and_bitwise_unchanged():
+    # band_basis 省略と "close" 明示が bit 同一＝既定挙動不変（破壊的変更なしの機械的担保）。
+    df = _df()
+    kw = dict(band_method="empirical", maxbars=20, empirical_n=50, q_out=0.99)
+    omitted = build_btlm_trail(df, **kw)
+    explicit = build_btlm_trail(df, band_basis="close", **kw)
+    for name in ("mean", "band_low", "band_high", "off_low", "off_high", "deviations"):
+        assert getattr(omitted, name).tobytes() == getattr(explicit, name).tobytes(), name
+    assert omitted.band_basis == explicit.band_basis == "close"
+    assert omitted.deviations_low is None and omitted.deviations_high is None
+
+
+def test_hl_band_brackets_close_band():
+    # 安値乖離 <= 終値乖離 <= 高値乖離（各バー同一窓）なので、分位も同順＝帯は外側に広がる。
+    df = _df()
+    kw = dict(band_method="empirical", maxbars=20, empirical_n=50)
+    close_res = build_btlm_trail(df, band_basis="close", **kw)
+    hl_res = build_btlm_trail(df, band_basis="hl", **kw)
+    both = (
+        np.isfinite(close_res.band_low) & np.isfinite(hl_res.band_low)
+        & np.isfinite(close_res.band_high) & np.isfinite(hl_res.band_high)
+    )
+    assert both.any()
+    assert np.all(hl_res.band_low[both] <= close_res.band_low[both] + 1e-12)
+    assert np.all(hl_res.band_high[both] >= close_res.band_high[both] - 1e-12)
+
+
+def test_hl_band_is_non_repaint():
+    full = _build_hl(_df(300))
+    prefix = _build_hl(_df(300).iloc[:250])
+    for name in ("band_low", "band_high", "deviations_low", "deviations_high"):
+        np.testing.assert_array_equal(
+            getattr(full, name)[:250], getattr(prefix, name), err_msg=name
+        )
+
+
+def test_hl_outlier_lines_lie_outside_the_band():
+    res = _build_hl(q_out=0.99)
+    both = (
+        np.isfinite(res.off_low) & np.isfinite(res.off_high)
+        & np.isfinite(res.band_low) & np.isfinite(res.band_high)
+    )
+    assert both.any()
+    assert np.all(res.off_low[both] <= res.band_low[both] + 1e-12)
+    assert np.all(res.off_high[both] >= res.band_high[both] - 1e-12)
+
+
+def test_rolling_containment_counts_wick_non_breach():
+    # バー3本: 完全内包 / 上ヒゲ貫通 / 下ヒゲ貫通 → 直近3本のヒゲ非貫通率 = 1/3。
+    bar_low = np.array([99.5, 100.0, 98.5])
+    bar_high = np.array([100.5, 101.5, 100.0])
+    low = np.full(3, 99.0)
+    high = np.full(3, 101.0)
+    out = rolling_containment(bar_low, bar_high, low, high, n_cov=3)
+    assert out[-1] == pytest.approx(1.0 / 3.0)
+    assert containment_latest(bar_low, bar_high, low, high, n_cov=3) == out[-1]
+
+
+def test_containment_denominator_counts_only_finite_bands():
+    bar_low = np.array([99.5, 99.5])
+    bar_high = np.array([100.5, 100.5])
+    low = np.array([np.nan, 99.0])
+    high = np.array([np.nan, 101.0])
+    assert containment_latest(bar_low, bar_high, low, high, n_cov=2) == 1.0
+
+
+# --- 計算量テスト（Test Spy・絶対命令 2026-08-28） --------------------------
+class _CallSpy:
+    """呼び出し回数を数える Spy（値は本物へ委譲）。"""
+
+    def __init__(self, real):
+        self._real = real
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self._real(*args, **kwargs)
+
+
+@pytest.mark.parametrize("n", [120, 240])
+def test_hl_issue_counts_do_not_grow_with_input(monkeypatch, n):
+    """乖離率と因果分位の**発行回数**は入力長に依らない（2 点でオーダーを固定・回数は比較で表明）。"""
+    spy_dev = _CallSpy(_trail_mod.deviation_ratio)
+    spy_q = _CallSpy(_trail_mod._empirical_quantile_causal)
+    monkeypatch.setattr(_trail_mod, "deviation_ratio", spy_dev)
+    monkeypatch.setattr(_trail_mod, "_empirical_quantile_causal", spy_q)
+    _trail_mod.build_btlm_trail(
+        _df(n), band_method="empirical", maxbars=20, empirical_n=50,
+        band_basis="hl", q_out=0.99,
+    )
+    # 発行 = 出力に使う系列数（乖離 2 面・分位 = 帯 2 + 外れ線 2）。入力 n を変えても不変。
+    assert (spy_dev.calls, spy_q.calls) == (2, 4)
+
+
+@pytest.mark.parametrize("n", [120, 240])
+def test_close_issue_counts_do_not_grow_with_input(monkeypatch, n):
+    spy_dev = _CallSpy(_trail_mod.deviation_ratio)
+    spy_q = _CallSpy(_trail_mod._empirical_quantile_causal)
+    monkeypatch.setattr(_trail_mod, "deviation_ratio", spy_dev)
+    monkeypatch.setattr(_trail_mod, "_empirical_quantile_causal", spy_q)
+    _trail_mod.build_btlm_trail(
+        _df(n), band_method="empirical", maxbars=20, empirical_n=50, q_out=0.99,
+    )
+    assert (spy_dev.calls, spy_q.calls) == (1, 4)

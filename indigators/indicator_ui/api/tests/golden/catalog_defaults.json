@@ -1,5 +1,6 @@
 {
   "btlm_trail": {
+    "band_basis": "close",
     "band_method": "ols",
     "color": "rgba(123, 104, 238, 1)",
     "empirical_n": 500,

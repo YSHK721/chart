@@ -26,7 +26,7 @@ from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E40
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
 
 from .core import DEFAULT_EMP_N, DEFAULT_MAXBARS, DEFAULT_N_COV, DEFAULT_Q_HIGH, DEFAULT_Q_LOW
-from .trail import build_btlm_trail, rolling_coverage
+from .trail import build_btlm_trail, rolling_containment, rolling_coverage
 
 _COLOR_MEAN = "rgba(123, 104, 238, 1)"   # MediumSlateBlue（tgp_btlm と同系色）
 _COLOR_BAND = "rgba(123, 104, 238, 0.6)"
@@ -92,6 +92,7 @@ def add_btlm_trail(
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
     q_out=None,
+    band_basis: str = "close",
     show_metrics: bool = True,
     n_cov: int = DEFAULT_N_COV,
     time_column: Optional[str] = None,
@@ -113,6 +114,8 @@ def add_btlm_trail(
         source: 8 択ソース。maxbars: 回帰窓。q_low/q_high: 分位ペア。
         band_method: "ols"/"empirical"。empirical_n: 経験分位の参照本数。
         q_out: 外れ値分位（q_high<q_out<1 のみ有効・無効/空はオフ＝補助線なし）。バンド方式と同一規約で算出。
+        band_basis: 経験分位の較正基準（正本仕様 §2(b')・ISSUE-495）。"close"（既定）＝終値乖離／
+            "hl"＝下側は安値・上側は高値の乖離分布（ヒゲ較正）。実績率も同基準（ヒゲ非貫通率）へ切替。
         show_metrics: β/σ/バンド内実績率の読取欄系列を出すか。n_cov: 被覆率のローリング本数。
         time_column: 時刻列。color: btlm_mean の色。
 
@@ -126,7 +129,7 @@ def add_btlm_trail(
     res = build_btlm_trail(
         df, source=source, maxbars=maxbars,
         q_low=q_low, q_high=q_high, band_method=band_method,
-        empirical_n=empirical_n, q_out=q_out,
+        empirical_n=empirical_n, q_out=q_out, band_basis=band_basis,
     )
     times = _resolve_times(df, time_column)
     # 既定はドット（サークル）で emit。ドット/ライン切替はスタイルタブ（applySeriesStyle の display）が
@@ -167,7 +170,15 @@ def add_btlm_trail(
     if show_metrics:
         cov = None
         lower = {str(c).lower(): c for c in df.columns}
-        if "close" in lower:
+        if res.band_basis == "hl":
+            # 高安較正: 実績率もヒゲ非貫通率で測る（帯の較正対象と同じ量・ISSUE-495 裁定）。
+            #   high/low 列は build_btlm_trail が要求済み＝ここでは必ず在る。
+            cov = rolling_containment(
+                df[lower["low"]].to_numpy(dtype=float),
+                df[lower["high"]].to_numpy(dtype=float),
+                low, high, n_cov,
+            )
+        elif "close" in lower:
             close = df[lower["close"]].to_numpy(dtype=float)
             cov = rolling_coverage(close, low, high, n_cov)
         for name, vals in (

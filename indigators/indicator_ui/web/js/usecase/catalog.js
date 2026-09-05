@@ -199,9 +199,15 @@ const BTLM_TRAIL = new IndicatorDef({
       group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS,
       tooltip: '帯の算出方式。名目 ols＝トレンド線 ± norm_ppf(q)·予測σ（残差の正規近似・理論値）。経験分位＝直近N本の乖離率（終値−トレンド線）/トレンド線 の経験分位をトレンド線に掛ける（実測分布ベース・因果ウォークフォワード＝非リペイント）。乖離率はソース設定に依らず終値で測る。',
     }),
+    // 較正基準（正本仕様 §2(b')・ISSUE-495・band_method==empirical のときのみ有効）。
+    param('band_basis', ParamType.ENUM, 'close', [], ['close', 'hl'], {
+      group: 'group.calc', order: 6, label: '較正基準', enumLabels: { close: '終値', hl: '高値/安値' },
+      conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
+      tooltip: '経験分位バンドをどの価格で較正するか。終値（既定）＝終値乖離の単一分布。高値/安値＝下側は安値乖離・上側は高値乖離の分布で「ヒゲすら届かない確率 q」の帯になり、外れ値分位線とバンド内実績率（ヒゲ非貫通率）も同じ基準へ切り替わる。ストップはヒゲで刈られるため、ストップ設計には高値/安値が整合する。名目 ols バンドでは使えない。',
+    }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
-      group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
+      group: 'group.calc', order: 7, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
       tooltip: '経験分位の参照本数。直近N本の乖離率の分布から分位を取る。バンド方式が「経験分位」のときのみ有効。大きいほど帯が安定し、小さいほど直近のボラティリティに追随する。',
     }),

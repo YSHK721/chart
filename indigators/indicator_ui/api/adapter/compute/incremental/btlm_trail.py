@@ -61,6 +61,9 @@ class _Request:
     method: str             # "ols" / "empirical"
     empirical_n: int
     n_cov: int
+    basis: str = "close"    # 較正基準（正本仕様 §2(b')・ISSUE-495）
+    bar_low: "np.ndarray | None" = None    # low 列（basis="hl" の乖離率・ヒゲ非貫通率用）
+    bar_high: "np.ndarray | None" = None   # high 列（同上）
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,8 @@ class _State:
     deviations: "np.ndarray | None"
     close: "np.ndarray | None"
     m: int
+    dev_low: "np.ndarray | None" = None    # 高安較正の安値乖離（basis="hl" のみ・ISSUE-495）
+    dev_high: "np.ndarray | None" = None   # 同・高値乖離
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,13 @@ class BtlmTrailIncrementer:
         except (TypeError, ValueError):
             qo = None
 
+        # 較正基準（ISSUE-495）。未知値・ols との組合せは参照実装の ValueError へ委ねる。
+        basis = str(params.get("band_basis", "close")).lower()
+        if basis not in ("close", "hl"):
+            return None
+        if basis == "hl" and method != "empirical":
+            return None
+
         prices = src.resolve_source(df, str(params.get("source", "close")))
         n = int(prices.size)
         # 回帰窓が満たない区間（先頭の w<maxbars）は増分の対象にしない。
@@ -147,8 +159,14 @@ class BtlmTrailIncrementer:
         close = (
             df[lower["close"]].to_numpy(dtype=np.float64) if "close" in lower else None
         )
-        if method == "empirical" and close is None:
+        if method == "empirical" and basis == "close" and close is None:
             return None  # 参照実装が ValueError を出す経路へ委ねる。
+        bar_low = bar_high = None
+        if basis == "hl":
+            if "low" not in lower or "high" not in lower:
+                return None  # 参照実装が ValueError を出す経路へ委ねる。
+            bar_low = df[lower["low"]].to_numpy(dtype=np.float64)
+            bar_high = df[lower["high"]].to_numpy(dtype=np.float64)
 
         resolved = resolve_times(df, None)
         stamps = resolved.to_numpy()
@@ -162,6 +180,7 @@ class BtlmTrailIncrementer:
             q_low=ql, q_high=qh, q_out=qo, method=method,
             empirical_n=int(params.get("empirical_n", 500)),
             n_cov=int(params.get("n_cov", 250)),
+            basis=basis, bar_low=bar_low, bar_high=bar_high,
         )
 
     # ------------------------------------------------------------------ #
@@ -178,7 +197,7 @@ class BtlmTrailIncrementer:
             high = src.ols_band(mean, pred_sd, req.q_high)
             off_hi = src.ols_band(mean, pred_sd, req.q_out) if req.q_out else np.nan
             off_lo = src.ols_band(mean, pred_sd, 1.0 - req.q_out) if req.q_out else np.nan
-        else:
+        elif req.basis == "close":
             # 経験分位は当該バーを除く直近 emp_n 本（＝確定済みの乖離率）だけを使う（因果）。
             prior = state.deviations[:i]
             emp = lambda q: src.empirical_quantile_latest(prior, req.empirical_n, q)  # noqa: E731
@@ -186,10 +205,27 @@ class BtlmTrailIncrementer:
             high = src.empirical_band(mean, emp(req.q_high))
             off_hi = src.empirical_band(mean, emp(req.q_out)) if req.q_out else np.nan
             off_lo = src.empirical_band(mean, emp(1.0 - req.q_out)) if req.q_out else np.nan
+        else:
+            # 高安較正（§2(b')・ISSUE-495）: 下側は安値乖離・上側は高値乖離の分布（規約は同一）。
+            prior_lo, prior_hi = state.dev_low[:i], state.dev_high[:i]
+            emp_lo = lambda q: src.empirical_quantile_latest(prior_lo, req.empirical_n, q)  # noqa: E731
+            emp_hi = lambda q: src.empirical_quantile_latest(prior_hi, req.empirical_n, q)  # noqa: E731
+            low = src.empirical_band(mean, emp_lo(req.q_low))
+            high = src.empirical_band(mean, emp_hi(req.q_high))
+            off_hi = src.empirical_band(mean, emp_hi(req.q_out)) if req.q_out else np.nan
+            off_lo = src.empirical_band(mean, emp_lo(1.0 - req.q_out)) if req.q_out else np.nan
 
         cov = np.nan
-        if req.close is not None:
-            start = max(0, i + 1 - req.n_cov)
+        start = max(0, i + 1 - req.n_cov)
+        if req.basis == "hl":
+            # 実績率もヒゲ非貫通率（帯の較正対象と同じ量・ISSUE-495 裁定）。
+            cov = src.containment_latest(
+                req.bar_low[start: i + 1], req.bar_high[start: i + 1],
+                np.append(state.band_low[start:i], low),
+                np.append(state.band_high[start:i], high),
+                req.n_cov,
+            )
+        elif req.close is not None:
             cov = src.coverage_latest(
                 req.close[start: i + 1],
                 np.append(state.band_low[start:i], low),
@@ -212,10 +248,14 @@ class BtlmTrailIncrementer:
         res = src.build_btlm_trail(
             req.df.iloc[:m], source=req.source, maxbars=req.maxbars,
             q_low=req.q_low, q_high=req.q_high, band_method=req.method,
-            empirical_n=req.empirical_n, q_out=req.q_out,
+            empirical_n=req.empirical_n, q_out=req.q_out, band_basis=req.basis,
         )
         cov = None
-        if req.close is not None:
+        if req.basis == "hl":
+            cov = src.rolling_containment(
+                req.bar_low[:m], req.bar_high[:m], res.band_low, res.band_high, req.n_cov
+            )
+        elif req.close is not None:
             cov = src.rolling_coverage(
                 req.close[:m], res.band_low, res.band_high, req.n_cov
             )
@@ -224,7 +264,7 @@ class BtlmTrailIncrementer:
             band_low=res.band_low, band_high=res.band_high,
             off_low=res.off_low, off_high=res.off_high, cov=cov,
             deviations=res.deviations, close=req.close[:m] if req.close is not None else None,
-            m=m,
+            m=m, dev_low=res.deviations_low, dev_high=res.deviations_high,
         )
 
     def _truncate(self, state: "_State", m: int) -> "_State":
@@ -235,6 +275,7 @@ class BtlmTrailIncrementer:
             sigma=state.sigma[:m], band_low=state.band_low[:m], band_high=state.band_high[:m],
             off_low=cut(state.off_low), off_high=cut(state.off_high), cov=cut(state.cov),
             deviations=cut(state.deviations), close=cut(state.close), m=m,
+            dev_low=cut(state.dev_low), dev_high=cut(state.dev_high),
         )
 
     def _extend(self, state: "_State", req: "_Request", target: int) -> "_State":
@@ -249,6 +290,10 @@ class BtlmTrailIncrementer:
                 dev = np.append(
                     cur.deviations, src.deviation_ratio(req.close[i], bar.mean)
                 )
+            dev_lo = dev_hi = None
+            if cur.dev_low is not None:
+                dev_lo = np.append(cur.dev_low, src.deviation_ratio(req.bar_low[i], bar.mean))
+                dev_hi = np.append(cur.dev_high, src.deviation_ratio(req.bar_high[i], bar.mean))
             cur = _State(
                 prices=req.prices[:i + 1],
                 mean=np.append(cur.mean, bar.mean),
@@ -262,6 +307,7 @@ class BtlmTrailIncrementer:
                 deviations=dev,
                 close=None if cur.close is None else req.close[:i + 1],
                 m=i + 1,
+                dev_low=dev_lo, dev_high=dev_hi,
             )
         return cur
 

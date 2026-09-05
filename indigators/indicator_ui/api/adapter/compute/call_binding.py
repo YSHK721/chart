@@ -365,6 +365,9 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "band_method": "ols",
             "empirical_n": 500,
             "q_out": None,
+            # 較正基準（正本仕様 §2(b')・ISSUE-495）: close＝終値乖離（既定・現行）／
+            #   hl＝下側は安値・上側は高値の乖離分布（経験分位のみ・実績率もヒゲ非貫通率へ）。
+            "band_basis": "close",
             "show_metrics": True,
             "n_cov": 250,
             "color": "rgba(123, 104, 238, 1)",

@@ -8,6 +8,12 @@
 バンド方式（正本仕様 §2）:
     (a) 名目 ols   : mean ± norm_ppf(q)·pred_sd（参照実装 build_btlm_bands と数値一致）。
     (b) 経験分位   : mean·(1 + 直近 N 本の乖離率 (close-mean)/mean の経験 q)。ウォークフォワード。
+    (b') 経験分位・高安較正（band_basis="hl"・依頼者承認 2026-09-05・ISSUE-495）:
+        下側は安値乖離 (low-mean)/mean の分布に q_low、上側は高値乖離 (high-mean)/mean の
+        分布に q_high を当てる。「ヒゲすら届かない確率 q」の帯＝ストップ設計に整合する
+        （終値較正はヒゲの貫通を数えない）。外れ値分位線も同じ基準（上側=高値分布の q_out・
+        下側=安値分布の 1-q_out）。名目 ols には高安較正は無い（ValueError）。
+        被覆率は「ヒゲ非貫通率」（low>=下帯 かつ high<=上帯）で測る（rolling_containment）。
 
 依存:
     標準: __future__, dataclasses / 外部: numpy, pandas / プロジェクト内: core
@@ -46,8 +52,12 @@ class TrailResult:
         off_low:   外れ値分位ラインの下側（分位 1-q_out）。q_out 無効時は None。
         off_high:  外れ値分位ラインの上側（分位 q_out）。q_out 無効時は None。
         band_method: "ols" / "empirical"。
-        deviations: 乖離率 (close-mean)/mean（band_method="empirical" のときのみ。ols は None）。
+        band_basis: "close"（終値較正・既定）/ "hl"（高安較正・経験分位のみ）。
+        deviations: 乖離率 (close-mean)/mean（band_method="empirical" かつ band_basis="close"
+            のときのみ。それ以外は None）。
             ISSUE-233: 増分計算が次バーの経験分位を求めるために要る（自前で式を持たない）。
+        deviations_low / deviations_high: 高安較正の乖離率 (low-mean)/mean・(high-mean)/mean
+            （band_basis="hl" のときのみ。増分計算の授受用・ISSUE-495）。
     """
 
     mean: np.ndarray
@@ -59,6 +69,9 @@ class TrailResult:
     off_low: "np.ndarray | None" = None
     off_high: "np.ndarray | None" = None
     deviations: "np.ndarray | None" = None
+    band_basis: str = "close"
+    deviations_low: "np.ndarray | None" = None
+    deviations_high: "np.ndarray | None" = None
 
 
 def _validate_pair(q_low: float, q_high: float) -> tuple[float, float]:
@@ -145,6 +158,7 @@ def build_btlm_trail(
     band_method: str = "ols",
     empirical_n: int = DEFAULT_EMP_N,
     q_out=None,
+    band_basis: str = "close",
 ) -> TrailResult:
     """価格 DataFrame から btlm_trail のローリング成果を組む（単一分位ペア）。
 
@@ -158,17 +172,26 @@ def build_btlm_trail(
         q_out: 外れ値分位（上側 q_out・下側 1-q_out で補助線）。有効条件 q_high < q_out < 1。
             None・範囲外・q_out<=q_high は無効化（off_low=off_high=None＝補助線なし）。
             算出はバンド方式と同一規約（ols=mean±norm_ppf(q_out)·pred_sd／経験分位=既存機構）。
+        band_basis: 経験分位の較正基準（正本仕様 §2(b')・ISSUE-495）。"close"（既定）＝
+            終値乖離の単一分布（現行）。"hl"＝下側は安値乖離・上側は高値乖離の分布
+            （ヒゲ較正）。経験分位のみ（ols で "hl" は ValueError）。
 
     Returns:
         TrailResult。
 
     Raises:
-        ValueError: 分位ペア不正・未知ソース・未知バンド方式・maxbars<3。
+        ValueError: 分位ペア不正・未知ソース・未知バンド方式・未知較正基準・maxbars<3・
+            ols で band_basis="hl"・高安較正で high/low 列欠落。
     """
     ql, qh = _validate_pair(q_low, q_high)
     method = str(band_method).lower()
     if method not in ("ols", "empirical"):
         raise ValueError(f"未知のバンド方式です: {band_method}")
+    basis = str(band_basis).lower()
+    if basis not in ("close", "hl"):
+        raise ValueError(f"未知の較正基準です: {band_basis}（close / hl）")
+    if basis == "hl" and method != "empirical":
+        raise ValueError("高安較正（band_basis='hl'）は経験分位バンドのみ対応します。")
 
     prices = resolve_source(df, source)
     mean, pred_sd, beta, sigma = rolling_ols_window_end(prices, maxbars)
@@ -182,10 +205,11 @@ def build_btlm_trail(
         qo = None
 
     deviations = None
+    dev_low = dev_high = None
     if method == "ols":
         band_low = ols_band(mean, pred_sd, ql)
         band_high = ols_band(mean, pred_sd, qh)
-    else:
+    elif basis == "close":
         # 経験分位: 乖離率 (close - mean)/mean の直近 emp_n 本の経験 q（因果・当該バー除外＝設計書 §4.3）。
         lower = {str(c).lower(): c for c in df.columns}
         if "close" not in lower:
@@ -196,6 +220,20 @@ def build_btlm_trail(
         emp_hi = _empirical_quantile_causal(deviations, empirical_n, qh)
         band_low = empirical_band(mean, emp_lo)
         band_high = empirical_band(mean, emp_hi)
+    else:
+        # 高安較正（§2(b')・ISSUE-495）: 下側は安値乖離・上側は高値乖離の分布へ同じ因果機構を
+        #   当てる（分位算出・当該バー除外の規約は close 較正と 1 ビットも変えない）。
+        lower = {str(c).lower(): c for c in df.columns}
+        if "high" not in lower or "low" not in lower:
+            raise ValueError("高安較正（band_basis='hl'）には high / low 列が必要です。")
+        bar_low = df[lower["low"]].to_numpy(dtype=np.float64)
+        bar_high = df[lower["high"]].to_numpy(dtype=np.float64)
+        dev_low = deviation_ratio(bar_low, mean)
+        dev_high = deviation_ratio(bar_high, mean)
+        emp_lo = _empirical_quantile_causal(dev_low, empirical_n, ql)
+        emp_hi = _empirical_quantile_causal(dev_high, empirical_n, qh)
+        band_low = empirical_band(mean, emp_lo)
+        band_high = empirical_band(mean, emp_hi)
 
     # 外れ値分位ライン（バンド方式と同一規約・上側 q_out／下側 1-q_out で上下対称）。
     off_low = off_high = None
@@ -203,9 +241,14 @@ def build_btlm_trail(
         if method == "ols":
             off_high = ols_band(mean, pred_sd, qo)
             off_low = ols_band(mean, pred_sd, 1.0 - qo)
-        else:
+        elif basis == "close":
             emp_off_hi = _empirical_quantile_causal(deviations, empirical_n, qo)
             emp_off_lo = _empirical_quantile_causal(deviations, empirical_n, 1.0 - qo)
+            off_high = empirical_band(mean, emp_off_hi)
+            off_low = empirical_band(mean, emp_off_lo)
+        else:
+            emp_off_hi = _empirical_quantile_causal(dev_high, empirical_n, qo)
+            emp_off_lo = _empirical_quantile_causal(dev_low, empirical_n, 1.0 - qo)
             off_high = empirical_band(mean, emp_off_hi)
             off_low = empirical_band(mean, emp_off_lo)
 
@@ -213,6 +256,7 @@ def build_btlm_trail(
         mean=mean, beta=beta, sigma=sigma,
         band_low=band_low, band_high=band_high, band_method=method,
         off_low=off_low, off_high=off_high, deviations=deviations,
+        band_basis=basis, deviations_low=dev_low, deviations_high=dev_high,
     )
 
 
@@ -259,6 +303,55 @@ def rolling_coverage(
     割合算出は :func:`_coverage_flags` / :func:`_coverage_ratio` を共有する（定義は 1 箇所）。
     """
     inside, valid = _coverage_flags(close, low, high)
+    n = inside.size
+    out = np.full(n, np.nan)
+    for t in range(n):
+        start = max(0, t - n_cov + 1)
+        out[t] = _coverage_ratio(inside[start: t + 1], valid[start: t + 1])
+    return out
+
+
+def _containment_flags(
+    bar_low: np.ndarray, bar_high: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """ヒゲ非貫通率の判定フラグ（inside / valid・**唯一の定義**・ISSUE-495）。
+
+    inside = 「バーのヒゲが帯を貫通していない」（low >= 下帯 かつ high <= 上帯）。
+    valid の規約（帯が有限なバーのみ分母）は :func:`_coverage_flags` と同一。
+    """
+    bar_low = np.asarray(bar_low, dtype=np.float64).ravel()
+    bar_high = np.asarray(bar_high, dtype=np.float64).ravel()
+    low = np.asarray(low, dtype=np.float64).ravel()
+    high = np.asarray(high, dtype=np.float64).ravel()
+    inside = (bar_low >= low) & (bar_high <= high)
+    valid = np.isfinite(low) & np.isfinite(high)
+    return inside, valid
+
+
+def containment_latest(
+    bar_low: np.ndarray, bar_high: np.ndarray,
+    low: np.ndarray, high: np.ndarray, n_cov: int = DEFAULT_N_COV,
+) -> float:
+    """**最新バー**（末尾）のヒゲ非貫通率を返す（直近 n_cov 本・当該バーを含む）。
+
+    高安較正（band_basis="hl"）時の被覆率。窓の取り方・分母規約は :func:`coverage_latest`
+    と同一で、判定だけがヒゲ非貫通（:func:`_containment_flags`）になる。増分計算の入口。
+    """
+    inside, valid = _containment_flags(bar_low, bar_high, low, high)
+    start = max(0, inside.size - n_cov)
+    return _coverage_ratio(inside[start:], valid[start:])
+
+
+def rolling_containment(
+    bar_low: np.ndarray, bar_high: np.ndarray,
+    low: np.ndarray, high: np.ndarray, n_cov: int = DEFAULT_N_COV,
+) -> np.ndarray:
+    """各バー t で直近 n_cov 本（t を含む）のヒゲ非貫通率を返す（因果・ISSUE-495）。
+
+    高安較正（band_basis="hl"）時の band_hit_rate。ローリング規約は
+    :func:`rolling_coverage` と同一（判定フラグだけが違う・定義は 1 箇所ずつ）。
+    """
+    inside, valid = _containment_flags(bar_low, bar_high, low, high)
     n = inside.size
     out = np.full(n, np.nan)
     for t in range(n):

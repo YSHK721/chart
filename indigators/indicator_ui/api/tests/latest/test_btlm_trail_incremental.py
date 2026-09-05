@@ -210,3 +210,56 @@ def test_invalid_quantile_pair_raises_same_error_as_full_path():
     with pytest.raises(ComputeError) as latest_exc:
         latest_compute(adapter, "btlm_trail", "default", df, dict(params))
     assert latest_exc.value.error_type == full_exc.value.error_type
+
+
+# =========================================================================== #
+# 5. 高安較正（band_basis="hl"・正本仕様 §2(b')・ISSUE-495）
+# =========================================================================== #
+@pytest.mark.parametrize("q_out", [None, 0.99])
+@pytest.mark.parametrize("maxbars", [50, 115])
+def test_latest_equals_full_hl_basis(maxbars, q_out):
+    adapter = IndicatorComputeAdapter()
+    _assert_tail_matches_full(
+        adapter, _ohlcv(400),
+        _params(band_method="empirical", band_basis="hl", maxbars=maxbars,
+                q_out=q_out, empirical_n=200, n_cov=150),
+    )
+
+
+def test_intrabar_steps_are_non_destructive_hl_basis():
+    adapter = IndicatorComputeAdapter()
+    base = _ohlcv(400)
+    params = _params(band_method="empirical", band_basis="hl", q_out=0.99,
+                     empirical_n=200, n_cov=150)
+    _assert_tail_matches_full(adapter, base, params)
+    for i in range(10):
+        df = base.copy()
+        delta = (i - 5) * 9.0
+        for col in ("open", "high", "low", "close"):
+            df.iloc[-1, df.columns.get_loc(col)] = base.iloc[-1][col] + delta
+        _assert_tail_matches_full(adapter, df, params)
+
+
+def test_bar_advance_keeps_exact_match_hl_basis():
+    adapter = IndicatorComputeAdapter()
+    base = _ohlcv(400)
+    params = _params(band_method="empirical", band_basis="hl",
+                     empirical_n=200, n_cov=150)
+    for n in range(300, 312):
+        _assert_tail_matches_full(adapter, base.iloc[:n], params)
+    assert incremental_state.stats()["states"] == 1
+
+
+def test_hl_basis_with_ols_falls_back_and_the_reference_error_propagates():
+    # ols + hl は増分器の対象外（prepare が None）→ 参照実装の ValueError が従来経路で
+    #   validation（ComputeError）へ翻訳されて可視化される（無言の縮退にならない）。
+    from adapter.compute.indicator_compute_adapter import ComputeError
+
+    adapter = IndicatorComputeAdapter()
+    with pytest.raises(ComputeError) as excinfo:
+        full_compute(
+            adapter, "btlm_trail", "default", _ohlcv(400),
+            _params(band_method="ols", band_basis="hl"),
+        )
+    assert excinfo.value.error_type == "validation"
+    assert incremental_state.stats()["states"] == 0
