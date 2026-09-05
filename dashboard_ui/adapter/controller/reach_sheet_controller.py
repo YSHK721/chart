@@ -438,8 +438,11 @@ class ReachSheetController:
                     band=level_value, side=side_key,
                 )
                 if projected is not None:
+                    # 表示名は「ext」を除いた hi / lo（依頼者指示 2026-09-05）。応答のキー
+                    #   （ext_hi / ext_lo）は識別子として変えない。
                     sides[side_key] = {
-                        "price": float(projected), "level": side_key,
+                        "price": float(projected),
+                        "level": side_key.removeprefix("ext_"),
                     }
             if any(entry is not None for entry in sides.values()):
                 level_prices[instance.key] = sides
@@ -649,10 +652,10 @@ def _cell_json(
     thresholds = [
         {"level": level, "value": float(value)}
         for level, value in (
-            ("ext_hi", cell.ext_high),
+            ("hi", cell.ext_high),
             (_quantile_label(spec.q_high) if spec else None, cell.band_high),
             (_quantile_label(spec.q_low) if spec else None, cell.band_low),
-            ("ext_lo", cell.ext_low),
+            ("lo", cell.ext_low),
         )
         if level is not None and value is not None
     ]

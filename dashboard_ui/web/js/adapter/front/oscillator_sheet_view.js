@@ -185,7 +185,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       if (!entry || entry.value === null || entry.value === undefined) continue;
       td.appendChild(el('span', {
         className: 'dash-osc-band',
-        title: String(entry.level).startsWith('ext')
+        title: entry.level === 'hi' || entry.level === 'lo'
           ? '極端分位（evq_ext）＝過去の帯外イベントの極端値の水準'
           : '正常帯の分位水準（上端は到達判定の閾値）',
         textContent: `${entry.level} ${formatValue(entry.value)}`,

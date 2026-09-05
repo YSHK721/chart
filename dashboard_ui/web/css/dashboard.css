@@ -346,6 +346,12 @@
   text-align: left;
 }
 
+/* 表頭の左端セル（「指標」）は上下・左右の両方向で固定する（z は行見出しより上）。 */
+.dash-osc-table thead th:first-child {
+  left: 0;
+  z-index: 6;
+}
+
 /* 表頭の補足（モックの .hint）。薄さではなく大きさで下げる（規約 4）。 */
 .dash-sheet-hint {
   font-size: 10.5px;
@@ -782,7 +788,12 @@
 /* ===== 第 2 表 = オシレータ表 =====
    モックの第 2 表からは**スタイルだけ**を借りる（段の名前 s0〜s3 は §5.3 で廃止済みなので
    構造は写さない）。1 セルに現在値と到達時刻を積む（色から絶対量は読めない・§5.2）。 */
+/* 指標名の列は左端へ固定する（依頼者指示 2026-09-05。横走査でどの行か見失わないため）。
+   背景は不透明（var(--surface)）が必須——透けるとセルが裏を通るときに読めなくなる。 */
 .dash-osc-table th.dash-osc-name {
+  position: sticky;
+  left: 0;
+  z-index: 4;
   text-align: left;
   min-width: 200px;
   font-size: 13px;

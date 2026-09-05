@@ -157,14 +157,14 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     const cells = [oscCell({
       indicator_id: 'tickvol', timeframe: '1h', value: 267, p: 0.31,
       thresholds: [
-        { level: 'ext_hi', value: 15321.0 },
+        { level: 'hi', value: 15321.0 },
         { level: 'q90', value: 8497.7 },
         { level: 'q10', value: 12.5 },
       ],
     })];
     const { host } = renderInto(sheetResponse({ cells }));
     const text = textOf(cellAt(host, 'tickvol', '1h'));
-    assert.match(text, /ext_hi 15,?321/);
+    assert.match(text, /hi 15,?321/);
     assert.match(text, /q90 8,?497\.7/);
     assert.match(text, /q10 12\.5/);
   });
@@ -174,10 +174,10 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     const cells = [oscCell({
       indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, p: 0.31,
       level_prices: {
-        ext_hi: { price: 67000.5, level: 'ext_hi' },
+        ext_hi: { price: 67000.5, level: 'hi' },
         q_high: { price: 65951.2, level: 'q90' },
         q_low: { price: 63164.7, level: 'q10' },
-        ext_lo: { price: 61200.3, level: 'ext_lo' },
+        ext_lo: { price: 61200.3, level: 'lo' },
       },
     })];
     const { host } = renderInto(sheetResponse({ cells }));
