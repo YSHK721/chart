@@ -111,20 +111,20 @@ def session_totals_via_grid(df: pd.DataFrame, bar_starts: np.ndarray) -> pd.Data
 
 
 def main() -> None:
-    tick = load_m1(DATA / "jp225_tick_m1.csv", since=SINCE)
-    print(f"jp225_tick M1: {tick.index.min()} .. {tick.index.max()}  rows={len(tick)}")
+    dukas_m1 = load_m1(DATA / "jp225_tick_m1.csv", since=SINCE)
+    print(f"jp225_tick M1: {dukas_m1.index.min()} .. {dukas_m1.index.max()}  rows={len(dukas_m1)}")
 
     # アンカー仮説の検証: 開場は常にブローカー日境界（18:00 NY）から 0 または 60 分後（日曜等）か
-    day_start = broker_day_starts(tick.index, "America/New_York", 18)
-    sid = session_ids(tick.index)
-    opens = pd.Series(_unix_seconds(tick.index), index=tick.index).groupby(sid).min()
-    ds_of_open = pd.Series(day_start, index=tick.index).groupby(sid).first()
+    day_start = broker_day_starts(dukas_m1.index, "America/New_York", 18)
+    sid = session_ids(dukas_m1.index)
+    opens = pd.Series(_unix_seconds(dukas_m1.index), index=dukas_m1.index).groupby(sid).min()
+    ds_of_open = pd.Series(day_start, index=dukas_m1.index).groupby(sid).first()
     lag_min = ((opens - ds_of_open) // 60)
     dist = lag_min.value_counts().sort_values(ascending=False).head(6)
     within = float((lag_min.isin([0, 60])).mean()) * 100
     print(f"開場と日境界(18:00 NY)の差（分・上位）: {dist.to_dict()} → 0 or 60 分が {within:.1f}%")
 
-    ts = tick.index
+    ts = dukas_m1.index
     grids = [
         ("(a) UTC床 4h", _unix_seconds(ts.floor("4h")), 240),
         ("(b) MT5式 4h(日境界起点)", anchored_starts(ts, 240, day_start), 240),
@@ -133,12 +133,12 @@ def main() -> None:
     print(f"\n== 監査（jp225_tick {SINCE} 以降）==")
     for label, starts, minutes in grids:
         # (a) のスロットは同じ日境界基準で数える（比較の物差しを揃える）
-        audit(tick, label, np.asarray(starts), day_start, minutes)
+        audit(dukas_m1, label, np.asarray(starts), day_start, minutes)
 
     print("\n== M-4 セッション畳み一致 ==")
-    base = session_totals_direct(tick)
+    base = session_totals_direct(dukas_m1)
     for label, starts, _m in grids:
-        via = session_totals_via_grid(tick, np.asarray(starts))
+        via = session_totals_via_grid(dukas_m1, np.asarray(starts))
         ok = np.allclose(base.to_numpy(), via.to_numpy(), rtol=0, atol=1e-9)
         print(f"{label}: {'完全一致' if ok else '不一致!!'}")
 
