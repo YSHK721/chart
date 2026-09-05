@@ -330,13 +330,27 @@ export class PropertiesDialog {
     label.className = 'prop-field-label';
     label.textContent = humanizeKey(field.label);
 
-    // info（ツールチップ）アイコン。
+    // info（ツールチップ）アイコン。クリックで説明ブロックを開閉する（hover の title だけだと
+    //   クリックでは何も出ず、タッチ環境では一切読めない・ユーザー報告 2026-09-05）。
+    //   本文は **素のまま** 使う。humanizeKey は i18n キー用（'label.length'→'length'）であり、
+    //   自由文へ適用すると小数点（「既定 0.05」等）以降に切り詰められる（ISSUE-494）。
     let info = null;
+    let desc = null;
     if (field.tooltip) {
       info = doc.createElement('span');
       info.className = 'prop-field-info';
       info.textContent = 'ⓘ';
-      info.title = humanizeKey(field.tooltip);
+      info.title = field.tooltip;
+      desc = doc.createElement('div');
+      desc.className = 'prop-field-desc';
+      desc.dataset.propDesc = field.name;
+      desc.textContent = field.tooltip;
+      desc.hidden = true;
+      info.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        desc.hidden = !desc.hidden;
+      });
       label.append(' ', info);
     }
 
@@ -356,6 +370,9 @@ export class PropertiesDialog {
     error.dataset.propError = field.name;
 
     row.append(label, controlWrap, error);
+    if (desc) {
+      row.append(desc);
+    }
     this._fieldEls.set(field.name, { row, control, error, info });
     return row;
   }

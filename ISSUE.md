@@ -14096,3 +14096,20 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   **トップレベルの `computeTimeframe`** で渡す。`params.timeframe` に入れると計算層が
   LAYER_CONSUMED_PARAMS として除去するだけで投影は発動せず、チャート足の値が返る
   （UI の設定ダイアログ経由なら front が正しく `computeTimeframe` へ載せるため問題ない）。
+
+## ISSUE-494: [UI不具合] 設定ダイアログの ⓘ をクリックしても説明が表示されない（＋ tooltip 本文の切り詰め）
+- **ステータス**: RESOLVED（2026-09-05・実UI検証済み）
+- **報告**: ユーザー「説明ツールチップをクリックしても説明が表示されない」（btlm_trail のチップ追加直後）。
+- **原因（2 件・いずれも既存実装）**:
+  1. ⓘ はネイティブ `title` 属性のみ（`properties_dialog.js` 旧 :339）。hover でしか出ず、
+     クリックでは何も起きない。タッチ環境では一切読めない。
+  2. `humanizeKey(field.tooltip)` — humanizeKey は i18n キー用（`label.length`→`length`）で、
+     ASCII `.` を含む自由文を**最後の `.` 以降に切り詰める**。小数を含む既存の `q_out` チップ
+     （「例 0.99＝…」）も追加前から被害していた（既存バグ）。
+- **抜本対策**: ⓘ クリックで行グリッド全幅の説明ブロック `.prop-field-desc` を開閉
+  （再クリックで閉じる・`title` は素の全文で併存）。本文は humanizeKey を通さず素のまま表示。
+  CSS は既存トークンのみ（`--ct-uiSurface`/`--ct-uiTextWeak`/`--ct-uiAccent`・新色ゼロ）。
+- **検証**: front 2,574 テスト green（css_theme_identity の色目録 301→304 を理由つき更新）。
+  実UI（Playwright・http://127.0.0.1:8000/live/）で btlm_trail ダイアログの 11 項目全てに ⓘ 在席、
+  クリックで全文表示（「既定 0.05」を含む q_low 本文が切り詰めなし）・再クリックで閉じることを実測。
+  スクリーンショット: btlm-trail-tooltip-click.png。
