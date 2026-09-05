@@ -21,10 +21,17 @@
 //     （付けると二重になる）。
 //
 // 無言縮退の禁止（設計書 §5.2 / §7 と同じ規約）: 紐付けが無い・JSON が壊れている・紐付け先の
-//   テンプレートが無い・未知の時間足が混ざっている場合は、空の束を静かに返さず**理由つきの
+//   テンプレートが無い・台帳に無い時間足が混ざっている場合は、空の束を静かに返さず**理由つきの
 //   エラー**を返す。空で返すと「水準が 1 つも無い相場」と区別が付かなくなる。
+//   台帳に在るがダッシュボード対象外の足（例 30m）はエラーでなく `ignoredTimeframes` で申告する
+//   （ISSUE-498）。
 
 import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
+// チャート UI の時間足台帳（生成物＝Python 定義の単一ソース・ISSUE-254）。共有は
+//   indicator_ui web への相対 symlink（js/domain/）＝live 側 105 件と同じ慣行。
+//   「台帳に在るがダッシュボードの 8 本に無い足」（例 30m）は**設定の誤りではない**
+//   （チャート画面では正当な紐付け）ため、束からは読まずに申告する（下記）。
+import { TF_CODES } from '../../domain/tf_meta.js';
 
 /** 読み取る論理キー（接頭辞は注入された storage が付ける）。 */
 export const TEMPLATE_STORAGE_KEYS = Object.freeze({
@@ -98,12 +105,20 @@ export function readInstanceBundle({ storage } = {}) {
   const templates = Array.isArray(templatesDoc?.templates) ? templatesDoc.templates : [];
   const byId = new Map(templates.filter((t) => t && t.templateId).map((t) => [t.templateId, t]));
 
+  // ダッシュボードの 8 本に無い紐付けの扱い（ユーザー報告 2026-09-05・ISSUE-498）:
+  //   - チャート台帳（TF_CODES）に在る足（例 30m）＝チャート画面の正当な設定。§3.4 の
+  //     対象外なので束からは読まないが、黙って落とさず `ignoredTimeframes` として申告する。
+  //     従来はここで束全体を失敗させており、30m へテンプレートを紐付けただけでラダーが
+  //     一切表示されなくなっていた（設定の誤りでないものを誤り扱いしていた）。
+  //   - 台帳にも無い値（壊れた保存内容）＝従来どおり理由つきで失敗させる（無言縮退の禁止）。
   const unknown = Object.keys(bindings).filter((tf) => !DASHBOARD_TIMEFRAMES.includes(tf));
-  if (unknown.length > 0) {
+  const corrupt = unknown.filter((tf) => !TF_CODES.includes(tf));
+  if (corrupt.length > 0) {
     return failure(
-      `紐付けに未知の時間足があります: ${unknown.join(', ')}（対象は ${DASHBOARD_TIMEFRAMES.join(' / ')}）`,
+      `紐付けに未知の時間足があります: ${corrupt.join(', ')}（対象は ${DASHBOARD_TIMEFRAMES.join(' / ')}）`,
     );
   }
+  const ignoredTimeframes = unknown;
 
   const instances = [];
   // 走査は **DASHBOARD_TIMEFRAMES の順**で行う（保存の列挙順に依存させない＝読むたびに
@@ -144,5 +159,5 @@ export function readInstanceBundle({ storage } = {}) {
     }
   }
 
-  return { ok: true, instances };
+  return { ok: true, instances, ignoredTimeframes };
 }

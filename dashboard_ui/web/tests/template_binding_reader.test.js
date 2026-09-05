@@ -168,7 +168,8 @@ describe('template_binding_reader — 8 時間足の instance 束', () => {
   });
 
   test('an_unknown_timeframe_in_the_bindings_is_reported_instead_of_silently_dropped', () => {
-    // 未知の足を黙って落とすと、設定側の誤りが表の欠落として現れて原因が追えない。
+    // 台帳（TF_CODES）にも無い足＝壊れた保存内容。黙って落とすと設定側の誤りが表の欠落として
+    // 現れて原因が追えないため、従来どおり理由つきで失敗させる。
     const storage = readOnlyStub({
       [TEMPLATE_STORAGE_KEYS.templates]: JSON.stringify({
         templates: [{ templateId: 'tpl#4', name: 'A', instances: [] }],
@@ -178,6 +179,39 @@ describe('template_binding_reader — 8 時間足の instance 束', () => {
     const result = readInstanceBundle({ storage });
     assert.equal(result.ok, false);
     assert.match(result.error.message, /3s/);
+  });
+
+  test('a_chart_only_timeframe_binding_is_skipped_and_declared_not_failed', () => {
+    // 30m はチャート台帳に在る正当な紐付け（ダッシュボードの 8 本の対象外＝§3.4）。
+    // ユーザー報告 2026-09-05（ISSUE-498）: 従来は束全体を失敗させ、30m へテンプレートを
+    // 紐付けただけでラダーが一切表示されなくなっていた。
+    const storage = readOnlyStub({
+      [TEMPLATE_STORAGE_KEYS.templates]: JSON.stringify({
+        templates: [{
+          templateId: 'tpl#4', name: 'A',
+          instances: [{ indicatorId: 'moving_averages', variant: 'default', params: {} }],
+        }],
+      }),
+      [TEMPLATE_STORAGE_KEYS.bindings]: JSON.stringify({ bindings: { '1m': 'tpl#4', '30m': 'tpl#4' } }),
+    });
+    const result = readInstanceBundle({ storage });
+    assert.equal(result.ok, true);
+    // 束は 8 本ぶんだけ（30m からは読まない）。
+    assert.deepEqual(result.instances.map((i) => i.timeframe_binding), ['1m']);
+    // 黙って落とさず申告する。
+    assert.deepEqual(result.ignoredTimeframes, ['30m']);
+  });
+
+  test('the_declared_ignored_timeframes_are_empty_when_all_bindings_are_dashboard_targets', () => {
+    const storage = readOnlyStub({
+      [TEMPLATE_STORAGE_KEYS.templates]: JSON.stringify({
+        templates: [{ templateId: 'tpl#4', name: 'A', instances: [] }],
+      }),
+      [TEMPLATE_STORAGE_KEYS.bindings]: JSON.stringify({ bindings: { '1m': 'tpl#4' } }),
+    });
+    const result = readInstanceBundle({ storage });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.ignoredTimeframes, []);
   });
 
   test('a_storage_that_throws_on_read_is_reported_as_an_error', () => {
