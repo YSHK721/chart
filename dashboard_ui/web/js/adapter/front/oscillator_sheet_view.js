@@ -183,13 +183,19 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     //   「閾表示ではなく q 水準を表示しろ」。名前は第 1 表・価格行と同じ語彙）。
     for (const entry of (Array.isArray(cell.thresholds) ? cell.thresholds : [])) {
       if (!entry || entry.value === null || entry.value === undefined) continue;
-      td.appendChild(el('span', {
+      const row = el('span', {
         className: 'dash-osc-band',
         title: entry.level === 'hi' || entry.level === 'lo'
           ? '極端分位（evq_ext）＝過去の帯外イベントの極端値の水準'
           : '正常帯の分位水準（上端は到達判定の閾値）',
-        textContent: `${entry.level} ${formatValue(entry.value)}`,
+      });
+      // 項目名は左端・数値は右端（依頼者指示 2026-09-05「項目を左端に固定しろ」。
+      //   名前の書式は価格行と同じ唯一のクラスを使う＝第 2 定義を作らない）。
+      row.appendChild(el('i', {
+        className: 'dash-osc-level-price-name', textContent: String(entry.level),
       }));
+      row.appendChild(el('span', { textContent: formatValue(entry.value) }));
+      td.appendChild(row);
     }
   }
 

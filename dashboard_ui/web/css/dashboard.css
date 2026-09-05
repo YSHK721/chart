@@ -822,9 +822,13 @@
   color: var(--ink2);
 }
 
-/* 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定の帯上端。現在値の直下に控えめに併記する。 */
+/* 閾値水準の行（§5.2・依頼者指示 2026-09-05）: 項目名（q90 / hi 等）は**セルの左端**・
+   数値は右端（同日指示「項目を左端に固定しろ」。数値の右揃えは表全体の規約のまま）。 */
 .dash-osc-band {
-  display: block;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   font-size: 10.5px;
   letter-spacing: .04em;
   color: var(--ink2);
@@ -969,8 +973,12 @@
 }
 
 /* 分位水準（帯上端）に達したときの価格（依頼者指示 2026-08-30・§5.5 の閉形式逆写像）。 */
+/* 項目名は左端・価格は右端（依頼者指示 2026-09-05・閾値水準の行と同じ読み）。 */
 .dash-osc-level-price {
-  display: block;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   color: var(--ink2);

@@ -163,10 +163,18 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
       ],
     })];
     const { host } = renderInto(sheetResponse({ cells }));
-    const text = textOf(cellAt(host, 'tickvol', '1h'));
-    assert.match(text, /hi 15,?321/);
-    assert.match(text, /q90 8,?497\.7/);
-    assert.match(text, /q10 12\.5/);
+    const cellEl = cellAt(host, 'tickvol', '1h');
+    const rows = flatten(cellEl).filter((el) => el.classList.contains('dash-osc-band'));
+    assert.equal(rows.length, 3);
+    // 各行は項目名（左端）と数値の 2 要素（項目名の書式は価格行と同じ唯一のクラス）。
+    assert.match(textOf(rows[0]), /hi/);
+    assert.match(textOf(rows[0]), /15,?321/);
+    assert.match(textOf(rows[1]), /q90/);
+    assert.match(textOf(rows[1]), /8,?497\.7/);
+    assert.match(textOf(rows[2]), /q10/);
+    assert.match(textOf(rows[2]), /12\.5/);
+    assert.ok(rows.every((row) => flatten(row)
+      .some((el) => el.classList.contains('dash-osc-level-price-name'))));
   });
 
   test('a_projectable_cell_shows_the_extreme_quantile_prices_in_ladder_order', () => {
