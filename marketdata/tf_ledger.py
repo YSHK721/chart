@@ -53,6 +53,13 @@ class TfDescriptor(NamedTuple):
       同じ規則（1D=同日 / 1W=6 日前 / 1M=月初）が resample・session_day・tf_meta の 5 箇所へ
       ``tf == "1D"`` 等のリテラル分岐として書き写されていた。暦算術は stdlib ``datetime`` だけで
       表せるため、本モジュールの「依存ゼロ（stdlib のみ）」宣言と両立する。
+    - ``anchored``: 日中足だが**セッション日起点**の等間隔グリッドで切る tf か（ISSUE-489・
+      依頼者承認 2026-09-05）。UTC 床では取引日の長さ（実測 22〜23 時間）が刻みで割り切れない
+      とき、休場を内包し 2 セッションを混在させるバーが毎営業日 1 本できる（4h 実測:
+      2019 年以降 1,525 本・オーバーナイトギャップ 1,525 回をローソク内部に隠蔽）。
+      セッション日境界（休場帯の中・:mod:`marketdata.session_day`）を起点にすると混在 0 本
+      （同実測）。MT5 端末のサーバ日起点グリッドと同じ考え方であり、境界の食い違いは
+      米 DST と EU DST の切替差の数週間だけ（±1 時間）。
     """
 
     rule: "str | None"
@@ -60,6 +67,7 @@ class TfDescriptor(NamedTuple):
     calendar: bool
     bar_sec: int
     period_first: "Callable[[date], date] | None" = None
+    anchored: bool = False
 
 
 # 時間足コード → 派生属性台帳（§チャート表示時間選択・1 分足原子）。**唯一の規則源**。
@@ -75,7 +83,7 @@ TF_DESCRIPTORS: "dict[str, TfDescriptor]" = {
     "15m": TfDescriptor("15min", True, False, 900),
     "30m": TfDescriptor("30min", True, False, 1800),
     "1h": TfDescriptor("1h", True, False, 3600),
-    "4h": TfDescriptor("4h", True, False, 14400),
+    "4h": TfDescriptor("4h", True, False, 14400, anchored=True),
     "1D": TfDescriptor("1D", True, True, 86400, period_first=_first_day_of_same_broker_day),
     "1W": TfDescriptor("W-FRI", False, True, 604800, period_first=_first_day_of_broker_week),
     "1M": TfDescriptor("ME", False, True, 2592000, period_first=_first_day_of_month),
@@ -92,6 +100,12 @@ TF_BAR_SEC: "dict[str, int]" = {
 # は本値の再輸出であり（名前・型・内容とも不変）、値を持たない。
 CALENDAR_LABEL_CODES: "frozenset[str]" = frozenset(
     code for code, d in TF_DESCRIPTORS.items() if d.calendar and not d.floorable
+)
+
+# セッション日起点の等間隔グリッドで切る日中足（ISSUE-489）の**唯一源**。台帳からの導出値。
+# resample（集計）・tf_meta（周期判定）はこの集合から分岐を導出する（tf リテラルを書かない）。
+SESSION_ANCHORED_CODES: "frozenset[str]" = frozenset(
+    code for code, d in TF_DESCRIPTORS.items() if d.anchored
 )
 
 

@@ -16,8 +16,10 @@ import pandas as pd
 
 from marketdata import keep_last, outlier_policy
 from marketdata.resample import (
+    SESSION_ANCHORED_TFS,
     SESSION_TFS,
     TIMEFRAME_RULES,
+    from_broker_naive_index,
     resample_ohlc_tf,
     to_broker_naive_index,
 )
@@ -149,6 +151,16 @@ def resample_with_pv(m1: pd.DataFrame, tf: str) -> pd.DataFrame:
             # 1D/1W/1M はブローカー暦日で集計する（本番 resample_ohlc_session と同じ index 写像）。
             ext = ext.copy()
             ext.index = to_broker_naive_index(m1.index)
-        out = base.join(ext.resample(rule).sum(), how="left")
+            summed = ext.resample(rule).sum()
+        elif tf in SESSION_ANCHORED_TFS:
+            # 4h はセッション日起点グリッド（ISSUE-489）。本番 resample_ohlc_anchored と同じ
+            #   写像＋逆写像（唯一源）でラベルを揃える（揃えないと join が全 NaN になる）。
+            ext = ext.copy()
+            ext.index = to_broker_naive_index(m1.index)
+            summed = ext.resample(rule).sum()
+            summed.index = from_broker_naive_index(summed.index)
+        else:
+            summed = ext.resample(rule).sum()
+        out = base.join(summed, how="left")
     assert out[base_cols].equals(base[base_cols]), f"{tf}: OHLCV が本番 resample と不一致"
     return out

@@ -68,15 +68,56 @@ def test_1w_labels_friday_broker_date():
 
 
 def test_intraday_passthrough_identical_to_utc_resample():
+    # 4h は ISSUE-489（依頼者承認 2026-09-05）でセッション日起点へ変更＝UTC 床の対象外
+    #   （下の test_anchored_4h_* が新規約を固定する）。
     df = _m1([
         (_utc(2026, 7, 12, 22, 3), 100, 101, 99, 100.5, 10),
         (_utc(2026, 7, 12, 22, 4), 100.5, 102, 100, 101.0, 5),
         (_utc(2026, 7, 13, 5, 0), 101.0, 105, 101, 104.0, 7),
     ])
-    for tf in ("5m", "1h", "4h"):
+    for tf in ("5m", "1h"):
         a = rs.resample_ohlc_tf(df, tf)
         b = rs.resample_ohlc(df, rs.TIMEFRAME_RULES[tf])
         pd.testing.assert_frame_equal(a, b)
+
+
+def test_anchored_4h_bars_start_at_the_session_day_boundary():
+    """ISSUE-489: 4h バーはセッション日境界（夏 21:00 / 冬 22:00 UTC）起点の等間隔グリッド。
+
+    UTC 床だと 22:03 の行は 20:00 バーへ入り、前セッション末尾と混在する（実測 1,525 本）。
+    新規約では日曜 22:03 の開場行が 21:00 起点のバーの先頭になる。
+    """
+    df = _m1([
+        (_utc(2026, 7, 12, 22, 3), 100, 101, 99, 100.5, 10),   # 夏: 境界 21:00 UTC
+        (_utc(2026, 7, 13, 0, 59), 100.5, 102, 100, 101.0, 5),  # 同じバー（21:00〜01:00）
+        (_utc(2026, 7, 13, 1, 0), 101.0, 105, 101, 104.0, 7),   # 次のバー（01:00〜05:00）
+        (_utc(2026, 1, 15, 22, 30), 90, 91, 89, 90.5, 3),       # 冬: 境界 22:00 UTC
+    ])
+    out = rs.resample_ohlc_tf(df.sort_index(), "4h")
+
+    labels = [ts.strftime("%m-%d %H:%M") for ts in out.index]
+    assert "07-12 21:00" in labels and "07-13 01:00" in labels
+    assert "01-15 22:00" in labels
+    first = out.loc[pd.Timestamp("2026-07-12 21:00")]
+    assert first["open"] == 100 and first["close"] == 101.0 and first["volume"] == 15
+
+
+def test_anchored_4h_agrees_with_the_scalar_period_entry():
+    """集計（ベクトル）と周期判定（スカラ・tf_meta 経由の唯一入口）の一致（第 2 定義を作らない）。"""
+    from marketdata.session_day import session_slot_start
+
+    rows = [
+        _utc(2026, 7, 12, 22, 3), _utc(2026, 7, 13, 0, 59), _utc(2026, 7, 13, 1, 0),
+        _utc(2026, 7, 13, 12, 34), _utc(2026, 1, 15, 22, 30), _utc(2026, 1, 15, 21, 59),
+        _utc(2026, 3, 20, 10, 0),   # 米 DST と EU DST の切替差の週も含める
+    ]
+    df = _m1([(t, 100, 101, 99, 100.5, 1) for t in rows]).sort_index()
+    out = rs.resample_ohlc_tf(df, "4h")
+
+    for t in df.index:
+        expected = session_slot_start(int(t.value // 1_000_000_000), 14400)
+        containing = out.index[out.index.searchsorted(t, side="right") - 1]
+        assert int(containing.value // 1_000_000_000) == expected, str(t)
 
 
 def test_period_utc_start_maps_labels_to_session_starts():

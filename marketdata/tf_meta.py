@@ -18,12 +18,18 @@ import pandas as pd
 from marketdata import dataset_registry
 from marketdata.resample import (
     CALENDAR_LABEL_TFS,
+    SESSION_ANCHORED_TFS,
     SESSION_TFS,
     TF_DESCRIPTORS,
     TIMEFRAME_RULES,
     period_utc_start,
 )
-from marketdata.session_day import session_bar_time, session_day_start, session_period_label
+from marketdata.session_day import (
+    session_bar_time,
+    session_day_start,
+    session_period_label,
+    session_slot_start,
+)
 
 # 形成中バー/tf-period を供給する datasetRef（ティック由来＝ticks parquet を持つ）。値の源は
 # marketdata.dataset_registry の記述子レジストリ（唯一源・ISSUE-094 🟡-9）。定義位置は本モジュール
@@ -92,6 +98,7 @@ def bar_time_unix(tf: str, unix_sec: int) -> int:
         return int(pd.Timestamp(label).value // 1_000_000_000)
     if tf in SESSION_TFS:                                   # 暦ラベル tf は上で返済み＝残余は 1D。
         return session_bar_time(unix_sec)
+    # セッション日起点日中足（ISSUE-489・4h）はラベル＝期間始端（下の period_start_unix と同値）。
     return period_start_unix(unix_sec, tf)
 
 
@@ -109,6 +116,8 @@ def period_start_unix(now_unix: int, tf: str) -> int:
         return int(start.value // 1_000_000_000)
     if tf in SESSION_TFS:                                   # 暦ラベル tf は上で返済み＝残余は 1D。
         return session_day_start(now_unix)
+    if tf in SESSION_ANCHORED_TFS:                          # セッション日起点日中足（ISSUE-489・4h）。
+        return session_slot_start(now_unix, TF_BAR_SEC[tf])
     start = pd.Timestamp(now_unix, unit="s").floor(floor_freq(tf))  # naive UTC
     return int(start.value // 1_000_000_000)
 

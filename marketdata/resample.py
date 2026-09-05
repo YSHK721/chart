@@ -70,6 +70,9 @@ SESSION_TFS = tuple(code for code, d in TF_DESCRIPTORS.items() if d.calendar)
 # = {"1W", "1M"}）の**再輸出**。名前・型（frozenset）・内容は不変で、値はここに持たない
 # （同じ導出式を 2 つ書けば台帳の第 2 定義になる）。
 CALENDAR_LABEL_TFS = _tf_ledger.CALENDAR_LABEL_CODES
+
+# セッション日起点の等間隔グリッドで切る日中足（ISSUE-489・4h）。台帳の再輸出（値を持たない）。
+SESSION_ANCHORED_TFS = _tf_ledger.SESSION_ANCHORED_CODES
 _NY_TZ = "America/New_York"
 _BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
 
@@ -102,8 +105,51 @@ def resample_ohlc_session(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
     return resample_ohlc(shifted, rule)
 
 
+def resample_ohlc_anchored(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
+    """日中足を**セッション日起点**の等間隔グリッドで集計する変種（ISSUE-489・依頼者承認 2026-09-05）。
+
+    UTC 床（:func:`resample_ohlc`）だと、取引日の長さ（実測 22〜23 時間）が刻みで割り切れない
+    tf（4h）は毎営業日 1 本、休場を内包し 2 セッションを混在させるバーを作る（2019 年以降の
+    実測: 混在 1,525 本・オーバーナイトギャップ 1,525 回をローソク内部に隠蔽）。ブローカー
+    時間（セッション日境界＝休場帯の中）を座標系にして floor すれば、グリッドが常に取引日の
+    頭から始まり混在は 0 本になる（同実測）。
+
+    実装は :func:`resample_ohlc_session` と同型: index をブローカー時間へ写像 → その座標系で
+    floor 集計（ブローカー日 00:00 起点＝セッション日起点）→ ラベルを UTC へ戻す。ラベルは
+    他の日中足と同じ**期間始端**（naive UTC）。集約規則は :func:`resample_ohlc` へ委譲する。
+
+    DST 切替との干渉について: 米 DST の切替（NY 02:00）は常に週末休場中であり、ラベル逆写像の
+    曖昧時刻（NY 01:00・秋の重複）に実バーは生じない（生じるならその期間に取引が要る）。
+    ``ambiguous=True``（夏側）は決定性のための明示であって経路としては使われない。
+    """
+    if rule is None:
+        return df
+    shifted = df.copy()
+    shifted.index = to_broker_naive_index(df.index)
+    out = resample_ohlc(shifted, rule)
+    out.index = from_broker_naive_index(out.index)
+    out.index.name = df.index.name
+    return out
+
+
+def from_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """:func:`to_broker_naive_index` の逆写像（naive ブローカー時間 → naive UTC）。
+
+    anchored 集計のラベルを UTC へ戻す唯一の式（ISSUE-489）。外部（pv 等の付加列を同じ
+    グリッドで合算する消費者）にも同じ式が要るため公開する（写しを作らせない）。
+    秋 DST の曖昧時刻は夏側（``ambiguous=True``）で決定的に解決する——切替は常に週末休場中で
+    あり、実バーの経路としては使われない。
+    """
+    ny_naive = idx - _BROKER_SHIFT
+    return (
+        ny_naive.tz_localize(_NY_TZ, ambiguous=True, nonexistent="shift_forward")
+        .tz_convert("UTC").tz_localize(None)
+    )
+
+
 def resample_ohlc_tf(df: pd.DataFrame, tf: str) -> pd.DataFrame:
-    """tf 名で resample する単一入口（ISSUE-078）: 1D/1W/1M はセッション集計・日中足は UTC floor。
+    """tf 名で resample する単一入口（ISSUE-078）: 1D/1W/1M はセッション集計・4h はセッション日
+    起点グリッド（ISSUE-489）・他の日中足は UTC floor。
 
     rollup（stream/increment）と全件再集計の両方が本関数を使うことで、セッション日規則の
     二重定義を防ぐ（旧: 呼び出し側が TIMEFRAME_RULES→resample_ohlc を直接組み合わせ）。
@@ -111,6 +157,8 @@ def resample_ohlc_tf(df: pd.DataFrame, tf: str) -> pd.DataFrame:
     rule = TIMEFRAME_RULES[tf]
     if tf in SESSION_TFS:
         return resample_ohlc_session(df, rule)
+    if tf in SESSION_ANCHORED_TFS:
+        return resample_ohlc_anchored(df, rule)
     return resample_ohlc(df, rule)
 
 

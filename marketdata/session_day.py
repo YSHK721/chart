@@ -85,6 +85,24 @@ def session_bar_time(t: "int | float") -> int:
     return int(datetime(b.year, b.month, b.day, tzinfo=timezone.utc).timestamp())
 
 
+def session_slot_start(t: "int | float", bar_sec: int) -> int:
+    """``t`` が属する「セッション日起点・等間隔 ``bar_sec`` グリッド」のバー始端 UNIX 秒（ISSUE-489）。
+
+    4h 等のセッション日起点日中足（:data:`marketdata.tf_ledger.SESSION_ANCHORED_CODES`）の
+    周期判定のスカラ入口。座標系は :func:`marketdata.resample.resample_ohlc_anchored` と同一
+    （ブローカー時間で floor）であり、両者の一致は検定が固定する。ラベル＝期間始端（UTC）。
+
+    秋の DST 切替（NY 01:00 の重複）は fold=0（夏側）で解決する＝pandas ``ambiguous=True`` と
+    同値。切替は常に週末休場中のため、実バーの経路としては使われない（決定性のための明示）。
+    """
+    b = _broker_date(t).replace(tzinfo=None)                  # ブローカー壁時計（naive）
+    midnight = datetime(b.year, b.month, b.day)
+    elapsed = (b - midnight).total_seconds()
+    slot_start = midnight + timedelta(seconds=(int(elapsed) // int(bar_sec)) * int(bar_sec))
+    ny_naive = slot_start - _BROKER_SHIFT
+    return int(ny_naive.replace(tzinfo=_NY, fold=0).timestamp())
+
+
 def session_label_to_start(label: str) -> int:
     """ラベル 'YYYY-MM-DD' → 当該セッション日の始端 UNIX 秒（:func:`session_date_label` の逆）。"""
     y, m, d = (int(x) for x in str(label).split("-"))
