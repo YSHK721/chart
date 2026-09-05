@@ -219,11 +219,15 @@ def test_invalid_quantile_pair_raises_same_error_as_full_path():
 @pytest.mark.parametrize("maxbars", [50, 115])
 def test_latest_equals_full_hl_basis(maxbars, q_out):
     adapter = IndicatorComputeAdapter()
-    _assert_tail_matches_full(
+    latest = _assert_tail_matches_full(
         adapter, _ohlcv(400),
         _params(band_method="empirical", band_basis="hl", maxbars=maxbars,
                 q_out=q_out, empirical_n=200, n_cov=150),
     )
+    # hl 較正でも系列一式（mean・帯 2 本・実績率）が増分経路から出ていること。
+    names = {s["name"] for s in latest}
+    assert {"btlm_trail_mean", "btlm_trail_q5", "btlm_trail_q95",
+            "btlm_trail_band_hit_rate"} <= names
 
 
 def test_intrabar_steps_are_non_destructive_hl_basis():
@@ -238,6 +242,8 @@ def test_intrabar_steps_are_non_destructive_hl_basis():
         for col in ("open", "high", "low", "close"):
             df.iloc[-1, df.columns.get_loc(col)] = base.iloc[-1][col] + delta
         _assert_tail_matches_full(adapter, df, params)
+    # 形成中バーを 10 通り動かしても確定状態は 1 つのまま（非破壊＝作り直していない）。
+    assert incremental_state.stats()["states"] == 1
 
 
 def test_bar_advance_keeps_exact_match_hl_basis():
