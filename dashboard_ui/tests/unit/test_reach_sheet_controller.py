@@ -229,7 +229,7 @@ def test_the_cells_use_the_model_field_names() -> None:
 
     cell = response["cells"][0]
 
-    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "p",
+    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "band_low", "p",
                          "tail_unscaled", "reach", "unavailable_reason", "level_prices",
                          "instance_key", "value_series", "history", "cumulative"}
     assert set(cell["level_prices"]) == {"q_high", "q_low"}

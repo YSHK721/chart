@@ -148,6 +148,7 @@ export function oscCell(overrides = {}) {
     timeframe: '1m',
     value: 0.8,
     band_high: null,   // 閾値＝到達判定の帯上端（依頼者指示 2026-09-05・帯の供給が無ければ null）
+    band_low: null,    // 帯下端（一本化承認 2026-09-05・宣言が無ければ null）
     p: 0.31,
     tail_unscaled: false,
     reach: null,

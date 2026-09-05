@@ -293,6 +293,38 @@ class TestOscillatorCells:
         assert sheet.cells[0].band_high == pytest.approx(91.5)
         assert series.issued.count(instance.key) == 1
 
+    def test_a_cell_reports_the_lower_band_when_declared(self) -> None:
+        """一本化（依頼者承認 2026-09-05）: band_low_series の宣言があれば帯下端も併記する。
+
+        計算量: 帯下端も**発行済み**の系列の当該時刻値を読むだけ（発行 − 使用 = 0 を維持）。
+        """
+        instance = SheetInstance("profit_rsi", "default", {}, "1m", intrabar_capable=True)
+        series = FakeSeriesPort({instance.key: {
+            "rsi": _points([10.0, 20.0, 30.0, 25.0]),
+            "rsi_q90": _points([90.0] * 4),
+            "rsi_q10": _points([12.0, 12.0, 12.0, 11.5])}})
+        bars = FakeBarPort({"1m": _bars([100.0] * 4)})
+        roles = FakeRoles({"profit_rsi": OscillatorSpec(
+            value_series="rsi", band_high_series="rsi_q90",
+            q_high=0.9, window_n=500, k_events=50,
+            band_low_series="rsi_q10", q_low=0.1)})
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].band_low == pytest.approx(11.5)
+        assert series.issued.count(instance.key) == 1
+
+    def test_a_cell_without_a_low_band_declaration_has_no_lower_threshold(self) -> None:
+        """band_low_series の宣言が無い指標の帯下端は None（発明しない）。"""
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 30.0, 25.0], [90.0] * 4)
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].band_low is None
+
     def test_a_cell_without_a_band_supply_has_no_threshold(self) -> None:
         """帯が供給されていない時刻の閾値は None（無言で数値を発明しない）。"""
         instance, series, bars, roles = self._rsi_setup(

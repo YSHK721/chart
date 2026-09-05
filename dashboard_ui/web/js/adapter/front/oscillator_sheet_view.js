@@ -156,20 +156,39 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     return root;
   }
 
+  /** 価格射影（§5.5・level_prices）が片側でも成立しているか。 */
+  function hasLevelPrice(cell) {
+    const prices = (cell && cell.level_prices) || {};
+    return Boolean(
+      (prices.q_high && prices.q_high.price !== null && prices.q_high.price !== undefined)
+      || (prices.q_low && prices.q_low.price !== null && prices.q_low.price !== undefined),
+    );
+  }
+
   /**
-   * 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定（§6.1）が現在バーで使っている帯上端。
+   * 閾値（依頼者指示 2026-09-05・一本化承認 2026-09-05）: 閾値表示は 1 セルに 1 単位系。
+   * 価格へ逆算できるセルは水準到達価格 2 値（level_prices・下で描画）が閾値表示そのもの
+   * なので、指数の閾値は出さない（単位の混在＝違和感の根本原因を除去）。
+   * 逆算できないセル（tickvol 等）だけ、指数の帯上端・帯下端を出す。
    * サーバ計算の値をそのまま出す（フロントは数値を再計算しない・arch-spec §9）。
-   * 帯の供給が無いセル（band_high = null）には出さない（発明しない）。
+   * 供給が無い側（null）は出さない（発明しない）。
    */
   function appendBandThreshold(td, cell) {
-    if (!cell || cell.band_high === null || cell.band_high === undefined) {
+    if (!cell || hasLevelPrice(cell)) {
       return;
     }
-    td.appendChild(el('span', {
-      className: 'dash-osc-band',
-      title: '閾値＝到達判定の帯上端（観測値がこの値以上で到達）',
-      textContent: `閾 ${formatValue(cell.band_high)}`,
-    }));
+    for (const [key, title] of [
+      ['band_high', '閾値＝到達判定の帯上端（観測値がこの値以上で到達）'],
+      ['band_low', '閾値＝帯下端（観測値がこの値以下で帯外）'],
+    ]) {
+      const value = cell[key];
+      if (value === null || value === undefined) continue;
+      td.appendChild(el('span', {
+        className: 'dash-osc-band',
+        title,
+        textContent: `閾 ${formatValue(value)}`,
+      }));
+    }
   }
 
   /** 1 セル（配色・現在値・閾値・到達時刻）。 */

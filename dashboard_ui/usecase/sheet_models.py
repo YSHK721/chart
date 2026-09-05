@@ -213,6 +213,10 @@ class OscCell:
     #: 末尾値）。色と到達時刻の根拠になる数なので、現在値と同様に必ず併記できる形で持つ
     #: （依頼者指示 2026-09-05）。帯が供給されていない時刻は None（発明しない）。
     band_high: "float | None" = None
+    #: 帯下端（OscillatorSpec.band_low_series の当該時刻値・依頼者承認 2026-09-05 の一本化）。
+    #: 宣言が無い指標・供給が無い時刻は None（発明しない）。表示の使い分け（価格射影が
+    #: 成立するセルは価格 2 値のみ・不能なセルは指数の閾値）はフロントが level_prices で判定する。
+    band_low: "float | None" = None
     reach: "ReachState | None" = None
     unavailable_reason: "str | None" = None
     #: この セルを出した instance の畳み込みキー（LadderRow.instance_key と同じ形）。

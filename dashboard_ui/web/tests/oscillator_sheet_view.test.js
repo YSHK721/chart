@@ -151,12 +151,28 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(textOf(cellAt(host, 'ma_marod', '1m')), /0\.8/);
   });
 
-  test('a_cell_prints_the_band_threshold_its_reach_is_judged_with', () => {
-    // §5.2（依頼者指示 2026-09-05）: 到達判定が使う帯上端＝閾値を併記する
-    //   （サーバ計算の band_high をそのまま出す・フロントは数値を再計算しない）。
-    const cells = [oscCell({ indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: 71.4, p: 0.31 })];
+  test('an_unprojectable_cell_prints_the_index_band_thresholds', () => {
+    // 一本化（承認 2026-09-05）: 価格へ逆算できないセルだけ指数の閾値を出す。
+    //   上下とも供給があれば両方（サーバ計算の band_high / band_low をそのまま・再計算しない）。
+    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 267, band_high: 8497.7, band_low: 12.5, p: 0.31 })];
     const { host } = renderInto(sheetResponse({ cells }));
-    assert.match(textOf(cellAt(host, 'profit_rsi', '1h')), /71\.4/);
+    const text = textOf(cellAt(host, 'tickvol', '1h'));
+    assert.match(text, /8497\.7/);
+    assert.match(text, /12\.5/);
+  });
+
+  test('a_projectable_cell_shows_prices_only_and_no_index_threshold', () => {
+    // 一本化（承認 2026-09-05）: 価格射影が成立するセルの閾値表示は水準到達価格 2 値のみ。
+    //   指数の閾値を重ねない（単位の混在＝依頼者指摘 2026-09-05 の違和感を除去）。
+    const cells = [oscCell({
+      indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: 71.4, p: 0.31,
+      level_prices: { q_high: { price: 65951.2, level: 'q90' }, q_low: { price: 63164.7, level: 'q10' } },
+    })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const cellEl = cellAt(host, 'profit_rsi', '1h');
+    assert.match(textOf(cellEl), /65,951\.2/);
+    assert.match(textOf(cellEl), /63,164\.7/);
+    assert.equal(flatten(cellEl).filter((el) => el.classList.contains('dash-osc-band')).length, 0);
   });
 
   test('a_cell_without_a_band_supply_prints_no_threshold', () => {

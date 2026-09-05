@@ -418,6 +418,9 @@ def _build_cell(
     """第 2 表のセル 1 つ（§5.2 / §5.3 / §5.3.3）。"""
     value_points = tuple(series.get(spec.value_series) or ())
     band_points = tuple(series.get(spec.band_high_series) or ())
+    band_low_points = tuple(
+        series.get(spec.band_low_series) or ()
+    ) if spec.band_low_series else ()
     if not value_points:
         return OscCell(
             indicator_id=instance.indicator_id,
@@ -438,11 +441,18 @@ def _build_cell(
     values, bands = observed.values, observed.bands
     reach = reach_state(list(observed.times), list(values), list(bands),
                         side=LevelSide.ABOVE)
-    # 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定が現在バーで使っている帯上端そのもの。
-    #   既に突き合わせた観測の末尾を読むだけで、新規の系列発行は 0（複雑度 T-1 を変えない）。
+    # 閾値（§5.2・依頼者指示 2026-09-05・一本化承認 2026-09-05）: 到達判定が現在バーで
+    #   使っている帯上端と、宣言があれば帯下端。既に発行済みの系列の当該時刻値を読むだけで、
+    #   新規の系列発行は 0（複雑度 T-1 を変えない）。突き合わせは band_high と同じ観測の口
+    #   （BandObservations）＝因果境界の第 2 定義を作らない。
     band_high = (
         float(bands[-1]) if bands.size and math.isfinite(float(bands[-1])) else None
     )
+    band_low = None
+    if band_low_points:
+        lows = _cq.BandObservations.of(value_points, band_low_points).bands
+        if lows.size and math.isfinite(float(lows[-1])):
+            band_low = float(lows[-1])
     # 直近区間の読み（§5.2 背景ストリップ・依頼者指示 2026-09-04）。確定履歴だけから決まる
     #   量なので epoch 持ち越し。現在区間はセルの `p` が持ち主（重複して持たない）。
     strip = history_cache.strip_for(
@@ -451,7 +461,7 @@ def _build_cell(
 
     if spec.cumulative:
         return _cumulative_cell(instance, spec, values, reach, comparison, strip,
-                                band_high=band_high)
+                                band_high=band_high, band_low=band_low)
 
     # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
     rank = _cq.in_band_rank_latest(values, spec.window_n)
@@ -478,6 +488,7 @@ def _build_cell(
         p=reading.p,
         tail_unscaled=reading.tail_unscaled,
         band_high=band_high,
+        band_low=band_low,
         reach=reach,
         history=strip,
         cumulative=spec.cumulative,
@@ -493,6 +504,7 @@ def _cumulative_cell(
     strip: "tuple[TrailingReading, ...]" = (),
     *,
     band_high: "float | None" = None,
+    band_low: "float | None" = None,
 ) -> OscCell:
     """積み上がる量のセル（§5.3.3: 部分和は**同じ経過**の過去の部分和へ当てる）。
 
@@ -511,6 +523,7 @@ def _cumulative_cell(
             p=None,
             tail_unscaled=False,
             band_high=band_high,
+            band_low=band_low,
             reach=reach,
             unavailable_reason=(
                 "同じ経過の比較集合が供給されていない（確定足の分布へは当てない・§5.3.3）"
@@ -535,6 +548,7 @@ def _cumulative_cell(
             p=None,
             tail_unscaled=False,
             band_high=band_high,
+            band_low=band_low,
             reach=reach,
             unavailable_reason="同じ経過まで進んだ過去の足が足りない（水準なし・§5.2）",
             history=strip,
@@ -549,6 +563,7 @@ def _cumulative_cell(
         p=_cq.empirical_rank(window, float(comparison.forming_sum)),
         tail_unscaled=False,
         band_high=band_high,
+        band_low=band_low,
         reach=reach,
         history=strip,
         cumulative=True,
