@@ -1,7 +1,7 @@
 """period_hl core（year_runs / ytd_running_extremes）の状態検証。
 
-src は top-level 名 ``src`` の同名衝突を避けるため、production と同じ機構
-（``common.module_loader.load_package``）で一意名 ``_period_hl_src`` として読む。
+指標パッケージは top-level パッケージ名の同名衝突を避けるため、production と同じ機構
+（``common.module_loader.load_package``）で一意名 _period_hl_src として読む。
 """
 
 from __future__ import annotations
