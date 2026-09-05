@@ -14025,3 +14025,48 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   以後は ISSUE-488 の末尾整合検査が新グリッドを自動維持する。
 - **残課題**: MT5 端末との突合検証は DST 切替差の週（年 ~5 週）だけ境界が ±1h ずれる——突合
   ツール側でその週を除外または補正すること（ISSUE-448 の実測 V 系で扱う）。
+
+## ISSUE-490: [機能追加] 価格ラダーへ期間高安の水準を追加（年初来・週・日・4h・1h の高値/安値）
+- **ステータス**: RESOLVED（2026-09-05・実装・検査完了）
+- **依頼**: 「価格ラダーに以下の価格を追加しろ — 安値/高値 × 年初来・週・日・4時間・1時間」。
+  意味は**進行中期間の走行高安**（依頼者承認 2026-09-05・AskUserQuestion）。実装経路も
+  **新規指標の追加**（設計書 §8 OCP の想定拡張・dashboard core 無改変）で承認済み。
+- **実装**:
+  - 新指標パッケージ `indigators/period_hl/`（1 パッケージ 2 compute_id・ISSUE-490）:
+    - `period_hl`（`period_hl_hi` / `period_hl_lo`）＝各バーの high / low そのもの。末尾＝
+      形成中バーなので、その時間足の**進行中期間の走行高安**になる。期間境界は
+      ロールアップのグリッド（4h はセッション日起点＝ISSUE-489）を**継承**し、境界定義を持たない。
+    - `ytd_hl`（`ytd_hl_hi` / `ytd_hl_lo`）＝暦年（naive UTC）内の走行 max / min。
+      **窓の最初の年は NaN**（年初被覆をデータだけから保証できないため。誤った年初来を
+      無言で出さない）。1D テンプレート（2,000 本≒8 年分）での使用を想定。
+  - 結線: `call_binding._TABLE` 2 エントリ（time_required・params 無し）／catalog.js 2 IndicatorDef
+    （period_hl=range・ytd_hl=alert）／golden `catalog_defaults.json`／基本設計書 §3.1・§7.1.1
+    契約ブロック（v0.9.47）／カラーテーマ設計書 §4.1.5（97→101 件・v0.3.3）。
+  - 計算量テスト（絶対命令）: `indigators/period_hl/tests/test_complexity.py` — 畳み込み供給
+    要素数 = 出力有限要素数（発行−使用=0）・当年バー数 1:1（2 点固定）・最初の年を伸ばしても
+    畳み込み 0 増・年内窓は畳み込み 0・系列発行数は入力長に非依存（2 点固定）。
+- **検査**: period_hl 24 / indicator_ui api＋dashboard_ui＋period_hl 計 1,663 passed（既知の
+  順序干渉 5 件は ISSUE-491・本変更と無関係を worktree(HEAD) で実証）／front 2,574 passed／
+  契約テスト（実 /compute ↔ 設計書）43 passed。
+- **利用手順（ユーザー操作が必要）**: ラダーは「テンプレートに設定した指標」だけを対象にする
+  （設計書 §3）ため、チャート UI で各テンプレートへ追加する — 1h(tpl#7)/4h(tpl#3)/1D(tpl#9)/
+  1W(tpl#8) へ `period_hl`（期間高安）、1D(tpl#9) へ `ytd_hl`（年初来高安）。
+- **既知の縮退（申告済み・cvfe と同型）**: 増分器未登録のため足内更新は不可（シート要求ごとの
+  再計算では形成中バーを毎回継ぐので値は最新。degradations に自動掲示される）。
+
+## ISSUE-491: [テスト] test_dataset_rollup_routing 実行後に dashboard e2e smoke が 400 になる（順序干渉・既存）
+- **ステータス**: OPEN（ISSUE-490 の検査中に発見・変更前 HEAD でも再現＝既存問題）
+- **再現**: `pytest indigators/indicator_ui/api/tests/test_dataset_rollup_routing.py
+  dashboard_ui/tests/e2e/test_serve_dashboard_smoke.py` → smoke 5〜6 件が `/reach_sheet` 400。
+  各ファイル単独では全通過。HEAD（423655d）の worktree でも同一再現（2026-09-05 実測）＝
+  ISSUE-490 の変更とは無関係。既定の収集順（dashboard_ui → indigators）では発火しない。
+- **推定範囲（未検証）**: 同モジュールは `dataset.serving_cache._BASE_CACHE/_RESAMPLE_CACHE` の
+  clear と tail_reader/rollup_store の monkeypatch を行う。プロセス寿命の共有状態が要求後も
+  汚染される経路の特定が必要（推定であり、根本原因は未確定）。
+
+## ISSUE-492: [テスト] test_composition_root_arg_parity が ChartToastView / ClipboardGateway の 4 件で失敗（既存）
+- **ステータス**: OPEN（ISSUE-490 の検査中に発見・HEAD(423655d) の worktree でも同一失敗＝既存問題）
+- **内容**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
+  が「本番の合成根は渡さないのに全テストが渡している」として ChartToastView.clearTimeout /
+  durationMs / setTimeout・ClipboardGateway.navigator の 4 件を報告する。
+- **確認**: 2026-09-05 実測。ISSUE-490 の変更ファイル群とは無関係（該当クラスは未改変）。

@@ -492,6 +492,25 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "bb_stddev": 2.0,
         },
     },
+    # --- period_hl / ytd_hl（期間高安・年初来高安・ISSUE-490）。実バインディングは
+    #     add_period_hl / add_ytd_hl（indigators/period_hl/src/lwc_chart.py・1 パッケージ
+    #     2 compute_id）。価格ラダーの水準供給が目的: period_hl は各バーの high / low
+    #     そのもの（末尾＝形成中バー＝その時間足の進行中期間の走行高安。期間境界は
+    #     ロールアップのグリッドを継承し、本指標は境界の定義を持たない）。ytd_hl は
+    #     暦年内の走行 max / min（窓の最初の年は NaN＝年初被覆を保証できないため）。
+    #     公開パラメータは無し（認知負荷の最小化・水準の定義に自由度が無い）。
+    ("period_hl", "default"): {
+        "loader": lambda: _load_callable("period_hl", "add_period_hl"),
+        "output_kind": "line", "kind": "kw",
+        "time_required": True,
+        "params_defaults": {},
+    },
+    ("ytd_hl", "default"): {
+        "loader": lambda: _load_callable("period_hl", "add_ytd_hl"),
+        "output_kind": "line", "kind": "kw",
+        "time_required": True,
+        "params_defaults": {},
+    },
     # --- profit_* 系（MQL 移植・lwc 仕様）。統合 FakeChart が line/histogram/水平線を
     #     一括収集するため output_kind は分岐に不使用（resolve 互換のため残置）。kind は全て kw。---
     ("profit_adx_needle", "default"): {

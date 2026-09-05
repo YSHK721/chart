@@ -38,6 +38,9 @@ const EXPECTED_PERIOD_PARAMS = {
   profit_rmm_macd: ['osc_period', 'ma_period', 'fast', 'slow', 'signal', 'window'],
   profit_rsi_macd: ['rsi_period', 'fast', 'slow', 'signal'],
   price_range_power: [],
+  // 期間高安 / 年初来高安（ISSUE-490）: 公開パラメータ無し（期間はテンプレートの時間足が決める）。
+  period_hl: [],
+  ytd_hl: [],
   market_profile: [],
   // 取引密度帯: sessions は「参照セッション日数」でバー本数ではない＝期間パラメータではない。
   tickvol_bands: [],

@@ -17,16 +17,17 @@ function paramOf(def, name) {
   return def.params.find((p) => p.name === name);
 }
 
-test('catalog: list returns the 26 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + profit_* 15 + market_profile + tickvol_bands + tickvol)', () => {
+test('catalog: list returns the 28 registered indicators (基本4 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + period_hl + ytd_hl + profit_* 15 + market_profile + tickvol_bands + tickvol)', () => {
   // Act
   const defs = list();
   // Assert: 既存4（tgp_btlm / profit_band / price_range_power / moving_averages）+ btlm_trail
-  //   + btlm_trail_marod（新規・MAROD 別 pane オシレータ）+ profit_* 15 + market_profile = 22。
+  //   + btlm_trail_marod（MAROD 別 pane オシレータ）+ period_hl / ytd_hl（期間高安・ISSUE-490）
+  //   + profit_* 15 + market_profile ほか = 28。
   const ids = defs.map((d) => d.id);
-  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod', 'ma_marod']) {
+  for (const base of ['moving_averages', 'price_range_power', 'profit_band', 'tgp_btlm', 'btlm_trail', 'btlm_trail_marod', 'ma_marod', 'period_hl', 'ytd_hl']) {
     assert.ok(ids.includes(base), `missing ${base}`);
   }
-  assert.equal(defs.length, 26);
+  assert.equal(defs.length, 28);
 });
 
 test('catalog: btlm_trail_marod is a pane oscillator (source 8択 / maxbars min3 / color + 0% 基準線)', () => {

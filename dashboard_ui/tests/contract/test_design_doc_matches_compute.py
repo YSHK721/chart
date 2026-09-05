@@ -79,6 +79,9 @@ REQUEST_PARAMS: "dict[str, dict[str, object]]" = {
         "n_har": 500, "sigma_inner": 1.0, "sigma_outer": 2.0,
         "show_outliers": True, "display_mode": "dashes", "dash_opacity": 0.5,
     },
+    # period_hl / ytd_hl（ISSUE-490）は公開パラメータを持たない（系列名も params に依らない）。
+    "period_hl": {},
+    "ytd_hl": {},
     "ma_marod": {
         "source": "close", "ma_type": "ema", "length": 50, "q_low": 0.05,
         "q_high": 0.95, "q_out": 0.99, "k_events": 50, "event_agg": "episode",

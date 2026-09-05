@@ -588,7 +588,7 @@ test('TC-CP06 previewTheme: 全系列色がプレビュー前と文字列一致�
   controller.previewTheme(null);
   const after = sample(controller.activeTheme());
   // Assert
-  assert.equal(before.length, 97, '前提: SeriesDef 総数');
+  assert.equal(before.length, 101, '前提: SeriesDef 総数');
   assert.notDeepEqual(during, before, '前提: プレビュー中は実際に色が変わっている');
   assert.deepEqual(after, before, '解除後の系列色がプレビュー前と一致しない');
 });

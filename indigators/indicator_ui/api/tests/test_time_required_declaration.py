@@ -12,7 +12,8 @@ _LEGACY_TIME_REQUIRED = {"tgp_btlm", "profit_band"}
 # ハードコード時点より後に追加された time 必須指標。回帰壁（legacy 集合）は据え置き、
 #   新規追加分はここへ明示的に列挙する（無言で壁を緩めない）。
 #   cvfe: バー境界 bar_edges を実時刻から構成するため時刻軸が必須（CVFE 仕様 §3.1・§4.7-1）。
-_ADDED_TIME_REQUIRED = {"cvfe"}
+#   period_hl / ytd_hl: 系列の時間軸に実時刻が必須（ytd_hl は暦年の畳み込みにも使う・ISSUE-490）。
+_ADDED_TIME_REQUIRED = {"cvfe", "period_hl", "ytd_hl"}
 
 _TIME_REQUIRED = _LEGACY_TIME_REQUIRED | _ADDED_TIME_REQUIRED
 

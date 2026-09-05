@@ -44,11 +44,13 @@ const LEDGER = [
   ['profit_mfi_macd', 4, 0, 0, 0, 0, 2, 1, 0, 1, 0],
   ['profit_rmm_macd', 3, 0, 0, 0, 0, 2, 1, 0, 0, 0],
   ['profit_rsi_macd', 4, 0, 0, 0, 0, 2, 1, 0, 1, 0],
+  ['period_hl', 2, 0, 0, 0, 0, 0, 0, 2, 0, 0],
+  ['ytd_hl', 2, 0, 0, 0, 2, 0, 0, 0, 0, 0],
 ];
 // 表の列順（SeriesDef 数の次から）。§4.1.5 の見出しと同順。
 const LEDGER_TOKENS = ['bullish', 'bearish', 'neutral', 'alert', 'primary', 'secondary', 'range', 'level', 'muted'];
 // §4.1.5 の合計行。
-const LEDGER_TOTAL = { total: 97, bullish: 1, bearish: 1, neutral: 4, alert: 25, primary: 21, secondary: 6, range: 18, level: 18, muted: 3 };
+const LEDGER_TOTAL = { total: 101, bullish: 1, bearish: 1, neutral: 4, alert: 27, primary: 21, secondary: 6, range: 20, level: 18, muted: 3 };
 
 function countByRole(def) {
   const counts = Object.fromEntries(LEDGER_TOKENS.map((t) => [t, 0]));
@@ -68,12 +70,12 @@ test('通過条件 1: 全 SeriesDef に colorRole が在席し、値は語彙 14
   }
 });
 
-test('通過条件 1: SeriesDef の総数は 97 件（§4.1.5 合計）', () => {
+test('通過条件 1: SeriesDef の総数は 101 件（§4.1.5 合計）', () => {
   const total = list().reduce((n, d) => n + d.series.length, 0);
   assert.equal(total, LEDGER_TOTAL.total);
 });
 
-test('REGISTRY は 26 指標（§4.1.5 の行数と一致）', () => {
+test('REGISTRY は 28 指標（§4.1.5 の行数と一致）', () => {
   assert.equal(list().length, LEDGER.length);
   assert.deepEqual(list().map((d) => d.id).sort(), LEDGER.map((r) => r[0]).sort());
 });

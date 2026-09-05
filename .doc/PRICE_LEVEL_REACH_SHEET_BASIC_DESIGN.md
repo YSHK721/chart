@@ -1,4 +1,4 @@
-# 水準到達シート 基本設計書 v0.9.46
+# 水準到達シート 基本設計書 v0.9.47
 
 - 起票: 2026-08-28（ISSUE-449）／オシレータの価格投影は ISSUE-453
 - 状態: **実装済み（feature/issue-449-price-level-reach-sheet・未マージ）**
@@ -23,6 +23,14 @@
 
 改訂履歴:
 
+- **v0.9.47（2026-09-05）**: **第 1 表へ期間高安の水準を追加**（依頼者指示「価格ラダーに
+  年初来・週・日・4 時間・1 時間の高値 / 安値を追加しろ」。走行高安＝進行中期間の
+  これまでの高安・依頼者承認 2026-09-05）。新指標 `period_hl`（各バーの high / low
+  そのもの＝末尾が当該足の走行高安。期間境界はロールアップのグリッドを継承し境界定義を
+  持たない）と `ytd_hl`（暦年内の走行 max / min。窓の最初の年は年初被覆を保証できないため
+  NaN）を追加し、テンプレートへ載せて供給する（1h/4h/1D/1W → `period_hl`・1D → `ytd_hl`）。
+  dashboard core は無改変（§8 OCP の想定拡張）。増分器は未登録＝足内更新不可
+  （§7 の申告に乗る）。ISSUE-490。
 - **v0.9.46（2026-09-04）**: **セル背景を 2 層へ**（依頼者明確化「指標を各セルのバックグラウンドに
   指標ペインの最新データから過去に遡って 10 区間表示し、その指標にヒートマップを重ねる。
   ヒートマップのレイヤーの下に指標ペインが表示されるイメージ。棒グラフやライン」）。
@@ -469,6 +477,8 @@
 | `moving_averages` | `MA`（`Smoothing`/`Upper`/`Lower` は現行設定では未出力） | 可 | 57 |
 | `btlm_trail` | `btlm_trail_mean` / `btlm_trail_q5` / `btlm_trail_q95` / `btlm_trail_off_hi` / `btlm_trail_off_lo` | 可 | 8 |
 | `cvfe` | `cvfe_u1` / `cvfe_u2` / `cvfe_l1` / `cvfe_l2` / `cvfe_evq_med_hi` / `cvfe_evq_med_lo` / `cvfe_evq_ext_hi` / `cvfe_evq_ext_lo`（価格スケール上のバンドと外れ値水準） | **不可** | 8 |
+| `period_hl` | `period_hl_hi` / `period_hl_lo`（各バーの high / low ＝当該足の進行中期間の走行高安・ISSUE-490） | **不可** | 未実測 |
+| `ytd_hl` | `ytd_hl_hi` / `ytd_hl_lo`（暦年内の走行 max / min ＝年初来高安。窓の最初の年は NaN・ISSUE-490） | **不可** | 未実測 |
 
 **`btlm_trail` は価格スケールに乗らない系列も返す**（`btlm_trail_beta` −2〜218 /
 `btlm_trail_sigma` 40〜5,591 / `btlm_trail_band_hit_rate` 0.70〜0.92）。これらは水準ではない。
@@ -1123,6 +1133,8 @@ price_scale:                       # 第 1 表（価格スケール）
   cvfe:        [cvfe_u1, cvfe_u2, cvfe_l1, cvfe_l2,
                 cvfe_evq_med_hi, cvfe_evq_med_lo,
                 cvfe_evq_ext_hi, cvfe_evq_ext_lo]
+  period_hl:   [period_hl_hi, period_hl_lo]
+  ytd_hl:      [ytd_hl_hi, ytd_hl_lo]
 oscillator:                        # 第 2 表
   ma_marod:         [ma_marod, "ma_marod_q{q_lo}", "ma_marod_q{q_hi}",
                      ma_marod_evq_med_hi, ma_marod_evq_med_lo,
@@ -1136,10 +1148,10 @@ oscillator:                        # 第 2 表
                      tickvol_evq_med_hi, tickvol_evq_ext_hi, tickvol_gpd_hi]
 intrabar_update:                   # 足内更新（増分器の登録有無）
   yes: [moving_averages, btlm_trail, ma_marod, btlm_trail_marod, profit_rsi, tickvol]
-  no:  [cvfe]
+  no:  [cvfe, period_hl, ytd_hl]
 price_invertible:                  # §5.5.1（価格へ逆算できる＝breakpoints() を提供する）
   yes: [ma_marod, btlm_trail_marod, profit_rsi]
-  no:  [tickvol]
+  no:  [tickvol, period_hl, ytd_hl]
 cumulative:                        # §5.3.3（足の中で積み上がる量＝同じ経過割合の分布へ当てる）
   yes: [tickvol]
   no:  [ma_marod, btlm_trail_marod, profit_rsi]

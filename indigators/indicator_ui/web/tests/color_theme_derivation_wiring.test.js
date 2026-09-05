@@ -122,10 +122,10 @@ test('TC-DW07 恒等回帰: 宣言 0 件のテーマでもクロム 20 slot が�
   }
 });
 
-test('TC-DW08 恒等回帰: 全 26 指標の全系列色がテーマ未設定・恒等テーマで payload 色のまま', () => {
+test('TC-DW08 恒等回帰: 全 28 指標の全系列色がテーマ未設定・恒等テーマで payload 色のまま', () => {
   // Arrange: 実描画色の解決入力（§4.5）。テーマが無ければ payload 色（backend 既定）が返る。
   const defs = list();
-  assert.equal(defs.length, 26, '指標は 26 件');
+  assert.equal(defs.length, 28, '指標は 28 件');
   const identity = projectThemeForUse({ themeId: 'thm#1', name: 't', roleColors: {} }).theme;
   // Act / Assert
   let checked = 0;
@@ -144,7 +144,7 @@ test('TC-DW08 恒等回帰: 全 26 指標の全系列色がテーマ未設定・
       checked += 1;
     }
   }
-  assert.equal(checked, 97, 'SeriesDef 総数（§4.1.5 合計）');
+  assert.equal(checked, 101, 'SeriesDef 総数（§4.1.5 合計）');
 });
 
 // =========================================================================

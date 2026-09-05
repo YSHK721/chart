@@ -480,6 +480,43 @@ const MOVING_AVERAGES = new IndicatorDef({
   compute: { computeId: 'moving_averages', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
 });
 
+// --- period_hl / ytd_hl（期間高安・年初来高安・OVERLAY・ISSUE-490）--------------------
+// 実バインディング add_period_hl / add_ytd_hl（period_hl/src/lwc_chart.py・1 パッケージ 2 compute_id）。
+//   価格ラダー（/dashboard 第 1 表）の水準供給が目的。period_hl は各バーの high / low そのもの
+//   （末尾＝形成中バー＝その時間足の進行中期間の走行高安。期間境界はロールアップのグリッドを継承）。
+//   ytd_hl は暦年内の走行 max / min（窓の最初の年は NaN＝年初被覆を保証できないため、
+//   年境界を覆わない足では系列が空になる。1D テンプレートでの使用を想定）。
+//   公開パラメータは無し（認知負荷の最小化・水準の定義に自由度が無い）。
+const HL_LINE = (seriesName, colorRole) => new SeriesDef({ kind: SeriesKind.LINE, sourceColumn: null, seriesName, dynamic: false, colorRole });
+const PERIOD_HL = new IndicatorDef({
+  id: 'period_hl',
+  displayNameKey: 'ind.期間高安',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [],
+  // hi / lo ＝ 期間の走行極値（通常域の縁・§4.1.1 range）。
+  series: [
+    HL_LINE('period_hl_hi', ColorRole.RANGE),
+    HL_LINE('period_hl_lo', ColorRole.RANGE),
+  ],
+  compute: { computeId: 'period_hl', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+const YTD_HL = new IndicatorDef({
+  id: 'ytd_hl',
+  displayNameKey: 'ind.年初来高安',
+  category: { group: 'builtin', nameKey: 'cat.technical' },
+  tab: 'indicator',
+  placement: 'overlay',
+  params: [],
+  // 年初来の極値＝稀な水準（外れ値水準と同じ扱い・§4.1.1 alert）。
+  series: [
+    HL_LINE('ytd_hl_hi', ColorRole.ALERT),
+    HL_LINE('ytd_hl_lo', ColorRole.ALERT),
+  ],
+  compute: { computeId: 'ytd_hl', requiredColumns: OHLC, timeRequired: true, backendParam: null, variants: ['default'] },
+});
+
 // --- ma_marod（移動平均乖離率・MA 種別選択式・別 pane オシレータ）----------
 // 新指標（.doc/MA_MAROD_BASIC_DESIGN.md）。moving_averages core の 4 種 MA（sma/ema/smma/lwma）
 //   を基準線の参照実装とし、(price - ma)/ma*100 を別 pane の line オシレータとして描く
@@ -958,7 +995,7 @@ function withCalcTimeframe(def) {
 }
 
 const REGISTRY = Object.freeze([
-  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, MARKET_PROFILE, TICKVOL_BANDS, TICKVOL,
+  TGP_BTLM, BTLM_TRAIL, BTLM_TRAIL_MAROD, MA_MAROD, CVFE, PROFIT_BAND, PRICE_RANGE_POWER, MOVING_AVERAGES, PERIOD_HL, YTD_HL, MARKET_PROFILE, TICKVOL_BANDS, TICKVOL,
   PROFIT_ADX_NEEDLE, PROFIT_ARCTAN, PROFIT_MFI, PROFIT_RSI, PROFIT_STC,
   PROFIT_OSCILLATOR, PROFIT_OSCILLATOR2, PROFIT_OSI_MA, PROFIT_RMM, PROFIT_VOLATILITY,
   PROFIT_HL_BAND, PROFIT_HLBAND, PROFIT_MFI_MACD, PROFIT_RMM_MACD, PROFIT_RSI_MACD,

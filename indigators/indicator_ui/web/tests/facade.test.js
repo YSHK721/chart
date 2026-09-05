@@ -26,9 +26,9 @@ import { AppliedInstance } from '../js/domain/domain_models.js';
 // UC-01 listForView（タブ∧カテゴリ∧検索∧お気に入りの論理積 §4.6）
 // ===========================================================================
 
-test('UC-01 listForView: empty filter returns all 26', () => {
+test('UC-01 listForView: empty filter returns all 28', () => {
   const result = listForView({});
-  assert.equal(result.length, 26);
+  assert.equal(result.length, 28);
 });
 
 test('UC-01 listForView: filters by query (id/display partial, case-insensitive)', () => {
@@ -44,10 +44,11 @@ test('UC-01 listForView: filters by category conjunctively', () => {
 });
 
 test('UC-01 listForView: filters by tab', () => {
-  // 24 指標（既存 19 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + tickvol）は tab=indicator、
+  // 26 指標（既存 19 + btlm_trail + btlm_trail_marod + ma_marod + cvfe + tickvol
+  //   + period_hl + ytd_hl）は tab=indicator、
   //   market_profile と tickvol_bands（取引密度帯）が tab=profile。strategy は 0 件。
   assert.equal(listForView({ tab: 'strategy' }).length, 0);
-  assert.equal(listForView({ tab: 'indicator' }).length, 24);
+  assert.equal(listForView({ tab: 'indicator' }).length, 26);
   assert.equal(listForView({ tab: 'profile' }).length, 2);
   assert.deepEqual(listForView({ tab: 'profile' }).map((d) => d.id), ['market_profile', 'tickvol_bands']);
 });

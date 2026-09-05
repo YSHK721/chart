@@ -56,6 +56,9 @@
     "source": "close",
     "timeframe": "chart"
   },
+  "period_hl": {
+    "timeframe": "chart"
+  },
   "price_range_power": {
     "bear_color": "rgba(210, 67, 58, 0.9)",
     "bull_color": "rgba(46, 158, 91, 0.9)",
@@ -199,5 +202,8 @@
     "q_out": 0.99,
     "timeframe": "chart",
     "window_n": 500
+  },
+  "ytd_hl": {
+    "timeframe": "chart"
   }
 }
