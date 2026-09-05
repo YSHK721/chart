@@ -173,7 +173,7 @@ const BTLM_TRAIL = new IndicatorDef({
     // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
     param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], {
       group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS,
-      tooltip: '回帰の入力に使う適用価格。トレンド線・バンド・β・σ のすべてがこの価格系列から計算される。',
+      tooltip: '回帰の入力に使う適用価格。トレンド線・β・σ・名目 ols バンドがこの系列から計算される。経験分位の乖離率とバンド内実績率はソース設定に依らず終値で測る（trail.py 正本仕様 §2）。',
     }),
     // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
     param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, {
@@ -197,7 +197,7 @@ const BTLM_TRAIL = new IndicatorDef({
     // バンド方式: ols（名目・norm_ppf(q)·pred_sd）/ empirical（経験分位・因果ウォークフォワード）。
     param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], {
       group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS,
-      tooltip: '帯の算出方式。名目 ols＝トレンド線 ± norm_ppf(q)·予測σ（残差の正規近似・理論値）。経験分位＝直近N本の乖離率 (close−mean)/mean の経験分位をトレンド線に掛ける（実測分布ベース・因果ウォークフォワード＝非リペイント）。',
+      tooltip: '帯の算出方式。名目 ols＝トレンド線 ± norm_ppf(q)·予測σ（残差の正規近似・理論値）。経験分位＝直近N本の乖離率（終値−トレンド線）/トレンド線 の経験分位をトレンド線に掛ける（実測分布ベース・因果ウォークフォワード＝非リペイント）。乖離率はソース設定に依らず終値で測る。',
     }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
