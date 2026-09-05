@@ -156,7 +156,23 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     return root;
   }
 
-  /** 1 セル（配色・現在値・到達時刻）。 */
+  /**
+   * 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定（§6.1）が現在バーで使っている帯上端。
+   * サーバ計算の値をそのまま出す（フロントは数値を再計算しない・arch-spec §9）。
+   * 帯の供給が無いセル（band_high = null）には出さない（発明しない）。
+   */
+  function appendBandThreshold(td, cell) {
+    if (!cell || cell.band_high === null || cell.band_high === undefined) {
+      return;
+    }
+    td.appendChild(el('span', {
+      className: 'dash-osc-band',
+      title: '閾値＝到達判定の帯上端（観測値がこの値以上で到達）',
+      textContent: `閾 ${formatValue(cell.band_high)}`,
+    }));
+  }
+
+  /** 1 セル（配色・現在値・閾値・到達時刻）。 */
   function buildCell(cell, indicatorId, timeframe, nowUnix) {
     const td = el('td', {
       className: 'dash-osc-cell',
@@ -185,6 +201,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
       if (cell) {
         valueEls.set(`${indicatorId}\u0000${timeframe}`, noLevelValue);
       }
+      appendBandThreshold(td, cell);
       td.appendChild(el('span', { className: 'dash-osc-no-level', textContent: '水準なし' }));
       return td;
     }
@@ -204,6 +221,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     }
     const valueEl = el('span', { className: 'dash-osc-value', textContent: formatValue(cell.value) });
     td.appendChild(valueEl);
+    appendBandThreshold(td, cell);
     valueEls.set(`${indicatorId}\u0000${timeframe}`, valueEl);
     // 分位水準に達したときの価格（依頼者指示 2026-08-30・上下 2 値は同日承認。
     //   §5.5 の閉形式逆写像＋往復検証）。逆算できない側は null＝出さない（発明しない）。

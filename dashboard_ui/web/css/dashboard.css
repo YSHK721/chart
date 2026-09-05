@@ -811,6 +811,14 @@
   color: var(--ink2);
 }
 
+/* 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定の帯上端。現在値の直下に控えめに併記する。 */
+.dash-osc-band {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  color: var(--ink2);
+}
+
 /* 水準が無いことは**隠さない**（§5.2）。異常ではないので amber の小片で示す。 */
 .dash-osc-no-level {
   display: inline-block;

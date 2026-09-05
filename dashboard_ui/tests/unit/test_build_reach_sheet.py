@@ -278,6 +278,31 @@ class TestOscillatorCells:
         assert sheet.cells[0].p == pytest.approx(2 / 3)
         assert sheet.cells[0].tail_unscaled is False
 
+    def test_a_cell_reports_the_band_threshold_it_judges_reach_with(self) -> None:
+        """§5.2（依頼者指示 2026-09-05）: 到達判定が使う帯上端＝閾値を必ず併記する。
+
+        計算量（絶対命令 CLAUDE.md）: 閾値は**既に発行済み**の帯系列の末尾を読むだけであり、
+        系列発行は増えない（発行 − 使用 = 0 を維持）。回数は Test Spy で表明する。
+        """
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 30.0, 25.0], [90.0, 90.0, 90.0, 91.5])
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].band_high == pytest.approx(91.5)
+        assert series.issued.count(instance.key) == 1
+
+    def test_a_cell_without_a_band_supply_has_no_threshold(self) -> None:
+        """帯が供給されていない時刻の閾値は None（無言で数値を発明しない）。"""
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 30.0, 25.0], [])
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].band_high is None
+
     def test_a_cell_outside_the_band_without_enough_events_has_no_scale(self) -> None:
         """§5.3.2 の 7 セル。帯外は単一色にし、濃淡でごまかさない。"""
         instance, series, bars, roles = self._rsi_setup(

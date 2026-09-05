@@ -627,6 +627,9 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         "instance_key": None if cell.instance_key is None else list(cell.instance_key),
         "value_series": cell.value_series,
         "value": None if cell.value is None else float(cell.value),
+        # 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定（§6.1）が現在バーで使っている帯上端。
+        #   色と到達時刻の根拠なので現在値と同様に併記する。帯の供給が無いときは None。
+        "band_high": None if cell.band_high is None else float(cell.band_high),
         "p": None if cell.p is None else float(cell.p),
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),

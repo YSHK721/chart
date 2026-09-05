@@ -438,6 +438,11 @@ def _build_cell(
     values, bands = observed.values, observed.bands
     reach = reach_state(list(observed.times), list(values), list(bands),
                         side=LevelSide.ABOVE)
+    # 閾値（§5.2・依頼者指示 2026-09-05）: 到達判定が現在バーで使っている帯上端そのもの。
+    #   既に突き合わせた観測の末尾を読むだけで、新規の系列発行は 0（複雑度 T-1 を変えない）。
+    band_high = (
+        float(bands[-1]) if bands.size and math.isfinite(float(bands[-1])) else None
+    )
     # 直近区間の読み（§5.2 背景ストリップ・依頼者指示 2026-09-04）。確定履歴だけから決まる
     #   量なので epoch 持ち越し。現在区間はセルの `p` が持ち主（重複して持たない）。
     strip = history_cache.strip_for(
@@ -445,7 +450,8 @@ def _build_cell(
     )
 
     if spec.cumulative:
-        return _cumulative_cell(instance, spec, values, reach, comparison, strip)
+        return _cumulative_cell(instance, spec, values, reach, comparison, strip,
+                                band_high=band_high)
 
     # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
     rank = _cq.in_band_rank_latest(values, spec.window_n)
@@ -471,6 +477,7 @@ def _build_cell(
         value=float(values[-1]),
         p=reading.p,
         tail_unscaled=reading.tail_unscaled,
+        band_high=band_high,
         reach=reach,
         history=strip,
         cumulative=spec.cumulative,
@@ -484,6 +491,8 @@ def _cumulative_cell(
     reach: ReachState,
     comparison: "ElapsedComparison | None",
     strip: "tuple[TrailingReading, ...]" = (),
+    *,
+    band_high: "float | None" = None,
 ) -> OscCell:
     """積み上がる量のセル（§5.3.3: 部分和は**同じ経過**の過去の部分和へ当てる）。
 
@@ -501,6 +510,7 @@ def _cumulative_cell(
             value=float(values[-1]),
             p=None,
             tail_unscaled=False,
+            band_high=band_high,
             reach=reach,
             unavailable_reason=(
                 "同じ経過の比較集合が供給されていない（確定足の分布へは当てない・§5.3.3）"
@@ -524,6 +534,7 @@ def _cumulative_cell(
             value=float(comparison.forming_sum),
             p=None,
             tail_unscaled=False,
+            band_high=band_high,
             reach=reach,
             unavailable_reason="同じ経過まで進んだ過去の足が足りない（水準なし・§5.2）",
             history=strip,
@@ -537,6 +548,7 @@ def _cumulative_cell(
         value=float(comparison.forming_sum),
         p=_cq.empirical_rank(window, float(comparison.forming_sum)),
         tail_unscaled=False,
+        band_high=band_high,
         reach=reach,
         history=strip,
         cumulative=True,

@@ -147,6 +147,7 @@ export function oscCell(overrides = {}) {
     indicator_id: 'ma_marod',
     timeframe: '1m',
     value: 0.8,
+    band_high: null,   // 閾値＝到達判定の帯上端（依頼者指示 2026-09-05・帯の供給が無ければ null）
     p: 0.31,
     tail_unscaled: false,
     reach: null,

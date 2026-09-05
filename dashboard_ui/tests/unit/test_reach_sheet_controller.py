@@ -229,8 +229,8 @@ def test_the_cells_use_the_model_field_names() -> None:
 
     cell = response["cells"][0]
 
-    assert set(cell) == {"indicator_id", "timeframe", "value", "p", "tail_unscaled",
-                         "reach", "unavailable_reason", "level_prices",
+    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "p",
+                         "tail_unscaled", "reach", "unavailable_reason", "level_prices",
                          "instance_key", "value_series", "history", "cumulative"}
     assert set(cell["level_prices"]) == {"q_high", "q_low"}
     # 直近区間の読み（依頼者指示 2026-09-04・同日明確化）: 古い順・各要素は

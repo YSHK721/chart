@@ -151,6 +151,30 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(textOf(cellAt(host, 'ma_marod', '1m')), /0\.8/);
   });
 
+  test('a_cell_prints_the_band_threshold_its_reach_is_judged_with', () => {
+    // §5.2（依頼者指示 2026-09-05）: 到達判定が使う帯上端＝閾値を併記する
+    //   （サーバ計算の band_high をそのまま出す・フロントは数値を再計算しない）。
+    const cells = [oscCell({ indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: 71.4, p: 0.31 })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    assert.match(textOf(cellAt(host, 'profit_rsi', '1h')), /71\.4/);
+  });
+
+  test('a_cell_without_a_band_supply_prints_no_threshold', () => {
+    // band_high = null は「帯が供給されていない」。数値を発明しない。
+    const cells = [oscCell({ indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: null, p: 0.31 })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const bands = flatten(cellAt(host, 'profit_rsi', '1h'))
+      .filter((el) => el.classList.contains('dash-osc-band'));
+    assert.equal(bands.length, 0);
+  });
+
+  test('a_no_level_cell_still_prints_its_threshold_when_the_band_is_supplied', () => {
+    // 水準なしセル（p = null）でも帯上端が分かるなら隠さない（§5.2 と同じ規約）。
+    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 120, band_high: 512.5, p: null, unavailable_reason: '比較集合なし' })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    assert.match(textOf(cellAt(host, 'tickvol', '1h')), /512\.5/);
+  });
+
   test('a_cell_shows_the_prices_reaching_both_quantile_bands', () => {
     // 依頼者指示 2026-08-30（上下 2 値は同日承認）: 分位水準に達したときの価格を表示
     //   （サーバの閉形式逆写像＋往復検証・フロントは数値を再計算しない）。

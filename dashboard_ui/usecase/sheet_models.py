@@ -209,6 +209,10 @@ class OscCell:
     value: "float | None"
     p: "float | None"
     tail_unscaled: bool
+    #: 閾値＝到達判定（§6.1）が現在バーで使っている帯上端（OscillatorSpec.band_high_series の
+    #: 末尾値）。色と到達時刻の根拠になる数なので、現在値と同様に必ず併記できる形で持つ
+    #: （依頼者指示 2026-09-05）。帯が供給されていない時刻は None（発明しない）。
+    band_high: "float | None" = None
     reach: "ReachState | None" = None
     unavailable_reason: "str | None" = None
     #: この セルを出した instance の畳み込みキー（LadderRow.instance_key と同じ形）。
