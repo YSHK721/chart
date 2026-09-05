@@ -381,10 +381,12 @@ test('buildFormModel: moving_averages surfaces Japanese label and enumLabels and
   const groupKeys = model.groups.map((g) => g.key);
   assert.ok(groupKeys.includes(null)); // 基本（無見出し）
   assert.ok(groupKeys.includes('平滑化'));
-  // 計算グループは全指標共通の 'group.calc' へ統一した（ISSUE-274）。注入される「時間足」と
+  // 計算グループは全指標共通の 'group.calc' へ統一した（ISSUE-274）。注入される「時間足」に
+  //   加え、ソース・期間も同グループの上部へ置く（依頼者指示 2026-09-05・配置規約は
+  //   param_layout_convention.test.js が全指標で固定）。
   assert.ok(groupKeys.includes('group.calc'));
   const calc = model.groups.find((g) => g.key === 'group.calc');
-  assert.deepEqual(calc.fields.map((f) => f.name), ['timeframe']);
+  assert.deepEqual(calc.fields.map((f) => f.name), ['timeframe', 'source', 'length']);
 });
 
 test('computeEnabled: moving_averages bb_stddev is enabled only when smoothing_type=sma_bb', () => {

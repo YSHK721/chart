@@ -14152,3 +14152,32 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   （catalog.js:276 共有 EVQ ビルダー・:702 profit_rsi・:964 tickvol）を書き換え、
   他チップも同基準で点検する。統計的根拠の数値（AD 検定 p 値等）はコード側コメントに残す
   （チップからは落とす）。
+
+## ISSUE-497: [UI統一] 設定ダイアログの配置規約（時間足→ソース→期間を上部）と項目名の全指標統一
+- **ステータス**: RESOLVED（2026-09-05・実装・実UI検証済み）
+- **依頼**: 「直接的に影響を与える項目は上部に配置しろ。時間足, ソース, 期間。項目名は全て統一しろ。
+  指標によって変えるな」。期間の統一名は**「期間」**（AskUserQuestion 裁定・2026-07-30 の
+  「移動期間」統一裁定を改称で更新。副次的な窓は「期間（用途）」型）。
+- **実装**（catalog.js / catalog_entry.js・ラベルと order のみ＝param 名・既定値・計算は不変）:
+  - **配置**: 全 28 指標で 時間足 → ソース → 期間 を実効順の先頭へ。是正した指標:
+    moving_averages（種別が先頭だった）・ma_marod（種別が期間の前）・tgp_btlm（fitter が先頭・
+    ソース/期間が無ラベル）・profit_rsi（**order 未設定のため期間とソースが最下部に落ちていた**）・
+    profit_osi_ma（種別が期間の前）・market_profile（表示モードのグループが先頭＝ソースより上、
+    期間がバリューエリアの後 → 2026-07-15 裁定を新指示で更新）。
+  - **呼称統一**:
+    - 期間: 主 lookback は「期間」。副次窓は「期間（分位）」「期間（平滑）」「期間（実績率）」
+      「期間（閾値）」「期間（標準化）」「期間（平均）」「期間（短期/長期/シグナル）」
+      「期間（OSC/STC/RCI）」「期間（ATR）」の型。**profit_* 15 指標は無ラベル（`period` /
+      `rsi_period` 等の生英語名表示）だったのを全て付与**。
+    - ソース: source/price/src/apply の 4 名すべて「ソース」（tgp_btlm price が無ラベルだった）。
+    - 共有概念: q_low=「下側分位」/ q_high=「上側分位」（btlm_trail・tgp_btlm が生名、
+      rsi/tickvol の注記付き表記を統一・注記は tooltip が担う）/ color=「色」（4 箇所生名）/
+      MA 方式系（ma_type/ma_method/ma_mode）=「種別」。
+- **機械的担保**: 新設 `tests/param_layout_convention.test.js`（4 検査）— isPeriod ラベルは
+  「期間」/「期間（用途）」型・ソース 4 名は「ソース」・q_low/q_high/color の統一・
+  実効順（buildFormModel.groups）で 時間足→ソース→期間 が先頭（規約は宣言でなく検査で強制）。
+- **検証**: front 2,577 passed（既存 2 テストの期待値を新裁定で更新: moving_averages の calc 群
+  構成・market_profile の order）。実UI（:8000/live/）で btlm_trail / moving_averages /
+  ma_marod / profit_rsi のダイアログ実表示順を実測確認。
+- **残課題（対象外・小）**: profit_band / price_range_power 等の固有パラメータ（probabilities・
+  interval 等）は概念が単独のため未ラベル（生英語名）のまま。統一対象の 3 概念＋共有概念は完了。

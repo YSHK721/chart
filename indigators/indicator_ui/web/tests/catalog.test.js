@@ -480,10 +480,12 @@ test('catalog params: existing q-chain constraints survive UI-metadata extension
 // 日別プロファイルは mode='sessions' へ統合済み（旧 sessions BOOL は撤去）。
 //   mode ENUM の enumLabels.sessions='日別プロファイル' 検証は上位の mode テストで担保する。
 
-// calc 群の表示順（依頼者指示 2026-07-15）: ソース → バリューエリア → 期間 → 表示幅(bp)。
-test('catalog: market_profile calc 群の order は ソース<バリューエリア<期間<表示幅(bp)', () => {
+// calc 群の表示順: ソース → 期間 → バリューエリア → 表示幅(bp)。
+//   2026-09-05 依頼者指示「時間足・ソース・期間を上部に配置」により、2026-07-15 の
+//   「ソース→バリューエリア→期間」から期間を 2 番目へ繰り上げた（新指示が旧裁定を更新）。
+test('catalog: market_profile calc 群の order は ソース<期間<バリューエリア<表示幅(bp)', () => {
   const d = get('market_profile');
   const o = (n) => paramOf(d, n).order;
-  assert.ok(o('src') < o('va') && o('va') < o('period') && o('period') < o('dispbp'),
-    `src=${o('src')} va=${o('va')} period=${o('period')} dispbp=${o('dispbp')}`);
+  assert.ok(o('src') < o('period') && o('period') < o('va') && o('va') < o('dispbp'),
+    `src=${o('src')} period=${o('period')} va=${o('va')} dispbp=${o('dispbp')}`);
 });
