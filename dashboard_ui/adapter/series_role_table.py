@@ -365,6 +365,10 @@ class SeriesRoleTable:
             q_low = float(settings.value("q_low"))
         except KeyError:
             q_low = None
+        # 極端分位（evq_ext・依頼者指示 2026-09-05）: 指標が当該系列を**実際に供給している**
+        #   ときだけ宣言する（tickvol は hi のみ等、供給の非対称を列挙で写さない）。
+        ext_high = f"{declaration.level_prefix}_evq_ext_hi"
+        ext_low = f"{declaration.level_prefix}_evq_ext_lo"
         return OscillatorSpec(
             value_series=declaration.value_series,
             band_high_series=f"{declaration.level_prefix}_q{_percent(q_high)}",
@@ -374,6 +378,8 @@ class SeriesRoleTable:
                 else f"{declaration.level_prefix}_q{_percent(q_low)}"
             ),
             q_low=q_low,
+            ext_high_series=ext_high if ext_high in series_names else None,
+            ext_low_series=ext_low if ext_low in series_names else None,
             window_n=int(settings.value("window_n")),
             k_events=int(settings.value("k_events")),
             cumulative=declaration.cumulative,

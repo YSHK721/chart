@@ -395,7 +395,9 @@ class ReachSheetController:
             #   上帯 = scale.band_high（q_high）・下帯 = band_low 系列の末尾値（q_low）。
             #   応答の level 欄は第 1 表の水準列と同じ語彙（q95 / q5・依頼者指摘 2026-08-30:
             #   矢印だけでは判断に迷う→どの分位かを名前で示す）。
-            sides: "dict[str, dict | None]" = {"q_high": None, "q_low": None}
+            sides: "dict[str, dict | None]" = {
+                "q_high": None, "q_low": None, "ext_hi": None, "ext_lo": None,
+            }
             if math.isfinite(float(scale.band_high)):
                 price_high = self._level_price_of(
                     instance, parsed.dataset_ref, value_map,
@@ -419,7 +421,26 @@ class ReachSheetController:
                         "price": float(price_low),
                         "level": _quantile_label(spec.q_low),
                     }
-            if sides["q_high"] is not None or sides["q_low"] is not None:
+            # 極端分位（evq_ext・依頼者指示 2026-09-05）: 同じ逆写像・同じ往復検証・同じ
+            #   (epoch, 帯値) 持ち越し（_level_price_of の side 別スロット）で価格へ投影する。
+            #   語彙は系列名と同じ ext_hi / ext_lo（第 2 の呼称を発明しない）。
+            for side_key, level_series in (
+                ("ext_hi", spec.ext_high_series), ("ext_lo", spec.ext_low_series),
+            ):
+                level_value = _latest_of(
+                    series_by_key[instance.key].get(level_series or "")
+                )
+                if level_value is None:
+                    continue
+                projected = self._level_price_of(
+                    instance, parsed.dataset_ref, value_map,
+                    band=level_value, side=side_key,
+                )
+                if projected is not None:
+                    sides[side_key] = {
+                        "price": float(projected), "level": side_key,
+                    }
+            if any(entry is not None for entry in sides.values()):
                 level_prices[instance.key] = sides
         return projections, unprojectable, level_prices
 
@@ -632,6 +653,9 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         #   セルは価格 2 値のみ・不能なセルは指数の閾値）。供給が無いときは None。
         "band_high": None if cell.band_high is None else float(cell.band_high),
         "band_low": None if cell.band_low is None else float(cell.band_low),
+        # 極端分位（evq_ext・依頼者指示 2026-09-05）。使い分けは band と同一。
+        "ext_high": None if cell.ext_high is None else float(cell.ext_high),
+        "ext_low": None if cell.ext_low is None else float(cell.ext_low),
         "p": None if cell.p is None else float(cell.p),
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
@@ -657,6 +681,8 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         "level_prices": {
             "q_high": sides.get("q_high"),
             "q_low": sides.get("q_low"),
+            "ext_hi": sides.get("ext_hi"),
+            "ext_lo": sides.get("ext_lo"),
         },
     }
 

@@ -406,6 +406,28 @@ def _level_period_touch(
     )
 
 
+def _aligned_latest(
+    value_points: "tuple[tuple[int, float], ...]",
+    series: "Mapping[str, tuple[tuple[int, float], ...]]",
+    series_name: "str | None",
+) -> "float | None":
+    """宣言された水準系列の**当該時刻**（値系列の末尾時刻）の値。
+
+    突き合わせは band_high と同じ観測の口（BandObservations）＝因果境界の第 2 定義を作らない。
+    宣言が無い・供給が無い・当該時刻が非有限なら None（発明しない）。発行済み系列を読むだけで
+    新規の系列発行は 0（複雑度 T-1 を変えない）。
+    """
+    if not series_name:
+        return None
+    level_points = tuple(series.get(series_name) or ())
+    if not level_points:
+        return None
+    levels = _cq.BandObservations.of(value_points, level_points).bands
+    if levels.size and math.isfinite(float(levels[-1])):
+        return float(levels[-1])
+    return None
+
+
 def _build_cell(
     instance: SheetInstance,
     spec: OscillatorSpec,
@@ -418,9 +440,6 @@ def _build_cell(
     """第 2 表のセル 1 つ（§5.2 / §5.3 / §5.3.3）。"""
     value_points = tuple(series.get(spec.value_series) or ())
     band_points = tuple(series.get(spec.band_high_series) or ())
-    band_low_points = tuple(
-        series.get(spec.band_low_series) or ()
-    ) if spec.band_low_series else ()
     if not value_points:
         return OscCell(
             indicator_id=instance.indicator_id,
@@ -448,11 +467,10 @@ def _build_cell(
     band_high = (
         float(bands[-1]) if bands.size and math.isfinite(float(bands[-1])) else None
     )
-    band_low = None
-    if band_low_points:
-        lows = _cq.BandObservations.of(value_points, band_low_points).bands
-        if lows.size and math.isfinite(float(lows[-1])):
-            band_low = float(lows[-1])
+    band_low = _aligned_latest(value_points, series, spec.band_low_series)
+    # 極端分位（evq_ext・依頼者指示 2026-09-05）。同じ観測の口・同じ規約で末尾値を読む。
+    ext_high = _aligned_latest(value_points, series, spec.ext_high_series)
+    ext_low = _aligned_latest(value_points, series, spec.ext_low_series)
     # 直近区間の読み（§5.2 背景ストリップ・依頼者指示 2026-09-04）。確定履歴だけから決まる
     #   量なので epoch 持ち越し。現在区間はセルの `p` が持ち主（重複して持たない）。
     strip = history_cache.strip_for(
@@ -461,7 +479,8 @@ def _build_cell(
 
     if spec.cumulative:
         return _cumulative_cell(instance, spec, values, reach, comparison, strip,
-                                band_high=band_high, band_low=band_low)
+                                band_high=band_high, band_low=band_low,
+                                ext_high=ext_high, ext_low=ext_low)
 
     # 順位は**末尾 1 点だけ**発行する（系列版は n−1 個を作って捨てる・レビュー 🔴-1）。
     rank = _cq.in_band_rank_latest(values, spec.window_n)
@@ -489,6 +508,8 @@ def _build_cell(
         tail_unscaled=reading.tail_unscaled,
         band_high=band_high,
         band_low=band_low,
+        ext_high=ext_high,
+        ext_low=ext_low,
         reach=reach,
         history=strip,
         cumulative=spec.cumulative,
@@ -505,6 +526,8 @@ def _cumulative_cell(
     *,
     band_high: "float | None" = None,
     band_low: "float | None" = None,
+    ext_high: "float | None" = None,
+    ext_low: "float | None" = None,
 ) -> OscCell:
     """積み上がる量のセル（§5.3.3: 部分和は**同じ経過**の過去の部分和へ当てる）。
 
@@ -524,6 +547,8 @@ def _cumulative_cell(
             tail_unscaled=False,
             band_high=band_high,
             band_low=band_low,
+            ext_high=ext_high,
+            ext_low=ext_low,
             reach=reach,
             unavailable_reason=(
                 "同じ経過の比較集合が供給されていない（確定足の分布へは当てない・§5.3.3）"
@@ -549,6 +574,8 @@ def _cumulative_cell(
             tail_unscaled=False,
             band_high=band_high,
             band_low=band_low,
+            ext_high=ext_high,
+            ext_low=ext_low,
             reach=reach,
             unavailable_reason="同じ経過まで進んだ過去の足が足りない（水準なし・§5.2）",
             history=strip,
@@ -564,6 +591,8 @@ def _cumulative_cell(
         tail_unscaled=False,
         band_high=band_high,
         band_low=band_low,
+        ext_high=ext_high,
+        ext_low=ext_low,
         reach=reach,
         history=strip,
         cumulative=True,

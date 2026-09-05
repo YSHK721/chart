@@ -161,6 +161,35 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(text, /12\.5/);
   });
 
+  test('an_unprojectable_cell_prints_its_extreme_quantiles_in_index_space', () => {
+    // 極端分位（依頼者指示 2026-09-05）: 逆算不能セルは evq_ext の指数値を「極」で併記する。
+    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 267, band_high: 8497.7, ext_high: 15321.0, p: 0.31 })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const text = textOf(cellAt(host, 'tickvol', '1h'));
+    assert.match(text, /極 15,?321/);
+    assert.match(text, /閾 8,?497\.7/);
+  });
+
+  test('a_projectable_cell_shows_the_extreme_quantile_prices_in_ladder_order', () => {
+    // 極端分位の価格（同じ逆写像・同じ往復検証）。並びは上から ext_hi → q_high → q_low → ext_lo。
+    const cells = [oscCell({
+      indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, p: 0.31,
+      level_prices: {
+        ext_hi: { price: 67000.5, level: 'ext_hi' },
+        q_high: { price: 65951.2, level: 'q90' },
+        q_low: { price: 63164.7, level: 'q10' },
+        ext_lo: { price: 61200.3, level: 'ext_lo' },
+      },
+    })];
+    const { host } = renderInto(sheetResponse({ cells }));
+    const cellEl = cellAt(host, 'profit_rsi', '1h');
+    const rows = flatten(cellEl).filter((el) => el.classList.contains('dash-osc-level-price'));
+    assert.equal(rows.length, 4);
+    assert.match(textOf(rows[0]), /67,000\.5/);
+    assert.match(textOf(rows[3]), /61,200\.3/);
+    assert.equal(flatten(cellEl).filter((el) => el.classList.contains('dash-osc-band')).length, 0);
+  });
+
   test('a_projectable_cell_shows_prices_only_and_no_index_threshold', () => {
     // 一本化（承認 2026-09-05）: 価格射影が成立するセルの閾値表示は水準到達価格 2 値のみ。
     //   指数の閾値を重ねない（単位の混在＝依頼者指摘 2026-09-05 の違和感を除去）。

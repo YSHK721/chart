@@ -315,6 +315,41 @@ class TestOscillatorCells:
         assert sheet.cells[0].band_low == pytest.approx(11.5)
         assert series.issued.count(instance.key) == 1
 
+    def test_a_cell_reports_the_extreme_quantiles_when_supplied(self) -> None:
+        """極端分位（依頼者指示 2026-09-05）: evq_ext の宣言があれば当該時刻値を併記する。
+
+        計算量: 発行済み系列の当該時刻値を読むだけ（発行 − 使用 = 0 を維持・Test Spy）。
+        """
+        instance = SheetInstance("profit_rsi", "default", {}, "1m", intrabar_capable=True)
+        series = FakeSeriesPort({instance.key: {
+            "rsi": _points([10.0, 20.0, 30.0, 25.0]),
+            "rsi_q90": _points([90.0] * 4),
+            "rsi_evq_ext_hi": _points([95.0, 95.0, 95.0, 96.5]),
+            "rsi_evq_ext_lo": _points([5.0, 5.0, 5.0, 4.5])}})
+        bars = FakeBarPort({"1m": _bars([100.0] * 4)})
+        roles = FakeRoles({"profit_rsi": OscillatorSpec(
+            value_series="rsi", band_high_series="rsi_q90",
+            q_high=0.9, window_n=500, k_events=50,
+            ext_high_series="rsi_evq_ext_hi", ext_low_series="rsi_evq_ext_lo")})
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].ext_high == pytest.approx(96.5)
+        assert sheet.cells[0].ext_low == pytest.approx(4.5)
+        assert series.issued.count(instance.key) == 1
+
+    def test_a_cell_without_ext_declarations_has_no_extreme_quantiles(self) -> None:
+        """宣言が無い側は None（発明しない）。"""
+        instance, series, bars, roles = self._rsi_setup(
+            [10.0, 20.0, 30.0, 25.0], [90.0] * 4)
+
+        sheet = build_reach_sheet(_request(instance), series_port=series,
+                                  bar_port=bars, roles=roles)
+
+        assert sheet.cells[0].ext_high is None
+        assert sheet.cells[0].ext_low is None
+
     def test_a_cell_without_a_low_band_declaration_has_no_lower_threshold(self) -> None:
         """band_low_series の宣言が無い指標の帯下端は None（発明しない）。"""
         instance, series, bars, roles = self._rsi_setup(

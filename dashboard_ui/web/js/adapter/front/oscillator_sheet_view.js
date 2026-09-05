@@ -156,12 +156,14 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     return root;
   }
 
+  /** 価格の並び順（上から下へ・ラダーと同じ降順。極端分位は帯の外側）。 */
+  const LEVEL_PRICE_ORDER = ['ext_hi', 'q_high', 'q_low', 'ext_lo'];
+
   /** 価格射影（§5.5・level_prices）が片側でも成立しているか。 */
   function hasLevelPrice(cell) {
     const prices = (cell && cell.level_prices) || {};
-    return Boolean(
-      (prices.q_high && prices.q_high.price !== null && prices.q_high.price !== undefined)
-      || (prices.q_low && prices.q_low.price !== null && prices.q_low.price !== undefined),
+    return LEVEL_PRICE_ORDER.some(
+      (key) => prices[key] && prices[key].price !== null && prices[key].price !== undefined,
     );
   }
 
@@ -177,16 +179,18 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     if (!cell || hasLevelPrice(cell)) {
       return;
     }
-    for (const [key, title] of [
-      ['band_high', '閾値＝到達判定の帯上端（観測値がこの値以上で到達）'],
-      ['band_low', '閾値＝帯下端（観測値がこの値以下で帯外）'],
+    for (const [key, mark, title] of [
+      ['ext_high', '極', '極端分位（evq_ext_hi）＝過去の帯外イベントの極端値の水準'],
+      ['band_high', '閾', '閾値＝到達判定の帯上端（観測値がこの値以上で到達）'],
+      ['band_low', '閾', '閾値＝帯下端（観測値がこの値以下で帯外）'],
+      ['ext_low', '極', '極端分位（evq_ext_lo）＝過去の帯外イベントの極端値の水準'],
     ]) {
       const value = cell[key];
       if (value === null || value === undefined) continue;
       td.appendChild(el('span', {
         className: 'dash-osc-band',
         title,
-        textContent: `閾 ${formatValue(value)}`,
+        textContent: `${mark} ${formatValue(value)}`,
       }));
     }
   }
@@ -248,7 +252,7 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     //   （依頼者指摘 2026-08-30: 矢印だけでは認知負荷が大きく判断に迷う）。
     //   上（高い価格）から並べる（ラダーと同じ降順）。
     const prices = cell.level_prices || {};
-    for (const side of [prices.q_high, prices.q_low]) {
+    for (const side of LEVEL_PRICE_ORDER.map((key) => prices[key])) {
       if (!side || side.price === null || side.price === undefined) continue;
       const row = el('span', {
         className: 'dash-osc-level-price',

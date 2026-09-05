@@ -229,10 +229,11 @@ def test_the_cells_use_the_model_field_names() -> None:
 
     cell = response["cells"][0]
 
-    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "band_low", "p",
+    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "band_low",
+                         "ext_high", "ext_low", "p",
                          "tail_unscaled", "reach", "unavailable_reason", "level_prices",
                          "instance_key", "value_series", "history", "cumulative"}
-    assert set(cell["level_prices"]) == {"q_high", "q_low"}
+    assert set(cell["level_prices"]) == {"q_high", "q_low", "ext_hi", "ext_lo"}
     # 直近区間の読み（依頼者指示 2026-09-04・同日明確化）: 古い順・各要素は
     #   {value（下層＝指標ミニ描画）, p, tail_unscaled（上層＝ヒート）}。
     assert isinstance(cell["history"], list)
@@ -383,7 +384,8 @@ def test_an_uninvertible_cell_has_no_level_price() -> None:
 
     tickvol = [cell for cell in response["cells"] if cell["indicator_id"] == "tickvol"][0]
 
-    assert tickvol["level_prices"] == {"q_high": None, "q_low": None}
+    assert tickvol["level_prices"] == {"q_high": None, "q_low": None,
+                                       "ext_hi": None, "ext_lo": None}
 
 
 def test_the_level_price_costs_no_extra_forward_evaluation_on_a_tick() -> None:

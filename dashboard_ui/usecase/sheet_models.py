@@ -96,6 +96,10 @@ class OscillatorSpec:
     #: （発明しない・依頼者承認 2026-08-30: 分位水準到達価格の上下 2 値表示）。
     band_low_series: "str | None" = None
     q_low: "float | None" = None
+    #: 極端分位（evq_ext）の系列名（依頼者指示 2026-09-05「極端分位も追加しろ」）。
+    #: 指標が当該系列を供給しているときだけ宣言する（供給が無い側は None＝発明しない）。
+    ext_high_series: "str | None" = None
+    ext_low_series: "str | None" = None
     cumulative: bool = False
     excess: Callable[[float, float], float] = field(
         default=lambda value, band_high: value - band_high
@@ -217,6 +221,11 @@ class OscCell:
     #: 宣言が無い指標・供給が無い時刻は None（発明しない）。表示の使い分け（価格射影が
     #: 成立するセルは価格 2 値のみ・不能なセルは指数の閾値）はフロントが level_prices で判定する。
     band_low: "float | None" = None
+    #: 極端分位（evq_ext_hi / evq_ext_lo）の当該時刻値（依頼者指示 2026-09-05）。
+    #: 表示の使い分けは band_high / band_low と同一（価格射影が成立するセルは価格・
+    #: 不能なセルは指数）。供給が無い側は None（発明しない）。
+    ext_high: "float | None" = None
+    ext_low: "float | None" = None
     reach: "ReachState | None" = None
     unavailable_reason: "str | None" = None
     #: この セルを出した instance の畳み込みキー（LadderRow.instance_key と同じ形）。
