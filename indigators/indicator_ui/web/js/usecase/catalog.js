@@ -171,23 +171,39 @@ const BTLM_TRAIL = new IndicatorDef({
   placement: 'overlay',
   params: [
     // ソース: moving_averages と同一 8 択（applied_price 参照・既定 close）。
-    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], { group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS }),
+    param('source', ParamType.ENUM, 'close', [], ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], {
+      group: 'group.calc', order: 1, label: 'ソース', enumLabels: BTLM_TRAIL_SOURCE_LABELS,
+      tooltip: '回帰の入力に使う適用価格。トレンド線・バンド・β・σ のすべてがこの価格系列から計算される。',
+    }),
     // maxbars: 回帰窓（既定 100・core DEFAULT_MAXBARS）。
-    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, { group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true }),
+    param('maxbars', ParamType.INT, 100, [{ kind: ConstraintKind.MIN_VALUE, operands: ['maxbars', 3], messageKey: 'err.maxbars' }], null, {
+      group: 'group.calc', order: 2, step: 1, min: 3, unit: 'unit.bars', label: '移動期間（回帰）', isPeriod: true,
+      tooltip: 'ローリング回帰の窓。各バーで直近N本の OLS 回帰直線を引き、その窓末尾の値がトレンド線（btlm_trail_mean）になる。大きいほど滑らかで反応が遅く、小さいほど追随が速い。',
+    }),
     // 分位ペア（0<q_low<q_high<1）。tgp_btlm と対称の q-chain 制約。
     param('q_low', ParamType.FLOAT, 0.05, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_low', 1], messageKey: 'err.q_low.range' },
       { kind: ConstraintKind.LT, operands: ['q_low', 'q_high'], messageKey: 'err.q_order' },
-    ], null, { group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1 }),
+    ], null, {
+      group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1,
+      tooltip: 'バンド下端の分位（0 < q_low < q_high < 1）。既定 0.05＝下側 5% の水準。線は btlm_trail_q5 のように分位の百分率つきで描かれる。',
+    }),
     param('q_high', ParamType.FLOAT, 0.95, [
       { kind: ConstraintKind.RANGE_OPEN, operands: [0, 'q_high', 1], messageKey: 'err.q_high.range' },
-    ], null, { group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1 }),
+    ], null, {
+      group: 'group.calc', order: 4, step: 0.01, min: 0, max: 1,
+      tooltip: 'バンド上端の分位。既定 0.95＝上側 5% の水準。q_low と対でトレンド線を挟む帯を作る。',
+    }),
     // バンド方式: ols（名目・norm_ppf(q)·pred_sd）/ empirical（経験分位・因果ウォークフォワード）。
-    param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], { group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS }),
+    param('band_method', ParamType.ENUM, 'ols', [], ['ols', 'empirical'], {
+      group: 'group.calc', order: 5, label: 'バンド方式', enumLabels: BTLM_TRAIL_METHOD_LABELS,
+      tooltip: '帯の算出方式。名目 ols＝トレンド線 ± norm_ppf(q)·予測σ（残差の正規近似・理論値）。経験分位＝直近N本の乖離率 (close−mean)/mean の経験分位をトレンド線に掛ける（実測分布ベース・因果ウォークフォワード＝非リペイント）。',
+    }),
     // 経験分位バンドの参照本数（既定 500・band_method==empirical のときのみ有効）。
     param('empirical_n', ParamType.INT, 500, [{ kind: ConstraintKind.MIN_VALUE, operands: ['empirical_n', 2], messageKey: 'err.empirical_n' }], null, {
       group: 'group.calc', order: 6, step: 1, min: 2, unit: 'unit.bars', label: '移動期間（分位）', isPeriod: true,
       conditionalEnable: { when: { param: 'band_method', equals: 'empirical' } },
+      tooltip: '経験分位の参照本数。直近N本の乖離率の分布から分位を取る。バンド方式が「経験分位」のときのみ有効。大きいほど帯が安定し、小さいほど直近のボラティリティに追随する。',
     }),
     // --- 表示 ---
     // 系列表示（ドット/ライン）はパラメーターから移設（案A・2026-07-19）。設定ダイアログの
@@ -207,9 +223,13 @@ const BTLM_TRAIL = new IndicatorDef({
     param('n_cov', ParamType.INT, 250, [{ kind: ConstraintKind.MIN_VALUE, operands: ['n_cov', 2], messageKey: 'err.n_cov' }], null, {
       group: 'group.display', order: 4, label: '移動期間（実績率）', step: 1, min: 2, unit: 'unit.bars', isPeriod: true,
       conditionalEnable: { when: { param: 'show_metrics', equals: true } },
+      tooltip: 'バンド内実績率を実測するローリング本数。直近N本の確定バーで「終値が帯に収まった割合」を数える。読取欄の表示だけに効き、帯の計算には影響しない。',
     }),
     // color は btlm_mean（トレンド現在位置）の色。スタイルタブへ移譲。
-    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, { group: 'group.style', order: 1 }),
+    param('color', ParamType.COLOR, 'rgba(123, 104, 238, 1)', [], null, {
+      group: 'group.style', order: 1,
+      tooltip: 'トレンド線（btlm_trail_mean・回帰窓末尾のドット/ライン）の色。',
+    }),
   ],
   // 系列: btlm_trail_mean（静的）＋ 動的分位線 btlm_trail_q{pct}＋オフセット/数値（読取欄）系列。
   //   数値系列（beta/sigma/band_hit_rate）は不可視 line（表示層が readout オーバーレイへ載せる）。
