@@ -179,18 +179,16 @@ export function createOscillatorSheetView({ doc, now } = {}) {
     if (!cell || hasLevelPrice(cell)) {
       return;
     }
-    for (const [key, mark, title] of [
-      ['ext_high', '極', '極端分位（evq_ext_hi）＝過去の帯外イベントの極端値の水準'],
-      ['band_high', '閾', '閾値＝到達判定の帯上端（観測値がこの値以上で到達）'],
-      ['band_low', '閾', '閾値＝帯下端（観測値がこの値以下で帯外）'],
-      ['ext_low', '極', '極端分位（evq_ext_lo）＝過去の帯外イベントの極端値の水準'],
-    ]) {
-      const value = cell[key];
-      if (value === null || value === undefined) continue;
+    // 水準名つきで降順（サーバの thresholds をそのまま・依頼者指示 2026-09-05
+    //   「閾表示ではなく q 水準を表示しろ」。名前は第 1 表・価格行と同じ語彙）。
+    for (const entry of (Array.isArray(cell.thresholds) ? cell.thresholds : [])) {
+      if (!entry || entry.value === null || entry.value === undefined) continue;
       td.appendChild(el('span', {
         className: 'dash-osc-band',
-        title,
-        textContent: `${mark} ${formatValue(value)}`,
+        title: String(entry.level).startsWith('ext')
+          ? '極端分位（evq_ext）＝過去の帯外イベントの極端値の水準'
+          : '正常帯の分位水準（上端は到達判定の閾値）',
+        textContent: `${entry.level} ${formatValue(entry.value)}`,
       }));
     }
   }

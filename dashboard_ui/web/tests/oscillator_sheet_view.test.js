@@ -151,23 +151,22 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     assert.match(textOf(cellAt(host, 'ma_marod', '1m')), /0\.8/);
   });
 
-  test('an_unprojectable_cell_prints_the_index_band_thresholds', () => {
-    // 一本化（承認 2026-09-05）: 価格へ逆算できないセルだけ指数の閾値を出す。
-    //   上下とも供給があれば両方（サーバ計算の band_high / band_low をそのまま・再計算しない）。
-    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 267, band_high: 8497.7, band_low: 12.5, p: 0.31 })];
+  test('an_unprojectable_cell_prints_its_thresholds_with_their_level_names', () => {
+    // 依頼者指示 2026-09-05「閾表示ではなく q 水準を表示しろ」: 指数の閾値は水準名つき・
+    //   降順（サーバの thresholds をそのまま・名前は第 1 表と同じ語彙・再計算しない）。
+    const cells = [oscCell({
+      indicator_id: 'tickvol', timeframe: '1h', value: 267, p: 0.31,
+      thresholds: [
+        { level: 'ext_hi', value: 15321.0 },
+        { level: 'q90', value: 8497.7 },
+        { level: 'q10', value: 12.5 },
+      ],
+    })];
     const { host } = renderInto(sheetResponse({ cells }));
     const text = textOf(cellAt(host, 'tickvol', '1h'));
-    assert.match(text, /8497\.7/);
-    assert.match(text, /12\.5/);
-  });
-
-  test('an_unprojectable_cell_prints_its_extreme_quantiles_in_index_space', () => {
-    // 極端分位（依頼者指示 2026-09-05）: 逆算不能セルは evq_ext の指数値を「極」で併記する。
-    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 267, band_high: 8497.7, ext_high: 15321.0, p: 0.31 })];
-    const { host } = renderInto(sheetResponse({ cells }));
-    const text = textOf(cellAt(host, 'tickvol', '1h'));
-    assert.match(text, /極 15,?321/);
-    assert.match(text, /閾 8,?497\.7/);
+    assert.match(text, /ext_hi 15,?321/);
+    assert.match(text, /q90 8,?497\.7/);
+    assert.match(text, /q10 12\.5/);
   });
 
   test('a_projectable_cell_shows_the_extreme_quantile_prices_in_ladder_order', () => {
@@ -194,7 +193,8 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
     // 一本化（承認 2026-09-05）: 価格射影が成立するセルの閾値表示は水準到達価格 2 値のみ。
     //   指数の閾値を重ねない（単位の混在＝依頼者指摘 2026-09-05 の違和感を除去）。
     const cells = [oscCell({
-      indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: 71.4, p: 0.31,
+      indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, p: 0.31,
+      thresholds: [{ level: 'q90', value: 71.4 }],
       level_prices: { q_high: { price: 65951.2, level: 'q90' }, q_low: { price: 63164.7, level: 'q10' } },
     })];
     const { host } = renderInto(sheetResponse({ cells }));
@@ -205,8 +205,8 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
   });
 
   test('a_cell_without_a_band_supply_prints_no_threshold', () => {
-    // band_high = null は「帯が供給されていない」。数値を発明しない。
-    const cells = [oscCell({ indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, band_high: null, p: 0.31 })];
+    // thresholds が空＝帯が供給されていない。数値を発明しない。
+    const cells = [oscCell({ indicator_id: 'profit_rsi', timeframe: '1h', value: 62.1, thresholds: [], p: 0.31 })];
     const { host } = renderInto(sheetResponse({ cells }));
     const bands = flatten(cellAt(host, 'profit_rsi', '1h'))
       .filter((el) => el.classList.contains('dash-osc-band'));
@@ -215,7 +215,7 @@ describe('oscillator_sheet_view — 第 2 表（オシレータ水準到達表�
 
   test('a_no_level_cell_still_prints_its_threshold_when_the_band_is_supplied', () => {
     // 水準なしセル（p = null）でも帯上端が分かるなら隠さない（§5.2 と同じ規約）。
-    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 120, band_high: 512.5, p: null, unavailable_reason: '比較集合なし' })];
+    const cells = [oscCell({ indicator_id: 'tickvol', timeframe: '1h', value: 120, thresholds: [{ level: 'q90', value: 512.5 }], p: null, unavailable_reason: '比較集合なし' })];
     const { host } = renderInto(sheetResponse({ cells }));
     assert.match(textOf(cellAt(host, 'tickvol', '1h')), /512\.5/);
   });

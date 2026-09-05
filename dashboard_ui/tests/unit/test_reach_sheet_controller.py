@@ -229,8 +229,7 @@ def test_the_cells_use_the_model_field_names() -> None:
 
     cell = response["cells"][0]
 
-    assert set(cell) == {"indicator_id", "timeframe", "value", "band_high", "band_low",
-                         "ext_high", "ext_low", "p",
+    assert set(cell) == {"indicator_id", "timeframe", "value", "thresholds", "p",
                          "tail_unscaled", "reach", "unavailable_reason", "level_prices",
                          "instance_key", "value_series", "history", "cumulative"}
     assert set(cell["level_prices"]) == {"q_high", "q_low", "ext_hi", "ext_lo"}
@@ -376,6 +375,17 @@ def test_the_lower_band_price_is_shown_alongside_the_upper_one() -> None:
     assert marod["level_prices"]["q_low"] is not None
     assert marod["level_prices"]["q_low"]["level"] == "q5"
     assert abs(float(marod["level_prices"]["q_low"]["price"]) - 800.0) < 0.01
+
+
+def test_the_thresholds_carry_their_quantile_level_names_in_descending_order() -> None:
+    """依頼者指示 2026-09-05「閾表示ではなく q 水準を表示しろ」: 水準名は spec の分位から
+    （_quantile_label＝第 1 表と同じ語彙）。値の無い水準は載せない。"""
+    response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
+
+    tickvol = [cell for cell in response["cells"] if cell["indicator_id"] == "tickvol"][0]
+
+    assert [entry["level"] for entry in tickvol["thresholds"]] == ["q90"]
+    assert tickvol["thresholds"][0]["value"] == 15.0
 
 
 def test_an_uninvertible_cell_has_no_level_price() -> None:

@@ -284,7 +284,8 @@ class ReachSheetController:
             ],
             "current_index": int(sheet.current_index),
             "cells": [
-                _cell_json(cell, level_prices.get(cell.instance_key))
+                _cell_json(cell, level_prices.get(cell.instance_key),
+                           specs.get(cell.instance_key))
                 for cell in sheet.cells
             ],
             "degradations": [_degradation_json(entry) for entry in degradations],
@@ -636,8 +637,25 @@ def _latest_of(points) -> "float | None":
     return value if math.isfinite(value) else None
 
 
-def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -> "dict[str, Any]":
+def _cell_json(
+    cell,
+    level_prices: "Mapping[str, float | None] | None" = None,
+    spec=None,
+) -> "dict[str, Any]":
     sides = level_prices or {}
+    # 閾値は**水準名つき**で降順に配る（依頼者指示 2026-09-05「閾表示ではなく q 水準を表示しろ」）。
+    #   名前は第 1 表の水準列・系列名と同じ語彙（q90 / q10 / ext_hi / ext_lo・_quantile_label が
+    #   唯一源）。値が無い水準は載せない（発明しない）。
+    thresholds = [
+        {"level": level, "value": float(value)}
+        for level, value in (
+            ("ext_hi", cell.ext_high),
+            (_quantile_label(spec.q_high) if spec else None, cell.band_high),
+            (_quantile_label(spec.q_low) if spec else None, cell.band_low),
+            ("ext_lo", cell.ext_low),
+        )
+        if level is not None and value is not None
+    ]
     return {
         "indicator_id": cell.indicator_id,
         "timeframe": cell.timeframe,
@@ -651,11 +669,9 @@ def _cell_json(cell, level_prices: "Mapping[str, float | None] | None" = None) -
         # 閾値（§5.2・依頼者指示 2026-09-05・一本化承認 2026-09-05）: 帯上端と（宣言があれば）
         #   帯下端。表示の使い分けはフロントが level_prices で判定する（価格射影が成立する
         #   セルは価格 2 値のみ・不能なセルは指数の閾値）。供給が無いときは None。
-        "band_high": None if cell.band_high is None else float(cell.band_high),
-        "band_low": None if cell.band_low is None else float(cell.band_low),
-        # 極端分位（evq_ext・依頼者指示 2026-09-05）。使い分けは band と同一。
-        "ext_high": None if cell.ext_high is None else float(cell.ext_high),
-        "ext_low": None if cell.ext_low is None else float(cell.ext_low),
+        # 指数の閾値水準（降順・水準名つき）。表示の使い分け（価格射影が成立するセルは
+        #   価格のみ・不能なセルはこの指数値）はフロントが level_prices で判定する。
+        "thresholds": thresholds,
         "p": None if cell.p is None else float(cell.p),
         "tail_unscaled": bool(cell.tail_unscaled),
         "reach": None if cell.reach is None else _reach_json(cell.reach),
