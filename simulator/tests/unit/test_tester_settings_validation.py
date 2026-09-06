@@ -719,19 +719,28 @@ class TestRuleOUnknownValues:
         assert tester_settings_from_mapping(expert_mapping(Period=label)).timeframe is not None
 
     @pytest.mark.parametrize(
-        ("key", "value"),
+        ("key", "value", "read", "expected"),
         [
-            ("Dates", "1"),         # 実証（mt5_options: 先月.ini 2026-09-06）
-            ("ForwardMode", "1"),   # 実証（mt5_options: 1/2）
-            ("ForwardMode", "2"),   # 実証（mt5_options: 1/3）
-            ("Optimization", "3"),  # 暫定（TBD-04: UI 消去法「気配値表示で選択されたすべての銘柄」）
+            # 実証（mt5_options: 先月.ini 2026-09-06）
+            ("Dates", "1", lambda s: s.date_range.preset, DatesPreset.LAST_MONTH),
+            # 実証（mt5_options: フォーワードテスト_2_1.ini＝1/2）
+            ("ForwardMode", "1", lambda s: s.forward_mode, ForwardMode.SPLIT_HALF),
+            # 実証（mt5_options: フォーワードテスト_3_1.ini＝1/3）
+            ("ForwardMode", "2", lambda s: s.forward_mode, ForwardMode.SPLIT_THIRD),
+            # 暫定（TBD-04: UI 消去法「気配値表示で選択されたすべての銘柄」）
+            (
+                "Optimization", "3",
+                lambda s: s.optimization, OptimizationMode.ALL_SYMBOLS_IN_MARKET_WATCH,
+            ),
         ],
     )
-    def test_vocabulary_synced_values_are_accepted(self, key, value):
-        # 2026-09-06 の MT5 語彙同期で列挙に加わった値（拒否から受理へ変わったことの固定）。
+    def test_vocabulary_synced_values_are_accepted(self, key, value, read, expected):
+        # 2026-09-06 の MT5 語彙同期で列挙に加わった値。「拒否から受理へ変わった」だけでなく、
+        # 生トークンが**期待の列挙メンバへ写る**ことまで固定する（受理の空振り防止）。
         # 最適化を有効にする行は規則 B（Visual と排他）に合わせ Visual を外す。
         extra = {"Visual": OMIT} if key == "Optimization" else {}
-        assert tester_settings_from_mapping(expert_mapping(**{key: value}, **extra)) is not None
+        settings = tester_settings_from_mapping(expert_mapping(**{key: value}, **extra))
+        assert read(settings) is expected
 
     @pytest.mark.parametrize("model", ["0", "1", "2", "3", "4"])
     def test_all_five_tick_models_are_accepted(self, model):
