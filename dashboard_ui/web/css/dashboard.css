@@ -560,7 +560,7 @@
   color: var(--ink);
 }
 
-/* MP 列（依頼者承認 2026-09-06）＝直近 60 日（1D×60 本）プロファイルの TPO 密度。
+/* MP 列（依頼者承認 2026-09-06）＝直近の 1m 確定足 2000 本プロファイルの TPO 密度。
    狭い固定幅（差の列と同じ流儀。余白の受け皿は指標名列に一本化する）。 */
 .dash-ladder-table td.dash-ladder-mp,
 .dash-ladder-table th.dash-ladder-head-mp {

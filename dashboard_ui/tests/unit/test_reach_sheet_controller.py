@@ -174,7 +174,7 @@ def test_the_rows_use_the_model_field_names() -> None:
 
 
 class MarketProfilePortFake:
-    """P-MP の代役（行の水準価格 → 直近 1D プロファイルの TPO 密度）。"""
+    """P-MP の代役（行の水準価格 → 直近 1m プロファイルの TPO 密度）。"""
 
     def __init__(self, norm: "float | None") -> None:
         self._norm = norm

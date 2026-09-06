@@ -47,13 +47,13 @@ const HORIZONS = Object.freeze([
  * View 内でこの数が複製されていないことは reach_sheet_view.test.js の
  * `the_mp_tooltip_names_the_window_in_bars_from_a_single_constant` が機械的に固定する。
  */
-const MP_WINDOW_BARS_LABEL = 60;
+const MP_WINDOW_BARS_LABEL = 2000;
 
 /**
- * MP セルの説明文。「暦 N 日」ではなく「日足 N 本」と言う——確定足 N 本は暦 N 日ではない
- * （休場日・欠損があるぶん暦の日数は本数より多くなるので、日数として言うと不正確である）。
+ * MP セルの説明文。「暦の N 分」ではなく「1分足 N 本」と言う——確定足 N 本は N 分ではない
+ * （休場・欠損があるぶん実際に跨ぐ時間は本数より長いので、時間として言うと不正確である）。
  */
-const MP_CELL_TITLE = `直近の日足 ${MP_WINDOW_BARS_LABEL} 本のプロファイルの TPO 密度`;
+const MP_CELL_TITLE = `直近の1分足 ${MP_WINDOW_BARS_LABEL} 本のプロファイルの TPO 密度`;
 
 /** 地平キーの集合（照合用）。 */
 const HORIZON_KEYS = Object.freeze(HORIZONS.map((h) => h.key));
@@ -87,7 +87,7 @@ const COLUMNS = Object.freeze([
   { cell: 'next', head: '次のターゲット', className: 'dash-ladder-head-next' },
   { cell: 'distance', head: '距離', className: 'dash-ladder-head-distance' },
   { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
-  // MP（依頼者承認 2026-09-06「価格と差の間に MP 列」）。1D 確定足の窓
+  // MP（依頼者承認 2026-09-06「価格と差の間に MP 列」）。1m 確定足の窓
   //   （長さは MP_WINDOW_BARS_LABEL）で作ったプロファイルの TPO 密度を色の濃度＋横バーで
   //   出す（同日指示「色の濃度とグラフで表示しろ」）。数値は出さない。
   { cell: 'mp', head: 'MP', className: 'dash-ladder-head-mp' },
@@ -590,7 +590,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
    * 載せると濃さが量を表さない（norm ≈ 0.5 が透明・norm < 0.5 は低いほど濃い）。
    * 密度が無い（null・欄なし・非有限）ときは**バーを作らない**——0 幅のバーや無色のバーを
    * 置くと「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
-   * 更新粒度は 1D バー確定なので、なめらか再生（refreshSmoothNumbers）はここを書き換えない。
+   * 更新粒度は 1m バー確定なので、なめらか再生（refreshSmoothNumbers）はここを書き換えない。
    */
   function buildMpCell(row) {
     const cell = el('td', {
