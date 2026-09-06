@@ -19,6 +19,7 @@ ma_marod が兄弟具象へ依存していた DIP 半成立を、common 抽出�
 from __future__ import annotations
 
 import warnings
+from bisect import bisect_left, insort
 
 import numpy as np
 
@@ -132,22 +133,122 @@ def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarra
     return out
 
 
-# 因果統計の種別 → (逐次 reducer factory, ベクトル化集約) の **単一表**。
+def _sorted_linear_quantile(buf: "list[float]", lo: int, hi: int, q: float) -> float:
+    """昇順区間 ``buf[lo:hi]`` の線形分位（numpy `method="linear"` と bit 一致の式）。
+
+    numpy の実装（`_function_base_impl.py` の `_QuantileMethods["linear"]` /
+    `_get_gamma` / `_lerp`）と同一の演算列で計算する:
+    仮想添字 ``(m-1)*q``・γ＝小数部・γ >= 0.5 では ``b - d*(1-γ)`` 側の式。
+    式を写すのは、増分ソート窓（:func:`_rolling_quantile_sweep`）が numpy の
+    分位呼び出しを 1 回も発行せずに**同一 bit の出力**を出すためであり、同一性は
+    digest 凍結テスト（test_marod_bands_kind_table.py）が恒久固定する。
+    """
+    m = hi - lo
+    vi = (m - 1) * q
+    if vi >= m - 1:            # numpy `_get_indexes` の上側クランプ（最大値を採る）
+        return buf[hi - 1]
+    if vi < 0.0:               # 同・下側クランプ（最小値を採る）
+        return buf[lo]
+    prev = int(vi)             # vi >= 0 なので floor と一致
+    gamma = vi - prev
+    a = buf[lo + prev]
+    b = buf[lo + prev + 1]
+    d = b - a
+    return (b - d * (1.0 - gamma)) if gamma >= 0.5 else (a + d * gamma)
+
+
+def _rolling_quantile_sweep(
+    values: np.ndarray, window_n: int, qs: "tuple[float, ...]"
+) -> "tuple[np.ndarray, ...]":
+    """因果ローリング分位の増分ソート窓一括版（quantile kind 専用・出力は完全一致）。
+
+    従来のベクトル化（``sliding_window_view`` ＋ ``np.nanquantile(axis=1)``）は、系列に
+    NaN が 1 つでもあると numpy が**全行**を行単位の Python 経路（``apply_along_axis``）へ
+    落とすため、隣接窓が 499/500 本を共有しているのに毎行を一から並べ直していた
+    （発行した並べ替えのほぼ全てが直前行と同一＝「作ってから捨てる」計算・実測で
+    コールド 1 要求の律速 12 秒）。本関数は昇順バッファを 1 本だけ維持し、バーごとに
+    挿入 1・削除 1 で窓を前進させる——各バーで**新しく発行する計算は出力に使う分位
+    評価だけ**になる（発行 − 使用 = 0。無駄の不在は計算量テストで固定する）。
+
+    同一性の規約（:func:`rolling_causal_fast` の従来出力と bit 一致・digest 凍結）:
+        - 部分窓（t < window_n）は逐次実装と同じ**有限値のみ**の窓
+          （±inf を除く。:func:`causal_stat_latest` の ``np.isfinite`` と同一）。
+        - 満杯窓（t >= window_n）は従来の ``np.nanquantile`` と同じ**非 NaN** の窓
+          （±inf を含む）。バッファは非 NaN を保持し、部分窓では ±inf の件数ぶん
+          両端を切って有限区間だけを読む。
+        - 有限本数 < :data:`MIN_STAT_OBS` のバーは NaN（両区間共通・従来と同一）。
+        - 分位の式は :func:`_sorted_linear_quantile`（numpy と同一の演算列）。
+
+    Args:
+        values: 対象系列。
+        window_n: 因果ローリング窓の本数。
+        qs: 分位の組。**同じ窓前進を共有して**全分位を読む（バンド上下 2 本のために
+            窓を 2 回前進させない——:func:`quantile_bands` の重複発行の除去）。
+
+    Returns:
+        ``qs`` と同順の配列タプル（各長さ n）。
+    """
+    vals = np.asarray(values, dtype=np.float64).ravel()
+    n = vals.size
+    outs = tuple(np.full(n, np.nan) for _ in qs)
+    raw = vals.tolist()           # ループ内で numpy スカラ化を繰り返さない
+    buf: "list[float]" = []       # 窓内の非 NaN 値（昇順・±inf を含む）
+    neg_inf = 0                   # buf 先頭側の -inf 件数
+    pos_inf = 0                   # buf 末尾側の +inf 件数
+    pos_infinity = float("inf")
+    neg_infinity = float("-inf")
+    for t in range(n):
+        m = len(buf)
+        finite_m = m - neg_inf - pos_inf
+        if finite_m >= MIN_STAT_OBS:
+            if t < window_n:      # 部分窓: 有限のみ（±inf を両端から除いた区間）
+                lo, hi = neg_inf, m - pos_inf
+            else:                 # 満杯窓: 非 NaN 全体（従来の nanquantile と同じ窓）
+                lo, hi = 0, m
+            for j, q in enumerate(qs):
+                outs[j][t] = _sorted_linear_quantile(buf, lo, hi, q)
+        value = raw[t]
+        if value == value:        # NaN でなければ窓へ入れる
+            insort(buf, value)
+            if value == pos_infinity:
+                pos_inf += 1
+            elif value == neg_infinity:
+                neg_inf += 1
+        leaving = t - window_n
+        if leaving >= 0:
+            gone = raw[leaving]
+            if gone == gone:
+                del buf[bisect_left(buf, gone)]
+                if gone == pos_infinity:
+                    pos_inf -= 1
+                elif gone == neg_infinity:
+                    neg_inf -= 1
+    return outs
+
+
+# 因果統計の種別 → (逐次 reducer factory, ベクトル化集約, 一括 sweep) の **単一表**。
 # 逐次（:func:`rolling_causal` 用）とベクトル化（:func:`rolling_causal_fast` 用）は同じ kind
 # 集合の 2 実装だったため、片方にだけ kind を足すと取り残しが生じていた（ISSUE-479 C-4）。
 # 種別の追加・削除は本表 1 箇所で完結する。
+# 第 3 要素（一括 sweep・whole-series）は、それを持つ kind では head/満杯窓の分割機構ごと
+# 置き換える（None の kind は従来機構）。quantile だけが持つのは、nan 系集約のうち
+# nanquantile だけが NaN 混在で行単位 Python 経路へ退行するためである（nanmean/nanstd は
+# C 実装のまま＝退行しない・実測）。
 _KIND_AGGREGATORS: "dict[str, tuple]" = {
     "quantile": (
         (lambda q: (lambda f: np.quantile(f, q))),
         (lambda win, q: np.nanquantile(win, q, axis=1)),
+        (lambda vals, window_n, q: _rolling_quantile_sweep(vals, window_n, (q,))[0]),
     ),
     "mean": (
         (lambda q: (lambda f: f.mean())),
         (lambda win, q: np.nanmean(win, axis=1)),
+        None,
     ),
     "std": (
         (lambda q: (lambda f: f.std(ddof=1))),
         (lambda win, q: np.nanstd(win, axis=1, ddof=1)),
+        None,
     ),
 }
 
@@ -172,8 +273,10 @@ def rolling_causal_fast(
     """
     vals = np.asarray(values, dtype=np.float64).ravel()
     n = vals.size
-    # 表引きは 1 呼び出しあたり 1 回（逐次・ベクトル化の両方を一度に解決する）。
-    seq_factory, vectorized = _KIND_AGGREGATORS[kind]
+    # 表引きは 1 呼び出しあたり 1 回（逐次・ベクトル化・一括 sweep を一度に解決する）。
+    seq_factory, vectorized, sweep = _KIND_AGGREGATORS[kind]
+    if sweep is not None:
+        return sweep(vals, window_n, q)
     reducer = seq_factory(q)
     head = min(n, window_n)
     out = np.full(n, np.nan)
@@ -220,8 +323,9 @@ def quantile_bands(
         ValueError: window_n < MIN_STAT_OBS、または分位ペア不正時。
     """
     n, ql, qh = validate_window_qpair(window_n, q_low, q_high)
-    low = rolling_causal_fast(series, n, "quantile", ql)
-    high = rolling_causal_fast(series, n, "quantile", qh)
+    # 上下 2 本は**同じ窓前進を共有して** 1 掃引で読む（:func:`_rolling_quantile_sweep`）。
+    #   分位ごとに掃引すると窓の維持（挿入・削除）を 2 回発行して片方を捨てることになる。
+    low, high = _rolling_quantile_sweep(series, n, (ql, qh))
     return low, high
 
 
