@@ -208,6 +208,7 @@ def build_reach_sheet(
     event_cache: "ExcessEventCache | None" = None,
     history_cache: "HistoryStripCache | None" = None,
     projected_levels: "Sequence[ProjectedLevel]" = (),
+    mp_port=None,
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
 
@@ -319,6 +320,15 @@ def build_reach_sheet(
         )
 
     ladder = build_ladder(levels, current_price=current_price)
+    # MP 列（依頼者承認 2026-09-06）。プロファイルはシート共通の 1 本なので、問い合わせも
+    #   **全行を 1 回**にする（行ごとに聞くと同じ畳み込みを行数ぶん引くことになり、出力は
+    #   正しいまま無駄だけが増える＝ISSUE-450 と同型）。供給が無ければ全行 None（後方互換）。
+    mp_norms = _mp_norms(
+        mp_port,
+        dataset_ref=request.dataset_ref,
+        prices=tuple(float(row.price) for row in ladder.rows),
+        now_unix=int(chart_bars[-1].time),
+    )
     rows = tuple(
         LadderRow(
             price=row.price,
@@ -331,8 +341,9 @@ def build_reach_sheet(
             instance_key=instance_by_row[(row.label, row.timeframe)],
             naming=naming_by_row[(row.label, row.timeframe)],
             series=series_by_row[(row.label, row.timeframe)],
+            mp=mp_norms[index],
         )
-        for row in ladder.rows
+        for index, row in enumerate(ladder.rows)
     )
     return ReachSheetResponse(
         current_price=current_price,
@@ -344,6 +355,22 @@ def build_reach_sheet(
 
 
 # --------------------------------------------------------------------- 部品
+def _mp_norms(
+    mp_port, *, dataset_ref: str, prices: "tuple[float, ...]", now_unix: int
+) -> "tuple[float | None, ...]":
+    """全行の水準価格に対する TPO 密度（P-MP を **1 回だけ** 呼ぶ）。
+
+    供給が無い組み立て（MP 列を持たない既存の呼出）では全行 None を返す。行数と同じ長さで
+    返すのは P-MP の契約であり、ここで足したり切ったりしない（食い違いは契約違反として
+    露見させる）。
+    """
+    if mp_port is None:
+        return tuple(None for _ in prices)
+    return tuple(
+        mp_port.norms_at(dataset_ref=dataset_ref, prices=prices, now_unix=now_unix)
+    )
+
+
 def _load_bars(
     request: ReachSheetRequest, instances: "Sequence[SheetInstance]", bar_port
 ) -> "dict[str, tuple[Bar, ...]]":

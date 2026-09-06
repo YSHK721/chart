@@ -22,6 +22,7 @@ from dashboard_ui.usecase.sheet_ports import (
     BreakpointSourcePort,
     ForwardEvaluationPort,
     IndicatorSeriesPort,
+    MarketProfilePort,
     SeriesRolePort,
 )
 
@@ -140,7 +141,8 @@ class TestPorts:
     @pytest.mark.parametrize(
         "port",
         [IndicatorSeriesPort, BarSupplyPort, ForwardEvaluationPort,
-         BreakpointSourcePort, BreakpointRegistryPort, SeriesRolePort],
+         BreakpointSourcePort, BreakpointRegistryPort, SeriesRolePort,
+         MarketProfilePort],
     )
     def test_every_port_is_a_runtime_checkable_protocol(self, port: type) -> None:
         assert getattr(port, "_is_protocol", False) is True

@@ -603,3 +603,92 @@ class TestRowInstanceLink:
                                   roles=FakeRoles())
 
         assert sheet.rows[0].instance_key == sheet.degradations[0].instance_key
+
+
+class FakeMarketProfilePort:
+    """P-MP の Test Spy。**どう束ねて呼ばれたか**を記録する（数えるのはこの面だけ）。"""
+
+    def __init__(self, norms_by_price: "dict[float, float] | None" = None) -> None:
+        self._norms = dict(norms_by_price or {})
+        self.calls: "list[tuple[str, tuple[float, ...], int]]" = []
+
+    def norms_at(self, *, dataset_ref, prices, now_unix):
+        asked = tuple(float(price) for price in prices)
+        self.calls.append((dataset_ref, asked, int(now_unix)))
+        return tuple(self._norms.get(price) for price in asked)
+
+
+class TestMarketProfileColumn:
+    """MP 列（依頼者承認 2026-09-06: 1D×60 本の TPO 密度を行ごとに配る）。
+
+    行の水準価格に対応する密度は**シート共通の 1 本のプロファイル**から引く。行ごとに
+    プロファイルを畳むと ISSUE-450 と同型の浪費になる（出力は正しいまま無駄だけ増える）。
+    """
+
+    @staticmethod
+    def _two_rows():
+        upper = SheetInstance("moving_averages", "default", {"length": 5}, "1m")
+        lower = SheetInstance("moving_averages", "default", {"length": 9}, "1m")
+        series = FakeSeriesPort({
+            upper.key: {"MA": _points([104.0, 105.0])},
+            lower.key: {"MA": _points([96.0, 95.0])},
+        })
+        bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
+        return _request(upper, lower), series, bars
+
+    def test_each_row_carries_the_profile_density_of_its_own_price(self) -> None:
+        # Arrange
+        request, series, bars = self._two_rows()
+        mp_port = FakeMarketProfilePort({105.0: 0.42, 95.0: 1.0})
+
+        # Act
+        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
+                                  roles=FakeRoles(), mp_port=mp_port)
+
+        # Assert
+        assert [row.price for row in sheet.rows] == [105.0, 95.0]
+        assert [row.mp for row in sheet.rows] == [0.42, 1.0]
+
+    def test_a_price_the_profile_cannot_answer_leaves_the_row_without_a_density(
+        self,
+    ) -> None:
+        """範囲外・素材なしは None のまま行へ渡る（0.0 で埋めない・発明しない）。"""
+        # Arrange
+        request, series, bars = self._two_rows()
+        mp_port = FakeMarketProfilePort({105.0: 0.42})
+
+        # Act
+        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
+                                  roles=FakeRoles(), mp_port=mp_port)
+
+        # Assert
+        assert [row.mp for row in sheet.rows] == [0.42, None]
+
+    def test_a_sheet_without_a_profile_port_leaves_every_row_without_a_density(
+        self,
+    ) -> None:
+        """後方互換: MP の供給が無い組み立て（既存の呼出）でも落ちない。"""
+        # Arrange
+        request, series, bars = self._two_rows()
+
+        # Act
+        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
+                                  roles=FakeRoles())
+
+        # Assert
+        assert [row.mp for row in sheet.rows] == [None, None]
+
+    def test_the_profile_is_asked_for_every_row_price_in_one_bulk_call(self) -> None:
+        """行ごとに聞かない（1 build＝全行一括の 1 呼出）。時刻は表示足の末尾＝シートの現在時刻。"""
+        # Arrange
+        request, series, bars = self._two_rows()
+        mp_port = FakeMarketProfilePort()
+
+        # Act
+        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
+                                  roles=FakeRoles(), mp_port=mp_port)
+
+        # Assert: 記録された呼出は「全行の価格を 1 度に渡した 1 件」だけである。
+        assert mp_port.calls == [
+            ("jp225_tick", tuple(row.price for row in sheet.rows), _NOW + 60),
+        ]

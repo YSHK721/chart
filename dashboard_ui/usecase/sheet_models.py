@@ -149,6 +149,10 @@ class LadderRow:
     #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこの行の
     #: 価格へ流すか」を選ぶための宣言。表示専用（None＝流さない）。
     series: "str | None" = None
+    #: この行の水準価格における TPO 密度 norm（0..1・依頼者承認 2026-09-06「MP 列」）。
+    #: 素材はシート共通の 1 本（1D 確定足・直近 60 本のプロファイル）。プロファイルの
+    #: 価格域の外・素材なしは None（0.0 で埋めない＝「密度が最小」と読ませない）。
+    mp: "float | None" = None
 
 
 @dataclass(frozen=True)

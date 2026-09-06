@@ -165,12 +165,48 @@ def test_the_rows_use_the_model_field_names() -> None:
 
     assert set(row) == {"price", "timeframe", "label", "distance", "gap_to_previous",
                         "horizon_marks", "reach", "horizon_p", "instance_key", "naming",
-                        "series"}
+                        "series", "mp"}
     # series はなめらか再生の宣言（依頼者指示 2026-08-31: tails のどの系列を流すか）。
     assert isinstance(row["series"], str) and row["series"]
     assert set(row["naming"]) == {"name", "level", "level_p", "level_note",
                                   "period", "source", "extra"}
     assert set(row["reach"]) == {"reached", "since_time", "truncated"}
+
+
+class MarketProfilePortFake:
+    """P-MP の代役（行の水準価格 → 直近 1D プロファイルの TPO 密度）。"""
+
+    def __init__(self, norm: "float | None") -> None:
+        self._norm = norm
+
+    def norms_at(self, *, dataset_ref, prices, now_unix):
+        return tuple(self._norm for _ in prices)
+
+
+def test_a_row_reports_the_profile_density_supplied_for_its_price() -> None:
+    """MP 列（依頼者承認 2026-09-06）。値はサーバが単一ソース（フロントは再計算しない）。"""
+    series = SeriesPortFake(series_material())
+    controller = ReachSheetController(
+        series_port=series,
+        bar_port=BarPortFake({"1m": bars(60, step=60)}),
+        roles=SeriesRoleTable(),
+        registry=BreakpointRegistry(),
+        forward_port=ForwardSpy(),
+        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        is_intrabar_capable=lambda indicator_id, variant, params: True,
+        mp_port=MarketProfilePortFake(0.75),
+    )
+
+    response = handle(controller, body())
+
+    assert [row["mp"] for row in response["rows"]] == [0.75] * len(response["rows"])
+
+
+def test_a_row_without_a_profile_supply_reports_no_density() -> None:
+    """供給が無ければ null（0.0 で埋めない・発明しない）。後方互換の組み立てでも落ちない。"""
+    response = handle(controller_of(ForwardSpy(), SeriesPortFake(series_material())), body())
+
+    assert all(row["mp"] is None for row in response["rows"])
 
 
 def test_the_rows_can_be_joined_to_the_degradations() -> None:

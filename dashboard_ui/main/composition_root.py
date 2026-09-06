@@ -48,6 +48,7 @@ from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
 from dashboard_ui.adapter.gateway.intrabar_capability_gateway import (
     IntrabarCapabilityGateway,
 )
+from dashboard_ui.adapter.gateway.market_profile_gateway import MarketProfileGateway
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.adapter.gateway.param_scopes import ParamScopes
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
@@ -115,6 +116,9 @@ def build_dashboard_app(
             ),
             is_intrabar_capable=capability,
             state=state,
+            # MP 列（依頼者承認 2026-09-06）。プロファイルは確定素材から決まる量なので、
+            #   持ち越しは**既存の共有ストア**へ相乗りさせる（専用ストアを新設しない）。
+            mp_port=MarketProfileGateway(bar_port=series_gateway, store=materials),
         )
 
     return DashboardApp(

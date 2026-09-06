@@ -104,6 +104,8 @@ class ReachSheetController:
         is_intrabar_capable: 足内更新の可否（増分器の宣言有無）。無言の縮退を作らないため、
             できない instance は応答の `degradations` に必ず現れる。
         state: 要求をまたいで持ち越す状態（省略時はこの controller 専用の状態を持つ）。
+        mp_port: P-MP（行の水準価格 → TPO 密度・依頼者承認 2026-09-06）。省略時は
+            全行 null（MP 列を持たない組み立てでも応答の形は変わらない）。
     """
 
     def __init__(
@@ -117,6 +119,7 @@ class ReachSheetController:
         elapsed_gateway,
         is_intrabar_capable: Callable[[str, str, "Mapping[str, object]"], bool],
         state: "SheetState | None" = None,
+        mp_port=None,
     ) -> None:
         self._series_port = series_port
         self._bar_port = bar_port
@@ -126,6 +129,7 @@ class ReachSheetController:
         self._elapsed_gateway = elapsed_gateway
         self._is_intrabar_capable = is_intrabar_capable
         self._state = state if state is not None else SheetState()
+        self._mp_port = mp_port
 
     # ------------------------------------------------------------------ 入口
     def handle(self, request: "Mapping[str, Any]") -> "dict[str, Any]":
@@ -272,6 +276,7 @@ class ReachSheetController:
             event_cache=self._state.events,
             history_cache=self._state.history,
             projected_levels=self._projected_levels(instances, specs, level_prices),
+            mp_port=self._mp_port,
         )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
         degradations = [*sheet.degradations, *_unprojectable_degradations(unprojectable)]
@@ -596,6 +601,9 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
         "series": row.series,
         # 表示 3 分割（依頼者指示 2026-08-30: 指標名 / 期間 / ソース）。識別は label が担う。
         "naming": (None if row.naming is None else dict(row.naming)),
+        # MP 列（依頼者承認 2026-09-06）: この水準価格の TPO 密度 norm（0..1）。供給が無い・
+        #   プロファイルの価格域の外は null（フロントはバーを描かない＝0 で埋めない）。
+        "mp": None if row.mp is None else float(row.mp),
     }
 
 
