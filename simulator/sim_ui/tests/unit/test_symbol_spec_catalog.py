@@ -146,3 +146,31 @@ def test_run_profile_exposes_eleven_backtest_keys():
         "leverage", "volume_min", "volume_max", "volume_step", "stops_level",
     ):
         assert key in d, key
+
+
+def test_data_range_is_measured_from_the_csv_itself():
+    """データ範囲（先頭/末尾の日付トークン）は CSV 実体からの実測であること。
+
+    プリセット選択時に日付ボックスへ表示する解決期間のデータ源（表示専用）。期待値は
+    fixture CSV（JP225_M1_202501.csv）の先頭データ行と末尾行の実測 golden。
+    """
+    jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
+    assert jp.data_first_date == "2025.01.02"
+    assert jp.data_last_date == "2025.01.30"
+    # `.ini` の日付トークンと同形（front が変換なしでボックスへ出せる）
+    import re
+
+    assert re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", jp.data_first_date)
+
+
+def test_data_range_is_not_in_the_submission_payload_keys():
+    """データ範囲は投入 body の profile 由来 11 キーに**含まれない**こと（表示専用）。
+
+    to_dict（API 応答）には載るが、front の投入キー許可リスト（PROFILE_KEYS）が写す
+    11 キーの側に混ざると byte 等価契約が壊れる。ここでは to_dict に載ることだけ固定し、
+    投入側の不変は既存の byte 等価 golden（submission_body_parity）が担う。
+    """
+    jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
+    payload = jp.to_dict()
+    assert payload["data_first_date"] == "2025.01.02"
+    assert payload["data_last_date"] == "2025.01.30"

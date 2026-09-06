@@ -31,6 +31,7 @@ from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
     TesterSettingsSchemaCatalog as SchemaCatalog,
 )
 from simulator.usecase.tester_settings.enums import (
+    DATES_PRESET_RANGE_KINDS,
     DATES_PRESET_UI_LABELS,
     EXECUTION_DELAY_UI_LABELS,
     FORWARD_MODE_UI_LABELS,
@@ -308,3 +309,18 @@ def test_execution_mode_spec_carries_the_ui_labels(catalog) -> None:
     assert spec["labels"] == {
         str(delay): label for delay, label in EXECUTION_DELAY_UI_LABELS.items()
     }
+
+
+def test_dates_options_carry_their_display_range_kind(catalog) -> None:
+    """`Dates` の全選択肢が表示期間の種別（enums の宣言の写し）を併載すること。
+
+    欠けたプリセットは日付ボックスの表示が静かに空になる（沈黙の縮退）ため、全メンバの
+    網羅を固定する（期待値は宣言から導く＝リテラルなし）。
+    """
+    # Arrange / Act
+    options = catalog.enum_options()["Dates"]
+    # Assert
+    assert {o.token: o.range_kind for o in options} == {
+        str(int(m)): DATES_PRESET_RANGE_KINDS[m] for m in DatesPreset
+    }
+    assert all(o.range_kind for o in options), "range_kind の欠けたプリセットがあります"

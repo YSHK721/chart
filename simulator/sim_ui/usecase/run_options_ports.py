@@ -54,12 +54,20 @@ class RunProfile:
     stops_level: int
     settlement_currency: str
     config_overrides: "dict | None" = None
+    #: データ実体の先頭/末尾の日付（`.ini` トークン形 `YYYY.MM.DD`・**表示専用**）。
+    #: MT5 の日付行はプリセット選択時に解決済み期間をボックスへ表示する（実測
+    #: `.doc/mt5_options/ss20260906204651.jpg`: 全履歴=データ範囲）。その表示の
+    #: データ源であり、投入 body の profile 由来 11 キーには**含めない**
+    #: （settlement_currency と同じ扱い）。範囲を読めないデータセットは None（表示なし）。
+    data_first_date: "str | None" = None
+    data_last_date: "str | None" = None
 
     def to_dict(self) -> "dict":
-        """JSON 直列化用のプレーン dict（API 応答が使う）。``config_overrides=None`` は載せない。"""
+        """JSON 直列化用のプレーン dict（API 応答が使う）。``None`` の任意項目は載せない。"""
         d = asdict(self)
-        if d.get("config_overrides") is None:
-            d.pop("config_overrides", None)
+        for optional in ("config_overrides", "data_first_date", "data_last_date"):
+            if d.get(optional) is None:
+                d.pop(optional, None)
         return d
 
 

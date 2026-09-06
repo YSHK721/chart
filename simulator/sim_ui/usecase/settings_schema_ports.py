@@ -9,9 +9,9 @@ DIP: usecase は本抽象にのみ依存し、`.ini` の語彙表・非対象の
 具体を知らない（束縛は adapter=`TesterSettingsSchemaCatalog` と Composition Root が持つ）。
 プレーン DTO（`SchemaOption` / `UnsupportedNotice`）で境界を跨ぐ。
 
-ラベルについて: 選択肢の ``label`` は**列挙メンバ名**である。MT5 の UI 文言は本リポジトリ
-内に根拠が無く、発明しない（基本設計 §18.3・`.claude/CLAUDE.md`「実証的証拠のない仮定で
-実装しない」）。
+ラベルについて: 選択肢の ``label`` は enums の MT5 実測写像（`*_UI_LABELS`・実測
+`.doc/mt5_options/` 2026-09-06）があればそれ・無ければ**列挙メンバ名**である。根拠の
+無い MT5 文言は発明しない（基本設計 §18.3・`.claude/CLAUDE.md`）。
 """
 from __future__ import annotations
 
@@ -26,14 +26,20 @@ class SchemaOption:
     ``token``: `.ini` に書かれるそのままの値（`Period` はラベル文字列・`Model` は生 int の
         文字列表記）。front はこの値をそのまま投入し、字形を組み立て直さない。
     ``label``: 画面表示名（＝列挙メンバ名）。意味の翻訳はしない（上の「ラベルについて」）。
+    ``range_kind``（任意・`Dates` の選択肢のみ）: プリセット選択時に日付ボックスへ表示する
+        解決期間の種別（enums `DATES_PRESET_RANGE_KINDS` が唯一の宣言・表示専用）。
     """
 
     token: str
     label: str
+    range_kind: "str | None" = None
 
     def to_dict(self) -> "dict":
-        """JSON 直列化用のプレーン dict（API 応答が使う）。"""
-        return {"token": self.token, "label": self.label}
+        """JSON 直列化用のプレーン dict（API 応答が使う）。``range_kind=None`` は載せない。"""
+        payload = {"token": self.token, "label": self.label}
+        if self.range_kind is not None:
+            payload["range_kind"] = self.range_kind
+        return payload
 
 
 @dataclass(frozen=True)

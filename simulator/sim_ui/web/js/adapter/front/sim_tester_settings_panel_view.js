@@ -227,6 +227,8 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
 
   function onChanged(key) {
     applyActivation();
+    // 期間プリセットを選び直したら、解決済み期間の表示を出し直す（期間指定なら触らない）。
+    if (key === PRESET_DATE_KEY) applyPresetRangeDisplay();
     renderWarnings();
     renderUnsupportedActivation();
     // 銘柄を変えたら外へ通知する（実行対象データセットの決め直しは合成根が担う）。
@@ -339,6 +341,40 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   function isCustomRange() {
     const node = controls.get(PRESET_DATE_KEY);
     return !!node && String(node.value) === CUSTOM_RANGE_OPTION.token;
+  }
+
+  /** プリセットが表示する解決期間（{from, to} トークン・計算できなければ null）。
+   *  種別（entire / year_to_date / month_to_date）は schema の Dates 選択肢が配る宣言
+   *  （enums `DATES_PRESET_RANGE_KINDS` 由来）で、データ範囲は run profile が供給する。 */
+  function presetDisplayRange() {
+    const token = currentToken(PRESET_DATE_KEY);
+    const option = ((schema && schema.enum_options) || {}).Dates?.find?.(
+      (o) => String(o.token) === token,
+    );
+    const kind = option && option.range_kind;
+    const last = profile && profile.data_last_date;
+    if (!kind || !last) return null;
+    if (kind === "entire") {
+      const first = profile.data_first_date;
+      return first ? { from: String(first), to: String(last) } : null;
+    }
+    const [year, month] = String(last).split(".");
+    if (kind === "year_to_date") return { from: `${year}.01.01`, to: String(last) };
+    if (kind === "month_to_date") return { from: `${year}.${month}.01`, to: String(last) };
+    return null;   // 未知の種別は表示しない（発明しない・投入には関与しない）
+  }
+
+  /** プリセット選択時、解決済み期間を不活性の From/To ボックスへ**表示**する（MT5 実測:
+   *  ss20260906204441/204651。値は表示専用＝不活性キーは投入本文に載らない）。期間指定
+   *  （カスタム）では上書きしない——直前のプリセット表示が手入力の起点として残る。 */
+  function applyPresetRangeDisplay() {
+    if (!schema || isCustomRange()) return;
+    const fromNode = controls.get(CUSTOM_DATE_KEYS[0]);
+    const toNode = controls.get(CUSTOM_DATE_KEYS[1]);
+    if (!fromNode || !toNode) return;
+    const range = presetDisplayRange();
+    fromNode.value = range ? range.from : "";
+    toNode.value = range ? range.to : "";
   }
 
   /** キー K の活性宣言が「表示だけ隠す」形か（不活性でも投入本文には載せ続ける）。 */
@@ -505,6 +541,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     for (const key of ordered) buildControl(key);
     applyProfileDefaults();
     applyActivation();
+    applyPresetRangeDisplay();
     renderUnsupported();
     renderUnsupportedActivation();
     renderWarnings();
@@ -627,6 +664,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       profile = runProfile || null;
       if (!schema) return;
       applyProfileDefaults();
+      applyPresetRangeDisplay();   // データ範囲の供給元が変わった＝表示期間も引き直す
       renderUnsupportedActivation();
       renderWarnings();
     },

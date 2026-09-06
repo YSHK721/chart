@@ -270,6 +270,19 @@ DATES_PRESET_UI_LABELS: "dict[DatesPreset, str]" = {
     DatesPreset.LAST_YEAR: "昨年",
 }
 
+#: `Dates` プリセット → 日付ボックスへ**表示**する解決期間の種別（表示専用・実行には使わない）。
+#: MT5 はプリセット選択時に解決済み期間を不活性の From/To ボックスへ出す（実測）:
+#:   - entire        = データ先頭〜データ最終日（ss20260906204651: 全履歴=2016.06.07〜2026.09.05）
+#:   - year_to_date  = データ最終日の年の 1/1〜データ最終日（ss20260906204441 ＋
+#:                     ss20260906195130: 昨年=2026.01.01〜2026.09.05・2 画面で一致）
+#:   - month_to_date = データ最終日の月の 1 日〜データ最終日。**暫定**（TBD-21:
+#:                     「先月」選択時のボックス表示は未採取。year_to_date との対称からの推定）
+DATES_PRESET_RANGE_KINDS: "dict[DatesPreset, str]" = {
+    DatesPreset.ENTIRE_HISTORY: "entire",
+    DatesPreset.LAST_MONTH: "month_to_date",
+    DatesPreset.LAST_YEAR: "year_to_date",
+}
+
 #: `ForwardMode` の表示ラベル（ss20260906203328: 開いたドロップダウンの実測）。
 FORWARD_MODE_UI_LABELS: "dict[ForwardMode, str]" = {
     ForwardMode.DISABLED: "キャンセル",

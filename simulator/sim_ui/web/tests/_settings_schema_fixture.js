@@ -27,7 +27,11 @@ export function settingsSchema() {
       ],
       Model: [{ token: "m0", label: "ML0" }, { token: "m1", label: "ML1" }],
       Optimization: [{ token: "o0", label: "OFF" }, { token: "o1", label: "ON" }],
-      Dates: [{ token: "d0", label: "ALL" }, { token: "d2", label: "LAST" }],
+      // range_kind はプリセット選択時に日付ボックスへ表示する解決期間の種別（実物と同語彙）
+      Dates: [
+        { token: "d0", label: "ALL", range_kind: "entire" },
+        { token: "d2", label: "LAST", range_kind: "year_to_date" },
+      ],
       ForwardMode: [{ token: "f0", label: "NONE" }, { token: "f4", label: "CUSTOM" }],
       OptimizationCriterion: [{ token: "c0", label: "C0" }],
     },
@@ -96,5 +100,7 @@ export function runProfile() {
     contract_size: 10.0, digits: 1, point_size: 0.1, leverage: 10.0,
     volume_min: 0.01, volume_max: 100.0, volume_step: 0.01, stops_level: 0,
     settlement_currency: "XYZ",
+    // データ実体の先頭/末尾（表示専用・投入 11 キー外。実物の RunProfile と同形）
+    data_first_date: "2015.06.07", data_last_date: "2016.09.05",
   };
 }

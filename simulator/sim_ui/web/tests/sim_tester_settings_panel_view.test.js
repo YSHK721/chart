@@ -440,6 +440,52 @@ test("an outside pointer-down closes the calendar and leaves the field untouched
   assert.equal(byClass(host, "cal-pop").length, 0);
 });
 
+// --- 11. プリセットの解決期間表示（MT5 実測 ss20260906204441/204651）---------------
+// プリセット選択時、解決済み期間を不活性の From/To ボックスへ表示する（表示専用）。
+// 種別は schema の Dates 選択肢（range_kind）・データ範囲は run profile が供給する。
+
+test("choosing a preset shows its resolved period in the greyed date boxes", () => {
+  const { host, view, schema, profile } = ready();
+  // 既定（entire）: データ範囲そのもの（期待値は fixture の profile から導く）
+  assert.equal(field(host, "FromDate").value, profile.data_first_date);
+  assert.equal(field(host, "ToDate").value, profile.data_last_date);
+  // year_to_date のプリセットへ: データ最終日の年の 1/1 〜 データ最終日
+  const ytd = schema.enum_options.Dates.find((o) => o.range_kind === "year_to_date");
+  const dates = field(host, "Dates");
+  dates.value = ytd.token;
+  fire(dates);
+  const year = profile.data_last_date.split(".")[0];
+  assert.equal(field(host, "FromDate").value, `${year}.01.01`);
+  assert.equal(field(host, "ToDate").value, profile.data_last_date);
+  // 表示は表示だけ——不活性キーは投入本文に載らない（規則 E は破らない）
+  assert.ok(!("FromDate" in view.buildTesterMapping()));
+  assert.ok(!("ToDate" in view.buildTesterMapping()));
+});
+
+test("the displayed preset period seeds the custom range and stays editable", () => {
+  const { host, view, profile } = ready();
+  chooseCustomRange(host);
+  // 直前のプリセット表示（entire）が手入力の起点として残り、そのまま投入できる
+  assert.equal(view.buildTesterMapping().FromDate, profile.data_first_date);
+  assert.equal(view.buildTesterMapping().ToDate, profile.data_last_date);
+  // 期間指定の間は選び直し以外で上書きされない（手入力が生きる）
+  field(host, "FromDate").value = "2016.01.02";
+  fire(field(host, "FromDate"), "input");
+  assert.equal(field(host, "FromDate").value, "2016.01.02");
+  assert.equal(view.buildTesterMapping().FromDate, "2016.01.02");
+});
+
+test("a profile without a data range leaves the display boxes blank (縮退)", () => {
+  const m = mounted();
+  m.view.setSchema(settingsSchema());
+  const bare = runProfile();
+  delete bare.data_first_date;
+  delete bare.data_last_date;
+  m.view.setRunProfile(bare);
+  assert.equal(field(m.host, "FromDate").value, "");
+  assert.equal(field(m.host, "ToDate").value, "");
+});
+
 test("a disabled date field's calendar button does not open (不活性の欄へ書かせない)", () => {
   const { host } = ready();
   const btn = findById(host, "testerForwardDateCalBtn");

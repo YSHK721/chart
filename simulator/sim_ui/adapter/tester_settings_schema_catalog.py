@@ -36,6 +36,7 @@ from simulator.sim_ui.usecase.settings_schema_ports import (
     UnsupportedNotice,
 )
 from simulator.usecase.tester_settings.enums import (
+    DATES_PRESET_RANGE_KINDS,
     DATES_PRESET_UI_LABELS,
     EXECUTION_DELAY_UI_LABELS,
     FORWARD_MODE_UI_LABELS,
@@ -123,7 +124,15 @@ _ENUM_OPTION_BUILDERS: "dict[str, Callable[[], list[SchemaOption]]]" = {
     _PERIOD_KEY: _timeframe_options,
     "Model": lambda: _int_enum_options(TickModel, TICK_MODEL_UI_LABELS),
     "Optimization": lambda: _int_enum_options(OptimizationMode, OPTIMIZATION_MODE_UI_LABELS),
-    "Dates": lambda: _int_enum_options(DatesPreset, DATES_PRESET_UI_LABELS),
+    # Dates は表示期間の種別（range_kind）も併載する（宣言は enums・表示専用）
+    "Dates": lambda: [
+        SchemaOption(
+            token=str(int(member)),
+            label=DATES_PRESET_UI_LABELS.get(member, member.name),
+            range_kind=DATES_PRESET_RANGE_KINDS.get(member),
+        )
+        for member in DatesPreset
+    ],
     "ForwardMode": lambda: _int_enum_options(ForwardMode, FORWARD_MODE_UI_LABELS),
     # 評価軸はドロップダウンの実測スクショ未取得＝ラベル写像なし（メンバ名で出す）
     "OptimizationCriterion": lambda: _int_enum_options(OptimizationCriterion),

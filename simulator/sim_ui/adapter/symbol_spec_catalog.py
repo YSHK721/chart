@@ -117,6 +117,31 @@ _JP225_MT5_CSV = (
 )
 
 
+def _csv_date_range(path: Path) -> "tuple[str | None, str | None]":
+    """MT5 形式 CSV のデータ先頭/末尾の日付トークン（`YYYY.MM.DD`）を実測する。
+
+    先頭はヘッダ直後の 1 行・末尾はファイル終端からの後読み（全走査しない）。日付列は
+    第 1 フィールド（TAB 区切り `<DATE>`）で、値は `.ini` の日付トークンと同形（実測:
+    `2025.01.02`）。読めない場合は (None, None)（表示なしへ縮退・投入には関与しない）。
+    """
+    try:
+        with path.open("rb") as f:
+            f.readline()                      # ヘッダ行
+            first = f.readline().split(b"\t", 1)[0].decode("ascii", "replace").strip()
+            f.seek(0, 2)
+            tail = min(f.tell(), 4096)
+            f.seek(-tail, 2)
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            last = lines[-1].split(b"\t", 1)[0].decode("ascii", "replace").strip() if lines else ""
+        pattern = __import__("re").compile(r"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$")
+        return (
+            first if pattern.fullmatch(first) else None,
+            last if pattern.fullmatch(last) else None,
+        )
+    except OSError:
+        return (None, None)
+
+
 class SymbolSpecCatalog(RunOptionsPort):
     """JP225 の実行プロファイルと ea_name 一覧を供給する単一ソース。"""
 
@@ -134,10 +159,14 @@ class SymbolSpecCatalog(RunOptionsPort):
         # 供給元スナップショットを 1 回読み、銘柄仕様 8 項目と決済通貨をそこから引く。
         # リテラルを持たない＝人が値を選べない（ISSUE-445 RC-1 の是正・D2）。
         snapshot = load_snapshot(_JP225_SERVER, _JP225_SYMBOL)
+        data_first, data_last = _csv_date_range(_JP225_MT5_CSV)
         return [
             RunProfile(
                 dataset=_JP225_REF,
                 data_path=str(_JP225_MT5_CSV),
+                # 日付行の表示用データ範囲（実測読取・表示専用。読めなければ None）
+                data_first_date=data_first,
+                data_last_date=data_last,
                 symbol=_JP225_SYMBOL,
                 period="M1",
                 # contract_size / digits / point_size / leverage / stops_level /
