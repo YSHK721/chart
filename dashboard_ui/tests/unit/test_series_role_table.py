@@ -149,7 +149,7 @@ def test_the_rsi_excess_is_normalised_by_the_headroom() -> None:
 def test_the_rsi_excess_is_nan_when_the_band_leaves_no_headroom() -> None:
     """帯上端が上限 100 に達したら NaN（＝イベント判定外・除算例外にしない）。
 
-    参照実装 `profit_rsi/src/levels.py` の `headroom` は非正・非有限の余地を NaN に
+    参照実装 `profit_rsi/src/levels.py` の headroom 関数は非正・非有限の余地を NaN に
     倒す。帯上端は因果ローリング分位なので、RSI が 100 に張り付く区間では u = 100 が
     実データに現れる（ISSUE-499: 市場再開直後の 1m で実測 14 本。ガード無しでは
     ZeroDivisionError がシート全体を 500 にしていた）。
