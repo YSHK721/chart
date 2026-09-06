@@ -7,35 +7,39 @@
 
 固定する不変条件は「束縛と ``__all__`` の出所が ``src.__all__`` 単一であること」——
 名前の列挙を期待値に書き写すと、それ自体が第 2 の手書きリストになる（同じ欠陥の再生産）。
+
+読み込みは ``common.module_loader.load_package``（一意名 exec・T8: sys.path 非改変）。
+``__init__.py`` の相対 import（``from .src import *``）ごと実行されるため、層の挙動は
+本番 import 経路と同一である。
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-# パッケージ層を通すため indigators/ を追加する（src 直読みの既存テストとは逆の向き）。
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common.module_loader import load_package
 
-import moving_averages  # noqa: E402
-from moving_averages import src as _src  # noqa: E402
+_pkg = load_package(
+    "_moving_averages_pkg_layer", Path(__file__).resolve().parents[1]
+)
+_src = _pkg.src
 
 
 def test_every_public_name_is_bound_on_the_package():
     """``from moving_averages import *`` が全名で成立する（欠けた名前を列挙して報告）。"""
-    missing = [n for n in moving_averages.__all__ if not hasattr(moving_averages, n)]
+    missing = [n for n in _pkg.__all__ if not hasattr(_pkg, n)]
     assert missing == []
 
 
 def test_all_is_the_single_source_from_src():
     """``__all__`` は src.__all__ と同一物（写しではなく同じオブジェクトの再公開）。"""
-    assert moving_averages.__all__ is _src.__all__
+    assert _pkg.__all__ is _src.__all__
 
 
 def test_bound_objects_are_the_src_objects():
     """層は素通しであり、別実装・別名を挟まない（同名で src の実体と一致する）。"""
     mismatched = [
-        n for n in moving_averages.__all__
-        if getattr(moving_averages, n) is not getattr(_src, n)
+        n for n in _pkg.__all__
+        if getattr(_pkg, n) is not getattr(_src, n)
     ]
     assert mismatched == []
