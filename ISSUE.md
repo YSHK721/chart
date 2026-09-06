@@ -14196,3 +14196,59 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - **検証**: dashboard front 247 passed（30m スキップ＋申告・全 8 本時は申告空・台帳外 3s は
   従来どおり失敗、の 3 検査を追加）。実UI（/dashboard/・30m 紐付けを含む保存状態を再現）で
   エラーなくラダー描画・30m のみ除外を実測。
+
+
+## ISSUE-499: /reach_sheet が dataset_ref=jp225_mt5 で ZeroDivisionError（供給失敗として返る）
+- **ステータス**: OPEN
+- **発見日**: 2026-09-05
+- **事象**: `POST /dashboard/reach_sheet` に `dataset_ref="jp225_mt5"` を渡すと
+  `{"ok": false, "error": {"type": "supply", "message": "ZeroDivisionError: float division by zero"}}`。
+  hi/lo 価格の実測検証（profit_rsi 1W）中に付随的に観測。jp225 / jp225_tick は正常。
+- **未対応**: 原因未特定（MT5 データセットの供給が空／段階未疎通の可能性・ISSUE-448 V-1 待ちと関連か未検証）。
+
+
+## ISSUE-500: サーバ側 MP（/reach_sheet の mp 欄）が第 1 段階で dormant 化＝「作って捨てる」計算が残る
+- **ステータス**: OPEN
+- **発見日**: 2026-09-06
+- **事象**: 依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」第 1 段階により、価格ラダーの MP 列は
+  live core の `/market_profile` をライブチャートと同一パラメータで借りて描くようになった。
+  一方サーバ側の MP 供給（`mp_port` → `_mp_norms` → `MarketProfileGateway`）は**無改変で温存**
+  （可逆性の確保・依頼者裁定 4）。結果として `/reach_sheet` の `mp` 欄は毎 epoch 計算されるが
+  **フロントから 1 バイトも読まれない**。これは CLAUDE.md 絶対命令 §4.1 が禁じる「作ってから
+  捨てる」計算そのものであり、状態検証（応答の正しさ）では原理的に落ちない型の浪費である。
+- **なぜ第 1 段階で除去しないか**: 本段階の制約が「サーバ側 Python は 1 バイトも変えない」
+  （撤去は不可逆側の変更なので別ターンで y/n を取る・破壊的裁定の一発 y/n 禁止規約）。
+  段階内では除去できないため、負債として明示的に起票する（文章で残して検査に落とさないと
+  ISSUE-450 と同じ再発経路になるため、下記の contract 検定を同時に置いた）。
+- **現状の機械的告知**（第 1 段階で設置済み・dashboard_ui/web/tests/mp_borrow_wiring.test.js）:
+  (a) `reach_sheet_view.js` のソース走査で `row.mp` 参照が 0 件であること
+  (b) 応答が `mp` を運んでも借用が無ければバーを描かないこと
+  (c) 応答の `mp` と借用 profile を食い違わせ、**借用側**が版面に出ること
+  → 「読んでいないつもりで読んでいる」状態を構造的に排除し、撤去時に版面が壊れないことを保証する。
+- **第 2 段階（撤去）の通過条件**:
+  1. 実UI（`/dashboard/`）で MP 列が `/live/market_profile` 応答から描かれることを Network 実測で確認
+     （バー描画・行分離・範囲外行の非描画）。**市場再開後**にティック契機の再取得（1m バー枠の
+     進みで次の 1 回）まで実測すること——休場中は枠が進まないため未実測項目である。
+  2. 上記 contract 検定 (a)(b)(c) が緑のままであること。
+  3. 撤去対象の確定: `dashboard_ui/adapter/gateway/market_profile_gateway.py`・`mp_port`・
+     `_mp_norms`・`ReachRow.mp` 欄・関連 Python 検定。**最小可逆段階**（まず呼び出しを外して
+     計算を止め、応答欄は残す）と不可逆段階（欄と実装の削除）に分割し、後者は別ターンで y/n。
+  4. 撤去後、`/reach_sheet` の 1 epoch あたり計算量が MP 相当ぶん減ることを回数で実測
+     （時間ではなく回数・§4.1）。
+- **関連**: ISSUE-450（同型の「作って捨てる」・既存検定 1,233 件が緑のまま 20 日間浪費を保護）／
+  ISSUE-257（同型の裁定）／ISSUE-470（ローソク借用の前例）。
+- **2a 完了（結線解除・MP 発行 0 を検定で固定・2026-09-06）**: 第 2 段階を分割した最小可逆段階
+  （上記通過条件 3 の前半）を実施した。`dashboard_ui/main/composition_root.py` から P-MP の
+  注入と import を削除し、計算を止めた。応答の MP 欄・P-MP の宣言・その実装・既存検定
+  （`dashboard_ui/tests/unit/test_market_profile_gateway.py`・
+  `dashboard_ui/tests/complexity/test_market_profile_computed_once.py`）は**無改変で温存**
+  （dormant 資産・git revert 1 つで戻せる）。新設した機械的検査
+  `dashboard_ui/tests/e2e/test_market_profile_unwired.py` が固定するのは
+  (a) 束縛点が P-MP を結線しないこと (b) 1 要求あたりの MP 発行が畳み込み・価格レンジの
+  **両面とも 0** であること（上記通過条件 4 を回数で検定へ落とした。結線時は両面とも 1 回
+  発行することを Red で実測済み。固定するのは無駄の不在であり回数は焼き込まない）
+  (c) 応答の各行が MP 欄を**持ったまま null** であること（欄の削除は不可逆な 2b の仕事なので
+  先取りしない）(d) 検出力の対照——同じ計算面へ P-MP を直に結べば発行が 0 でなくなること。
+  実測: pytest 631 passed / node 337 pass / 静的品質検定 exit 0。
+  **ステータスは OPEN のまま**（不可逆な 2b＝欄・Port・Gateway・検定の削除と、市場再開後の
+  実測である通過条件 1 が残る）。
