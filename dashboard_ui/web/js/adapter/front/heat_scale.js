@@ -89,6 +89,41 @@ export function colorForP(p) {
 }
 
 /**
+ * 密度 `norm ∈ [0,1]` に比例した不透明度（**単調**）。
+ *
+ * `alphaForP` と分けてある理由: `p`（分位）と `norm`（量）は読み方が違う。`p` は中立 0.5 を
+ * 基準にした**隔たり**なので双極（`|p − 0.5|`）で正しいが、`norm` は量そのものなので
+ * 双極写像に載せると濃さが量を表さなくなる——`norm ≈ 0.5` が完全透明になって「密度なし」と
+ * 区別が付かず、`norm < 0.5` では低いほど濃い逆相関の領域ができる。
+ *
+ * @param {number} norm 正規化 TPO 密度
+ * @returns {number} 0（量なし）〜 MAX_ALPHA（最大）
+ */
+export function alphaForDensity(norm) {
+  assertOnScale(norm);
+  return norm * MAX_ALPHA;
+}
+
+/**
+ * `norm` に対応する背景色（MP 列の横バー・依頼者指示 2026-09-06「色の濃度とグラフで表示しろ」）。
+ *
+ * 量は向きを持たないので色相は 1 つ（過熱側の `HOT_RGB`）に固定し、**濃さだけ**が量を担う。
+ * 濃さの上限は `p` の写像と同じ `MAX_ALPHA`（テーマ両方で本文が読める上限・第 2 の上限を
+ * 作らない）。
+ *
+ * @param {number|null|undefined} norm 密度。`null` / `undefined` は「素材なし・範囲外」を
+ *   意味し、**色を置かない**（0 で埋めると「密度が最小」と読める）。
+ * @returns {string} CSS 色（`rgba(...)`）。色を置かない場合は `NO_LEVEL_COLOR`。
+ * @throws {TypeError} 数値だが [0,1] に載らないとき（丸めずに落とす＝フェイルクローズ）。
+ */
+export function colorForDensity(norm) {
+  if (norm === null || norm === undefined) {
+    return NO_LEVEL_COLOR;
+  }
+  return `rgba(${HOT_RGB}, ${alphaForDensity(norm)})`;
+}
+
+/**
  * §5.3.2 の帯外単一色（GPD が当てはまらない 7 セル）。
  *
  * 「目盛りが無い」ことを示す色であり、`p` の濃さとして読んではならない。

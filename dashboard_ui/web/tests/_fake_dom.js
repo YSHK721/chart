@@ -134,6 +134,9 @@ export function ladderRow(overrides = {}) {
     horizon_marks: [],
     reach: { reached: false, since_time: null, truncated: false },
     horizon_p: { short: 0.058, medium: 0.077, long: 0.128 },
+    // MP 列（依頼者承認 2026-09-06）: 1D×60 本プロファイルの TPO 密度 norm（0..1）。
+    //   範囲外・素材なしは null（0.0 で埋めない）。
+    mp: null,
     // なめらか再生の宣言（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
     instance_key: ['cvfe', 'default', '{}', '5m'],
     series: 'cvfe_u2',

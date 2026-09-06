@@ -8,7 +8,7 @@ P-3 は§7 の計算量 Spy が数える**唯一の面**であり、前進評価
 """
 from __future__ import annotations
 
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_models import OscillatorSpec, SeriesRole, SheetInstance
@@ -42,6 +42,54 @@ class BarSupplyPort(Protocol):
         self, *, dataset_ref: str, timeframe: str, now_unix: int
     ) -> "Bar | None":
         """形成中の足（無ければ None）。"""
+
+
+@runtime_checkable
+class MarketProfilePort(Protocol):
+    """P-MP 価格水準の TPO 密度（依頼者承認 2026-09-06: 価格ラダーの MP 列）。
+
+    実装は既存の MP core（参照実装 `compute_candle_profile`）を **読むだけ**で再利用する。
+    プロファイルはシート共通の 1 本（dataset_ref の 1D 確定足・直近 60 本）であり、
+    行ごとに畳まない——だから面は「価格 1 本」ではなく**全行一括**である
+    （行ごとの口にすると ISSUE-450 と同型の浪費が構造として入り込む）。
+
+    縮退告知（`Degradation`）の対象外である理由:
+        縮退の告知は `instance_key`（4-tuple）を必須にしており、行ではなく instance の
+        単位で「更新粒度が落ちている」ことを伝える面である。MP はシート共通の 1 本であって
+        instance を持たない（どの指標の系列でもない）ため、この面に載る鍵が存在しない。
+        素材が無い・範囲外のときは `None` を返し、フロントは**バーを描かない**ことで
+        「密度が無い」ことを版面に表す（0.0 で埋めると「密度が最小」と読める）。
+
+    供給そのものが失敗したときの決定（フェイルクローズ）:
+        MP を作れない失敗——core が配置されていない（`ImportError`）、core の契約が変わった
+        （`TypeError` / `KeyError`）等——は**要求全体の失敗として貫通させる**。捕まえて
+        全行 `None` に置き換えてはならない。
+
+        理由は上の「縮退告知の対象外」と同じ一点である: 告知の面（`Degradation`）は
+        `instance_key` を必須にしており、instance を持たない MP はそこに載れない。
+        つまり握り潰した場合、利用者にも呼び出し側にも**それを伝える口が無い**。
+        `None` は版面では「この価格に密度が無い」と読める値なので、失敗を `None` に
+        変換すると「計算できなかった」が「密度が無かった」として黙って表示される
+        ——読み手には区別が付かず、壊れたまま何日も動き続ける。
+
+        したがって「無言の縮退」より「見える失敗」を採る。この規律は
+        `tests/unit/test_market_profile_gateway.py` の
+        `TestSupplyFailuresAreNotSwallowed` が機械的に固定する（宣言では守られない）。
+    """
+
+    def norms_at(
+        self, *, dataset_ref: str, prices: "Sequence[float]", now_unix: int
+    ) -> "tuple[float | None, ...]":
+        """各価格の正規化 TPO 密度 norm（0..1）。要求と同じ順序・同じ件数で返す。
+
+        Args:
+            dataset_ref: 素材の参照（シートの要求が運ぶもの）。
+            prices: ラダー全行の水準価格（**一括**）。
+            now_unix: シートの現在時刻（表示足の末尾 time）。形成中足の判定に使う。
+
+        Returns:
+            価格ごとの norm。プロファイルの価格域の外・素材なしはその要素が `None`。
+        """
 
 
 class SeriesSupplyUnavailable(RuntimeError):

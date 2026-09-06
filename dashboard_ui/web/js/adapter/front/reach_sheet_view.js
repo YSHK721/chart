@@ -22,7 +22,7 @@
 // 発行（HTTP）も時計も持たない——描くだけ。混ぜると「描くたびに発行する」欠陥が入り込み、
 //   出力は正しいまま無駄だけが増える（ISSUE-450 と同型）。
 
-import { colorForP } from './heat_scale.js';
+import { colorForP, colorForDensity } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
 // 価格表記の唯一源（第 2 表と共有・写しを持たない）。
 import { formatPrice, formatReachTimestamp } from './format.js';
@@ -35,6 +35,25 @@ const HORIZONS = Object.freeze([
   { key: 'medium', label: '中期' },
   { key: 'long', label: '長期' },
 ]);
+
+/**
+ * MP 列の説明文が名乗る窓の長さ（**本数**）。
+ *
+ * 実体の唯一源はサーバ側の `MP_WINDOW_BARS`
+ * （`dashboard_ui/adapter/gateway/market_profile_gateway.py`）であり、応答は窓の長さを
+ * 運ばない（`meta` を足す拡張は今回しない）。したがって版面側は**この定数 1 つ**だけを
+ * 持ち、説明文はここから組み立てる——文字列に直接書くと、サーバ側を変えたときに
+ * 説明文だけが古い数を名乗り続ける（手書き複製は必ず取り残しを生む）。
+ * View 内でこの数が複製されていないことは reach_sheet_view.test.js の
+ * `the_mp_tooltip_names_the_window_in_bars_from_a_single_constant` が機械的に固定する。
+ */
+const MP_WINDOW_BARS_LABEL = 60;
+
+/**
+ * MP セルの説明文。「暦 N 日」ではなく「日足 N 本」と言う——確定足 N 本は暦 N 日ではない
+ * （休場日・欠損があるぶん暦の日数は本数より多くなるので、日数として言うと不正確である）。
+ */
+const MP_CELL_TITLE = `直近の日足 ${MP_WINDOW_BARS_LABEL} 本のプロファイルの TPO 密度`;
 
 /** 地平キーの集合（照合用）。 */
 const HORIZON_KEYS = Object.freeze(HORIZONS.map((h) => h.key));
@@ -68,19 +87,34 @@ const COLUMNS = Object.freeze([
   { cell: 'next', head: '次のターゲット', className: 'dash-ladder-head-next' },
   { cell: 'distance', head: '距離', className: 'dash-ladder-head-distance' },
   { cell: 'price', head: '価格', className: 'dash-ladder-head-price' },
+  // MP（依頼者承認 2026-09-06「価格と差の間に MP 列」）。1D 確定足の窓
+  //   （長さは MP_WINDOW_BARS_LABEL）で作ったプロファイルの TPO 密度を色の濃度＋横バーで
+  //   出す（同日指示「色の濃度とグラフで表示しろ」）。数値は出さない。
+  { cell: 'mp', head: 'MP', className: 'dash-ladder-head-mp' },
   // 差は独立列（依頼者指示 2026-08-30「価格と直前行の差を分離して各列に」）。
   { cell: 'gap', head: '差', hint: '（直前行と）', className: 'dash-ladder-head-gap' },
   // 到達時間（依頼者指示 2026-08-30: 差と時間足の間・YYYY/MM/DD HH:MM:SS・UTC）。
   { cell: 'reach_time', head: '到達時間', className: 'dash-ladder-head-reach-time' },
   { cell: 'timeframe', head: '時間足', className: 'dash-ladder-head-timeframe' },
-  { cell: 'name', head: '指標名', className: 'dash-ladder-head-name' },
-  { cell: 'level', head: '水準', className: 'dash-ladder-head-level' },
-  { cell: 'period', head: '期間', hint: '（プリセット）', className: 'dash-ladder-head-period' },
-  { cell: 'source', head: 'ソース', className: 'dash-ladder-head-source' },
+  // 水準情報の 4 列（依頼者指示 2026-08-30）。`naming` の宣言が「この列は水準情報か」の
+  //   唯一源で、セル数は下でここから数える（列の一覧と別に数字を書かない）。
+  { cell: 'name', head: '指標名', className: 'dash-ladder-head-name', naming: true },
+  { cell: 'level', head: '水準', className: 'dash-ladder-head-level', naming: true },
+  { cell: 'period', head: '期間', hint: '（プリセット）', className: 'dash-ladder-head-period', naming: true },
+  { cell: 'source', head: 'ソース', className: 'dash-ladder-head-source', naming: true },
 ]);
 
-/** 水準情報のセル数（現在値行の colSpan が数え直しを忘れないための唯一源）。 */
-const NAMING_CELLS = 4;
+/** 水準情報のセル数（naming を宣言した列の数）。 */
+const NAMING_CELLS = COLUMNS.filter((column) => column.naming).length;
+
+/** 現在値行（§4.1）が畳む列数＝価格列の**前**と**後ろ**。COLUMNS から導く。
+ *
+ *  ここを定数で持つと、列を足すたびに列の一覧と別の場所を手で数え直すことになる
+ *  （実際に 2026-08-30 の「差」列・2026-09-06 の「MP」列で 2 度発生した）。数え違いは
+ *  版面の列ずれとして現れるので、列の一覧を唯一源にして数え直しの機会そのものを無くす。 */
+const PRICE_COLUMN_AT = COLUMNS.findIndex((column) => column.cell === 'price');
+const CURRENT_HEAD_CELLS = PRICE_COLUMN_AT;
+const CURRENT_TAIL_CELLS = COLUMNS.length - PRICE_COLUMN_AT - 1;
 
 /** ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、2 秒で
  *  フェードアウト（同日指示で 1 秒 → 2 秒）。先の「単色・中間色なし」を本指示が置換）。
@@ -547,6 +581,34 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     return cell;
   }
 
+  /**
+   * MP セル（依頼者承認 2026-09-06: 価格ラダーの MP 列）。
+   *
+   * 中身は**横バー 1 本**だけで、数値は出さない（依頼者指示 2026-09-06「色の濃度とグラフで
+   * 表示しろ」）。長さ ∝ norm・色は heat_scale の `colorForDensity`（色の唯一源。ここで色を
+   * 作らない）。密度は「量」なので**単調**写像を使う——分位 `p` の双極写像（`colorForP`）へ
+   * 載せると濃さが量を表さない（norm ≈ 0.5 が透明・norm < 0.5 は低いほど濃い）。
+   * 密度が無い（null・欄なし・非有限）ときは**バーを作らない**——0 幅のバーや無色のバーを
+   * 置くと「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
+   * 更新粒度は 1D バー確定なので、なめらか再生（refreshSmoothNumbers）はここを書き換えない。
+   */
+  function buildMpCell(row) {
+    const cell = el('td', {
+      className: 'dash-ladder-mp',
+      dataset: { cell: 'mp' },
+      title: MP_CELL_TITLE,
+    });
+    const norm = Number(row.mp);
+    if (row.mp === null || row.mp === undefined || !Number.isFinite(norm)) {
+      return cell;
+    }
+    const bar = el('span', { className: 'dash-ladder-mp-bar' });
+    bar.style.width = `${norm * 100}%`;
+    bar.style.backgroundColor = colorForDensity(norm);
+    cell.appendChild(bar);
+    return cell;
+  }
+
   /** 時間足セル（モックのピル）。 */
   function buildTimeframeCell(timeframe, tone) {
     const cell = el('td', { className: 'dash-ladder-timeframe', dataset: { cell: 'timeframe' } });
@@ -580,6 +642,7 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     tr.appendChild(distanceCell);
 
     tr.appendChild(buildPriceCell(row));
+    tr.appendChild(buildMpCell(row));
     const gapCell = el('td', {
       className: 'dash-ladder-gap',
       textContent: formatGap(row.gap_to_previous),
@@ -710,9 +773,11 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
         tr.classList.remove('dash-ladder-current-down');
       });
     }
-    // 現在値行は距離＋次のターゲットの 2 列ぶんをまとめる（列の分離・依頼者指示 2026-08-30）。
+    // 現在値行は価格より前の列（次のターゲット・距離）をまとめる（列の分離・依頼者指示
+    //   2026-08-30）。数は COLUMNS から導く（CURRENT_HEAD_CELLS）。
     tr.appendChild(el('th', {
-      scope: 'row', colSpan: 2, textContent: '現在値', dataset: { cell: 'distance' },
+      scope: 'row', colSpan: CURRENT_HEAD_CELLS, textContent: '現在値',
+      dataset: { cell: 'distance' },
     }));
     const priceCell = el('td', { dataset: { cell: 'price' } });
     currentPriceEl = el('b', {
@@ -722,9 +787,10 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     priceCell.appendChild(currentPriceEl);
     tr.appendChild(priceCell);
     const labelCell = el('td', {
-      // 差＋到達時間＋時間足＋水準情報のぶんをまとめて 1 セルに（列を足したら NAMING_CELLS
-      //   側とここの定数 3（差・到達時間・時間足）を数え直す）。ラベル文は置かない（上記）。
-      colSpan: 3 + NAMING_CELLS,
+      // 価格より後ろの列（MP・差・到達時間・時間足＋水準情報）をまとめて 1 セルに。
+      //   数は COLUMNS から導く（CURRENT_TAIL_CELLS）＝列を足しても数え直さない。
+      //   ラベル文は置かない（上記）。
+      colSpan: CURRENT_TAIL_CELLS,
       dataset: { cell: 'label' },
     });
     currentUpdateEl = null;

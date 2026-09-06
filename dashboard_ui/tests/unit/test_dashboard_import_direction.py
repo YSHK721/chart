@@ -277,6 +277,9 @@ _ADAPTER_ONLY_ROOTS = (
     #   削除された。塞ぐ対象は所有者 1 点で足りる——存在しない旧位置を許容集合へ
     #   書き続ける必要はない（許容集合は小さいほど強い）。
     "indigators.indicator_ui.api_loader",
+    # MP core（依頼者承認 2026-09-06: 価格ラダーの MP 列）。プロファイル計算の技術は
+    #   adapter に閉じる——usecase は `MarketProfilePort` 越しにしか密度を知らない。
+    "market_profile_api",
 )
 
 
@@ -375,7 +378,8 @@ def test_the_composition_root_binds_both_sides() -> None:
 @pytest.mark.parametrize(
     "concrete",
     ["IndicatorUiComputeGateway", "ForwardEvaluationGateway", "ReachSheetController",
-     "BreakpointRegistry", "SeriesRoleTable", "ElapsedComparisonGateway"],
+     "BreakpointRegistry", "SeriesRoleTable", "ElapsedComparisonGateway",
+     "MarketProfileGateway"],
 )
 def test_the_concrete_pieces_are_wired_only_at_the_binding_point(concrete: str) -> None:
     """R5: 具象を組み立ててよいのは main だけ（他の層は Protocol 越しに受け取る）。"""
