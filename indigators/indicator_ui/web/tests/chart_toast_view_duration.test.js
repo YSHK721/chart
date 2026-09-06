@@ -56,6 +56,30 @@ test('show(text, ms): この 1 回だけ表示時間を上書きする', () => {
   assert.equal(t.timers[1].ms, 1600); // 上書きは 1 回限り（既定へ戻る）
 });
 
+// ISSUE-492 / ISSUE-275 型の防止: 本番の合成根は `{ document }` だけで構築する
+//   （chart_app_wiring.js:248）。timer 注入（seam）だけの世界で緑にせず、キー不在の
+//   既定経路（globalThis タイマー・既定 1600ms）を最低 1 つ実行する。
+//   既定は**構築時**に globalThis.setTimeout を bind するため、差し替えは構築前に行う。
+test('本番形（document のみ）: 既定タイマーと既定 1600ms で配線される', () => {
+  const scheduled = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => { scheduled.push({ fn, ms }); return scheduled.length; };
+  globalThis.clearTimeout = () => {};
+  try {
+    const doc = fakeDoc();
+    const view = new ChartToastView({ document: doc });
+    view.show('hello');
+    assert.equal(doc._host.textContent, 'hello');
+    assert.equal(scheduled[0].ms, 1600);      // 既定 durationMs（コメント「既定 1.6 秒」の契約）
+    scheduled[0].fn();                        // 既定タイマー経由で消える
+    assert.equal(doc._host.classList.contains('is-hidden'), true);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
 test('show(text, 不正値): 0 以下・非数値は既定へフォールバック', () => {
   const t = fakeTimers();
   const view = new ChartToastView({

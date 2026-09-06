@@ -160,6 +160,25 @@ test('ClipboardGateway: clipboard 失敗時も execCommand 経路を試す', asy
   assert.equal(await gw.writeText('abc'), true);
 });
 
+// ISSUE-492 / ISSUE-275 型の防止: 本番の合成根は `{ document: doc }` だけで構築する
+//   （chart_app_wiring.js:270・navigator キー不在＝実行環境の global へフォールバック）。
+//   node の global navigator は clipboard を持たないため、本番形は execCommand 経路で
+//   決定的に検証できる（注入済みの形だけで緑にしない）。
+test('ClipboardGateway: 本番形（document のみ）でも書き込める（navigator は環境フォールバック）', async () => {
+  const body = { children: [], appendChild(n) { this.children.push(n); }, removeChild(n) { this.children = this.children.filter((x) => x !== n); } };
+  const doc = {
+    body,
+    _copied: false,
+    createElement() { return { value: '', style: {}, setAttribute() {}, select() {} }; },
+    execCommand(cmd) { doc._copied = cmd === 'copy'; return true; },
+  };
+  const gw = new ClipboardGateway({ document: doc });
+
+  assert.equal(await gw.writeText('abc'), true);
+  assert.equal(doc._copied, true);
+  assert.deepEqual(body.children, []);   // 一時要素を残さない
+});
+
 test('ClipboardGateway: どちらも使えない環境・空文字は false（成功を偽らない）', async () => {
   const gw = new ClipboardGateway({ navigator: {}, document: null });
   assert.equal(await gw.writeText('abc'), false);
