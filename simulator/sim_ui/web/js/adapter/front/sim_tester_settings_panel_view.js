@@ -14,18 +14,23 @@
 //   選択肢は 0 件であり、それが「写しが無い」ことの実証である（構造ガードは
 //   `tests/import_source.test.js` の語彙リテラル走査）。
 //
-// フォームが破らない規則は 1 つだけ（規則 E: 期間の排他）。`Dates` プリセットと
-//   `FromDate`/`ToDate` カスタムは同時に送れないため、切替 1 つで出し分ける。他の規則
-//   （B・F・K・H …）はサーバの Fail-Stop に委ねる——front で判定を写すと規則が 2 実装になる。
+// 行構成は MT5 ストラテジーテスター「設定」タブと同期する（依頼者指示 2026-09-06・
+//   参照 `.doc/ss20260906192940.jpg`＝行の並びとラベル、`.doc/ss20260906195130.jpg`＝
+//   活性/不活性の実画面）。ここに置く行割当・行ラベル・チェックボックス文言は
+//   **表示メタデータ**であり、語彙値（トークン・選択肢）は 1 つも持たない。
+//   MT5 の IDE ボタン・銘柄仕様ボタン・スリッページエミュレート切替は `.ini` キーを
+//   持たない（投入本文に写らない）ため出さない（受け口だけの死んだ操作を作らない）。
+//
+// 欄の有効/無効（活性）は**宣言駆動**: schema の `activation`（規則 B/F と MT5 実画面が
+//   根拠・サーバ宣言）を評価するだけで、front は規則の第 2 実装を持たない。期間の排他
+//   （規則 E）だけは UI 専用の「カスタム期間」選択肢が切替を担う（`Dates` プリセットと
+//   `FromDate`/`ToDate` は同時に送れない）。
 //
 // 非対象の該当判定は**宣言駆動**（R-9）: どの選択がどの告知に当たるかは schema が配る
 //   `keys` × `trigger`（+`tokens`）だけで決める。キー名から宣言側の field 名を正規表現で
-//   再導出したり、「既定値から動かしたか」を該当の代理にしたりしない。前者は綴りが一致
-//   しない告知（実ティック・期間窓・実行対象 EA）を**静かに 0 件**にし、後者は profile を
-//   選び直しただけで既定が振り直され警告が黙って消える（どちらも実測済みの壊れ方）。
+//   再導出したり、「既定値から動かしたか」を該当の代理にしたりしない。
 //
-// EA inputs（`[TesterInputs]`）欄は出さない（裁定 T-2）。束縛表が空であり、1 行でも指定
-//   すれば実行段で必ず設定エラーになる。SL/TP/移動平均/ロットは実行仕様（backtest）が権威。
+// EA inputs（`[TesterInputs]`）欄は出さない（裁定 T-2）。
 //
 // fake DOM 前提: querySelector は使わず、キーごとに要素参照を JS 側で保持する。
 
@@ -61,38 +66,57 @@ const NO_SCHEMA_TEXT = "設定 schema を取得できていません（この構
 /** 非対象一覧の開閉トグルの表示文（開いているかを字面でも示す）。 */
 const UNSUPPORTED_TOGGLE_TEXT = { collapsed: "非対象の詳細を開く", expanded: "非対象の詳細を閉じる" };
 
-/** 群 → `.ini` キーの割当（**表示メタデータ**・スライス 7）。
+/** 期間カスタム形（規則 E の `FromDate`+`ToDate` 形）を選ぶ **UI 専用**の選択肢。
+ *  MT5 の「日付」ドロップダウンと同じく、プリセットの並びの末尾に置く（実画面準拠）。
+ *  このトークンは投入本文に**決して載らない**（`.ini` の語彙ではない）。 */
+export const CUSTOM_RANGE_OPTION = { token: "__custom_range__", label: "カスタム期間" };
+
+/** MT5「設定」タブの行構成（**表示メタデータ**・出典 `.doc/ss20260906192940.jpg`）。
  *
- *  ここに置くのは「キー名をどの見出しの下に並べるか」だけである。語彙値（時間足ラベル・
- *  `Model` の生値・対象接尾辞）は 1 つも持たない——値の単一ソースは schema のままである。
- *
- *  **割当表に無いキーは既定群へ落とす**（`DEFAULT_GROUP`）。schema が新しいキーを配ったとき、
+ *  ここに置くのは「どのキーをどの行にどのラベルで並べるか」だけである。語彙値は持たない。
+ *  **割当表に無いキーは既定行へ落とす**（`DEFAULT_ROW`）。schema が新しいキーを配ったとき、
  *  ここを直し忘れても UI から**消えない**（表を直せば置き場所だけが変わる＝OCP）。 */
-const FIELD_GROUPS = [
-  { id: "subject", title: "対象", keys: ["Expert", "Symbol", "Period"] },
-  { id: "period", title: "期間", keys: ["Dates", "FromDate", "ToDate", "ForwardMode", "ForwardDate"] },
-  { id: "run", title: "実行", keys: ["Model", "ExecutionMode", "Optimization", "OptimizationCriterion", "Visual", "ProfitInPips"] },
-  { id: "account", title: "口座", keys: ["Deposit", "Currency", "Leverage"] },
+const MT5_ROWS = [
+  { id: "expert", label: "エキスパート", keys: ["Expert"] },
+  { id: "symbol", label: "銘柄", keys: ["Symbol", "Period"] },
+  { id: "dates", label: "日付", keys: ["Dates", "FromDate", "ToDate"] },
+  { id: "forward", label: "フォワードテスト", keys: ["ForwardMode", "ForwardDate"] },
+  { id: "delay", label: "延滞", keys: ["ExecutionMode"] },
+  { id: "model", label: "モデル", keys: ["Model", "ProfitInPips"] },
+  { id: "deposit", label: "入金", keys: ["Deposit", "Currency", "Leverage"], note: "レバレッジ" },
+  { id: "optimize", label: "オプティマイズ", keys: ["Optimization", "OptimizationCriterion", "Visual"] },
 ];
 /** 割当表に無いキーの落とし先（新キーを黙って捨てないための受け皿）。 */
-const DEFAULT_GROUP = { id: "other", title: "その他", keys: [] };
+const DEFAULT_ROW = { id: "other", label: "その他", keys: [] };
 
-/** キーが属する群の定義を返す（無ければ既定群）。 */
-function groupDefOf(key) {
-  return FIELD_GROUPS.find((g) => g.keys.includes(key)) || DEFAULT_GROUP;
-}
+/** 旗キー（チェックボックス）の説明文（表示メタデータ・出典は上記 MT5 実画面）。 */
+const FLAG_TEXTS = {
+  ProfitInPips: "より高速計算のためのピップ単位利益",
+  Visual: "チャート、指標、取引を表示するビジュアルモード",
+};
 
-/** 非対象の発火条件（サーバ宣言 `UI_TRIGGER_*` と同一語彙）。front は条件を発明しない。 */
+/** 不活性のとき**隠す**キー（MT5 実画面で最適化が無効のとき出ない・他はグレーアウト）。 */
+const HIDDEN_WHEN_INACTIVE = ["OptimizationCriterion"];
+
+/** レバレッジの MT5 表示（`1:10`）。値そのもの（`10`）は `.ini` トークンのまま。 */
+const LEVERAGE_KEY = "Leverage";
+
+/** 非対象の発火条件（サーバ宣言 `UI_TRIGGER_*` と同一語彙）。front は条件を発明しない。
+ *  `on_tokens` / `except_tokens` は欄の活性宣言（schema.activation）でも同じ意味で使う。 */
 const TRIGGER_ON_TOKENS = "on_tokens";
 const TRIGGER_EXCEPT_TOKENS = "except_tokens";
 const TRIGGER_ON_PRESENCE = "on_presence";
 const TRIGGER_OFF_CANDIDATES = "off_candidates";
 const TRIGGER_OFF_PROFILE = "off_profile";
 
+/** キーが属する行の定義を返す（無ければ既定行）。 */
+function rowDefOf(key) {
+  return MT5_ROWS.find((r) => r.keys.includes(key)) || DEFAULT_ROW;
+}
+
 export function createSimTesterSettingsPanelView({ doc, today } = {}) {
-  /** 日付キーのカレンダー（依頼者参照デザイン 2026-09-06）。ネイティブ `<input type="date">`
-   *  のポップアップは CSS が届かず視認性を直せない（実測）ため、自前 View を使う。欄の値は
-   *  `.ini` の日付トークン `YYYY.MM.DD` **そのもの**（変換層を挟まない・手入力も同じ形）。 */
+  /** 日付キーのカレンダー（依頼者参照デザイン 2026-09-06）。欄の値は `.ini` の日付トークン
+   *  `YYYY.MM.DD` そのもの（変換層を挟まない・手入力も同じ形）。 */
   const picker = createSimDatePickerView({ doc, today });
   /** カレンダーを開いているキー（トグル判定用）。 */
   let pickerKey = null;
@@ -103,16 +127,17 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   let unsupportedActiveHost = null;
   let unsupportedToggle = null;
   let emptyNote = null;
-  let dateCustom = null;
   let schema = null;
   let profile = null;
   let symbolCb = null;
   /** 実行対象データセットが供給する銘柄候補（Phase 9 S4）。空なら自由入力へ縮退する。 */
   let symbolCandidates = [];
-  /** 群 id → その群のフィールド置き場（`.tester-group-fields`）。rebuild ごとに作り直す。 */
-  const groupHosts = new Map();
+  /** 行 id → その行の控え置き場（`.tester-row-controls`）。rebuild ごとに作り直す。 */
+  const rowHosts = new Map();
   /** `.ini` キー → 入力要素。 */
   const controls = new Map();
+  /** `.ini` キー → 欄を包む見た目の箱（日付箱・レバレッジ箱など。無いキーは登録しない）。 */
+  const controlBoxes = new Map();
   /** Expert の生トークン → EA 名の語幹（接尾辞の切り出しを front でやらない）。 */
   const expertLabels = new Map();
 
@@ -129,9 +154,17 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     for (const child of Array.from((host && host.children) || [])) host.removeChild(child);
   };
 
-  /** キー K の値が日付か（schema の宣言だけを見る。キー名から推測しない）。 */
-  function isDateKey(key) {
-    return (((schema && schema.scalar_specs) || {})[key] || {}).value_type === "date";
+  /** キー K の値型（schema の宣言だけを見る。キー名から推測しない）。 */
+  function valueTypeOf(key) {
+    return (((schema && schema.scalar_specs) || {})[key] || {}).value_type || "";
+  }
+  const isDateKey = (key) => valueTypeOf(key) === "date";
+  const isFlagKey = (key) => valueTypeOf(key) === "flag";
+
+  /** 控え 1 個の現在値（チェックボックスは 0/1 の生トークンへ写す）。 */
+  function valueOf(node) {
+    if (node.type === "checkbox") return node.checked ? "1" : "0";
+    return String(node.value == null ? "" : node.value);
   }
 
   /** 選択肢のあるキーなら [{token,label}]、自由入力なら null。判定は schema だけを見る。 */
@@ -161,38 +194,34 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     return [...proven, ...provisional];
   }
 
-  /** 群の器（見出し＋フィールド置き場）を作って登録し、フィールド置き場を返す。 */
-  function createGroup(def) {
-    const section = el("div", { className: "tester-group", dataset: { group: def.id } });
-    section.appendChild(el("div", { className: "tester-group-title", textContent: def.title }));
-    const host = el("div", { className: "tester-group-fields" });
-    section.appendChild(host);
-    fieldsHost.appendChild(section);
-    groupHosts.set(def.id, host);
+  /** 行の器（ラベル＋控え置き場＋任意の後置注記）を作って登録し、控え置き場を返す。 */
+  function createRow(def) {
+    const row = el("div", { className: "tester-row", dataset: { row: def.id } });
+    row.appendChild(el("div", { className: "tester-row-label", textContent: def.label }));
+    const host = el("div", { className: "tester-row-controls" });
+    row.appendChild(host);
+    if (def.note) row.appendChild(el("span", { className: "tester-row-note", textContent: def.note }));
+    fieldsHost.appendChild(row);
+    rowHosts.set(def.id, host);
     return host;
   }
 
-  /** 描画するキー列から、**中身のある群だけ**を宣言順に先に並べる。
-   *  先に並べないと群の順序が key_order の出現順になり、見出しの並びが schema 依存で揺れる。 */
-  function prepareGroups(keys) {
+  /** 描画するキー列から、**中身のある行だけ**を MT5 の行順に先に並べる。 */
+  function prepareRows(keys) {
     const present = new Set(keys);
-    for (const def of FIELD_GROUPS) {
-      if (def.keys.some((k) => present.has(k))) createGroup(def);
+    for (const def of MT5_ROWS) {
+      if (def.keys.some((k) => present.has(k))) createRow(def);
     }
   }
 
-  /** キーの群のフィールド置き場を返す（割当表に無いキーは既定群を末尾に作って落とす）。 */
-  function groupHostFor(key) {
-    const def = groupDefOf(key);
-    return groupHosts.get(def.id) || createGroup(def);
-  }
-
-  function labelFor(key) {
-    const required = (schema.required_keys || []).includes(key);
-    return required ? `${key} *` : key;
+  /** キーの行の控え置き場を返す（割当表に無いキーは既定行を末尾に作って落とす）。 */
+  function rowHostFor(key) {
+    const def = rowDefOf(key);
+    return rowHosts.get(def.id) || createRow(def);
   }
 
   function onChanged(key) {
+    applyActivation();
     renderWarnings();
     renderUnsupportedActivation();
     // 銘柄を変えたら外へ通知する（実行対象データセットの決め直しは合成根が担う）。
@@ -209,7 +238,19 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       for (const option of options) {
         node.appendChild(el("option", { value: option.token, textContent: option.label }));
       }
+      // 期間プリセットの末尾に UI 専用の「カスタム期間」を足す（MT5 の日付ドロップダウンと
+      // 同形・規則 E の切替）。このトークンは buildTesterMapping が決して送らない。
+      if (key === PRESET_DATE_KEY) {
+        node.appendChild(el("option", {
+          value: CUSTOM_RANGE_OPTION.token, textContent: CUSTOM_RANGE_OPTION.label,
+        }));
+      }
       node.value = options.length ? options[0].token : "";
+    } else if (isFlagKey(key)) {
+      node = el("input", {
+        id: `tester${key}`, className: "tester-flag", type: "checkbox",
+        checked: (INITIAL_SCALARS[key] || "0") === "1", dataset: { key, mt5: `tester:${key}` },
+      });
     } else {
       node = el("input", {
         id: `tester${key}`, className: "tester-input", type: "text",
@@ -218,13 +259,36 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     }
     node.addEventListener("change", () => onChanged(key));
     node.addEventListener("input", () => onChanged(key));
-    const wrap = el("label", { className: "tester-field", textContent: labelFor(key) });
-    // 日付キーは欄＋カレンダーボタンをひと箱に（どのキーが日付かは schema の宣言
-    // `scalar_specs[key].value_type`＝検証層 `DATE_VALUE_KEYS` 由来だけで決める）。
-    if (isDateKey(key)) wrap.appendChild(buildDateBox(key, node));
-    else wrap.appendChild(node);
     controls.set(key, node);
-    groupHostFor(key).appendChild(wrap);
+
+    let piece = node;
+    if (isDateKey(key)) piece = buildDateBox(key, node);
+    else if (isFlagKey(key)) piece = buildFlagBox(key, node);
+    else if (key === LEVERAGE_KEY) piece = buildLeverageBox(key, node);
+    if (piece !== node) controlBoxes.set(key, piece);
+    // fake DOM の classList は className と独立のため、className の連結で付ける（検定可視）。
+    if (HIDDEN_WHEN_INACTIVE.includes(key)) {
+      piece.className = `${piece.className} tester-hide-inactive`.trim();
+    }
+    rowHostFor(key).appendChild(piece);
+  }
+
+  /** 旗キーの箱（チェックボックス＋説明文・MT5 のチェックボックス行と同形）。 */
+  function buildFlagBox(key, node) {
+    const box = el("label", { className: "tester-flag-box" });
+    box.appendChild(node);
+    box.appendChild(el("span", {
+      className: "tester-flag-text", textContent: FLAG_TEXTS[key] || key,
+    }));
+    return box;
+  }
+
+  /** レバレッジの箱（MT5 の `1:10` 表示。送る値は数値トークンのまま）。 */
+  function buildLeverageBox(_key, node) {
+    const box = el("span", { className: "tester-lev-box" });
+    box.appendChild(el("span", { className: "tester-lev-prefix", textContent: "1:" }));
+    box.appendChild(node);
+    return box;
   }
 
   /** 日付欄の箱（欄＋開閉ボタン）。カレンダーの確定はトークンを欄へ書き戻して通知する。 */
@@ -235,6 +299,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       textContent: "▾", dataset: { mt5: `ui:cal:${key}` },
     });
     btn.addEventListener("click", () => {
+      if (btn.disabled) return;
       const wasOpenHere = picker.isOpen() && pickerKey === key;
       picker.close();
       pickerKey = null;
@@ -255,19 +320,6 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     return box;
   }
 
-  /** 期間形式の切替（規則 E をフォームが破らないための唯一の分岐）。 */
-  function buildDateModeToggle() {
-    const wrap = el("label", { className: "tester-field", textContent: "期間をカスタム指定する" });
-    dateCustom = el("input", {
-      id: "testerDateCustom", className: "tester-date-mode", type: "checkbox", checked: false,
-      dataset: { mt5: "ui:date-mode" },
-    });
-    dateCustom.addEventListener("change", () => onChanged(PRESET_DATE_KEY));
-    wrap.appendChild(dateCustom);
-    // 切替は「何を出し分けるか」の対象（期間キー）と同じ群に置く（分岐と対象を離さない）。
-    groupHostFor(PRESET_DATE_KEY).appendChild(wrap);
-  }
-
   function applyProfileDefaults() {
     if (!profile) return;
     for (const [key, field] of Object.entries(PROFILE_FIELD_OF_KEY)) {
@@ -278,10 +330,57 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     }
   }
 
+  /** 期間カスタム形（規則 E の `FromDate`+`ToDate` 形）を選んでいるか。 */
+  function isCustomRange() {
+    const node = controls.get(PRESET_DATE_KEY);
+    return !!node && String(node.value) === CUSTOM_RANGE_OPTION.token;
+  }
+
+  /** キー K の活性宣言が「表示だけ隠す」形か（不活性でも投入本文には載せ続ける）。 */
+  function isDisplayOnlyActivation(key) {
+    const rule = ((schema && schema.activation) || {})[key];
+    return !!rule && rule.effect === "display";
+  }
+
+  /** キー K が活性か（宣言駆動）。期間カスタム 2 キーだけは UI の切替そのものが決める。 */
+  function isActive(key) {
+    if (CUSTOM_DATE_KEYS.includes(key)) return isCustomRange();
+    const rule = ((schema && schema.activation) || {})[key];
+    if (!rule) return true;
+    const token = currentToken(rule.key);
+    if (token === null) return true;
+    const tokens = rule.tokens || [];
+    if (rule.mode === TRIGGER_ON_TOKENS) return tokens.includes(token);
+    if (rule.mode === TRIGGER_EXCEPT_TOKENS) return !tokens.includes(token);
+    // 未知の形の宣言では欄を殺さない（fail-open。誤投入はサーバの Fail-Stop が受ける）。
+    return true;
+  }
+
+  /** 全控えへ活性状態を書く（欄の disabled と箱の `data-inactive`。隠すかは CSS が決める）。 */
+  function applyActivation() {
+    for (const [key, node] of controls) {
+      const active = isActive(key);
+      node.disabled = !active;
+      const piece = controlBoxes.get(key) || node;
+      piece.dataset.inactive = active ? "0" : "1";
+      if (isDateKey(key)) {
+        // 日付箱の▾ボタンも同時に殺す（欄だけ殺すとカレンダーから書けてしまう）。
+        for (const child of piece.children || []) {
+          if (child.tagName === "BUTTON") child.disabled = !active;
+        }
+      }
+    }
+    // 開いているカレンダーの欄が不活性になったら閉じる（不活性の欄へ書かせない）。
+    if (pickerKey && !isActive(pickerKey)) {
+      picker.close();
+      pickerKey = null;
+    }
+  }
+
   /** キー K の現在値（未生成なら null）。 */
   function currentToken(key) {
     const node = controls.get(key);
-    return node ? String(node.value == null ? "" : node.value) : null;
+    return node ? valueOf(node) : null;
   }
 
   /** キー K に対して配られた候補トークン（自由入力なら空）。 */
@@ -376,10 +475,10 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     // 開く中身の件数をトグルへ書く（0 件なら CSS が消す＝押しても何も出ないボタンを残さない）。
     // schema を取れない構成でも必ず通る位置に置く（下の早期 return より前）。
     unsupportedToggle.dataset.count = String(((schema && schema.unsupported) || []).length);
-    groupHosts.clear();
+    rowHosts.clear();
     controls.clear();
+    controlBoxes.clear();
     expertLabels.clear();
-    dateCustom = null;
     picker.close();      // 組み直しで欄が入れ替わるため、開いたままのカレンダーを残さない
     pickerKey = null;
     if (!schema) {
@@ -392,12 +491,15 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       expertLabels.set(String(option.token), String(option.label));
     }
     const renderedKeys = (schema.key_order || []).filter((k) => k !== INDICATOR_KEY);
-    prepareGroups(renderedKeys);   // 規則 D: 本パネルは Expert テスト（Indicator は出さない）
-    for (const key of renderedKeys) {
-      if (key === PRESET_DATE_KEY) buildDateModeToggle();
-      buildControl(key);
-    }
+    prepareRows(renderedKeys);   // 規則 D: 本パネルは Expert テスト（Indicator は出さない）
+    // 行の中の並びは MT5 の行内順（割当表の keys 順）。行に属さないキーは key_order 順。
+    const ordered = [
+      ...MT5_ROWS.flatMap((def) => def.keys.filter((k) => renderedKeys.includes(k))),
+      ...renderedKeys.filter((k) => rowDefOf(k) === DEFAULT_ROW),
+    ];
+    for (const key of ordered) buildControl(key);
     applyProfileDefaults();
+    applyActivation();
     renderUnsupported();
     renderUnsupportedActivation();
     renderWarnings();
@@ -420,7 +522,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     for (const key of PROFILE_MATCHED_KEYS) {
       const node = controls.get(key);
       if (!node) continue;
-      const chosen = String(node.value == null ? "" : node.value);
+      const chosen = valueOf(node);
       const field = PROFILE_FIELD_OF_KEY[key];
       const expected = profile[field] === undefined || profile[field] === null
         ? "" : String(profile[field]);
@@ -445,15 +547,18 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
 
   function buildTesterMapping() {
     if (!schema) return {};
-    const custom = !!(dateCustom && dateCustom.checked);
     const mapping = {};
     for (const key of schema.key_order || []) {
       if (key === INDICATOR_KEY) continue;
-      if (key === PRESET_DATE_KEY && custom) continue;
-      if (CUSTOM_DATE_KEYS.includes(key) && !custom) continue;
+      // UI 専用トークン（カスタム期間）は `.ini` の語彙ではない——決して送らない（規則 E）。
+      if (key === PRESET_DATE_KEY && isCustomRange()) continue;
+      // 不活性の欄は送らない（規則 B/E/F の宣言駆動。値は欄に残る＝MT5 のグレーアウトと同形）。
+      // ただし宣言が `effect: "display"` のキーは表示だけ隠れ、値は載せ続ける（規則 H:
+      // Expert 専用キーは常に必須。omit すると投入が必ず E-08 で失敗する・実測 2026-09-06）。
+      if (!isActive(key) && !isDisplayOnlyActivation(key)) continue;
       const node = controls.get(key);
       if (!node) continue;
-      const value = String(node.value == null ? "" : node.value);
+      const value = valueOf(node);
       if (value === "" && BLANK_MEANS_ABSENT.includes(key)) continue;
       mapping[key] = value;
     }

@@ -19,7 +19,11 @@ from __future__ import annotations
 import pytest
 
 from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
-from simulator.framework.tester_settings.validation import DATE_VALUE_KEYS, EXPERT_ONLY_KEYS
+from simulator.framework.tester_settings.validation import (
+    DATE_VALUE_KEYS,
+    EXPERT_ONLY_KEYS,
+    FLAG_VALUE_KEYS,
+)
 from simulator.main.tester_settings.unsupported import RULES
 # 別名で受けるのは pytest の収集規則（`Test*` 接頭辞）を避けるため。既存
 # `test_tester_settings_validation.py:68`（`TesterSettings as SettingsDto`）と同じ流儀。
@@ -52,6 +56,7 @@ def catalog() -> SchemaCatalog:
         required_keys=_REQUIRED,
         expert_only_keys=EXPERT_ONLY_KEYS,
         date_keys=DATE_VALUE_KEYS,
+        flag_keys=FLAG_VALUE_KEYS,
         known_ea_names=lambda: _EA_NAMES,
         subject_suffix=_SUFFIX,
         unsupported_rules=RULES,
@@ -206,6 +211,7 @@ def test_a_rule_without_a_ui_binding_is_rejected_at_construction() -> None:
             required_keys=_REQUIRED,
             expert_only_keys=EXPERT_ONLY_KEYS,
             date_keys=DATE_VALUE_KEYS,
+            flag_keys=FLAG_VALUE_KEYS,
             known_ea_names=lambda: _EA_NAMES,
             subject_suffix=_SUFFIX,
             unsupported_rules=broken,
@@ -245,6 +251,7 @@ def test_a_date_key_outside_the_scalar_keys_is_rejected_at_construction(date_key
             required_keys=_REQUIRED,
             expert_only_keys=EXPERT_ONLY_KEYS,
             date_keys=date_keys,
+            flag_keys=FLAG_VALUE_KEYS,
             known_ea_names=lambda: _EA_NAMES,
             subject_suffix=_SUFFIX,
             unsupported_rules=RULES,
@@ -255,3 +262,32 @@ def test_key_order_and_required_keys_pass_the_injection_through(catalog) -> None
     # Arrange / Act / Assert
     assert catalog.key_order() == tuple(STANDARD_KEY_ORDER)
     assert catalog.required_keys() == _REQUIRED
+
+
+# --- 旗キーの value_type と活性宣言（MT5 設定タブ同期・2026-09-06）------------------
+
+
+def test_scalar_specs_mark_flag_keys_from_the_injection(catalog) -> None:
+    """`value_type == "flag"` の集合が**注入された旗キー**とちょうど一致すること。"""
+    # Arrange / Act
+    specs = catalog.scalar_specs()
+    marked = {key for key, spec in specs.items() if spec.get("value_type") == "flag"}
+    # Assert
+    assert marked, "旗キーが 1 つも宣言されていません（注入が届いていない）"
+    assert marked == set(FLAG_VALUE_KEYS)
+
+
+def test_activation_rules_bind_existing_keys_with_trigger_vocabulary(catalog) -> None:
+    """活性宣言が実在キーへ束縛され、発火語彙が非対象告知と同じ集合に属すること。"""
+    # Arrange
+    from simulator.main.tester_settings.unsupported import UI_TRIGGER_MODES
+
+    # Act
+    activation = catalog.activation()
+    # Assert
+    assert activation, "活性宣言が空です（欄の有効/無効を出し分けられない）"
+    for target, rule in activation.items():
+        assert target in catalog.key_order(), f"{target} が標準キー順にありません"
+        assert rule["key"] in catalog.key_order(), f"{rule['key']} が標準キー順にありません"
+        assert rule["mode"] in UI_TRIGGER_MODES, f"{target} の発火語彙が未知です: {rule['mode']}"
+        assert rule["tokens"], f"{target} のトークン集合が空です"

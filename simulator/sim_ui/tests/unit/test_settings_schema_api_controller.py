@@ -57,6 +57,9 @@ class _FakePort(SettingsSchemaPort):
             ),
         ]
 
+    def activation(self):
+        return {"Symbol": {"key": "Period", "mode": "on_tokens", "tokens": ["t1"]}}
+
 
 def test_interactor_bundles_every_face_of_the_port() -> None:
     # Arrange
@@ -70,6 +73,7 @@ def test_interactor_bundles_every_face_of_the_port() -> None:
     assert result.scalar_specs == {"Symbol": {"expert_only": False}}
     assert result.expert_options == [SchemaOption(token="A_EA.suffix", label="A_EA")]
     assert [n.unsupported_id for n in result.unsupported] == ["N-99", "N-98"]
+    assert result.activation == {"Symbol": {"key": "Period", "mode": "on_tokens", "tokens": ["t1"]}}
 
 
 def test_controller_returns_200_with_the_schema() -> None:
@@ -87,6 +91,9 @@ def test_controller_returns_200_with_the_schema() -> None:
     assert resp.payload["enum_options"] == {"Period": [{"token": "t1", "label": "L1"}]}
     assert resp.payload["scalar_specs"] == {"Symbol": {"expert_only": False}}
     assert resp.payload["expert_options"] == [{"token": "A_EA.suffix", "label": "A_EA"}]
+    assert resp.payload["activation"] == {
+        "Symbol": {"key": "Period", "mode": "on_tokens", "tokens": ["t1"]}
+    }
 
 
 def test_controller_omits_the_tbd_key_when_the_rule_has_none() -> None:

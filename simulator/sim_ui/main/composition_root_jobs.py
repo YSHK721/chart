@@ -131,6 +131,7 @@ def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
     from simulator.framework.tester_settings.validation import (
         DATE_VALUE_KEYS,
         EXPERT_ONLY_KEYS,
+        FLAG_VALUE_KEYS,
         required_tester_keys,
     )
     from simulator.main.tester_settings.ea_input_map import SUBJECT_SUFFIX
@@ -141,6 +142,7 @@ def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
         required_keys=required_tester_keys(),
         expert_only_keys=EXPERT_ONLY_KEYS,
         date_keys=DATE_VALUE_KEYS,
+        flag_keys=FLAG_VALUE_KEYS,
         known_ea_names=_known_ea_names,
         subject_suffix=SUBJECT_SUFFIX,
         unsupported_rules=RULES,

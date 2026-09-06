@@ -26,6 +26,7 @@ class SettingsSchema:
     scalar_specs: "dict[str, dict]"
     expert_options: "list[SchemaOption]"
     unsupported: "list[UnsupportedNotice]"
+    activation: "dict[str, dict]"
 
 
 class ListSettingsSchemaInteractor:
@@ -42,4 +43,5 @@ class ListSettingsSchemaInteractor:
             scalar_specs=self._port.scalar_specs(),
             expert_options=self._port.expert_options(),
             unsupported=self._port.unsupported(),
+            activation=self._port.activation(),
         )

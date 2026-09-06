@@ -51,6 +51,8 @@ const GOLDEN = {
     settings: {
       inputs: [],
       tester: {
+        // OptimizationCriterion は最適化が無効でも載る（規則 H: Expert 専用キーは常に必須。
+        // activation の effect:"display" は表示だけ隠す・2026-09-06 同期）。
         Currency: "XYZ", Dates: "d0", Deposit: "10000", ExecutionMode: "7",
         Expert: "PRO_fit_Band_EA.zzz", ForwardMode: "f0", Leverage: "10", Model: "m0",
         Optimization: "o0", OptimizationCriterion: "c0", Period: "P2",

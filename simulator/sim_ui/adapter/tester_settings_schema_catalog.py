@@ -51,6 +51,42 @@ _EXECUTION_MODE_KEY = "ExecutionMode"
 _PERIOD_KEY = "Period"
 
 
+def _activation_rules() -> "dict[str, dict]":
+    """キーの活性条件（UI が欄を有効/無効にするための宣言・MT5 設定タブと同形）。
+
+    発火語彙は非対象告知（``UI_TRIGGER_*``）と同じ ``on_tokens`` / ``except_tokens``。
+    ``effect`` は不活性時の扱い:
+
+    - ``"omit"``    = 投入本文からキーごと外す（検証規則がキーの不在を要求する）。
+    - ``"display"`` = 表示だけ隠し、値は**投入本文に載せ続ける**（キーは常に必須）。
+
+    根拠は検証層の値依存規則と MT5 実画面（`.doc/ss20260906195130.jpg`）:
+
+    - ``ForwardDate``: 規則 F（`ForwardMode == CUSTOM_DATE` ⇔ 存在）→ omit。
+    - ``Visual``: 規則 B（`Optimization != DISABLED` のとき存在してはならない）→ omit。
+    - ``OptimizationCriterion``: MT5 実画面で最適化が無効のとき**表示されない**が、
+      規則 H（Expert 専用キーはすべて必須）によりキー自体は常に要る → display。
+      omit にすると投入が E-08（H）で必ず失敗する（統合検定で実測済み 2026-09-06）。
+
+    トークンは enums からの反復導出（数値リテラルを書かない）。front はこの宣言を
+    評価するだけで、規則の第 2 実装を持たない。
+    """
+    return {
+        "ForwardDate": {
+            "key": "ForwardMode", "mode": "on_tokens",
+            "tokens": [str(int(ForwardMode.CUSTOM_DATE))], "effect": "omit",
+        },
+        "OptimizationCriterion": {
+            "key": "Optimization", "mode": "except_tokens",
+            "tokens": [str(int(OptimizationMode.DISABLED))], "effect": "display",
+        },
+        "Visual": {
+            "key": "Optimization", "mode": "on_tokens",
+            "tokens": [str(int(OptimizationMode.DISABLED))], "effect": "omit",
+        },
+    }
+
+
 def _int_enum_options(members: "Iterable[Any]") -> "list[SchemaOption]":
     """`IntEnum` の全メンバを「生値の文字列表記 → メンバ名」の選択肢へ写す。
 
@@ -86,6 +122,7 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
     ``required_keys``: 他の選択に依らず常に必要なキー（検証層のモデルが権威）。
     ``expert_only_keys``: Expert テスト専用キー（検証層の規則 G/H が権威）。
     ``date_keys``: 値が日付であるキー（検証層 `DATE_VALUE_KEYS` が権威）。
+    ``flag_keys``: 値が 0/1 の旗であるキー（検証層 `FLAG_VALUE_KEYS` が権威）。
     ``known_ea_names``: 実行可能な EA 名を返す呼び出し可能（エンジンの公開アクセサへの束縛）。
     ``subject_suffix``: 対象ファイルの接尾辞（`main/tester_settings` が権威）。
     ``unsupported_rules``: 非対象の宣言表（ID → 宣言）。
@@ -98,6 +135,7 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         required_keys: "Sequence[str]",
         expert_only_keys: "Sequence[str]",
         date_keys: "Sequence[str]",
+        flag_keys: "Sequence[str]",
         known_ea_names: "Callable[[], Sequence[str]]",
         subject_suffix: str,
         unsupported_rules: "Mapping[str, Any]",
@@ -106,11 +144,14 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         self._required_keys = tuple(required_keys)
         self._expert_only_keys = frozenset(expert_only_keys)
         self._date_keys = frozenset(date_keys)
+        self._flag_keys = frozenset(flag_keys)
         self._known_ea_names = known_ea_names
         self._subject_suffix = subject_suffix
         self._unsupported_rules = unsupported_rules
         self._assert_keys_exist()
         self._assert_date_keys_are_scalars()
+        self._assert_flag_keys_are_scalars()
+        self._assert_activation_binds_known_keys()
 
     def _assert_keys_exist(self) -> None:
         """本モジュールが名指しするキーが、注入されたキー順に実在することを構築時に検査する。
@@ -142,6 +183,25 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         if enum_clash:
             raise ValueError(f"日付キーが列挙キーと衝突しています: {enum_clash}")
 
+    def _assert_flag_keys_are_scalars(self) -> None:
+        """注入された旗キーが「標準キー順に実在する非列挙キー」であることを構築時に検査する。"""
+        missing = sorted(self._flag_keys - set(self._key_order))
+        if missing:
+            raise ValueError(
+                f"旗キーが標準キー順に存在しません: {missing}"
+                f"（key_order={list(self._key_order)}）"
+            )
+        enum_clash = sorted(self._flag_keys & set(_ENUM_OPTION_BUILDERS))
+        if enum_clash:
+            raise ValueError(f"旗キーが列挙キーと衝突しています: {enum_clash}")
+
+    def _assert_activation_binds_known_keys(self) -> None:
+        """活性宣言が標準キー順に実在するキーだけを名指ししていることを構築時に検査する。"""
+        for target, rule in _activation_rules().items():
+            unknown = sorted({target, rule["key"]} - set(self._key_order))
+            if unknown:
+                raise ValueError(f"活性宣言が未知のキーへ束縛されています: {unknown}")
+
     def key_order(self) -> "tuple[str, ...]":
         return self._key_order
 
@@ -169,6 +229,8 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
             spec: "dict[str, Any]" = {"expert_only": key in self._expert_only_keys}
             if key in self._date_keys:
                 spec["value_type"] = "date"
+            if key in self._flag_keys:
+                spec["value_type"] = "flag"
             if key == _EXECUTION_MODE_KEY:
                 spec["proven"] = sorted(PROVEN_EXECUTION_DELAYS)
                 spec["provisional"] = {
@@ -177,6 +239,10 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
                 }
             specs[key] = spec
         return specs
+
+    def activation(self) -> "dict[str, dict]":
+        """キーの活性条件（宣言表 `_activation_rules` の写し・導出はしない）。"""
+        return _activation_rules()
 
     def expert_options(self) -> "list[SchemaOption]":
         """`Expert` の候補（実行可能 EA 名 ＋ 注入された対象接尾辞）。

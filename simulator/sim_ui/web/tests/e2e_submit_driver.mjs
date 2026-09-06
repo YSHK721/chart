@@ -26,6 +26,7 @@
 
 import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { mountSimExecutionPanel } from "../js/adapter/front/composition_root_execution.js";
+import { CUSTOM_RANGE_OPTION } from "../js/adapter/front/sim_tester_settings_panel_view.js";
 
 const [base, scenario, mode] = process.argv.slice(2);
 const SCHEMA_PATH = "/sim/settings-schema";
@@ -122,9 +123,10 @@ async function main() {
 
   if (scenario === "custom_range") {
     // 期間をカスタム指定する（データセットの実在範囲内＝窓は実際に適用され run は完走する）。
-    const toggle = findById(doc.body, "testerDateCustom");
-    toggle.checked = true;
-    fire(toggle, "change");
+    // 切替は Dates ドロップダウンの「カスタム期間」（MT5 同形・2026-09-06 同期）。
+    const dates = findById(doc.body, "testerDates");
+    dates.value = CUSTOM_RANGE_OPTION.token;
+    fire(dates, "change");
     const from = findById(doc.body, "testerFromDate");
     const to = findById(doc.body, "testerToDate");
     from.value = CUSTOM_FROM;

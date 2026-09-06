@@ -40,10 +40,18 @@ export function settingsSchema() {
       ForwardDate: { expert_only: false, value_type: "date" },
       Deposit: { expert_only: true },
       Currency: { expert_only: true },
-      ProfitInPips: { expert_only: true },
+      ProfitInPips: { expert_only: true, value_type: "flag" },
       Leverage: { expert_only: true },
       ExecutionMode: { expert_only: true, proven: [7], provisional: { 9: "TBD-99" } },
-      Visual: { expert_only: false },
+      Visual: { expert_only: false, value_type: "flag" },
+    },
+    // キーの活性条件（サーバ宣言。規則 B/F と MT5 実画面由来・実物と同形の 3 件）。
+    // effect: "omit"＝不活性なら本文から外す（規則 B/F）／"display"＝表示だけ隠し値は載せ続ける
+    // （規則 H: Expert 専用キーは常に必須。実物の OptimizationCriterion と同形）。
+    activation: {
+      ForwardDate: { key: "ForwardMode", mode: "on_tokens", tokens: ["f4"], effect: "omit" },
+      OptimizationCriterion: { key: "Optimization", mode: "except_tokens", tokens: ["o0"], effect: "display" },
+      Visual: { key: "Optimization", mode: "on_tokens", tokens: ["o0"], effect: "omit" },
     },
     // label は EA 名の語幹（実物の schema も同じ）。合成根の既存検定が使う ea_name と
     // そろえてあるのは、Expert 選択が指標候補の取得起点になるためである。

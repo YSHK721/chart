@@ -77,7 +77,7 @@ class UnsupportedNotice:
 
 
 class SettingsSchemaPort(abc.ABC):
-    """Tester Settings フォームの schema を供給する境界（6 面）。"""
+    """Tester Settings フォームの schema を供給する境界（7 面）。"""
 
     @abc.abstractmethod
     def key_order(self) -> "tuple[str, ...]":
@@ -107,4 +107,9 @@ class SettingsSchemaPort(abc.ABC):
     @abc.abstractmethod
     def unsupported(self) -> "list[UnsupportedNotice]":
         """非対象の告知一覧（投入前に理由を示すため）。"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def activation(self) -> "dict[str, dict]":
+        """キー → 活性条件（{key, mode, tokens}）。UI が欄の有効/無効を出し分ける宣言。"""
         raise NotImplementedError

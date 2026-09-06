@@ -1007,3 +1007,18 @@ class TestDateValueKeysDerivation:
             if field.annotation == (date | None)
         }
         assert set(validation.DATE_VALUE_KEYS) == annotated
+
+
+class TestFlagValueKeysDerivation:
+    """`FLAG_VALUE_KEYS`（チェックボックス出し分けの単一源）が検証モデルから導出されること。"""
+
+    def test_the_derivation_matches_the_model_annotations(self):
+        from typing import Literal
+
+        annotated = {
+            name
+            for name, field in validation._TesterIniModel.model_fields.items()
+            if field.annotation == (Literal[0, 1] | None)
+        }
+        assert validation.FLAG_VALUE_KEYS, "旗キーの導出が空です（注釈照合の空振り）"
+        assert set(validation.FLAG_VALUE_KEYS) == annotated

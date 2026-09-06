@@ -17,7 +17,10 @@ import assert from "node:assert/strict";
 
 import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { runProfile, settingsSchema } from "./_settings_schema_fixture.js";
-import { createSimTesterSettingsPanelView } from "../js/adapter/front/sim_tester_settings_panel_view.js";
+import {
+  createSimTesterSettingsPanelView,
+  CUSTOM_RANGE_OPTION,
+} from "../js/adapter/front/sim_tester_settings_panel_view.js";
 
 const hasClass = (el, c) => String((el && el.className) || "").split(/\s+/).includes(c);
 const byClass = (root, c) => flatten(root).filter((n) => hasClass(n, c));
@@ -25,11 +28,11 @@ const byClass = (root, c) => flatten(root).filter((n) => hasClass(n, c));
 const field = (host, key) => findById(host, `tester${key}`);
 /** change リスナを直接叩く（fake DOM は自動発火しない）。 */
 const fire = (el, ev = "change") => (el._listeners[ev] || []).forEach((f) => f());
-/** 要素が属する群（`.tester-group`）を親方向にたどって返す。 */
-function groupOf(el) {
+/** 要素が属する行（`.tester-row`・MT5 の設定タブと同じ行構成）を親方向にたどって返す。 */
+function rowOf(el) {
   let node = el && el.parentNode;
   while (node) {
-    if (hasClass(node, "tester-group")) return node;
+    if (hasClass(node, "tester-row")) return node;
     node = node.parentNode;
   }
   return null;
@@ -47,28 +50,28 @@ function ready(schema = settingsSchema()) {
   return { doc, host: doc.body, view, schema };
 }
 
-// --- 1. 群割当に取りこぼしが無い -------------------------------------------------
+// --- 1. 行割当に取りこぼしが無い（MT5 の行構成・依頼者指示 2026-09-06）--------------
 
-test("every schema key is rendered inside a labelled group (取りこぼし 0)", () => {
+test("every schema key is rendered inside a labelled row (取りこぼし 0)", () => {
   const { host, schema } = ready();
   const offenders = [];
   for (const key of schema.key_order) {
     if (NEVER.includes(key)) continue;
     const el = field(host, key);
     if (!el) { offenders.push(`${key}: 入力要素が無い`); continue; }
-    if (!groupOf(el)) offenders.push(`${key}: どの群にも属していない`);
+    if (!rowOf(el)) offenders.push(`${key}: どの行にも属していない`);
   }
   assert.deepEqual(offenders, []);
 });
 
-test("every rendered group carries a non-empty heading", () => {
+test("every rendered row carries a non-empty label", () => {
   const { host } = ready();
-  const groups = byClass(host, "tester-group");
-  assert.ok(groups.length > 0, "群が 1 つも描画されていません");
-  for (const g of groups) {
-    const title = flatten(g).find((n) => hasClass(n, "tester-group-title"));
-    assert.ok(title, `群 ${g.dataset.group} に見出し要素がありません`);
-    assert.ok(String(title.textContent).length > 0, `群 ${g.dataset.group} の見出しが空です`);
+  const rows = byClass(host, "tester-row");
+  assert.ok(rows.length > 0, "行が 1 つも描画されていません");
+  for (const r of rows) {
+    const label = flatten(r).find((n) => hasClass(n, "tester-row-label"));
+    assert.ok(label, `行 ${r.dataset.row} にラベル要素がありません`);
+    assert.ok(String(label.textContent).length > 0, `行 ${r.dataset.row} のラベルが空です`);
   }
 });
 
@@ -76,26 +79,28 @@ test("every rendered group carries a non-empty heading", () => {
 // schema が新しいキーを配ったとき、view の割当表を直し忘れても UI から欠落しない。
 // 欠落すると「設定したつもりの値が投入されない」沈黙失敗になる。
 
-test("a key absent from the group table still renders and still submits (OCP)", () => {
+test("a key absent from the row table still renders and still submits (OCP)", () => {
   const schema = settingsSchema();
-  // 割当表のどの群にも載っていない架空のキー（schema 側にだけ現れた新キーの代役）。
+  // 割当表のどの行にも載っていない架空のキー（schema 側にだけ現れた新キーの代役）。
   const NEW_KEY = "FutureKnob";
   schema.key_order = [...schema.key_order, NEW_KEY];
   const { host, view } = ready(schema);
 
   const el = field(host, NEW_KEY);
   assert.ok(el, "割当表に無いキーが描画されていません（新キーが UI から消えています）");
-  assert.ok(groupOf(el), "割当表に無いキーが既定群へ落ちていません");
+  assert.ok(rowOf(el), "割当表に無いキーが既定行へ落ちていません");
   assert.ok(NEW_KEY in view.buildTesterMapping(), "描画はされたが投入本文に載っていません");
 });
 
-test("the date-mode switch sits in the same group as the period keys", () => {
+test("the custom-range option sits inside the Dates dropdown (MT5 の日付ドロップダウンと同形)", () => {
   const { host } = ready();
-  const toggle = findById(host, "testerDateCustom");
-  assert.ok(toggle, "#testerDateCustom が無い");
-  assert.ok(groupOf(toggle), "期間形式の切替がどの群にも属していません");
-  assert.equal(groupOf(toggle), groupOf(field(host, "Dates")),
-    "切替が、出し分ける対象（期間キー）と別の群に置かれています");
+  const dates = field(host, "Dates");
+  const custom = (dates.children || []).find((o) => o.value === CUSTOM_RANGE_OPTION.token);
+  assert.ok(custom, "Dates に「カスタム期間」の選択肢がありません");
+  assert.equal(custom.textContent, CUSTOM_RANGE_OPTION.label);
+  // From/To は同じ「日付」行に並ぶ（MT5: プリセットと日付欄が同一行）
+  assert.equal(rowOf(field(host, "FromDate")), rowOf(dates));
+  assert.equal(rowOf(field(host, "ToDate")), rowOf(dates));
 });
 
 // --- 3. 非対象告知の折りたたみ（T-5 の完成形）--------------------------------------

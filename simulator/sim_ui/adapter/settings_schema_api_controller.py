@@ -47,5 +47,6 @@ class SettingsSchemaApiController:
                 "scalar_specs": dict(result.scalar_specs),
                 "expert_options": [option.to_dict() for option in result.expert_options],
                 "unsupported": [notice.to_dict() for notice in result.unsupported],
+                "activation": dict(result.activation),
             },
         )

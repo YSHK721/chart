@@ -406,6 +406,14 @@ DATE_VALUE_KEYS: tuple[str, ...] = tuple(
     if field.annotation == (date | None)
 )
 
+#: 値が 0/1 の旗である `[Tester]` キー（宣言順）。導出方針は ``DATE_VALUE_KEYS`` と同じ。
+#: UI が入力部品（チェックボックス・MT5 の設定タブと同形）を型で出し分けるための単一源。
+FLAG_VALUE_KEYS: tuple[str, ...] = tuple(
+    name
+    for name, field in _TesterIniModel.model_fields.items()
+    if field.annotation == (Literal[0, 1] | None)
+)
+
 
 @_after_rule("B")
 def _rule_b_visual_exclusive(model: _TesterIniModel) -> None:

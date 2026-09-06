@@ -14,7 +14,10 @@ import assert from "node:assert/strict";
 
 import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { runProfile, settingsSchema } from "./_settings_schema_fixture.js";
-import { createSimTesterSettingsPanelView } from "../js/adapter/front/sim_tester_settings_panel_view.js";
+import {
+  createSimTesterSettingsPanelView,
+  CUSTOM_RANGE_OPTION,
+} from "../js/adapter/front/sim_tester_settings_panel_view.js";
 
 const hasClass = (el, c) => String((el && el.className) || "").split(/\s+/).includes(c);
 const byClass = (root, c) => flatten(root).filter((n) => hasClass(n, c));
@@ -47,10 +50,33 @@ const PRESET_ONLY = ["Dates"];
 const CUSTOM_ONLY = ["FromDate", "ToDate"];
 const OPTIONAL = ["ForwardDate"];
 
-/** 注入 schema の key_order から「この形式で出るはずのキー列」を導く（期待値を書かない）。 */
+/** 各列挙キーの既定トークン（先頭の選択肢）。活性判定の導出に使う。 */
+function defaultTokens(schema) {
+  const out = {};
+  for (const [key, options] of Object.entries(schema.enum_options)) out[key] = options[0].token;
+  return out;
+}
+
+/** 注入 schema の key_order から「この形式で出るはずのキー列」を導く（期待値を書かない）。
+ *  活性宣言（schema.activation）で既定トークンのとき不活性になるキーも落とす。 */
 function expectedKeys(schema, { custom = false } = {}) {
+  const tokens = defaultTokens(schema);
   const dropped = new Set([...NEVER, ...OPTIONAL, ...(custom ? PRESET_ONLY : CUSTOM_ONLY)]);
+  for (const [key, rule] of Object.entries(schema.activation || {})) {
+    if (rule.effect === "display") continue;   // 表示だけ隠す宣言は本文に載り続ける
+    const token = tokens[rule.key];
+    const active = rule.mode === "on_tokens"
+      ? rule.tokens.includes(token) : !rule.tokens.includes(token);
+    if (!active) dropped.add(key);
+  }
   return schema.key_order.filter((k) => !dropped.has(k));
+}
+
+/** 期間カスタム形へ切り替える（Dates の「カスタム期間」選択肢＝MT5 と同形）。 */
+function chooseCustomRange(host) {
+  const dates = field(host, "Dates");
+  dates.value = CUSTOM_RANGE_OPTION.token;
+  fire(dates);
 }
 
 // --- 1. setSchema 前は候補 0 -------------------------------------------------
@@ -70,7 +96,11 @@ test("every enum control offers exactly the schema tokens (リテラル期待値
   for (const [key, options] of Object.entries(schema.enum_options)) {
     const el = field(host, key);
     assert.ok(el, `${key} の入力要素が無い`);
-    assert.deepEqual(tokens(el), options.map((o) => o.token), key);
+    // Dates だけは末尾に UI 専用の「カスタム期間」が足される（MT5 の日付ドロップダウンと同形）
+    const expected = key === "Dates"
+      ? [...options.map((o) => o.token), CUSTOM_RANGE_OPTION.token]
+      : options.map((o) => o.token);
+    assert.deepEqual(tokens(el), expected, key);
   }
 });
 
@@ -113,7 +143,8 @@ test("the defaults come from the selected run profile (T-3)", () => {
 test("enum defaults are the first schema option (発明しない)", () => {
   const { view, schema } = ready();
   const mapping = view.buildTesterMapping();
-  for (const key of ["Model", "Optimization", "Dates", "ForwardMode", "OptimizationCriterion"]) {
+  // OptimizationCriterion は既定（最適化が無効）では不活性＝載らない（activation 宣言）
+  for (const key of ["Model", "Optimization", "Dates", "ForwardMode"]) {
     assert.equal(mapping[key], schema.enum_options[key][0].token, key);
   }
   assert.equal(mapping.Expert, schema.expert_options[0].token);
@@ -130,23 +161,78 @@ test("the preset form emits Dates and never the custom range keys (規則 E)", (
 
 test("switching to the custom range drops Dates and emits FromDate/ToDate (規則 E)", () => {
   const { host, view, schema } = ready();
-  const toggle = findById(host, "testerDateCustom");
-  assert.ok(toggle, "#testerDateCustom が無い（期間形式の切替が無い）");
-  toggle.checked = true;
-  fire(toggle);
+  chooseCustomRange(host);
   field(host, "FromDate").value = "2025.01.06";
   field(host, "ToDate").value = "2025.01.10";
   const mapping = view.buildTesterMapping();
   assert.deepEqual(Object.keys(mapping), expectedKeys(schema, { custom: true }));
   assert.equal(mapping.FromDate, "2025.01.06");
   assert.equal(mapping.ToDate, "2025.01.10");
+  assert.ok(!Object.values(mapping).includes(CUSTOM_RANGE_OPTION.token),
+    "UI 専用トークンが投入本文に漏れています");
 });
 
-test("ForwardDate is only emitted when it is filled in", () => {
-  const { host, view } = ready();
+test("the custom range keys are greyed out while a preset is chosen (MT5 の不活性と同形)", () => {
+  const { host } = ready();
+  assert.equal(field(host, "FromDate").disabled, true, "プリセット中も FromDate が活性です");
+  assert.equal(field(host, "ToDate").disabled, true);
+  chooseCustomRange(host);
+  assert.equal(field(host, "FromDate").disabled, false, "カスタム期間で FromDate が不活性のまま");
+  assert.equal(field(host, "ToDate").disabled, false);
+});
+
+test("ForwardDate is emitted only under the activating ForwardMode (規則 F の宣言駆動)", () => {
+  const { host, view, schema } = ready();
   assert.ok(!("ForwardDate" in view.buildTesterMapping()));
+  // 不活性のうちは、値が入っていても送らない（MT5 のグレーアウトと同形）
   field(host, "ForwardDate").value = "2025.02.01";
+  assert.ok(!("ForwardDate" in view.buildTesterMapping()),
+    "不活性の ForwardDate が投入本文に載っています");
+  assert.equal(field(host, "ForwardDate").disabled, true);
+  // 活性化条件は schema.activation の宣言から引く（値を検定へ書き写さない）
+  const rule = schema.activation.ForwardDate;
+  const sel = field(host, rule.key);
+  sel.value = rule.tokens[0];
+  fire(sel);
+  assert.equal(field(host, "ForwardDate").disabled, false);
   assert.equal(view.buildTesterMapping().ForwardDate, "2025.02.01");
+});
+
+test("Visual and OptimizationCriterion follow the optimization activation (規則 B/H・MT5 同形)", () => {
+  const { host, view, schema } = ready();
+  // 既定（最適化が無効）: Visual は活性で載る。criterion は**表示だけ**隠れて値は載り続ける
+  // （規則 H: Expert 専用キーは常に必須。effect:"display" の宣言）。
+  assert.ok("Visual" in view.buildTesterMapping());
+  assert.ok("OptimizationCriterion" in view.buildTesterMapping(),
+    "criterion が本文から落ちています（規則 H で必須・E-08 で必ず失敗する）");
+  assert.equal(field(host, "OptimizationCriterion").dataset.inactive, "1",
+    "最適化が無効なのに criterion が表示上も活性です（MT5 は出さない）");
+  // 最適化を有効へ: Visual が落ち（規則 B）、criterion は表示にも出る
+  const rule = schema.activation.Visual;
+  const sel = field(host, rule.key);
+  const enabling = tokens(sel).find((t) => !rule.tokens.includes(t));
+  sel.value = enabling;
+  fire(sel);
+  assert.ok(!("Visual" in view.buildTesterMapping()),
+    "最適化が有効なのに Visual が載っています（規則 B 違反の本文）");
+  assert.ok("OptimizationCriterion" in view.buildTesterMapping());
+  assert.equal(field(host, "OptimizationCriterion").dataset.inactive, "0");
+});
+
+test("flag keys render as checkboxes emitting 0/1 tokens (MT5 のチェックボックスと同形)", () => {
+  const { host, view, schema } = ready();
+  const flagKeys = Object.entries(schema.scalar_specs)
+    .filter(([, spec]) => spec.value_type === "flag").map(([key]) => key);
+  assert.ok(flagKeys.length, "fixture に旗キーが無い（検定が空振り）");
+  for (const key of flagKeys) {
+    assert.equal(field(host, key).type, "checkbox", key);
+  }
+  // 既定は 0、チェックで 1 の生トークンになる（Visual は既定で活性）
+  assert.equal(view.buildTesterMapping().Visual, "0");
+  const visual = field(host, "Visual");
+  visual.checked = true;
+  fire(visual);
+  assert.equal(view.buildTesterMapping().Visual, "1");
 });
 
 // --- 5. profile 不一致の警告（T-3）---------------------------------------------
@@ -231,9 +317,7 @@ test("a declared firing token on another key activates its notice (on_tokens)", 
 test("a notice bound by presence fires once its keys are actually submitted (on_presence)", () => {
   const { host, view } = ready();
   assert.equal(activeIds(view).includes("X-05"), false, "既定（プリセット期間）で発火しています");
-  const toggle = findById(host, "testerDateCustom");
-  toggle.checked = true;
-  fire(toggle);
+  chooseCustomRange(host);
   // 投入本文に載るキーと発火が一致する（載らないのに警告しない・載るのに黙らない）
   assert.ok("FromDate" in view.buildTesterMapping());
   assert.ok(activeIds(view).includes("X-05"));
@@ -325,9 +409,7 @@ test("date-typed keys get a token field with a calendar button (宣言駆動)", 
 
 test("the calendar opens at the field's month; a day click commits instantly", () => {
   const { host, view } = ready();
-  const toggle = findById(host, "testerDateCustom");
-  toggle.checked = true;
-  fire(toggle);
+  chooseCustomRange(host);
   field(host, "FromDate").value = "2025.01.06";
   fire(findById(host, "testerFromDateCalBtn"), "click");
   const pop = byClass(host, "cal-pop")[0];
@@ -342,19 +424,28 @@ test("the calendar opens at the field's month; a day click commits instantly", (
 
 test("an outside pointer-down closes the calendar and leaves the field untouched", () => {
   const { doc, host } = ready();
-  field(host, "ForwardDate").value = "2025.02.01";
-  const btn = findById(host, "testerForwardDateCalBtn");
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2025.02.01";
+  const btn = findById(host, "testerFromDateCalBtn");
   fire(btn, "click");
   assert.equal(byClass(host, "cal-pop").length, 1);
   // カレンダーの外（別の欄）を押すと閉じ、値は変わらない
   (doc._listeners.mousedown || []).slice().forEach((f) => f({ target: field(host, "Deposit") }));
   assert.equal(byClass(host, "cal-pop").length, 0);
-  assert.equal(field(host, "ForwardDate").value, "2025.02.01");
+  assert.equal(field(host, "FromDate").value, "2025.02.01");
   // 同じボタンの 2 度押しは開いて閉じる（トグル・外側判定が日付箱を除外している証拠）
   fire(btn, "click");
   assert.equal(byClass(host, "cal-pop").length, 1);
   fire(btn, "click");
   assert.equal(byClass(host, "cal-pop").length, 0);
+});
+
+test("a disabled date field's calendar button does not open (不活性の欄へ書かせない)", () => {
+  const { host } = ready();
+  const btn = findById(host, "testerForwardDateCalBtn");
+  assert.equal(btn.disabled, true, "不活性の ForwardDate のカレンダーボタンが活性です");
+  fire(btn, "click");
+  assert.equal(byClass(host, "cal-pop").length, 0, "不活性の欄からカレンダーが開いています");
 });
 
 test("offered candidates survive a real-DOM HTMLCollection (children に .map が無くても動く)", () => {
