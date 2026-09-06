@@ -37,23 +37,14 @@ const HORIZONS = Object.freeze([
 ]);
 
 /**
- * MP 列の説明文が名乗る窓の長さ（**本数**）。
+ * MP セルの説明文（依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」・裁定 8(b)）。
  *
- * 実体の唯一源はサーバ側の `MP_WINDOW_BARS`
- * （`dashboard_ui/adapter/gateway/market_profile_gateway.py`）であり、応答は窓の長さを
- * 運ばない（`meta` を足す拡張は今回しない）。したがって版面側は**この定数 1 つ**だけを
- * 持ち、説明文はここから組み立てる——文字列に直接書くと、サーバ側を変えたときに
- * 説明文だけが古い数を名乗り続ける（手書き複製は必ず取り残しを生む）。
- * View 内でこの数が複製されていないことは reach_sheet_view.test.js の
- * `the_mp_tooltip_names_the_window_in_bars_from_a_single_constant` が機械的に固定する。
+ * 窓の本数を名乗るのをやめた理由: MP 列はもうサーバ側の固定窓（gateway の `MP_WINDOW_BARS`）
+ * ではなく、live core の `/market_profile` を**ライブチャートと同一のパラメータで**借りて
+ * 描いている。窓も設定も更新規則もチャート側が唯一源であり、版面が独立した数を名乗ると
+ * その数だけが古くなる。したがって「どこと同じか」を言う。
  */
-const MP_WINDOW_BARS_LABEL = 2000;
-
-/**
- * MP セルの説明文。「暦の N 分」ではなく「1分足 N 本」と言う——確定足 N 本は N 分ではない
- * （休場・欠損があるぶん実際に跨ぐ時間は本数より長いので、時間として言うと不正確である）。
- */
-const MP_CELL_TITLE = `直近の1分足 ${MP_WINDOW_BARS_LABEL} 本のプロファイルの TPO 密度`;
+const MP_CELL_TITLE = 'ライブチャートの MP と同一（設定・窓・更新はチャートに追従）';
 
 /** 地平キーの集合（照合用）。 */
 const HORIZON_KEYS = Object.freeze(HORIZONS.map((h) => h.key));
@@ -210,9 +201,15 @@ function isReached(distance) {
  *   期間（バー本数）に対応する暦期間プリセット表記（例 '1週'）。唯一源は
  *   indicator_ui の period_presets.js で、composition root が実行時 import して注入する
  *   （写しを持たない）。無ければ本数だけを出す（注記の欠落で版面は壊さない）。
+ * @param {?Function} [opts.mpNormOf] (price) => number|null。行の価格に対する MP の密度。
+ *   出所は live core から借りたプロファイル（依頼者承認 2026-09-06）。bin の決め方は
+ *   domain の mp_bin.js が持ち、合成根が束ねて注入する（写しを持たない・View は描くだけ）。
+ *   無ければ MP 列は空欄（借用できない環境で 0 を描かない）。
  * @returns {{mount: Function, render: Function, unmount: Function}}
  */
-export function createReachSheetView({ doc, periodAnnotator = null, now = null } = {}) {
+export function createReachSheetView({
+  doc, periodAnnotator = null, now = null, mpNormOf = null,
+} = {}) {
   let root = null;
   let tbody = null;
   let message = null;
@@ -262,6 +259,8 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   const markMovedAt = new Map();
   /** 描画時点の時計（unix 秒・render の冒頭で 1 回だけ取る）。null＝時計なし。 */
   let renderNowSec = null;
+  /** MP 借用の掲示文（null＝異常なし）。書き手は合成根（setMpNote）だけ。 */
+  let mpNote = null;
   /** 現在値行のその場書き換え先（毎 tick の表再構築を避ける）。 */
   let currentRowEl = null;
   let currentPriceEl = null;
@@ -584,11 +583,17 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
   /**
    * MP セル（依頼者承認 2026-09-06: 価格ラダーの MP 列）。
    *
+   * 密度の出所は**注入された `mpNormOf(price)`**（依頼者承認 2026-09-06「MP 列＝ライブ MP の
+   * 借用」・裁定 6）。合成根が live core から借りたプロファイルを domain の bin 写像
+   * （mp_bin.js）へ通して渡す。View は受けた値を描くだけで、どの bin かも、どこから来たかも
+   * 知らない（periodAnnotator と同型）。`/reach_sheet` の `mp` 欄は**読まない**——第 1 段階では
+   * サーバ側の供給を温存する（dormant）ため欄は残るが、版面の出所ではない。
+   *
    * 中身は**横バー 1 本**だけで、数値は出さない（依頼者指示 2026-09-06「色の濃度とグラフで
    * 表示しろ」）。長さ ∝ norm・色は heat_scale の `colorForDensity`（色の唯一源。ここで色を
    * 作らない）。密度は「量」なので**単調**写像を使う——分位 `p` の双極写像（`colorForP`）へ
    * 載せると濃さが量を表さない（norm ≈ 0.5 が透明・norm < 0.5 は低いほど濃い）。
-   * 密度が無い（null・欄なし・非有限）ときは**バーを作らない**——0 幅のバーや無色のバーを
+   * 密度が無い（範囲外・借用なし・非有限）ときは**バーを作らない**——0 幅のバーや無色のバーを
    * 置くと「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
    * 更新粒度は 1m バー確定なので、なめらか再生（refreshSmoothNumbers）はここを書き換えない。
    */
@@ -598,8 +603,17 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
       dataset: { cell: 'mp' },
       title: MP_CELL_TITLE,
     });
-    const norm = Number(row.mp);
-    if (row.mp === null || row.mp === undefined || !Number.isFinite(norm)) {
+    if (typeof mpNormOf !== 'function') {
+      return cell;   // 借用の口が無い環境（単体起動）は空欄のまま（無言の 0 を描かない）。
+    }
+    // `null` を Number へ通すと 0 になり、「密度なし」が「密度 0」として最小のバーで
+    //   描かれてしまう（読み手には最も薄い密度に見える）。先に不在を弾く。
+    const supplied = mpNormOf(row.price);
+    if (supplied === null || supplied === undefined) {
+      return cell;
+    }
+    const norm = Number(supplied);
+    if (!Number.isFinite(norm)) {
       return cell;
     }
     const bar = el('span', { className: 'dash-ladder-mp-bar' });
@@ -1009,9 +1023,17 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     levelRowRefs = [];
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
     const unknown = unknownHorizonKeys(allRows);
-    message.textContent = unknown.length === 0
-      ? ''
-      : `未知の地平キーが応答に含まれています: ${unknown.join(', ')}（対象は ${HORIZON_KEYS.join(' / ')}）`;
+    // 掲示は 1 か所へまとめる（欄を増やすと読み手が見る場所が散る）。MP の借用失敗も
+    //   ここへ載せる——列が空のとき「密度が無い相場」と「借りられなかった」は版面で
+    //   区別が付かないため、無言で空にしない（設計書 §5.2 / §7 の無言縮退の禁止）。
+    const notes = [];
+    if (unknown.length > 0) {
+      notes.push(`未知の地平キーが応答に含まれています: ${unknown.join(', ')}（対象は ${HORIZON_KEYS.join(' / ')}）`);
+    }
+    if (mpNote) {
+      notes.push(mpNote);
+    }
+    message.textContent = notes.join(' / ');
 
     // 絞り込み: 選択中の時間足（期間ボタンとピルが操作する唯一の集合）。並びはサーバのまま
     //   （順序を再計算しない）。全選択のときはフィルタを通さない（未知の足も従来どおり）。
@@ -1134,5 +1156,15 @@ export function createReachSheetView({ doc, periodAnnotator = null, now = null }
     currentUpdateEl = null;
   }
 
-  return { mount, render, unmount, updateCurrentPrice, updateLevelValues };
+  /**
+   * MP 借用の掲示文を差し替える（null で解除）。次の描画から効く。
+   *
+   * 呼び手は合成根だけ（借用の成否を知っているのはそこだけである）。View は文言を
+   * 組み立てない——理由の文言は失敗を観測した層が持つ（mp_profile_client の error.message）。
+   */
+  function setMpNote(text) {
+    mpNote = text || null;
+  }
+
+  return { mount, render, unmount, updateCurrentPrice, updateLevelValues, setMpNote };
 }

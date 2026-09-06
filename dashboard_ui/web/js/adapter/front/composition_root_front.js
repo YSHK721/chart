@@ -28,11 +28,15 @@ import { createOscillatorSheetView } from './oscillator_sheet_view.js';
 import { createTimeframeChartsView, chartsLibUsable } from './timeframe_charts_view.js';
 import { createReachSheetClient, deriveApiPrefix } from './reach_sheet_client.js';
 import { createCandlesClient } from './candles_client.js';
+import { createMpProfileClient } from './mp_profile_client.js';
+import { createMpFetchContext } from './mp_fetch_context.js';
 import { createLiveTicksFeed } from './live_ticks_client.js';
 import { readInstanceBundle, DASHBOARD_TIMEFRAMES } from './template_binding_reader.js';
 import { TIMEFRAME_REFRESH_MS } from './timeframes.js';
 import { createSheetPoller } from '../../usecase/sheet_poller.js';
 import { createCandlePoller } from '../../usecase/candle_poller.js';
+import { createMpPoller } from '../../usecase/mp_poller.js';
+import { mpNormAt } from '../../domain/mp_bin.js';
 
 /** 素材（arch-spec T-10: live と同一データセット固定）。 */
 const DATASET_REF = 'jp225_tick';
@@ -102,6 +106,7 @@ export async function setupDashboardDisplay({
   barCloseTimeOf,
   loadPeriodPresets = () => import(LIVE_PUBLIC_API_PATH),
   loadLiveTickPlayer = () => import(LIVE_PUBLIC_API_PATH),
+  loadLiveMpApi = () => import(LIVE_PUBLIC_API_PATH),
   lwc,
   candlesApiPrefix = CANDLES_API_PREFIX,
 } = {}) {
@@ -144,8 +149,19 @@ export async function setupDashboardDisplay({
     return hit ? hit.label : null;
   };
 
+  // 借用した MP プロファイル（依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」）。
+  //   null＝未着（まだ借りていない・借りられなかった）。版面は空欄になる。
+  let mpProfile = null;
+  /** 最新の 1m 形成中バー（MpFetchParams の `_getCandles` へ供給する）。 */
+  let latestChartCandle = null;
+
   const ladderView = createReachSheetView({
-    doc, periodAnnotator, now: () => Math.floor(clock() / 1000),
+    doc,
+    periodAnnotator,
+    now: () => Math.floor(clock() / 1000),
+    // bin の決め方は domain（mp_bin.js）が唯一源。View は受けた密度を描くだけで、
+    //   どの bin かも、どこから来たかも知らない（periodAnnotator と同型・裁定 6）。
+    mpNormOf: (price) => mpNormAt(mpProfile, price),
   });
   const oscillatorView = createOscillatorSheetView({ doc, now: () => Math.floor(clock() / 1000) });
   // lwc は注入が無ければ global から解決する（unified_root は live vendor を読み込んでから
@@ -167,6 +183,13 @@ export async function setupDashboardDisplay({
   let poller = null;
   let candlePoller = null;
   let stopTimer = null;
+  /** 借用 MP の発行判定（live 公開面が届くまで null＝1 本も発行しない）。 */
+  let mpPoller = null;
+  /** 借用クライアント / 取得文脈（同上）。 */
+  let mpClient = null;
+  let mpFetchContext = null;
+  /** 借用プロファイルの世代（描画鍵に混ぜ、借用が版面へ確実に反映されるようにする）。 */
+  let mpGeneration = 0;
   /** なめらか tick 再生（live の LiveTickPlayer を借りる）。時間足ごとに 1 台
    *  （主＝チャート足がラダー・第 2 表・1m タイルを、他の 7 台が各タイルを駆動する・
    *  依頼者指示 2026-08-31「各時間足のチャートもライブモードと同じティック粒度」）。
@@ -181,6 +204,8 @@ export async function setupDashboardDisplay({
   let lastFullResponse = null;
   /** 直近に描いた内容の鍵（省リソース段階 1: 同一内容なら第 1・第 2 表を作り直さない）。 */
   let lastRenderedKey = null;
+  /** 直近に**描いた**応答が成功だったか（借用の着弾が失敗掲示を上書きしないための札）。 */
+  let lastPresentedOk = false;
   /** なめらか再生の spec 台帳（唯一源＝完全応答・依頼者指示 2026-08-31）。第 2 表のセルと
    *  第 1 表の行になった instance **だけ**を申告する（表に出ない instance へ tails を
    *  計算させると使わない計算を発行することになる・絶対命令 §4.1）。 */
@@ -254,6 +279,17 @@ export async function setupDashboardDisplay({
   }
 
   /**
+   * 描画済みの内容を表す鍵（省リソース段階 1）。
+   *
+   * 日付印を含める＝到達時刻の「今日/昨日」表記が日替わりで確実に描き直される。
+   * 借用 MP の世代も含める——プロファイルが入れ替わったのに応答が同一だと、鍵が変わらず
+   * MP 列だけが古いまま残る（借りたのに描かない＝作って捨てる計算になる）。
+   */
+  function renderKeyOf(response) {
+    return `${Math.floor(clock() / 86_400_000)}|${mpGeneration}|${JSON.stringify(response)}`;
+  }
+
+  /**
    * 応答を両表へ配る（描画は閉形式・ここで計算を発行しない）。
    *
    * 有効でないときは配らない。モードを出た後に**発行中だった応答**が着弾すると、View は
@@ -285,10 +321,12 @@ export async function setupDashboardDisplay({
       // なめらか再生の申告: 表の構成が変わりうるのは完全応答のときだけ。
       rebuildTailSpecs(response);
     }
+    // 版面がいま「成功した応答」を映しているか。借用の着弾が失敗掲示を上書きしないための札
+    //   （下の applyMpProfile を参照）。unchanged はここへ来ないので、直近に**描いた**内容を表す。
+    lastPresentedOk = !!(response && response.ok === true);
     // 省リソース段階 1: 内容が直前の描画と同一なら第 1・第 2 表を作り直さない
     //   （毎秒の全再構築は内容不変時にはまるごと浪費・依頼者指摘 2026-08-30）。
-    //   日付印を鍵へ含める＝到達時刻の「今日/昨日」表記が日替わりで確実に描き直される。
-    const key = `${Math.floor(clock() / 86_400_000)}|${JSON.stringify(response)}`;
+    const key = renderKeyOf(response);
     if (key !== lastRenderedKey) {
       ladderView.render(response);
       oscillatorView.render(response);
@@ -297,6 +335,72 @@ export async function setupDashboardDisplay({
     // チャート一覧は**同じ応答**で描く（ISSUE-452 禁止事項: 二重発行の不在）。差分適用のみ
     //   なので同一内容では発行 0（charts_paint_complexity で固定済み）。
     chartsView.render(response);
+  }
+
+  /**
+   * 借りたプロファイルを版面へ適用する（発行 − 使用 = 0 の「使用」側）。
+   *
+   * 借りたら**必ず 1 回描く**。応答（`/reach_sheet`）が unchanged だと present は版面を
+   * 触らないため、ここで描き直さないと借用が版面に出ないまま捨てられる。逆に、借りて
+   * いないのに描き直すこともしない（描き直しは鍵の世代でだけ起こる）。
+   *
+   * ただし**版面が失敗を掲示している間は描き戻さない**。`lastFullResponse` は直近の
+   * *成功* 応答なので、無条件に描くとシートが落ちている最中に古い行が復活し、理由の掲示も
+   * 消える——ユーザーには復旧したように見える（最も危険な縮退）。合成根は MP をシートより
+   * 先に発行するため、この順序（失敗掲示 → 借用の着弾）は実際に起こる。
+   * このとき profile は保持だけしておき、次の成功応答が `mpGeneration` 経由で拾う。
+   */
+  function applyMpProfile(profile) {
+    mpProfile = profile;
+    mpGeneration += 1;
+    if (!enabled || !lastFullResponse || !lastPresentedOk) {
+      return;
+    }
+    ladderView.render(lastFullResponse);
+    // 直後の同一応答で二重に描き直さないよう、鍵を今描いた内容へ揃える。
+    lastRenderedKey = renderKeyOf(lastFullResponse);
+  }
+
+  /** MP を 1 本借りて版面へ流す（発行するかは mp_poller が決める）。 */
+  async function issueMpProfile() {
+    const result = await mpClient.fetchProfile(mpFetchContext.context());
+    if (!enabled) {
+      return result;   // モードを出た後の遅延着弾は捨てる（present と同じ 1 箇所ガード）。
+    }
+    if (result.ok) {
+      ladderView.setMpNote(null);
+      applyMpProfile(result.profile);
+    } else {
+      // 無言縮退の禁止: 列が空のとき「密度が無い相場」と区別が付く形で理由を掲示する。
+      //   文言は**そのまま**流す（組み立てるのは失敗を観測した mp_profile_client だけ・
+      //   candles_client → chartsView.setCandleError と同じ受け渡し）。ここで頭に文を足すと
+      //   版面に同じ主語が二重に出る。
+      ladderView.setMpNote(result.error.message);
+      applyMpProfile(null);
+    }
+    return result;
+  }
+
+  /**
+   * MP 借用の契機を 1 つ通す（依頼者裁定 2026-09-06 案 a: 契機はライブと完全同期）。
+   *
+   * 契機は 3 つ——1m バー枠の進み・有効化直後の初回・テンプレートの MP 設定の変化。
+   * どれを発行に変えるかは mp_poller が決める（ここは契機を渡すだけ・View は発行しない）。
+   *
+   * @param {?object} [bundle] 既に読んだ instance 束（無ければここで読む）
+   */
+  function tickMpBorrow(bundle = null) {
+    if (!enabled || !mpPoller || !mpFetchContext) {
+      return;
+    }
+    const read = bundle ?? readInstanceBundle({ storage: templates });
+    if (!read.ok) {
+      return;   // 束が組めない理由は present が既に掲示している（二重に出さない）。
+    }
+    // どの instance の設定を借りるか（裁定 7）は mp_fetch_context が持つ——束の記録の形を
+    //   知るのは設定を写す役であって、結線ではない。
+    mpFetchContext.setFromBundle(read);
+    mpPoller.tick({ paramsKey: mpFetchContext.settingsKey() });
   }
 
   /** ローソク 1 時間足ぶんの取得と供給（発行するかは candle_poller が決める）。 */
@@ -328,6 +432,7 @@ export async function setupDashboardDisplay({
       present({ ok: false, error: { type: 'TemplateBindingError', message: bundle.error.message } });
       return null;
     }
+    tickMpBorrow(bundle);
     return poller.tick({
       body: {
         dataset_ref: DATASET_REF,
@@ -385,6 +490,59 @@ export async function setupDashboardDisplay({
         refreshMs: TIMEFRAME_REFRESH_MS,
       })
       : null;
+    // MP 列＝ライブ MP の借用（依頼者承認 2026-09-06・第 1 段階）。URL の組み立てと設定の
+    //   写像はライブの唯一源（buildMarketProfileUrl / MpFetchParams）を公開面から借りる
+    //   ——写すとライブが 1 パラメータ足した瞬間にラダーだけ古い URL を投げ、メモの共有も
+    //   仕様の同期も無言で壊れる。公開面が読めない環境（単体起動・live 停止）では MP 列は
+    //   空欄のまま＝借用しないので発行も 0（取得だけして捨てる経路を作らない）。
+    if (transport) {
+      loadLiveMpApi().then((mod) => {
+        if (!enabled || mpPoller) {
+          return;   // モードを出た後の着弾・二重結線は静かに捨てる（異常ではない）。
+        }
+        if (!mod || typeof mod.buildMarketProfileUrl !== 'function'
+            || typeof mod.MpFetchParams !== 'function') {
+          // 面はあるが名前が無い＝公開面の再輸出が消えた / live 側の配置換え。
+          //   黙って返すと MP 列がただ空になり、借用が始まってすらいないことが
+          //   版面からも読めない（無言縮退の禁止）。
+          throw new TypeError('ライブの公開面に MP の借用口がありません');
+        }
+        mpClient = createMpProfileClient({
+          fetch: transport, apiPrefix: candlesApiPrefix, buildUrl: mod.buildMarketProfileUrl,
+        });
+        mpFetchContext = createMpFetchContext({
+          MpFetchParams: mod.MpFetchParams,
+          datasetRef: DATASET_REF,
+          timeframe: CHART_TIMEFRAME,
+          // ライブの src 既定（テンプレートに MP が無いときだけ使う）。'zp' のリテラルを
+          //   dashboard 側に持たない——ライブが既定を変えたら黙ってずれる。
+          defaultSource: mod.MP_DEFAULT_SOURCE,
+          // 最新 1m 足は既存の LiveTickPlayer 供給を流用する（第 2 の取得口を作らない）。
+          getLatestCandle: () => latestChartCandle,
+          nowSec: () => Math.floor(clock() / 1000),
+        });
+        mpPoller = createMpPoller({
+          issue: issueMpProfile,
+          now: clock,
+          // 枠の判定はチャート足のバー周期（candle_poller と同じ表・同じ式）。
+          barMs: TIMEFRAME_REFRESH_MS[CHART_TIMEFRAME],
+        });
+        tickMpBorrow();   // 有効化直後の初回（3 契機のうちの 1 つ）。
+      }).catch((err) => {
+        // 公開面を読めない（live 停止・単体起動・配置換え・再輸出の削除）。借用は始まらない
+        //   ので発行は 0 のままだが、**なぜ MP 列が空なのか**は版面に出す。文言の書き手は
+        //   ここ 1 か所（View は文言を組み立てない・setMpNote の規約）。
+        if (!enabled) {
+          return;
+        }
+        ladderView.setMpNote(`MP を借用できません: ${err && err.message ? err.message : err}`);
+        if (lastFullResponse && lastPresentedOk) {
+          ladderView.render(lastFullResponse);
+          lastRenderedKey = renderKeyOf(lastFullResponse);
+        }
+      });
+    }
+
     await refresh();
     stopTimer = startTimer(() => { refresh(); }, TICK_INTERVAL_MS);
 
@@ -414,6 +572,9 @@ export async function setupDashboardDisplay({
                 // チャート足のタイルも同じ形成中バーで描く（依頼者指示 2026-08-31。
                 //   同じ足の再生を 2 台立てると同一ストリームの二重取得になる）。
                 chartsView.updateLastCandle(CHART_TIMEFRAME, bar);
+                // MP の取得文脈（period='day' の窓下限・dispbp→barw）が読む最新足。
+                //   既にここへ流れているものを分岐させるだけ＝取得は増えない。
+                latestChartCandle = bar;
               }
             },
           },
@@ -496,6 +657,14 @@ export async function setupDashboardDisplay({
       candlePoller.stop();
       candlePoller = null;
     }
+    if (mpPoller) {
+      mpPoller.stop();
+      mpPoller = null;
+    }
+    mpClient = null;
+    mpFetchContext = null;
+    mpProfile = null;
+    latestChartCandle = null;
     if (typeof stopTimer === 'function') {
       stopTimer();
       stopTimer = null;

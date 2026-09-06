@@ -19,13 +19,23 @@ import { createReachSheetView } from '../js/adapter/front/reach_sheet_view.js';
 import { colorForP, colorForDensity } from '../js/adapter/front/heat_scale.js';
 
 /** 版面を組んで応答を 1 回描く（AAA の Arrange をまとめる）。 */
-function renderInto(response, { periodAnnotator = null } = {}) {
+function renderInto(response, { periodAnnotator = null, mpNormOf = null } = {}) {
   const doc = fakeDoc();
   const host = fakeEl('div');
-  const view = createReachSheetView({ doc, periodAnnotator });
+  const view = createReachSheetView({ doc, periodAnnotator, mpNormOf });
   view.mount(host);
   view.render(response);
   return { doc, host, view };
+}
+
+/**
+ * MP 密度を「行の価格 → norm」の表で注入する（依頼者承認 2026-09-06「MP 列＝ライブ MP の
+ * 借用」）。密度の出所は `/reach_sheet` の `mp` 欄から**借用プロファイル**へ移ったため、
+ * 版面の検定も注入で与える。版面が固定する意味（長さ ∝ norm・色 = colorForDensity・
+ * 密度なしはバーを描かない）は変わっていない。
+ */
+function densities(byPrice) {
+  return (price) => (Object.prototype.hasOwnProperty.call(byPrice, price) ? byPrice[price] : null);
 }
 
 /** 行要素（現在値行を含む・上から順）。 */
@@ -181,8 +191,11 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     // 依頼者指示 2026-09-06「色の濃度とグラフで表示しろ」。長さ ∝ norm・色は heat_scale の
     //   colorForDensity が唯一源（フロントは色も数値も作らない）。数値は出さない。
     //   密度は「量」なので**単調**写像を使う（分位 p の双極写像 colorForP ではない）。
-    const rows = [ladderRow({ mp: 0.25 })];
-    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const rows = [ladderRow({ price: 65_803.4 })];
+    const { host } = renderInto(
+      sheetResponse({ rows, current_index: 0 }),
+      { mpNormOf: densities({ 65_803.4: 0.25 }) },
+    );
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const cell = flatten(row).find((el) => el.dataset.cell === 'mp');
     assert.ok(cell, 'MP のセルがありません');
@@ -207,9 +220,18 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     };
     const LADDER = [0.1, 0.25, 0.5, 0.75, 1];
     // 密度なし（バーを描かない行）を最後に混ぜて、可視性の比較対象にする。
-    const rows = [...LADDER.map((mp) => ladderRow({ mp })), ladderRow({ mp: null })];
+    //   行は価格で識別する（借用プロファイルは行の価格で引かれる）。
+    const rows = [
+      ...LADDER.map((_norm, i) => ladderRow({ price: 60_000 + i })),
+      ladderRow({ price: 60_000 + LADDER.length }),
+    ];
+    const byPrice = {};
+    LADDER.forEach((norm, i) => { byPrice[60_000 + i] = norm; });
 
-    const { host } = renderInto(sheetResponse({ rows, current_index: rows.length }));
+    const { host } = renderInto(
+      sheetResponse({ rows, current_index: rows.length }),
+      { mpNormOf: densities(byPrice) },
+    );
 
     const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
     const barsPerRow = levelRows.map((r) => {
@@ -240,44 +262,50 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
 
   test('the_densest_level_fills_the_whole_mp_cell', () => {
     // 境界値: norm = 1（POC の bin）。
-    const rows = [ladderRow({ mp: 1 })];
-    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const rows = [ladderRow({ price: 65_803.4 })];
+    const { host } = renderInto(
+      sheetResponse({ rows, current_index: 0 }),
+      { mpNormOf: densities({ 65_803.4: 1 }) },
+    );
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const bar = flatten(row).find((el) => el.classList.contains('dash-ladder-mp-bar'));
     assert.equal(bar.style.width, '100%');
   });
 
-  test('the_mp_tooltip_names_the_window_in_bars_from_a_single_constant', async () => {
-    // 窓の長さは gateway の MP_WINDOW_BARS が唯一源。View 側では**定数 1 つ**に持たせ、
-    //   説明文はそこから組み立てる（手書き複製は必ず取り残しを生む）。
-    //   文言も是正する: 確定足 2000 本は暦 2000 分**ではない**（休場・欠損があるので
-    //   「2000 分」は不正確）。読み手には「1分足を何本畳んだか」を伝える。
-    const { host } = renderInto(sheetResponse({ rows: [ladderRow({ mp: 0.4 })], current_index: 1 }));
+  test('the_mp_tooltip_names_the_live_chart_instead_of_a_window_length', async () => {
+    // 依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」・裁定 8(b): 窓の名乗りを廃止する。
+    //   MP 列はもうサーバ側の固定窓（gateway の MP_WINDOW_BARS=2000）ではなく、ライブ
+    //   チャートと同一パラメータで借りた `/market_profile` を描いている。版面が独立した
+    //   数を名乗ると、その数だけが古くなる（本数の焼き込みが残っていないことも固定する）。
+    const { host } = renderInto(
+      sheetResponse({ rows: [ladderRow({ price: 65_803.4 })], current_index: 1 }),
+      { mpNormOf: densities({ 65_803.4: 0.4 }) },
+    );
     // 見出し（TH）にも dataset.cell = 'mp' が付くので、水準行の TD へ絞る。
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const cell = flatten(row).find((el) => el.tagName === 'TD' && el.dataset.cell === 'mp');
     assert.ok(cell, 'MP のセルがありません');
 
-    assert.equal(cell.title, '直近の1分足 2000 本のプロファイルの TPO 密度');
-    assert.doesNotMatch(cell.title, /2000\s*分/, '確定足の本数を暦の分数として説明しています');
+    assert.match(cell.title, /ライブチャート/);
+    assert.doesNotMatch(cell.title, /2000/, 'サーバ側の窓の本数を名乗り続けています');
 
-    // 唯一源であることの機械的固定: View の中に裸の 2000 が 2 つ以上あれば複製である。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const source = readFileSync(
       fileURLToPath(new URL('../js/adapter/front/reach_sheet_view.js', import.meta.url)), 'utf8',
     );
     const occurrences = source.match(/(?<![\w.])2000(?![\w.])/g) ?? [];
-    assert.equal(occurrences.length, 1, `窓の本数 2000 が View 内で複製されています（${occurrences.length} 箇所）`);
+    assert.equal(occurrences.length, 0, `版面にサーバ側の窓の本数が残っています（${occurrences.length} 箇所）`);
   });
 
   test('a_row_without_a_density_draws_no_bar_instead_of_inventing_one', () => {
-    // 範囲外・素材なし（null）と旧応答（欄そのものが無い）で色を置かない。0 幅のバーも
-    //   置かない——「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
-    const missing = ladderRow({});
-    delete missing.mp;
-    const rows = [ladderRow({ mp: null }), missing];
-    const { host } = renderInto(sheetResponse({ rows, current_index: 2 }));
+    // 借用プロファイルの範囲外・未着（null）で色を置かない。0 幅のバーも置かない
+    //   ——「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
+    const rows = [ladderRow({ price: 65_803.4 }), ladderRow({ price: 65_900.1 })];
+    const { host } = renderInto(
+      sheetResponse({ rows, current_index: 2 }),
+      { mpNormOf: densities({}) },
+    );
     const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
     for (const row of levelRows) {
       const cell = flatten(row).find((el) => el.dataset.cell === 'mp');
