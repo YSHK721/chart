@@ -32,6 +32,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from dashboard_ui.adapter.breakpoints import BreakpointRegistry
+from dashboard_ui.adapter.controller.demand_ledger import (
+    DemandRecordingController,
+    start_warmup_thread,
+)
 from dashboard_ui.adapter.controller.reach_sheet_controller import (
     ReachSheetController,
     SheetState,
@@ -50,6 +54,10 @@ from dashboard_ui.adapter.gateway.intrabar_capability_gateway import (
 )
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.adapter.gateway.param_scopes import ParamScopes
+from dashboard_ui.adapter.gateway.persistent_material_store import (
+    PersistentMaterialStore,
+    default_spill_dir,
+)
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
 from dashboard_ui.framework.serve_dashboard import DashboardApp
 from dashboard_ui.usecase.sheet_models import SheetInstance
@@ -66,13 +74,15 @@ BAR_LIMITS: "Mapping[str, int]" = {
 #: 表示に使うデータセット（T-10: ライブと同一の `jp225_tick` 固定）。参照は要求が運ぶ。
 DATASET_REF = "jp225_tick"
 
-
 def build_dashboard_app(
     *,
     repo_root: Any = None,
     web_dir: Any = None,
     shared_js_root: Any = None,
     bar_limits: "Mapping[str, int] | None" = None,
+    persist: bool = False,
+    persist_dir: Any = None,
+    warmup: bool = False,
 ) -> DashboardApp:
     """dashboard core のアプリケーションを組み立てる。
 
@@ -81,6 +91,13 @@ def build_dashboard_app(
         web_dir: フロントの配信根（既定は `dashboard_ui/web`。無ければ静的配信無効）。
         shared_js_root: 単一ソース共有の根（既定は `indigators/indicator_ui/web`）。
         bar_limits: 足ごとに読む本数（既定は :data:`BAR_LIMITS`）。
+        persist: True なら確定素材と需要台帳をディスクへ持ち越す（置き場は adapter の
+            :func:`default_spill_dir`＝DATA_DIR 配下・ISSUE-501 段階 2・依頼者承認
+            2026-09-06）。本番の起動口 `serve_dashboard.main` だけが True を渡す
+            （テスト・in-process 計測は既定 OFF＝隔離）。
+        persist_dir: 置き場の明示指定（検定用。指定時は `persist` に依らず持ち越す）。
+        warmup: True なら起動時に需要台帳の束を別スレッドで 1 回再演して温める
+            （待受け開始はブロックしない）。持ち越しなしでは温める材料が無いので無効。
     """
     root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
     limits = dict(BAR_LIMITS if bar_limits is None else bar_limits)
@@ -93,14 +110,33 @@ def build_dashboard_app(
     registry = BreakpointRegistry()
     capability = IntrabarCapabilityGateway()
     state = SheetState()
-    materials = MaterialStore()
+    if persist_dir is not None:
+        spill = Path(persist_dir).resolve()
+    elif persist:
+        spill = default_spill_dir()
+    else:
+        spill = None
+    materials = (
+        MaterialStore() if spill is None
+        else PersistentMaterialStore(MaterialStore(), spill_dir=spill)
+    )
     scopes = ParamScopes()
     roles = SeriesRoleTable(store=materials)
 
-    def controller_factory() -> ReachSheetController:
+    def controller_factory():
         series_gateway = IndicatorUiComputeGateway(
             bar_limits=limits, store=materials, param_scopes=scopes
         )
+        controller = _build_controller(series_gateway)
+        if spill is None:
+            return controller
+        # 需要台帳（束の記録）: 次回起動の warmup が「どの束を温めるか」を知るための記録。
+        #   記録するのは束の定義だけ・同じ束は再記録しない（demand_ledger の規約）。
+        return DemandRecordingController(
+            controller, ledger_path=spill / "demand.json"
+        )
+
+    def _build_controller(series_gateway) -> ReachSheetController:
         return ReachSheetController(
             series_port=series_gateway,
             bar_port=series_gateway,
@@ -129,6 +165,12 @@ def build_dashboard_app(
             #   結線解除と発行 0 は
             #   `dashboard_ui/tests/e2e/test_market_profile_unwired.py` が固定する。
         )
+
+    if warmup and spill is not None:
+        # 起動時の温め（ISSUE-501 段階 2）: 直近の実要求の束を別スレッドで 1 回だけ再演し、
+        #   ディスクに無い量（増分ビルダ・当てはめ・比較集合）まで初回要求の前に組み上げる。
+        #   待受け開始（GET / の 200）はブロックしない。
+        start_warmup_thread(controller_factory, spill / "demand.json")
 
     return DashboardApp(
         controller_factory=controller_factory,

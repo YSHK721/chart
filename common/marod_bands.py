@@ -136,8 +136,8 @@ def rolling_causal_pointwise(values: np.ndarray, window_n: int, fn) -> np.ndarra
 def _sorted_linear_quantile(buf: "list[float]", lo: int, hi: int, q: float) -> float:
     """昇順区間 ``buf[lo:hi]`` の線形分位（numpy `method="linear"` と bit 一致の式）。
 
-    numpy の実装（`_function_base_impl.py` の `_QuantileMethods["linear"]` /
-    `_get_gamma` / `_lerp`）と同一の演算列で計算する:
+    numpy の実装（numpy.lib の分位機構: linear メソッドの仮想添字・gamma・lerp）と
+    同一の演算列で計算する:
     仮想添字 ``(m-1)*q``・γ＝小数部・γ >= 0.5 では ``b - d*(1-γ)`` 側の式。
     式を写すのは、増分ソート窓（:func:`_rolling_quantile_sweep`）が numpy の
     分位呼び出しを 1 回も発行せずに**同一 bit の出力**を出すためであり、同一性は

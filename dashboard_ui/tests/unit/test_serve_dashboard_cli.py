@@ -44,8 +44,11 @@ def test_the_repo_root_option_is_handed_to_the_composition_root(monkeypatch) -> 
     # Act
     serve_dashboard.main(["18481", "--repo-root", "/tmp/some-worktree"])
 
-    # Assert: 配信元は起動側が決める（core 側が自分で推測しない）。
-    assert calls.built == [{"repo_root": "/tmp/some-worktree"}]
+    # Assert: 配信元は起動側が決める（core 側が自分で推測しない）。本番の起動口だけが
+    #   確定素材の持ち越しと温めを有効化する（ISSUE-501 段階 2）。
+    assert calls.built == [
+        {"repo_root": "/tmp/some-worktree", "persist": True, "warmup": True}
+    ]
     assert calls.served == [("APP", 18481)]
 
 
@@ -60,7 +63,7 @@ def test_without_the_option_the_composition_root_resolves_the_tree_itself(
     serve_dashboard.main(["18481"])
 
     # Assert
-    assert calls.built == [{"repo_root": None}]
+    assert calls.built == [{"repo_root": None, "persist": True, "warmup": True}]
     assert calls.served == [("APP", 18481)]
 
 

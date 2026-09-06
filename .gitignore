@@ -144,6 +144,10 @@ data/marketdata
 cache/market_profile_dwell/
 **/cache/market_profile_dwell/
 
+# 水準到達シートの確定素材ディスク持ち越し（生成物・再構築可能・ISSUE-501 段階 2）。
+cache/reach_sheet_materials/
+**/cache/reach_sheet_materials/
+
 # ============================================================
 # 生成・検証アーティファクト（スクショ・出力HTML）
 # ============================================================

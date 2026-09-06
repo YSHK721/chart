@@ -168,7 +168,16 @@ def main(argv: "list[str] | None" = None) -> None:
     from dashboard_ui.main.composition_root import build_dashboard_app
 
     port, repo_root = _parse(list(sys.argv[1:] if argv is None else argv))
-    serve(build_dashboard_app(repo_root=repo_root), port=port)
+    serve(
+        build_dashboard_app(
+            repo_root=repo_root,
+            # 確定素材の持ち越しと起動時の温め（ISSUE-501 段階 2・依頼者承認 2026-09-06）。
+            #   本番の起動口だけが有効化する（テスト・in-process 計測は既定 OFF＝隔離）。
+            persist=True,
+            warmup=True,
+        ),
+        port=port,
+    )
 
 
 def _parse(arguments: "list[str]") -> "tuple[int, str | None]":
