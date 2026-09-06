@@ -14220,7 +14220,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 
 
 ## ISSUE-499: /reach_sheet が dataset_ref=jp225_mt5 で ZeroDivisionError（供給失敗として返る）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-06・b053b7d）
 - **発見日**: 2026-09-05
 - **事象**: `POST /dashboard/reach_sheet` に `dataset_ref="jp225_mt5"` を渡すと
   `{"ok": false, "error": {"type": "supply", "message": "ZeroDivisionError: float division by zero"}}`。
@@ -14245,6 +14245,30 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - **クローズ条件（再観測時に必ず取る 3 点）**: (1) HTTP ステータスと `error.type` の生値
   (2) 要求 body 全量（instances・params）(3) 配信元ツリーの確認（branch 限定ファイルの実測・
   memory: serve-sh-does-not-verify-serving-tree）。この 3 点が揃うまで原因確定は不能。
+- **追補 2（2026-09-06・再観測＝原因確定・是正済み b053b7d）**: 依頼者報告
+  「ダッシュボードが応答しません（HTTP 500）」（reach_sheet_client.js:85 の文言＝
+  `POST /dashboard/reach_sheet` の 500 で確定）。クローズ条件 3 点:
+  (1) **HTTP 500 / `type:"internal"` / `message:"ZeroDivisionError: float division by zero"`**
+  （09-05 記録の `type:"supply"` は不正確——ZeroDivisionError は ValueError の派生でなく
+  supply 封筒を通れない。生値は internal/500 で観測）。
+  (2) 要求 body: `dataset_ref="jp225_tick"`・instances に **profit_rsi**（カタログ既定値）を
+  含む束。timeframe は 1m でも 1D でも発火（dataset は無関係。カタログ全 26 指標の掃引で
+  発火は profit_rsi のみ）。
+  (3) 配信元ツリー: 8481 の argv `--repo-root /workspaces/app` で確認済み。
+- **確定した根本原因**（追補 1 の未検証仮説 price_value_map.py:79 は**否定**）:
+  `dashboard_ui/adapter/series_role_table.py` の `_rsi_headroom_excess` が余地
+  `(RSI_MAX − band_high)` を**ガード無しで除算**していた。帯上端（rsi_q90＝因果ローリング
+  分位）は RSI が上限 100 に張り付く区間で**ちょうど 100** になる（市場再開直後の 1m で
+  14 本実測）。参照実装 `profit_rsi/src/levels.py` の `headroom` は非正・非有限の余地を
+  NaN（＝イベント判定外）へ倒しており、このガードだけが写し落とされていた。
+  09-05〜09-06 の掃引で再現しなかったのは休場データに RSI=100 張り付き区間が無かったため
+  （素材依存・コード不変）。
+- **是正**: `_rsi_headroom_excess` に参照実装と同一のガードを追加（余地が非正・非有限なら
+  NaN を返す。NaN は `step_events` の `_event_flags` で偽＝エピソード確定のみ＝指標 core と
+  同挙動）。回帰検定 `test_the_rsi_excess_is_nan_when_the_band_leaves_no_headroom` を追加。
+  発行回数の変化なし（既存の回数検定 `test_core_constant_resolved_once` 緑のまま）。
+  検証: 新プロセスで同一 payload が 4 時間足すべて ok:true・dashboard_ui 検定 632 passed。
+  **注**: 稼働中の 8481 は旧コードのため、serve.sh の再起動（Ctrl-C → 再実行）で反映される。
 
 
 ## ISSUE-500: サーバ側 MP（/reach_sheet の mp 欄）が第 1 段階で dormant 化＝「作って捨てる」計算が残る
