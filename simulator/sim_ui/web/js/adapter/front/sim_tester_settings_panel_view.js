@@ -29,6 +29,8 @@
 //
 // fake DOM 前提: querySelector は使わず、キーごとに要素参照を JS 側で保持する。
 
+import { createSimDatePickerView } from "./sim_date_picker_view.js";
+
 /** 対象種別（規則 D）: 本パネルは Expert テストだけを組む。`Indicator` は出さない。 */
 const SUBJECT_KEY = "Expert";
 const INDICATOR_KEY = "Indicator";
@@ -87,17 +89,13 @@ const TRIGGER_ON_PRESENCE = "on_presence";
 const TRIGGER_OFF_CANDIDATES = "off_candidates";
 const TRIGGER_OFF_PROFILE = "off_profile";
 
-/** 日付入力（`<input type="date">` の ISO 値 `YYYY-MM-DD`）→ `.ini` の日付トークン
- *  `YYYY.MM.DD`。区切りの置換だけ（ゼロ埋め・桁は ISO と `.ini` で同一）で、`.` 区切りの
- *  値には何もしない（date 非対応ブラウザの text 縮退で直接打たれた形をそのまま通す）。
- *  実在日付の検証はしない——検証の単一ソースはサーバの `_strict_date`（R10）である。 */
-const isoToIniDateToken = (value) => value.replaceAll("-", ".");
-
-export function createSimTesterSettingsPanelView({ doc, dateToken } = {}) {
-  /** 日付トークン変換（既定は `isoToIniDateToken`）。注入面は計算量テスト（発行回数の
-   *  計数）のためにある——変換は投入本文に**載る値だけ**に発行される（出し分けで落ちた
-   *  キー・空欄には発行しない）ことを Test Spy で表明する。 */
-  const toIniDate = dateToken || isoToIniDateToken;
+export function createSimTesterSettingsPanelView({ doc, today } = {}) {
+  /** 日付キーのカレンダー（依頼者参照デザイン 2026-09-06）。ネイティブ `<input type="date">`
+   *  のポップアップは CSS が届かず視認性を直せない（実測）ため、自前 View を使う。欄の値は
+   *  `.ini` の日付トークン `YYYY.MM.DD` **そのもの**（変換層を挟まない・手入力も同じ形）。 */
+  const picker = createSimDatePickerView({ doc, today });
+  /** カレンダーを開いているキー（トグル判定用）。 */
+  let pickerKey = null;
   let root = null;
   let fieldsHost = null;
   let warnNode = null;
@@ -213,20 +211,48 @@ export function createSimTesterSettingsPanelView({ doc, dateToken } = {}) {
       }
       node.value = options.length ? options[0].token : "";
     } else {
-      // 日付キーはカレンダー入力（`type="date"`）。どのキーが日付かは schema の宣言
-      // （`scalar_specs[key].value_type`＝検証層 `DATE_VALUE_KEYS` 由来）だけで決める。
       node = el("input", {
-        id: `tester${key}`, className: "tester-input",
-        type: isDateKey(key) ? "date" : "text",
+        id: `tester${key}`, className: "tester-input", type: "text",
         value: INITIAL_SCALARS[key] || "", dataset: { key, mt5: `tester:${key}` },
       });
     }
     node.addEventListener("change", () => onChanged(key));
     node.addEventListener("input", () => onChanged(key));
     const wrap = el("label", { className: "tester-field", textContent: labelFor(key) });
-    wrap.appendChild(node);
+    // 日付キーは欄＋カレンダーボタンをひと箱に（どのキーが日付かは schema の宣言
+    // `scalar_specs[key].value_type`＝検証層 `DATE_VALUE_KEYS` 由来だけで決める）。
+    if (isDateKey(key)) wrap.appendChild(buildDateBox(key, node));
+    else wrap.appendChild(node);
     controls.set(key, node);
     groupHostFor(key).appendChild(wrap);
+  }
+
+  /** 日付欄の箱（欄＋開閉ボタン）。カレンダーの確定はトークンを欄へ書き戻して通知する。 */
+  function buildDateBox(key, node) {
+    const box = el("div", { className: "tester-date-wrap" });
+    const btn = el("button", {
+      id: `tester${key}CalBtn`, className: "tester-cal-btn", type: "button",
+      textContent: "▾", dataset: { mt5: `ui:cal:${key}` },
+    });
+    btn.addEventListener("click", () => {
+      const wasOpenHere = picker.isOpen() && pickerKey === key;
+      picker.close();
+      pickerKey = null;
+      if (wasOpenHere) return;
+      pickerKey = key;
+      picker.openFor({
+        anchor: box,                 // 値列（日付箱）が座標の基準（fixed 配置の実測元）
+        value: node.value,
+        onCommit: (token) => {
+          pickerKey = null;
+          node.value = token;
+          onChanged(key);
+        },
+      });
+    });
+    box.appendChild(node);
+    box.appendChild(btn);
+    return box;
   }
 
   /** 期間形式の切替（規則 E をフォームが破らないための唯一の分岐）。 */
@@ -354,6 +380,8 @@ export function createSimTesterSettingsPanelView({ doc, dateToken } = {}) {
     controls.clear();
     expertLabels.clear();
     dateCustom = null;
+    picker.close();      // 組み直しで欄が入れ替わるため、開いたままのカレンダーを残さない
+    pickerKey = null;
     if (!schema) {
       emptyNote.textContent = NO_SCHEMA_TEXT;
       warnNode.textContent = "";
@@ -427,9 +455,7 @@ export function createSimTesterSettingsPanelView({ doc, dateToken } = {}) {
       if (!node) continue;
       const value = String(node.value == null ? "" : node.value);
       if (value === "" && BLANK_MEANS_ABSENT.includes(key)) continue;
-      // 日付トークン変換は**載る値だけ**に発行する（出し分け・空欄の後）。ここより前に
-      // 置くと「変換したのに捨てる」計算が生まれる（計算量テストが固定する不変条件）。
-      mapping[key] = value !== "" && isDateKey(key) ? toIniDate(value) : value;
+      mapping[key] = value;
     }
     return mapping;
   }

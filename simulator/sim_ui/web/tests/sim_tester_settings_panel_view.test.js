@@ -303,102 +303,56 @@ test("derivedBacktest takes ea_name from the Expert label and initial_deposit fr
   assert.equal(view.derivedBacktest().ea_name, schema.expert_options[1].label);
 });
 
-// --- 9. 日付キーはカレンダー入力（value_type 宣言駆動）---------------------------
+// --- 9. 日付キーはカレンダー付きのトークン欄（value_type 宣言駆動）------------------
 // どのキーが日付かは schema の `scalar_specs[key].value_type` だけで決める（キー名からの
-// 推測は宣言と食い違っても静かに text へ縮退する）。
+// 推測は宣言と食い違っても静かに素の欄へ縮退する）。欄の値は `.ini` トークン
+// `YYYY.MM.DD` そのもの（変換層なし）。カレンダー本体の検定は sim_date_picker_view.test.js。
 
-test("date-typed keys render as calendar inputs and the others stay text (宣言駆動)", () => {
+test("date-typed keys get a token field with a calendar button (宣言駆動)", () => {
   const { host, schema } = ready();
   const dateKeys = Object.entries(schema.scalar_specs)
     .filter(([, spec]) => spec.value_type === "date").map(([key]) => key);
   assert.ok(dateKeys.length, "fixture に日付キーが無い（検定が空振りしています）");
-  for (const [key, spec] of Object.entries(schema.scalar_specs)) {
+  for (const key of dateKeys) {
     const node = field(host, key);
-    if (!node || node.tagName !== "INPUT") continue;
-    assert.equal(node.type, spec.value_type === "date" ? "date" : "text", key);
+    assert.equal(node.type, "text", `${key} はトークンをそのまま持つ text 欄で出す`);
+    assert.ok(hasClass(node.parentNode, "tester-date-wrap"), `${key} の日付箱が無い`);
+    assert.ok(findById(host, `tester${key}CalBtn`), `${key} のカレンダーボタンが無い`);
   }
+  // 日付でないスカラーにはボタンを付けない（宣言に無い所へ発明しない）
+  assert.equal(findById(host, "testerDepositCalBtn"), null);
 });
 
-test("calendar (ISO) values are emitted as `.ini` date tokens (YYYY-MM-DD → YYYY.MM.DD)", () => {
+test("the calendar opens at the field's month and commits the picked token", () => {
   const { host, view } = ready();
   const toggle = findById(host, "testerDateCustom");
   toggle.checked = true;
   fire(toggle);
-  field(host, "FromDate").value = "2025-01-06";
-  field(host, "ToDate").value = "2025-01-10";
-  field(host, "ForwardDate").value = "2025-02-01";
-  const mapping = view.buildTesterMapping();
-  assert.equal(mapping.FromDate, "2025.01.06");
-  assert.equal(mapping.ToDate, "2025.01.10");
-  assert.equal(mapping.ForwardDate, "2025.02.01");
+  field(host, "FromDate").value = "2025.01.06";
+  fire(findById(host, "testerFromDateCalBtn"), "click");
+  const pop = byClass(host, "cal-pop")[0];
+  assert.ok(pop, "カレンダーが開いていない");
+  assert.equal(byClass(pop, "cal-title")[0].textContent, "January 2025");
+  fire(byClass(pop, "cal-day").find((d) => d.dataset.token === "2025.01.10"), "click");
+  fire(byClass(pop, "cal-choose")[0], "click");
+  assert.equal(field(host, "FromDate").value, "2025.01.10");
+  assert.equal(view.buildTesterMapping().FromDate, "2025.01.10");
+  assert.equal(byClass(host, "cal-pop").length, 0, "確定後もカレンダーが残っています");
 });
 
-// --- 10. 計算量テスト（規約: 発行した変換 − 出力に使った変換 = 0）------------------
-// 変換回数そのものを仕様に焼き込まない。固定するのは「載らない値へ変換を発行しない」
-// （無駄の不在）と「キー数を増やしても発行が増えない」（オーダーの表明）である。
-
-function spiedReady(schema = settingsSchema()) {
-  const doc = fakeDoc();
-  const spy = { calls: 0 };
-  const view = createSimTesterSettingsPanelView({
-    doc,
-    dateToken: (value) => { spy.calls += 1; return value.replaceAll("-", "."); },
-  });
-  view.mount(doc.body);
-  view.setSchema(schema);
-  view.setRunProfile(runProfile());
-  return { host: doc.body, view, schema, spy };
-}
-
-/** 投入本文に載った日付トークンの数（schema の宣言から導く・期待値を書かない）。 */
-const emittedDateTokens = (mapping, schema) => Object.keys(mapping)
-  .filter((key) => (schema.scalar_specs[key] || {}).value_type === "date").length;
-
-test("no conversion is issued for date keys that are not emitted (無駄の不在)", () => {
-  const { view, schema, spy } = spiedReady();
-  // プリセット期間・ForwardDate 空欄: 日付キーは 1 つも載らない → 変換の発行も 0。
-  spy.calls = 0;
-  const mapping = view.buildTesterMapping();
-  assert.equal(emittedDateTokens(mapping, schema), 0);
-  assert.equal(spy.calls - emittedDateTokens(mapping, schema), 0,
-    "投入本文に載らない値へ日付変換を発行しています（作ってから捨てる計算）");
-});
-
-test("issued conversions equal the date tokens actually emitted (発行 − 使用 = 0)", () => {
-  const { host, view, schema, spy } = spiedReady();
-  const toggle = findById(host, "testerDateCustom");
-  toggle.checked = true;
-  fire(toggle);
-  field(host, "FromDate").value = "2025-01-06";
-  field(host, "ToDate").value = "2025-01-10";
-  spy.calls = 0;
-  const mapping = view.buildTesterMapping();
-  assert.ok(emittedDateTokens(mapping, schema) > 0, "日付トークンが載っていない（検定の空振り）");
-  assert.equal(spy.calls - emittedDateTokens(mapping, schema), 0);
-});
-
-test("adding non-date keys does not grow the conversions issued (オーダーの表明)", () => {
-  // 入力（キー数）を 2 点で比べる: 基準の schema と、非日付キーを増やした schema。
-  const grown = settingsSchema();
-  for (let i = 0; i < 8; i += 1) {
-    const key = `Extra${i}`;
-    grown.key_order.push(key);
-    grown.scalar_specs[key] = { expert_only: false };
-  }
-  const points = [spiedReady(), spiedReady(grown)];
-  for (const point of points) {
-    const toggle = findById(point.host, "testerDateCustom");
-    toggle.checked = true;
-    fire(toggle);
-    field(point.host, "FromDate").value = "2025-01-06";
-    field(point.host, "ToDate").value = "2025-01-10";
-    point.spy.calls = 0;
-    point.mapping = point.view.buildTesterMapping();
-  }
-  const [small, large] = points;
-  assert.equal(small.spy.calls, emittedDateTokens(small.mapping, small.schema));
-  assert.equal(large.spy.calls, small.spy.calls,
-    "非日付キーを増やしただけで日付変換の発行が増えました");
+test("Cancel leaves the field untouched and the button toggles the popup", () => {
+  const { host } = ready();
+  field(host, "ForwardDate").value = "2025.02.01";
+  const btn = findById(host, "testerForwardDateCalBtn");
+  fire(btn, "click");
+  fire(byClass(host, "cal-cancel")[0], "click");
+  assert.equal(field(host, "ForwardDate").value, "2025.02.01");
+  assert.equal(byClass(host, "cal-pop").length, 0);
+  // 同じボタンの 2 度押しは開いて閉じる（トグル）
+  fire(btn, "click");
+  assert.equal(byClass(host, "cal-pop").length, 1);
+  fire(btn, "click");
+  assert.equal(byClass(host, "cal-pop").length, 0);
 });
 
 test("offered candidates survive a real-DOM HTMLCollection (children に .map が無くても動く)", () => {

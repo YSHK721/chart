@@ -206,14 +206,143 @@
   padding-left: 6px;
   padding-right: 2px;
 }
-/* 日付入力のネイティブ部品はページの配色変数を知らない。ページは `color-scheme` 未宣言
- * ＝normal（ライト扱い）のため、ダーク地（--bg: #0e1117）に**ライト用の黒いカレンダー
- * アイコンと白いポップアップ**が出て見えない（実測 2026-09-06・依頼者指摘）。部品の
- * 描画系だけ dark を宣言して地色に合わせる（欄自体の色は上の --bg/--fg 指定が既に持つ。
- * 素の input[type=date] へ当てず本パネル配下に閉じるのは、結果ビューアへの波及遮断＝
- * 裁定 B と同じ理由）。 */
-#simTesterPanel input.tester-input[type="date"] {
-  color-scheme: dark;
+/* --- 日付欄とカレンダー（依頼者参照デザイン 2026-09-06）---------------------------
+ * ネイティブ `<input type="date">` のポップアップはブラウザ内部描画で CSS が届かず、
+ * ダーク地で視認性を直せない（実測）。自前カレンダー（sim_date_picker_view.js）を
+ * 参照デザインに合わせて描く。色は :root 変数だけ（参照画像の青い選択色は本アプリの
+ * 強調色 --accent へ写像する。ここに hex を書くと配色が 2 箇所になる）。 */
+#simTesterPanel .tester-date-wrap {
+  display: flex;
+  align-items: center;
+  width: var(--sim-field-input-w);
+  max-width: 100%;
+  height: var(--sim-field-row-h);
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+/* 箱が枠を持つので、中の欄は素通し（.tester-input の枠・幅・高さ指定を打ち消す）。 */
+#simTesterPanel .tester-date-wrap .tester-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+#simTesterPanel .tester-cal-btn {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+#simTesterPanel .tester-cal-btn:hover { color: var(--fg); }
+/* popup の座標基準は行（.tester-field）。日付行だけ relative にする。 */
+#simTesterPanel .tester-field:has(.tester-date-wrap) { position: relative; }
+#simTesterPanel .cal-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 136px;                       /* 値列（ラベル列 136px の右）に揃える */
+  z-index: 30;
+  width: 252px;
+  padding: 12px;
+  box-sizing: border-box;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .55);   /* 影は移植元 style.css:167 と同形 */
+}
+#simTesterPanel .cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+#simTesterPanel .cal-title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+#simTesterPanel .cal-nav {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+}
+#simTesterPanel .cal-nav:hover { color: var(--fg); }
+#simTesterPanel .cal-week,
+#simTesterPanel .cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+#simTesterPanel .cal-weekday {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 0 4px;
+}
+#simTesterPanel .cal-day {
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+#simTesterPanel .cal-day:hover { border-color: var(--accent); }
+#simTesterPanel .cal-day.cal-out {
+  background: transparent;
+  color: var(--muted);
+}
+#simTesterPanel .cal-day.cal-sel {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+#simTesterPanel .cal-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+#simTesterPanel .cal-cancel,
+#simTesterPanel .cal-choose {
+  flex: 1 1 0;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+#simTesterPanel .cal-cancel {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+}
+#simTesterPanel .cal-choose {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+#simTesterPanel .cal-choose:disabled {
+  opacity: .45;
+  cursor: default;
 }
 /* チェックボックスの行は**ラベル列を使わない**（依頼者指摘 2026-08-22「『期間をカスタム指定
  * する』が 2 行になっている」）。この行だけラベルが長く（実測 134px＝ラベル列 136px とほぼ

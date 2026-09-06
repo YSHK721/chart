@@ -49,6 +49,8 @@ const EXEC_ROOT = "composition_root_execution.js";
 // Phase 8 で追加した Tester Settings（MT5 設定パネル）系（純 DOM / HTTP・lwc に触れない）。
 const SETTINGS_CLIENT = "settings_schema_client.js";
 const TESTER_PANEL = "sim_tester_settings_panel_view.js";
+// 日付選択カレンダー（依頼者参照デザイン 2026-09-06・純 DOM・lwc に触れない）。
+const DATE_PICKER = "sim_date_picker_view.js";
 // Phase 9 で分けた面（S2）: EA パラメータ面（純 DOM）と投入契約（純関数）。
 const EA_INPUTS_PANEL = "sim_ea_inputs_panel_view.js";
 const SUBMISSION_BUILDER = "sim_submission_builder.js";
@@ -76,7 +78,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     ROOT, RENDERER, SOURCE, VIEW, FRAME,
     TABS, SEGMENT, COMPARE, CONTACTS_TOGGLE, FILTER_PILL,
     SUBMIT_CLIENT, RUN_ACTION, EXEC_ROOT,
-    SETTINGS_CLIENT, TESTER_PANEL,
+    SETTINGS_CLIENT, TESTER_PANEL, DATE_PICKER,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT,
   ].sort());
