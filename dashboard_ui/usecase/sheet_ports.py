@@ -55,7 +55,8 @@ class MarketProfilePort(Protocol):
 
     実装は既存の MP core（参照実装 `market_profile_api/compute/market_profile.py`）を
     **読むだけ**で再利用する。
-    プロファイルはシート共通の 1 本（dataset_ref の 1D 確定足・直近 60 本）であり、
+    プロファイルはシート共通の 1 本（dataset_ref の 1m 確定足・直近 2000 本を幅 5pt の
+    ビンで畳んだもの）であり、
     行ごとに畳まない——だから面は「価格 1 本」ではなく**全行一括**である
     （行ごとの口にすると ISSUE-450 と同型の浪費が構造として入り込む）。
 
@@ -91,7 +92,9 @@ class MarketProfilePort(Protocol):
         Args:
             dataset_ref: 素材の参照（シートの要求が運ぶもの）。
             prices: ラダー全行の水準価格（**一括**）。
-            now_unix: シートの現在時刻（表示足の末尾 time）。形成中足の判定に使う。
+            now_unix: シートの現在時刻（**表示足**の末尾 time）。面が運ぶ引数だが、素材の
+                窓は時計ではなく供給の並びで決まる（`bars()` の末尾 1 本を無条件に落とす）
+                ——表示足が素材の足より粗いと、この時刻は素材の周期に載らないからである。
 
         Returns:
             価格ごとの norm。プロファイルの価格域の外・素材なしはその要素が `None`。

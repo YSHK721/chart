@@ -1,10 +1,14 @@
-"""MP 列の素材（依頼者承認 2026-09-06): 行の水準価格 → 直近 1D プロファイルの TPO 密度 norm。
+"""MP 列の素材（依頼者承認 2026-09-06): 行の水準価格 → 直近 1m プロファイルの TPO 密度 norm。
 
 固定する核心:
-  - プロファイルは**シート共通の 1 本**（dataset_ref の 1D 確定足・直近 MP_WINDOW_BARS 本）。
+  - プロファイルは**シート共通の 1 本**（dataset_ref の 1m 確定足・直近 MP_WINDOW_BARS 本）。
+  - ビン数は固定値ではなく**ビン幅から導出**する（`MP_BIN_WIDTH_POINTS` と窓の span）。
+    上限は `MP_MAX_BINS` でクランプする（計算量の保護）。
   - 行価格 → bin は `price_min` と bin 幅の算術で引く（bins[].price は bin 中心・実測済み）。
   - 範囲外・素材なしは **None**（発明しない）。0.0 で埋めると「密度が最小」と読める。
-  - 形成中の 1D 足は窓に入れない（epoch 安定・更新粒度はバー確定）。
+  - 供給の末尾 1 本は**無条件に**窓から落とす（P-2 の契約: `bars()[-1]` は形成中でありうる）。
+    時計（`now_unix`）を窓の決定に使わない——`now_unix` は表示足の末尾 time であり、
+    表示足が 1m より粗いと形成中の 1m 足を「確定」と誤って窓へ入れてしまう。
 
 計算量（絶対命令 §4.1）は `dashboard_ui/tests/complexity/test_market_profile_computed_once.py`
 が別途固定する（本ファイルは状態検証＝出力の正しさだけを見る）。
@@ -13,11 +17,14 @@ from __future__ import annotations
 
 import pytest
 
+from dashboard_ui.adapter.gateway import market_profile_gateway
 from dashboard_ui.adapter.gateway.market_profile_gateway import (
-    MP_BINS,
+    MP_BIN_WIDTH_POINTS,
+    MP_MAX_BINS,
     MP_TIMEFRAME,
     MP_WINDOW_BARS,
     MarketProfileGateway,
+    _bins_for,
     _norm_at,
     _reference_compute,
 )
@@ -26,30 +33,50 @@ from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_ports import MarketProfilePort
 
 REF = "jp225_tick"
-#: 2026-08-01 00:00:00 UTC（1D の境界に載る時刻）。
+#: 2026-08-01 00:00:00 UTC（1m の境界に載る時刻）。
 START = 1_785_542_400
-DAY = 86_400
+MINUTE = 60
 
 
 def _bars(count: int, *, base: float = 100.0) -> "tuple[Bar, ...]":
     return tuple(
-        Bar(time=START + index * DAY, open=base + index, high=base + index + 5.0,
+        Bar(time=START + index * MINUTE, open=base + index, high=base + index + 5.0,
             low=base + index - 5.0, close=base + index)
         for index in range(count)
     )
 
 
+def _flat_bars(count: int, *, low: float, high: float) -> "tuple[Bar, ...]":
+    """価格域を `[low, high]` に固定した足。
+
+    どの部分列を取っても span が `high - low` のままなので、**span がビン数へどう効くか**
+    だけを見る検定の素材になる（本数や窓の切り出しが span を動かさない）。
+    """
+    return tuple(
+        Bar(time=START + index * MINUTE, open=low, high=high, low=low, close=high)
+        for index in range(count)
+    )
+
+
 class BarPortFake:
-    """P-2 の代役。`forming` を立てると末尾の足を形成中として返す（bars の末尾と同一物）。"""
+    """P-2 の代役。`forming` を立てると末尾の足を形成中として返す（bars の末尾と同一物）。
+
+    どの時間足を訊かれたか・形成中足を訊かれたかを記録する。gateway が窓の決定に
+    時計を使っていないことは「`forming_bar` を呼んでいない」で機械的に見える。
+    """
 
     def __init__(self, bars_by_timeframe, *, forming: bool = False) -> None:
         self._bars_by_timeframe = dict(bars_by_timeframe)
         self._forming = bool(forming)
+        self.asked_timeframes: "list[str]" = []
+        self.forming_calls: "list[str]" = []
 
     def bars(self, *, dataset_ref, timeframe):
+        self.asked_timeframes.append(timeframe)
         return self._bars_by_timeframe.get(timeframe, ())
 
     def forming_bar(self, *, dataset_ref, timeframe, now_unix):
+        self.forming_calls.append(timeframe)
         supplied = self._bars_by_timeframe.get(timeframe) or ()
         return supplied[-1] if (self._forming and supplied) else None
 
@@ -68,6 +95,27 @@ class ComputeSpy:
     def __call__(self, candles, *, n_bins):
         self.calls.append((tuple(int(candle["time"]) for candle in candles), int(n_bins)))
         return profile()
+
+
+class PriceRangeSpy:
+    """価格レンジ面（`market_profile_gateway._core_price_range`）の Test Spy。
+
+    引いた事実と、返す値を握る。
+
+    返り値は**素材と無関係に**呼び出し側が決める。`_bins_for` が「この面が返したレンジ」に
+    追従するのか、それとも素材の高安を自分で読み直しているのかは、両者が食い違う入力を
+    作らなければ区別できない——`max(high) - min(low)` を書き写した実装は縮退窓でも
+    `max(1, …)` に吸収されて同じ 1 ビンを返すため、素材を工夫しても分かれ道が現れない。
+    面を差し替えて初めて分かれる。
+    """
+
+    def __init__(self, *, low: float, high: float) -> None:
+        self.calls: "list[int]" = []
+        self._range = (float(low), float(high))
+
+    def __call__(self, candles) -> "tuple[float, float]":
+        self.calls.append(len(candles))
+        return self._range
 
 
 def profile() -> dict:
@@ -121,7 +169,7 @@ class TestNorms:
         # Assert: 0.0 で埋めない（「密度が最小」と読める・発明しない）。
         assert norms == (None, None)
 
-    def test_a_dataset_without_daily_bars_has_no_norm_and_computes_nothing(self) -> None:
+    def test_a_dataset_without_minute_bars_has_no_norm_and_computes_nothing(self) -> None:
         # Arrange
         compute = ComputeSpy()
         port = gateway_of(BarPortFake({MP_TIMEFRAME: ()}), compute)
@@ -160,37 +208,93 @@ class TestNorms:
         assert compute.calls == []
 
 
-class TestWindow:
-    def test_the_forming_daily_bar_is_left_out_of_the_window(self) -> None:
-        """形成中の 1D 足を入れると epoch が毎ティック動く（更新粒度はバー確定・§7）。"""
-        # Arrange
-        supplied = _bars(10)
-        compute = ComputeSpy()
-        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}, forming=True), compute)
+class TestTheDeclaredMaterial:
+    """素材の名乗り（依頼者承認 2026-09-06「a) 1m 足の短窓へ変更」）。
+
+    数（本数・ビン幅）は依頼者が承認した値そのものなので、値として固定する。
+    「1m」を読む口であることは版面ではなく**供給に何を訊いたか**で確かめる。
+    """
+
+    def test_the_material_is_read_from_the_one_minute_supply(self) -> None:
+        # Arrange: 1m 以外も供給されている場（誤って粗い足を掴んでいたら見える）。
+        bar_port = BarPortFake({"1m": _bars(10), "1D": _bars(10, base=900.0)})
+        port = gateway_of(bar_port, ComputeSpy())
 
         # Act
         port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
 
-        # Assert: 末尾（形成中）の 1 本だけが窓から外れる。
-        times, _n_bins = compute.calls[0]
-        assert times == tuple(int(bar.time) for bar in supplied[:-1])
+        # Assert
+        assert bar_port.asked_timeframes == ["1m"]
 
-    def test_a_confirmed_last_bar_stays_in_the_window(self) -> None:
-        """形成中足が無い（周期が閉じている）なら末尾も確定足＝窓に入る。"""
+    def test_the_declared_window_and_bin_width_are_the_approved_ones(self) -> None:
+        """依頼者承認の実測選定値（1m×2000 本・幅 5pt・上限 2000 ビン）。"""
+        # Arrange / Act / Assert
+        assert (MP_WINDOW_BARS, MP_BIN_WIDTH_POINTS, MP_MAX_BINS) == (2000, 5.0, 2000)
+
+    def test_the_supply_limit_covers_the_declared_window(self) -> None:
+        """供給が窓より短ければ、名乗った本数を**決して**満たせない（無言で短い窓になる）。"""
+        # Arrange
+        from dashboard_ui.main.composition_root import BAR_LIMITS
+
+        # Act / Assert
+        assert BAR_LIMITS[MP_TIMEFRAME] >= MP_WINDOW_BARS
+
+
+class TestWindow:
+    @pytest.mark.parametrize("forming", [True, False])
+    def test_the_supplied_tail_bar_is_dropped_whether_or_not_a_forming_bar_is_reported(
+        self, forming: bool
+    ) -> None:
+        """末尾 1 本は**無条件に**落とす（P-2 の契約: 確定足を見たい側は `bars()[-2]`）。
+
+        形成中判定に頼ると、表示足が 1m より粗いとき（`now_unix` は表示足の末尾 time）に
+        形成中の 1m 足が窓へ残り、epoch がティックごとに動く。
+        """
         # Arrange
         supplied = _bars(10)
         compute = ComputeSpy()
-        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute)
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}, forming=forming), compute)
 
         # Act
         port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
 
         # Assert
         times, _n_bins = compute.calls[0]
-        assert times == tuple(int(bar.time) for bar in supplied)
+        assert times == tuple(int(bar.time) for bar in supplied[:-1])
 
-    def test_the_window_keeps_only_the_declared_number_of_the_latest_bars(self) -> None:
-        """窓は末尾 MP_WINDOW_BARS 本（依頼者承認 2026-09-06: 1D×60 本）。"""
+    def test_the_window_never_consults_the_forming_bar(self) -> None:
+        """窓の決定に時計を使わない（決定的・休場でも周期でも同じ窓）。"""
+        # Arrange
+        bar_port = BarPortFake({MP_TIMEFRAME: _bars(10)}, forming=True)
+        port = gateway_of(bar_port, ComputeSpy())
+
+        # Act
+        port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert
+        assert bar_port.forming_calls == []
+
+    def test_the_window_is_the_same_whatever_the_clock_says(self) -> None:
+        """境界: `now_unix` が 1m の周期に載らない値（粗い表示足の末尾 time）でも窓は同じ。"""
+        # Arrange: ストアを分けて 2 回とも実計算させる（共有で 2 回目が省かれない）。
+        supplied = _bars(10)
+        compute = ComputeSpy()
+        gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute).norms_at(
+            dataset_ref=REF, prices=(105.0,), now_unix=START,
+        )
+
+        # Act: 1m の境界に載らない・遠い時刻。
+        gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute).norms_at(
+            dataset_ref=REF, prices=(105.0,), now_unix=START + 37 * MINUTE + 11,
+        )
+
+        # Assert
+        assert compute.calls[0][0] == compute.calls[1][0]
+
+    def test_the_window_keeps_only_the_declared_number_of_the_latest_confirmed_bars(
+        self,
+    ) -> None:
+        """窓は確定足（末尾 1 本を除いた残り）の末尾 MP_WINDOW_BARS 本。"""
         # Arrange
         supplied = _bars(MP_WINDOW_BARS + 7)
         compute = ComputeSpy()
@@ -200,9 +304,8 @@ class TestWindow:
         port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
 
         # Assert
-        times, n_bins = compute.calls[0]
-        assert times == tuple(int(bar.time) for bar in supplied[-MP_WINDOW_BARS:])
-        assert n_bins == MP_BINS
+        times, _n_bins = compute.calls[0]
+        assert times == tuple(int(bar.time) for bar in supplied[:-1][-MP_WINDOW_BARS:])
 
     def test_a_window_shorter_than_the_declared_length_is_used_as_it_is(self) -> None:
         """境界値: 素材が窓より短い（起動直後）。短いまま計算する（発明も切り捨てもしない）。"""
@@ -216,7 +319,143 @@ class TestWindow:
 
         # Assert
         times, _n_bins = compute.calls[0]
-        assert times == tuple(int(bar.time) for bar in supplied)
+        assert times == tuple(int(bar.time) for bar in supplied[:-1])
+
+    def test_a_single_supplied_bar_leaves_no_confirmed_window(self) -> None:
+        """境界値: 供給が 1 本だけ（＝確定足 0 本）。素材なしとして扱い、計算も発行しない。"""
+        # Arrange
+        compute = ComputeSpy()
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: _bars(1)}), compute)
+
+        # Act
+        norms = port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert
+        assert norms == (None,)
+        assert compute.calls == []
+
+
+class TestTheBinWidthDrivesTheBinCount:
+    """ビン数は固定値ではなく**窓の span とビン幅**から決まる（依頼者承認 2026-09-06）。
+
+    固定ビン数（旧 `MP_BINS`）だと、素材が広いほどビンが粗くなり、可視ラダー域（±130pt）が
+    1〜2 ビンへ潰れて行ごとの差が消える（実測 2026-09-06: norm 0.83〜0.96・distinct 2/7）。
+    幅を固定すれば版面の分解能が素材の広さに依らない。
+    """
+
+    @pytest.mark.parametrize(
+        ("span", "expected"),
+        [
+            (100.0, 20),    # 幅の整数倍（5pt × 20）
+            (102.0, 20),    # 端数は切り捨て（20.4 → 20・幅より細いビンを作らない）
+            (5.0, 1),       # 境界: 幅ちょうど
+            (4.0, 1),       # 境界: 幅より狭い（0 ビンにはしない）
+        ],
+    )
+    def test_the_bin_count_is_the_span_divided_by_the_declared_bin_width(
+        self, span: float, expected: int
+    ) -> None:
+        # Arrange
+        supplied = _flat_bars(4, low=30_000.0, high=30_000.0 + span)
+        compute = ComputeSpy()
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute)
+
+        # Act
+        port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert: 具体値と、幅の宣言（定数）の双方に紐付ける。
+        _times, n_bins = compute.calls[0]
+        assert n_bins == expected
+        assert n_bins == max(1, int(span / MP_BIN_WIDTH_POINTS))
+
+    def test_a_huge_span_is_clamped_to_the_declared_maximum(self) -> None:
+        """上限クランプ（計算量の保護）。期待値は定数参照——裸の数を書かない。
+
+        `MP_WINDOW_BARS` と `MP_MAX_BINS` は同じリテラルなので、span は「クランプが効く
+        境目」より確実に大きく取り、クランプが実際に効く配置であることも併せて固定する。
+        """
+        # Arrange
+        span = MP_MAX_BINS * MP_BIN_WIDTH_POINTS * 3.0
+        supplied = _flat_bars(4, low=10_000.0, high=10_000.0 + span)
+        compute = ComputeSpy()
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute)
+
+        # Act
+        port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert
+        _times, n_bins = compute.calls[0]
+        assert int(span / MP_BIN_WIDTH_POINTS) > MP_MAX_BINS, "クランプが効かない配置です"
+        assert n_bins == MP_MAX_BINS
+
+    def test_a_degenerate_window_still_folds_into_one_bin(self) -> None:
+        """境界: 高安が 1 点に潰れた窓（休場直後の同値足）でも 0 ビンを core へ渡さない。
+
+        ここが固定するのは**下限クランプ**だけである（上限クランプの対称）。span の唯一源が
+        core であることは固定できない: 手書きの max(high) - min(low) を注いでも同じ 1 ビンを
+        返すため、この検定は緑のまま通る（実測 2026-09-06・変異注入で確認）。core の安全化
+        （上端 = 下端 + 1）と写しの span = 0 の差 1pt は、どちらも `max(1, …)` に吸収されて
+        出力に現れないからである。唯一源の固定は面を差し替える
+        `test_the_bin_count_follows_the_core_range_definition_not_the_raw_high_and_low`
+        が担う。
+        """
+        # Arrange
+        supplied = _flat_bars(4, low=30_000.0, high=30_000.0)
+        compute = ComputeSpy()
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: supplied}), compute)
+
+        # Act
+        port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert
+        _times, n_bins = compute.calls[0]
+        assert n_bins == 1
+
+    @pytest.mark.parametrize("widths", [3, 17])
+    def test_the_bin_count_follows_the_core_range_definition_not_the_raw_high_and_low(
+        self, monkeypatch: pytest.MonkeyPatch, widths: int
+    ) -> None:
+        """span の唯一源が core の価格レンジ面であることを**機械的に**固定する。
+
+        なぜ素材では固定できないか（実測 2026-09-06）: 高安を書き写した実装を注いでも、
+        縮退窓（span 0）は `max(1, …)` に吸収されて core 由来と同じ 1 ビンを返す。出力に
+        差が出ないので、素材だけを工夫する検定は手書きの写しを通してしまう（vacuous）。
+        そこで面を差し替え、**返ってきたレンジに n_bins が追従するか**を見る。素材の高安は
+        1 点に潰したままなので、写しを持つ実装はレンジを無視して 1 ビンに落ちる。
+
+        追従は 2 点（3 幅 / 17 幅）で固定する——1 点だと定数を返すだけの実装も通る。
+        """
+        # Arrange: 素材の高安は潰す（写しを持つ実装なら span = 0）。面だけが広さを知る。
+        degenerate = [{"time": 0, "open": 5.0, "high": 5.0, "low": 5.0, "close": 5.0}]
+        spy = PriceRangeSpy(low=5.0, high=5.0 + widths * MP_BIN_WIDTH_POINTS)
+        monkeypatch.setattr(market_profile_gateway, "_core_price_range", spy)
+
+        # Act
+        n_bins = _bins_for(degenerate)
+
+        # Assert: 面を引いており（回数は焼き込まない）、返り値へ追従している。
+        assert spy.calls != []
+        assert n_bins == widths
+
+    def test_the_span_comes_from_the_window_not_from_the_dropped_tail_bar(self) -> None:
+        """span と窓は同じ素材から来る（落とした足が span に混ざらない）。
+
+        混ざると、形成中の足が走るたびにビン数が動き、epoch が同じでも版面の分解能が
+        揺れる。落とす 1 本だけを極端に広く取れば、混入は即座に見える。
+        """
+        # Arrange
+        body = _flat_bars(4, low=30_000.0, high=30_100.0)
+        tail = Bar(time=START + 4 * MINUTE, open=30_000.0, high=90_000.0,
+                   low=1_000.0, close=30_000.0)
+        compute = ComputeSpy()
+        port = gateway_of(BarPortFake({MP_TIMEFRAME: (*body, tail)}), compute)
+
+        # Act
+        port.norms_at(dataset_ref=REF, prices=(105.0,), now_unix=START)
+
+        # Assert: 窓の span は 100pt のまま（末尾を混ぜれば 89,000pt になる）。
+        _times, n_bins = compute.calls[0]
+        assert n_bins == int(100.0 / MP_BIN_WIDTH_POINTS)
 
 
 def core_bin_index():
@@ -235,6 +474,9 @@ def core_bin_index():
 #: 帰属式の食い違いが実際に出る価格域（JP225 の実勢に近い値・実測 2026-09-06）。
 #: 100..160 のような小さい域では 2 式が偶然一致してしまい、検定が空振りする。
 DIVERGENT_MIN, DIVERGENT_MAX = 38_000.0, 42_000.0
+#: 同じく実測で食い違いが出たビン数。gateway が使うビン数（幅から導出）とは無関係である
+#: ——ここで見るのは `_norm_at` の**式**であって、素材の分解能ではない。
+DIVERGENT_BINS = 60
 
 
 def lattice_profile(price_min: float, price_max: float, n_bins: int) -> dict:
@@ -264,13 +506,13 @@ class TestBinAttributionMatchesTheCore:
     def test_the_lattice_actually_separates_the_bins(self) -> None:
         """検定の検定: norm が重複していたら「同じ bin を引いた」が偽陽性になる。"""
         # Arrange / Act
-        profile = lattice_profile(DIVERGENT_MIN, DIVERGENT_MAX, MP_BINS)
+        profile = lattice_profile(DIVERGENT_MIN, DIVERGENT_MAX, DIVERGENT_BINS)
         norms = [bin_["norm"] for bin_ in profile["bins"]]
 
         # Assert
-        assert len(set(norms)) == MP_BINS
+        assert len(set(norms)) == DIVERGENT_BINS
 
-    @pytest.mark.parametrize("n_bins", [MP_BINS, 7])
+    @pytest.mark.parametrize("n_bins", [DIVERGENT_BINS, 7])
     def test_every_bin_boundary_lands_in_the_same_bin_as_the_core(self, n_bins: int) -> None:
         """bin 境界ちょうどの価格で、gateway の引きが core と一致する。"""
         # Arrange
@@ -298,7 +540,7 @@ class TestBinAttributionMatchesTheCore:
         """境界以外も含めた掃引（帰属の一致は境界だけの話ではない）。"""
         # Arrange
         bin_index = core_bin_index()
-        profile = lattice_profile(DIVERGENT_MIN, DIVERGENT_MAX, MP_BINS)
+        profile = lattice_profile(DIVERGENT_MIN, DIVERGENT_MAX, DIVERGENT_BINS)
         span = DIVERGENT_MAX - DIVERGENT_MIN
         steps = 5_000
 
@@ -308,7 +550,7 @@ class TestBinAttributionMatchesTheCore:
             for step in range(steps + 1)
             for price in (DIVERGENT_MIN + span * step / steps,)
             if _norm_at(profile, price)
-            != profile["bins"][bin_index(price, DIVERGENT_MIN, span, MP_BINS)]["norm"]
+            != profile["bins"][bin_index(price, DIVERGENT_MIN, span, DIVERGENT_BINS)]["norm"]
         ]
 
         # Assert
@@ -326,33 +568,59 @@ class TestTheDefaultComputePath:
     def test_the_gateway_without_an_injected_compute_folds_a_real_profile(self) -> None:
         # Arrange: compute を渡さない（既定の参照実装が使われる）。
         port = MarketProfileGateway(
-            bar_port=BarPortFake({MP_TIMEFRAME: _bars(2)}), store=MaterialStore(),
+            bar_port=BarPortFake({MP_TIMEFRAME: _bars(3)}), store=MaterialStore(),
         )
 
-        # Act: 素材の値域（_bars(2) は low=95..96 / high=105..106）の内と外。
+        # Act: 窓（_bars(3) の末尾 1 本を落とした残り＝low 95..96 / high 105..106）の内と外。
         norms = port.norms_at(dataset_ref=REF, prices=(100.0, 1.0), now_unix=START)
 
         # Assert: 域内は 0..1 の密度・域外は None（発明しない）。
         assert norms[0] is not None and 0.0 <= norms[0] <= 1.0
         assert norms[1] is None
 
+    def test_the_real_core_range_keeps_the_narrowest_windows_at_one_bin(self) -> None:
+        """**実物の** core レンジを通した下限側の境界 2 点（面を差し替えない唯一の経路）。
+
+        名前も中身も「実窓」「ゲートウェイ」ではない: ここは `_bins_for` を直に呼び、
+        差し替えていない `market_profile_gateway._core_price_range`（＝実物の MP core）を
+        通す。固定するのは、core が返すレンジでも最も狭い 2 つの窓が 1 ビンに収まること
+        ——縮退窓（core が上端 = 下端 + 1 へ安全化）と、幅ちょうど 1 本ぶんの窓である。
+
+        span の唯一源が core であることは、ここでは固定できない（手書きの
+        max(high) - min(low) を注いでも同じ 1 ビンを返す・実測 2026-09-06）。それは
+        `test_the_bin_count_follows_the_core_range_definition_not_the_raw_high_and_low`
+        の担当である。
+        """
+        # Arrange
+        degenerate = [{"time": 0, "open": 5.0, "high": 5.0, "low": 5.0, "close": 5.0}]
+        # 幅ちょうど 1 本ぶんの広さ（境界の反対側・クランプもしない）。
+        one_width = [
+            {"time": 0, "open": 5.0, "high": 5.0 + MP_BIN_WIDTH_POINTS, "low": 5.0,
+             "close": 5.0},
+        ]
+
+        # Act / Assert
+        assert _bins_for(degenerate) == 1
+        assert _bins_for(one_width) == 1
+
     def test_the_reference_compute_returns_the_shape_the_gateway_reads(self) -> None:
         """gateway が読む欄が実物に在ること（欄の名前は core の契約）。"""
-        # Arrange
+        # Arrange: ビン数は幅から決まるので、ここでは任意の値を置いて**形**だけを見る。
+        asked_bins = 24
         candles = [
             {"time": 0, "open": 1.0, "high": 3.0, "low": 0.5, "close": 2.0},
-            {"time": 86_400, "open": 2.0, "high": 4.0, "low": 1.5, "close": 3.0},
+            {"time": 60, "open": 2.0, "high": 4.0, "low": 1.5, "close": 3.0},
         ]
 
         # Act
-        profile = _reference_compute(candles, n_bins=MP_BINS)
+        profile = _reference_compute(candles, n_bins=asked_bins)
 
         # Assert: gateway の `_norm_at` が触る欄がすべて在る。
         for field in ("bins", "price_min", "price_max", "n_bins"):
             assert field in profile, f"core の応答に {field} がありません"
         # 実物が畳んだ証拠（Spy の作り物は n_bins=6 を返すので、ここは実経路でしか通らない）。
-        assert profile["n_bins"] == MP_BINS
-        assert len(profile["bins"]) == MP_BINS
+        assert profile["n_bins"] == asked_bins
+        assert len(profile["bins"]) == asked_bins
         assert profile["price_min"] < profile["price_max"]
         # 正規化の定義（0..1）が core 側で崩れていないこと。
         assert all(0.0 <= float(bin_["norm"]) <= 1.0 for bin_ in profile["bins"])
