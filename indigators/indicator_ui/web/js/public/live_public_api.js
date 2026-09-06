@@ -30,3 +30,17 @@
 export * from '../usecase/period_presets.js';
 export * from '../adapter/front/live_tick_player.js';
 export { DATASET_REF_QUERY_PARAM, resolveDatasetRef } from '../adapter/front/dataset_ref_query.js';
+
+// Market Profile の借用面（依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」・第 1 段階）。
+//   dashboard の価格ラダーの MP 列は、live core の `/market_profile` を**ライブチャートと同一の
+//   パラメータで**借りる（ローソク借用＝candles_client / ISSUE-470 と同型）。これで窓・仕様・
+//   更新規則・計算（サーバ側メモ化込み）がライブと自動同期する。
+//
+//   URL の組み立てと設定の写像を**借り手に書き写させない**ために公開する。写した瞬間、ライブ側が
+//   1 パラメータ足しただけでラダーだけが古い URL を投げ、サーバ側メモの共有も仕様の同期も
+//   無言で壊れる（版面には「それらしい MP」が出続けるので状態検証では落ちない）。
+//   借り手が `/live/js/adapter/front/...` を直接名指すのは G-3（越境 URL）違反であり、
+//   dashboard の js_layer_direction.test.js が機械的に赤にする。だから面はここに置く。
+export { buildMarketProfileUrl } from '../adapter/front/market_profile_client.js';
+export { MpFetchParams } from '../adapter/front/mp_fetch_params.js';
+export { MP_DEFAULT_SOURCE } from '../domain/mp_source_capability.js';
