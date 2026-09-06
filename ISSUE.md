@@ -14055,7 +14055,16 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   再計算では形成中バーを毎回継ぐので値は最新。degradations に自動掲示される）。
 
 ## ISSUE-491: [テスト] test_dataset_rollup_routing 実行後に dashboard e2e smoke が 400 になる（順序干渉・既存）
-- **ステータス**: OPEN（ISSUE-490 の検査中に発見・変更前 HEAD でも再現＝既存問題）
+- **ステータス**: RESOLVED（2026-09-06・原因確定・是正・実測済み。a4c1258）
+- **原因（実測で確定）**: スパイが `load_dataframe` の実経路を通るため、fake 3 行 DataFrame が
+  **本物の (ref, mtime) 鍵**で `serving_cache._TAIL_CACHE` へ書き込まれる（`_read_tail_cached` は
+  実ファイルの mtime を鍵にし、返り値は差し替え済み `tail_reader.read_tail` の fake）。
+  monkeypatch は関数を戻すがキャッシュの中身は戻さず、クリアは各テストの「前」だけだったため、
+  プロセス共有キャッシュに fake が残置され、後続の dashboard smoke の jp225_tick 供給へ
+  fake が配られていた（実測: `current_price=3.0`・rows 空 or /reach_sheet 400）。
+- **是正**: 同モジュールへ autouse fixture `_isolated_supply_caches`（前後対称クリア）を追加＝
+  残置そのものを遮断（実行順の回避ではない）。
+- **検証**: 干渉ペア 16 passed（修正前 5 failed）・api 1,084 passed・dashboard 631 passed。
 - **再現**: `pytest indigators/indicator_ui/api/tests/test_dataset_rollup_routing.py
   dashboard_ui/tests/e2e/test_serve_dashboard_smoke.py` → smoke 5〜6 件が `/reach_sheet` 400。
   各ファイル単独では全通過。HEAD（423655d）の worktree でも同一再現（2026-09-05 実測）＝
