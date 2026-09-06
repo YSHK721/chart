@@ -146,6 +146,25 @@ def test_the_rsi_excess_is_normalised_by_the_headroom() -> None:
     assert tickvol.excess(95.0, 90.0) == 5.0
 
 
+def test_the_rsi_excess_is_nan_when_the_band_leaves_no_headroom() -> None:
+    """帯上端が上限 100 に達したら NaN（＝イベント判定外・除算例外にしない）。
+
+    参照実装 `profit_rsi/src/levels.py` の `headroom` は非正・非有限の余地を NaN に
+    倒す。帯上端は因果ローリング分位なので、RSI が 100 に張り付く区間では u = 100 が
+    実データに現れる（ISSUE-499: 市場再開直後の 1m で実測 14 本。ガード無しでは
+    ZeroDivisionError がシート全体を 500 にしていた）。
+    """
+    table = SeriesRoleTable()
+
+    rsi = table.oscillator_spec(
+        instance=instance_of("profit_rsi", {}), series_names=frozenset()
+    )
+
+    assert math.isnan(rsi.excess(100.0, 100.0))   # 余地 0（実測で発火した形）
+    assert math.isnan(rsi.excess(95.0, 100.0))
+    assert math.isnan(rsi.excess(95.0, float("nan")))
+
+
 def test_a_price_scale_indicator_has_no_oscillator_cell() -> None:
     table = SeriesRoleTable()
 

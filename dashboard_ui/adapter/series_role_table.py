@@ -61,8 +61,18 @@ _LADDER_NOISE_PARAMS: "frozenset[str]" = frozenset({
 
 
 def _rsi_headroom_excess(value: float, band_high: float) -> float:
-    """RSI の超過分（`(v - u) / (100 - u)`）。上限は指標側 `levels.RSI_MAX` が唯一源。"""
-    return (float(value) - float(band_high)) / (_rsi_max() - float(band_high))
+    """RSI の超過分（`(v - u) / (100 - u)`）。上限は指標側 `levels.RSI_MAX` が唯一源。
+
+    余地 `100 - u` が非正・非有限のときは NaN（＝イベント判定外）。参照実装
+    `profit_rsi/src/levels.py` の `headroom`（非正・非有限は NaN）と同一の扱い。
+    帯上端は因果ローリング分位なので、RSI が上限へ張り付く区間では u = 100 が実際に
+    現れる（ISSUE-499: 市場再開直後の 1m で 14 本実測。ガード無しでは除算例外で
+    シート全体が 500 になっていた）。
+    """
+    head = _rsi_max() - float(band_high)
+    if not (math.isfinite(head) and head > 0.0):
+        return float("nan")
+    return (float(value) - float(band_high)) / head
 
 
 def _plain_excess(value: float, band_high: float) -> float:
