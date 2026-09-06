@@ -129,17 +129,26 @@ class DateRangeKind(StrEnum):
 
 
 class DatesPreset(IntEnum):
-    """`Dates`。corpus 実測値のみを定義する（1・3 以降は未知値として拒否）。"""
+    """`Dates`。実測値のみを定義する（3 以降は未知値として拒否）。
 
-    ENTIRE_HISTORY = 0  # 実証（F-7: entire history）
-    LAST_YEAR = 2       # 実証（F-7: last year）
+    実測源: corpus（F-7）＋ MT5 保存 ini（`.doc/mt5_options/` 2026-09-06）。
+    """
+
+    ENTIRE_HISTORY = 0  # 実証（F-7: entire history／mt5_options: 全履歴.ini）
+    LAST_MONTH = 1      # 実証（mt5_options: 先月.ini 2026-09-06）
+    LAST_YEAR = 2       # 実証（F-7: last year／mt5_options: 昨年.ini）
 
 
 class ForwardMode(IntEnum):
-    """`ForwardMode`。値 1・2 は corpus 未出現のため定義しない（未知値は拒否）。"""
+    """`ForwardMode`。全 5 値実測（corpus ＋ mt5_options 保存 ini・2026-09-06）。
 
-    DISABLED = 0        # 実証（F-9）
-    PRESET_SPLIT = 3    # 実証（F-9/F-10）。分割位置は未確定（TBD-03）
+    分割位置は保存 ini のファイル名（UI 選択肢との対応）で確定した——TBD-03 解消。
+    """
+
+    DISABLED = 0        # 実証（F-9）。MT5 表示「キャンセル」
+    SPLIT_HALF = 1      # 実証（mt5_options: フォーワードテスト_2_1.ini＝UI「1/2」）
+    SPLIT_THIRD = 2     # 実証（mt5_options: フォーワードテスト_3_1.ini＝UI「1/3」）
+    SPLIT_QUARTER = 3   # 実証（F-9/F-10 ＋ mt5_options: フォーワードテスト_4_1.ini＝UI「1/4」）
     CUSTOM_DATE = 4     # 実証（F-10。ForwardDate を必ず伴う）
 
 
@@ -178,8 +187,21 @@ PROVEN_EXECUTION_DELAYS: "frozenset[int]" = frozenset({ExecutionDelay.DELAY_50MS
 
 #: 名前は与えたが意味が**暫定**の遅延 → 未確定事項番号。上の宣言コメント
 #: 「暫定（TBD-08。画像 1 のラベル対応は未取得）」が根拠。
+#:
+#: TBD-20（2026-09-06）: MT5「延滞」ドロップダウンの実測スクショ
+#: （.doc/mt5_options/ss20260906204849.jpg）に「N ミリ秒」形の選択肢が並ぶ。
+#: 数値ラベル＝生値ミリ秒との対応は、実証済みの 50（DELAY_50MS ⇔「50ミリ秒」）からの
+#: 類推＝**暫定**（各値の保存 ini は未取得）。「ランダム遅延」「カスタム遅延」「ping 由来」
+#: は生値を推定できないため定義しない（corpus の -1 / 21 は引き続き無名＝近似扱い）。
 PROVISIONAL_EXECUTION_DELAYS: "dict[int, str]" = {
     ExecutionDelay.ZERO_LATENCY_IDEAL: "TBD-08",
+    1: "TBD-20",
+    5: "TBD-20",
+    10: "TBD-20",
+    20: "TBD-20",
+    100: "TBD-20",
+    500: "TBD-20",
+    1000: "TBD-20",
 }
 
 
@@ -201,11 +223,15 @@ def approximation_reason_for(delay: "int | None") -> "str | None":
 
 
 class OptimizationMode(IntEnum):
-    """`Optimization`。値 3 は corpus 未出現のため定義しない（TBD-04）。"""
+    """`Optimization`。0〜2 は corpus 実測。3 は暫定（TBD-04）。"""
 
     DISABLED = 0              # 実証（F-8）
     FULL_SLOW_COMPLETE = 1    # 実証（F-8: Full optimization）
     GENETIC = 2               # 実証（F-8: Genetic optimization）
+    # 暫定（TBD-04）: MT5 UI の 4 番目「気配値表示で選択されたすべての銘柄」
+    # （実測スクショ .doc/mt5_options/ss20260906204947.jpg）。0〜2 が既知で選択肢が
+    # 4 つのため消去法で 3。保存 ini による生値実測は未取得。
+    ALL_SYMBOLS_IN_MARKET_WATCH = 3
 
 
 class OptimizationCriterion(IntEnum):
@@ -227,3 +253,61 @@ class InputForm(StrEnum):
 
     SCALAR = "scalar"   # 名前=値（|| なし・F-14）
     RANGE_5 = "range5"  # 名前=現在値||開始値||刻み||終了値||{Y|N}（F-13）
+
+
+# ---------------------------------------------------------------------------
+# MT5「設定」タブの表示ラベル（UI 専用の写像・`.ini` トークンには使わない）
+# ---------------------------------------------------------------------------
+# 実測源: `.doc/mt5_options/`（2026-09-06）。開いたドロップダウンのスクショ
+# （ss20260906203328 / 204849 / 204918 / 204947）と保存 ini のファイル名。
+# 未収載の値はラベル無し＝UI はメンバ名で出す（発明しない）。評価軸
+# （OptimizationCriterion）と時間足のスクショは未取得のため写像を持たない。
+
+#: `Dates` の表示ラベル（保存 ini のファイル名＝選択肢名が根拠）。
+DATES_PRESET_UI_LABELS: "dict[DatesPreset, str]" = {
+    DatesPreset.ENTIRE_HISTORY: "全履歴",
+    DatesPreset.LAST_MONTH: "先月",
+    DatesPreset.LAST_YEAR: "昨年",
+}
+
+#: `ForwardMode` の表示ラベル（ss20260906203328: 開いたドロップダウンの実測）。
+FORWARD_MODE_UI_LABELS: "dict[ForwardMode, str]" = {
+    ForwardMode.DISABLED: "キャンセル",
+    ForwardMode.SPLIT_HALF: "1/2",
+    ForwardMode.SPLIT_THIRD: "1/3",
+    ForwardMode.SPLIT_QUARTER: "1/4",
+    ForwardMode.CUSTOM_DATE: "カスタム",
+}
+
+#: `Model` の表示ラベル（ss20260906204918: 開いたドロップダウンの実測）。
+#: 値との対応: 0/1/2/4 は corpus コメント（every tick / m1 ohlc / open prices /
+#: real ticks）と表示文言の対で確定。3 は残る 1 語「数値計算」＝消去法（TBD-01 のまま）。
+TICK_MODEL_UI_LABELS: "dict[TickModel, str]" = {
+    TickModel.EVERY_TICK: "全ティック",
+    TickModel.ONE_MINUTE_OHLC: "1分足 OHLC",
+    TickModel.OPEN_PRICES_ONLY: "始値のみ",
+    TickModel.MATH_CALCULATIONS: "数値計算",
+    TickModel.REAL_TICKS: "リアルティックに基づいたすべてのティック",
+}
+
+#: `Optimization` の表示ラベル（ss20260906204947: 開いたドロップダウンの実測）。
+OPTIMIZATION_MODE_UI_LABELS: "dict[OptimizationMode, str]" = {
+    OptimizationMode.DISABLED: "無効",
+    OptimizationMode.FULL_SLOW_COMPLETE: "完全アルゴリズム(遅い)",
+    OptimizationMode.GENETIC: "遺伝的アルゴリズム(速い)",
+    OptimizationMode.ALL_SYMBOLS_IN_MARKET_WATCH: "気配値表示で選択されたすべての銘柄",
+}
+
+#: `ExecutionMode`（延滞）の表示ラベル（ss20260906204849: 開いたドロップダウンの実測）。
+#: 数値ラベル⇔生値の対応は 50 のみ実証・他は暫定（TBD-20。PROVISIONAL 側の宣言を参照）。
+EXECUTION_DELAY_UI_LABELS: "dict[int, str]" = {
+    ExecutionDelay.ZERO_LATENCY_IDEAL: "遅延ゼロ、理想的な実行",
+    1: "1ミリ秒",
+    5: "5ミリ秒",
+    10: "10ミリ秒",
+    20: "20ミリ秒",
+    ExecutionDelay.DELAY_50MS: "50ミリ秒",
+    100: "100ミリ秒",
+    500: "500ミリ秒",
+    1000: "1000ミリ秒",
+}

@@ -22,8 +22,9 @@
 作らない）。UI 束縛は**宣言が所有する**——ここでキー名から導出すると、宣言と食い違っても
 静かに 0 件になる告知が生まれる（R-9）。
 
-ラベルは列挙メンバ名である。MT5 の UI 文言は本リポジトリ内に根拠が無く、発明しない
-（基本設計 §18.3）。
+ラベルは enums の MT5 実測写像（`*_UI_LABELS`・実測 `.doc/mt5_options/` 2026-09-06）が
+あればそれ・無ければ列挙メンバ名である。根拠の無い MT5 文言は発明しない（基本設計 §18.3。
+評価軸・時間足はスクショ未取得のためメンバ名のまま）。
 """
 from __future__ import annotations
 
@@ -35,8 +36,13 @@ from simulator.sim_ui.usecase.settings_schema_ports import (
     UnsupportedNotice,
 )
 from simulator.usecase.tester_settings.enums import (
+    DATES_PRESET_UI_LABELS,
+    EXECUTION_DELAY_UI_LABELS,
+    FORWARD_MODE_UI_LABELS,
+    OPTIMIZATION_MODE_UI_LABELS,
     PROVEN_EXECUTION_DELAYS,
     PROVISIONAL_EXECUTION_DELAYS,
+    TICK_MODEL_UI_LABELS,
     TIMEFRAME_INI_LABELS,
     DatesPreset,
     ForwardMode,
@@ -87,13 +93,21 @@ def _activation_rules() -> "dict[str, dict]":
     }
 
 
-def _int_enum_options(members: "Iterable[Any]") -> "list[SchemaOption]":
-    """`IntEnum` の全メンバを「生値の文字列表記 → メンバ名」の選択肢へ写す。
+def _int_enum_options(
+    members: "Iterable[Any]", ui_labels: "Mapping[Any, str] | None" = None
+) -> "list[SchemaOption]":
+    """`IntEnum` の全メンバを「生値の文字列表記 → 表示ラベル」の選択肢へ写す。
 
     トークンが生値表記なのは `.ini` の値がそうだからである（`ini_codec._format_int` と同じ
-    規約）。表示順は列挙の宣言順＝値順であり、UI の表示順を発明しない（基本設計 §4.3.2）。
+    規約）。表示ラベルは enums の MT5 実測写像（`*_UI_LABELS`）があればそれ・無ければ
+    メンバ名（発明しない）。表示順は列挙の宣言順＝値順であり、UI の表示順を発明しない
+    （基本設計 §4.3.2）。
     """
-    return [SchemaOption(token=str(int(member)), label=member.name) for member in members]
+    labels = ui_labels or {}
+    return [
+        SchemaOption(token=str(int(member)), label=labels.get(member, member.name))
+        for member in members
+    ]
 
 
 def _timeframe_options() -> "list[SchemaOption]":
@@ -107,10 +121,11 @@ def _timeframe_options() -> "list[SchemaOption]":
 #: 列挙キー → 選択肢の作り方。キー名は `.ini` のキー（標準キー順に実在することを構築時に検査する）。
 _ENUM_OPTION_BUILDERS: "dict[str, Callable[[], list[SchemaOption]]]" = {
     _PERIOD_KEY: _timeframe_options,
-    "Model": lambda: _int_enum_options(TickModel),
-    "Optimization": lambda: _int_enum_options(OptimizationMode),
-    "Dates": lambda: _int_enum_options(DatesPreset),
-    "ForwardMode": lambda: _int_enum_options(ForwardMode),
+    "Model": lambda: _int_enum_options(TickModel, TICK_MODEL_UI_LABELS),
+    "Optimization": lambda: _int_enum_options(OptimizationMode, OPTIMIZATION_MODE_UI_LABELS),
+    "Dates": lambda: _int_enum_options(DatesPreset, DATES_PRESET_UI_LABELS),
+    "ForwardMode": lambda: _int_enum_options(ForwardMode, FORWARD_MODE_UI_LABELS),
+    # 評価軸はドロップダウンの実測スクショ未取得＝ラベル写像なし（メンバ名で出す）
     "OptimizationCriterion": lambda: _int_enum_options(OptimizationCriterion),
 }
 
@@ -236,6 +251,12 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
                 spec["provisional"] = {
                     str(delay): tbd
                     for delay, tbd in sorted(PROVISIONAL_EXECUTION_DELAYS.items())
+                }
+                # 表示ラベル（MT5「延滞」の実測写像・enums が唯一の宣言）。無い値は
+                # front が生値表記で出す（発明しない）。
+                spec["labels"] = {
+                    str(delay): label
+                    for delay, label in sorted(EXECUTION_DELAY_UI_LABELS.items())
                 }
             specs[key] = spec
         return specs

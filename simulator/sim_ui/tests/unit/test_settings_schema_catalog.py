@@ -31,8 +31,13 @@ from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
     TesterSettingsSchemaCatalog as SchemaCatalog,
 )
 from simulator.usecase.tester_settings.enums import (
+    DATES_PRESET_UI_LABELS,
+    EXECUTION_DELAY_UI_LABELS,
+    FORWARD_MODE_UI_LABELS,
+    OPTIMIZATION_MODE_UI_LABELS,
     PROVEN_EXECUTION_DELAYS,
     PROVISIONAL_EXECUTION_DELAYS,
+    TICK_MODEL_UI_LABELS,
     TIMEFRAME_INI_LABELS,
     DatesPreset,
     ForwardMode,
@@ -75,26 +80,28 @@ def test_period_options_are_derived_from_the_timeframe_label_map(catalog) -> Non
 def test_model_options_are_derived_from_the_tick_model_enum(catalog) -> None:
     # Arrange / Act
     options = catalog.enum_options()["Model"]
-    # Assert
+    # Assert（ラベルは MT5 実測写像・無ければメンバ名。期待値は写像から導く＝リテラルなし）
     assert {o.token for o in options} == {str(int(m)) for m in TickModel}
-    assert {o.label for o in options} == {m.name for m in TickModel}
+    assert {o.label for o in options} == {
+        TICK_MODEL_UI_LABELS.get(m, m.name) for m in TickModel
+    }
 
 
 @pytest.mark.parametrize(
-    ("key", "members"),
+    ("key", "members", "ui_labels"),
     [
-        ("Dates", DatesPreset),
-        ("ForwardMode", ForwardMode),
-        ("Optimization", OptimizationMode),
-        ("OptimizationCriterion", OptimizationCriterion),
+        ("Dates", DatesPreset, DATES_PRESET_UI_LABELS),
+        ("ForwardMode", ForwardMode, FORWARD_MODE_UI_LABELS),
+        ("Optimization", OptimizationMode, OPTIMIZATION_MODE_UI_LABELS),
+        ("OptimizationCriterion", OptimizationCriterion, {}),
     ],
 )
-def test_int_enum_options_are_derived_from_their_enum(catalog, key, members) -> None:
+def test_int_enum_options_are_derived_from_their_enum(catalog, key, members, ui_labels) -> None:
     # Arrange / Act
     options = catalog.enum_options()[key]
-    # Assert
+    # Assert（ラベルは MT5 実測写像・無ければメンバ名。期待値は写像から導く＝リテラルなし）
     assert {o.token for o in options} == {str(int(m)) for m in members}
-    assert {o.label for o in options} == {m.name for m in members}
+    assert {o.label for o in options} == {ui_labels.get(m, m.name) for m in members}
 
 
 def test_every_enum_key_is_a_key_of_the_injected_key_order(catalog) -> None:
@@ -291,3 +298,13 @@ def test_activation_rules_bind_existing_keys_with_trigger_vocabulary(catalog) ->
         assert rule["key"] in catalog.key_order(), f"{rule['key']} が標準キー順にありません"
         assert rule["mode"] in UI_TRIGGER_MODES, f"{target} の発火語彙が未知です: {rule['mode']}"
         assert rule["tokens"], f"{target} のトークン集合が空です"
+
+
+def test_execution_mode_spec_carries_the_ui_labels(catalog) -> None:
+    """延滞のラベルは enums の実測写像の写しであること（発明しない）。"""
+    # Arrange / Act
+    spec = catalog.scalar_specs()["ExecutionMode"]
+    # Assert
+    assert spec["labels"] == {
+        str(delay): label for delay, label in EXECUTION_DELAY_UI_LABELS.items()
+    }

@@ -105,21 +105,24 @@ def _entire_history(_effective: EffectiveSettings) -> DataWindow:
     return _no_window()
 
 
-def _last_year(_effective: EffectiveSettings) -> DataWindow:
-    """`Dates=2`（last year）: 起点を決められないため実行しない（N-16）。
+def _relative_preset(preset: DatesPreset) -> "Callable[[EffectiveSettings], DataWindow]":
+    """相対プリセット（last year / last month）: 起点を決められないため実行しない（N-16）。
 
     非対象の宣言（ID・理由・TBD 番号）は `unsupported.RULES` が唯一の所有者であり、
     ここは**送出地点**にすぎない（文言を書き写さない）。実行要求時は
     `apply_unsupported_rules` が先に同じ宣言で弾くが、API-07 は単独でも呼ばれ得る
     ため、窓の解決地点にも同じ宣言による Fail-Stop を置く。
     """
-    raise_unsupported(RULES["N-16"], value=int(DatesPreset.LAST_YEAR))
+    def _raise(_effective: EffectiveSettings) -> DataWindow:
+        raise_unsupported(RULES["N-16"], value=int(preset))
+    return _raise
 
 
 #: `Dates` の値 → 窓の解決（プリセットの追加は**本表への 1 エントリ追加**で済む）。
 PRESET_RESOLVERS: "dict[DatesPreset, Callable[[EffectiveSettings], DataWindow]]" = {
     DatesPreset.ENTIRE_HISTORY: _entire_history,
-    DatesPreset.LAST_YEAR: _last_year,
+    DatesPreset.LAST_MONTH: _relative_preset(DatesPreset.LAST_MONTH),
+    DatesPreset.LAST_YEAR: _relative_preset(DatesPreset.LAST_YEAR),
 }
 
 

@@ -697,12 +697,9 @@ class TestRuleOUnknownValues:
             ("Model", "5"),
             ("Model", "9"),
             ("Model", "-1"),
-            ("Dates", "1"),
             ("Dates", "3"),
-            ("ForwardMode", "1"),
-            ("ForwardMode", "2"),
             ("ForwardMode", "5"),
-            ("Optimization", "3"),
+            ("Optimization", "4"),
             ("OptimizationCriterion", "2"),
         ],
     )
@@ -720,6 +717,21 @@ class TestRuleOUnknownValues:
     def test_measured_timeframe_labels_are_accepted(self, label):
         # corpus 実測ラベル 3 件
         assert tester_settings_from_mapping(expert_mapping(Period=label)).timeframe is not None
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("Dates", "1"),         # 実証（mt5_options: 先月.ini 2026-09-06）
+            ("ForwardMode", "1"),   # 実証（mt5_options: 1/2）
+            ("ForwardMode", "2"),   # 実証（mt5_options: 1/3）
+            ("Optimization", "3"),  # 暫定（TBD-04: UI 消去法「気配値表示で選択されたすべての銘柄」）
+        ],
+    )
+    def test_vocabulary_synced_values_are_accepted(self, key, value):
+        # 2026-09-06 の MT5 語彙同期で列挙に加わった値（拒否から受理へ変わったことの固定）。
+        # 最適化を有効にする行は規則 B（Visual と排他）に合わせ Visual を外す。
+        extra = {"Visual": OMIT} if key == "Optimization" else {}
+        assert tester_settings_from_mapping(expert_mapping(**{key: value}, **extra)) is not None
 
     @pytest.mark.parametrize("model", ["0", "1", "2", "3", "4"])
     def test_all_five_tick_models_are_accepted(self, model):

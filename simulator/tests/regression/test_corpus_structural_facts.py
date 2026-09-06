@@ -44,7 +44,7 @@ OPTIMIZATION_WITHOUT_VISUAL: frozenset[OptimizationMode] = frozenset(
 
 #: forward 有効を表す `ForwardMode` 値（F-9・F-16 の第 3 桁）。
 FORWARD_ENABLED_MODES: frozenset[ForwardMode] = frozenset(
-    {ForwardMode.PRESET_SPLIT, ForwardMode.CUSTOM_DATE}
+    {ForwardMode.SPLIT_QUARTER, ForwardMode.CUSTOM_DATE}
 )
 
 #: ファイル名の区切り（F-16 の末尾数字は最後から 2 番目のフィールド）。

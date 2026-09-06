@@ -75,7 +75,7 @@ CUSTOM_PERIOD_WORD_SEPARATOR: str = " - "
 
 #: forward 有効を表す `ForwardMode` の値（基本設計 F-9 / F-10）。
 FORWARD_ENABLED_MODES: frozenset[ForwardMode] = frozenset(
-    {ForwardMode.PRESET_SPLIT, ForwardMode.CUSTOM_DATE}
+    {ForwardMode.SPLIT_QUARTER, ForwardMode.CUSTOM_DATE}
 )
 
 #: 既知の不一致 1 件（ISSUE-390）。ファイル名で固定する。

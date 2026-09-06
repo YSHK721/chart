@@ -69,7 +69,7 @@ const UNSUPPORTED_TOGGLE_TEXT = { collapsed: "非対象の詳細を開く", expa
 /** 期間カスタム形（規則 E の `FromDate`+`ToDate` 形）を選ぶ **UI 専用**の選択肢。
  *  MT5 の「日付」ドロップダウンと同じく、プリセットの並びの末尾に置く（実画面準拠）。
  *  このトークンは投入本文に**決して載らない**（`.ini` の語彙ではない）。 */
-export const CUSTOM_RANGE_OPTION = { token: "__custom_range__", label: "カスタム期間" };
+export const CUSTOM_RANGE_OPTION = { token: "__custom_range__", label: "期間指定" };
 
 /** MT5「設定」タブの行構成（**表示メタデータ**・出典 `.doc/ss20260906192940.jpg`）。
  *
@@ -184,12 +184,17 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     return null;
   }
 
-  /** 実行遅延の候補（実証済み ＋ 暫定）。暫定は TBD をラベルに出す（実証済みに見せない）。 */
+  /** 実行遅延の候補（実証済み ＋ 暫定）。表示は schema が配るラベル（MT5 実測写像）・
+   *  無ければ生値表記。暫定は TBD をラベルに出す（実証済みに見せない）。 */
   function delayOptions(spec) {
-    const proven = (spec.proven || []).map((v) => ({ token: String(v), label: String(v) }));
+    const labels = spec.labels || {};
+    const labelOf = (token) => labels[token] || String(token);
+    const proven = (spec.proven || []).map((v) => ({
+      token: String(v), label: labelOf(String(v)),
+    }));
     const provisional = Object.entries(spec.provisional || {}).map(([token, tbd]) => ({
       token: String(token),
-      label: `${token}（${tbd}）`,
+      label: `${labelOf(token)}（${tbd}）`,
     }));
     return [...proven, ...provisional];
   }

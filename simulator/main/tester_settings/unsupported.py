@@ -237,12 +237,19 @@ def _detect_cross_currency(effective: EffectiveSettings, binding: "EngineBinding
     return currency
 
 
-def _detect_last_year(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
-    """N-16: `Dates=2`（last year）。起点がバー系列の最終時刻に依存する。"""
+#: 起点がバー系列の最終時刻に依存する相対プリセット（N-16 の対象）。
+#: `LAST_MONTH` は 2026-09-06 の語彙同期（.doc/mt5_options/ 先月.ini）で追加。
+RELATIVE_DATE_PRESETS: "frozenset[DatesPreset]" = frozenset(
+    {DatesPreset.LAST_MONTH, DatesPreset.LAST_YEAR}
+)
+
+
+def _detect_relative_preset(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
+    """N-16: 相対プリセット（last year / last month）。起点がバー系列の最終時刻に依存する。"""
     date_range = effective.date_range
     preset = None if date_range is None else date_range.preset
-    if preset is DatesPreset.LAST_YEAR:
-        return int(DatesPreset.LAST_YEAR)
+    if preset in RELATIVE_DATE_PRESETS:
+        return int(preset)
     return NOT_VIOLATED
 
 
@@ -275,11 +282,12 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         ),
     ),
     UnsupportedRule(
+        # 分割位置そのものは実測で確定した（TBD-03 解消: 1=1/2・2=1/3・3=1/4、
+        # `.doc/mt5_options/` 2026-09-06）。残る非対象はフォワード実行そのもの。
         unsupported_id="N-03",
         field="forward_mode",
-        reason="フォワードの期間分割位置が未確定です",
+        reason="フォワードテストの実行はエンジンの対象外です",
         detect=_detect_forward,
-        tbd="TBD-03",
         ui=UiTrigger(
             keys=("ForwardMode",),
             mode=UI_TRIGGER_EXCEPT_TOKENS,
@@ -356,15 +364,17 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         unsupported_id="N-16",
         field="date_range.preset",
         reason=(
-            "直近 1 年の起点はバー系列の最終時刻に依存し、"
+            "相対プリセット（先月・昨年）の起点はバー系列の最終時刻に依存し、"
             "Settings 層はデータを読まないため窓を決定できません"
         ),
-        detect=_detect_last_year,
+        detect=_detect_relative_preset,
         tbd="TBD-14",
         ui=UiTrigger(
             keys=("Dates",),
             mode=UI_TRIGGER_ON_TOKENS,
-            tokens=(format_int_token(DatesPreset.LAST_YEAR),),
+            tokens=tuple(
+                format_int_token(preset) for preset in sorted(RELATIVE_DATE_PRESETS)
+            ),
         ),
     ),
 )
