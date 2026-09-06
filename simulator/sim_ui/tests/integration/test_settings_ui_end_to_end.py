@@ -61,7 +61,7 @@ def _serve_forever(server):
 #: e2e 用のデータ実体（MT5 突合 fixture・2025-01・spread あり）。
 #: 本検定はデータ量ではなく**結線**を固定する。実カタログの JP225 実体（全期間・
 #: 460 万行）で完走シナリオを回すと 1 run が数十分になるため、データ実体だけを
-#: 差し替える（カタログの結線・形式導出＝`_config_overrides_for` は実物のまま通る）。
+#: 差し替える（カタログの結線と形式導出の経路は実物のまま通る）。
 #: 全期間実体の完走は `simulator/tests/integration/test_marketdata_dataset_run.py` が
 #: 期間窓つきで実測する。
 _E2E_DATA_CSV = (

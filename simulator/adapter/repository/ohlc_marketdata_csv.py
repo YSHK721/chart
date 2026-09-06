@@ -29,7 +29,7 @@ from simulator.adapter.repository._ohlc_frame import (
 from simulator.domain.bar import Bar
 from simulator.usecase.ports import MarketDataPort
 
-#: marketdata 形式の必須列（`up`/`dn` は任意・使わない）。
+#: marketdata 形式の必須列。任意列（up・dn）は読み飛ばす（Bar に写さない）。
 _REQUIRED = ("date", "open", "high", "low", "close", "volume")
 
 #: 正規化済み時刻列（読み込み後に 1 回だけベクトル計算で付ける内部列）。

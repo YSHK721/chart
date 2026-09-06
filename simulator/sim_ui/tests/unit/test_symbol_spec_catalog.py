@@ -45,7 +45,7 @@ def test_jp225_profile_symbol_spec_comes_from_the_supply_snapshot():
 def test_data_path_points_to_the_full_marketdata_jp225_csv():
     """data_path は 2012 年からの全期間 JP225 実データ（marketdata 形式）を指す。
 
-    依頼者承認 2026-09-06。読み手は `MarketdataCsvOHLCRepository`（形式はヘッダが権威）。
+    依頼者承認 2026-09-06。読み手は marketdata 形式リーダ（形式はヘッダが権威）。
     spread 依存 EA はこのデータでは N-17 が実行前に弾く。
     """
     from pathlib import Path

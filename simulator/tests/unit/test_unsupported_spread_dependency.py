@@ -61,12 +61,12 @@ def test_a_spread_dependent_ea_on_mt5_form_does_not_fire():
     assert _detect("MA_Slope_EA.ex5", _MT5_FIXTURE) is NOT_VIOLATED
 
 
-def test_the_declared_set_matches_the_factory_table():
-    """宣言集合 == 「ファクトリが Mt5CsvOHLCRepository を返す EA」の集合（機械の結び）。
+def _measured_spread_dependent_eas() -> "set[str]":
+    """ファクトリ表を実際に呼び「Mt5CsvOHLCRepository を返す EA」の集合を測る。
 
-    unsupported.py は循環回避のため `simulator.main` を import できず宣言を写しで持つ。
-    写しが腐ればここが落ちる。判定は各ファクトリを MT5 fixture で実際に呼び、返る
-    repository の型で行う（comma 系ファクトリは MT5 TAB を読めず例外＝非該当）。
+    判定は各ファクトリを MT5 fixture で実際に呼び、返る repository の型で行う
+    （comma 系ファクトリは MT5 TAB を読めず例外＝非該当）。分岐は本ヘルパに閉じ、
+    テスト本体は単一の等式表明だけを持つ。
     """
     import simulator.main as sim_main
 
@@ -82,6 +82,13 @@ def test_the_declared_set_matches_the_factory_table():
             continue   # MT5 TAB を読めない＝comma 系（spread 非依存）
         if isinstance(repo, Mt5CsvOHLCRepository):
             measured.add(ea_name)
-    assert measured == set(SPREAD_DEPENDENT_EA_NAMES), (
-        f"宣言と実体がずれています: 宣言={sorted(SPREAD_DEPENDENT_EA_NAMES)} 実体={sorted(measured)}"
-    )
+    return measured
+
+
+def test_the_declared_set_matches_the_factory_table():
+    """宣言集合 == 「ファクトリが Mt5CsvOHLCRepository を返す EA」の集合（機械の結び）。
+
+    unsupported.py は循環回避のため `simulator.main` を import できず宣言を写しで持つ。
+    写しが腐ればここが落ちる（測り方は `_measured_spread_dependent_eas` に閉じる）。
+    """
+    assert _measured_spread_dependent_eas() == set(SPREAD_DEPENDENT_EA_NAMES)
