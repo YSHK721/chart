@@ -48,7 +48,6 @@ from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
 from dashboard_ui.adapter.gateway.intrabar_capability_gateway import (
     IntrabarCapabilityGateway,
 )
-from dashboard_ui.adapter.gateway.market_profile_gateway import MarketProfileGateway
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.adapter.gateway.param_scopes import ParamScopes
 from dashboard_ui.adapter.series_role_table import SeriesRoleTable
@@ -116,9 +115,19 @@ def build_dashboard_app(
             ),
             is_intrabar_capable=capability,
             state=state,
-            # MP 列（依頼者承認 2026-09-06）。プロファイルは確定素材から決まる量なので、
-            #   持ち越しは**既存の共有ストア**へ相乗りさせる（専用ストアを新設しない）。
-            mp_port=MarketProfileGateway(bar_port=series_gateway, store=materials),
+            # MP 列は P-MP を**結線しない**（段階 2a・依頼者 y 2026-09-06・ISSUE-500）。
+            #   第 1 段階でフロントはライブ core の `/market_profile` を借りるようになり、
+            #   `/reach_sheet` の MP 欄は 1 バイトも読まれない。読まれない量を毎 epoch
+            #   作るのは絶対命令 §4.1 が禁じる「作ってから捨てる」計算であり、応答は
+            #   正しいままなので状態検証では原理的に落ちない（ISSUE-450 と同型）。
+            #   ここは**最小可逆段階**である: 注入を外して計算を止めるだけで、応答の MP 欄
+            #   （controller の既定に落ち、usecase 側
+            #   `dashboard_ui/usecase/build_reach_sheet.py` が全行 None を返す）・
+            #   P-MP の宣言（`dashboard_ui/usecase/sheet_ports.py`）・その実装
+            #   （`dashboard_ui/adapter/gateway/market_profile_gateway.py`）・既存検定は
+            #   そのまま残す（撤去は不可逆なので別ターンの y/n＝ISSUE-500 第 2 段階 2b）。
+            #   結線解除と発行 0 は
+            #   `dashboard_ui/tests/e2e/test_market_profile_unwired.py` が固定する。
         )
 
     return DashboardApp(
