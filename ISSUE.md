@@ -14205,6 +14205,25 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   `{"ok": false, "error": {"type": "supply", "message": "ZeroDivisionError: float division by zero"}}`。
   hi/lo 価格の実測検証（profit_rsi 1W）中に付随的に観測。jp225 / jp225_tick は正常。
 - **未対応**: 原因未特定（MT5 データセットの供給が空／段階未疎通の可能性・ISSUE-448 V-1 待ちと関連か未検証）。
+- **追補 1（2026-09-06・再現調査＝実測 0 件）**: 現行 develop（f7bc757）＋現データで再現しない。
+  掃引範囲: 単体（ma_marod / btlm_trail_marod / profit_rsi / period_hl / ytd_hl / tickvol）×
+  chart 8 足 × instance 8 足 × full/tick、実テンプレート相当 37 instance 束 × chart 8 足 ×
+  full/tick——すべて例外 0。**09-05 末尾コード（21f14e7）＋現データでも 0 件**（worktree 実測）。
+  素材は観測時から不変: `jp225_mt5_m1.csv` は 09-04 21:00 以降更新なし（休場）・4h ロールアップは
+  09-05 01:41 再生成（ISSUE-489 追補 3・423655d）。
+- **追補 1 続・封筒の不整合（実コード確認）**: `type:"supply"` を作るのは
+  `reach_sheet_controller.handle` の `except (ValueError, KeyError)` だけだが、ZeroDivisionError
+  を ValueError へ翻訳する経路はリポジトリ内に存在しない（09-05 時点のコードも同一）。素の
+  ZeroDivisionError は `serve_dashboard.py` の最終防衛で **500 / type:"internal"** になるはず。
+  したがって観測記録は (a) `type` の記録が不正確（実際は internal/500）か、(b) 別コードを配信する
+  ツリーへの要求（serve.sh は配信元ツリーを検証しない・ISSUE-348 と同型）のどちらか。
+- **未検証仮説（事実と分離・断定しない）**: `/reach_sheet` 出力経路上の未ガード純 Python 除算は
+  `dashboard_ui/domain/price_value_map.py:79`（`MobiusPiece.value_at` の極 `price + d == 0`）の
+  1 箇所のみで、発火すればメッセージは正確に "float division by zero" になる。ただし現データ・
+  上記掃引では発火せず、原因と確定できない。
+- **クローズ条件（再観測時に必ず取る 3 点）**: (1) HTTP ステータスと `error.type` の生値
+  (2) 要求 body 全量（instances・params）(3) 配信元ツリーの確認（branch 限定ファイルの実測・
+  memory: serve-sh-does-not-verify-serving-tree）。この 3 点が揃うまで原因確定は不能。
 
 
 ## ISSUE-500: サーバ側 MP（/reach_sheet の mp 欄）が第 1 段階で dormant 化＝「作って捨てる」計算が残る
