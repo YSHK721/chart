@@ -9,17 +9,9 @@ import で再利用できる（実体は ``src/core.py``。本層は薄い再公
 
 from __future__ import annotations
 
-from .src import (  # noqa: F401
-    MA_TYPES,
-    exponential_ma,
-    exponential_ma_on_buffer,
-    linear_weighted_ma,
-    linear_weighted_ma_on_buffer,
-    linear_weighted_ma_on_buffer_fast,
-    ma,
-    simple_ma,
-    simple_ma_on_buffer,
-    smoothed_ma,
-    smoothed_ma_on_buffer,
-)
-from .src import __all__  # 公開 API を src と一致させる
+# 束縛と __all__ の唯一源は src.__all__（ISSUE-331）。名前を手書きで書き写すと、src へ
+#   追加された公開名（stateful LWMA 等）がここで欠け、`from moving_averages import *` が
+#   AttributeError になる（実際に 3 名欠けていた）。`import *` は src.__all__ の全名を
+#   束縛するので、出所が構造的に 1 つになる。
+from .src import *  # noqa: F401,F403
+from .src import __all__  # noqa: F401 — 公開 API を src と一致させる
