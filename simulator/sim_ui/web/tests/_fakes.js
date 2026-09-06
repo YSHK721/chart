@@ -96,6 +96,14 @@ export function fakeDoc() {
     getElementById: () => null,
     querySelector: () => null,
     querySelectorAll: () => [],
+    // 文書全体のイベント（カレンダーの外側クリック検出など）を検定から発火できるようにする。
+    _listeners: {},
+    addEventListener(ev, fn) { (this._listeners[ev] ||= []).push(fn); },
+    removeEventListener(ev, fn) {
+      const list = this._listeners[ev] || [];
+      const at = list.indexOf(fn);
+      if (at >= 0) list.splice(at, 1);
+    },
   };
 }
 

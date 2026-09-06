@@ -323,7 +323,7 @@ test("date-typed keys get a token field with a calendar button (宣言駆動)", 
   assert.equal(findById(host, "testerDepositCalBtn"), null);
 });
 
-test("the calendar opens at the field's month and commits the picked token", () => {
+test("the calendar opens at the field's month; a day click commits instantly", () => {
   const { host, view } = ready();
   const toggle = findById(host, "testerDateCustom");
   toggle.checked = true;
@@ -333,22 +333,24 @@ test("the calendar opens at the field's month and commits the picked token", () 
   const pop = byClass(host, "cal-pop")[0];
   assert.ok(pop, "カレンダーが開いていない");
   assert.equal(byClass(pop, "cal-title")[0].textContent, "January 2025");
+  // 日付クリックで即時確定（確定ボタンは無い・依頼者裁定 2026-09-06）
   fire(byClass(pop, "cal-day").find((d) => d.dataset.token === "2025.01.10"), "click");
-  fire(byClass(pop, "cal-choose")[0], "click");
   assert.equal(field(host, "FromDate").value, "2025.01.10");
   assert.equal(view.buildTesterMapping().FromDate, "2025.01.10");
   assert.equal(byClass(host, "cal-pop").length, 0, "確定後もカレンダーが残っています");
 });
 
-test("Cancel leaves the field untouched and the button toggles the popup", () => {
-  const { host } = ready();
+test("an outside pointer-down closes the calendar and leaves the field untouched", () => {
+  const { doc, host } = ready();
   field(host, "ForwardDate").value = "2025.02.01";
   const btn = findById(host, "testerForwardDateCalBtn");
   fire(btn, "click");
-  fire(byClass(host, "cal-cancel")[0], "click");
-  assert.equal(field(host, "ForwardDate").value, "2025.02.01");
+  assert.equal(byClass(host, "cal-pop").length, 1);
+  // カレンダーの外（別の欄）を押すと閉じ、値は変わらない
+  (doc._listeners.mousedown || []).slice().forEach((f) => f({ target: field(host, "Deposit") }));
   assert.equal(byClass(host, "cal-pop").length, 0);
-  // 同じボタンの 2 度押しは開いて閉じる（トグル）
+  assert.equal(field(host, "ForwardDate").value, "2025.02.01");
+  // 同じボタンの 2 度押しは開いて閉じる（トグル・外側判定が日付箱を除外している証拠）
   fire(btn, "click");
   assert.equal(byClass(host, "cal-pop").length, 1);
   fire(btn, "click");

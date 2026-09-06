@@ -314,36 +314,7 @@
   color: var(--bg);
   font-weight: 700;
 }
-#simTesterPanel .cal-foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 10px;
-}
-#simTesterPanel .cal-cancel,
-#simTesterPanel .cal-choose {
-  flex: 1 1 0;
-  height: 28px;
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-}
-#simTesterPanel .cal-cancel {
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--fg);
-}
-#simTesterPanel .cal-choose {
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--bg);
-}
-#simTesterPanel .cal-choose:disabled {
-  opacity: .45;
-  cursor: default;
-}
+/* フッタ（Cancel / Choose Date）は依頼者裁定（2026-09-06）で無し: 日付クリックで即時確定。 */
 /* チェックボックスの行は**ラベル列を使わない**（依頼者指摘 2026-08-22「『期間をカスタム指定
  * する』が 2 行になっている」）。この行だけラベルが長く（実測 134px＝ラベル列 136px とほぼ
  * 同幅）、環境の字幅がわずかに広いだけで折り返して 2 行になり、その群だけ以降の行が 1 行ぶん

@@ -1,10 +1,10 @@
 // sim_date_picker_view（日付選択カレンダー・依頼者参照デザイン 2026-09-06）の単体テスト。
 //
 // 固定する不変条件:
-//   1. 参照デザインの構成要素（月送りヘッダ・曜日行 Mo〜Su・6×7 格子・隣接月の淡色・
-//      Cancel / Choose Date）が過不足なく出る。
+//   1. 参照デザインの構成要素（月送りヘッダ・曜日行 Mo〜Su・6×7 格子・隣接月の淡色）が
+//      過不足なく出る。確定ボタン・Cancel は出さない（依頼者裁定 2026-09-06: 即時確定）。
 //   2. 格子は月曜始まりで正しい（参照画像と同じ 2021 年 4 月で先頭・末尾・隣接月数を固定）。
-//   3. 確定（Choose Date）だけが onCommit(token) を発行し、Cancel は発行しない。
+//   3. 日付クリックが即時に onCommit(token) を発行して閉じる。外側の押下は無発行で閉じる。
 //   4. 計算量: 作った DOM − 取り付けた DOM = 0（作って捨てる要素なし）。月送り 1 回の
 //      発行は格子 1 面ぶんで、月の長短（入力）に依存しない（オーダーの表明）。
 import { test } from "node:test";
@@ -26,13 +26,20 @@ function countingDoc() {
   return { doc, counter };
 }
 
+/** 文書全体のイベントを発火する（外側クリック判定は doc のリスナで受ける）。 */
+const fireDoc = (doc, ev, event) => (doc._listeners[ev] || []).slice().forEach((f) => f(event));
+
 function opened({ value = "", today = () => new Date(2021, 3, 15) } = {}) {
   const { doc, counter } = countingDoc();
   const view = createSimDatePickerView({ doc, today });
   const committed = [];
-  view.openFor({ anchor: doc.body, value, onCommit: (t) => committed.push(t) });
+  // anchor は body 直下の 1 要素（外側クリックの「外側」を body 上に作れるようにする）
+  const anchor = doc.createElement("div");
+  doc.body.appendChild(anchor);
+  counter.created = 0;
+  view.openFor({ anchor, value, onCommit: (t) => committed.push(t) });
   const pop = byClass(doc.body, "cal-pop")[0];
-  return { doc, counter, view, committed, pop, host: doc.body };
+  return { doc, counter, view, committed, pop, anchor, host: doc.body };
 }
 
 // --- 1. 参照デザインの構成要素 -------------------------------------------------
@@ -46,8 +53,9 @@ test("the popup carries exactly the reference-design parts", () => {
   assert.deepEqual(byClass(pop, "cal-weekday").map((n) => n.textContent),
     ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]);
   assert.equal(byClass(pop, "cal-day").length, 42, "6 週 × 7 曜の固定格子ではありません");
-  assert.equal(byClass(pop, "cal-cancel")[0].textContent, "Cancel");
-  assert.equal(byClass(pop, "cal-choose")[0].textContent, "Choose Date");
+  // 確定ボタン・Cancel は出さない（日付クリックで即時確定・依頼者裁定 2026-09-06）
+  assert.equal(byClass(pop, "cal-choose").length, 0, "確定ボタンが残っています");
+  assert.equal(byClass(pop, "cal-cancel").length, 0, "Cancel が残っています");
 });
 
 // --- 2. 格子の正当性（参照画像と同じ 2021 年 4 月）------------------------------
@@ -70,7 +78,6 @@ test("an empty value opens at the injected today with nothing selected", () => {
   const { pop } = opened({ value: "" });
   assert.equal(byClass(pop, "cal-title")[0].textContent, "April 2021");
   assert.equal(byClass(pop, "cal-sel").length, 0);
-  assert.equal(byClass(pop, "cal-choose")[0].disabled, true, "未選択で確定できています");
 });
 
 test("the arrows move one month per click (both directions)", () => {
@@ -82,32 +89,45 @@ test("the arrows move one month per click (both directions)", () => {
   assert.equal(byClass(pop, "cal-title")[0].textContent, "March 2021");
 });
 
-test("picking an adjacent-month day moves the view to that month", () => {
-  const { pop } = opened({ value: "2021.04.09" });
-  const march = byClass(pop, "cal-day").find((d) => d.dataset.token === "2021.03.30");
-  fire(march);
-  assert.equal(byClass(pop, "cal-title")[0].textContent, "March 2021");
-  assert.deepEqual(byClass(pop, "cal-sel").map((d) => d.dataset.token), ["2021.03.30"]);
+test("picking an adjacent-month day commits that month's token (隣接月も 1 クリック)", () => {
+  const { committed, pop, view } = opened({ value: "2021.04.09" });
+  fire(byClass(pop, "cal-day").find((d) => d.dataset.token === "2021.03.30"));
+  assert.deepEqual(committed, ["2021.03.30"]);
+  assert.equal(view.isOpen(), false);
 });
 
-// --- 3. 確定と取消 --------------------------------------------------------------
+// --- 3. 即時確定と外側クリック ---------------------------------------------------
 
-test("Choose Date commits the token and closes; the popup does not linger", () => {
+test("clicking a day commits immediately and closes (確定ボタンなし)", () => {
   const { view, committed, pop, host } = opened({ value: "2021.04.09" });
   fire(byClass(pop, "cal-day").find((d) => d.dataset.token === "2021.04.17"));
-  fire(byClass(pop, "cal-choose")[0]);
   assert.deepEqual(committed, ["2021.04.17"]);
   assert.equal(view.isOpen(), false);
   assert.equal(byClass(host, "cal-pop").length, 0);
 });
 
-test("Cancel closes without committing", () => {
-  const { view, committed, pop, host } = opened({ value: "2021.04.09" });
-  fire(byClass(pop, "cal-day").find((d) => d.dataset.token === "2021.04.17"));
-  fire(byClass(pop, "cal-cancel")[0]);
+test("a pointer-down outside closes without committing", () => {
+  const { doc, view, committed, host } = opened({ value: "2021.04.09" });
+  const outside = doc.createElement("div");
+  host.appendChild(outside);
+  fireDoc(doc, "mousedown", { target: outside });
   assert.deepEqual(committed, []);
   assert.equal(view.isOpen(), false);
   assert.equal(byClass(host, "cal-pop").length, 0);
+});
+
+test("a pointer-down inside the calendar or on the opening box keeps it open", () => {
+  const { doc, view, pop, anchor } = opened();
+  fireDoc(doc, "mousedown", { target: byClass(pop, "cal-next")[0] });  // 月送りは操作の途中
+  assert.equal(view.isOpen(), true);
+  fireDoc(doc, "mousedown", { target: anchor });                        // 箱＝トグルの担当
+  assert.equal(view.isOpen(), true);
+});
+
+test("closing removes the document listener (残置リスナゼロ)", () => {
+  const { doc, view } = opened();
+  view.close();
+  assert.equal((doc._listeners.mousedown || []).length, 0, "閉じた後も doc リスナが残っています");
 });
 
 test("re-opening the same view replaces its popup instead of stacking (残骸ゼロ)", () => {

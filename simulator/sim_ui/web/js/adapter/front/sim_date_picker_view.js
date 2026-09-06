@@ -11,8 +11,11 @@
 //
 // 参照デザインどおりの要素（勝手に足さない・削らない）:
 //   ヘッダ（前月◀ / "April 2021" / 翌月▶）・曜日行（Mo〜Su・月曜始まり）・6×7 の格子
-//   （隣接月は淡色）・選択日の強調・フッタ（Cancel / Choose Date）。
+//   （隣接月は淡色）・選択日の強調。
 //   参照画像の日の下の点（マーカー）は対応する概念が本アプリに無いため対象外。
+//   フッタ（Cancel / Choose Date）は依頼者裁定（2026-09-06）で撤去: 日付クリックで
+//   **即時確定して閉じる**（確定ボタン不要）。即時確定では Cancel も機能を失う（取り消す
+//   選択が存在しない）ため同時に撤去。カレンダーの外をクリックしたら閉じる。
 //
 // fake DOM 前提: querySelector は使わず、要素参照を JS 側で保持する。
 
@@ -59,7 +62,7 @@ export function createSimDatePickerView({ doc, today } = {}) {
   let pop = null;          // 開いている popup（null = 閉）
   let titleNode = null;
   let gridNode = null;
-  let chooseBtn = null;
+  let anchorNode = null;   // 開いた欄の箱（この中のクリックでは閉じない＝トグルを壊さない）
   let viewY = 0;           // 表示中の年月
   let viewM = 0;
   let selected = null;     // {y, m, d} | null
@@ -87,15 +90,13 @@ export function createSimDatePickerView({ doc, today } = {}) {
         textContent: String(cell.d),
         dataset: { token: formatToken(cell) },
       });
+      // 日付クリックで**即時確定して閉じる**（確定ボタンは置かない・依頼者裁定 2026-09-06）
       day.addEventListener("click", () => {
         selected = { y: cell.y, m: cell.m, d: cell.d };
-        viewY = cell.y;                                 // 隣接月を選んだらその月へ送る
-        viewM = cell.m;
-        renderGrid();
+        commit();
       });
       gridNode.appendChild(day);
     }
-    chooseBtn.disabled = !selected;
   }
 
   function moveMonth(delta) {
@@ -105,12 +106,29 @@ export function createSimDatePickerView({ doc, today } = {}) {
     renderGrid();
   }
 
+  /** node が root の部分木に属するか（親参照は parentNode を正とする）。 */
+  function within(node, root) {
+    for (let n = node; n; n = n.parentNode) if (n === root) return true;
+    return false;
+  }
+
+  /** カレンダーの外のクリックで閉じる（依頼者裁定 2026-09-06）。開いた欄の箱の中は除く
+   *  （欄の▾ボタンのトグル・欄への手入力を、閉→開の再発火で壊さないため）。
+   *  mousedown で判定する: click だと「開いたその 1 クリック」が doc まで浮上して
+   *  即座に閉じてしまう（mousedown はリスナ登録**前**に終わっている）。 */
+  function onOutsidePointerDown(event) {
+    const target = event && event.target;
+    if (within(target, pop) || within(target, anchorNode)) return;
+    close();
+  }
+
   function close() {
     if (pop && pop.parentNode) pop.parentNode.removeChild(pop);
+    if (pop && doc.removeEventListener) doc.removeEventListener("mousedown", onOutsidePointerDown);
     pop = null;
     titleNode = null;
     gridNode = null;
-    chooseBtn = null;
+    anchorNode = null;
     selected = null;
     commitCb = null;
   }
@@ -154,18 +172,11 @@ export function createSimDatePickerView({ doc, today } = {}) {
     gridNode = el("div", { className: "cal-grid" });
     pop.appendChild(gridNode);
 
-    const foot = el("div", { className: "cal-foot" });
-    const cancel = el("button", { type: "button", className: "cal-cancel", textContent: "Cancel" });
-    cancel.addEventListener("click", close);
-    chooseBtn = el("button", { type: "button", className: "cal-choose", textContent: "Choose Date" });
-    chooseBtn.addEventListener("click", commit);
-    foot.appendChild(cancel);
-    foot.appendChild(chooseBtn);
-    pop.appendChild(foot);
-
     renderGrid();
+    anchorNode = anchor;
     anchor.appendChild(pop);
     positionNear(anchor);
+    if (doc.addEventListener) doc.addEventListener("mousedown", onOutsidePointerDown);
     return pop;
   }
 
