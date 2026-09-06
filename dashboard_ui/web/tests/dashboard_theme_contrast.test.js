@@ -432,3 +432,121 @@ describe('dashboard の版面 — 読めることを計算で固定する', () =
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 版面の**寸法**（色ではなく長さ）— 同じ「読めることを計算で固定する」方針を、
+//   MP 列の横バーが量を伝えるための幾何へ適用する。
+//
+// なぜ必要か（ISSUE-463 と同型の抜け）: 「バーが読めない」は状態検証では原理的に落ちない。
+//   reach_sheet_view.test.js は「バーが在る / 長さが norm に従う」ことを見るが、**その長さが
+//   版面上で何 px に写るか**は CSS の寸法で決まり、どの検定も読んでいなかった（本追補まで
+//   `min-width` / `padding` を読む検定は 0 件）。列幅を 44px へ戻す変更は全 267 件を緑のまま
+//   通過し、隣り合う行の norm 差 4.6% を 0.7px＝不可視へ潰す。
+//
+// 数値（96 / 14 / 2）は**焼き込まない**。固定するのは寸法どうしの**関係**である:
+//   走行幅 = 列の min-width − td の左右余白（`.dash-sheet-host *` の box-sizing: border-box
+//   ＝ dashboard.css:159-161 により min-width は余白を含む外寸）。CSS がどの数値を選んでも、
+//   この関係が保たれる限り版面は読める。
+// ---------------------------------------------------------------------------
+
+/**
+ * バーが走れる幅の下限（px）。
+ *
+ * 根拠は実UIのピクセル実測（dashboard.css:563-566 と同じ出典）: 隣り合う行の norm 差 4.6% が
+ * 1px 未満だと段差として読めない。0.046 × 走行幅 ≥ 1px を満たすには走行幅 ≥ 21.7px あれば
+ * 足りるが、それは「かろうじて 1px」であって読める幅ではない。実測で ≈3px の差が付いた
+ * 走行 ≈68px を基準に、CSS 側の調整余地を残した下限として 60px を置く。
+ */
+const MIN_BAR_TRAVEL_PX = 60;
+
+/** `12px` の形の長さを数へ。px 以外の単位は「この検定では判定できない」として落とす。 */
+function pxOf(value, what) {
+  const m = /^(-?[\d.]+)px$/.exec(String(value).trim());
+  assert.ok(m, `${what} が px の長さではありません（この検定は px でのみ判定できます）: ${value}`);
+  return Number(m[1]);
+}
+
+/** 選択子群のいずれかが `matches` を満たす規則を（`@media` の内側も含めて）集める。 */
+function rulesFor(matches) {
+  return styleRules(CSS).filter((rule) =>
+    rule.selector.split(',').map((s) => s.trim()).some(matches));
+}
+
+/**
+ * `prop` の宣言をすべて集める（`@media` の内側も含む）。
+ *
+ * 「最後の 1 つ」ではなく**全件**を返す理由: 条件付き規則（`@media`）で狭められた値を
+ * 見逃すと、検査に穴が開く。どの条件下で適用される値も関係を満たさねばならない。
+ */
+function declaredLengths(matches, prop, what) {
+  const out = [];
+  for (const rule of rulesFor(matches)) {
+    for (const d of declarations(rule.body)) {
+      if (d.prop === prop) out.push({ selector: rule.selector, px: pxOf(d.value, what) });
+    }
+  }
+  return out;
+}
+
+/** `padding` 短縮形（1〜4 値）の左右成分。 */
+function horizontalPaddingOf(shorthand) {
+  const parts = String(shorthand).trim().split(/\s+/);
+  assert.ok(parts.length >= 1 && parts.length <= 4, `padding の値が読めません: ${shorthand}`);
+  // 1 値 = 全辺 / 2 値 = 縦 横 / 3 値 = 上 横 下 / 4 値 = 上 右 下 左
+  const right = parts.length === 1 ? parts[0] : parts[1];
+  const left = parts.length === 4 ? parts[3] : right;
+  return pxOf(left, 'padding-left') + pxOf(right, 'padding-right');
+}
+
+const IS_MP_CELL = (s) => /(^|\s)(td|th)\.dash-ladder-(head-)?mp$/.test(s);
+const IS_LADDER_CELL = (s) => s === '.dash-ladder-table td';
+const IS_MP_BAR = (s) => s === '.dash-ladder-mp-bar';
+
+describe('dashboard の版面 — 寸法の関係を計算で固定する', () => {
+  test('the_mp_column_leaves_the_bar_enough_width_to_show_a_difference', () => {
+    // Arrange: 列の外寸と、その内側を削る余白。box-sizing: border-box なので走行幅は差になる。
+    const columns = declaredLengths(IS_MP_CELL, 'min-width', 'MP 列の min-width');
+    const paddings = rulesFor(IS_LADDER_CELL)
+      .flatMap((rule) => declarations(rule.body).filter((d) => d.prop === 'padding'))
+      .map((d) => horizontalPaddingOf(d.value));
+
+    // 検定の検定: 読む対象が消えたら（改名・削除）無言の no-op に化けるのを防ぐ。
+    assert.ok(columns.length > 0, 'MP 列の min-width を宣言する規則がありません');
+    assert.ok(paddings.length > 0, '梯子表のセルの padding を宣言する規則がありません');
+
+    // フェイルクローズ: 本検定は余白を `padding` 短縮形からのみ読む。MP セルに長縮形
+    //   （padding-left / padding-right）で余白が足されると、走行幅は縮むのに上の計算には
+    //   現れず、検査が無言で素通りする。その記法が現れたら**落ちる側**へ倒す
+    //   （_css.js の方針「範囲外の記法が入ったら検定が落ちる側に倒す」と同じ）。
+    for (const rule of rulesFor(IS_MP_CELL)) {
+      for (const d of declarations(rule.body)) {
+        assert.ok(!['padding', 'padding-left', 'padding-right'].includes(d.prop),
+          `MP セルが独自の余白を宣言しています（走行幅の計算が追随できません）: ${d.prop}`);
+      }
+    }
+
+    // Act / Assert: どの列幅 × どの余白の組でも、バーが走れる幅が残ること。
+    for (const column of columns) {
+      for (const padding of paddings) {
+        const travel = column.px - padding;
+        assert.ok(travel >= MIN_BAR_TRAVEL_PX,
+          `MP 列のバーの走行幅が足りません: ${column.px}px − 余白 ${padding}px = ${travel}px `
+          + `(下限 ${MIN_BAR_TRAVEL_PX}px) — ${column.selector}`);
+      }
+    }
+  });
+
+  test('the_mp_bar_declares_a_lower_bound_on_its_own_length', () => {
+    // Arrange / Act: 長さ側の可視下限（濃さ側の下限は heat_scale が持つ）。
+    const floors = declaredLengths(IS_MP_BAR, 'min-width', 'バーの min-width');
+
+    // Assert: 下限の**存在**を固定する（値は CSS が唯一源なので焼き込まない）。
+    //   これが無いと norm の小さい行が 1px 未満へ潰れ、「窓内だがほぼ居なかった」が
+    //   「窓外＝バー無し」と区別できなくなる（dashboard.css:575-581 の 2 値の区別）。
+    assert.ok(floors.length > 0,
+      '.dash-ladder-mp-bar に min-width の宣言がありません（長さ側の可視下限が無い）');
+    for (const floor of floors) {
+      assert.ok(floor.px > 0, `バーの可視下限が正の長さではありません: ${floor.px}px`);
+    }
+  });
+});

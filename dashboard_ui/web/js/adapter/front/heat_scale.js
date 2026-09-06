@@ -89,7 +89,23 @@ export function colorForP(p) {
 }
 
 /**
- * 密度 `norm ∈ [0,1]` に比例した不透明度（**単調**）。
+ * 密度の目盛りの**下端**の不透明度（可視下限）。`p` の写像は 0.5 を完全透明にするのが
+ * 意味そのもの（隔たりが無い）なので、この下限は `alphaForDensity` の内側だけで使う。
+ *
+ * なぜ下端を透明にしないのか（実UI実測 2026-09-06・依頼者承認）: `norm` は量そのものなので、
+ * 小さい量も「在る」ことは読めなければならない。比例のままだと norm 0.01 で不透明度 0.004＝
+ * 地に沈み、在るはずの量が消える。
+ *
+ * 版面での区別は 2 値である: **バーが無い＝窓外・素材なし（`null`）／バーが在る＝窓内**。
+ * `norm = 0.0`（窓内だが滞在ゼロの bin）は到達可能な値で、下限により「窓内で量ゼロ〜極小」
+ * の可視の線になる——これは仕様である（ゼロと極小の見分けは付かないが、どちらも
+ * 「ここにはほぼ居なかった」であり、読みは変わらない。窓外の空欄との区別が本質）。
+ * 既存の同旨: reach_sheet_view の TICK_MIN_STRENGTH（「動いたことが見える」最小濃度）。
+ */
+const MIN_DENSITY_ALPHA = 0.12;
+
+/**
+ * 密度 `norm ∈ [0,1]` に比例した不透明度（**単調**・下限つき）。
  *
  * `alphaForP` と分けてある理由: `p`（分位）と `norm`（量）は読み方が違う。`p` は中立 0.5 を
  * 基準にした**隔たり**なので双極（`|p − 0.5|`）で正しいが、`norm` は量そのものなので
@@ -97,11 +113,11 @@ export function colorForP(p) {
  * 区別が付かず、`norm < 0.5` では低いほど濃い逆相関の領域ができる。
  *
  * @param {number} norm 正規化 TPO 密度
- * @returns {number} 0（量なし）〜 MAX_ALPHA（最大）
+ * @returns {number} MIN_DENSITY_ALPHA（下端・可視）〜 MAX_ALPHA（最大）
  */
 export function alphaForDensity(norm) {
   assertOnScale(norm);
-  return norm * MAX_ALPHA;
+  return MIN_DENSITY_ALPHA + norm * (MAX_ALPHA - MIN_DENSITY_ALPHA);
 }
 
 /**

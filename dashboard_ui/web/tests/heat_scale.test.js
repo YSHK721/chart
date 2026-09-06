@@ -26,6 +26,15 @@ function alphaOf(css) {
   return Number(m[1]);
 }
 
+/**
+ * 密度の目盛りの下限が、その上に伸びる幅（上限 − 下限）に対して占めるべき最小の比。
+ *
+ * 「下限が在る」だけでは足りない（在っても効かない値へ弱まりうる）ので、効いていることを
+ * 比で表明する。1/4 は、下限を目盛り全体の中で**目に付く一段**として要求する水準であり、
+ * 下限の絶対値（現在 0.12）にも上限の絶対値（現在 0.40）にも依存しない。
+ */
+const MIN_FLOOR_SHARE = 0.25;
+
 describe('heat_scale — p から色への唯一の写像', () => {
   test('color_for_p_at_neutral_is_fully_transparent', () => {
     // Arrange: 中立 = 0.5（§5.3 の目盛りの中央）。
@@ -152,13 +161,40 @@ describe('heat_scale — 密度 norm から色への単調写像', () => {
   /** 代表点（下端・中央・上端を含む昇順の梯子）。 */
   const LADDER = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1];
 
-  test('color_for_density_at_zero_places_no_ink_at_all', () => {
-    // Arrange: 量の下端 = 0（＝密度が無い）。
+  test('color_for_density_at_the_bottom_of_the_scale_still_leaves_visible_ink', () => {
+    // Arrange: 量の下端 = 0。ここを完全透明にすると、目盛りの下端側（実測 norm 0.01 で
+    //   不透明度 0.004）が地に沈んで**在るはずの量が読めない**（実UI実測 2026-09-06・
+    //   依頼者承認）。norm = 0.0（窓内で滞在ゼロの bin）も到達可能な値で、下限により
+    //   可視の線になる——版面の区別は「バー無し＝窓外（null）」「バー在り＝窓内」の 2 値
+    //   であり、ゼロと極小の見分けより窓外との区別が本質（heat_scale.js の定数の記録参照）。
     // Act
     const alpha = alphaOf(heatScale.colorForDensity(0));
 
-    // Assert: 地をそのまま見せる（濃さ 0 が「量 0」を表す）。
-    assert.equal(alpha, 0);
+    // Assert: 見えること・下端であること（上限側の値は焼き込まない）。
+    assert.ok(alpha > 0, '下端が完全透明では最小の量が読めません');
+    assert.ok(alpha < alphaOf(heatScale.colorForDensity(0.1)), '下端が最小量より濃くなっています');
+    assert.ok(alpha < alphaForP(0), '下限が濃さの上限に達しています');
+  });
+
+  test('color_for_density_keeps_the_floor_a_noticeable_share_of_the_scale_above_it', () => {
+    // Arrange / Act: 目盛りの両端。
+    const floor = alphaOf(heatScale.colorForDensity(0));
+    const ceiling = alphaOf(heatScale.colorForDensity(1));
+
+    // Assert: 下限は、その上に伸びる目盛りの幅に対して**無視できない比**であること。
+    //
+    // なぜ `floor < ceiling`（＝目盛りが幅を持つ）ではないのか: それは下の全対単調性
+    //   `color_for_density_rises_strictly_with_the_density_over_the_whole_scale` が
+    //   LADDER の両端（norm 0 と 1）について既に含意しており、新しく捕まえるものが無い。
+    //
+    // 捕まえたいのは別の壊れ方である: 下限が**在るのに効かない**（例えば 1e-6 まで弱まる）
+    //   状態。このとき単調性も `floor < ceiling` も緑のままだが、norm の小さい行は地に沈み、
+    //   下限を置いた目的（小さい量も「在る」ことが読める・heat_scale.js:95-103）が消える。
+    //   よって下限の**絶対値**ではなく、目盛り幅に対する**比**で固定する。
+    //   0.12 という現在値は焼き込まない——CSS 側と同じく、値は実装が唯一源である。
+    const span = ceiling - floor;
+    assert.ok(floor >= span * MIN_FLOOR_SHARE,
+      `下限が目盛り幅に対して無視できる大きさです: 下限 ${floor} < ${span} × ${MIN_FLOOR_SHARE}`);
   });
 
   test('color_for_density_at_one_reaches_the_maximum_opacity', () => {
