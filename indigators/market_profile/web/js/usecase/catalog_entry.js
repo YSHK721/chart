@@ -87,34 +87,6 @@ export function makeMarketProfileDef({
     tab: 'profile',
     placement: 'overlay',
     params: [
-      // ISSUE-081（依頼者指示 2026-07-15）: 表示モードを**親**としてダイアログ先頭へ置き、以下の
-      //   パラメータ（子）はモード・時間足に応じて表示/非表示で切り替える（グレーアウト廃止＝
-      //   「効かないツマミは見せない」。グレーアウトはユーザビリティを下げるとの依頼者指摘）。
-      // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
-      //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
-      //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
-      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
-      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
-      //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
-      //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
-      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
-      //     （refresh(to, sessions)・機構A）。
-      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
-      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
-      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
-      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
-      //   order は旧 replay の位置（1）＝表示系 group の先頭。
-      // ISSUE-082（依頼者指示 2026-07-15）: リプレイモードは present（本指標）から撤去。
-      //   リプレイ機構（actor の setReplayCursor/replay bar 等）は replay_ui（別アプリ）が依存する
-      //   共有資産のため温存し、本 catalog の選択肢と composition の配線のみを撤去する。
-      //   保存済み mode='replay'／legacy replay:true は controller._deriveMode が 'normal' へ正規化。
-      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'sessions'], {
-        group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
-        enumLabels: {
-          normal: '通常', sessions: '日別プロファイル',
-        },
-        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
-      }),
       // dispbp: 表示幅（bp・価格比 1bp=0.01%・FLOAT 自由入力・ISSUE-079 依頼者承認 2026-07-15）。
       //   旧 解像度トグル（resmode）＋ビン（bins）＋レンジpt（range）を**一本化**して置換する。
       //   絶対 pt/本数指定は価格水準で意味が変わる（時代ドリフト）ため、比率（bp）で表示粗さを
@@ -132,7 +104,7 @@ export function makeMarketProfileDef({
       // va: バリューエリア比率（FLOAT・既定は Python 唯一源の生成物・0<va<1 RANGE_OPEN）。
       //   ISSUE-260: 全プロファイル生成経路（/market_profile・/tf_period_profile・増分成長）へ
       //   届く。かつては tf-period 列と増分成長に届かず既定比率へ固定されていた（効かないツマミ）。
-      param('va', ParamType.FLOAT, VA_PCT_DEFAULT, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 2, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
+      param('va', ParamType.FLOAT, VA_PCT_DEFAULT, [{ kind: ConstraintKind.RANGE_OPEN, operands: [0, 'va', 1], messageKey: 'err.va.range' }], null, { group: 'group.calc', order: 3, step: 0.01, min: 0, max: 1, label: 'バリューエリア' }),
       // limit（対象本数）param は削除済＝MP は常に全期間集計（backend は limit 省略時＝全件集計）。
       // src: 集計原子（ENUM・既定 zp=超過占有 z(p)〔依頼者指示 2026-07-12 で candle から昇格〕/
       //   dwell=実ティック滞在 / m1=tick数 /
@@ -169,11 +141,41 @@ export function makeMarketProfileDef({
       //   帰無（偶然の期待値/ばらつき）は窓と独立に各日の直前 NULL_HIST_DAYS 完了日から構築されるため、
       //   当日窓でも z の統計的品質は不変。通常モード×固定周期 tf（1m..1D）でのみ有効（_mpPeriodEnabled）。
       param('period', ParamType.ENUM, 'all', [], ['all', 'day'], {
-        group: 'group.calc', order: 3, label: '期間',
+        group: 'group.calc', order: 2, label: '期間',
         // ISSUE-081: zp×通常×対応 tf のときだけ表示（旧: src 条件で表示＋mode/tf 条件でグレーアウト）。
         conditionalVisible: (values, ctx) => mpSourceCapability(values.src).hasPeriodWindow
           && _mpPeriodEnabled(values, ctx),
         enumLabels: { all: '全期間', day: '当日' },
+      }),
+      // mode（表示モード）は配列末尾に置く: グループは初出順のため、calc（ソース/期間…）を
+      //   先頭グループにする（時間足/ソース/期間の上部配置規約・依頼者指示 2026-09-05）。
+      // ISSUE-081（依頼者指示 2026-07-15）: 表示モードを**親**としてダイアログ先頭へ置き、以下の
+      //   パラメータ（子）はモード・時間足に応じて表示/非表示で切り替える（グレーアウト廃止＝
+      //   「効かないツマミは見せない」。グレーアウトはユーザビリティを下げるとの依頼者指摘）。
+      // mode: 表示モード（ENUM・既定 'normal'・表示系 group・segmented トグル）。旧 replay(BOOL)/
+      //   sessions(BOOL) の 2 チェックを 1 つの排他トグル [通常｜リプレイ｜日別プロファイル] へ統合する
+      //   （解像度トグル resmode と同方式）。排他が構造的に保証され、同時 ON が不可能になる。
+      //   - normal: 全期間累積プロファイル（既定）。成長状態（FOLLOW/reveal 前進）では現在足の bar-period
+      //     forming で足内成長する（Model A: 表示モード×成長状態の直交化。成長は growing 信号が担う）。
+      //   - replay: リプレイバー表示（旧 replay=true と同一挙動・時間カーソル as-seen-at-t）。sessions は必ず OFF。
+      //   - sessions: 日別プロファイル分割（旧 sessions=true と同一）。replay は必ず OFF（バー非表示・
+      //     T 縦線/トリム/スナップショット解除）。成長状態では当日タイルが [session_start, cursor) で因果成長
+      //     （refresh(to, sessions)・機構A）。
+      //   Phase5（統一成長）: 旧 'ticklive' セグメント（表示選択肢）は撤去した。足内 1tick 逐次成長は
+      //     「表示モード」ではなく成長軸（growing 信号）が担う（直交化）＝normal/sessions のいずれでも成長する。
+      //     成長エンジン（_enterTicklive/forming/DwellAccumulator）は grow 軸で存続（表示選択肢のみ削除）。
+      //   actor.setParams が mode を受けて _setReplay/_applySessions の復元経路を再利用し状態遷移する。
+      //   order は旧 replay の位置（1）＝表示系 group の先頭。
+      // ISSUE-082（依頼者指示 2026-07-15）: リプレイモードは present（本指標）から撤去。
+      //   リプレイ機構（actor の setReplayCursor/replay bar 等）は replay_ui（別アプリ）が依存する
+      //   共有資産のため温存し、本 catalog の選択肢と composition の配線のみを撤去する。
+      //   保存済み mode='replay'／legacy replay:true は controller._deriveMode が 'normal' へ正規化。
+      param('mode', ParamType.ENUM, 'normal', [], ['normal', 'sessions'], {
+        group: 'group.display', order: 1, label: '表示モード', controlType: 'segmented',
+        enumLabels: {
+          normal: '通常', sessions: '日別プロファイル',
+        },
+        tooltip: '通常＝全期間累積プロファイル（成長時は現在足forming で足内成長）／日別プロファイル＝各営業日を列で分割表示（成長時は当日タイルが因果成長）',
       }),
     ],
     series: [
