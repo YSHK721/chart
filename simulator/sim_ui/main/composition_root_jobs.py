@@ -129,6 +129,7 @@ def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
     """
     from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
     from simulator.framework.tester_settings.validation import (
+        DATE_VALUE_KEYS,
         EXPERT_ONLY_KEYS,
         required_tester_keys,
     )
@@ -139,6 +140,7 @@ def build_settings_schema_port() -> TesterSettingsSchemaCatalog:
         key_order=STANDARD_KEY_ORDER,
         required_keys=required_tester_keys(),
         expert_only_keys=EXPERT_ONLY_KEYS,
+        date_keys=DATE_VALUE_KEYS,
         known_ea_names=_known_ea_names,
         subject_suffix=SUBJECT_SUFFIX,
         unsupported_rules=RULES,

@@ -397,6 +397,16 @@ class _TesterIniModel(BaseModel):
         return self
 
 
+#: 値が日付（`YYYY.MM.DD`）である `[Tester]` キー（宣言順）。
+#: 検証モデルの型注釈から**導出**する（手で列挙すると `_StrictDate` を持つフィールドの
+#: 増減とここが静かにずれる）。UI が入力部品（カレンダー）を型で出し分けるための単一源。
+DATE_VALUE_KEYS: tuple[str, ...] = tuple(
+    name
+    for name, field in _TesterIniModel.model_fields.items()
+    if field.annotation == (date | None)
+)
+
+
 @_after_rule("B")
 def _rule_b_visual_exclusive(model: _TesterIniModel) -> None:
     """`Optimization != DISABLED` のとき `Visual` は存在してはならない（規則 B）。

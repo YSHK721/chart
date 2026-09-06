@@ -87,7 +87,17 @@ const TRIGGER_ON_PRESENCE = "on_presence";
 const TRIGGER_OFF_CANDIDATES = "off_candidates";
 const TRIGGER_OFF_PROFILE = "off_profile";
 
-export function createSimTesterSettingsPanelView({ doc } = {}) {
+/** 日付入力（`<input type="date">` の ISO 値 `YYYY-MM-DD`）→ `.ini` の日付トークン
+ *  `YYYY.MM.DD`。区切りの置換だけ（ゼロ埋め・桁は ISO と `.ini` で同一）で、`.` 区切りの
+ *  値には何もしない（date 非対応ブラウザの text 縮退で直接打たれた形をそのまま通す）。
+ *  実在日付の検証はしない——検証の単一ソースはサーバの `_strict_date`（R10）である。 */
+const isoToIniDateToken = (value) => value.replaceAll("-", ".");
+
+export function createSimTesterSettingsPanelView({ doc, dateToken } = {}) {
+  /** 日付トークン変換（既定は `isoToIniDateToken`）。注入面は計算量テスト（発行回数の
+   *  計数）のためにある——変換は投入本文に**載る値だけ**に発行される（出し分けで落ちた
+   *  キー・空欄には発行しない）ことを Test Spy で表明する。 */
+  const toIniDate = dateToken || isoToIniDateToken;
   let root = null;
   let fieldsHost = null;
   let warnNode = null;
@@ -120,6 +130,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
   const clear = (host) => {
     for (const child of Array.from((host && host.children) || [])) host.removeChild(child);
   };
+
+  /** キー K の値が日付か（schema の宣言だけを見る。キー名から推測しない）。 */
+  function isDateKey(key) {
+    return (((schema && schema.scalar_specs) || {})[key] || {}).value_type === "date";
+  }
 
   /** 選択肢のあるキーなら [{token,label}]、自由入力なら null。判定は schema だけを見る。 */
   function optionsFor(key) {
@@ -198,8 +213,11 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       }
       node.value = options.length ? options[0].token : "";
     } else {
+      // 日付キーはカレンダー入力（`type="date"`）。どのキーが日付かは schema の宣言
+      // （`scalar_specs[key].value_type`＝検証層 `DATE_VALUE_KEYS` 由来）だけで決める。
       node = el("input", {
-        id: `tester${key}`, className: "tester-input", type: "text",
+        id: `tester${key}`, className: "tester-input",
+        type: isDateKey(key) ? "date" : "text",
         value: INITIAL_SCALARS[key] || "", dataset: { key, mt5: `tester:${key}` },
       });
     }
@@ -409,7 +427,9 @@ export function createSimTesterSettingsPanelView({ doc } = {}) {
       if (!node) continue;
       const value = String(node.value == null ? "" : node.value);
       if (value === "" && BLANK_MEANS_ABSENT.includes(key)) continue;
-      mapping[key] = value;
+      // 日付トークン変換は**載る値だけ**に発行する（出し分け・空欄の後）。ここより前に
+      // 置くと「変換したのに捨てる」計算が生まれる（計算量テストが固定する不変条件）。
+      mapping[key] = value !== "" && isDateKey(key) ? toIniDate(value) : value;
     }
     return mapping;
   }

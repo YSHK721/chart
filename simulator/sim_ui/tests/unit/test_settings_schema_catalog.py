@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
-from simulator.framework.tester_settings.validation import EXPERT_ONLY_KEYS
+from simulator.framework.tester_settings.validation import DATE_VALUE_KEYS, EXPERT_ONLY_KEYS
 from simulator.main.tester_settings.unsupported import RULES
 # 別名で受けるのは pytest の収集規則（`Test*` 接頭辞）を避けるため。既存
 # `test_tester_settings_validation.py:68`（`TesterSettings as SettingsDto`）と同じ流儀。
@@ -51,6 +51,7 @@ def catalog() -> SchemaCatalog:
         key_order=STANDARD_KEY_ORDER,
         required_keys=_REQUIRED,
         expert_only_keys=EXPERT_ONLY_KEYS,
+        date_keys=DATE_VALUE_KEYS,
         known_ea_names=lambda: _EA_NAMES,
         subject_suffix=_SUFFIX,
         unsupported_rules=RULES,
@@ -204,10 +205,50 @@ def test_a_rule_without_a_ui_binding_is_rejected_at_construction() -> None:
             key_order=STANDARD_KEY_ORDER,
             required_keys=_REQUIRED,
             expert_only_keys=EXPERT_ONLY_KEYS,
+            date_keys=DATE_VALUE_KEYS,
             known_ea_names=lambda: _EA_NAMES,
             subject_suffix=_SUFFIX,
             unsupported_rules=broken,
         ).unsupported()
+
+
+# --- 日付キーの value_type（カレンダー入力の出し分け宣言）------------------------
+
+
+def test_scalar_specs_mark_date_keys_from_the_injection(catalog) -> None:
+    """`value_type == "date"` の集合が**注入された日付キー**とちょうど一致すること。
+
+    UI はこの宣言だけでカレンダー入力を出し分ける（キー名から推測しない）。集合の
+    非空も併せて固定する（空なら「どのキーもカレンダーにならない」縮退が素通りする）。
+    """
+    # Arrange / Act
+    specs = catalog.scalar_specs()
+    marked = {key for key, spec in specs.items() if spec.get("value_type") == "date"}
+    # Assert
+    assert marked, "日付キーが 1 つも宣言されていません（注入が届いていない）"
+    assert marked == set(DATE_VALUE_KEYS)
+
+
+@pytest.mark.parametrize(
+    "date_keys",
+    [
+        pytest.param(("NoSuchKey",), id="標準キー順に無いキー"),
+        pytest.param(("Dates",), id="列挙キーとの衝突（Dates はプリセットの列挙で日付値ではない）"),
+    ],
+)
+def test_a_date_key_outside_the_scalar_keys_is_rejected_at_construction(date_keys) -> None:
+    """日付キーの注入が食い違ったら構築時に Fail-Stop する（沈黙の text 縮退を作らない）。"""
+    # Arrange / Act / Assert
+    with pytest.raises(ValueError):
+        SchemaCatalog(
+            key_order=STANDARD_KEY_ORDER,
+            required_keys=_REQUIRED,
+            expert_only_keys=EXPERT_ONLY_KEYS,
+            date_keys=date_keys,
+            known_ea_names=lambda: _EA_NAMES,
+            subject_suffix=_SUFFIX,
+            unsupported_rules=RULES,
+        )
 
 
 def test_key_order_and_required_keys_pass_the_injection_through(catalog) -> None:

@@ -85,6 +85,7 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
     ``key_order``: `[Tester]` の標準キー順（字句層が権威）。
     ``required_keys``: 他の選択に依らず常に必要なキー（検証層のモデルが権威）。
     ``expert_only_keys``: Expert テスト専用キー（検証層の規則 G/H が権威）。
+    ``date_keys``: 値が日付であるキー（検証層 `DATE_VALUE_KEYS` が権威）。
     ``known_ea_names``: 実行可能な EA 名を返す呼び出し可能（エンジンの公開アクセサへの束縛）。
     ``subject_suffix``: 対象ファイルの接尾辞（`main/tester_settings` が権威）。
     ``unsupported_rules``: 非対象の宣言表（ID → 宣言）。
@@ -96,6 +97,7 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         key_order: "Sequence[str]",
         required_keys: "Sequence[str]",
         expert_only_keys: "Sequence[str]",
+        date_keys: "Sequence[str]",
         known_ea_names: "Callable[[], Sequence[str]]",
         subject_suffix: str,
         unsupported_rules: "Mapping[str, Any]",
@@ -103,10 +105,12 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
         self._key_order = tuple(key_order)
         self._required_keys = tuple(required_keys)
         self._expert_only_keys = frozenset(expert_only_keys)
+        self._date_keys = frozenset(date_keys)
         self._known_ea_names = known_ea_names
         self._subject_suffix = subject_suffix
         self._unsupported_rules = unsupported_rules
         self._assert_keys_exist()
+        self._assert_date_keys_are_scalars()
 
     def _assert_keys_exist(self) -> None:
         """本モジュールが名指しするキーが、注入されたキー順に実在することを構築時に検査する。
@@ -122,6 +126,22 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
                 f"{missing}（key_order={list(self._key_order)}）"
             )
 
+    def _assert_date_keys_are_scalars(self) -> None:
+        """注入された日付キーが「標準キー順に実在する非列挙キー」であることを構築時に検査する。
+
+        Fail-Stop にする理由: 検証層のキー名が変わったとき、`value_type` の印字が静かに
+        消えて「カレンダーの出ない自由入力欄」へ縮退する（沈黙の縮退を作らない）。
+        """
+        missing = sorted(self._date_keys - set(self._key_order))
+        if missing:
+            raise ValueError(
+                f"日付キーが標準キー順に存在しません: {missing}"
+                f"（key_order={list(self._key_order)}）"
+            )
+        enum_clash = sorted(self._date_keys & set(_ENUM_OPTION_BUILDERS))
+        if enum_clash:
+            raise ValueError(f"日付キーが列挙キーと衝突しています: {enum_clash}")
+
     def key_order(self) -> "tuple[str, ...]":
         return self._key_order
 
@@ -136,6 +156,8 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
 
         ``expert_only``: 注入された Expert 専用キー集合に属するか（Indicator テストでは
         持てないキーであることを UI が投入前に示せるようにする＝規則 G）。
+        ``value_type``（日付キーのみ ``"date"``）: 値の型。UI が入力部品（カレンダー）を
+        出し分けるための宣言。どのキーが日付かは注入（検証層 `DATE_VALUE_KEYS`）が権威。
         ``proven`` / ``provisional``（`ExecutionMode` のみ）: 遅延値の**実証状態**。
         宣言は enums 1 箇所であり、ここは反復して写すだけである。
         """
@@ -145,6 +167,8 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
             if key in enum_keys:
                 continue
             spec: "dict[str, Any]" = {"expert_only": key in self._expert_only_keys}
+            if key in self._date_keys:
+                spec["value_type"] = "date"
             if key == _EXECUTION_MODE_KEY:
                 spec["proven"] = sorted(PROVEN_EXECUTION_DELAYS)
                 spec["provisional"] = {

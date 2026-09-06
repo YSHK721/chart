@@ -979,3 +979,31 @@ class TestNonAsciiDigitsAreRejected:
             expert_mapping(Dates=OMIT, FromDate="2020.03.30", ToDate="2024.05.18")
         )
         assert settings.date_range.from_date == date(2020, 3, 30)
+
+
+class TestDateValueKeysDerivation:
+    """`DATE_VALUE_KEYS`（UI のカレンダー出し分けの単一源）が検証モデルから導出されること。
+
+    手で列挙した写しではないことを、モデル注釈との一致・既知の期間キーの包含・非空で
+    固定する（導出が静かに空になると、フォームが text 入力へ黙って縮退する）。
+    """
+
+    def test_the_derivation_is_not_empty(self):
+        assert validation.DATE_VALUE_KEYS, "日付キーの導出が空です（注釈照合の空振り）"
+
+    def test_every_derived_key_is_annotated_as_a_date(self):
+        for key in validation.DATE_VALUE_KEYS:
+            annotation = validation._TesterIniModel.model_fields[key].annotation
+            assert annotation == (date | None), f"{key} の注釈が日付ではありません: {annotation}"
+
+    def test_the_custom_range_keys_are_derived(self):
+        # 規則 E の期間キー（既存宣言）が導出に含まれる（食い違えば規則と UI がずれる）
+        assert set(validation.CUSTOM_DATE_KEYS) <= set(validation.DATE_VALUE_KEYS)
+
+    def test_no_date_annotated_field_is_left_out(self):
+        annotated = {
+            name
+            for name, field in validation._TesterIniModel.model_fields.items()
+            if field.annotation == (date | None)
+        }
+        assert set(validation.DATE_VALUE_KEYS) == annotated
