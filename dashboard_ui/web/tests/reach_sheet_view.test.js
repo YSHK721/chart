@@ -165,7 +165,7 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
 
   test('the_mp_column_sits_between_the_price_and_the_gap', () => {
     // 依頼者承認 2026-09-06: 価格ラダーの「価格」と「差」の間に MP 列
-    //   （dataset_ref の 1D×60 本プロファイルの TPO 密度）。
+    //   （dataset_ref の 1m×2000 本プロファイルの TPO 密度）。
     const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
     const heads = flatten(host)
       .filter((el) => el.tagName === 'TH' && el.dataset && el.dataset.cell)
@@ -250,25 +250,25 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
   test('the_mp_tooltip_names_the_window_in_bars_from_a_single_constant', async () => {
     // 窓の長さは gateway の MP_WINDOW_BARS が唯一源。View 側では**定数 1 つ**に持たせ、
     //   説明文はそこから組み立てる（手書き複製は必ず取り残しを生む）。
-    //   文言も是正する: 確定足 60 本は暦 60 日**ではない**（休場日・欠損があるので
-    //   「60 日」は不正確）。読み手には「日足を何本畳んだか」を伝える。
+    //   文言も是正する: 確定足 2000 本は暦 2000 分**ではない**（休場・欠損があるので
+    //   「2000 分」は不正確）。読み手には「1分足を何本畳んだか」を伝える。
     const { host } = renderInto(sheetResponse({ rows: [ladderRow({ mp: 0.4 })], current_index: 1 }));
     // 見出し（TH）にも dataset.cell = 'mp' が付くので、水準行の TD へ絞る。
     const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const cell = flatten(row).find((el) => el.tagName === 'TD' && el.dataset.cell === 'mp');
     assert.ok(cell, 'MP のセルがありません');
 
-    assert.equal(cell.title, '直近の日足 60 本のプロファイルの TPO 密度');
-    assert.doesNotMatch(cell.title, /60\s*日/, '確定足の本数を暦日数として説明しています');
+    assert.equal(cell.title, '直近の1分足 2000 本のプロファイルの TPO 密度');
+    assert.doesNotMatch(cell.title, /2000\s*分/, '確定足の本数を暦の分数として説明しています');
 
-    // 唯一源であることの機械的固定: View の中に裸の 60 が 2 つ以上あれば複製である。
+    // 唯一源であることの機械的固定: View の中に裸の 2000 が 2 つ以上あれば複製である。
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const source = readFileSync(
       fileURLToPath(new URL('../js/adapter/front/reach_sheet_view.js', import.meta.url)), 'utf8',
     );
-    const occurrences = source.match(/(?<![\w.])60(?![\w.])/g) ?? [];
-    assert.equal(occurrences.length, 1, `窓の本数 60 が View 内で複製されています（${occurrences.length} 箇所）`);
+    const occurrences = source.match(/(?<![\w.])2000(?![\w.])/g) ?? [];
+    assert.equal(occurrences.length, 1, `窓の本数 2000 が View 内で複製されています（${occurrences.length} 箇所）`);
   });
 
   test('a_row_without_a_density_draws_no_bar_instead_of_inventing_one', () => {
