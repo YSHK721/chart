@@ -13,6 +13,7 @@ jp225_m1 がどの経路へ分岐するかを「呼び出しの有無」で検�
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from adapter.compute import dataset
 
@@ -27,6 +28,22 @@ def _clear_caches() -> None:
     dataset.serving_cache._BASE_CACHE.clear()
     dataset.serving_cache._RESAMPLE_CACHE.clear()
     dataset.serving_cache._TAIL_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_supply_caches():
+    """供給キャッシュを前後で空にする（ISSUE-491・順序干渉の根本遮断）。
+
+    本ファイルのスパイは `load_dataframe` の**実経路**を通るため、fake DataFrame が
+    **本物の (ref, mtime) 鍵**で `_TAIL_CACHE` 等へ書き込まれる。monkeypatch は関数を
+    戻すがキャッシュの中身は戻さないので、後始末が無いとプロセス共有のキャッシュに
+    fake が残置され、以後の全消費者（dashboard e2e smoke の jp225_tick 供給）へ
+    3 行の fake が配られる（実測: current_price=3.0・/reach_sheet 400）。
+    クリアが「前」だけでは自分は守れても他者を汚す——対称（前後）にして残置を遮断する。
+    """
+    _clear_caches()
+    yield
+    _clear_caches()
 
 
 def _fake_df():
