@@ -155,13 +155,22 @@ class ForwardMode(IntEnum):
 class ExecutionDelay:
     """`ExecutionMode` の**名前付き定数**（列挙にしない）。
 
-    フィールドは生 ``int`` で保持する（基本設計 §4.3.5）。意味が実証済みの 2 値
-    のみを命名し、corpus 実測の ``-1`` / ``21`` には名前を与えない（未実証の意味を
-    確定事実として下流へ伝播させないため）。
+    フィールドは生 ``int`` で保持する（基本設計 §4.3.5）。命名するのは「意味の主張
+    （実証または暫定）を持つ値」だけであり、主張の実証状態は下の
+    ``PROVEN_EXECUTION_DELAYS`` / ``PROVISIONAL_EXECUTION_DELAYS`` が宣言する。
+    corpus 実測の ``-1`` / ``21`` には名前を与えない（意味を推定できない値に主張を
+    作らない。「ランダム遅延」「カスタム遅延」「ping 由来」の生値は未実測のまま）。
     """
 
-    ZERO_LATENCY_IDEAL: int = 0   # 暫定（TBD-08。画像 1 のラベル対応は未取得）
+    ZERO_LATENCY_IDEAL: int = 0   # 暫定（TBD-08。UI「遅延ゼロ、理想的な実行」との対応は推定）
+    DELAY_1MS: int = 1            # 暫定（TBD-20。UI「1ミリ秒」＝生値 ms の類推）
+    DELAY_5MS: int = 5            # 暫定（TBD-20）
+    DELAY_10MS: int = 10          # 暫定（TBD-20）
+    DELAY_20MS: int = 20          # 暫定（TBD-20）
     DELAY_50MS: int = 50          # 実証（golden fixture の delays_ms=50 と一致）
+    DELAY_100MS: int = 100        # 暫定（TBD-20。MT5 実画面 ss20260906195130 の選択値）
+    DELAY_500MS: int = 500        # 暫定（TBD-20）
+    DELAY_1000MS: int = 1000      # 暫定（TBD-20）
 
     def __init__(self) -> None:  # pragma: no cover - 定数名前空間のため生成しない
         raise TypeError("ExecutionDelay は定数の名前空間であり生成できません")
@@ -195,13 +204,13 @@ PROVEN_EXECUTION_DELAYS: "frozenset[int]" = frozenset({ExecutionDelay.DELAY_50MS
 #: は生値を推定できないため定義しない（corpus の -1 / 21 は引き続き無名＝近似扱い）。
 PROVISIONAL_EXECUTION_DELAYS: "dict[int, str]" = {
     ExecutionDelay.ZERO_LATENCY_IDEAL: "TBD-08",
-    1: "TBD-20",
-    5: "TBD-20",
-    10: "TBD-20",
-    20: "TBD-20",
-    100: "TBD-20",
-    500: "TBD-20",
-    1000: "TBD-20",
+    ExecutionDelay.DELAY_1MS: "TBD-20",
+    ExecutionDelay.DELAY_5MS: "TBD-20",
+    ExecutionDelay.DELAY_10MS: "TBD-20",
+    ExecutionDelay.DELAY_20MS: "TBD-20",
+    ExecutionDelay.DELAY_100MS: "TBD-20",
+    ExecutionDelay.DELAY_500MS: "TBD-20",
+    ExecutionDelay.DELAY_1000MS: "TBD-20",
 }
 
 
@@ -315,12 +324,12 @@ OPTIMIZATION_MODE_UI_LABELS: "dict[OptimizationMode, str]" = {
 #: 数値ラベル⇔生値の対応は 50 のみ実証・他は暫定（TBD-20。PROVISIONAL 側の宣言を参照）。
 EXECUTION_DELAY_UI_LABELS: "dict[int, str]" = {
     ExecutionDelay.ZERO_LATENCY_IDEAL: "遅延ゼロ、理想的な実行",
-    1: "1ミリ秒",
-    5: "5ミリ秒",
-    10: "10ミリ秒",
-    20: "20ミリ秒",
+    ExecutionDelay.DELAY_1MS: "1ミリ秒",
+    ExecutionDelay.DELAY_5MS: "5ミリ秒",
+    ExecutionDelay.DELAY_10MS: "10ミリ秒",
+    ExecutionDelay.DELAY_20MS: "20ミリ秒",
     ExecutionDelay.DELAY_50MS: "50ミリ秒",
-    100: "100ミリ秒",
-    500: "500ミリ秒",
-    1000: "1000ミリ秒",
+    ExecutionDelay.DELAY_100MS: "100ミリ秒",
+    ExecutionDelay.DELAY_500MS: "500ミリ秒",
+    ExecutionDelay.DELAY_1000MS: "1000ミリ秒",
 }

@@ -300,6 +300,9 @@ class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
         assert referencing == [
             "tests/unit/test_ea_factory_registry.py",
             "tests/unit/test_unsupported_n01_ea_name_source.py",
+            # N-17: spread 依存宣言と「Mt5CsvOHLCRepository を返すファクトリ」の一致を
+            # 機械で結ぶ検定（宣言の写しが腐らないための参照・2026-09-06）。
+            "tests/unit/test_unsupported_spread_dependency.py",
         ]
         assert [
             path

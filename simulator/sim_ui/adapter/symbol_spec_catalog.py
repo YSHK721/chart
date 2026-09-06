@@ -91,6 +91,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from simulator.adapter.repository.ohlc_marketdata_csv import detect_ohlc_form
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
     load_snapshot,
@@ -108,36 +109,58 @@ _JP225_SERVER = OANDA_JAPAN_MT5_LIVE
 
 # リポジトリ根 = simulator/sim_ui/adapter/symbol_spec_catalog.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-# MT5 形式の実 JP225 M1 CSV（実 OANDA-Japan MT5・MT5 突合 fixture と同系譜・TAB <DATE> 形式）。
-# 本番配置は未確定（別 ISSUE）。カタログ authored 固定パス（ユーザー供給でない）。
-_JP225_MT5_CSV = (
-    _REPO_ROOT
-    / "simulator" / "tests" / "fixtures" / "mt5" / "ma_slope_jp225_202501"
-    / "input" / "JP225_M1_202501.csv"
-)
+# JP225 の実行データ実体（依頼者承認 2026-09-06: 2012 年からの全期間 marketdata 系列）。
+# 形式は `date,open,high,low,close,volume`（ISO 日時・UTC）。spread 列を持たないため
+# spread 依存 EA（MA_Slope 系）は N-17 が実行前に弾く。従来の MT5 突合 fixture
+# （2025-01 の 1 ヶ月・JP225_M1_202501.csv）はテスト用途に残る（本カタログからは外す）。
+_JP225_DATA_CSV = _REPO_ROOT / "data" / "marketdata" / "jp225_m1.csv"
+
+
+def _config_overrides_for(path: Path) -> "dict | None":
+    """データ実体の形式から決定論設定の override を導く（形式の権威はヘッダ実測）。
+
+    MT5 TAB 形式のみ `entry_price_basis: current_open` を供給する——MT5 ローダ EA は
+    建値系列に close を持たず open を持つ（実測・従来 fixture データセットの事情）。
+    marketdata / comma 形式は既定（close）で建値系列が成立するため override なし。
+    """
+    if detect_ohlc_form(path) == "mt5_tab":
+        return {"entry_price_basis": "current_open"}
+    return None
+
+
+def _date_token_of_row(row: bytes) -> "str | None":
+    """データ 1 行の先頭フィールドから `.ini` 日付トークン（`YYYY.MM.DD`）を取り出す。
+
+    形式差はここに閉じる（実測 2 形式）: MT5 TAB 形式は `2025.01.02\t...`、marketdata
+    comma 形式は `2012-06-14 10:35:00,...`。どちらでもなければ None。
+    """
+    import re
+
+    head = row.split(b"\t", 1)[0].split(b",", 1)[0].decode("ascii", "replace").strip()
+    date_part = head.split(" ", 1)[0]
+    if re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", date_part):
+        return date_part
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_part):
+        return date_part.replace("-", ".")
+    return None
 
 
 def _csv_date_range(path: Path) -> "tuple[str | None, str | None]":
-    """MT5 形式 CSV のデータ先頭/末尾の日付トークン（`YYYY.MM.DD`）を実測する。
+    """価格 CSV のデータ先頭/末尾の日付トークン（`YYYY.MM.DD`）を実測する。
 
-    先頭はヘッダ直後の 1 行・末尾はファイル終端からの後読み（全走査しない）。日付列は
-    第 1 フィールド（TAB 区切り `<DATE>`）で、値は `.ini` の日付トークンと同形（実測:
-    `2025.01.02`）。読めない場合は (None, None)（表示なしへ縮退・投入には関与しない）。
+    先頭はヘッダ直後の 1 行・末尾はファイル終端からの後読み（全走査しない・460 万行でも
+    定数コスト）。読めない場合は (None, None)（表示なしへ縮退・投入には関与しない）。
     """
     try:
         with path.open("rb") as f:
             f.readline()                      # ヘッダ行
-            first = f.readline().split(b"\t", 1)[0].decode("ascii", "replace").strip()
+            first_row = f.readline()
             f.seek(0, 2)
             tail = min(f.tell(), 4096)
             f.seek(-tail, 2)
             lines = [ln for ln in f.read().splitlines() if ln.strip()]
-            last = lines[-1].split(b"\t", 1)[0].decode("ascii", "replace").strip() if lines else ""
-        pattern = __import__("re").compile(r"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$")
-        return (
-            first if pattern.fullmatch(first) else None,
-            last if pattern.fullmatch(last) else None,
-        )
+            last_row = lines[-1] if lines else b""
+        return (_date_token_of_row(first_row), _date_token_of_row(last_row))
     except OSError:
         return (None, None)
 
@@ -159,11 +182,11 @@ class SymbolSpecCatalog(RunOptionsPort):
         # 供給元スナップショットを 1 回読み、銘柄仕様 8 項目と決済通貨をそこから引く。
         # リテラルを持たない＝人が値を選べない（ISSUE-445 RC-1 の是正・D2）。
         snapshot = load_snapshot(_JP225_SERVER, _JP225_SYMBOL)
-        data_first, data_last = _csv_date_range(_JP225_MT5_CSV)
+        data_first, data_last = _csv_date_range(_JP225_DATA_CSV)
         return [
             RunProfile(
                 dataset=_JP225_REF,
-                data_path=str(_JP225_MT5_CSV),
+                data_path=str(_JP225_DATA_CSV),
                 # 日付行の表示用データ範囲（実測読取・表示専用。読めなければ None）
                 data_first_date=data_first,
                 data_last_date=data_last,
@@ -174,9 +197,8 @@ class SymbolSpecCatalog(RunOptionsPort):
                 **spec_fields(snapshot),
                 # N-11（口座通貨 ≠ 決済通貨）の判定データ源。供給元の symbol.currency_profit。
                 settlement_currency=settlement_currency(snapshot),
-                # MT5 ローダ EA は建値系列に close を持たず open を持つ（実測）。既定 close では
-                # 建値系列未登録で job 失敗するため、本データセットは current_open を権威供給する。
-                config_overrides={"entry_price_basis": "current_open"},
+                # 決定論設定はデータ形式から導出（MT5 TAB のみ current_open・上記 docstring）。
+                config_overrides=_config_overrides_for(_JP225_DATA_CSV),
             )
         ]
 

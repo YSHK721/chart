@@ -1,4 +1,4 @@
-"""保証境界（非対象）N-01〜N-16 の宣言表と送出（基本設計 §4.6・内部設計 §8.4.4）。
+"""保証境界（非対象）N-01〜N-17 の宣言表と送出（基本設計 §4.6・内部設計 §8.4.4）。
 
 1. 層名/責務:
     main 層（Composition Root）。「本実装が保証しない設定」の**唯一の宣言場所**。
@@ -9,7 +9,7 @@
 2. 含む構造:
     UiTrigger             : 設定フォームへの束縛（効くキー・発火条件・生トークン）。
     UnsupportedRule       : 非対象 1 件の宣言（ID / field / reason / 判定式 / 送出 / UI 束縛）。
-    RULES                 : ID → 宣言（N-01〜N-16 のうち送出を伴うもの）。
+    RULES                 : ID → 宣言（N-01〜N-17 のうち送出を伴うもの）。
     RUN_REQUEST_RULES     : 実行要求時に評価する宣言（評価順）。
     NON_RAISING_RULES     : 送出を伴わない非対象（欠番・近似・責務境界・ロード時）。
     apply_unsupported_rules : 実行要求時の一括評価（違反は最初の 1 件で Fail-Stop）。
@@ -244,6 +244,32 @@ RELATIVE_DATE_PRESETS: "frozenset[DatesPreset]" = frozenset(
 )
 
 
+#: spread 依存 EA（約定式が open + spread×point を参照する 3 本・H-4 裁定）。
+#: 権威は EA ファクトリ表（`simulator.main._EA_FACTORIES` で Mt5CsvOHLCRepository を
+#: 返す 3 本）だが、本モジュールから `simulator.main` は import できない（循環）ため
+#: ここに宣言し、一致は検定（test_unsupported_spread_dependency.py）が機械で固定する。
+SPREAD_DEPENDENT_EA_NAMES: "frozenset[str]" = frozenset(
+    {"MA_Slope_EA", "MA_Slope_Pending_EA", "StopEntryProbe_EA"}
+)
+
+
+def _detect_spread_dependent_ea_on_spreadless_data(
+    effective: EffectiveSettings, binding: "EngineBinding"
+) -> Any:
+    """N-17: spread 依存 EA × spread 列の無いデータ形式（marketdata 形式）。
+
+    marketdata 系列は spread を持たず spread=0 供給になるため、約定価格式が
+    open + spread×point の EA は実 MT5 と一致しない（H-4）。形式の判定はデータ実体の
+    ヘッダ実測（`detect_ohlc_form`）で行う——EA 名や拡張子から推測しない。
+    """
+    from simulator.adapter.repository.ohlc_marketdata_csv import detect_ohlc_form
+
+    name = ea_stem(effective.subject_path)
+    if name in SPREAD_DEPENDENT_EA_NAMES and detect_ohlc_form(binding.data_path) == "marketdata":
+        return name
+    return NOT_VIOLATED
+
+
 def _detect_relative_preset(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
     """N-16: 相対プリセット（last year / last month）。起点がバー系列の最終時刻に依存する。"""
     date_range = effective.date_range
@@ -359,6 +385,19 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         # 常時点灯し、本当の非対象の警告まで無視されるようになる。判定はエンジンが返した
         # バー系列を要するため、生トークンでは判定できない——それを N-10 と同じ形で宣言する。
         ui=UiTrigger(keys=("FromDate", "ToDate"), mode=UI_TRIGGER_NONE),
+    ),
+    UnsupportedRule(
+        unsupported_id="N-17",
+        field="subject_path",
+        reason=(
+            "spread 依存 EA（約定式が open + spread×point）は、spread 列を持たない"
+            " marketdata 形式データセットでは実行できません（spread=0 供給になり"
+            "実 MT5 と一致しない・H-4）"
+        ),
+        detect=_detect_spread_dependent_ea_on_spreadless_data,
+        # 生トークンだけでは判定できない（データ実体の形式に依存する）——N-10 と同じ形。
+        # 投入時の Fail-Stop が本則で、UI へは実行前の 400 で理由が届く。
+        ui=UiTrigger(keys=("Expert",), mode=UI_TRIGGER_NONE),
     ),
     UnsupportedRule(
         unsupported_id="N-16",

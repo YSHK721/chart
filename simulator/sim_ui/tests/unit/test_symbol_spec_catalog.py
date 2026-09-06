@@ -42,33 +42,43 @@ def test_jp225_profile_symbol_spec_comes_from_the_supply_snapshot():
     assert jp.symbol == "JP225" and jp.period == "M1"
 
 
-def test_data_path_points_to_readable_mt5_jp225_csv():
-    """data_path は MT5 形式の実 JP225 CSV（run ローダが読める形式）を指す。
+def test_data_path_points_to_the_full_marketdata_jp225_csv():
+    """data_path は 2012 年からの全期間 JP225 実データ（marketdata 形式）を指す。
 
-    出典（憶測禁止）: dataset_registry の jp225_m1.csv（date/volume・time/spread 無し）は
-    comma ローダでも MT5 ローダでも読めない（実測）。MT5 ローダ EA が読める MT5 突合 fixture
-    と同系譜の実 OANDA-Japan MT5 JP225 M1（JP225_M1_202501.csv・TAB <DATE>）へ向ける。
-    本番データ配置は未確定＝別 ISSUE。
+    依頼者承認 2026-09-06。読み手は `MarketdataCsvOHLCRepository`（形式はヘッダが権威）。
+    spread 依存 EA はこのデータでは N-17 が実行前に弾く。
     """
     from pathlib import Path
+
+    from simulator.adapter.repository.ohlc_marketdata_csv import detect_ohlc_form
 
     jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
     assert jp.dataset == "jp225_m1"
     p = Path(jp.data_path)
-    assert p.name == "JP225_M1_202501.csv"
+    assert p.name == "jp225_m1.csv"
     assert p.is_file(), f"data_path の CSV が実在しない: {jp.data_path}"
-    # 先頭行が MT5 TAB 形式（<DATE> <TIME> … <SPREAD>）であることを実測で固定する。
-    head = p.read_text(encoding="utf-8").splitlines()[0]
-    assert "<DATE>" in head and "<SPREAD>" in head and "\t" in head
+    assert detect_ohlc_form(p) == "marketdata"
 
 
-def test_mt5_profile_supplies_current_open_basis():
-    """MT5 ローダ EA は建値系列に close を持たず open を持つため、profile が
-    entry_price_basis=current_open を config_overrides で権威供給する（既定 close は失敗）。"""
+def test_config_overrides_follow_the_data_form():
+    """決定論設定の override はデータ実体の形式から導く（宣言は _config_overrides_for）。
+
+    MT5 TAB 形式のみ current_open（MT5 ローダ EA が close 系列を持たない・実測）。
+    marketdata 形式（現行データセット）は override なし＝既定 close。
+    """
+    from pathlib import Path
+
+    from simulator.sim_ui.adapter.symbol_spec_catalog import _config_overrides_for
+
     jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
-    assert jp.config_overrides == {"entry_price_basis": "current_open"}
-    # to_dict にも載る（run-options 応答 → フォームへ届く）
-    assert jp.to_dict()["config_overrides"] == {"entry_price_basis": "current_open"}
+    assert jp.config_overrides is None
+    assert "config_overrides" not in jp.to_dict()
+    mt5_fixture = (
+        Path(jp.data_path).parents[2] / "simulator" / "tests" / "fixtures" / "mt5"
+        / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv"
+    )
+    assert mt5_fixture.is_file(), "MT5 fixture が見つかりません（前提の崩れ）"
+    assert _config_overrides_for(mt5_fixture) == {"entry_price_basis": "current_open"}
 
 
 def test_ea_names_come_from_the_engine_accessor():
@@ -151,16 +161,16 @@ def test_run_profile_exposes_eleven_backtest_keys():
 def test_data_range_is_measured_from_the_csv_itself():
     """データ範囲（先頭/末尾の日付トークン）は CSV 実体からの実測であること。
 
-    プリセット選択時に日付ボックスへ表示する解決期間のデータ源（表示専用）。期待値は
-    fixture CSV（JP225_M1_202501.csv）の先頭データ行と末尾行の実測 golden。
+    プリセット選択時に日付ボックスへ表示する解決期間のデータ源（表示専用）。先頭は
+    全期間データの先頭（2012-06-14・不変の実測 golden）。末尾はライブ供給で日々進む
+    ため値を焼き込まず、トークン形と順序（first <= last）だけを固定する。
     """
-    jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
-    assert jp.data_first_date == "2025.01.02"
-    assert jp.data_last_date == "2025.01.30"
-    # `.ini` の日付トークンと同形（front が変換なしでボックスへ出せる）
     import re
 
-    assert re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", jp.data_first_date)
+    jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
+    assert jp.data_first_date == "2012.06.14"
+    assert re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", jp.data_last_date)
+    assert jp.data_first_date <= jp.data_last_date   # トークンは辞書順＝時系列順
 
 
 def test_data_range_is_not_in_the_submission_payload_keys():
@@ -172,5 +182,5 @@ def test_data_range_is_not_in_the_submission_payload_keys():
     """
     jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
     payload = jp.to_dict()
-    assert payload["data_first_date"] == "2025.01.02"
-    assert payload["data_last_date"] == "2025.01.30"
+    assert payload["data_first_date"] == jp.data_first_date
+    assert payload["data_last_date"] == jp.data_last_date

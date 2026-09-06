@@ -30,9 +30,27 @@ from simulator.sim_ui.main import run_job
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.tester_settings_engine_fixtures import runnable_expert_mapping
 
-#: MT5 ローダ EA（本データセットが読める EA）。`.ini` の `Expert` と `backtest.ea_name`
+#: MT5 ローダ EA（本データ実体が読める EA）。`.ini` の `Expert` と `backtest.ea_name`
 #: は同じ EA を指す必要がある（受付検証 b と同じ規律）。
 _EA_NAME = "MA_Slope_EA"
+
+#: 本ファイルはデータ量ではなく**写像と経路**を固定する。実カタログの JP225 実体
+#: （全期間・460 万行・2026-09-06 承認）で回すと 1 run が数十分になるため、e2e スタックと
+#: 同じ継ぎ目でデータ実体だけを MT5 突合 fixture（2025-01・spread あり）へ差し替える。
+#: 全期間実体の実行は `simulator/tests/integration/test_marketdata_dataset_run.py` が担う。
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fixture_dataset(monkeypatch):
+    from simulator.sim_ui.adapter import symbol_spec_catalog
+
+    monkeypatch.setattr(
+        symbol_spec_catalog,
+        "_JP225_DATA_CSV",
+        Path(__file__).resolve().parents[4] / "simulator" / "tests" / "fixtures" / "mt5"
+        / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv",
+    )
 
 #: 本 EA は SL/TP を持たない（`stop_loss_points`/`take_profit_points` > 0 は未サポート）。
 _NO_SL_TP = 0.0

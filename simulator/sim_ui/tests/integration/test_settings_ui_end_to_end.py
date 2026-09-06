@@ -58,9 +58,24 @@ def _serve_forever(server):
     return thread
 
 
+#: e2e 用のデータ実体（MT5 突合 fixture・2025-01・spread あり）。
+#: 本検定はデータ量ではなく**結線**を固定する。実カタログの JP225 実体（全期間・
+#: 460 万行）で完走シナリオを回すと 1 run が数十分になるため、データ実体だけを
+#: 差し替える（カタログの結線・形式導出＝`_config_overrides_for` は実物のまま通る）。
+#: 全期間実体の完走は `simulator/tests/integration/test_marketdata_dataset_run.py` が
+#: 期間窓つきで実測する。
+_E2E_DATA_CSV = (
+    _ROOT / "simulator" / "tests" / "fixtures" / "mt5" / "ma_slope_jp225_202501"
+    / "input" / "JP225_M1_202501.csv"
+)
+
+
 @pytest.fixture
-def stack(tmp_path: Path):
+def stack(tmp_path: Path, monkeypatch):
     """製品 UI の合成経路（ルータ → sim core）を ephemeral port で立てる。"""
+    from simulator.sim_ui.adapter import symbol_spec_catalog
+
+    monkeypatch.setattr(symbol_spec_catalog, "_JP225_DATA_CSV", _E2E_DATA_CSV)
     core = build_sim_display_app(repo_root=_ROOT, web_dir=_SIM_WEB, data_root=tmp_path / "data")
     core_server = make_server(core, "127.0.0.1", None)
     core_base = f"http://127.0.0.1:{core_server.server_address[1]}"

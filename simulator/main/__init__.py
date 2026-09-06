@@ -52,6 +52,10 @@ from simulator.adapter.repository.marketdata_source import MarketDataSourceRepos
 # A-1: バー系列を消費しない modelling 用の Null 実装（`requires_market_data is False`）。
 from simulator.adapter.repository.null_market_data import NullMarketDataRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
+from simulator.adapter.repository.ohlc_marketdata_csv import (
+    MarketdataCsvOHLCRepository,
+    detect_ohlc_form,
+)
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 # A-3: 取得窓を全 MarketDataPort 実装へ効かせる合成デコレータ（L-2 の解消）。
 from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
@@ -346,6 +350,20 @@ class _EaBuildContext:
     weekly_f_risk: float
 
 
+def _ohlc_repository_for(data_path: Any) -> Any:
+    """spread 非依存（comma 系）EA の OHLC リーダをデータ実体の形式で選ぶ。
+
+    形式の権威はデータのヘッダ（`detect_ohlc_form`）である。marketdata 形式
+    （2012 年からの全期間 JP225 実データ・依頼者承認 2026-09-06）は
+    `MarketdataCsvOHLCRepository`、それ以外は従来どおり `CsvOHLCRepository`
+    （comma 合成データの既存経路と byte 等価）。spread 依存 EA（MT5 ローダ）には
+    使わない——marketdata 形式は spread を持たず、その組合せは N-17 が実行前に弾く。
+    """
+    if detect_ohlc_form(data_path) == "marketdata":
+        return MarketdataCsvOHLCRepository()
+    return CsvOHLCRepository()
+
+
 def _factory_ma_slope(ctx: "_EaBuildContext") -> "tuple[Any, PandasIndicatorRegistry, Any]":
     # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
     df = _load_mt5_dataframe(ctx.data_path)
@@ -386,7 +404,7 @@ def _factory_weekly_vol_band(
         capital=ctx.weekly_capital,
         f_risk=ctx.weekly_f_risk,
     )
-    return strategy, registry, CsvOHLCRepository()
+    return strategy, registry, _ohlc_repository_for(ctx.data_path)
 
 
 def _factory_pro_fit_band(
@@ -398,7 +416,7 @@ def _factory_pro_fit_band(
     registry = _build_pro_fit_band_registry(
         df, ma_period=ctx.ma_period, adx_period=ctx.adx_period
     )
-    return ProFitBand(), registry, CsvOHLCRepository()
+    return ProFitBand(), registry, _ohlc_repository_for(ctx.data_path)
 
 
 def _factory_dataless(_ctx: "_EaBuildContext") -> "tuple[Any, Any, Any]":
@@ -419,7 +437,7 @@ def _factory_tc24051901(
     # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
     df = _load_dataframe(ctx.data_path)
     registry = _build_registry(df, ma_period=ctx.ma_period, ma_method=ctx.ma_method)
-    return TC24051901(), registry, CsvOHLCRepository()
+    return TC24051901(), registry, _ohlc_repository_for(ctx.data_path)
 
 
 # ea_name → ファクトリの登録表（ISSUE-097 🟡-3・従来の if/elif 5 分岐を置換）。
@@ -750,6 +768,12 @@ def build_interactor(
             market_data = MarketDataSourceRepository(
                 CsvCandleSource(data_path), window=marketdata_window
             )
+        elif isinstance(market_data, MarketdataCsvOHLCRepository):
+            # marketdata 形式は**フレーム段**で窓を適用する（構築時パラメータへ隔離＝
+            # CsvOHLCRepository の委譲と同じ形）。後段の窓デコレータに任せると全行の
+            # Bar を作ってから捨てる（実測 4,604,080 行で構築 442.6 秒）ISSUE-450 型の
+            # 浪費になる。構築数＝採用数は repository の計算量テストが固定する。
+            market_data = MarketdataCsvOHLCRepository(window=marketdata_window)
         else:
             # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
             # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
