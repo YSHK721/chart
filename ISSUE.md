@@ -5941,7 +5941,12 @@ ISSUE-319 〜 ISSUE-340 は 2026-08-09 の「テストコードと実装コー�
 - **関連**: ISSUE-238。
 
 ## ISSUE-331: [構造] `moving_averages` パッケージの再エクスポート層が壊れている（2026-08-09）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-06・対策案どおり単一源化・実測済み）
+- **是正**: 手書き 11 名の束縛を `from .src import *` へ置換＝束縛と `__all__` の出所を
+  `src.__all__` 単一へ。パッケージ層を通す検定 `tests/test_reexport_layer.py` を新設
+  （欠け名 0・`__all__` 同一物・素通し同一性。名前列挙を期待値に書かない）。
+- **検証**: `from moving_averages import *` 14 名成立・moving_averages 170 passed・
+  消費者（profit_osi_ma 24 / profit_arctan 38）passed・本番 import 経路 OK。
 - **重大度**: Medium（本番 import 経路でありながら `from moving_averages import *` が失敗する）
 - **実測**: `indigators/moving_averages/__init__.py:12-24` が 11 名を束縛したあと `:25` で `from .src import __all__`（14 名）を上書きする。結果 `from moving_averages import *` が `AttributeError: module 'moving_averages' has no attribute 'linear_weighted_ma_on_buffer_stateful'`。`LwmaState` / `MA_FROM_ZERO` も未束縛。
 - **原因**: 束縛リストと `__all__` の出所が別（前者は手書き 11 名、後者は `src.__all__` の 14 名）。テストは全 3 ファイルが `from src import ...` で直接読むため、この層を一度も通らない。
