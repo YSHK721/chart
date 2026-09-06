@@ -14074,7 +14074,14 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   汚染される経路の特定が必要（推定であり、根本原因は未確定）。
 
 ## ISSUE-492: [テスト] test_composition_root_arg_parity が ChartToastView / ClipboardGateway の 4 件で失敗（既存）
-- **ステータス**: OPEN（ISSUE-490 の検査中に発見・HEAD(423655d) の worktree でも同一失敗＝既存問題）
+- **ステータス**: RESOLVED（2026-09-06・是正・実測済み。d72320a）
+- **原因**: 両クラスの全構築テストが seam（timer / navigator）を注入した形だけで検証しており、
+  本番の合成根が作る形（`{ document }` のみ・chart_app_wiring.js:248,270）を 1 つも通して
+  いなかった（ISSUE-275 型＝検定の趣旨どおりの検出であり、検定側の誤報ではない）。
+- **是正**: 本番形（キー不在）の構築テストを各 1 件追加 — ChartToastView は globalThis
+  タイマー既定 bind＋既定 1600ms、ClipboardGateway は navigator 環境フォールバック＋
+  execCommand 経路。
+- **検証**: test_composition_root_arg_parity 7 passed（修正前 1 failed）・front 2,580 passed。
 - **内容**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form`
   が「本番の合成根は渡さないのに全テストが渡している」として ChartToastView.clearTimeout /
   durationMs / setTimeout・ClipboardGateway.navigator の 4 件を報告する。
