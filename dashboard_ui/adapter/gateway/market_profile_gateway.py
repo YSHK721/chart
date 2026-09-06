@@ -18,7 +18,8 @@
 
 ストアの鍵に接頭辞を付ける理由（実測 2026-09-06）:
     :class:`MaterialStore` は**鍵ごとに版を 1 つだけ**持ち、版が変わればその鍵の素材を丸ごと
-    捨てる。鍵 `(dataset_ref, timeframe)` は P-1（`IndicatorUiComputeGateway`）が自分の版の
+    捨てる。鍵 `(dataset_ref, timeframe)` は P-1
+    （`dashboard_ui/adapter/gateway/indicator_ui_compute_gateway.py`）が自分の版の
     定義で所有しており、そこへ別の版の定義で相乗りすると互いの素材を毎要求押し出し合う。
     実測: 素材が不変な 5 要求で P-1 の full 発行が 1 回のはずが **10 回**、MP の畳み込みが
     1 回のはずが **5 回**になった（出力は正しいままなので状態検証では原理的に落ちない
@@ -36,13 +37,14 @@
     （`dashboard_ui/tests/unit/test_dashboard_import_direction.py` の R3 が機械強制する）。
     探索パスの用意は `indigators.indicator_ui.api_loader` が唯一源であり、遅延 import の
     直前に必ず呼ぶ——他の口（series_port）の実行順に暗黙に依存させない
-    （既存前例: `adapter/series_role_table.py` の `_indicator_module`）。
+    （既存前例: `adapter/series_role_table.py` の遅延 import の口）。
 """
 from __future__ import annotations
 
 import math
 from typing import Sequence
 
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
 from dashboard_ui.domain.bar import Bar
 
 #: プロファイルの素材にする時間足（依頼者承認 2026-09-06: シート共通の 1D）。
@@ -64,7 +66,7 @@ class MarketProfileGateway:
             計算量テスト（Test Spy）が**発行回数を数える面**を必要とするためである。
     """
 
-    def __init__(self, *, bar_port, store, compute=None) -> None:
+    def __init__(self, *, bar_port, store: "MaterialStore", compute=None) -> None:
         self._bar_port = bar_port
         self._store = store
         self._compute = compute
@@ -154,7 +156,8 @@ def _reference_compute(candles, *, n_bins: int) -> dict:
 def _norm_at(profile: "dict", price: float) -> "float | None":
     """価格が入る bin の norm。プロファイルの価格域の外・素材なしは None。
 
-    bin の引き方は MP core の `_bin_index`（参照実装）と**字面まで同じ**式にする——
+    bin の引き方は MP core の bin 帰属
+    （`market_profile_api/compute/market_profile.py`・参照実装）と**字面まで同じ**式にする——
     `(price - price_min) / span * n_bins` であって `(price - price_min) / 幅` ではない。
     代数的には同値だが、幅を先に割ると丸めが 1 回増え、**bin 境界ちょうど**の価格で
     core と別の bin へ落ちる（実測 2026-09-06: price_min=38000 / price_max=42000 /

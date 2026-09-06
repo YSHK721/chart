@@ -11,7 +11,12 @@ from __future__ import annotations
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from dashboard_ui.domain.bar import Bar
-from dashboard_ui.usecase.sheet_models import OscillatorSpec, SeriesRole, SheetInstance
+from dashboard_ui.usecase.sheet_models import (
+    Degradation,
+    OscillatorSpec,
+    SeriesRole,
+    SheetInstance,
+)
 
 
 @runtime_checkable
@@ -48,7 +53,8 @@ class BarSupplyPort(Protocol):
 class MarketProfilePort(Protocol):
     """P-MP 価格水準の TPO 密度（依頼者承認 2026-09-06: 価格ラダーの MP 列）。
 
-    実装は既存の MP core（参照実装 `compute_candle_profile`）を **読むだけ**で再利用する。
+    実装は既存の MP core（参照実装 `market_profile_api/compute/market_profile.py`）を
+    **読むだけ**で再利用する。
     プロファイルはシート共通の 1 本（dataset_ref の 1D 確定足・直近 60 本）であり、
     行ごとに畳まない——だから面は「価格 1 本」ではなく**全行一括**である
     （行ごとの口にすると ISSUE-450 と同型の浪費が構造として入り込む）。
@@ -73,8 +79,8 @@ class MarketProfilePort(Protocol):
         ——読み手には区別が付かず、壊れたまま何日も動き続ける。
 
         したがって「無言の縮退」より「見える失敗」を採る。この規律は
-        `tests/unit/test_market_profile_gateway.py` の
-        `TestSupplyFailuresAreNotSwallowed` が機械的に固定する（宣言では守られない）。
+        `tests/unit/test_market_profile_gateway.py` の握り潰し検査
+        （TestSupplyFailuresAreNotSwallowed）が機械的に固定する（宣言では守られない）。
     """
 
     def norms_at(

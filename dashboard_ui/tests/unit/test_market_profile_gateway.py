@@ -55,7 +55,7 @@ class BarPortFake:
 
 
 class ComputeSpy:
-    """MP 計算面（参照実装 `compute_candle_profile`）の Test Spy。
+    """MP 計算面（参照実装 `market_profile_api/compute/market_profile.py`）の Test Spy。
 
     返す形は実測済みの応答そのもの（bins[].price は bin 中心・norm は 0..1）。
     価格域 [100, 160] を 6 bin（幅 10）に割り、bin ごとに違う norm を持たせる
@@ -278,17 +278,19 @@ class TestBinAttributionMatchesTheCore:
         profile = lattice_profile(DIVERGENT_MIN, DIVERGENT_MAX, n_bins)
         span = DIVERGENT_MAX - DIVERGENT_MIN
         width = span / n_bins
-        # 境界ちょうど・境界の直前後（同値クラスの境界とその代表）。
+        # 境界ちょうど・境界の直前後（同値クラスの境界とその代表）。域内の絞り込みは
+        #   素材の構築で行う——テスト本体に分岐を置かない（域外は None を返す面であり、
+        #   帰属の話ではない）。
         prices = [
-            DIVERGENT_MIN + step * width + offset
+            price
             for step in range(n_bins + 1)
             for offset in (0.0, -1e-9, 1e-9)
+            for price in (DIVERGENT_MIN + step * width + offset,)
+            if DIVERGENT_MIN <= price <= DIVERGENT_MAX
         ]
 
         # Act / Assert
         for price in prices:
-            if not (DIVERGENT_MIN <= price <= DIVERGENT_MAX):
-                continue  # 域外は None を返す面（帰属の話ではない）。
             expected = profile["bins"][bin_index(price, DIVERGENT_MIN, span, n_bins)]["norm"]
             assert _norm_at(profile, price) == expected, f"price={price!r} で core と食い違います"
 
@@ -314,7 +316,7 @@ class TestBinAttributionMatchesTheCore:
 
 
 class TestTheDefaultComputePath:
-    """注入なし＝**実経路**（`_reference_compute` → api_loader → `compute_candle_profile`）。
+    """注入なし＝**実経路**（`_reference_compute` → api_loader → MP core の実計算）。
 
     他の検定はすべて `ComputeSpy` を注ぐので、既定の口が壊れても（探索パスの用意が抜けた・
     core 側で名前が変わった・引数の並びが変わった）どれも赤くならない。ここだけが実物を
@@ -360,7 +362,8 @@ class TestTheDefaultComputePath:
 class TestTheGatewayIsWiredToThePort:
     """具象が P-MP の面を満たすこと。
 
-    usecase（`build_reach_sheet`）は `MarketProfilePort` 越しにしか密度を知らない。面と
+    usecase（`dashboard_ui/usecase/build_reach_sheet.py`）は `MarketProfilePort`
+    越しにしか密度を知らない。面と
     具象がずれても、注入している側は Protocol を実行時に照合しないので**無言で通る**
     （合成の口が壊れていることは実 UI まで出て来ない）。ここで一度だけ突き合わせる。
     """

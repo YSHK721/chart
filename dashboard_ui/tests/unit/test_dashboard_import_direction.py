@@ -278,7 +278,8 @@ _ADAPTER_ONLY_ROOTS = (
     #   書き続ける必要はない（許容集合は小さいほど強い）。
     "indigators.indicator_ui.api_loader",
     # MP core（依頼者承認 2026-09-06: 価格ラダーの MP 列）。プロファイル計算の技術は
-    #   adapter に閉じる——usecase は `MarketProfilePort` 越しにしか密度を知らない。
+    #   adapter に閉じる——usecase は P-MP（`dashboard_ui/usecase/sheet_ports.py`）
+    #   越しにしか密度を知らない。
     "market_profile_api",
 )
 
