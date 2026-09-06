@@ -50,6 +50,7 @@ const HEAT_BACKED_CLASSES = Object.freeze([
   'dash-ladder-price',        // 3 分割の帯を敷く価格セル
   'dash-ladder-price-text',   // その上に載る価格の文字
   'dash-ladder-gap',          // その下に添える直前行との差
+  'dash-ladder-mp-bar',       // MP 列の横バー（地は heat_scale の colorForDensity）
   'dash-osc-cell',            // p で塗るセル
   'dash-osc-tail-unscaled',   // 帯外単一色のセル
   'dash-osc-value',           // セル内の現在値

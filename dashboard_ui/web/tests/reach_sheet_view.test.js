@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 
 import { fakeDoc, fakeEl, flatten, textOf, sheetResponse, ladderRow } from './_fake_dom.js';
 import { createReachSheetView } from '../js/adapter/front/reach_sheet_view.js';
-import { colorForP } from '../js/adapter/front/heat_scale.js';
+import { colorForP, colorForDensity } from '../js/adapter/front/heat_scale.js';
 
 /** 版面を組んで応答を 1 回描く（AAA の Arrange をまとめる）。 */
 function renderInto(response, { periodAnnotator = null } = {}) {
@@ -161,6 +161,141 @@ describe('reach_sheet_view — 第 1 表（価格ラダー）', () => {
     const first = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
     const priceCell = flatten(first).find((el) => el.classList.contains('dash-ladder-price'));
     assert.equal(flatten(priceCell).some((el) => el.dataset.cell === 'gap'), false);
+  });
+
+  test('the_mp_column_sits_between_the_price_and_the_gap', () => {
+    // 依頼者承認 2026-09-06: 価格ラダーの「価格」と「差」の間に MP 列
+    //   （dataset_ref の 1D×60 本プロファイルの TPO 密度）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const heads = flatten(host)
+      .filter((el) => el.tagName === 'TH' && el.dataset && el.dataset.cell)
+      .map((el) => el.dataset.cell);
+    const at = (cell) => heads.indexOf(cell);
+    assert.ok(at('mp') >= 0, 'MP の列見出しがありません');
+    assert.ok(at('price') < at('mp') && at('mp') < at('gap'));
+    const head = flatten(host).find((el) => el.tagName === 'TH' && el.dataset.cell === 'mp');
+    assert.match(textOf(head), /MP/);
+  });
+
+  test('the_mp_cell_draws_a_bar_whose_length_and_colour_come_from_the_density', () => {
+    // 依頼者指示 2026-09-06「色の濃度とグラフで表示しろ」。長さ ∝ norm・色は heat_scale の
+    //   colorForDensity が唯一源（フロントは色も数値も作らない）。数値は出さない。
+    //   密度は「量」なので**単調**写像を使う（分位 p の双極写像 colorForP ではない）。
+    const rows = [ladderRow({ mp: 0.25 })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const cell = flatten(row).find((el) => el.dataset.cell === 'mp');
+    assert.ok(cell, 'MP のセルがありません');
+    const bar = flatten(cell).find((el) => el.classList.contains('dash-ladder-mp-bar'));
+    assert.ok(bar, 'MP のバーがありません');
+    assert.equal(bar.style.width, '25%');
+    assert.equal(bar.style.backgroundColor, colorForDensity(0.25));
+    assert.equal(textOf(cell), '');
+  });
+
+  test('the_mp_bars_get_denser_with_the_density_and_never_vanish_mid_scale', () => {
+    // 依頼者指示 2026-09-06「色の濃度とグラフで表示しろ」の**濃度が量を表す**ことを、
+    //   版面に出た実際のバーの上で性質として固定する（「colorForDensity を呼ぶ」という
+    //   同語反復では、写像が双極へ戻った退行を捕まえられない）。
+    //   捕まえる退行は 2 つ:
+    //     (a) 中央（norm ≈ 0.5）が透明になり「密度なし行」と見分けが付かなくなる
+    //     (b) norm < 0.5 で低いほど濃くなる（量と濃さの逆相関）
+    const alphaOf = (css) => {
+      const m = /^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([0-9.]+)\s*\)$/.exec(css);
+      assert.ok(m, `rgba(...) 形ではありません: ${css}`);
+      return Number(m[1]);
+    };
+    const LADDER = [0.1, 0.25, 0.5, 0.75, 1];
+    // 密度なし（バーを描かない行）を最後に混ぜて、可視性の比較対象にする。
+    const rows = [...LADDER.map((mp) => ladderRow({ mp })), ladderRow({ mp: null })];
+
+    const { host } = renderInto(sheetResponse({ rows, current_index: rows.length }));
+
+    const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    const barsPerRow = levelRows.map((r) => {
+      const cell = flatten(r).find((el) => el.dataset.cell === 'mp');
+      return flatten(cell).find((el) => el.classList.contains('dash-ladder-mp-bar')) ?? null;
+    });
+
+    // 密度なしの行はバーそのものが無い＝「量 0」ではなく「読めない」を版面に表す。
+    assert.equal(barsPerRow[barsPerRow.length - 1], null, '密度なし行にバーがあります');
+
+    const alphas = barsPerRow.slice(0, LADDER.length).map((bar) => {
+      assert.ok(bar, 'MP のバーがありません');
+      return alphaOf(bar.style.backgroundColor);
+    });
+
+    // (a) 目盛りのどこであっても、密度がある行は**見える**（密度なし行と区別が付く）。
+    for (const [index, alpha] of alphas.entries()) {
+      assert.ok(alpha > 0, `norm = ${LADDER[index]} のバーが透明です（密度なしと同じ見え方）`);
+    }
+    // (b) 濃さは量の順序を保つ（逆相関の領域が無い）。
+    for (let i = 1; i < alphas.length; i += 1) {
+      assert.ok(
+        alphas[i] > alphas[i - 1],
+        `濃さが量の順序を保っていません: norm ${LADDER[i - 1]} → ${LADDER[i]}`,
+      );
+    }
+  });
+
+  test('the_densest_level_fills_the_whole_mp_cell', () => {
+    // 境界値: norm = 1（POC の bin）。
+    const rows = [ladderRow({ mp: 1 })];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 0 }));
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const bar = flatten(row).find((el) => el.classList.contains('dash-ladder-mp-bar'));
+    assert.equal(bar.style.width, '100%');
+  });
+
+  test('the_mp_tooltip_names_the_window_in_bars_from_a_single_constant', async () => {
+    // 窓の長さは gateway の MP_WINDOW_BARS が唯一源。View 側では**定数 1 つ**に持たせ、
+    //   説明文はそこから組み立てる（手書き複製は必ず取り残しを生む）。
+    //   文言も是正する: 確定足 60 本は暦 60 日**ではない**（休場日・欠損があるので
+    //   「60 日」は不正確）。読み手には「日足を何本畳んだか」を伝える。
+    const { host } = renderInto(sheetResponse({ rows: [ladderRow({ mp: 0.4 })], current_index: 1 }));
+    // 見出し（TH）にも dataset.cell = 'mp' が付くので、水準行の TD へ絞る。
+    const row = rowsOf(host).find((r) => !r.classList.contains('dash-ladder-current'));
+    const cell = flatten(row).find((el) => el.tagName === 'TD' && el.dataset.cell === 'mp');
+    assert.ok(cell, 'MP のセルがありません');
+
+    assert.equal(cell.title, '直近の日足 60 本のプロファイルの TPO 密度');
+    assert.doesNotMatch(cell.title, /60\s*日/, '確定足の本数を暦日数として説明しています');
+
+    // 唯一源であることの機械的固定: View の中に裸の 60 が 2 つ以上あれば複製である。
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(
+      fileURLToPath(new URL('../js/adapter/front/reach_sheet_view.js', import.meta.url)), 'utf8',
+    );
+    const occurrences = source.match(/(?<![\w.])60(?![\w.])/g) ?? [];
+    assert.equal(occurrences.length, 1, `窓の本数 60 が View 内で複製されています（${occurrences.length} 箇所）`);
+  });
+
+  test('a_row_without_a_density_draws_no_bar_instead_of_inventing_one', () => {
+    // 範囲外・素材なし（null）と旧応答（欄そのものが無い）で色を置かない。0 幅のバーも
+    //   置かない——「密度が最小」と読めてしまう（§5.5.5 の正当な空と同じ規律）。
+    const missing = ladderRow({});
+    delete missing.mp;
+    const rows = [ladderRow({ mp: null }), missing];
+    const { host } = renderInto(sheetResponse({ rows, current_index: 2 }));
+    const levelRows = rowsOf(host).filter((r) => !r.classList.contains('dash-ladder-current'));
+    for (const row of levelRows) {
+      const cell = flatten(row).find((el) => el.dataset.cell === 'mp');
+      assert.ok(cell, 'MP のセルがありません');
+      assert.equal(flatten(cell).some((el) => el.classList.contains('dash-ladder-mp-bar')), false);
+      assert.equal(textOf(cell), '');
+    }
+  });
+
+  test('the_current_price_row_spans_every_column_including_the_mp_one', () => {
+    // 現在値行はセルを畳んで 1 行に収める。列を足したら colSpan を数え直す（畳み残しは
+    //   実 UI で列ずれになる）。
+    const { host } = renderInto(sheetResponse({ rows: THREE_ROWS, current_index: 2 }));
+    const headRow = flatten(host).find((el) => el.tagName === 'TR');
+    const columns = headRow.children.length;
+    const current = rowsOf(host).find((r) => r.classList.contains('dash-ladder-current'));
+    const spanned = current.children.reduce((sum, cell) => sum + (cell.colSpan || 1), 0);
+    assert.equal(spanned, columns);
   });
 
   test('a_level_below_the_current_price_is_marked_as_reached_and_one_above_is_not', () => {
