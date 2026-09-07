@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/form_model.js
+../../../../../indigators/indicator_kit/web/js/usecase/form_model.js

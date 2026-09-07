@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/domain_models.js
+../../../../../indigators/indicator_kit/web/js/domain/domain_models.js

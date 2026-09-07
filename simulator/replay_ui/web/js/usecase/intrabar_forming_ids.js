@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/intrabar_forming_ids.js
+../../../../../indigators/indicator_kit/web/js/usecase/intrabar_forming_ids.js

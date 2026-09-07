@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/indicator_state_store.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/indicator_state_store.js

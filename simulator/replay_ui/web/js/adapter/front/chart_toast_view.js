@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/chart_toast_view.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/chart_toast_view.js

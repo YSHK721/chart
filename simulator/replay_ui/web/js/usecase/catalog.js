@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/catalog.js
+../../../../../indigators/indicator_kit/web/js/usecase/catalog.js

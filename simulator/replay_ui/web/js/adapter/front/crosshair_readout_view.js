@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/crosshair_readout_view.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/crosshair_readout_view.js

@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/series_render_router.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/series_render_router.js

@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/price_pick_controller.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/price_pick_controller.js

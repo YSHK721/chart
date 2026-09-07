@@ -56,7 +56,19 @@ from pathlib import Path
 #:   indicator_ui と market_profile の双方がここへ**一方向**に依存する（C-4 の循環はこの実体が
 #:   indicator_ui 側に置かれていたことだけが原因だった）。
 #: - market_profile: Market Profile のフロント一式（actor/client/primitive/domain）。
-SHARED_WEB_PACKAGES: "tuple[str, ...]" = ("chart_kernel", "market_profile")
+#: - ``indicator_kit`` : live core（indicator_ui）と replay core（simulator/replay_ui）が**共に**
+#:   使うチャートフロント部品一式（描画・操作・凡例・テンプレート・配色・建玉サイジングの
+#:   adapter/front と、それが載る domain/usecase）。ISSUE-502 C-4 3d で indicator_ui から移した。
+#:   移す前は「live の配信 core」と「live/replay 共有部品の供給元」が同一パッケージで、
+#:   両者は別アクター（live 面の変更 / 共有部品の変更）だったため SRP 違反だった。実測では
+#:   indicator_ui の実体 112 本のうち 105 本が replay の実行グラフに乗っており、**共有部品が
+#:   主で live 専任分が従**という比率だった（残る 7 本＝index.html の合成根・live 公開面・
+#:   tick 再生など live 専用）。chart_kernel / market_profile へ**一方向**に依存する。
+SHARED_WEB_PACKAGES: "tuple[str, ...]" = (
+    "chart_kernel",
+    "market_profile",
+    "indicator_kit",
+)
 
 
 def shared_web_js_roots(indigators_root: Path) -> "tuple[Path, ...]":

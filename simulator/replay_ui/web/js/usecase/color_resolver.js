@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/color_resolver.js
+../../../../../indigators/indicator_kit/web/js/usecase/color_resolver.js

@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/update_scheduler.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/update_scheduler.js

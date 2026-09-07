@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/series_kind.js
+../../../../../indigators/indicator_kit/web/js/domain/series_kind.js

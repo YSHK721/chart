@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/split_entry_plan.js
+../../../../../indigators/indicator_kit/web/js/domain/split_entry_plan.js

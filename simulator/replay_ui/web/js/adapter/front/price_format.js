@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/price_format.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/price_format.js

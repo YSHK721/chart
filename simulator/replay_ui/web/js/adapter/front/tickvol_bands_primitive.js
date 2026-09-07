@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/tickvol_bands_primitive.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/tickvol_bands_primitive.js

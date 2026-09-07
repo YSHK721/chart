@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/property_control_builders.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/property_control_builders.js

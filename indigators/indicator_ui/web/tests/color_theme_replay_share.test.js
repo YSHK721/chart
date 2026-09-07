@@ -16,14 +16,15 @@
 //
 // よって本ファイルが固定するのは次の 2 つだけにする（在ってほしい形ではなく、要求そのもの）:
 //   - TC-CS02: replay ツリーの実ファイルからの論理 import に欠落が無いこと（＝実際の要求）。
-//   - TC-CS01 / TC-CS03 / TC-CS04: 共有モジュールの実体はライブ側 1 つで、replay 側に**実ファイル
-//     の複製**を作らないこと（複製は必ず取り残しを生む・ISSUE-304）。
+//   - TC-CS01 / TC-CS03 / TC-CS04: 共有モジュールの実体は全 core を通じて 1 つで、replay 側に
+//     **実ファイルの複製**を作らないこと（複製は必ず取り残しを生む・ISSUE-304）。
+//     所有者は焼き込まない（ISSUE-502 C-4 3d で実体は indicator_kit へ移った。TC-CS03 註記参照）。
 // 構造: Arrange-Act-Assert（AAA）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, lstatSync, readFileSync, readdirSync,
+  existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync,
 } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,10 +106,23 @@ test('TC-CS02 replay ツリーの実ファイルからの論理 import に欠落
   assert.deepEqual(missing, [], `replay 実ファイルの論理 import が解決できない: ${missing.join(' / ')}`);
 });
 
-test('TC-CS03 共有モジュールの実体はライブ側 1 つ（単一ソース）', () => {
-  // Arrange / Act / Assert
+test('TC-CS03 共有モジュールの実体は全 core を通じて 1 つ（単一ソース）', () => {
+  // 固定しているのは**単一ソース**（複製が無いこと）であって「誰が持つか」ではない。
+  //   ISSUE-502 C-4 3d で共有部品の実体は live core（indicator_ui）から中立パッケージ
+  //   `indigators/indicator_kit/web/js` へ移り、live 側は同じ配信 rel の symlink になった。
+  //   旧版は `lstat(live).isFile()`、すなわち**所有者が live であること**を測っていたため、
+  //   複製が 1 本も増えていないのに赤になった（実測 2026-09-07）。所有者を焼き込むと、
+  //   中立化のたびに検定を書き換える必要が生じ、検定が構造変更を止める側に回る。
+  // Arrange / Act / Assert: live と replay の配信 rel が「同一の 1 実体」へ解決すること。
   for (const rel of SHARED) {
-    assert.ok(lstatSync(resolve(LIVE_WEB, rel)).isFile(), `${rel} の実体はライブ側に置く`);
+    const livePath = resolve(LIVE_WEB, rel);
+    const entity = realpathSync(livePath);
+    assert.ok(statSync(entity).isFile(), `${rel} の実体が実ファイルとして解決できない`);
+    const replayPath = resolve(REPLAY_WEB, rel);
+    if (existsSync(replayPath)) {
+      assert.equal(realpathSync(replayPath), entity,
+        `${rel} が live と replay で別実体に解決される（複製＝取り残しの温床・ISSUE-304）`);
+    }
   }
 });
 

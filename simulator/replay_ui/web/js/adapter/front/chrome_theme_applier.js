@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/chrome_theme_applier.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/chrome_theme_applier.js

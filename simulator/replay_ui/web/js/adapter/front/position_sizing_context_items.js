@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/position_sizing_context_items.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/position_sizing_context_items.js

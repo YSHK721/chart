@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/chart_template_controller.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/chart_template_controller.js

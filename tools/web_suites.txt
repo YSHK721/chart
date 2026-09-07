@@ -16,6 +16,7 @@
 # 対象外: prototype_*（試作＝参照実装であり回帰対象ではない）。
 dashboard_ui/web
 indigators/chart_kernel/web
+indigators/indicator_kit/web
 indigators/indicator_ui/web
 indigators/market_profile/web
 simulator/replay_ui/web

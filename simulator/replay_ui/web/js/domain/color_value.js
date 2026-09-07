@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/color_value.js
+../../../../../indigators/indicator_kit/web/js/domain/color_value.js

@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/catalog_client.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/catalog_client.js

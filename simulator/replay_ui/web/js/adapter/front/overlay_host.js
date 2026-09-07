@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/overlay_host.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/overlay_host.js

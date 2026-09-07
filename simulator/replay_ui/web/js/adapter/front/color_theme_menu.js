@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/color_theme_menu.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/color_theme_menu.js

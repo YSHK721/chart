@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/chart_context_menu.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/chart_context_menu.js

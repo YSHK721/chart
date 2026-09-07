@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/mc_port.js
+../../../../../indigators/indicator_kit/web/js/usecase/mc_port.js

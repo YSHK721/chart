@@ -32,6 +32,9 @@
 //   P-2 market_profile の実体は indicator_ui の実体を import しない（逆方向の不在＝循環の不在）。
 //   P-3 indicator_ui → market_profile は現に存在する（正方向。錨が恒真式に退化していない証拠）。
 //   P-4 両者 → chart_kernel は現に存在する（移設が効いている証拠）。
+//   P-5 indicator_kit の実体は indicator_ui の実体を import しない（段階 3d。live/replay 共有部品
+//       が live 配信 core を参照し返さないこと＝共有部品の中立性）。
+//   P-6 indicator_ui → indicator_kit は現に存在する（段階 3d の移設が効いている証拠）。
 // 併せて計算量（realpath の発行 − 相異なるパス数 = 0・項目を増やしても発行が増えない）。
 
 import { test } from 'node:test';
@@ -52,6 +55,7 @@ const REPO_ROOT = path.resolve(TESTS_DIR, '..', '..', '..', '..');
 /** 依存方向を測る対象パッケージ（`<pkg>/web/js` の絶対パス）。 */
 const PACKAGE_ROOTS = Object.freeze({
   chart_kernel: path.join(REPO_ROOT, 'indigators', 'chart_kernel', 'web', 'js'),
+  indicator_kit: path.join(REPO_ROOT, 'indigators', 'indicator_kit', 'web', 'js'),
   indicator_ui: path.join(REPO_ROOT, 'indigators', 'indicator_ui', 'web', 'js'),
   market_profile: path.join(REPO_ROOT, 'indigators', 'market_profile', 'web', 'js'),
 });
@@ -211,6 +215,22 @@ test('P-4 indicator_ui / market_profile はいずれも chart_kernel へ依存�
     'indicator_ui → chart_kernel が 0 本（移設が届いていない）');
   assert.ok(edgesFromTo(EDGES.market_profile, 'market_profile', 'chart_kernel').length > 0,
     'market_profile → chart_kernel が 0 本（張り替えが届いていない）');
+});
+
+test('P-5 indicator_kit の実体は indicator_ui の実体を import しない（共有部品の中立性）', () => {
+  const reverse = edgesFromTo(EDGES.indicator_kit, 'indicator_kit', 'indicator_ui');
+  assert.deepEqual(describe(reverse), [],
+    'live/replay 共有部品が live 配信 core の実体を参照している（replay 側では URL が '
+    + 'shared_js_root フォールバック頼みになり、live 専任分を消した日に replay だけ 404 に '
+    + `なる。共有物なら indicator_kit へ移すこと）:\n${describe(reverse).join('\n')}`);
+  // 錨の非空振り: kit 内部の辺は現に存在する（chart_renderer → series_drawer 等）。
+  assert.ok(edgesFromTo(EDGES.indicator_kit, 'indicator_kit', 'indicator_kit').length > 0,
+    'indicator_kit 内部の辺が 0 本＝走査または解決が壊れている');
+});
+
+test('P-6 indicator_ui → indicator_kit の正方向は現に存在する（移設が効いている証拠）', () => {
+  assert.ok(edgesFromTo(EDGES.indicator_ui, 'indicator_ui', 'indicator_kit').length > 0,
+    'live 配信 core → 共有部品の辺が 0 本。P-5 が「そもそも辺が無い」ことで通っている疑い');
 });
 
 // --------------------------------------------------------------------------- //

@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/domain/price_levels.js
+../../../../../indigators/indicator_kit/web/js/domain/price_levels.js

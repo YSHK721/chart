@@ -1,1 +1,1 @@
-../../../../../indigators/indicator_ui/web/js/usecase/period_presets.js
+../../../../../indigators/indicator_kit/web/js/usecase/period_presets.js

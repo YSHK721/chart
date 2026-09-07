@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/bar_info_text.js
+../../../../../../indigators/indicator_kit/web/js/adapter/front/bar_info_text.js
