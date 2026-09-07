@@ -14423,3 +14423,25 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   の `len(issued) - warmed == 0` を 1 回赤で観測。推論（未再現・単体 30 回/全体 3 回は緑）: warm と繰り返し要求の
   間に 1m 足が 1 本確定すると素材 epoch が進み full_compute が再発行される——仕様どおりの再構築を検定側が
   「epoch が進まない」前提で測っているのが原因。抜本策は事象 A と同型（素材を固定するか、版の前進を検出して測り直す）。
+- **後続候補の是正完了（2026-09-07・依頼者「続けろ」承認）**: 46f2e85（router core 集合突合＋env_keys 導出）・
+  e36ed7f（C-4 3c＝市場データ語彙 4 本を chart_kernel へ・参照 0 symlink 1 本削除。color_roles は方向検定が
+  参照 1 を実捕捉し削除撤回＝台帳の「参照 0」認定は誤り）・e869362（D-15 同型 2 件）・eecdad3（dashboard 3 点）・
+  71598bb（span 統計を profit_system へ・T8 凍結 9 ファイル全廃）・2e962ee（resolve_times 所有者 1 件へ）・
+  1fbc7e2（_RunState 残滓 4 除去・史実引用 11 件）・167eb9b（baseline prune 31 件）。
+  simulator フル 5777 / marketdata 1018 / dashboard 676 / 全 7 web スイート緑・品質ゲート exit 0。
+- **C-4 3d は HALT（実測で指示方向が逆と判定）**: 合成根だけの分離は SRP を悪化させ依存も減らない。
+  対案＝replay と共有する 87 本の供給側を中立パッケージ indigators/indicator_kit へ（3b/3c と同型・要 y/n）。
+- **保留・後続候補（小）**: compute_rmm_level_count 統合（ISSUE-175 裁定待ち）・marketdata のパッケージ純度検定
+  新設・_RunState の宣言経由残滓 3 件・テスト basename 衝突（凍結済み）・profit_system テスト 3 件の sys.path・
+  JS モード表パーサの二重化（tools/tests 側）・ISSUE-503 事象 B。
+
+## ISSUE-504: replay_ui に解決不能な相対 import 22 本が既存残存・core 側 symlink 閉包の機械的検査が無い
+- **ステータス**: OPEN
+- **発見日**: 2026-09-07（C-4 3c 是正中の全数走査で検出・是正起因ではないことを git ls-files で確認済み）
+- **事象**: replay_ui の JS 22 本が指す相対 import 先が git に一度も存在しない（例: mp_session_tiles.js →
+  ../../domain/session_ohlc.js の symlink 閉包漏れと同型）。該当モジュールは実行グラフに乗っておらず実害なし。
+- **原因**: js_package_direction.test.js の「解決できない相対 import が無い」走査が 3 供給パッケージ限定で、
+  replay_ui/dashboard_ui/sim_ui 等 core 側の symlink 閉包は無検査（色役割 symlink の誤削除を market_profile で
+  捕捉できたのは走査対象だった偶然）。
+- **抜本策**: 全 core の web/js を対象にした相対 import 解決可能性検定の新設＋22 本の実態調査
+  （死蔵なら撤去は別 y/n・生かすなら symlink 補完）。
