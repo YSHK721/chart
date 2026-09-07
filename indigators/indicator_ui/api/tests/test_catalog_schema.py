@@ -4,7 +4,8 @@ single source（``adapter.compute.catalog_schema.PARAM_DEFAULTS``）が
   - ``call_binding._TABLE`` の compute_id 集合と一致（指標追加時の登録漏れを検出）
   - front 静的フォールバック契約 ``web/js/adapter/front/catalog_defaults.json`` と一致
     （back 既定値 == front 静的フォールバック値の乖離を検出・ISSUE-092 ③ 要件④）
-  - ``call_binding._DEFAULT_SAMPLES`` と mcmc_samples 既定が一致（back 内二重定義の解消）
+  - 協働子 ``adapter.compute.bindings.tgp_btlm`` の DEFAULT_SAMPLES と mcmc_samples 既定が一致
+    （back 内二重定義の解消・ISSUE-502 段階 4B で所有者を協働子へ移した）
 を固定する。``handle_catalog`` は正典契約（ok / nested error）で schema を配信する。
 
 ISSUE-180（OCP）以降、既定値の定義位置は指標記述子 ``call_binding._TABLE`` の
@@ -132,12 +133,15 @@ def test_catalog_defaults_matches_front_static_fallback_json():
 
 
 def test_default_samples_sourced_from_catalog_schema():
-    # back 内の二重定義解消: _DEFAULT_SAMPLES は schema の mcmc_samples 既定を単一源とする。
-    from adapter.compute import call_binding
+    # back 内の二重定義解消: 配信値 PARAM_DEFAULTS["tgp_btlm"]["mcmc_samples"] と fitter 構築側の
+    #   既定は同一の 1 リテラル（協働子 bindings.tgp_btlm.DEFAULT_SAMPLES）から来る。
+    #   ISSUE-502 段階 4B で参照の向きを反転した（_TABLE が協働子の定数を参照する）。値は不変で、
+    #   本検定が「配信値 == 構築既定」を引き続き固定するため二重定義は再発しない。
+    from adapter.compute.bindings import tgp_btlm
     from adapter.compute.catalog_schema import PARAM_DEFAULTS
 
-    assert call_binding._DEFAULT_SAMPLES == PARAM_DEFAULTS["tgp_btlm"]["mcmc_samples"]
-    assert call_binding._DEFAULT_SAMPLES in call_binding._BTE_PRESETS
+    assert tgp_btlm.DEFAULT_SAMPLES == PARAM_DEFAULTS["tgp_btlm"]["mcmc_samples"]
+    assert tgp_btlm.DEFAULT_SAMPLES in tgp_btlm.BTE_PRESETS
 
 
 def test_handle_catalog_returns_ok_schema():

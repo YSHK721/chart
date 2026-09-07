@@ -16,6 +16,8 @@ import pytest
 
 from adapter.compute import call_binding
 from adapter.compute import indicator_compute_adapter as ica
+from adapter.compute.bindings import price_range_power as prp
+from adapter.compute.bindings import profit_band as profit_band_binding
 from adapter.compute.call_binding import _TABLE
 from adapter.compute.latest_meta import latest_meta
 
@@ -107,8 +109,8 @@ def test_prp_preprocess_adapts_interval_on_band_explosion():
     kw = {"interval": 0.1, "top_n": 3}
     out = spec["preprocess"](df, dict(kw))
     assert out["interval"] > 0.1
-    # 適応値は従来の _adapt_prp_interval と byte 一致（ロジック保存）。
-    assert out["interval"] == call_binding._adapt_prp_interval(df, dict(kw))
+    # 適応値は協働子の adapt_interval と byte 一致（ロジック保存）。
+    assert out["interval"] == prp.adapt_interval(df, dict(kw))
 
 
 def test_prp_preprocess_untouched_when_no_interval_key():
@@ -148,7 +150,7 @@ def test_empty_series_indicator_set_removed_from_generic_scope():
 def test_profit_band_bucket_empty_translates_to_empty_series():
     # LSP 是正 LSP-3: 型 EmptyBucketError で empty_series へ翻訳する（日本語メッセージ片照合ではない）。
     #   実 profit_band src が送出する型（bands.py の EmptyBucketError）を用いる＝実挙動と等価。
-    empty_bucket_cls = call_binding.profit_band_empty_bucket_error()
+    empty_bucket_cls = profit_band_binding.empty_bucket_error()
     err = ica._translate_value_error("profit_band", empty_bucket_cls("必須バケットが空です"))
     assert err.error_type == "empty_series"
 

@@ -23,19 +23,22 @@ from adapter.controller.compute_controller import handle_compute  # noqa: E402
 
 
 def _patch_tgp_unavailable(monkeypatch):
-    """tgp バックエンド不在を環境非依存に再現する（_fitter_factory("tgp") を ImportError 化）。"""
-    from adapter.compute import call_binding
+    """tgp バックエンド不在を環境非依存に再現する（fitter_factory("tgp") を ImportError 化）。
+
+    差し替え点は fitter 構築の所有者である協働子 ``bindings.tgp_btlm`` 1 つ（ISSUE-502 段階 4B）。
+    """
+    from adapter.compute.bindings import tgp_btlm
 
     class _UnavailableTgpFitter:
         def fit_predict(self, *args, **kwargs):
             raise ImportError("rpy2 未導入（テストで tgp 不在を再現）")
 
-    original = call_binding._fitter_factory
+    original = tgp_btlm.fitter_factory
 
     def fake(name, samples="standard"):
         return _UnavailableTgpFitter() if name == "tgp" else original(name, samples)
 
-    monkeypatch.setattr(call_binding, "_fitter_factory", fake)
+    monkeypatch.setattr(tgp_btlm, "fitter_factory", fake)
 
 
 # --------------------------------------------------------------------------- #

@@ -5,7 +5,8 @@
 
 本モジュールは **共有プリミティブ層 ``common.module_loader`` への委譲**（再エクスポート）
 であり、独自の実装を持たない。``adapter.compute.module_loader`` という既存の import 面
-（``call_binding._load_src_package``）を維持したまま、実装を 1 本化する。
+（利用者は指標 src のロード境界 ``adapter.compute.src_packages``）を維持したまま、実装を
+1 本化する。
 
 - ``load_package(name, pkg_dir)``  : ``__init__.py`` を持つパッケージを一意名で読み込む
   （相対 import ``from .bands import`` が解決するよう submodule_search_locations を設定）。

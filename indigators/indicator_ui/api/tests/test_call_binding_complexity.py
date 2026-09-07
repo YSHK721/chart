@@ -23,7 +23,7 @@ import uuid
 import pytest
 
 import common.module_loader as common_loader
-from adapter.compute import call_binding
+from adapter.compute import call_binding, param_binding, src_packages
 from adapter.compute.bindings import price_range_power as prp
 
 
@@ -43,9 +43,12 @@ class _ExecSpy:
 
 
 def _isolated_src_namespace(monkeypatch) -> None:
-    """本テスト専用の一意パッケージ名前空間へ切り替える（他テストのキャッシュ状態に依存しない）。"""
+    """本テスト専用の一意パッケージ名前空間へ切り替える（他テストのキャッシュ状態に依存しない）。
+
+    一意名の付け方はロード境界 ``src_packages`` が所有する（ISSUE-502 段階 4B）。
+    """
     monkeypatch.setattr(
-        call_binding, "_SRC_MODULE_PREFIX", f"_cx{uuid.uuid4().hex[:8]}_", raising=True
+        src_packages, "_SRC_MODULE_PREFIX", f"_cx{uuid.uuid4().hex[:8]}_", raising=True
     )
 
 
@@ -59,7 +62,7 @@ def test_src_package_exec_issued_never_exceeds_the_kinds_of_src_used(monkeypatch
     # Act: 同一 src を複数回要求する（invoke は loader と fitter で同じ src を要求しうる）。
     used = set()
     for _ in range(requests):
-        call_binding._load_src_package("moving_averages")
+        src_packages.load_src_package("moving_averages")
         used.add("moving_averages")
 
     # Assert: 発行した exec − 使った src の種類数 = 0（要求数では増えない＝オーダーの表明）。
@@ -116,12 +119,12 @@ def _free_form(chart, df, **kwargs):  # pragma: no cover - 束縛先のダミー
 @pytest.mark.parametrize("n_params", [5, 20])
 def test_kwarg_binding_signature_lookups_do_not_grow_with_param_count(monkeypatch, n_params):
     # Arrange
-    spy = _SignatureSpy(call_binding.accepted_param_names)
-    monkeypatch.setattr(call_binding, "accepted_param_names", spy)
+    spy = _SignatureSpy(param_binding.accepted_param_names)
+    monkeypatch.setattr(param_binding, "accepted_param_names", spy)
     params = {f"p{i}": i for i in range(n_params)}
 
     # Act
-    bound = call_binding._bind_kwargs(_free_form, params)
+    bound = param_binding.bind_kwargs(_free_form, params)
 
     # Assert: 発行した signature 解析 − 束縛した callable の種類数 = 0。
     assert len(spy.calls) - len(set(map(id, spy.calls))) == 0
@@ -199,3 +202,121 @@ def test_complexity_gate_detects_a_double_fetch_mutation():
     mutated_adapt_interval(df, {"interval": 0.1})
     used = {"low.min", "high.max"}
     assert len(df.issued) - len(used) != 0, "変異を検出できていない（検査が空振り）"
+
+
+# --------------------------------------------------------------------------- #
+# C5: 分割で増えた import が **計算を 1 件も発行しない**（ISSUE-502 段階 4B）
+#
+# call_binding を「表＋結線」へ縮小し、指標固有 hook を協働子 bindings/<compute_id>.py へ
+# 分けた。分割そのものが起動時の仕事を増やしていないことを、指標 src の exec 発行回数
+# （＝最も重いモジュールロード）で測る。値ではなく **回数** を測る。
+#
+#   発行した指標 src の exec − 実際に使った指標 src の種類数 = 0
+#
+# 起動経路（import）で使う指標 src は 0 種類なので、期待値は「0 件」である。回数を焼き込んで
+# いるのではなく「使っていない計算を発行しない」ことを表明している。
+# --------------------------------------------------------------------------- #
+_IMPORT_PROBE = r"""
+import json, sys
+sys.path.insert(0, {api!r})
+import common.module_loader as loader
+
+execs = []
+_orig = loader._load_package_locked
+loader._load_package_locked = lambda name, d: (execs.append(name), _orig(name, d))[1]
+
+import adapter.compute.call_binding as cb          # 表の構築（協働子を参照する）
+after_import = list(execs)
+
+from adapter.compute import bindings               # 協働子パッケージ
+for name in dir(bindings):
+    getattr(bindings, name)                        # 全協働子を実体化
+after_all_bindings = list(execs)
+
+print(json.dumps({{
+    "after_import": after_import,
+    "after_all_bindings": after_all_bindings,
+    "entries": len(cb._TABLE),
+    "collaborators": sorted(dir(bindings)),
+}}))
+"""
+
+
+def _import_probe() -> dict:
+    """まっさらなインタプリタで「import が発行する指標 src exec」を数える。"""
+    import json
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+
+    api_dir = str(Path(__file__).resolve().parents[1])
+    out = subprocess.run(
+        [_sys.executable, "-c", _IMPORT_PROBE.format(api=api_dir)],
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_importing_call_binding_execs_no_indicator_src():
+    # Arrange / Act
+    probe = _import_probe()
+
+    # Assert: 表の構築は指標 src を 1 件も exec しない（loader は遅延・宣言は名前参照だけ）。
+    used = set()  # import 経路が出力に使う指標 src は 0 種類
+    assert len(probe["after_import"]) - len(used) == 0, (
+        f"call_binding の import が指標 src を exec している: {probe['after_import']}"
+    )
+    assert probe["entries"] > 0  # 自己検定: 表は空でない（空振りでない）
+
+
+def test_materialising_every_collaborator_execs_no_indicator_src():
+    """協働子を全件実体化しても指標 src の exec は増えない（オーダーの表明・2 点目）。
+
+    1 点目（表の import だけ）と 2 点目（全協働子）で発行が増えないことを見る。協働子を
+    1 本足したら exec が 1 件増える、という構造になっていないことの表明である。
+    """
+    probe = _import_probe()
+    assert len(probe["after_all_bindings"]) - len(probe["after_import"]) == 0, (
+        f"協働子の実体化が指標 src を exec している: {probe['after_all_bindings']}"
+    )
+    assert len(probe["collaborators"]) >= 5, probe["collaborators"]  # 自己検定
+
+
+# --------------------------------------------------------------------------- #
+# C6: invoke の loader 発行 − 使った add_* の種類数 = 0（表引きは 1 回きり）
+# --------------------------------------------------------------------------- #
+class _LoaderSpy:
+    def __init__(self, original):
+        self._original = original
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self._original()
+
+
+@pytest.mark.parametrize("params_extra", [{}, {"q_low": 0.05, "q_high": 0.95, "maxbars": 40}])
+def test_invoke_resolves_the_add_callable_exactly_once(monkeypatch, params_extra):
+    """1 回の invoke で add_* の解決は 1 回。param 数を増やしても増えない。"""
+    from adapter.compute import FakeLineChart
+
+    import numpy as np
+    import pandas as pd
+
+    key = ("btlm_trail", "default")
+    spec = call_binding._TABLE[key]
+    spy = _LoaderSpy(spec["loader"])
+    monkeypatch.setitem(spec, "loader", spy)
+
+    n = 120
+    base = 100.0 + np.sin(np.linspace(0.0, 6.0, n))
+    df = pd.DataFrame({
+        "open": base, "high": base + 1.0, "low": base - 1.0, "close": base + 0.5,
+        "volume": np.full(n, 10.0),
+        "time": pd.date_range("2024-01-01", periods=n, freq="h"),
+    })
+    binding = call_binding.CallBinding.resolve(*key)
+    binding.invoke(FakeLineChart(), df, dict(params_extra))
+
+    used = 1  # 出力に使った add_* は 1 件
+    assert spy.calls - used == 0, f"add_* の解決を作り直している（{spy.calls} 回）"

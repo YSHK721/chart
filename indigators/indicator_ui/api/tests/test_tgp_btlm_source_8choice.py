@@ -16,7 +16,8 @@ import numpy as np
 import pandas as pd
 
 from adapter.compute import CallBinding, FakeLineChart
-from adapter.compute import call_binding
+from adapter.compute.bindings import tgp_btlm
+from adapter.compute.src_packages import load_src_package
 
 
 def _ohlcv(n: int = 200, seed: int = 0) -> pd.DataFrame:
@@ -39,7 +40,7 @@ def _mean_from_invoke(price: str, df: pd.DataFrame) -> np.ndarray:
 
 
 def _reference_mean(series: np.ndarray) -> np.ndarray:
-    src = call_binding._load_src_package("tgp_btlm")
+    src = load_src_package("tgp_btlm")
     bands = src.build_btlm_bands(
         pd.DataFrame({"px": series}), src.OlsBtlmFitter(),
         price="px", maxbars=100, q_low=0.05, q_high=0.95,
@@ -75,14 +76,14 @@ def test_synthetic_sources_resolve_via_applied_price():
 
 def test_resolve_btlm_price_identity_for_literal_columns():
     df = _ohlcv(20)
-    df2, name = call_binding._resolve_btlm_price(df, "high")
+    df2, name = tgp_btlm.resolve_price(df, "high")
     assert name == "high"
     assert df2 is df  # 既存列はコピーせず素通し（byte 不変）
 
 
 def test_resolve_btlm_price_adds_synthetic_column():
     df = _ohlcv(20)
-    df2, name = call_binding._resolve_btlm_price(df, "hl2")
+    df2, name = tgp_btlm.resolve_price(df, "hl2")
     h = df["high"].to_numpy(float); lo = df["low"].to_numpy(float)
     np.testing.assert_allclose(df2[name].to_numpy(float), (h + lo) / 2)
     # 元 df は不変（列を足していない）。

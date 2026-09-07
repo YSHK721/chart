@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 # adapter は各指標 src を一意なパッケージ名でファイルパスから読み込むため（同名 src
-# 衝突の回避・call_binding._load_src_package）、本テストは top-level ``src`` を import
+# 衝突の回避・src_packages.load_src_package）、本テストは top-level ``src`` を import
 # しない。adapter 経由でのみ既存 add_* を呼ぶ。
 
 from adapter.compute import (  # noqa: E402
@@ -29,20 +29,23 @@ def _patch_tgp_unavailable(monkeypatch):
     """tgp バックエンド不在（rpy2/R/tgp 未導入）を環境非依存に再現する。
 
     R/tgp/rpy2 を導入済みの環境でも「backend_unavailable へのエラー翻訳」契約を検証できるよう、
-    _fitter_factory("tgp") が fit_predict 時に ImportError を送出する fitter を返すよう差し替える。
+    fitter_factory("tgp") が fit_predict 時に ImportError を送出する fitter を返すよう差し替える。
+
+    ISSUE-502 段階 4B: fitter 構築は協働子 ``bindings.tgp_btlm`` が所有する（call_binding は
+    表と結線だけを持つ）。差し替え点は協働子 1 つであり、call_binding 側に別名は無い。
     """
-    from adapter.compute import call_binding
+    from adapter.compute.bindings import tgp_btlm
 
     class _UnavailableTgpFitter:
         def fit_predict(self, *args, **kwargs):
             raise ImportError("rpy2 未導入（テストで tgp 不在を再現）")
 
-    original = call_binding._fitter_factory
+    original = tgp_btlm.fitter_factory
 
     def fake(name, samples="standard"):
         return _UnavailableTgpFitter() if name == "tgp" else original(name, samples)
 
-    monkeypatch.setattr(call_binding, "_fitter_factory", fake)
+    monkeypatch.setattr(tgp_btlm, "fitter_factory", fake)
 
 
 # --------------------------------------------------------------------------- #
@@ -192,59 +195,60 @@ def test_call_binding_invoke_passes_fitter_as_third_positional():
 
 def test_fitter_factory_tgp_uses_fixed_seed_for_live_determinism():
     # 回帰: tgp(MCMC) は seed 固定でなければライブ再計算ごとにトレンド/帯が揺れる。
-    # _fitter_factory("tgp") が固定 seed 付き TgpBtlmFitter を返すことを担保（None 退行防止）。
-    from adapter.compute import call_binding
+    # fitter_factory("tgp") が固定 seed 付き TgpBtlmFitter を返すことを担保（None 退行防止）。
+    from adapter.compute.bindings import tgp_btlm
 
-    assert call_binding._TGP_SEED is not None
-    fitter = call_binding._fitter_factory("tgp")  # R 不在でも実体化は成功
-    assert fitter.seed == call_binding._TGP_SEED
+    assert tgp_btlm.SEED is not None
+    fitter = tgp_btlm.fitter_factory("tgp")  # R 不在でも実体化は成功
+    assert fitter.seed == tgp_btlm.SEED
 
 
 def test_fitter_factory_tgp_samples_select_bte_preset():
     # MCMC サンプル選択: standard(既定)/high/max が BTE プリセットへ写像される。
-    from adapter.compute import call_binding
+    from adapter.compute.bindings import tgp_btlm
 
-    assert call_binding._fitter_factory("tgp").bte == call_binding._BTE_PRESETS["standard"]
-    assert call_binding._fitter_factory("tgp", "high").bte == call_binding._BTE_PRESETS["high"]
-    assert call_binding._fitter_factory("tgp", "max").bte == call_binding._BTE_PRESETS["max"]
+    assert tgp_btlm.fitter_factory("tgp").bte == tgp_btlm.BTE_PRESETS["standard"]
+    assert tgp_btlm.fitter_factory("tgp", "high").bte == tgp_btlm.BTE_PRESETS["high"]
+    assert tgp_btlm.fitter_factory("tgp", "max").bte == tgp_btlm.BTE_PRESETS["max"]
     # 未知値は standard へフォールバック（不正入力で壊れない）。
-    assert call_binding._fitter_factory("tgp", "bogus").bte == call_binding._BTE_PRESETS["standard"]
+    assert tgp_btlm.fitter_factory("tgp", "bogus").bte == tgp_btlm.BTE_PRESETS["standard"]
     # Total は standard<high<max（サンプル増の単調性）。
-    totals = [call_binding._BTE_PRESETS[k][1] for k in ("standard", "high", "max")]
+    totals = [tgp_btlm.BTE_PRESETS[k][1] for k in ("standard", "high", "max")]
     assert totals == sorted(totals) and len(set(totals)) == 3
 
 
 def test_fitter_factory_ols_ignores_samples():
     # ols は解析解のため samples を無視（bte 属性を持たない OlsBtlmFitter）。
-    from adapter.compute import call_binding
+    from adapter.compute.bindings import tgp_btlm
 
-    fitter = call_binding._fitter_factory("ols", "max")
+    fitter = tgp_btlm.fitter_factory("ols", "max")
     assert not hasattr(fitter, "bte")
 
 
 def test_fitter_factory_default_matches_catalog():
-    # 既定の二重定義（catalog.js mcmc_samples 既定 'standard' と _DEFAULT_SAMPLES）の乖離防止。
+    # 既定の二重定義（catalog.js mcmc_samples 既定 'standard' と DEFAULT_SAMPLES）の乖離防止。
     # catalog 側は catalog.test.js が 'standard' を固定。backend 側を本テストで固定する。
-    from adapter.compute import call_binding
+    from adapter.compute.bindings import tgp_btlm
 
-    assert call_binding._DEFAULT_SAMPLES == "standard"
-    assert call_binding._DEFAULT_SAMPLES in call_binding._BTE_PRESETS
+    assert tgp_btlm.DEFAULT_SAMPLES == "standard"
+    assert tgp_btlm.DEFAULT_SAMPLES in tgp_btlm.BTE_PRESETS
 
 
 def test_invoke_btlm_passes_mcmc_samples_to_factory_not_to_add_btlm(monkeypatch):
     # E2E（invoke 経路）: params の mcmc_samples が pop されて factory へ届き、add_btlm には
     # 漏れない（漏れれば TypeError）。fitter は R 不要の OlsBtlmFitter で完走させ samples を捕捉。
-    from adapter.compute import call_binding
+    from adapter.compute.bindings import tgp_btlm
+    from adapter.compute.src_packages import load_src_package
 
     captured = {}
 
     def fake_factory(name, samples="standard"):
         captured["name"] = name
         captured["samples"] = samples
-        src = call_binding._load_src_package("tgp_btlm")
+        src = load_src_package("tgp_btlm")
         return src.OlsBtlmFitter()  # R 不要・add_btlm が完走
 
-    monkeypatch.setattr(call_binding, "_fitter_factory", fake_factory)
+    monkeypatch.setattr(tgp_btlm, "fitter_factory", fake_factory)
     chart = FakeLineChart()
     binding = CallBinding.resolve("tgp_btlm", "default")
     binding.invoke(chart, _ohlcv(60),
@@ -414,14 +418,14 @@ def test_adapter_required_bucket_empty_translates_to_empty_series():
 
 def test_profit_band_value_error_translation_is_type_based_not_message_based():
     # LSP 是正 LSP-3: 翻訳は EmptyBucketError 型で識別する（日本語メッセージ片照合ではない）。
-    from adapter.compute.call_binding import profit_band_empty_bucket_error
+    from adapter.compute.bindings.profit_band import empty_bucket_error
     from adapter.compute.indicator_compute_adapter import _VALUE_ERROR_TRANSLATORS
 
     # ISSUE-479 Wave2 I-1（OCP-3）: 翻訳器は _TABLE の value_error_types 宣言からの導出値に
     #   なった（adapter に指標名リテラルを置かない）。取得経路だけが変わり、下の検証は不変。
     _translate_profit_band_value_error = _VALUE_ERROR_TRANSLATORS["profit_band"]
 
-    empty_bucket_cls = profit_band_empty_bucket_error()
+    empty_bucket_cls = empty_bucket_error()
     assert issubclass(empty_bucket_cls, ValueError)  # 後方互換（サブクラス）
 
     # 型が EmptyBucketError → empty_series（メッセージに "バケット" が無くても型で判定）。

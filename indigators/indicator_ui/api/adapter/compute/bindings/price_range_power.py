@@ -6,16 +6,22 @@ interval は**絶対価格刻み**（``price_range_power/src/core.py`` の ``ban
 （パリティ契約を保つ）、**バンド数が上限超過の場合のみ**価格規模へ自動適応する。
 
 本モジュールは call_binding から分離した協働子である（ISSUE-479 Wave2 I-1・SRP）。
-call_binding は ``_TABLE`` の ``preprocess`` 宣言で本モジュールの ``preprocess`` を参照するだけで、
-price_range_power 固有の定数（上限/目標バンド数）も丸め規則も知らない。既存の参照面
-（``call_binding._nice_step`` / ``_adapt_prp_interval`` / ``_prp_preprocess``）は
-call_binding 側の再エクスポートで維持する。
+call_binding は ``_TABLE`` の ``preprocess`` / ``latest_meta`` 宣言で本モジュールの関数を
+参照するだけで、price_range_power 固有の定数（上限/目標バンド数）も丸め規則も
+「価格軸分布だから末尾 K 切りしない」という性質も知らない。
+
+ISSUE-502 段階 4B: 従来 call_binding が持っていた再エクスポート面
+（``call_binding._nice_step`` / ``_adapt_prp_interval`` / ``_prp_preprocess``）は撤去した。
+指標を 1 件足すたびに共有ファイルへ別名 3 行を書き足す構造そのものが OCP 違反であり、
+参照面は本モジュール（``bindings.price_range_power``）を唯一とする。
 """
 
 from __future__ import annotations
 
 import math
 from typing import Any
+
+from adapter.compute.latest_meta_spec import LatestMeta
 
 #: バンド数（価格レンジ / interval）の上限。超えたときだけ刻みを粗くする。
 MAX_BANDS = 20000
@@ -72,3 +78,12 @@ def preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
     if "interval" in kw:
         kw["interval"] = adapt_interval(df, kw)
     return kw
+
+
+def latest_meta(params: dict[str, Any]) -> LatestMeta:
+    """params → Latest 増分計算メタ（ISSUE-097 🟡-6）。
+
+    価格軸分布（非時系列）。末尾 K 切りしない（全件・trailing_k=None）。
+    """
+    del params
+    return LatestMeta("axis_distribution", None, None)

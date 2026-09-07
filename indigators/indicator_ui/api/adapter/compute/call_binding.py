@@ -1,15 +1,19 @@
-"""CALL_BINDING（内部設計書 §3.3.3・基本設計 §5.5.4.1）— 指標ごとの呼出規約。
+"""CALL_BINDING（内部設計書 §3.3.3・基本設計 §5.5.4.1）— 指標記述子表と結線。
 
 compute_id(+variant) → {callable, output_kind, keyword_params} を保持し、``invoke`` で
-既存 add_* を一意・決定論的に呼ぶ。add_btlm のみ fitter を第3位置引数で渡し、他は
-df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter 実体化
-（ols→OlsBtlmFitter() / tgp→TgpBtlmFitter()）をここで行う。
+既存 add_* を一意・決定論的に呼ぶ。
 
-3 指標はいずれも top-level パッケージ名 ``src`` を使うため、``import src`` では同名衝突し
-1 つしか読めない。本モジュールは各指標 src を **ファイルパスから一意なパッケージ名で
-読み込む**（既存 src は read-only・改変しない）。描画ライブラリは import しない。
+**本モジュールの責務は「表」と「表からの導出」だけである**（ISSUE-502 段階 4B・SRP）。
+指標固有の知識も汎用機構の実装も持たない。分離先は次のとおり:
 
-指標を 1 件追加する手順（ISSUE-180・back 側）:
+  | 責務                          | 所有者                                        |
+  |---|---|
+  | 指標 src のロード境界          | ``adapter.compute.src_packages``              |
+  | param 既定値の導出・束縛       | ``adapter.compute.param_binding``             |
+  | ``kind`` ごとの呼出器（汎用）  | ``adapter.compute.kind_invokers``             |
+  | 指標固有 hook（1 指標 1 本）   | ``adapter.compute.bindings.<compute_id>``     |
+
+指標を 1 件追加する手順（ISSUE-180・ISSUE-502 段階 4B・back 側）:
     1. ``_TABLE`` へ ``(compute_id, variant)`` のエントリを 1 件足す。呼出規約（loader /
        output_kind / kind）に加え、必要なら thread_affinity / time_required / latest_meta /
        preprocess を、そして param 既定値 ``params_defaults`` を **同一エントリ内に** 宣言する。
@@ -17,274 +21,65 @@ df 以降キーワード専用（§5.5.4.1）。fitter enum 文字列 → Fitter
        （ISSUE-278 #8）。variant を複数持つ指標は各 variant がそれぞれ宣言する（受理引数は
        variant ごとに異なるため。宣言と実シグネチャの一致は
        ``api/tests/test_call_binding_param_scopes.py`` が固定する）。
-    2. back 側の改変はこれで完了する。``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の
+    2. hook（latest_meta の解決規則・preprocess・専用例外型・共有既定値など）が要るなら
+       ``adapter/compute/bindings/<compute_id>.py`` を **1 本置く**。登録行は不要で
+       （``bindings.__getattr__`` が遅延解決する）、``_TABLE`` の宣言から参照するだけでよい。
+       **本ファイルへ関数・定数・import・再エクスポート別名を足してはならない**
+       （``api/tests/test_call_binding_open_closed.py`` の G1〜G4 が AST で固定する）。
+    3. back 側の改変はこれで完了する。``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の
        配信値）・``requires_time`` ・``requires_dedicated_worker`` ・``latest_meta`` はいずれも
        本エントリからの導出であり、追加登録は不要（宣言漏れは
        ``indicator_param_defaults`` が ValueError で、テストが構造検査で検出する）。
-    3. 既定値を追加・変更したときは front 同期契約 ``api/tests/golden/catalog_defaults.json``
+    4. 既定値を追加・変更したときは front 同期契約 ``api/tests/golden/catalog_defaults.json``
        を更新する（back 配信値 == front 静的フォールバック値のオラクル）。
-    4. front（``web/js/usecase/catalog.js`` の IndicatorDef、足内更新対象なら
+    5. front（``web/js/usecase/catalog.js`` の IndicatorDef、足内更新対象なら
        ``intrabar_forming_ids.js``）は別アクターの所有物であり、本テーブルからは導出されない
        （``GET /catalog`` は param 既定値のみを配信する契約のため）。front 側の宣言は別途必要。
+
+なお **新しい引数渡し規約（``kind``）を足すとき**だけは ``_INVOKERS`` へ 1 行足す。これは
+「指標が増える」軸ではなく「呼出規約が増える」軸であり、両者は独立に変化する。
 """
 
 from __future__ import annotations
 
-import copy
-import importlib
-import inspect
-import sys
 from dataclasses import dataclass
-from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable, NotRequired, TypedDict
 
+from adapter.compute import bindings
+from adapter.compute import kind_invokers
 from adapter.compute.latest_meta_spec import LatestMeta
-from adapter.compute.module_loader import load_package
+from adapter.compute.kind_invokers import Invoker as _Invoker
 
-# 共有プリミティブ層（``common.applied_price`` 等）を指標 src から絶対 import 可能にする。
-#   指標 src（例 moving_averages/src/lwc_chart.py）が ``from common.applied_price import ...``
-#   を解決できるよう、ワークスペース根（このファイル: api/adapter/compute/ → parents[5]）を
-#   sys.path に追加する（ロード境界で一括設定し、各 src に sys.path ハックを散らさない）。
-# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
-# ISSUE-174: 兄弟パッケージ層（``moving_averages`` / ``mql_builtins`` / ``profit_system``）の解決点は
-#   本ロード境界（_ensure_indigators_on_path）に一本化した。各 src の ``sys.path.insert`` は撤去済み。
-
-
-def accepted_param_names(callable_: Callable) -> "set[str] | None":
-    """``callable_`` が受理するキーワード引数名の集合（``**kwargs`` を持つなら ``None``＝無制限）。
-
-    「この variant が受理する param」の実体はここ（add_* のシグネチャ）にしかない。
-    ``_TABLE`` の ``params_defaults`` 宣言が実シグネチャと一致することは
-    ``test_call_binding_param_scopes`` が本関数を使って固定する。
-    """
-    sig = inspect.signature(callable_)
-    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-        return None
-    return {
-        name for name, p in sig.parameters.items()
-        if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)
-    }
-
-
-def _bind_kwargs(callable_: Callable, params: dict[str, Any]) -> dict[str, Any]:
-    """``params`` を ``callable_`` の受理引数へ束縛する。未受理キーは **例外**（ISSUE-278 #8）。
-
-    従来は「当該 variant の add_* が取らない引数は黙って捨てる」縮退だった。これは
-    ``params_defaults`` の宣言粒度が compute_id、実契約が variant であることの差を吸収する
-    ためのもので、結果として **UI が効かないコントロールを表示し続けた**（実測: profit_band
-    variant=global で normalize/window/atr_period/min_obs を動かしても応答は byte 同一）。
-    宣言粒度を variant へ揃えた（各 variant が受理引数だけを宣言する）ため、差を埋める
-    無言破棄は不要になった。以後、未受理キーの到来は front/back の契約違反であり
-    ValueError＝``validation`` エラーとして可視化する（``_translate_value_error``）。
-
-    ``**kwargs`` を持つ callable は素通しする（受理集合が定義できないため）。
-    """
-    allowed = accepted_param_names(callable_)
-    if allowed is None:
-        return dict(params)
-    unknown = sorted(set(params) - allowed)
-    if unknown:
-        raise ValueError(
-            f"{getattr(callable_, '__name__', callable_)} が受理しない param が渡されました: "
-            f"{unknown}。variant ごとの受理引数は GET /catalog の paramScopes を参照してください。"
-        )
-    return dict(params)
-
-
-# price_range_power 固有の interval 適応（バンド爆発対策）は協働子
-#   ``adapter.compute.bindings.price_range_power`` が所有する（ISSUE-479 Wave2 I-1・SRP）。
-#   本モジュールは上限/目標バンド数も丸め規則も持たず、_TABLE の ``preprocess`` 宣言で参照するだけ。
-#   既存の参照面（``call_binding._nice_step`` / ``_adapt_prp_interval`` / ``_prp_preprocess``）は
-#   以下の再エクスポートで維持する（呼出側・既存テストの import 面は不変）。
-from adapter.compute.bindings.price_range_power import (  # noqa: E402
-    adapt_interval as _adapt_prp_interval,
-    nice_step as _nice_step,
-    preprocess as _prp_preprocess,
+# 汎用機構の再エクスポート（既存の import 面を維持する。いずれも指標名を含まない汎用名であり、
+#   指標を足しても増減しない＝OCP ガードの対象外）。
+from adapter.compute.param_binding import (
+    CALC_TIMEFRAME_DEFAULT,
+    LAYER_CONSUMED_PARAMS,
+    accepted_param_names,
+    bind_kwargs as _bind_kwargs,
+    derive_param_defaults as _derive_param_defaults,
+    derive_param_scopes as _derive_param_scopes,
+)
+from adapter.compute.src_packages import (
+    indicator_src,
+    load_callable as _load_callable,
+    load_src_package as _load_src_package,
 )
 
-
-# --- Latest 増分計算メタ（archetype/min_window/trailing_k）の宣言（ISSUE-097 🟡-6・OCP）---
-# latest_meta.py の per-indicator if 連鎖を撤去し、各指標の archetype 分類を _BindingSpec の
-# ``latest_meta`` フィールド（params → (archetype, min_window, trailing_k) の resolver）へ
-# 一元宣言する。未宣言（field 不在）の指標は latest_meta.py 側の安全既定
-# recurrence/full/K=1 へ落ちる（従来不変）。LatestMeta 型はここで import しない
-# （latest_meta.py が本 resolver の戻り tuple から構築＝call_binding との循環を回避）。
-
-# ISSUE-233: moving_averages は 4 種すべて「保持した状態を 1 点進める」増分計算
-#   （archetype="incremental"・状態器 "moving_averages"）で計算する。full 再計算を行わない
-#   ため所要は窓長に依らず一定になる。値は full と bit 一致する（sma/ema/smma は
-#   ``*_on_buffer`` の prev_calculated 契約、lwma は走行和を授受する
-#   ``linear_weighted_ma_on_buffer_stateful`` が full の漸化をそのまま継続するため）。
-#
-#   min_window は None（full）のままにする。増分器が扱えないパラメータ（平滑化あり等）で
-#   落ちる従来経路は、tail による短縮を行わない厳密一致設計を維持する必要があるため
-#   （sma/lwma は core がスライド和の再帰であり、tail で開始点を変えると末尾値に浮動小数
-#   ドリフト ~1e-15 が乗る）。この理由で従来 sma/lwma を "window" と分類していた。
-
-
-def _moving_averages_latest_meta(
-    params: dict[str, Any],
-) -> LatestMeta:
-    del params  # 4 種・全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
-    return LatestMeta("incremental", None, 1, "moving_averages")
-
-
-def _price_range_power_latest_meta(
-    params: dict[str, Any],
-) -> LatestMeta:
-    # 価格軸分布（非時系列）。末尾K切りしない（全件・trailing_k=None）。
-    return LatestMeta("axis_distribution", None, None)
-
-
-# tickvol は本体（点ごとの写像）と外れ値水準（因果ローリング＋イベント蓄積）の複合である。
-#   水準はバー t までに**確定したイベント観測**すべてに依存し、必要な履歴長は上限を持たない
-#   （イベント頻度はデータ依存。実測 5m で 1 件 / 35.7 バー＝直近 50 件に 1,800 バー必要）。
-#   よって有限 tail は取れず、full 再計算では足内更新のたびに全窓を走り直すことになる。
-#   ISSUE-233 と同じ真因なので同じ解を採る＝「保持した状態を 1 点進める」増分計算を宣言する。
-#   増分器が扱えないパラメータでは prepare が None を返し従来の full 経路へ落ちる。
-
-
-def _tickvol_latest_meta(
-    params: dict[str, Any],
-) -> LatestMeta:
-    del params  # 全パラメータで同一宣言（適用可否の判定は増分器 prepare が持つ）。
-    return LatestMeta("incremental", None, 1, "tickvol")
-
-
-# indigators/ ルート（このファイル: api/adapter/compute/ → parents[4] = indigators/）。
-_INDIGATORS = Path(__file__).resolve().parents[4]
-
-# 一意パッケージ名の接頭辞。3 指標が共通 top-level 名 ``src`` を使うため、各指標を
-# ``_<indicator>_src`` という衝突しない名前で sys.modules へ登録する（同名 src 回避）。
-_SRC_MODULE_PREFIX = "_"
-_SRC_MODULE_SUFFIX = "_src"
-
-
-def _src_module_name(indicator: str) -> str:
-    """指標名から一意なパッケージ名（``_<indicator>_src``）を組み立てる。"""
-    return f"{_SRC_MODULE_PREFIX}{indicator}{_SRC_MODULE_SUFFIX}"
-
-
-def _ensure_indigators_on_path() -> None:
-    """``indigators/`` を sys.path へ 1 回だけ登録する（ISSUE-174・冪等）。
-
-    指標 src は兄弟パッケージ（``moving_averages`` / ``mql_builtins`` / ``profit_system``）を
-    top-level 名で import する。その解決点を **ロード境界であるここ 1 か所**に置き、各 src の
-    最内層に散っていた ``sys.path.insert``（13 本）を撤去する。既に登録済みなら何もしない。
-    """
-    path = str(_INDIGATORS)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-
-def _load_src_package(indicator: str) -> ModuleType:
-    """指標 src パッケージを一意なパッケージ名で読み込む（同名 ``src`` 衝突を回避）。
-
-    importlib 機構は ``module_loader.load_package`` に集約（重複解消・振る舞い不変）。
-    一意名 ``_<indicator>_src`` を与え、相対 import（``from .bands import``）と
-    sys.modules キャッシュは load_package が担保する。
-
-    exec 前に ``indigators/`` を sys.path へ載せる（src 内の兄弟パッケージ絶対 import の解決点）。
-    """
-    _ensure_indigators_on_path()
-    return load_package(_src_module_name(indicator), _INDIGATORS / indicator / "src")
-
-
-# tgp::btlm の MCMC 設定（_TGP_SEED / _BTE_PRESETS / _DEFAULT_SAMPLES / _fitter_factory）は
-# _TABLE の直後に定義する。_DEFAULT_SAMPLES は指標記述子 _TABLE の tgp_btlm
-# ``params_defaults["mcmc_samples"]`` から導出するため、_TABLE の定義後でなければ解決できない
-# （ISSUE-180: param 既定値の単一情報源を _TABLE へ統合）。
-
-
-def _load_callable(indicator: str, attr: str) -> Callable:
-    """指標 src の lwc_chart から add_* を取り出す（read-only）。"""
-    src = _load_src_package(indicator)
-    lwc = importlib.import_module(src.__name__ + ".lwc_chart")
-    return getattr(lwc, attr)
-
-
-def indicator_src(indicator: str) -> ModuleType:
-    """指標 src パッケージを一意名で読み込んで返す（read-only・無改変参照）。
-
-    増分器（``adapter.compute.incremental``）が指標 src の **公開関数**（``*_on_buffer`` /
-    ``rolling_ols_window_end`` 等）を呼ぶための唯一の入口。ロード機構（同名 ``src`` 衝突の
-    回避・sys.path の解決点）を本モジュールへ閉じ込め、増分器側へ importlib を散らさない。
-    """
-    return _load_src_package(indicator)
-
-
-def profit_band_empty_bucket_error() -> type:
-    """profit_band src の ``EmptyBucketError`` 型を返す（LSP 是正・型識別用）。
-
-    profit_band src を一意パッケージ名で遅延ロードし専用例外型を返す。adapter はこの型で
-    ``isinstance`` 判定し、「必須バケット空(empty_series)」と「検証失敗(validation)」の二意味を
-    日本語メッセージ片照合でなく型で区別する。ロードは sys.modules キャッシュ済みのため、
-    invoke で送出された例外インスタンスの型と同一クラスオブジェクトを返す（isinstance が成立）。
-    """
-    return _load_src_package("profit_band").EmptyBucketError
-
-
-# tgp_btlm ソース 8 択化（kind-twirling-hollerith.md §4）。既存 4 択（open/high/low/close）は
-# 参照実装 build_btlm_bands が列名を直接参照する経路をそのまま使う（byte 不変）。合成 4 択
-# （hl2/hlc3/ohlc4/hlcc4）は本結線層が共有 applied_price で列を先に合成し、その列名を price
-# として渡す（tgp_btlm src は無改変・追加拡張のみ・非破壊）。moving_averages と同一の写像。
-from common.applied_price import (  # noqa: E402
-    OHLC_COLUMNS,
-    SYNTHETIC_SOURCE_TO_APPLIED,
-    applied_price,
-)
-
-#: 合成が要る source → 種別。以前は本ファイルが 4 組を逐語列挙しており、共有表
-#: ``SOURCE_TO_APPLIED``（8 組）の部分写しになっていた（ISSUE-502 段階 2 D-6: 8 択解決の
-#: 第 4 の部分実装）。列挙をやめ共有側の導出値をそのまま束縛する（source を 1 つ足しても
-#: 本ファイルは改変不要）。
-_BTLM_SYNTHETIC_SOURCES = SYNTHETIC_SOURCE_TO_APPLIED
-
-
-def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
-    """tgp_btlm の price を 8 択解決する（結線拡張・src 無改変）。
-
-    既存列（open/high/low/close 等）はコピーせず素通しし、build_btlm_bands の直接列参照を
-    そのまま使う（byte 不変）。合成ソース（hl2/hlc3/ohlc4/hlcc4）は applied_price で列を合成し
-    df のコピーへ一意列名で足し、その列名を返す。未知ソースは素通しし、build_btlm_bands の
-    KeyError 契約に委ねる。
-
-    共有の解決手続き common.applied_price.resolve_source_prices へは寄せていない（ISSUE-502 段階 2 D-6
-    で差分を実測）。契約が別物であるため:
-        * 戻り値が価格配列ではなく ``(df, 列名)``（tgp_btlm src は列名で直接参照する＝byte 不変）。
-        * 既存列は**素通し**し合成しない（price="close" は同名列をそのまま使う）。
-        * 列欠落は ``ValueError`` ではなく ``KeyError``（build_btlm_bands の契約に揃える）。
-    語彙（どの source が合成を要するか・どの列が要るか）だけを共有側から受け取る。
-    """
-    key = str(price).lower()
-    lower = {str(c).lower(): c for c in df.columns}
-    if key in lower:
-        return df, price  # 既存列は素通し（byte 不変）
-    kind = _BTLM_SYNTHETIC_SOURCES.get(key)
-    if kind is None:
-        return df, price  # 未知は build_btlm_bands の KeyError へ委ねる
-
-    def col(name: str) -> Any:
-        if name not in lower:
-            raise KeyError(f"合成ソース計算に必要な列がありません: {name}")
-        return df[lower[name]].to_numpy(dtype=float)
-
-    series = applied_price(kind, *(col(name) for name in OHLC_COLUMNS))
-    col_name = f"_btlm_src_{key}"
-    df2 = df.copy()
-    df2[col_name] = series
-    return df2, col_name
-
-
-# profit_band の 2 variant（global/robust）が **どちらも受理する** param の既定値。
-#   宣言粒度は variant（ISSUE-278 #8）だが、共有 param の既定値は 1 箇所に置き両エントリが
-#   参照する（同じリテラルを 2 度書かない＝値の食い違いを構造的に作らない）。
-_PROFIT_BAND_SHARED: dict[str, Any] = {
-    "probabilities": [0.51, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99],
-    "buckets": ["nOH", "pOL", "pOH", "nOL"],
-    "legend": False,
-}
+__all__ = [
+    "CALC_TIMEFRAME_DEFAULT",
+    "CallBinding",
+    "LAYER_CONSUMED_PARAMS",
+    "accepted_param_names",
+    "indicator_param_defaults",
+    "indicator_param_scopes",
+    "indicator_src",
+    "latest_meta_fields",
+    "requires_dedicated_worker",
+    "requires_time",
+    "value_error_declarations",
+    "value_error_types",
+]
 
 
 class _BindingSpec(TypedDict):
@@ -294,9 +89,11 @@ class _BindingSpec(TypedDict):
     output_kind : 系列 JSON 種別（"line" / "horizontal_line"・§6.3）。
     kind        : invoke 時の引数渡し（"btlm"=fitter 第3位置 / "kw"=df 以降キーワード専用）。
     latest_meta : Latest 増分計算メタの resolver（任意・ISSUE-097 🟡-6）。
-                  params → (archetype, min_window, trailing_k)。未宣言は安全既定へ落ちる。
+                  params → LatestMeta。未宣言は安全既定へ落ちる。宣言が一行の定数返しで済まない
+                  指標は協働子 ``bindings.<compute_id>.latest_meta`` を参照する。
     preprocess  : invoke 前の kw 変換フック（任意・ISSUE-097 🟡-7）。(df, kw) → kw。
                   未宣言（既定 None）は変換なし。invoke から指標名直判定を排するための昇格点。
+                  実装は協働子 ``bindings.<compute_id>`` が所有する。
     value_error_types : ValueError の下位型 → error.type の宣言（任意・SOLID 是正 OCP-3）。
                   ``{error_type: 型ローダ}``。指標 src が専用例外型を持ち、素の ValueError と
                   区別して翻訳させたいときだけ宣言する（例: profit_band の EmptyBucketError →
@@ -316,7 +113,9 @@ class _BindingSpec(TypedDict):
                   add_* が受理する引数であり、``GET /catalog`` の ``paramScopes`` としてそのまま
                   配信される（front はこれで variant ごとの表示・送信を決める）。共有 param は
                   各 variant のエントリが同じ既定値で宣言する（食い違いと宣言漏れは
-                  ``indicator_param_defaults`` が ValueError で検出する）。
+                  ``indicator_param_defaults`` が ValueError で検出する）。複数 variant が同じ
+                  リテラルを 2 度書かないよう、共有分は協働子（例
+                  ``bindings.profit_band.SHARED_PARAMS_DEFAULTS``）が所有する。
     """
 
     loader: Callable[[], Callable]
@@ -340,6 +139,10 @@ class _BindingSpec(TypedDict):
 # 導出値であり、独立した定義を持たない。エントリの並び順は ``GET /catalog`` 応答の compute_id
 # 出現順そのものであるため、既存応答の byte 等価を保つ目的で従来の配信順を維持する
 # （並び替えは応答 JSON の key 順を変える＝挙動変更）。
+#
+# ISSUE-502 段階 4B（SRP/OCP）: 本テーブルは **宣言だけ** を持つ。指標固有の手続き
+# （fitter 構築・合成ソース解決・専用例外型のロード・共有既定値・増分メタの解決規則）は
+# すべて ``bindings.<compute_id>`` が所有し、ここからは名前で参照する。
 _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("tgp_btlm", "default"): {
         "loader": lambda: _load_callable("tgp_btlm", "add_btlm"),
@@ -356,7 +159,9 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "maxbars": 100,
             "q_low": 0.05,
             "q_high": 0.95,
-            "mcmc_samples": "standard",
+            # MCMC サンプル量の既定は協働子が所有する（BTE プリセット表と同じ場所に置き、
+            #   同じリテラルを 2 度書かない）。配信値との一致は test_catalog_schema が固定する。
+            "mcmc_samples": bindings.tgp_btlm.DEFAULT_SAMPLES,
             "color": "rgba(123, 104, 238, 1)",
         },
     },
@@ -418,15 +223,10 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
             "color": "rgba(255, 152, 0, 1)",
         },
     },
-    # cvfe（条件付ボラティリティ予測 σ̂・別 pane オシレータ）。実バインディングは
-    #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
-    #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
-    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下する）。
-    #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
     # cvfe（条件付ボラティリティ予測 σ̂・価格スケール上の水平ダッシュ）。実バインディングは
     #   add_cvfe（indigators/cvfe/src/lwc_chart.py）。UI 計算経路が渡せるのは OHLC だけで
     #   仕様 §3.1 のティック列が無いため、§4.1-6 の FAIL 行が定める縮退
-    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下・ISSUE-218）。
+    #   （measure_id="PARK"）で算出する（精度は仕様 §7-6 のとおり低下する・ISSUE-218）。
     #   line 系（時系列）＝時刻軸必須。時刻解決失敗は missing_time へ翻訳される。
     #
     #   公開パラメータは 6 個に絞る（認知負荷の最小化・ユーザー厳命 2026-07-30）。
@@ -453,11 +253,11 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "time_required": True,
         # SOLID 是正 OCP-3: 「必須バケット空」は専用型 EmptyBucketError（ValueError サブクラス）で
         #   送出される。素の ValueError（normalize 不正等）と区別して empty_series へ翻訳する。
-        "value_error_types": {"empty_series": profit_band_empty_bucket_error},
+        "value_error_types": {"empty_series": bindings.profit_band.empty_bucket_error},
         # ISSUE-278 #8: global が受理するのは共有 3 件＋ require_full。robust 専用
         #   （normalize/window/atr_period/min_obs）は add_profit_band のシグネチャに無い。
         "params_defaults": {
-            **_PROFIT_BAND_SHARED,
+            **bindings.profit_band.SHARED_PARAMS_DEFAULTS,
             "require_full": True,
         },
     },
@@ -465,11 +265,11 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
         "loader": lambda: _load_callable("profit_band", "add_robust_profit_band"),
         "output_kind": "line", "kind": "kw",
         "time_required": True,
-        "value_error_types": {"empty_series": profit_band_empty_bucket_error},
+        "value_error_types": {"empty_series": bindings.profit_band.empty_bucket_error},
         # ISSUE-278 #8: robust が受理するのは共有 3 件＋因果窓/正規化の 4 件。
         #   ``require_full`` は add_robust_profit_band のシグネチャに無い（global 専用）。
         "params_defaults": {
-            **_PROFIT_BAND_SHARED,
+            **bindings.profit_band.SHARED_PARAMS_DEFAULTS,
             "normalize": "return",
             "window": "expanding",
             "atr_period": 14,
@@ -479,8 +279,8 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("price_range_power", "default"): {
         "loader": lambda: _load_callable("price_range_power", "add_price_range_power"),
         "output_kind": "horizontal_line", "kind": "kw",
-        "latest_meta": _price_range_power_latest_meta,
-        "preprocess": _prp_preprocess,
+        "latest_meta": bindings.price_range_power.latest_meta,
+        "preprocess": bindings.price_range_power.preprocess,
         "params_defaults": {
             "interval": 0.1,
             "range_from": None,
@@ -494,7 +294,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("moving_averages", "default"): {
         "loader": lambda: _load_callable("moving_averages", "add_moving_averages"),
         "output_kind": "line", "kind": "kw",
-        "latest_meta": _moving_averages_latest_meta,
+        "latest_meta": bindings.moving_averages.latest_meta,
         "params_defaults": {
             "ma_type": "ema",
             "length": 9,
@@ -683,7 +483,7 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
     ("tickvol", "default"): {
         "loader": lambda: _load_callable("tickvol", "add_tickvol"),
         "output_kind": "histogram", "kind": "kw",
-        "latest_meta": _tickvol_latest_meta,
+        "latest_meta": bindings.tickvol.latest_meta,
         "params_defaults": {
             "window_n": 500,
             "q_low": 0.10,
@@ -699,105 +499,17 @@ _TABLE: dict[tuple[str, str], _BindingSpec] = {
 }
 
 
-#: 計算.時間足の既定（ISSUE-274）。"chart"＝チャートの時間足に追従する（＝投影しない）。
-CALC_TIMEFRAME_DEFAULT = "chart"
-
-
-def indicator_param_defaults() -> dict[str, dict[str, Any]]:
-    """_TABLE の ``params_defaults`` 宣言から compute_id → param 既定値を導出する（ISSUE-180）。
-
-    ``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の配信値）の唯一の生成元。返り値は deep copy
-    のため、呼び出し側の変更は _TABLE へ波及しない。既定値は指標（compute_id）の単位で 1 セット
-    ＝全 variant の宣言の和であり、共有 param は全 variant で同値でなければならない。
-
-    整合検査（宣言漏れ・食い違いの構造的検出）:
-      - _TABLE の **全エントリ**（compute_id, variant）が ``params_defaults`` を持つ（漏れは ValueError）。
-      - 同一 compute_id の複数 variant が同じ param を **異なる既定値** で宣言することを禁ずる。
-    dict の挿入順は _TABLE のエントリ順（＝従来の配信順）を保つ。
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for (compute_id, variant), spec in _TABLE.items():
-        defaults = spec.get("params_defaults")
-        if defaults is None:
-            raise ValueError(
-                f"params_defaults が未宣言のエントリがあります: {(compute_id, variant)}。"
-                "各 variant が受理する param の既定値を宣言してください（ISSUE-278 #8）。"
-            )
-        merged = out.setdefault(compute_id, {})
-        for name, value in defaults.items():
-            if name in merged and merged[name] != value:
-                raise ValueError(
-                    f"variant 間で param 既定値が食い違っています: {compute_id}.{name} "
-                    f"({merged[name]!r} != {value!r} / variant={variant})。"
-                )
-            merged[name] = copy.deepcopy(value)
-    for defaults in out.values():
-        # 計算.時間足（ISSUE-274）: 「この指標を何の足で計算するか」は指標固有の性質ではなく
-        #   全指標共通の設定であるため、26 エントリへ同じリテラルを配らず本導出で 1 度だけ注入する
-        #   （front の catalog.js も同じく REGISTRY 構築時に 1 箇所から注入する＝両側とも単一定義）。
-        #   指標 src へは渡らない（invoke が計算層の param として pop する）。
-        defaults.setdefault("timeframe", CALC_TIMEFRAME_DEFAULT)
-    return out
-
-
-#: 指標 src ではなく **計算層が消費する** param（ISSUE-274 の計算.時間足）。
-#: 全 variant の受理集合に含まれ、``invoke`` が add_* 呼出前に取り除く。
-LAYER_CONSUMED_PARAMS: frozenset[str] = frozenset({"timeframe"})
-
 # --- kind（引数渡し規約）ごとの呼出器（SOLID 是正 OCP-2）------------------------------
 # ``kind`` は _BindingSpec の宣言として残す（catalog / scope 検定が読む面）。従来 ``invoke`` が
 # ``if self._kind == "btlm"`` で分岐していた部分だけを表 ``_INVOKERS`` へ移し、invoke は分岐を
 # 持たない（新しい引数渡し規約は本表へ 1 行足すだけで足りる＝invoke 本体を改変しない）。
-
-
-@dataclass(frozen=True)
-class _Invoker:
-    """1 つの ``kind``（引数渡し規約）の実体。
-
-    consumes : ``invoke`` 自身が消費する param 名（add_* の kwarg ではない）。
-    call     : ``(spec, callable_, chart, df, kw, consumed) -> None``。
-    """
-
-    consumes: frozenset[str]
-    call: Callable[..., None]
-
-
-def _call_btlm(spec, callable_, chart, df, kw, consumed) -> None:
-    """add_btlm(chart, df, <fitter実体>, **kw)（fitter は第 3 位置・§5.5.4.1）。
-
-    ``_fitter_factory`` は**モジュール globals 経由**で呼ぶ（既存テストの monkeypatch 面を維持する
-    ため。属性束縛にすると差し替えが効かなくなる）。
-    """
-    del spec
-    fitter = _fitter_factory(consumed["fitter"], consumed.get("mcmc_samples", _DEFAULT_SAMPLES))
-    # ソース 8 択化: 合成ソースは applied_price で列合成し price を差し替える（src 無改変）。
-    df, kw["price"] = _resolve_btlm_price(df, kw.get("price", "open"))
-    callable_(chart, df, fitter, **_bind_kwargs(callable_, kw))
-
-
-def _identity_preprocess(df: Any, kw: dict[str, Any]) -> dict[str, Any]:
-    """preprocess 未宣言の指標が使う既定フック（変換なし）。"""
-    del df
-    return kw
-
-
-def _call_kw(spec, callable_, chart, df, kw, consumed) -> None:
-    """add_*(chart, df, **kw)（df 以降キーワード専用）。
-
-    指標固有の前処理は _BindingSpec の ``preprocess`` 宣言へ委譲する（compute_id 直判定は
-    どこにも無い・ISSUE-097 🟡-7）。未宣言の指標は恒等フックへ落ちる＝変換なし。
-    """
-    del consumed
-    kw = _bind_kwargs(callable_, kw)
-    kw = (spec.get("preprocess") or _identity_preprocess)(df, kw)
-    callable_(chart, df, **kw)
-
-
-#: ``kind`` → 呼出器。``invoke`` はこの表を引くだけで分岐を持たない。
+#
+# 本表は「呼出規約が増える」軸でだけ変化する（指標が増える軸とは独立）。実装は所有者が持つ:
+#   kw   … どの指標にも属さない汎用規約 → adapter.compute.kind_invokers
+#   btlm … tgp_btlm だけが要する規約     → adapter.compute.bindings.tgp_btlm
 _INVOKERS: dict[str, _Invoker] = {
-    # btlm は fitter を第 3 位置引数へ、mcmc_samples を fitter 構築のプリセットへ変換する。
-    "btlm": _Invoker(frozenset({"fitter", "mcmc_samples"}), _call_btlm),
-    "kw": _Invoker(frozenset(), _call_kw),
+    "btlm": bindings.tgp_btlm.INVOKER,
+    "kw": kind_invokers.KW_INVOKER,
 }
 
 #: ``kind`` ごとに ``invoke`` 自身が消費する param（add_* の kwarg ではない）。
@@ -807,87 +519,23 @@ _KIND_CONSUMED_PARAMS: dict[str, frozenset[str]] = {
 }
 
 
+# --- 表からの導出（宣言を読むだけ・指標名を知らない）---------------------------------
+def indicator_param_defaults() -> dict[str, dict[str, Any]]:
+    """_TABLE の ``params_defaults`` 宣言から compute_id → param 既定値を導出する（ISSUE-180）。
+
+    ``catalog_schema.PARAM_DEFAULTS``（``GET /catalog`` の配信値）の唯一の生成元。
+    導出規則そのものは ``_derive_param_defaults``（adapter.compute.param_binding）が所有する。
+    """
+    return _derive_param_defaults(_TABLE)
+
+
 def indicator_param_scopes() -> dict[str, dict[str, list[str]]]:
     """compute_id → variant → その variant が受理する param 名（ISSUE-278 #8）。
 
-    ``GET /catalog`` が ``paramScopes`` として配信し、front はこれで (a) ダイアログに出す
-    コントロール (b) ``/compute`` へ送る params を variant ごとに決める。従来は front が
-    variant 横断の全 params を送り、受理しない引数を back が無言で捨てていたため、
-    **効かないコントロールが UI に出続けていた**（実測: profit_band global の
-    normalize/window/atr_period/min_obs は応答 byte 同一）。
-
-    宣言（``params_defaults`` のキー集合）が実シグネチャと一致することは
-    ``test_call_binding_param_scopes`` が ``accepted_param_names`` と突き合わせて固定する。
+    ``GET /catalog`` が ``paramScopes`` として配信する。導出規則そのものは
+    ``_derive_param_scopes``（adapter.compute.param_binding）が所有する。
     """
-    out: dict[str, dict[str, list[str]]] = {}
-    for (compute_id, variant), spec in _TABLE.items():
-        names = list(spec.get("params_defaults") or {})
-        names += [n for n in sorted(LAYER_CONSUMED_PARAMS) if n not in names]
-        out.setdefault(compute_id, {})[variant] = names
-    return out
-
-
-# --- tgp::btlm の MCMC 設定（_TABLE 導出値 _DEFAULT_SAMPLES に依存するため _TABLE の後に置く）---
-# tgp::btlm は MCMC（非決定的）。seed 未設定だと再当てはめ（ライブの毎分再計算）ごとに
-# 結果が揺れ、トレンド線/帯が更新間で動いて見える。固定 seed で「同じ窓→毎回同一結果」にし、
-# ライブ表示を静的表示と一致させる（rbridge は fit_predict ごとに set.seed する＝各 fit が決定的）。
-# 値は任意だが固定であることが重要（再現性確保）。
-_TGP_SEED = 20260101
-
-# MCMC サンプル量プリセット（BTE=Burn-in, Total, Every）。Total を増やすほど posterior が
-# 収束し分位帯が安定するが計算は重い（おおよそ Total 比例）。catalog.js の mcmc_samples と対応。
-# ⚠️ 運用注意（性能）: server は R スレッド非安全のため単一スレッド（framework/server.py）。
-#   tgp 計算中は全リクエストがブロックされる。ライブは 60 秒間隔で再計算するため、"max"（Total
-#   4倍）は実 R btlm が 60 秒を超えると当該指標がライブ中ほとんど更新されない場合がある。
-#   重い設定は静的分析向け。既定 standard は従来どおり軽量（後方互換）。
-_BTE_PRESETS: dict[str, tuple[int, int, int]] = {
-    "standard": (2000, 15000, 2),  # 既定（保持サンプル ~6500）
-    "high": (4000, 30000, 2),      # ~13000・約2倍重い
-    "max": (8000, 60000, 2),       # ~26000・約4倍重い（ライブ再計算で server をブロックし得る）
-}
-# 既定サンプル。param 既定値の単一情報源（_TABLE の tgp_btlm ``params_defaults``）から解決する
-# （ISSUE-092 ③ / ISSUE-180・back 内二重定義の解消）。front（catalog.js）とは catalog_defaults.json
-# 契約経由で back/front 双方のテストが一致を固定する。
-_DEFAULT_SAMPLES = _TABLE[("tgp_btlm", "default")]["params_defaults"]["mcmc_samples"]
-
-
-def _make_ols_fitter(src: ModuleType, samples: str) -> Any:
-    """解析解の OLS fitter（``samples`` は無関係＝MCMC を持たない）。"""
-    del samples
-    return src.OlsBtlmFitter()
-
-
-def _make_tgp_fitter(src: ModuleType, samples: str) -> Any:
-    """MCMC の tgp fitter。seed 固定（再現性）＋ ``samples`` で BTE プリセットを選ぶ。
-
-    未知の ``samples`` は standard へフォールバックする（従来不変）。
-    """
-    return src.TgpBtlmFitter(
-        seed=_TGP_SEED, bte=_BTE_PRESETS.get(samples, _BTE_PRESETS[_DEFAULT_SAMPLES])
-    )
-
-
-#: fitter enum 文字列 → 実体化（SOLID 是正 OCP-1）。fitter を 1 種増やす手順は本表へ 1 行足すこと
-#: だけであり、``_fitter_factory`` 本体は改変しない（本体に比較が 0 件であることを
-#: ``api/tests/test_call_binding_open_closed.py`` が AST で固定する）。
-_FITTERS: dict[str, Callable[[ModuleType, str], Any]] = {
-    "ols": _make_ols_fitter,
-    "tgp": _make_tgp_fitter,
-}
-
-
-def _fitter_factory(name: str, samples: str = _DEFAULT_SAMPLES) -> Any:
-    """fitter enum 文字列 → Fitter 実体（§3.3.3 fitter_factory・_FITTERS 表引き）。
-
-    rpy2/R 不在でも TgpBtlmFitter の実体化自体は成功し、fit_predict 時に ImportError。
-    未知の fitter 名は ValueError（文言は従来と同一）。
-    """
-    src = _load_src_package("tgp_btlm")
-    try:
-        make = _FITTERS[name]
-    except KeyError:
-        raise ValueError(f"未知の fitter です: {name}") from None
-    return make(src, samples)
+    return _derive_param_scopes(_TABLE)
 
 
 def requires_dedicated_worker(indicator_id: "str | None") -> bool:
@@ -948,8 +596,8 @@ def value_error_types(compute_id: "str | None") -> dict[str, Callable[[], type]]
 
 def latest_meta_fields(
     compute_id: str, variant: str, params: dict[str, Any]
-) -> tuple[str, int | None, int | None] | None:
-    """_BindingSpec の ``latest_meta`` 宣言から (archetype, min_window, trailing_k) を解決する。
+) -> "LatestMeta | None":
+    """_BindingSpec の ``latest_meta`` 宣言から増分計算メタを解決する。
 
     ISSUE-097 🟡-6: archetype 分類の単一情報源。未登録 (compute_id, variant) または
     ``latest_meta`` 未宣言のエントリは ``None`` を返し、呼び出し側（latest_meta.py）が
