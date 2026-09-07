@@ -75,10 +75,24 @@ def test_the_generated_projection_matches_the_domain_order() -> None:
     )
 
 
-def test_the_generated_projection_is_marked_as_generated() -> None:
-    """生成物であることが冒頭で明示されている（手編集を誘発しない）。"""
-    head = _GENERATED.read_text(encoding="utf-8").splitlines()[0]
-    assert "自動生成" in head and "編集しない" in head
+def test_the_generated_projection_is_byte_identical_to_the_generator_output() -> None:
+    """生成物＝生成器の再レンダリングと byte 一致（手編集・陳腐化の両方を落とす）。
+
+    マーカー文言の有無を文字列で見る形は「被検査ソースへの grep」（品質検定 C2 の禁止形）
+    なので、生成器そのものを唯一の正として全文一致で突き合わせる。マーカーは生成器が
+    書くため、一致していれば必ず付いている。
+    """
+    from importlib import util as _importlib_util
+
+    gen_path = _DASHBOARD_ROOT.parent / "tools" / "gen_js_parity_golden.py"
+    spec = _importlib_util.spec_from_file_location("gen_js_parity_golden", gen_path)
+    assert spec is not None and spec.loader is not None
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rendered = module.render_dashboard_timeframes_js(TIMEFRAME_ORDER)
+    assert rendered == _GENERATED.read_text(encoding="utf-8"), (
+        "生成物が生成器の出力と一致しません。tools/gen_js_parity_golden.py を再実行すること"
+    )
 
 
 def test_the_front_entry_re_exports_instead_of_declaring_the_order() -> None:
