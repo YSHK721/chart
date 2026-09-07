@@ -68,8 +68,8 @@ SIM_WEB_DIR="${REPO_ROOT}/simulator/sim_ui/web"
 # dashboard core（ISSUE-452 / arch-spec §3）も単独起動 serve.sh を持たない（sim と同じ裁定）。
 #   live core への相乗りは不可（`framework/server.py` の do_GET が if 連鎖＝拡張点を持たず、
 #   相乗りには既存 core の改変が要る＝「既存 3 モードを改変しない」に反する）。
-DASHBOARD_MODULE="dashboard_ui.framework.serve_dashboard"
-DASHBOARD_ENTRY="${REPO_ROOT}/dashboard_ui/framework/serve_dashboard.py"
+DASHBOARD_MODULE="dashboard_ui.main.serve"
+DASHBOARD_ENTRY="${REPO_ROOT}/dashboard_ui/main/serve.py"
 
 PUBLIC_PORT=8000
 LIVE_PORT=8001
@@ -204,7 +204,7 @@ stop_dashboard_core_if_up() {
   done
   if ! wait_down "http://127.0.0.1:${DASHBOARD_PORT}/" 20; then
     echo "エラー: dashboard core ${DASHBOARD_PORT} が停止しませんでした。手動で確認してください:" >&2
-    echo "        ps -eo pid,args | grep serve_dashboard" >&2
+    echo "        ps -eo pid,args | grep dashboard_ui.main.serve" >&2
     exit 1
   fi
 }
@@ -340,7 +340,7 @@ ensure_dashboard_port_free() {
   echo "       そのまま進むと、このツリーの変更が入っていない画面を検証することになります。" >&2
   echo "       （--repo-root を持たない古い形で起動された core もここに来ます。argv を確認してください）" >&2
   echo "       占有プロセス:" >&2
-  ps -eo pid,args 2>/dev/null | grep -F "serve_dashboard" | grep -v grep >&2 || true
+  ps -eo pid,args 2>/dev/null | grep -F "dashboard_ui.main.serve" | grep -v grep >&2 || true
   exit 1
 }
 
@@ -370,7 +370,7 @@ serve(build_sim_app(web_dir='${SIM_WEB_DIR}'), port=${SIM_PORT})
 }
 
 # dashboard core をグループ起動する（sim core と同形）。単独起動 serve.sh を作らない裁定のため、
-#   venv python へ Composition Root（`framework/serve_dashboard`）を直接与える。
+#   venv python へ起動口（`main/serve`・Composition Root を束ねる）を直接与える。
 #   配信元ツリーは `--repo-root` で **argv に載せる**（PYTHONPATH は ps の argv に現れず、
 #   $VENV_PY は worktree でもメインツリーを指すため、どちらもツリーの区別に使えない）。
 #   停止側が読む断片は dashboard_argv_of が唯一源であり、ここは同じ形を組み立てる。

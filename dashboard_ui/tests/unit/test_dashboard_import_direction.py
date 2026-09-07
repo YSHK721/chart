@@ -397,8 +397,12 @@ def test_the_concrete_pieces_are_wired_only_at_the_binding_point(concrete: str) 
 def top_level_modules(path: Path, *, source: "str | None" = None) -> "frozenset[str]":
     """**モジュール本体**（トップレベル）の import だけを集める。
 
-    関数の中の import は「実行時に初めて要る依存」であり、層の依存関係とは別物である。
-    プロセス起動点（serve_dashboard の main）が Composition Root を呼ぶのはこの形になる。
+    関数の中の import は「実行時に初めて要る依存」だが、**層の規則はそれも見る**
+    （関数内 import は循環を実行時まで遅らせるだけで消しはしない・ISSUE-502 C-3）。
+    本関数はトップレベルだけを見る補助であり、下の
+    `test_the_framework_body_does_not_bind_anything` が「本体では何も束縛しない」という
+    より強い（トップレベルに限れば `dashboard_ui` を一切知らない）規則に使う。
+    層をまたぐ import の全数は `imported_modules`（関数内も見る）で検定する。
     """
     tree = ast.parse(source if source is not None else path.read_text(encoding="utf-8"))
     found: "set[str]" = set()
@@ -426,11 +430,7 @@ def test_the_top_level_scan_ignores_imports_inside_functions(tmp_path: Path) -> 
 
 
 def test_the_framework_body_does_not_bind_anything() -> None:
-    """framework の本体は `dashboard_ui` の中身を知らない（束縛は main だけが行う）。
-
-    プロセス起動点（`python -m dashboard_ui.framework.serve_dashboard <port>`）だけが
-    Composition Root を関数の中で呼ぶ。unified_ui/serve.sh がこの形で起動する。
-    """
+    """framework の本体は `dashboard_ui` の中身を知らない（束縛は main だけが行う）。"""
     bound = {
         str(path.relative_to(_ROOT)): sorted(
             module for module in top_level_modules(path)
@@ -443,15 +443,62 @@ def test_the_framework_body_does_not_bind_anything() -> None:
     assert bound == {}
 
 
-def test_the_only_main_reference_from_the_framework_is_the_process_entry_point() -> None:
-    entry = _ROOT / "framework" / "serve_dashboard.py"
+# ------------------------------- R6: framework → main の逆流禁止（ISSUE-502 C-3）
+#
+# 台帳 .doc/solid_audit_20260906.md の C-3（循環 `main/composition_root.py` ⇄
+#   `framework/serve_dashboard.py`）は、起動口（argv 解釈・本番既定・Composition Root の
+#   呼出）が framework 層に置かれていたことが原因だった（同 F-13）。起動口を
+#   `main/serve.py` へ移して除去した。関数の中の import で「遅らせる」形は循環を消さない
+#   ため、本検定は**関数内も含めた全数**（`imported_modules`）で 0 件を固定する。
 
-    referenced = sorted(
-        module for module in imported_modules(entry)
-        if module.startswith("dashboard_ui")
+def main_layer_references(modules: "frozenset[str]") -> "list[str]":
+    """参照集合のうち `dashboard_ui.main`（配下を含む）に当たるものの全数。"""
+    return sorted(
+        module for module in modules
+        if module == "dashboard_ui.main" or module.startswith("dashboard_ui.main.")
     )
 
-    assert referenced == [
+
+def test_the_main_layer_detector_sees_an_import_inside_a_function(tmp_path: Path) -> None:
+    """検出力の自己検査: 関数の中に隠した逆流を必ず見つけること。
+
+    これが無いと、C-3 と同じ「関数内 import による回避」が無検査で戻れてしまう。
+    """
+    modules = imported_modules(
+        tmp_path / "sample.py",
+        package=("dashboard_ui", "framework"),
+        source=(
+            "def main():\n"
+            "    from dashboard_ui.main.composition_root import build_dashboard_app\n"
+        ),
+    )
+
+    assert main_layer_references(modules) == [
         "dashboard_ui.main.composition_root",
         "dashboard_ui.main.composition_root.build_dashboard_app",
     ]
+
+
+def test_the_framework_never_reaches_the_main_layer() -> None:
+    """R6: framework → main の import は関数の中を含めて 0 件（循環の除去）。"""
+    offenders = {
+        str(path.relative_to(_ROOT)): main_layer_references(imported_modules(path))
+        for path in _production_sources("framework")
+        if main_layer_references(imported_modules(path))
+    }
+
+    assert offenders == {}
+
+
+def test_the_process_entry_point_lives_in_the_main_layer() -> None:
+    """起動口の所在を固定する（`python -m dashboard_ui.main.serve <port>`）。
+
+    unified_ui/serve.sh がこの形で起動する。移設先が空だと R6 は「起動口が消えた」
+    状態でも緑になるため、実在と両側の参照をここで押さえる。
+    """
+    entry = _ROOT / "main" / "serve.py"
+    modules = imported_modules(entry)
+
+    assert entry.is_file()
+    assert "dashboard_ui.main.composition_root" in modules
+    assert "dashboard_ui.framework.serve_dashboard" in modules

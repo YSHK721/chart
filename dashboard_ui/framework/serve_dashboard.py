@@ -17,6 +17,13 @@ HTTP でライブ core を叩かず in-process で読む（プールを奪わな
 
 CLEAN_ARCH §6: HTTP・スレッド・静的配信という偶有的技術を最外層へ隔離する
 （`serve_sim.py` / `serve_replay.py` と同型の ThreadingHTTPServer 構成）。
+
+**プロセス起動口はここに無い**（ISSUE-502 段階 3・台帳 C-3 / F-11 / F-13）。argv の解釈・
+本番既定（持ち越し・温め）・Composition Root の呼出は `dashboard_ui.main.serve` が持つ。
+起動口をここに置くと「HTTP の口」と「運用方針の束縛」という別アクターが 1 モジュールに
+同居し（SRP）、束縛のために framework が main を import する＝依存が逆流して循環になる
+（DIP）。本モジュールは `dashboard_ui` の中身を一切 import しない（機械的検査:
+`tests/unit/test_dashboard_import_direction.py`）。
 """
 from __future__ import annotations
 
@@ -31,12 +38,6 @@ from simulator.replay_ui.framework.static_file_server import StaticFileServer
 
 #: シート要求の経路（router が `/dashboard` を剥がした後の形）。
 REACH_SHEET_PATH = "/reach_sheet"
-
-#: 既定の待受けポート（統合 UI の `DASHBOARD_PORT` と同値）。
-DEFAULT_PORT = 8481
-
-#: 配信元ツリーを明示する起動引数（ISSUE-348 の規律）。
-REPO_ROOT_OPTION = "--repo-root"
 
 #: 受け付ける本文の上限（素材は送らない＝束の宣言だけなので小さくてよい）。
 _MAX_BODY = 1_000_000
@@ -152,48 +153,3 @@ def serve(app: DashboardApp, host: str = "127.0.0.1", port: "int | None" = None)
     actual = server.server_address[1]
     print(f"dashboard backend: http://{host}:{actual}/  (Ctrl-C 停止)")
     server.serve_forever()
-
-
-def main(argv: "list[str] | None" = None) -> None:
-    """`python -m dashboard_ui.framework.serve_dashboard <port> [--repo-root <path>]`。
-
-    `--repo-root` は**配信元ツリーの絶対パス**である。省略時は Composition Root が自分の
-    ファイル位置から解決する（既定の挙動は不変）。統合 UI の起動スクリプト（unified_ui/serve.sh）は必ず渡す:
-    PYTHONPATH は ps の argv に現れないため、これが無いと停止側が「8481 を握っているのが
-    どのツリーの core か」を判定できず、別ツリーの残骸を掴んだまま起動する
-    （ISSUE-348 / ISSUE-355 と同型の「他人のコードを自分のものとして見る」事故）。
-    """
-    import sys
-
-    from dashboard_ui.main.composition_root import build_dashboard_app
-
-    port, repo_root = _parse(list(sys.argv[1:] if argv is None else argv))
-    serve(
-        build_dashboard_app(
-            repo_root=repo_root,
-            # 確定素材の持ち越しと起動時の温め（ISSUE-501 段階 2・依頼者承認 2026-09-06）。
-            #   本番の起動口だけが有効化する（テスト・in-process 計測は既定 OFF＝隔離）。
-            persist=True,
-            warmup=True,
-        ),
-        port=port,
-    )
-
-
-def _parse(arguments: "list[str]") -> "tuple[int, str | None]":
-    """`<port> [--repo-root <path>]` を `(port, repo_root)` へ。"""
-    port = DEFAULT_PORT
-    repo_root: "str | None" = None
-    rest = list(arguments)
-    while rest:
-        token = rest.pop(0)
-        if token == REPO_ROOT_OPTION and rest:
-            repo_root = rest.pop(0)
-            continue
-        if not token.startswith("-"):
-            port = int(token)
-    return port, repo_root
-
-
-if __name__ == "__main__":
-    main()

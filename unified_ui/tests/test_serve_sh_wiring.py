@@ -83,7 +83,7 @@ def test_serve_sh_starts_the_dashboard_core_with_the_venv_python():
     # di-ok(C2): 同上
     assert 'DASHBOARD_PGID="$(start_dashboard_core)"' in SERVE_SH
     # di-ok(C2): 同上
-    assert "dashboard_ui.framework.serve_dashboard" in SERVE_SH
+    assert "dashboard_ui.main.serve" in SERVE_SH
     # venv python で起動する（生 python では import パスも依存も解決できない）。
     start = SERVE_SH.split("start_dashboard_core()", 1)[1].split("\n}", 1)[0]
     assert '"$VENV_PY"' in start

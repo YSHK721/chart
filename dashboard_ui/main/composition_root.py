@@ -93,7 +93,7 @@ def build_dashboard_app(
         bar_limits: 足ごとに読む本数（既定は :data:`BAR_LIMITS`）。
         persist: True なら確定素材と需要台帳をディスクへ持ち越す（置き場は adapter の
             :func:`default_spill_dir`＝DATA_DIR 配下・ISSUE-501 段階 2・依頼者承認
-            2026-09-06）。本番の起動口 `serve_dashboard.main` だけが True を渡す
+            2026-09-06）。本番の起動口 `dashboard_ui.main.serve` だけが True を渡す
             （テスト・in-process 計測は既定 OFF＝隔離）。
         persist_dir: 置き場の明示指定（検定用。指定時は `persist` に依らず持ち越す）。
         warmup: True なら起動時に需要台帳の束を別スレッドで 1 回再演して温める
