@@ -16,20 +16,21 @@ close_volume(side, entry, ref_price, position_volume, volume_step):
 再発火抑止（1 回のみ・裁定「trigger 到達で 1 度」）は本規則の責務外。作動判定は純関数で
 毎回同じ結果を返し、「1 回のみ」は適用済み判定を持つ :class:`PositionManager` が担う。
 
-domain 層は外部依存ゼロ。刻み丸めは :func:`floor_to_step` を共有せず、本規則は
-「0 と全量を None にする」独自の境界を持つため専用に floor する（volume_min/max は
-建玉時に検証済みで、部分決済の残玉・決済量は step の倍数であれば足りる）。
+domain 層は外部依存ゼロ。刻み**量子化**（round/floor の選択と許容）は所有者である
+:func:`simulator.domain.volume_step.quantize_to_step` へ委譲し、写経しない
+（ISSUE-502 D-13・2026-09-06）。一方 :func:`floor_to_step` は共有しない。あれは
+volume_min/max を課す**方針**であり、本規則は「0 と全量を None にする」別の境界を持つ
+（volume_min/max は建玉時に検証済みで、部分決済の残玉・決済量は step の倍数であれば足りる）。
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from simulator.domain._shared import SIDES
-
-# volume_step 倍数判定の丸め誤差許容（Order._validate_volume と同一ソース）。
-from simulator.domain.order import _STEP_RATIO_TOL
 from simulator.domain.sltp import sltp_from_points
+
+# 刻み量子化とその許容の単一ソース（volume_step が所有する）。
+from simulator.domain.volume_step import STEP_RATIO_TOL, quantize_to_step
 
 
 @dataclass(frozen=True)
@@ -61,17 +62,11 @@ class PartialCloseRule:
             return None
 
         raw = position_volume * self.close_fraction
-        ratio = raw / volume_step
-        # 二進表現誤差で 1 刻み落ちるのを防ぐ（floor_to_step と同一の許容）。
-        if abs(ratio - round(ratio)) <= _STEP_RATIO_TOL:
-            steps = round(ratio)
-        else:
-            steps = math.floor(ratio)
-        quantized = steps * volume_step
+        quantized = quantize_to_step(raw, volume_step)
 
         if quantized <= 0:
             return None  # 丸めて 0 → 決済不可（保守側）
-        if quantized >= position_volume - _STEP_RATIO_TOL * volume_step:
+        if quantized >= position_volume - STEP_RATIO_TOL * volume_step:
             return None  # 全量は部分決済でない（保守側・残玉を残す）
         return quantized
 

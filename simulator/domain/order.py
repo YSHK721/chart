@@ -22,6 +22,11 @@ from typing import Any
 from simulator.domain._shared import SIDES
 from simulator.domain.exceptions import InvalidPriceError
 
+# 刻み倍数判定は volume_step が所有する規則（許容値も同所有）。ここで書き直すと、
+# 「floor_to_step が丸めた結果を validate が刻み違反として弾く」食い違いが静かに生まれる
+# （ISSUE-502 D-13・2026-09-06）。
+from simulator.domain.volume_step import is_step_multiple
+
 # kind は Order 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
 # 成行 + ペンディング 4 種（指値=limit / 逆指値=stop の買い・売り）。ペンディング種別の
 # 約定判定（トリガ条件）は usecase/_execution.fill_pending_order が担い、domain は
@@ -36,10 +41,9 @@ _KIND_SIDE = {
     "buy_stop": "buy",
     "sell_stop": "sell",
 }
-# 価格・範囲比較の絶対許容（FX 価格の丸め誤差を吸収する）。
+# 価格・範囲比較の絶対許容（FX 価格の丸め誤差を吸収する）。刻み比の許容
+# （STEP_RATIO_TOL）とは別概念のため、こちらは Order が所有する。
 _TOL = 1e-9
-# volume / volume_step が整数倍かを判定する際の許容（刻み比の丸め誤差を吸収する）。
-_STEP_RATIO_TOL = 1e-6
 
 
 @dataclass(frozen=True)
@@ -88,9 +92,8 @@ class Order:
         # `if step > 0` 分岐）も同じ規約で刻み量子化を飛ばしており、ここはそれに揃える。
         if spec.volume_step <= 0:
             return
-        # volume_step の倍数か（丸め誤差許容）
-        ratio = self.volume / spec.volume_step
-        if abs(ratio - round(ratio)) > _STEP_RATIO_TOL:
+        # volume_step の倍数か（丸め誤差許容・規則の所有者は volume_step）。
+        if not is_step_multiple(self.volume, spec.volume_step):
             raise InvalidPriceError(
                 "volume が volume_step の倍数でない",
                 context={"volume": self.volume, "step": spec.volume_step},
