@@ -14,7 +14,7 @@
 
     L-1 の解消は実測済み（`POST /sim/jobs` → 202 → `status="completed"` ＋ report.json
     生成）。ただし成立にはレジストリ追加だけでなく、EA ファクトリ**選択規則の判定点が
-    1 つであること**が要る（`main._select_ea_factory`。詳細と実測は
+    1 つであること**が要る（`main.ea_bindings.select_ea_binding`。詳細と実測は
     `math_calculations` の module docstring / `tests/integration/
     test_ea_factory_selection_rule.py`）。
 

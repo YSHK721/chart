@@ -175,9 +175,9 @@ def raise_unsupported(rule: UnsupportedRule, *, value: Any, **context: Any) -> N
 def _detect_unknown_ea(effective: EffectiveSettings, binding: "EngineBinding") -> Any:
     """N-01: 未登録 EA 名の沈黙フォールバックを上流で遮断する。
 
-    判定源は**注入された** ``binding.known_ea_names`` であり、`_EA_FACTORIES` ではない
+    判定源は**注入された** ``binding.known_ea_names`` であり、EA 登録表ではない
     （本モジュールは `simulator.main` を import しない）。遮断したい下流の挙動が
-    `main/__init__.py` の `_EA_FACTORIES.get(ea_name, 既定)` である、という関係であって、
+    `main/ea_bindings` の `_EA_BINDINGS.get(ea_name, 既定)` である、という関係であって、
     判定源そのものではない。両集合の関係（注入集合 ⊇ 登録キー、差分は既定フォールバック
     EA 名のみ）は `test_unsupported_n01_ea_name_source.py` が固定する。
     """
@@ -245,7 +245,8 @@ RELATIVE_DATE_PRESETS: "frozenset[DatesPreset]" = frozenset(
 
 
 #: spread 依存 EA（約定式が open + spread×point を参照する 3 本・H-4 裁定）。
-#: 権威は EA ファクトリ表（`simulator.main._EA_FACTORIES` で Mt5CsvOHLCRepository を
+#: 権威は EA 束縛の登録表（`simulator.main.ea_bindings._EA_BINDINGS` で
+#: Mt5CsvOHLCRepository を
 #: 返す 3 本）だが、それは Composition Root の**私有名**であり本モジュールは読まない
 #: （ISSUE-502 段階 3 以前はここに「循環のため import できない」と書いていたが、循環は
 #: 是正済みであり、参照しない理由は私有名への依存を作らないことである）。よってここに

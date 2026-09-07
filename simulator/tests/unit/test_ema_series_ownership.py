@@ -122,8 +122,9 @@ class TestTheAdapterOwnsTheEmaSeries:
         """
         import pandas as pd
 
-        import simulator.main as main
+        # ISSUE-502 段階 4A: registry の作り方は EA 側モジュールの所有物へ移った。
         from simulator.adapter.indicator import madiff
+        from simulator.main.ea_bindings import ma_slope
 
         calls: "list[int]" = []
         original = madiff.ema_series
@@ -135,7 +136,7 @@ class TestTheAdapterOwnsTheEmaSeries:
         df = pd.DataFrame({"close": [float(i) for i in range(64)]})
         madiff.ema_series = spy
         try:
-            main._build_ma_slope_registry(df, ma_period=21)
+            ma_slope.build_registry(df, ma_period=21)
         finally:
             madiff.ema_series = original
 

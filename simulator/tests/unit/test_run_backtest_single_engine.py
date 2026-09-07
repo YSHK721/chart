@@ -23,9 +23,63 @@ import numpy as np
 import pytest
 
 from simulator.domain.bar import Bar
+from simulator.usecase import margin_guard as margin_guard_module
+from simulator.usecase import order_execution as order_execution_module
+from simulator.usecase import position_directives as position_directives_module
 from simulator.usecase import run_backtest as rb
+from simulator.usecase import sltp_monitor as sltp_monitor_module
+from simulator.usecase import trade_ledger as trade_ledger_module
+from simulator.usecase.margin_guard import MarginGuard
 from simulator.usecase.models import AccountSpec, BacktestConfig, SymbolSpec
+from simulator.usecase.order_execution import OrderExecutor
+from simulator.usecase.position_directives import PositionDirectiveApplier
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
+from simulator.usecase.sltp_monitor import SltpMonitor
+from simulator.usecase.trade_ledger import TradeLedger
+
+#: 実行経路を構成するモジュール（ISSUE-502 段階 4A で run ライフサイクルと 5 つの協働
+#: クラスに分かれた）。Spy を被せる対象を 1 モジュールに固定しない理由: 定義点が別の
+#: モジュールへ移った瞬間、固定した検定は**何も測らないまま緑**になる（本リポジトリが
+#: 繰り返し踏んでいる壊れ方）。名前を持つモジュール全部に被せれば、移動しても測り続ける。
+_ENGINE_MODULES = (
+    rb,
+    order_execution_module,
+    sltp_monitor_module,
+    margin_guard_module,
+    position_directives_module,
+    trade_ledger_module,
+)
+
+
+def _engine_name_original(name):
+    """`name` を束縛している実行経路モジュールと、その素の実体を返す。
+
+    事前条件: `name` を持つモジュールが 1 つ以上あり、どれも同じ実体を束縛していること
+        （束縛が食い違っていれば、それ自体が単一ソース違反なのでここで赤にする）。
+    """
+    holders = [module for module in _ENGINE_MODULES if hasattr(module, name)]
+    assert holders, f"実行経路のどのモジュールにも {name} が無い（定義点が消えた）"
+    original = getattr(holders[0], name)
+    for module in holders:
+        assert getattr(module, name) is original, (name, module.__name__)
+    return holders, original
+
+
+def _patch_engine_name(monkeypatch, name, make_spy, *, original=None):
+    """`name` を持つ実行経路モジュール**すべて**に Spy を被せ、素の実体を返す。
+
+    ``original`` を渡すと、その実体を素とみなす（同じ名前へ 2 度被せる測定で、
+    2 周目の Spy が 1 周目の Spy を包んで発行が二重に数えられるのを防ぐ）。
+    事後条件: 返るのは素の実体。`make_spy(original)` が各モジュールへ入る。
+    """
+    holders = [module for module in _ENGINE_MODULES if hasattr(module, name)]
+    assert holders, f"実行経路のどのモジュールにも {name} が無い（定義点が消えた）"
+    if original is None:
+        _holders, original = _engine_name_original(name)
+    spy = make_spy(original)
+    for module in holders:
+        monkeypatch.setattr(module, name, spy)
+    return original
 
 
 # ---- 最小の合成 Port（本ファイルは「構造」を測るので値は動かさない） ----
@@ -150,21 +204,25 @@ _BOTH_PATHS = [_BAR_PATH, _TICK_PATH]
 
 
 def _run(bars, path_overrides, *, spy_on=None, monkeypatch=None):
-    """1 run 実行し、`spy_on` に挙げた `run_backtest` モジュール属性の発行回数を返す。
+    """1 run 実行し、`spy_on` に挙げた実行経路モジュール属性の発行回数を返す。
+
+    名前は実行経路の**全モジュール**（`_ENGINE_MODULES`）で同時に差し替える。
 
     事後条件: `(result, {属性名: 発行回数})`。
     """
     counts: "dict[str, int]" = {}
     if spy_on:
         for name in spy_on:
-            original = getattr(rb, name)
             counts[name] = 0
 
-            def _wrapped(*args, _name=name, _original=original, **kwargs):
-                counts[_name] += 1
-                return _original(*args, **kwargs)
+            def _make(original, _name=name):
+                def _wrapped(*args, **kwargs):
+                    counts[_name] += 1
+                    return original(*args, **kwargs)
 
-            monkeypatch.setattr(rb, name, _wrapped)
+                return _wrapped
+
+            _patch_engine_name(monkeypatch, name, _make)
     result = _interactor().execute(_request(bars, config=_config(**path_overrides)))
     return result, counts
 
@@ -322,13 +380,20 @@ class TestTheSetupStageDoesNotWasteWork:
 
 # ---- 4-3: run のスイッチ読み取り点の単一化（O-2） ----
 
-def _run_backtest_tree():
-    """実行経路の構文木（既定値リテラルの所在を測るため）。"""
+def _run_backtest_trees():
+    """実行経路**全モジュール**の構文木（既定値リテラルの所在を測るため）。
+
+    run ライフサイクルだけを読むと、規則が協働クラスへ移った瞬間に検定の射程が縮む
+    （ISSUE-502 段階 4A）。射程は `_ENGINE_MODULES` と同じ集合に固定する。
+    """
     import ast
     from pathlib import Path
 
-    source = Path(rb.__file__).read_text(encoding="utf-8")
-    return ast.parse(source, filename=rb.__file__)
+    trees = []
+    for module in _ENGINE_MODULES:
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        trees.append((module.__name__, ast.parse(source, filename=module.__file__)))
+    return trees
 
 
 class TestTheRunSwitchesAreReadInOnePlace:
@@ -344,8 +409,9 @@ class TestTheRunSwitchesAreReadInOnePlace:
         import ast
 
         offenders = [
-            node.lineno
-            for node in ast.walk(_run_backtest_tree())
+            (name, node.lineno)
+            for name, tree in _run_backtest_trees()
+            for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "getattr"
@@ -361,8 +427,9 @@ class TestTheRunSwitchesAreReadInOnePlace:
         import ast
 
         offenders = [
-            (node.lineno, node.attr)
-            for node in ast.walk(_run_backtest_tree())
+            (name, node.lineno, node.attr)
+            for name, tree in _run_backtest_trees()
+            for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
             and node.value.id == "config"
@@ -582,8 +649,9 @@ class TestTheStopOutDecisionHasOneDefinitionPoint:
         import ast
 
         offenders = [
-            (node.lineno, node.value)
-            for node in ast.walk(_run_backtest_tree())
+            (name, node.lineno, node.value)
+            for name, tree in _run_backtest_trees()
+            for node in ast.walk(tree)
             if isinstance(node, ast.Constant)
             and node.value in ("close_and_halt", "fail_stop")
         ]
@@ -708,7 +776,10 @@ class TestBothEnginesShareTheMarketFillStage:
     """成行約定（反対玉の reverse 決済 → 建玉 → 口座反映）の定義点が 1 つであること。"""
 
     def test_the_market_fill_stage_has_exactly_one_definition_point(self):
-        assert callable(getattr(RunBacktestInteractor, "_fill_market_orders", None))
+        # 約定執行の所有者は `OrderExecutor`（ISSUE-502 段階 4A で Interactor から分離）。
+        # 定義点が 1 つであることは変わらない——run ライフサイクル側に写しは無い。
+        assert callable(getattr(OrderExecutor, "fill_market", None))
+        assert not hasattr(RunBacktestInteractor, "_fill_market_orders")
 
     @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
     def test_orders_are_applied_in_the_order_they_were_scanned(
@@ -722,13 +793,15 @@ class TestBothEnginesShareTheMarketFillStage:
         """
         # Arrange: 約定の発行順を記録する。
         scanned: "list[str]" = []
-        original = rb.fill_market_order
 
-        def _spy(order, **kwargs):
-            scanned.append(order.side)
-            return original(order, **kwargs)
+        def _make(original):
+            def _spy(order, **kwargs):
+                scanned.append(order.side)
+                return original(order, **kwargs)
 
-        monkeypatch.setattr(rb, "fill_market_order", _spy)
+            return _spy
+
+        _patch_engine_name(monkeypatch, "fill_market_order", _make)
         interactor, request = _fill_scenario(overrides, _FILL_ORDERS)
         # Act
         result = interactor.execute(request)
@@ -756,11 +829,10 @@ class TestBothEnginesShareTheMarketFillStage:
                 account_box.append(account)
                 return super().on_new_bar(bar_index, indicators, account)
 
-        original = rb.fill_market_order
-        monkeypatch.setattr(
-            rb,
+        _patch_engine_name(
+            monkeypatch,
             "fill_market_order",
-            lambda order, **kw: (
+            lambda original: lambda order, **kw: (
                 seen.append((order.side, len(account_box[-1].open_positions))),
                 original(order, **kw),
             )[1],
@@ -786,13 +858,15 @@ class TestTheMarketFillDoesNotWasteWork:
     ):
         # Arrange: 建値クォートの導出発行を数える（注文が 1 本も無い run）。
         derived: "list[int]" = []
-        original = rb.derive_quotes
 
-        def _spy(bar, **kwargs):
-            derived.append(1)
-            return original(bar, **kwargs)
+        def _make(original):
+            def _spy(bar, **kwargs):
+                derived.append(1)
+                return original(bar, **kwargs)
 
-        monkeypatch.setattr(rb, "derive_quotes", _spy)
+            return _spy
+
+        _patch_engine_name(monkeypatch, "derive_quotes", _make)
         # Act: 発注しない戦略で 32 バー走らせる。
         _interactor().execute(_request(_bars(32), config=_config(**overrides)))
         # Assert: 発行（建値クォート）− 使用（約定に使った回数 0）= 0。
@@ -804,16 +878,16 @@ class TestTheMarketFillDoesNotWasteWork:
     ):
         # Arrange
         derived: "list[int]" = []
-        original = rb.derive_quotes
-        monkeypatch.setattr(
-            rb, "derive_quotes",
-            lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
+        _patch_engine_name(
+            monkeypatch, "derive_quotes",
+            lambda original: lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
         )
         filled: "list[str]" = []
-        original_fill = rb.fill_market_order
-        monkeypatch.setattr(
-            rb, "fill_market_order",
-            lambda order, **kw: (filled.append(order.side), original_fill(order, **kw))[1],
+        _patch_engine_name(
+            monkeypatch, "fill_market_order",
+            lambda original: lambda order, **kw: (
+                filled.append(order.side), original(order, **kw)
+            )[1],
         )
         interactor, request = _fill_scenario(overrides, _FILL_ORDERS)
         # Act
@@ -830,18 +904,22 @@ class TestTheMarketFillDoesNotWasteWork:
         """約定バー 1 本 / 2 本の 2 点で「導出数 == 約定バー数」（オーダーの表明）。"""
         measured = {}
         # 素の実体は差し替える前に 1 度だけ捉える（2 周目に spy が spy を包むのを防ぐ）。
-        original = rb.derive_quotes
-        original_fill = rb.fill_market_order
+        _, original = _engine_name_original("derive_quotes")
+        _, original_fill = _engine_name_original("fill_market_order")
         for filling_bars, orders_by_bar in ((1, _FILL_ORDERS), (2, _FILL_ORDERS_TWO_BARS)):
             derived: "list[int]" = []
             filled: "list[str]" = []
-            monkeypatch.setattr(
-                rb, "derive_quotes",
-                lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
+            _patch_engine_name(
+                monkeypatch, "derive_quotes",
+                lambda _o: lambda bar, **kw: (derived.append(1), original(bar, **kw))[1],
+                original=original,
             )
-            monkeypatch.setattr(
-                rb, "fill_market_order",
-                lambda order, **kw: (filled.append(order.side), original_fill(order, **kw))[1],
+            _patch_engine_name(
+                monkeypatch, "fill_market_order",
+                lambda _o: lambda order, **kw: (
+                    filled.append(order.side), original_fill(order, **kw)
+                )[1],
+                original=original_fill,
             )
             interactor, request = _fill_scenario(overrides, orders_by_bar)
             interactor.execute(request)
@@ -880,7 +958,9 @@ class TestBothEnginesShareThePositionDirectiveStage:
     """建玉変更の適用（粒度と参照価格の決め方）の定義点が 1 つであること。"""
 
     def test_the_position_directive_stage_has_exactly_one_definition_point(self):
-        assert callable(getattr(RunBacktestInteractor, "_apply_position_directives", None))
+        # 建玉変更の所有者は `PositionDirectiveApplier`（ISSUE-502 段階 4A）。
+        assert callable(getattr(PositionDirectiveApplier, "apply_all", None))
+        assert not hasattr(RunBacktestInteractor, "_apply_position_directives")
 
     def test_the_bar_path_asks_at_bar_granularity_with_the_reached_extreme(self):
         """バー粒度の参照価格は「トレーリング方向の到達価格」（買い=high / 売り=low）。
@@ -949,13 +1029,14 @@ class TestThePositionDirectiveStageDoesNotWasteWork:
         捨てる計算が増えるが、出力は 1 ビットも変わらないため状態検証では落ちない。
         """
         # Arrange: 玉 1 / 玉 4 の 2 点で、玉あたりの決済価格解決の発行を測る。
-        original = rb.close_price_for
+        _, original = _engine_name_original("close_price_for")
         measured = {}
         for lot_count in (1, 4):
             resolved: "list[int]" = []
-            monkeypatch.setattr(
-                rb, "close_price_for",
-                lambda side, **kw: (resolved.append(1), original(side, **kw))[1],
+            _patch_engine_name(
+                monkeypatch, "close_price_for",
+                lambda _o: lambda side, **kw: (resolved.append(1), original(side, **kw))[1],
+                original=original,
             )
             pm = _RecordingPositionManager()
             interactor = RunBacktestInteractor(
@@ -997,7 +1078,9 @@ class TestBothEnginesShareTheEvaluationPointSettlement:
     """1 評価点の口座再評価（I 段）の定義点が 1 つであること。"""
 
     def test_the_settlement_stage_has_exactly_one_definition_point(self):
-        assert callable(getattr(RunBacktestInteractor, "_settle_evaluation_point", None))
+        # 口座再評価と証拠金割れの所有者は `MarginGuard`（ISSUE-502 段階 4A）。
+        assert callable(getattr(MarginGuard, "settle", None))
+        assert not hasattr(RunBacktestInteractor, "_settle_evaluation_point")
 
     @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
     def test_one_equity_point_is_recorded_per_evaluation_point(self, path, overrides):
@@ -1177,8 +1260,11 @@ class TestTheEngineIsDrivenByEvaluationPoints:
     """エンジンが評価点で駆動され、生んだ点をすべて消費すること。"""
 
     def test_the_point_evaluation_has_exactly_one_definition_point(self):
+        # 評価点 1 つの**成立順**は run ライフサイクル（Interactor）が持ち続ける。
         assert callable(getattr(RunBacktestInteractor, "_evaluate_point", None))
-        assert callable(getattr(RunBacktestInteractor, "_check_sltp_hits", None))
+        # SL/TP 到達判定そのものの所有者は `SltpMonitor`（ISSUE-502 段階 4A）。
+        assert callable(getattr(SltpMonitor, "check", None))
+        assert not hasattr(RunBacktestInteractor, "_check_sltp_hits")
 
     def test_the_bar_path_takes_one_point_per_bar(self, monkeypatch):
         # Arrange: スケジュールを数える版に差し替える。
@@ -1269,11 +1355,12 @@ def _measure_per_point(overrides, *, ticks_per_bar, bar_count, lot_count, monkey
 
     hits: "list[int]" = []
     updates: "list[int]" = []
-    original_hit = rb.check_sltp_hit
     original_update = Account.update_floating_pnl_at
-    monkeypatch.setattr(
-        rb, "check_sltp_hit",
-        lambda position, **kw: (hits.append(1), original_hit(position, **kw))[1],
+    _patch_engine_name(
+        monkeypatch, "check_sltp_hit",
+        lambda original: lambda position, **kw: (
+            hits.append(1), original(position, **kw)
+        )[1],
     )
     monkeypatch.setattr(
         Account, "update_floating_pnl_at",
@@ -1449,8 +1536,9 @@ class TestTheEngineHoldsNoGranularityCondition:
         import ast
 
         offenders = [
-            (node.lineno, node.value)
-            for node in ast.walk(_run_backtest_tree())
+            (name, node.lineno, node.value)
+            for name, tree in _run_backtest_trees()
+            for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and node.value == "real_ticks"
         ]
         assert offenders == [], f"粒度を決める文字列が実行経路に残っている: {offenders}"
@@ -1557,15 +1645,28 @@ class _DiscardingSchedule:
         yield from self._inner.points(bar_index, bar, prev_close)
 
 
-class _PerLotSettlingInteractor(RunBacktestInteractor):
+class _PerLotSettlingMarginGuard(MarginGuard):
     """M2: 評価点ごとで足りる口座再評価を、保有玉ごとに繰り返す（N+1）。"""
 
-    def _settle_evaluation_point(self, state, open_trades, halted, **kwargs):
+    def settle(self, open_trades, halted, **kwargs):
         for _ot in open_trades:
-            state.account.update_floating_pnl_at(
+            self._account.update_floating_pnl_at(
                 bid=kwargs["eval_bid"], ask=kwargs["eval_ask"]
             )
-        return super()._settle_evaluation_point(state, open_trades, halted, **kwargs)
+        return super().settle(open_trades, halted, **kwargs)
+
+
+class _PerLotSettlingInteractor(RunBacktestInteractor):
+    """M2 の欠陥を注入した run（準備段で組まれた証拠金監視を欠陥版へ差し替える）。
+
+    差し替えを準備段の**後**に行うのは、協働クラスの構築引数（口座・帳簿・方針・水準…）を
+    テスト側へ書き写さないためである。書き写せば準備段の改訂に取り残される。
+    """
+
+    def _begin_run(self, request, features=None):
+        state = super()._begin_run(request, features)
+        state.margin_guard.__class__ = _PerLotSettlingMarginGuard
+        return state
 
 
 class _ResetupPerBarInteractor(RunBacktestInteractor):

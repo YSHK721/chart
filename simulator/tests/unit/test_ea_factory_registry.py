@@ -109,7 +109,9 @@ def _comma_kwargs(csv_path: Path, ea_name: str) -> dict:
 # --- レジストリ構造の不変性 --------------------------------------------------
 
 def test_registry_exposes_all_four_named_eas_plus_pro_fit_band():
-    from simulator.main import _EA_FACTORIES
+    # ISSUE-502 段階 4A: 登録表の所在は `simulator/main/ea_bindings/`（EA ごとの宣言を
+    # 束ねる場所）。キーは各 EA モジュールの宣言が持つ（ここで名前を写さない）。
+    from simulator.main.ea_bindings import _EA_BINDINGS
 
     assert {
         "MA_Slope_EA",
@@ -117,7 +119,7 @@ def test_registry_exposes_all_four_named_eas_plus_pro_fit_band():
         "StopEntryProbe_EA",
         "WeeklyVolBand_EA",
         "PRO_fit_Band_EA",
-    } <= set(_EA_FACTORIES)
+    } <= set(_EA_BINDINGS)
 
 
 # --- 未カバー EA（Pending / StopEntryProbe）の解決不変性 ----------------------

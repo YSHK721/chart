@@ -16,11 +16,8 @@ main 層は全層を import 可。コミット済 domain/usecase/adapter/framewo
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-
-import pandas as pd
 
 from marketdata.tf_ledger import TF_BAR_SEC
 from simulator.adapter.calendar.session_calendar import (
@@ -32,43 +29,31 @@ from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
     RealTickModel,
 )
-from simulator.adapter.execution.tick_model_registry import (
-    TICK_MODEL_REGISTRY,
-    consumes_market_data,
-)
+from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
-from simulator.adapter.indicator.ema_adx_di import compute_adx_with_di
-# ISSUE-479 Wave2b: 指標 adapter は**モジュールとして**借りる。`from ... import ema_series`
-#   と書くと main に EMA の名前が生え、外側スライスが Composition Root 経由で計算を
-#   借りられてしまう（0-2 層ゲートが禁じている構造）。名前を生やさなければその経路は
-#   書けなくなる。所有者は adapter ただ 1 つである。
-from simulator.adapter.indicator import madiff as madiff_indicator
-from simulator.adapter.indicator.null_registry import NullIndicatorRegistry
-from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.presenter.json import JsonPresenter
 from simulator.adapter.presenter.markdown import MarkdownPresenter
 from simulator.adapter.repository.marketdata_source import MarketDataSourceRepository
-# A-1: バー系列を消費しない modelling 用の Null 実装（`requires_market_data is False`）。
-from simulator.adapter.repository.null_market_data import NullMarketDataRepository
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
-from simulator.adapter.repository.ohlc_marketdata_csv import (
-    MarketdataCsvOHLCRepository,
-    detect_ohlc_form,
-)
-from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
+from simulator.adapter.repository.ohlc_marketdata_csv import MarketdataCsvOHLCRepository
 # A-3: 取得窓を全 MarketDataPort 実装へ効かせる合成デコレータ（L-2 の解消）。
 from simulator.adapter.repository.windowed_market_data import WindowedMarketDataRepository
-from simulator.adapter.strategy.ma_slope import MaSlope
-from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
-from simulator.adapter.strategy.null_strategy import NullStrategy
-from simulator.adapter.strategy.pro_fit_band import ProFitBand
-from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
-from simulator.adapter.strategy.tc24051901 import TC24051901
-from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
 from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
+# ISSUE-502 段階 4A: EA ごとの構築知識（registry の作り方・OHLC リーダ・戦略の生成・
+#   戦略へ配るパラメータ名）は **EA 側モジュールの宣言**が持つ。Composition Root は
+#   宣言から導くだけであり、EA を 1 本足すために本ファイルを開かない（OCP）。
+#   `DEFAULT_EA_NAME` / `known_ea_names` は本モジュールの**公開 API の再輸出**である
+#   （`from simulator.main import known_ea_names` の呼出点が本番・検定に多数ある）。
+#   値と列挙規則の所有者は束縛パッケージただ 1 つであり、ここは名前を通すだけである。
+from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
+    DEFAULT_EA_NAME,
+    build_ea_components,
+    known_ea_names,
+    strategy_param_names,
+)
 # 規則 S（バー系列の有無と tick_model の整合）の唯一の判定点。ISSUE-502 段階 3 以前は
 # 子パッケージ側（main/tester_settings/kwargs_mapper.py）に在り、ここから
 # **関数内 import** で呼んでいた。その形は親パッケージ（`simulator.main`）と
@@ -218,306 +203,6 @@ def _build_real_tick_model(
     return RealTickModel(frame)
 
 
-def _load_dataframe(data_path: Any) -> pd.DataFrame:
-    """指標 registry の事前計算用に価格 CSV を DataFrame として読み込む。
-
-    registry は系列（pandas）を要するため DataFrame が必須。一方 Interactor は Bar 列を
-    消費し、controller.run は committed IF（source_ref パス）上で再度 load する。registry
-    の DataFrame 需要・Interactor の Bar 需要・controller の path 再読みを 1 回の読み込みへ
-    統合するには committed adapter/usecase の IF 変更が要るため範囲外＝申し送り。
-    外側（pandas/OS）例外は内側 DataError へ翻訳し漏出を防ぐ（CLEAN_ARCH §6）。
-    """
-    try:
-        return pd.read_csv(data_path)
-    except Exception as exc:
-        raise DataError(
-            f"指標計算用 CSV の読み込みに失敗しました: {data_path}",
-            context={"data_path": str(data_path), "cause": repr(exc)},
-        ) from exc
-
-
-def _load_mt5_dataframe(data_path: Any) -> pd.DataFrame:
-    """MT5 エクスポート形式（タブ区切り）を指標 registry 用 DataFrame として読み込む。
-
-    `<CLOSE>` 等の MT5 列名を registry/EMA 計算が参照する小文字列名（close 等）へ
-    正規化する（_build_ma_slope_registry は df["close"] を参照）。外側例外は内側
-    DataError へ翻訳する（CLEAN_ARCH §6）。
-    """
-    try:
-        df = pd.read_csv(data_path, sep="\t")
-    except Exception as exc:
-        raise DataError(
-            f"指標計算用 MT5 CSV の読み込みに失敗しました: {data_path}",
-            context={"data_path": str(data_path), "cause": repr(exc)},
-        ) from exc
-    return df.rename(
-        columns={
-            "<OPEN>": "open",
-            "<HIGH>": "high",
-            "<LOW>": "low",
-            "<CLOSE>": "close",
-        }
-    )
-
-
-def _build_registry(df: pd.DataFrame, *, ma_period: int, ma_method: str) -> PandasIndicatorRegistry:
-    """MADiff 系列と close 系列を登録した IndicatorPort 実装を構築する。
-
-    TC24051901 は indicators.get("madiff") と indicators.get("close") を参照する
-    （tc24051901.py を Read で実証）。両系列を事前計算して登録する。
-    """
-    madiff_series = madiff_indicator.madiff(df, period=ma_period, method=ma_method)
-    return PandasIndicatorRegistry({"madiff": madiff_series, "close": df["close"]})
-
-
-# 確定足 EMA の所有者は指標 adapter（ISSUE-479 Wave2 S-2 / Wave2b）。main は re-export も
-# 旧名別名も置かない——置けば外側スライスがそこから借りられる。内部の 3 箇所は
-# madiff_indicator.ema_series として adapter を直接呼ぶ。main 経由の借用は
-# simulator/tests/unit/test_outer_slice_composition_root_borrowing.py が禁じ、
-# 名前が生えていないことは simulator/tests/unit/test_ema_series_ownership.py が固定する。
-
-
-def _build_ma_slope_registry(df: pd.DataFrame, *, ma_period: int) -> PandasIndicatorRegistry:
-    """EMA(ma_period, close) を "ema" として登録した IndicatorPort 実装を構築する。
-
-    MaSlope は indicators.get("ema") を参照する（ma_slope.py を Read で実証）。
-    """
-    ema = madiff_indicator.ema_series(df["close"], ma_period)
-    return PandasIndicatorRegistry({"ema": ema})
-
-
-def _build_ma_slope_pending_registry(
-    df: pd.DataFrame, *, ma_period: int
-) -> PandasIndicatorRegistry:
-    """EMA に加え当該バー始値 "open" と "spread"（ポイント）を登録した IndicatorPort。
-
-    MaSlopePending は確定足 EMA（"ema"）でシグナルを出しつつ、ペンディング価格を当該バー
-    始値クォート（bid=open / ask=open+spread×point）から算出するため "open"/"spread" 系列を
-    参照する（ma_slope_pending.py を Read で実証）。spread は MT5 CSV の <SPREAD>（ポイント）。
-    """
-    ema = madiff_indicator.ema_series(df["close"], ma_period)
-    return PandasIndicatorRegistry(
-        {
-            "ema": ema,
-            "open": df["open"].astype(float).reset_index(drop=True),
-            "spread": df["<SPREAD>"].astype(float).reset_index(drop=True),
-        }
-    )
-
-
-def _build_open_registry(df: pd.DataFrame) -> PandasIndicatorRegistry:
-    """セグメント先頭 open を "open" として登録した IndicatorPort 実装を構築する。
-
-    WeeklyVolBand は indicators.get("open").iloc[0] でセグメント先頭バー open（=O）を
-    参照する（weekly_vol_band.py を Read で実証）。registry IF を満たすため open 系列の
-    みを登録する（他指標は未参照）。pandas は composition root=main 内に閉じる。
-    """
-    return PandasIndicatorRegistry({"open": df["open"].astype(float).reset_index(drop=True)})
-
-
-def _build_pro_fit_band_registry(
-    df: pd.DataFrame, *, ma_period: int, adx_period: int
-) -> PandasIndicatorRegistry:
-    """EMA(ma_period, close)・ADX(adx_period)/+DI/−DI・close を登録した IndicatorPort。
-
-    ProFitBand は indicators.get("ema"/"adx"/"plus_di"/"minus_di"/"close") を参照する
-    （pro_fit_band.py を Read で実証）。EMA は adapter の ``ema_series``、ADX/±DI は
-    ``compute_adx_with_di``（原典 iADX 再現・SPEC §3.5）で事前計算して登録する。
-    close は df["close"] をそのまま登録する（TC 既定 registry と同形）。
-    """
-    ema = madiff_indicator.ema_series(df["close"], ma_period)
-    adx, plus_di, minus_di = compute_adx_with_di(
-        df["high"], df["low"], df["close"], period=adx_period
-    )
-    return PandasIndicatorRegistry(
-        {
-            "ema": ema,
-            "adx": adx,
-            "plus_di": plus_di,
-            "minus_di": minus_di,
-            "close": df["close"],
-        }
-    )
-
-
-@dataclass(frozen=True)
-class _EaBuildContext:
-    """EA ファクトリが参照する構築入力（ISSUE-097 🟡-3）。
-
-    build_interactor から各 EA ファクトリへ渡す構築パラメータを 1 つに束ねる。各
-    ファクトリは自分が必要とするフィールドのみ参照する（未参照フィールドは無害）。
-    """
-
-    data_path: Any
-    ma_period: int
-    ma_method: str
-    adx_period: int
-    weekly_forecast: Any
-    weekly_p_tp: float
-    weekly_capital: float
-    weekly_f_risk: float
-
-
-def _ohlc_repository_for(data_path: Any) -> Any:
-    """spread 非依存（comma 系）EA の OHLC リーダをデータ実体の形式で選ぶ。
-
-    形式の権威はデータのヘッダ（`detect_ohlc_form`）である。marketdata 形式
-    （2012 年からの全期間 JP225 実データ・依頼者承認 2026-09-06）は
-    `MarketdataCsvOHLCRepository`、それ以外は従来どおり `CsvOHLCRepository`
-    （comma 合成データの既存経路と byte 等価）。spread 依存 EA（MT5 ローダ）には
-    使わない——marketdata 形式は spread を持たず、その組合せは N-17 が実行前に弾く。
-    """
-    if detect_ohlc_form(data_path) == "marketdata":
-        return MarketdataCsvOHLCRepository()
-    return CsvOHLCRepository()
-
-
-def _factory_ma_slope(ctx: "_EaBuildContext") -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
-    df = _load_mt5_dataframe(ctx.data_path)
-    registry = _build_ma_slope_registry(df, ma_period=ctx.ma_period)
-    return MaSlope(), registry, Mt5CsvOHLCRepository()
-
-
-def _factory_ma_slope_pending(
-    ctx: "_EaBuildContext",
-) -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # 指値/逆指値版。MA_Slope_EA と同じ MT5 CSV を読み、open/spread も registry に載せる。
-    df = _load_mt5_dataframe(ctx.data_path)
-    registry = _build_ma_slope_pending_registry(df, ma_period=ctx.ma_period)
-    return MaSlopePending(), registry, Mt5CsvOHLCRepository()
-
-
-def _factory_stop_entry_probe(
-    ctx: "_EaBuildContext",
-) -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # 逆指値プローブ（両建て BuyStop+SellStop・OCO・足途中ティック再アーム）。MT5 CSV を読む。
-    #   発注クォートは engine が on_tick へ渡すティック bid/ask を使うため指標非依存だが、
-    #   registry IF を満たすため pending 用 registry（ema/open/spread）を共用する（戦略は未参照）。
-    df = _load_mt5_dataframe(ctx.data_path)
-    registry = _build_ma_slope_pending_registry(df, ma_period=ctx.ma_period)
-    return StopEntryProbe(), registry, Mt5CsvOHLCRepository()
-
-
-def _factory_weekly_vol_band(
-    ctx: "_EaBuildContext",
-) -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # 週次ボラ・バンド戦略（詳細設計 §5.1・§11 D1）。comma 形式 CSV を読み、セグメント
-    # 先頭 open のみを "open" registry に載せる。構築は共有ファクトリへ一元化（🟡-3）。
-    df = _load_dataframe(ctx.data_path)
-    registry = _build_open_registry(df)
-    strategy = make_weekly_vol_band(
-        forecast=ctx.weekly_forecast,
-        p_tp=ctx.weekly_p_tp,
-        capital=ctx.weekly_capital,
-        f_risk=ctx.weekly_f_risk,
-    )
-    return strategy, registry, _ohlc_repository_for(ctx.data_path)
-
-
-def _factory_pro_fit_band(
-    ctx: "_EaBuildContext",
-) -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # PRO!fit_Band（#5・my_first_ea）。comma 形式 CSV を読み、EMA/ADX/±DI/close registry を
-    # 供給する。従来 build_interactor に分岐が無く生成不能だった件を 1 エントリで解消（🟡-3）。
-    df = _load_dataframe(ctx.data_path)
-    registry = _build_pro_fit_band_registry(
-        df, ma_period=ctx.ma_period, adx_period=ctx.adx_period
-    )
-    return ProFitBand(), registry, _ohlc_repository_for(ctx.data_path)
-
-
-def _factory_dataless(_ctx: "_EaBuildContext") -> "tuple[Any, Any, Any]":
-    """バー系列を消費しない modelling の構成（A-1・ISSUE-397）。
-
-    `ctx.data_path` を**参照しない**（読むものが無いのが本経路の実体である）。既存の
-    EA ファクトリは全て `_load_dataframe` / `_load_mt5_dataframe` で `data_path` を読むため
-    （実測: `data_path=None` は `market_data.load` より前に `_factory_*` の CSV 読みで
-    `DataError` になる）、データ供給の有無は **market_data 実体だけでなく本 3 点組の
-    選択**で表す必要がある。返す 3 点は既存の Null 実装（Port ABC の実装＝LSP 維持）。
-    """
-    return NullStrategy(), NullIndicatorRegistry(), NullMarketDataRepository()
-
-
-def _factory_tc24051901(
-    ctx: "_EaBuildContext",
-) -> "tuple[Any, PandasIndicatorRegistry, Any]":
-    # 既定経路（TC24051901・comma 形式・MADiff 指標）= 従来挙動を不変に保つ。
-    df = _load_dataframe(ctx.data_path)
-    registry = _build_registry(df, ma_period=ctx.ma_period, ma_method=ctx.ma_method)
-    return TC24051901(), registry, _ohlc_repository_for(ctx.data_path)
-
-
-# ea_name → ファクトリの登録表（ISSUE-097 🟡-3・従来の if/elif 5 分岐を置換）。
-# 各ファクトリは (strategy, registry, market_data) を返す。未登録 ea_name は
-# _factory_tc24051901（既定 TC 経路）へフォールバックする（従来 else 分岐と同一）。
-# 新 EA 追加は本表への 1 エントリ追加のみで済む（import 行・専用 registry ビルダの
-# 追加は伴うが、分岐追記は不要）。
-_EA_FACTORIES: "dict[str, Callable[[_EaBuildContext], tuple[Any, PandasIndicatorRegistry, Any]]]" = {
-    "MA_Slope_EA": _factory_ma_slope,
-    "MA_Slope_Pending_EA": _factory_ma_slope_pending,
-    "StopEntryProbe_EA": _factory_stop_entry_probe,
-    "WeeklyVolBand_EA": _factory_weekly_vol_band,
-    "PRO_fit_Band_EA": _factory_pro_fit_band,
-}
-
-
-#: 未登録 ea_name が落ちる既定 TC 経路（`_factory_tc24051901`）の EA 名。
-#:
-#: 「実行可能な EA 名」は登録表のキーだけでは表せない——未登録名は既定 TC 経路へ
-#: フォールバックするため、この 1 名だけが表の外側にある実行可能名である。名前を
-#: 表の所有者（本モジュール）に置く理由（ISSUE-405 実測）: 従来は
-#: `sim_ui/adapter/symbol_spec_catalog._DEFAULT_EA` と
-#: `simulator/tests/tester_settings_engine_fixtures.DEFAULT_EA_NAME` に同じ文字列が
-#: 写されており、フォールバック先を変えると 2 箇所が同時に腐る配置だった。
-DEFAULT_EA_NAME = "TC24051901"
-
-
-def known_ea_names() -> "tuple[str, ...]":
-    """実行可能な EA 名を昇順で返す（登録表のキー＋既定 TC 経路の名前）。
-
-    **列挙**であって選択ではない。表を引く式（`.get(ea_name, 既定)`）はここに無く、
-    選択規則は従来どおり `_select_ea_factory` の 1 箇所に閉じている（AST 検定が
-    両者の役割分担を固定する）。
-
-    なぜ公開するか（ISSUE-405）: 表示スライス（`sim_ui`）の実行指示フォームは「どの EA を
-    選べるか」の一覧を要る。これが無いと外側が私有名（`_EA_FACTORIES`）を越境 import して
-    `set(_EA_FACTORIES) | {"TC24051901"}` という**同じ列挙を書き写す**ことになり、実際に
-    そうなっていた（`symbol_spec_catalog.ea_names`）。
-
-    `tick_model` を要求しない: 「どの EA が実行可能か」は run の modelling に依存しない。
-    要求すると呼出側が値を捏造することになる。
-
-    戻り値は決定的順（昇順・重複なし）。
-    """
-    return tuple(sorted(set(_EA_FACTORIES) | {DEFAULT_EA_NAME}))
-
-
-def _select_ea_factory(
-    ea_name: str, *, tick_model: str
-) -> "Callable[[_EaBuildContext], tuple[Any, Any, Any]]":
-    """(strategy, registry, market_data) を作るファクトリを選ぶ**唯一の判定点**。
-
-    規則は 1 つだけである: **バー系列を消費しない modelling は、データを読まない構成を
-    採る**。判定入力は `TickModelSpec.requires_market_data`（レジストリの宣言）であり、
-    tick_model の id を列挙しない——新しい modelling が増えても本関数は改変不要
-    （既定 ``requires_market_data=True`` によって従来どおり EA 表を引く）。
-
-    `if math` を書かない理由（OCP）: 「math かどうか」は Settings 層の語彙であり
-    Composition Root の関心ではない。ここで見るのは「データを消費するか」だけである。
-
-    `_EA_FACTORIES` を**引く式は本関数にしか無い**（🔴-1）。A-1 時点では
-    `build_ea_indicators` が同じ式を生で持ち、data-less 規則を知らないまま
-    `_factory_tc24051901` へ落ちて `DataError`（``data_path=None`` の CSV 読み）になって
-    いた。呼出側は判定入力（`tick_model` id）を渡すだけにし、規則の複製を作らない。
-    式の個数は `simulator/tests/integration/test_ea_factory_selection_rule.py` が AST で
-    機械的に固定する（目視規約にしない）。
-    """
-    if not consumes_market_data(tick_model):
-        return _factory_dataless
-    return _EA_FACTORIES.get(ea_name, _factory_tc24051901)
-
-
 def _tick_model_of(config_overrides: "dict | None") -> str:
     """決定論 config から `tick_model` id を得る（`build_interactor` と同じ導出）。
 
@@ -546,8 +231,8 @@ def _ea_components(
     """ジョブ仕様から `(strategy, registry, market_data)` を組む**唯一の入口**。
 
     `build_interactor` と同じジョブ仕様（余分なキーを含んでよい＝`**spec` で丸ごと渡せる）
-    を受け、`_select_ea_factory`（選択規則の唯一の判定点）へそのまま委譲する。対応表も
-    選択規則もここへは書き写さない——写した規則は片方だけ改訂されて必ず食い違う。
+    を受け、選択規則の唯一の判定点（ea_bindings の select_ea_binding）へそのまま委譲する。
+    対応表も選択規則もここへは書き写さない——写した規則は片方だけ改訂されて必ず食い違う。
 
     公開アクセサ（`build_ea_indicators` / `build_ea_strategy`）が引数の既定値と組み立てを
     **共有**するために private で切り出してある。公開側それぞれに同じ 10 個の引数と既定値を
@@ -556,42 +241,46 @@ def _ea_components(
 
     `config_overrides` を受ける理由（🔴-1）: 選択規則の判定入力は `tick_model` であり、
     投入仕様ではそれが `config_overrides` に載る。A-1 時点で `build_ea_indicators` は
-    この引数を受けず `_EA_FACTORIES` を生で引いていたため、バー系列を消費しない modelling
-    （`Math calculations`）でも `_factory_tc24051901` へ落ち、``data_path=None`` の CSV 読みで
+    この引数を受けず登録表を生で引いていたため、バー系列を消費しない modelling
+    （`Math calculations`）でも既定 TC 経路へ落ち、``data_path=None`` の CSV 読みで
     `DataError` になっていた（`sim_ui/main/run_job.py` の `_supply_contacts` 経由で
     report.json が生成されない run を生んでいた）。既定 ``None`` は従来の呼出と同じく
     config_loader の既定（``every_tick``＝バー系列を消費する）に落ちる。
 
+    明示引数は**既定値の置き場**であって EA 私有パラメータの列挙ではない（ISSUE-502
+    段階 4A）。EA が読む名前は EA 側の宣言が持ち、値は下の束（``spec``）から引かれる。
+    ``**_unused`` に載って来た仕様（`build_interactor` 側にしか宣言の無いパラメータ）も
+    束へ合流させるため、新しい私有パラメータを使う EA が本関数を改変させない。
+
     既定値は `build_interactor` の同名引数と同じ（指標周期を持たない仕様でも呼べる）。
-    副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは factory が
-    行うため、run の実行とは独立に呼べる。
+    副作用は無い（`build_interactor` は 1 バイトも変えない）。データ読み込みは束縛の
+    ファクトリが行うため、run の実行とは独立に呼べる。
     """
-    context = _EaBuildContext(
+    # 本関数の**仮引数だけ**を束として捉える（関数の最初の実行文であることが条件。
+    #   後続で局所変数を作る前に取るので、ここに現れるのは仮引数と ``_unused`` である）。
+    declared = dict(locals())
+    extra = declared.pop("_unused")
+    return build_ea_components(
+        ea_name,
+        tick_model=_tick_model_of(config_overrides),
         data_path=data_path,
-        ma_period=ma_period,
-        ma_method=ma_method,
-        adx_period=adx_period,
-        weekly_forecast=weekly_forecast,
-        weekly_p_tp=weekly_p_tp,
-        weekly_capital=weekly_capital,
-        weekly_f_risk=weekly_f_risk,
+        # 明示引数（既定値つき）が、素通しで来た同名キーより優先する（従来と同一）。
+        params={**extra, **declared},
     )
-    factory = _select_ea_factory(ea_name, tick_model=_tick_model_of(config_overrides))
-    return factory(context)
 
 
 def build_ea_indicators(**spec: Any) -> IndicatorPort:
     """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
 
     なぜ公開するか: 表示スライス（sim / report_ui）は「価格×MA の接点」のように**EA が
-    見ていた系列そのもの**を要る。これが無いと外側が私有名（`_EA_FACTORIES` /
-    `_EaBuildContext`）を越境 import するか、EA ごとの指標を推測で書き写すことになる。
+    見ていた系列そのもの**を要る。これが無いと外側が私有名（EA 束縛の登録表・構築入力型）
+    を越境 import するか、EA ごとの指標を推測で書き写すことになる。
 
     ``spec``: `build_interactor` と同じジョブ仕様（`**spec` で丸ごと渡せる）。引数と既定値は
     `_ea_components` が単一ソースとして持つ。
 
     戻り値は `IndicatorPort`（LSP）: バー系列を消費しない構成では系列を 1 本も持たない
-    `NullIndicatorRegistry` を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
+    NullIndicatorRegistry を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
     （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
     """
     _strategy, registry, _market_data = _ea_components(**spec)
@@ -601,21 +290,21 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
 def build_ea_strategy(**spec: Any) -> Any:
     """その EA が**実行に使う戦略実体**（StrategyPort）を返す（ISSUE-405・追加のみ）。
 
-    `build_ea_indicators` と**同じ仕様・同じ選択規則**（`_select_ea_factory` への委譲）で、
+    `build_ea_indicators` と**同じ仕様・同じ選択規則**（選択の唯一の判定点への委譲）で、
     3 点組のうち戦略だけを返す。
 
     なぜ公開するか（ISSUE-405 実測）: 表示スライスの受付検証（§12.8「戦略設定が SL を
     保証するか」）は「その ea_name はどの戦略クラスか」を要る。これが無いと外側が
-    `getattr(simulator.main, "_EA_FACTORIES", {})` で表を覗き、`_factory_tc24051901` への
+    getattr(simulator.main, "_EA_FACTORIES", {}) で表を覗き、既定 TC 経路への
     フォールバック規則を書き写した上で、factory 関数の**ソース文字列**から戦略クラス名を
-    推測することになる（実際にそうなっていた。`_factory_weekly_vol_band` はビルダ関数
+    推測することになる（実際にそうなっていた。WeeklyVolBand のファクトリはビルダ関数
     `make_weekly_vol_band(...)` を呼ぶため、その推測は WeeklyVolBand で失敗していた）。
 
     `tick_model` を要求しない: 呼出側の問い（「その EA はどの戦略を持つか」）は run の
     modelling に依存しない。既定 ``config_overrides=None`` で config_loader の既定
     （``every_tick``＝バー系列を消費する）に落ち、従来の表引きと同じ factory が選ばれる。
-    バー系列を消費しない modelling を明示した場合だけ `NullStrategy` になる（規則は
-    `_select_ea_factory` の 1 箇所のまま）。
+    バー系列を消費しない modelling を明示した場合だけ NullStrategy になる（規則は
+    選択の唯一の判定点 1 箇所のまま）。
 
     戻り値は `StrategyPort`（LSP）: engine が呼ぶ `on_init` / `on_new_bar` /
     `on_position_check` を持つ実体。データ読み込みは factory が行うため、``data_path`` は
@@ -671,7 +360,26 @@ def build_interactor(
     決定論 config は config_loader（pydantic 検証）で構築し、列挙外値は ConfigError を
     送出する（DESIGN §9.4 の exit 2 経路）。戦略パラメータは RunConfig の subscript で
     供給し、Interactor／戦略の双方の config 契約を満たす（run_config.py 参照）。
+
+    **公開シグネチャは事実上の HTTP スキーマ**である: `sim_ui` の受付検証
+    （allowed_backtest_keys / required_backtest_keys）・Settings 写像
+    （kwargs_mapper.interactor_key_sets）・.ini 入力束縛（ea_input_map）の 3 つが
+    inspect.signature(build_interactor) を反射して許容キー・必須キー・型を導く。
+    したがって引数名・並び・既定値の変更は投入 API の変更である。
+
+    本体が持つのは**結線だけ**である（ISSUE-502 段階 4A）。EA ごとの知識（どの registry を
+    作るか・どの OHLC リーダを使うか・どのパラメータを戦略へ配るか）は EA 側モジュールの
+    宣言（`simulator/main/ea_bindings/`）が持ち、ここは宣言から導く。
     """
+    # 本関数の**仮引数だけ**を 1 つの束として捉える（ここが最初の実行文であることが条件。
+    #   まだ局所変数を作っていないので、`locals()` に現れるのは仮引数だけである）。
+    #   束を作る理由: EA が読むパラメータ名は EA 側の宣言が持ち、値はここから名前で引く。
+    #   是正前は同じ名前を本体に 3 回（戦略パラメータの dict リテラル・EA 構築入力型の
+    #   8 引数・シグネチャ）書いており、EA 追加のたびに 3 箇所を同期させていた。
+    #   束が仮引数と一致することは tests/integration/
+    #   test_ea_bindings_are_declaration_driven.py が inspect.signature と突合して固定する
+    #   （`locals()` の位置ずれを機械で赤にする）。
+    job = dict(locals())
     # 決定論 9 項目（config_loader の pydantic 検証経由・列挙外は ConfigError）
     determinism = load_config(config_overrides or {})
     # 🟡-1: 規則 S を**この境界**で効かせる。`to_interactor_kwargs` を通らない投入経路
@@ -684,51 +392,26 @@ def build_interactor(
     verify_engine_data_consistency(
         tick_model=determinism.tick_model, has_data=data_path is not None
     )
-    strategy_params = {
-        "lot_size": lot_size,
-        "stop_loss_points": stop_loss_points,
-        "take_profit_points": take_profit_points,
-        "point_size": point_size,
-        # MaSlope が参照する追加パラメータ（TC24051901 は未参照のため無害）。
-        "slope_shift": slope_shift,
-        "slope_min_points": slope_min_points,
-        # MaSlope の NormalizeLot（原典 MA_Slope_EA.mq5:157）が参照する銘柄仕様。
-        # SymbolInfoDouble(SYMBOL_VOLUME_MIN/MAX/STEP) 相当（ISSUE-445 段階 1・
-        # 他戦略は未参照のため無害）。SymbolSpec と同じ引数を供給元とする。
-        "volume_min": volume_min,
-        "volume_max": volume_max,
-        "volume_step": volume_step,
-        # MaSlopePending が参照する追加パラメータ（MaSlope/TC は未参照のため無害）。
-        "digits": digits,
-        "stops_level": stops_level,
-        "entry_offset_points": entry_offset_points,
-        "entry_type": entry_type,
-        # ProFitBand が参照する追加パラメータ（他戦略は未参照のため無害）。既定は
-        # 原典 .mq5 の Adx_Min=22.0（🟡-3）。
-        "adx_min": adx_min,
-    }
+    # 戦略へ配るパラメータ。**名前は EA 側の宣言が持つ**（`EaBinding.strategy_params`）。
+    #   是正前はここに 14 行の dict リテラルが在り、EA が参照するパラメータを 1 つ増やす
+    #   たびに本ファイルを開いていた（EA 追加の 8 編集点のうち 1 つ・OCP 違反）。配る集合は
+    #   従来どおり**全 EA 宣言の和**であり（EA ごとに絞らない）、並びも従来と同じである。
+    strategy_params = {name: job[name] for name in strategy_param_names()}
     run_config = RunConfig(determinism, strategy_params)
 
     # ea_name で戦略・指標・入力フォーマットを選択（config gated・既定は従来 TC 経路）。
-    # ea_name → ファクトリの登録表（_EA_FACTORIES）へ委譲する（ISSUE-097 🟡-3・従来の
-    # if/elif 5 分岐を置換）。ファクトリは (strategy, registry, market_data) を返す。未登録
-    # ea_name は _factory_tc24051901（既定 TC 経路）へフォールバックする（従来 else と同一）。
-    _ea_ctx = _EaBuildContext(
-        data_path=data_path,
-        ma_period=ma_period,
-        ma_method=ma_method,
-        adx_period=adx_period,
-        weekly_forecast=weekly_forecast,
-        weekly_p_tp=weekly_p_tp,
-        weekly_capital=weekly_capital,
-        weekly_f_risk=weekly_f_risk,
-    )
+    #   選択規則（未登録 ea_name → 既定 TC 経路 / データを消費しない modelling → 読まない
+    #   構成）は ea_bindings の select_ea_binding 1 箇所が持ち、ここは呼ぶだけである。
     # A-1: データ供給の要否は tick_model レジストリの宣言（requires_market_data）だけで
-    # 決まる。既定 True のため既存 4 モードは従来と同じ EA ファクトリを引く（byte 等価）。
-    _ea_factory = _select_ea_factory(ea_name, tick_model=determinism.tick_model)
-    strategy, registry, market_data = _ea_factory(_ea_ctx)
+    # 決まる。既定 True のため既存 4 モードは従来と同じ EA 束縛を引く（byte 等価）。
+    strategy, registry, market_data = build_ea_components(
+        ea_name,
+        tick_model=determinism.tick_model,
+        data_path=data_path,
+        params=job,
+    )
     # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
-    # （GenericConditionStrategy）で _EA_FACTORIES が選んだ戦略を置き換える拡張点。
+    # （GenericConditionStrategy）で EA 束縛が選んだ戦略を置き換える拡張点。
     # 既定 None は素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。registry・
     # market_data・tick_model の選択（ea_name＝指標セット）は override の有無で変えない。
     # 置換は strategy_decorator（sizing）適用の**前**に行う＝sizing wrap は override へ

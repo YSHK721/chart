@@ -2,16 +2,16 @@
 
 背景（実測）:
     `unsupported._detect_unknown_ea` が読むのは **注入された** `binding.known_ea_names`
-    である（`_EA_FACTORIES` を import すらしていない）。にもかかわらず N-01 の `reason`
-    は「実行可能な EA は現行 `_EA_FACTORIES` の登録集合に限られます」と書いており、
-    実装と食い違っていた。両者は実際に一致しない——`_EA_FACTORIES` のキーは 5 件、
+    である（`_EA_BINDINGS` を import すらしていない）。にもかかわらず N-01 の `reason`
+    は「実行可能な EA は現行 `_EA_BINDINGS` の登録集合に限られます」と書いており、
+    実装と食い違っていた。両者は実際に一致しない——`_EA_BINDINGS` のキーは 5 件、
     注入元の `SymbolSpecCatalog.ea_names()` は 6 件（既定フォールバック EA を含む）。
 
 固定する仕様:
-    1. `reason` は実装が読む集合（注入集合）を指す。実装が読まない `_EA_FACTORIES`
+    1. `reason` は実装が読む集合（注入集合）を指す。実装が読まない `_EA_BINDINGS`
        を判定源として名指さない。
-    2. 注入集合 ⊇ `_EA_FACTORIES` のキー。差分は**既定フォールバック EA 名のみ**。
-    3. 上の 2 が意味するとおり、`_EA_FACTORIES` 未登録でも注入集合に載る名前は
+    2. 注入集合 ⊇ `_EA_BINDINGS` のキー。差分は**既定フォールバック EA 名のみ**。
+    3. 上の 2 が意味するとおり、`_EA_BINDINGS` 未登録でも注入集合に載る名前は
        N-01 を通り、注入集合に無い名前は N-01 で止まる（振る舞いで測る）。
 
 なぜ `reason` を測るのか:
@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from simulator.domain.exceptions import ConfigError
-from simulator.main import _EA_FACTORIES
+from simulator.main.ea_bindings import _EA_BINDINGS
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.main.tester_settings.unsupported import RULES
 from simulator.main import DEFAULT_EA_NAME as _DEFAULT_EA
@@ -37,15 +37,17 @@ from simulator.tests.tester_settings_engine_fixtures import (
 
 #: 判定源のうち実装が実際に読む側（注入集合）の出所。テストが名前を再宣言しない。
 INJECTED_EA_NAMES = frozenset(build_run_options_port().ea_names())
-FACTORY_KEYS = frozenset(_EA_FACTORIES)
+FACTORY_KEYS = frozenset(_EA_BINDINGS)
 
 
 class TestReasonMatchesTheImplementation:
     """`reason` が、実装が読む判定源を指していること。"""
 
     def test_the_reason_does_not_name_a_registry_the_detector_never_reads(self):
-        # `_detect_unknown_ea` は `_EA_FACTORIES` を参照しない（import もしていない）
+        # `_detect_unknown_ea` は登録表を参照しない（import もしていない）。表の名前は
+        # ISSUE-502 段階 4A で `_EA_FACTORIES` → `_EA_BINDINGS` へ移ったので両方見る。
         assert "_EA_FACTORIES" not in RULES["N-01"].reason
+        assert "_EA_BINDINGS" not in RULES["N-01"].reason
 
     def test_the_reason_names_the_injected_set(self):
         assert "注入" in RULES["N-01"].reason

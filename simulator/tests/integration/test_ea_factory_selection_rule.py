@@ -35,31 +35,55 @@ from simulator.domain.tester_settings_exceptions import SettingsActivationError
 
 _SIMULATOR_ROOT = Path(__file__).resolve().parents[2]
 _MAIN_SOURCE = _SIMULATOR_ROOT / "main" / "__init__.py"
+#: EA 束縛の所在（ISSUE-502 段階 4A で登録表・選択規則・EA ごとの構築知識が移った先）。
+_EA_BINDINGS_DIR = _SIMULATOR_ROOT / "main" / "ea_bindings"
+#: 登録表そのものと選択規則を持つモジュール。
+_BINDINGS_SOURCE = _EA_BINDINGS_DIR / "__init__.py"
 
-#: 表を**列挙**してよい関数（選択はしない）。選択規則は `_select_ea_factory` の 1 箇所のまま。
+#: 表を**列挙**してよい関数（選択はしない）。選択規則は下の _SELECTOR の 1 箇所のまま。
 _ENUMERATOR = "known_ea_names"
+#: 表を**引く**唯一の関数。
+_SELECTOR = "select_ea_binding"
+#: 表を**宣言の集まりとして読む**関数（戦略へ配るパラメータ名の和を導く）。選択はしない。
+_PARAM_DERIVER = "strategy_param_names"
+
+
+def _composition_root_sources() -> "list[Path]":
+    """EA 構築を所有するモジュール群（Composition Root 本体＋EA 束縛パッケージ）。
+
+    ISSUE-502 段階 4A 以前は `main/__init__.py` の 1 ファイルだった。EA ごとの構築知識を
+    宣言側へ出したため、所有者は**この集合**になった。私有名の走査で「所有者の外側」を
+    測るときは、必ずこの集合を除外する（除外を 1 ファイルに固定したままだと、束縛
+    パッケージ自身が自分の私有名を触っただけで赤になる）。
+    """
+    return sorted({_MAIN_SOURCE, *_EA_BINDINGS_DIR.glob("*.py")})
 
 
 def _private_ea_names() -> "frozenset[str]":
-    """EA 構築の内部構造を表す `simulator/main/__init__.py` の私有名（単一ソース導出）。
+    """EA 構築の内部構造を表す私有名（単一ソース導出）。
 
     `_factory_*` を**手書きの一覧にしない**——登録 EA が増えるたびに取り残される。
-    main の AST から module 直下の `_factory_*` 定義を拾い、固定 3 名と合わせる。
+    Composition Root 側の全モジュールの AST から module 直下の `_factory_*` 定義を拾い、
+    固定 4 名（登録表・構築入力型・宣言型・選択規則）と合わせる。
     """
-    tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
-    factories = {
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name.startswith("_factory_")
-    }
-    return frozenset(factories | {"_EA_FACTORIES", "_EaBuildContext", "_select_ea_factory"})
+    factories: "set[str]" = set()
+    for path in _composition_root_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        factories |= {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("_factory_")
+        }
+    return frozenset(
+        factories | {"_EA_BINDINGS", "EaBuildContext", "EaBinding", _SELECTOR}
+    )
 
 
 def _production_sources() -> "list[Path]":
     """`simulator/` 配下の本番コード（`**/tests/**` を除く）。
 
-    除外の根拠（実測）: 関数内で `_EA_FACTORIES` を読む検定が複数ある。いずれも
+    除外の根拠（実測）: 関数内で登録表を読む検定が複数ある。いずれも
     「表が単一ソースであること」を固定する正当な参照であり、違反ではない。
     """
     return sorted(
@@ -162,36 +186,51 @@ class TestFactorySelectionHasASinglePoint:
 
     @staticmethod
     def _factory_table_readers() -> "list[str]":
-        """`_EA_FACTORIES` を**読む**関数名を列挙する（束縛＝定義は除く）。"""
-        tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+        """`_EA_BINDINGS` を**読む**関数名を列挙する（束縛＝定義は除く）。"""
+        tree = ast.parse(_BINDINGS_SOURCE.read_text(encoding="utf-8"))
         readers: "list[str]" = []
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Name) and inner.id == "_EA_FACTORIES":
+                if isinstance(inner, ast.Name) and inner.id == "_EA_BINDINGS":
                     if isinstance(inner.ctx, ast.Load):
                         readers.append(node.name)
                         break
         return readers
 
     def test_the_table_is_read_by_the_selector_and_the_enumerator_only(self):
-        """表に触れてよい関数は 2 つだけ、かつ役割が違う。
+        """表に触れてよい関数は 3 つだけ、かつ役割が違う。
 
-        `_select_ea_factory` は**選択**（`.get(ea_name, 既定)`）、`known_ea_names` は
-        **列挙**（キー集合）である。列挙は選択規則を含まない（下の `.get` 検定が
-        「引く式は 1 箇所」を別途固定する）ため、規則の複製にはならない。
-        `known_ea_names` を公開する動機は、外側スライス（`sim_ui`）が `set(_EA_FACTORIES)`
+        選択規則の関数は**選択**（`.get(ea_name, 既定)`）、列挙の関数は**列挙**（キー
+        集合）、パラメータ名の関数は**宣言の読み出し**（各宣言の strategy_params の和）
+        である。後ろ 2 つは選択規則を含まない（下の `.get` 検定が「引く式は 1 箇所」を
+        別途固定する）ため、規則の複製にはならない。
+        `known_ea_names` を公開する動機は、外側スライス（`sim_ui`）が登録表のキー集合
         を越境 import して同じ列挙を書き写していたこと（ISSUE-405 実測）である。
-        3 つ目の読み手が入れば本検定が落ちる。
+        4 つ目の読み手が入れば本検定が落ちる。
         """
         assert sorted(self._factory_table_readers()) == sorted(
-            ["_select_ea_factory", _ENUMERATOR]
+            [_SELECTOR, _ENUMERATOR, _PARAM_DERIVER]
         )
+
+    def test_the_composition_root_never_reads_the_table(self):
+        """Composition Root 本体（`main/__init__.py`）が表を**まったく**読まないこと。
+
+        ISSUE-502 段階 4A の要点。EA を 1 本足すときに本体を開かないことが目的であり、
+        本体に表引きが 1 つでも戻れば、そこから条件と分岐が再び育つ。
+        """
+        tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "_EA_BINDINGS"
+        ]
+        assert offenders == [], offenders
 
     def test_the_enumerator_does_not_select(self):
         """列挙側が選択規則（既定フォールバック）を持たないこと。"""
-        tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+        tree = ast.parse(_BINDINGS_SOURCE.read_text(encoding="utf-8"))
         enumerator = next(
             node
             for node in tree.body
@@ -208,8 +247,7 @@ class TestFactorySelectionHasASinglePoint:
 
     def test_the_fallback_default_appears_once_in_the_module(self):
         # 既定フォールバック（未登録 ea_name → TC 経路）も 1 箇所に限る。
-        text = _MAIN_SOURCE.read_text(encoding="utf-8")
-        tree = ast.parse(text)
+        tree = ast.parse(_BINDINGS_SOURCE.read_text(encoding="utf-8"))
         sites = [
             node
             for node in ast.walk(tree)
@@ -217,7 +255,7 @@ class TestFactorySelectionHasASinglePoint:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "_EA_FACTORIES"
+            and node.func.value.id == "_EA_BINDINGS"
         ]
         assert len(sites) == 1
 
@@ -249,11 +287,11 @@ class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
         """
         sample = tmp_path / "sample.py"
         sample.write_text(
-            'from simulator import main as m\n'
-            'v = getattr(m, "_EA_FACTORIES", {})\n',
+            'from simulator.main import ea_bindings as b\n'
+            'v = getattr(b, "_EA_BINDINGS", {})\n',
             encoding="utf-8",
         )
-        assert _private_ea_references(sample) == frozenset({"_EA_FACTORIES"})
+        assert _private_ea_references(sample) == frozenset({"_EA_BINDINGS"})
 
     def test_the_detector_sees_the_attribute_form(self, tmp_path):
         sample = tmp_path / "sample.py"
@@ -268,13 +306,24 @@ class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
         names = _private_ea_names()
         assert "_factory_tc24051901" in names
         assert "_factory_dataless" in names
-        assert "_EA_FACTORIES" in names
+        assert "_EA_BINDINGS" in names
+
+    def test_the_scan_reaches_every_ea_binding_module(self):
+        """射程が EA 束縛パッケージ全体に及ぶこと（ゲートの自己検査）。
+
+        ISSUE-502 段階 4A で構築知識が 1 ファイルから 1 パッケージへ広がった。除外集合を
+        1 ファイルに固定したままだと、束縛パッケージ側の私有名が射程外になり、外側からの
+        越境参照を測れなくなる。
+        """
+        owned = {path.name for path in _composition_root_sources()}
+        assert {"__init__.py", "binding.py", "tc24051901.py", "ma_slope.py"} <= owned
 
     def test_no_production_module_outside_main_touches_a_private_ea_name(self):
+        owners = set(_composition_root_sources())
         offenders = {
             str(path.relative_to(_SIMULATOR_ROOT)): sorted(_private_ea_references(path))
             for path in _production_sources()
-            if path != _MAIN_SOURCE
+            if path not in owners
         }
         assert {name: refs for name, refs in offenders.items() if refs} == {}
 
@@ -298,6 +347,8 @@ class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
             and _private_ea_references(path)
         )
         assert referencing == [
+            # ISSUE-502 段階 4A: 宣言駆動化そのものの検定（編集点数・宣言と実装の一致）。
+            "tests/integration/test_ea_bindings_are_declaration_driven.py",
             "tests/unit/test_ea_factory_registry.py",
             "tests/unit/test_unsupported_n01_ea_name_source.py",
             # N-17: spread 依存宣言と「Mt5CsvOHLCRepository を返すファクトリ」の一致を
@@ -382,11 +433,11 @@ class TestRuleSReachesTheBuildInteractorBoundary:
         assert result is None
 
     def test_the_judgment_is_declared_once(self):
-        """判定の宣言は `verify_data_consistency` 側にあり、main は呼ぶだけ。"""
-        tree = ast.parse(_MAIN_SOURCE.read_text(encoding="utf-8"))
+        """判定の宣言は `verify_data_consistency` 側にあり、Composition Root は呼ぶだけ。"""
         raises = [
-            node
-            for node in ast.walk(tree)
+            (path.name, node.lineno)
+            for path in _composition_root_sources()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, ast.Raise)
             and isinstance(node.exc, ast.Call)
             and isinstance(node.exc.func, ast.Name)

@@ -34,7 +34,7 @@ A-1 で追加専用経路を撤去した理由（旧 §8.2.2 代替案 A の反�
         `report_payload_error.json` は残らない。
 
     ただし**レジストリ追加だけでは成立しなかった**ことを記録する。A-1 時点では
-    `build_ea_indicators` が選択規則（`_select_ea_factory`）を経由せず `_EA_FACTORIES` を
+    `build_ea_indicators` が選択規則（ea_bindings の select_ea_binding）を経由せず登録表を
     生で引いていたため、`run_job` の `_supply_contacts` が
     ``DataError: 指標計算用 CSV の読み込みに失敗しました: None`` になり、終了コード 0・
     `status="completed"` のまま report.json が生成されなかった（変異試験で再現済み）。

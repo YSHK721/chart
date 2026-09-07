@@ -68,16 +68,22 @@ def _measured_spread_dependent_eas() -> "set[str]":
     （comma 系ファクトリは MT5 TAB を読めず例外＝非該当）。分岐は本ヘルパに閉じ、
     テスト本体は単一の等式表明だけを持つ。
     """
-    import simulator.main as sim_main
+    # ISSUE-502 段階 4A: 登録表と構築入力の所在は `simulator/main/ea_bindings/`。
+    from simulator.main.ea_bindings import _EA_BINDINGS
+    from simulator.main.ea_bindings.binding import EaBuildContext
 
-    ctx = sim_main._EaBuildContext(
-        data_path=str(_MT5_FIXTURE), ma_period=20, ma_method="sma", adx_period=14,
-        weekly_forecast=None, weekly_p_tp=0.5, weekly_capital=1_000_000.0, weekly_f_risk=0.1,
+    ctx = EaBuildContext(
+        data_path=str(_MT5_FIXTURE),
+        params={
+            "ma_period": 20, "ma_method": "sma", "adx_period": 14,
+            "weekly_forecast": None, "weekly_p_tp": 0.5,
+            "weekly_capital": 1_000_000.0, "weekly_f_risk": 0.1,
+        },
     )
     measured = set()
-    for ea_name, factory in sim_main._EA_FACTORIES.items():
+    for ea_name, binding in _EA_BINDINGS.items():
         try:
-            _, _, repo = factory(ctx)
+            _, _, repo = binding.build(ctx)
         except Exception:
             continue   # MT5 TAB を読めない＝comma 系（spread 非依存）
         if isinstance(repo, Mt5CsvOHLCRepository):
