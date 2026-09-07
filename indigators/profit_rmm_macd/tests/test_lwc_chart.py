@@ -11,26 +11,29 @@ profit_mfi_macd の test_lwc_chart にあった「水平線 7 本」「draw_leve
 テスト（TC-L5）を置く。
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from src import HIST_COLUMN, MACD_COLUMN, SIGNAL_COLUMN, build_rmmmacd  # noqa: E402
-from src.lwc_chart import (  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、本パッケージは名前空間パッケージ
+# （PEP 420）として ``profit_rmm_macd`` の名前で解決する。
+from indigators.testing.lwc_fakes import FakeChart, FakeSeries
+from profit_rmm_macd.src import (
+    HIST_COLUMN,
+    MACD_COLUMN,
+    SIGNAL_COLUMN,
+    build_rmmmacd,
+)
+from profit_rmm_macd.src.lwc_chart import (
     MACD_LINE_NAME,
     SIGNAL_LINE_NAME,
     add_rmmmacd,
 )
 
 _KW = dict(osc_period=6, ma_period=6, fast=4, slow=8, signal=4)
-
-
-from indigators.testing.lwc_fakes import FakeChart, FakeSeries  # noqa: E402
 
 
 def _df(n=40):

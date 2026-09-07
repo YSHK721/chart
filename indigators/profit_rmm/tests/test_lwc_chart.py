@@ -11,20 +11,18 @@
     6. 異常系: 必須列欠落（KeyError）/ volume 欠落（KeyError）/ 時刻解決不可（KeyError）
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm/
-
-from src import core, rmm  # noqa: E402
-from src.lwc_chart import _LEVEL_KEYS, add_rmm  # noqa: E402
-
-
-from indigators.testing.lwc_fakes import FakeChart, FakeHistogram  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、本パッケージは名前空間パッケージ
+# （PEP 420）として ``profit_rmm`` の名前で解決する。
+from indigators.testing.lwc_fakes import FakeChart, FakeHistogram
+from profit_rmm.src import core, rmm
+from profit_rmm.src.lwc_chart import _LEVEL_KEYS, add_rmm
 
 
 def _df(n=60):

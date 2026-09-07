@@ -11,6 +11,12 @@ profit_adx_needle / profit_arctan / profit_oscillator / profit_volatility が
     level_count_score    : funLevelCount 4 ケース採点（profit_rmm 正準形を集約）
     compute_marod        : MAROD = (typical-ma)/ma*100（profit_rmm 正準形を集約）
 
+公開 API（σ スパン統計。実装は ``span_stats.py``＝単一情報源。ISSUE-502 D-5 後続）:
+    series_avg           : 系列平均（全系列。``ps_average`` と異なり Normalize しない）
+    series_std           : 母標準偏差（÷N・全系列）
+    oscillator_span      : avg±3σ のスパン（採点の分母。clamp で [0,100] クランプ）
+    rolling_span         : ``oscillator_span`` の因果ローリング版（単一掃引）
+
 公開 API（PS プリミティブ。パッケージ境界を越えて参照される＝公開契約。ISSUE-182 項目 1）:
     ps_normalize         : NormalizeDouble(x, 5)
     ps_average           : PS_GetAverage（算術平均・Normalize 5）
@@ -41,6 +47,12 @@ from .core import (
     ps_std_ema,
     ps_unit_conversion,
 )
+from .span_stats import (
+    oscillator_span,
+    rolling_span,
+    series_avg,
+    series_std,
+)
 
 __all__ = [
     "ps_level_count",
@@ -53,4 +65,8 @@ __all__ = [
     "ps_ema",
     "ps_std_ema",
     "ps_unit_conversion",
+    "series_avg",
+    "series_std",
+    "oscillator_span",
+    "rolling_span",
 ]

@@ -13,16 +13,16 @@ histogram/macd/signal の 3 列のみを付与した DataFrame（元 index 継�
     - σ 水準が無い（rmmmacd_levels 関数を持たない）を構造で担保
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm_macd/
-
-from src import core, rmmmacd  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、本パッケージは名前空間パッケージ
+# （PEP 420）として ``profit_rmm_macd`` の名前で解決する。
+from profit_rmm_macd.src import core, rmmmacd
 
 
 def _sample_df(index=None) -> pd.DataFrame:

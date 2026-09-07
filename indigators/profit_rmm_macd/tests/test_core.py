@@ -20,32 +20,24 @@ MACD 連鎖を適用する。**ただし MFIMACD/RSIMACD とは 2 点が異な�
 """
 
 import dataclasses
-import importlib.util
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm_macd/
-
-from src import core  # noqa: E402
-
-# profit_rmm の正準 level_count を取り込む。``src`` パッケージ名が本パッケージと衝突
-# する（pytest 横断 sys.modules 汚染）ため、正準 core.py をファイル指定で別名ロードする。
-_rmm_core_path = (
-    Path(__file__).resolve().parents[2] / "profit_rmm" / "src" / "core.py"
-)
-_spec = importlib.util.spec_from_file_location("profit_rmm_core", _rmm_core_path)
-rmm_core = importlib.util.module_from_spec(_spec)
-sys.modules["profit_rmm_core"] = rmm_core  # dataclass の注釈解決に必要
-_spec.loader.exec_module(rmm_core)
-
-# 共有 EMA（fast/slow/signal の連鎖一致検証用）。
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2])
-)  # = indicators/
-from moving_averages import exponential_ma_on_buffer  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、両指標は名前空間パッケージ（PEP 420）
+# として ``profit_rmm`` / ``profit_rmm_macd`` の名前で、共有ライブラリ
+# ``moving_averages`` はそのままの名前で解決する。
+#
+# profit_rmm の正準 level_count は、以前は ``src`` というパッケージ名が両指標で衝突する
+# ため core.py をファイル指定で別名ロードしていた。名前空間パッケージ名で解決するように
+# なり衝突が消えたので、**プロダクトと同一のモジュール**を直接 import する（別名ロードは
+# プロダクトと別実体の 2 つ目のコピーを作るため、モジュール同一性の観点で避ける）。
+from moving_averages import exponential_ma_on_buffer  # 共有 EMA（連鎖一致検証用）
+from profit_rmm.src import core as rmm_core
+from profit_rmm_macd.src import core
 
 
 # ---------------------------------------------------------------------------

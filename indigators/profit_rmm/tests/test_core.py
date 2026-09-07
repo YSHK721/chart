@@ -17,15 +17,15 @@ MAROD を funLevelCount で合算する処理を、昇順（古→新, index 0=�
    10. DTO 不変性（全 ndarray writeable=False・frozen）
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm/
-
-from src import core  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、本パッケージは名前空間パッケージ
+# （PEP 420）として ``profit_rmm`` の名前で解決する。
+from profit_rmm.src import core
 
 
 # ---------------------------------------------------------------------------

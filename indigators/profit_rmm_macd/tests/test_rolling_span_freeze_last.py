@@ -17,14 +17,14 @@ freeze_last も同一実装。profit_system._causal_z の freeze_last と整合�
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm_macd/
-
-from src.core import (  # noqa: E402
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、本パッケージは名前空間パッケージ
+# （PEP 420）として ``profit_rmm_macd`` の名前で解決する。
+from profit_rmm_macd.src.core import (
     compute_rmm_level_count,
     compute_rmmmacd,
     rolling_span,

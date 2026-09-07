@@ -24,8 +24,8 @@ import numpy as np
 # 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
 # pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
 # ``jp225_chart_paths.pth`` の双方に登録済み。
-from profit_rmm import span_stats
 from profit_rmm_macd.src import core
+from profit_system import span_stats
 
 
 # ---------------------------------------------------------------------------

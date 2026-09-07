@@ -1,10 +1,12 @@
-"""層名: 共有計算カーネル（σ スパン統計）— profit_rmm 所有の単一情報源。
+"""層名: 共有計算カーネル（σ スパン統計）— 中立共有層 profit_system 所有の単一情報源。
 
 責務:
     オシレーターの「スパン（採点の分母）」= avg±3σ の幅を求める純関数を **1 箇所だけ**
     定義する層。numpy のみに依存し、pandas・描画・成果物層・アダプタ層を一切 import
-    しない。姉妹指標 profit_rmm_macd は本モジュールを import して同一実装を共有する
-    （従来は profit_rmm_macd/src/core.py に verbatim 複製されていた＝ISSUE-502 D-5）。
+    しない。姉妹指標 profit_rmm / profit_rmm_macd は本モジュールを profit_system
+    の公開面から import して同一実装を共有する（従来は両 core.py に verbatim 複製
+    されていた＝ISSUE-502 D-5。D-5 の暫定所有者は profit_rmm 直下に置いた同名モジュール
+    だったが、そこから本層へ移送した＝ISSUE-502 後続）。
 
 含む構造:
     series_avg     : 系列平均（全系列）。
@@ -12,25 +14,28 @@
     oscillator_span: avg±3σ のスパン（clamp で [0,100] クランプ・MAROD は非クランプ）。
     rolling_span   : ``oscillator_span`` の因果ローリング版（単一掃引・freeze_last 対応）。
 
-配置の理由（src/ 配下ではなくパッケージ直下に置く根拠）:
-    profit_rmm/src/__init__.py は成果物層（pandas）と出力アダプタを再公開する集約層で
-    ある。profit_rmm/src/core.py を姉妹指標の **core 層**から import すると、親パッケージ
-    初期化により pandas とアダプタ層が連鎖 import され、(1) core 層の「pandas/描画
-    import は禁止」契約に反し、(2) core（内側）→ アダプタ（外側）の依存方向逆流を招く。
-    profit_rmm は __init__.py を持たない名前空間パッケージ（PEP 420）であるため、直下に
-    置いた本モジュールは import profit_rmm.span_stats で **初期化コードを 1 行も実行せず**
-    解決でき、numpy のみの純度を保てる。
-
-    なお構造上の本筋は、両指標が既に import している中立共有層 profit_system
-    （MAROD・funLevelCount 採点・因果 z 化を所有し numpy のみに依存）へ本モジュールを
-    移すことである。profit_system の改修は本タスクの承認範囲外のため実施しない
-    （移送は別タスクで扱う）。
+配置の理由（profit_rmm ではなく中立共有層 profit_system に置く根拠）:
+    1. 指標間依存の解消。所有者が profit_rmm だと、姉妹指標 profit_rmm_macd の core が
+       **他指標パッケージ**を import することになり、対等な 2 指標の間に一方向の依存が
+       生まれる。profit_system は両指標が既に import している中立共有層（PS.mqh
+       プリミティブ・funLevelCount 採点・MAROD・因果 z 化を所有）であり、ここに置けば
+       両指標は共有層へ**対称に**依存するだけになる。
+    2. 構成規約への一致。本パッケージの規約は「実装は src/ 配下・公開はパッケージ
+       初期化モジュールの再公開層」である（src/core.py と同じ扱い）。本モジュールも
+       src/ 配下に置き、src/ の初期化モジュールとパッケージ直下の初期化モジュールの
+       双方から再公開する。
+    3. core 層の純度の保持。profit_system の連鎖 import は、パッケージ初期化 →
+       src/ 初期化 → core と span_stats の順で辿っても numpy のみで、pandas・描画・
+       出力アダプタを 1 つも引き込まない。したがって core（内側）から成果物層・
+       アダプタ層（外側）への依存方向逆流は生じない。これは宣言ではなく別プロセスの
+       実測で常設検査する
+       （``indigators/profit_rmm_macd/tests/test_span_stats_single_source.py``）。
 
 import 解決の前提:
-    indigators/ が import パスにあること。これは本モジュールの利用側（両 core）が既に
-    共有ライブラリ（moving_averages・mql_builtins・profit_system）を同じ方法で解決して
-    いる前提と**完全に同一**であり、新たな解決点を要求しない。解決点の台帳は
-    tools/dev_paths.txt（テストは pyproject.toml の pythonpath、本番は venv の .pth と
+    ``indigators/`` が import パスにあること。これは本モジュールの利用側（両 core）が
+    共有ライブラリ（moving_averages・mql_builtins・profit_system）を解決している前提と
+    **完全に同一**であり、新たな解決点を要求しない。解決点の台帳は
+    ``tools/dev_paths.txt``（テストは pyproject.toml の pythonpath、本番は venv の .pth と
     指標ローダが同じ台帳から導出する）。
 
 依存:

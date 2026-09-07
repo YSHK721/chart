@@ -8,8 +8,9 @@
     level_count 生成パイプライン全体を複製する（iWPR/iRSI/iMFI/
     oscillator_span/level_count_score・クランプ非対称・funLevelCount4ケース・合算・
     warm-up・iWPR 権威・flat→50/負MF==0→100 を完全保持・ロジック改変禁止）。
-    なお σ スパン統計（oscillator_span / rolling_span ほか）は複製ではなく単一情報源
-    ``profit_rmm.span_stats`` を import して共有する（ISSUE-502 D-5 で是正）。
+    なお σ スパン統計（oscillator_span / rolling_span ほか）は複製ではなく、中立共有層
+    profit_system が所有する単一情報源（span_stats）を import して共有する
+    （ISSUE-502 D-5 で是正・後続で所有者を共有層へ移送）。
     **ただし ``compute_rmm_level_count`` の採点ループは profit_rmm 側に無い span NaN
     伝播ブロックを持ち、構造上は verbatim ではない**（ISSUE-175・未裁定。詳細は同関数
     の docstring 参照）。
@@ -27,7 +28,7 @@
     compute_wpr / compute_marod / compute_rsi / compute_mfi / level_count_score :
         共有層（mql_builtins / profit_system）の import 再公開。
     _series_avg / _series_std / oscillator_span / rolling_span : σ スパン統計。実装は
-        単一情報源 ``profit_rmm.span_stats`` にあり、本モジュールは import 再公開のみ
+        中立共有層 profit_system の単一情報源にあり、本モジュールは import 再公開のみ
         （ISSUE-502 D-5 で verbatim 複製 4 関数 84 行を解消。数値は bit 等価で不変）。
     compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製だが span
         NaN 伝播ブロックが profit_rmm 側に無い＝ISSUE-175 未裁定。window で
@@ -47,9 +48,9 @@
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
     共有: common（typical_price）, moving_averages（ma, exponential_ma_on_buffer）,
-        mql_builtins, profit_system, profit_rmm.span_stats（σ スパン統計の単一情報源・
-        numpy のみ。``profit_rmm.src`` 集約層は経由しないため pandas/アダプタ層を
-        連鎖 import しない）。
+        mql_builtins, profit_system（funLevelCount/MAROD ＋ σ スパン統計の単一情報源・
+        numpy のみ。姉妹指標 profit_rmm は一切 import しないため、指標間依存も
+        pandas/アダプタ層の連鎖 import も持たない）。
     pandas/描画 import は禁止。
 """
 
@@ -66,16 +67,16 @@ from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開し
     compute_rsi,
     compute_wpr,
 )
-from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
+# 中立共有層 profit_system（numpy のみ）から正準実装を import して再公開する。
+#   - funLevelCount / MAROD: 従来どおり（in-package 参照面を維持）。
+#   - σ スパン統計 4 関数: 単一情報源（ISSUE-502 D-5 とその後続の移送）。従来は本
+#     モジュールに姉妹指標 profit_rmm の verbatim 複製（4 関数 84 行）を保持し、D-5 で
+#     profit_rmm/span_stats.py へ集約したが、それでは姉妹**指標**への依存が残った。
+#     所有者を中立共有層へ移したことで、両指標は対等に共有層へ依存するだけになる。
+#     実装を本モジュールへ書き戻す（＝複製の再生）ことは禁止する。
+from profit_system import (  # noqa: F401
     compute_marod,
     level_count_score,
-)
-
-# σ スパン統計の単一情報源（ISSUE-502 D-5 の是正）。従来は本モジュールに姉妹指標
-# profit_rmm の verbatim 複製（4 関数 84 行）を保持していたが、実装は
-# profit_rmm/span_stats.py の 1 箇所へ集約し、ここは import 再公開のみとする
-# （名前空間パッケージ直下の numpy 専用モジュール＝pandas/アダプタ層を連鎖 import しない）。
-from profit_rmm.span_stats import (  # noqa: F401
     oscillator_span,
     rolling_span,
     series_avg as _series_avg,
@@ -109,8 +110,9 @@ DEFAULT_WINDOW: int | None = 120
 # 【ISSUE-502 D-5 是正】
 #   _series_avg / _series_std / oscillator_span / rolling_span の 4 関数は、かつて
 #   姉妹指標 profit_rmm/src/core.py の verbatim 複製として本モジュールに置かれていた。
-#   複製は取り残しを必ず生むため、実装を profit_rmm/span_stats.py（numpy のみに依存する
-#   単一情報源）へ集約し、本モジュールは上部の import で再公開するだけにした。
+#   複製は取り残しを必ず生むため、実装を profit_system/src/span_stats.py（numpy のみに
+#   依存する中立共有層の単一情報源）へ集約し、本モジュールは上部の import で再公開する
+#   だけにした。
 #   ``core.oscillator_span`` / ``core.rolling_span`` 等の参照面と数値は不変（bit 等価）。
 #   実装を本モジュールへ書き戻す（＝複製の再生）ことは禁止する。再発は
 #   tests/test_span_stats_single_source.py が機械的に遮断する。

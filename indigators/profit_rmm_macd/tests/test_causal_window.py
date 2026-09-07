@@ -18,24 +18,21 @@ NaN 汚染する。
     5. 全NaN 境界（n<window）で全出力 NaN（argmax 誤判定で start=0→汚染しない）。
 """
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # = profit_rmm_macd/
-
-from src import core  # noqa: E402
-
-# profit_rmm の正準 level_count（全期間版・window=None）を別名ロードして取り込む。
-_rmm_core_path = (
-    Path(__file__).resolve().parents[2] / "profit_rmm" / "src" / "core.py"
-)
-_spec = importlib.util.spec_from_file_location("profit_rmm_core_cw", _rmm_core_path)
-rmm_core = importlib.util.module_from_spec(_spec)
-sys.modules["profit_rmm_core_cw"] = rmm_core
-_spec.loader.exec_module(rmm_core)
+# import 解決は台帳（tools/dev_paths.txt）由来の pythonpath が担う。テスト側で sys.path を
+# 改変しない（改変するとプロダクトとモジュール同一性が食い違う）。``indigators/`` は
+# pyproject.toml ``[tool.pytest.ini_options] pythonpath`` と venv の
+# ``jp225_chart_paths.pth`` の双方に登録済みで、両指標は名前空間パッケージ（PEP 420）
+# として ``profit_rmm`` / ``profit_rmm_macd`` の名前で解決する。
+#
+# profit_rmm の正準 level_count（全期間版・window=None）は、以前は ``src`` という
+# パッケージ名が両指標で衝突するため core.py をファイル指定で別名ロードしていた。
+# 名前空間パッケージ名で解決するようになり衝突が消えたので、**プロダクトと同一の
+# モジュール**を直接 import する（別名ロードはプロダクトと別実体の 2 つ目のコピーを
+# 作るため、モジュール同一性の観点で避ける）。
+from profit_rmm.src import core as rmm_core
+from profit_rmm_macd.src import core
 
 
 def _synthetic_ohlcv(n: int, seed: int = 7):

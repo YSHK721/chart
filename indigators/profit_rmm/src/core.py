@@ -5,8 +5,8 @@
     入出力・描画・pandas を含まない。iRSI / iMFI / iWPR は共有 mql_builtins、採点
     （funLevelCount）・MAROD は共有 profit_system を import 再公開して in-package
     参照面を維持する。σ スパン統計（series_avg / series_std / oscillator_span /
-    rolling_span）は本指標パッケージが所有する単一情報源 ``profit_rmm.span_stats``
-    へ集約し、ここでは import 再公開する（ISSUE-502 D-5: 姉妹 profit_rmm_macd との
+    rolling_span）は中立共有層 profit_system が所有する単一情報源（span_stats）へ
+    集約し、ここでは import 再公開する（ISSUE-502 D-5: 姉妹 profit_rmm_macd との
     verbatim 複製の解消）。σ6 水準（compute_rmm_levels）のみ本モジュール内に閉じる。
     EMA 平滑・typical_price は共有層を再利用する（in-package 再実装はしない）。
 
@@ -35,8 +35,8 @@
 
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: common（typical_price）, moving_averages（ma）。
-    パッケージ内: profit_rmm.span_stats（σ スパン統計の単一情報源・numpy のみ）。
+    共有: common（typical_price）, moving_averages（ma）,
+        profit_system（funLevelCount/MAROD ＋ σ スパン統計の単一情報源・numpy のみ）。
     pandas/描画 import は禁止。
 """
 
@@ -53,16 +53,17 @@ from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開し
     compute_rsi,
     compute_wpr,
 )
-from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
+# 中立共有層 profit_system（numpy のみ）から正準実装を import して再公開する。
+#   - funLevelCount / MAROD: 従来どおり（in-package 参照面を維持）。
+#   - σ スパン統計 4 関数: 単一情報源（ISSUE-502 D-5 とその後続の移送）。姉妹
+#     profit_rmm_macd も **同じ共有層の同じモジュール**を import するため、実装は本
+#     リポジトリ内に 1 つしか存在せず、2 指標の間に依存は生じない（対称に共有層へ依存
+#     する）。複製の再発は profit_rmm_macd/tests/test_span_stats_single_source.py が
+#     機械的に遮断する。旧来の in-module 名（_series_avg / _series_std）は別名で維持し、
+#     参照面を変えない。
+from profit_system import (  # noqa: F401
     compute_marod,
     level_count_score,
-)
-
-# σ スパン統計の単一情報源（ISSUE-502 D-5）。姉妹 profit_rmm_macd も同一モジュールを
-# import するため、実装は本リポジトリ内に 1 つしか存在しない（複製の再発は
-# profit_rmm_macd/tests/test_span_stats_single_source.py が機械的に遮断する）。
-# 旧来の in-module 名（_series_avg / _series_std）は別名で維持し、参照面を変えない。
-from profit_rmm.span_stats import (  # noqa: F401
     oscillator_span,
     rolling_span,
     series_avg as _series_avg,
@@ -90,8 +91,8 @@ DEFAULT_WINDOW: int | None = 120
 # σ 統計（母σ÷N・全系列）
 # ===========================================================================
 # _series_avg / _series_std / oscillator_span / rolling_span の実装は
-# profit_rmm/span_stats.py（本パッケージ所有の単一情報源）にある。上部の import で
-# 再公開しており、``core._series_avg`` 等の従来の参照面は変わらない。
+# profit_system/src/span_stats.py（中立共有層が所有する単一情報源）にある。上部の import
+# で再公開しており、``core._series_avg`` 等の従来の参照面は変わらない。
 # 実装を本モジュールへ書き戻す（＝複製の再生）ことは禁止する。
 
 
