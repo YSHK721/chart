@@ -233,9 +233,10 @@ def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
         return []
     _heal_next_monotonic = now + _HEAL_EVERY_SECONDS
     from marketdata.rollup import heal_tail_gaps
+    from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
 
-    out_dir = Path(data_dir) / "rollups" / REF
+    out_dir = ref_dir(REF, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
     out_dir.mkdir(parents=True, exist_ok=True)
     healed = heal_tail_gaps(
         m1_csv_path(ref=REF, data_dir=data_dir), _rollup_timeframes(), out_dir,
@@ -254,10 +255,11 @@ def _rollup_update(data_dir: Path):
     差分を積まない）。
     """
     from marketdata.rollup import RollupState, incremental_update
+    from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
 
     _heal_if_due(data_dir)
-    out_dir = Path(data_dir) / "rollups" / REF
+    out_dir = ref_dir(REF, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
     out_dir.mkdir(parents=True, exist_ok=True)
     m1_path = m1_csv_path(ref=REF, data_dir=data_dir)
     state = RollupState.load(out_dir)

@@ -25,6 +25,7 @@
     恒久解消した（``marketdata/tests/test_mt5_m1_append_api.py`` が AST で再発を禁じる）。
 
 依存宣言: pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.rollup` /
+:mod:`marketdata.rollup_paths`（ロールアップ配置の唯一権威・ISSUE-502 D-16）/
 :mod:`marketdata.mt5_ticks` 下位。
 """
 from __future__ import annotations
@@ -34,13 +35,14 @@ from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from marketdata import tick_m1
+from marketdata import rollup_paths, tick_m1
 from marketdata.mt5_ticks import ingest, server_clock
 
 Row = Tuple[int, float, float]
 
-#: rollup の出力先（``<data_dir>/rollups/<ref>/``）。
-ROLLUP_DIRNAME = "rollups"
+#: rollup の出力先ディレクトリ名（``<data_dir>/rollups/<ref>/``）。綴りの唯一の所有者は
+#: :mod:`marketdata.rollup_paths`（ISSUE-502 D-16）。本名は既存参照の互換のための別名である。
+ROLLUP_DIRNAME = rollup_paths.ROLLUPS_DIRNAME
 
 
 class AppendResult(NamedTuple):
@@ -51,8 +53,8 @@ class AppendResult(NamedTuple):
 
 
 def rollup_dir(*, ref: str, data_dir: Any) -> Path:
-    """``ref`` のロールアップ出力ディレクトリ。"""
-    return Path(data_dir) / ROLLUP_DIRNAME / ref
+    """``ref`` のロールアップ出力ディレクトリ（配置権威へ委譲・ISSUE-502 D-16）。"""
+    return rollup_paths.ref_dir(ref, data_dir=data_dir)
 
 
 def append_m1_for_closed_minutes(

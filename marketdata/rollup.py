@@ -6,7 +6,8 @@ server が 4.5M 行 / 284MB の 1 分足を全ロードして OOM する問題�
 集約して TF 別ロールアップ CSV（``date,open,high,low,close,volume``・loader 互換）へ書き出す。
 
 依存方向（厳守）: 本モジュールは pandas + :mod:`marketdata.resample` + :mod:`marketdata.tail_reader`
-にのみ依存し、indicator_ui を逆 import しない（marketdata の循環依存禁止・設計 §4）。
++ :mod:`marketdata.rollup_paths`（配置権威・ISSUE-502 D-16）+ :mod:`marketdata.csv_schema` に
+のみ依存し、indicator_ui を逆 import しない（marketdata の循環依存禁止・設計 §4）。
 
 メモリ有界（厳守）:
     全行を同時に pandas へ載せない。``chunk_rows`` 単位でストリーム読みし、チャンク跨ぎの未確定
@@ -43,6 +44,7 @@ import pandas as pd
 
 # marketdata の resample 規則を再利用する（再実装しない・indicator_ui を逆 import しない）。
 from marketdata import resample as _resample
+from marketdata import rollup_paths as _rollup_paths
 from marketdata import tail_reader
 
 # 増分更新で「state 以降の新規 1 分足」を逆シークで拾う末尾 probe 行数。--watch は毎分 ~1 行
@@ -123,8 +125,10 @@ def _rollup_path(out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> Path:
     """ロールアップ CSV の解決パス（``<out_dir>/<ref_prefix>_<tf>.csv``）。
 
     §10.3 M-3: ``ref_prefix``（既定 ``"jp225_m1"``）で銘柄を汎用化する。既定値で全既存呼出は不変。
+    ファイル名の綴りは :func:`marketdata.rollup_paths.csv_name`（配置権威）が唯一所有する
+    （ISSUE-502 D-16）。本関数は「書き手が決めた ``out_dir`` の下で解決する」呼出点である。
     """
-    return Path(out_dir) / f"{ref_prefix}_{tf}.csv"
+    return _rollup_paths.csv_path(out_dir, ref_prefix, tf)
 
 
 def _bar_to_dict(row: pd.Series) -> dict[str, Any]:

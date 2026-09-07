@@ -37,11 +37,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from marketdata import rollup_paths
 from marketdata.session_day import session_date_label, session_day_starts
 
 REPO = Path(__file__).resolve().parents[3]
 
-ROLL = REPO / "data" / "marketdata" / "rollups" / "jp225_tick"
+# ロールアップ配置の唯一権威（marketdata.rollup_paths）へ委譲する（ISSUE-502 D-16）。
+# 既定の DATA_DIR は ``<repo>/data/marketdata`` であり、従来の直書きと同一パスを指す。
+REF = "jp225_tick"
+ROLL = rollup_paths.ref_dir(REF)
 M1 = REPO / "data" / "marketdata" / "jp225_tick_m1.csv"
 
 TFS = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"]
@@ -82,7 +86,7 @@ MAX_SAMPLES = 4000
 
 
 def load(tf: str) -> pd.DataFrame:
-    path = M1 if tf == "1m" else ROLL / f"jp225_tick_{tf}.csv"
+    path = M1 if tf == "1m" else rollup_paths.csv_path(ROLL, REF, tf)
     return pd.read_csv(path, parse_dates=["date"])
 
 

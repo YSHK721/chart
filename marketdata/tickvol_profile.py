@@ -38,7 +38,8 @@ BIN_SEC = 900
 # 既定の集計セッション日数と HIGH 判定パーセンタイル。
 DEFAULT_SESSIONS = 20
 DEFAULT_PCT = 75
-# 集計セッション数の上限。1 分足原子の供給 tail は 50,000 行（marketdata/serving_cache.py）で
+# 集計セッション数の上限。1 分足原子の供給 tail は
+#   :data:`marketdata.tail_reader.SERVING_TAIL_ROWS`（= 50,000 行・唯一の定義）で
 #   1 セッション ≒ 1,300 行（実測）＝ 25 セッションで ≒32,500 行。これを超えると窓が履歴切れで
 #   静かに短くなるため、仕様として上限を固定する（黙って精度が落ちるのを防ぐ）。
 MAX_SESSIONS = 25

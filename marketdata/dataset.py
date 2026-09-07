@@ -100,7 +100,8 @@ from marketdata.resample import (  # noqa: E402  (再エクスポート)
 _ROLLUP_REFS = dataset_registry.rollup_refs()
 # 1m（原子）tail の安全上限（D-2）。表示 limit + 指標ルックバックぶんに十分な有界行数。
 # 1m 全件 tail（4.5M 行）で OOM を復活させないための上限（全件読みではない有限値）。
-_ATOMIC_TAIL_LOOKBACK_ROWS = 50_000
+# 値の唯一の定義は tail_reader.SERVING_TAIL_ROWS（上位足ロールアップと共有・ISSUE-502 D-10）。
+_ATOMIC_TAIL_LOOKBACK_ROWS = tail_reader.SERVING_TAIL_ROWS
 
 
 def is_known(ref: Any) -> bool:

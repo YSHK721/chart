@@ -45,6 +45,10 @@ _ALLOWED: "dict[str, set[str]]" = {
     # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
     # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
     "tick_tree.py": {"pandas", "marketdata.paths"},
+    # ロールアップ配置レイアウトの唯一権威。物理基点（paths）だけに依存し、生成側（rollup）・
+    # 読取側（rollup_store）へは依存しない＝権威が利用者へ逆流しない（ISSUE-502 D-16）。
+    # pandas すら要らない（純粋なパス組み立て）ため、依存はこの 1 エントリに閉じる。
+    "rollup_paths.py": {"marketdata.paths"},
     # M1 素材化。外れ値方針・CSV スキーマ・末尾読取は marketdata 内の下位部品。
     # ``marketdata.keep_last`` は「同一キーの最終出現を採る」規則の唯一の実体（依存ゼロの中立核・
     # ISSUE-479 F-6）。この 1 エントリを消すと _dedupe_minutes に同じ式の複製が復活する。

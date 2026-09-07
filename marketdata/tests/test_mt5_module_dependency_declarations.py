@@ -39,7 +39,13 @@ _ALLOWED: "dict[str, set[str]]" = {
     # 月別アーカイブ（zip）の取り込み。pandas を**持たない**のが要点で、行 → DataFrame は
     # ingest（権威）に、原子置換は journal に委譲する（ISSUE-447 段階 2）。
     "archive_ingest.py": {"marketdata.tick_m1", _SELF},
-    "m1_chain.py": {"pandas", "marketdata.tick_m1", "marketdata.rollup", _SELF},
+    # 閉じた分の M1 追記と rollup 差分更新。``marketdata.rollup_paths`` はロールアップ保存配置
+    # （``<data_dir>/rollups/<ref>``）の唯一権威（ISSUE-502 D-16）。この 1 エントリを消すと
+    # 配置を組む式が本モジュールへ復活し、権威が 2 箇所になる。
+    "m1_chain.py": {
+        "pandas", "marketdata.tick_m1", "marketdata.rollup",
+        "marketdata.rollup_paths", _SELF,
+    },
     # 日次確定後の再構築。日次クリーニングの唯一の実装（outlier_policy）を権威と共有する。
     "rebuild.py": {
         "pandas", "marketdata.tick_m1", "marketdata.outlier_policy",

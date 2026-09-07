@@ -38,10 +38,12 @@ import argparse
 import datetime as dt
 import logging
 import sys
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
+
+# 段階パイプラインの実行器（単一実装・ISSUE-502 D-17）。
+from tools import pipeline_runner
 
 LOG = logging.getLogger("build_tick_rollup")
 
@@ -209,8 +211,12 @@ class PipelineContext:
         ``out_dir`` へ無条件保存するため、既存 jp225_m1 ロールアップ（``DATA_DIR/rollups`` 直下・
         共有 state）と**同一 dir に書くと既存 state を上書き破壊**する。ref でサブ dir を切り、
         CSV だけでなく state まで物理分離して既存系へ波及させない。
+
+        配置の単一権威（marketdata.rollup_paths.ref_dir）へ委譲する（ISSUE-502 D-16）。
         """
-        return self.data_dir / "rollups" / self.ref
+        from marketdata.rollup_paths import ref_dir  # 遅延: import 副作用を実行時に限定
+
+        return ref_dir(self.ref, data_dir=self.data_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -272,41 +278,27 @@ def _dispatch(stage: str, ctx: PipelineContext) -> int:
 
 
 def select_stages(skip: Sequence[str], only: Optional[str]) -> List[str]:
-    """実行する段階名を実行順で返す。only 指定時は skip を無視し単一段階のみ。"""
-    if only is not None:
-        return [only]
-    skip_set = set(skip)
-    return [s for s in STAGE_NAMES if s not in skip_set]
+    """実行する段階名を実行順で返す。only 指定時は skip を無視し単一段階のみ。
+
+    規則の実体は :func:`tools.pipeline_runner.select_stages`（単一実装・ISSUE-502 D-17）。
+    本関数は自パイプラインの段階並び :data:`STAGE_NAMES` を与えるだけ。
+    """
+    return pipeline_runner.select_stages(STAGE_NAMES, skip, only)
 
 
 def run_pipeline(ctx: PipelineContext, stages: Sequence[str]) -> int:
-    """段階を順次実行し、全段成功なら 0・いずれか失敗なら 1 を返す。"""
-    results: List[tuple] = []
-    overall_ok = True
-    for stage in stages:
-        LOG.info("=== stage %s 開始 ===", stage)
-        t0 = time.monotonic()
-        rc, err = 1, None
-        try:
-            rc = _dispatch(stage, ctx)
-        except Exception as exc:  # noqa: BLE001 — 段階例外を集約しサマリに反映
-            err = exc
-            rc = 1
-            LOG.error("stage %s 例外: %s: %s", stage, type(exc).__name__, exc)
-        elapsed = time.monotonic() - t0
-        ok = rc == 0 and err is None
-        results.append((stage, rc, elapsed, err))
-        LOG.info("=== stage %s 終了 rc=%s elapsed=%.2fs %s ===", stage, rc, elapsed, "OK" if ok else "NG")
-        if not ok:
-            overall_ok = False
-            if not ctx.continue_on_error:
-                break
-    LOG.info("---- サマリ ----")
-    for stage, rc, elapsed, err in results:
-        status = "OK" if (rc == 0 and err is None) else "NG"
-        detail = f" ({type(err).__name__}: {err})" if err is not None else ""
-        LOG.info("  %-7s %s rc=%s %.2fs%s", stage, status, rc, elapsed, detail)
-    return 0 if overall_ok else 1
+    """段階を順次実行し、全段成功なら 0・いずれか失敗なら 1 を返す。
+
+    実行ループ（ログ・例外捕捉・中断規則・サマリ）の実体は
+    :func:`tools.pipeline_runner.run_pipeline`（単一実装・ISSUE-502 D-17）。本関数は文脈を
+    閉包へ閉じ込めて渡す合成点であり、``_dispatch`` 経由の解決を保つ（monkeypatch 差替を尊重）。
+    """
+    return pipeline_runner.run_pipeline(
+        stages,
+        run_stage=lambda stage: _dispatch(stage, ctx),
+        log=LOG,
+        continue_on_error=ctx.continue_on_error,
+    )
 
 
 # --------------------------------------------------------------------------- #

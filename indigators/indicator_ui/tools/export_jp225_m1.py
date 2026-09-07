@@ -54,11 +54,13 @@ from marketdata import (  # ベンダは marketdata で隔離
     JP225,
     DukascopyCandleSource,
 )
+from marketdata import rollup_paths
 from marketdata.paths import DATA_DIR
 
 _DEFAULT_OUTPUT = DATA_DIR / "jp225_m1.csv"
-# 上位足ロールアップ CSV の既定出力先（rollup_store.path と整合）。
-_DEFAULT_ROLLUP_DIR = DATA_DIR / "rollups"
+# 上位足ロールアップ CSV の既定出力先（フラット配置）。配置の唯一権威は
+#   marketdata.rollup_paths（ISSUE-502 D-16）で、読取側 rollup_store.path も同じ権威で解決する。
+_DEFAULT_ROLLUP_DIR = rollup_paths.rollups_root()
 # ロールアップ対象の上位足（1m 原子を除く 5m..1M）。1 分足追記に同期して増分更新する。
 _ROLLUP_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M")
 

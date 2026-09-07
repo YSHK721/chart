@@ -217,10 +217,11 @@ def _default_confirmed_end(ref: str) -> Optional[int]:
     ``RollupState`` 不在（未生成）は ``None``。base（rollup partial）の被覆終端と一致するため、
     tail 窓 ``[confirmed_end, now)`` が base とギャップ・重複なく連結する。
     """
-    from marketdata.paths import DATA_DIR  # 遅延 import
-    from marketdata.rollup import RollupState
+    from marketdata.rollup import RollupState  # 遅延 import
+    from marketdata.rollup_paths import ref_dir
 
-    state = RollupState.load(_Path(DATA_DIR) / "rollups" / ref)
+    # 配置（``<DATA_DIR>/rollups/<ref>``）の唯一権威は marketdata.rollup_paths（ISSUE-502 D-16）。
+    state = RollupState.load(ref_dir(ref))
     if state is None:
         return None
     return int(pd.Timestamp(state.last_processed_ts).value // 1_000_000_000) + 60

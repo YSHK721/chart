@@ -14,7 +14,7 @@ mtime キャッシュ（plain dict 上書き有界）と torn-read フォール�
 mtime の 1 エントリのみ保持（mtime ごと増殖しない）。ロールアップ書込は原子的（os.replace）だが、
 読込失敗時は失敗をキャッシュへ焼かず直前の良好 df を返す（防御）。
 
-依存方向（厳守）: pandas + 標準ライブラリ + marketdata（tail_reader / paths）のみに依存し、
+依存方向（厳守）: pandas + 標準ライブラリ + marketdata（tail_reader / rollup_paths）のみに依存し、
 indicator_ui / simulator / MP / indigators を一切 import しない（marketdata は最下層・逆依存ゼロ）。
 """
 
@@ -27,19 +27,21 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from marketdata import tail_reader
+from marketdata import rollup_paths, tail_reader
 
 # workspace ルート（このファイル: marketdata/ → parents[1] = /workspaces/app）。
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-# 時系列データの単一基点（marketdata.paths.DATA_DIR・Sd §10.1 C-1）を import するため
-# ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
-from marketdata.paths import DATA_DIR
 
-_ROLLUPS_DIR = DATA_DIR / "rollups"
+# ロールアップ格納の基点。配置規則の唯一の所有者は marketdata.rollup_paths（ISSUE-502 D-16）で
+#   あり、本モジュールは解決結果を保持するだけ（``"rollups"`` の綴りを持たない）。
+#   モジュール属性として持つのは、利用側が基点だけを差し替えられるようにするため。
+_ROLLUPS_DIR = rollup_paths.rollups_root()
 
-# 末尾読込の上限行数（全件を読まず末尾だけ逆シーク。recentBars=1500 に対し十分大。1m の
-#   dataset._ATOMIC_TAIL_LOOKBACK_ROWS と同方式・同値）。遡及上限＝この行数（5m≈170 日・1h≈5.7 年）。
-_ROLLUP_TAIL_ROWS = 50_000
+# 末尾読込の上限行数（全件を読まず末尾だけ逆シーク。recentBars=1500 に対し十分大）。
+#   値の唯一の定義は marketdata.tail_reader.SERVING_TAIL_ROWS（ISSUE-502 D-10）。かつては
+#   1m 原子（dataset）と本所が同じ数値を各自に持ち、コメントで「同値」と人手同期していた。
+#   遡及上限＝この行数（5m≈170 日・1h≈5.7 年）。
+_ROLLUP_TAIL_ROWS = tail_reader.SERVING_TAIL_ROWS
 
 # ロールアップ読込の mtime 検知キャッシュ（dataset._BASE_CACHE と同方式・有界）。
 #   (ref, tf) → (mtime_ns, DataFrame)。(ref,tf) ごと最新 mtime の 1 エントリのみ保持する
@@ -48,21 +50,13 @@ _ROLLUP_CACHE: dict[tuple[str, str], tuple[int | None, pd.DataFrame]] = {}
 
 
 def path(ref: str, tf: str) -> Path:
-    """ロールアップ CSV の解決パス（**当該 CSV ファイルの存在**でレイアウトを選ぶ）。
+    """ロールアップ CSV の解決パス（配置権威 :func:`marketdata.rollup_paths.resolve_csv` へ委譲）。
 
-    ref 専用サブディレクトリ配置 ``DATA_DIR/rollups/<ref>/<ref>_<tf>.csv`` に**当該 tf の CSV が
-    実在すれば**それを返す（``build_tick_rollup.py`` が ``rollup_state.json`` 衝突回避のため ref ごと
-    隔離する配置・例 ``rollups/jp225_tick/jp225_tick_5m.csv``）。無ければ従来のフラット配置
-    ``DATA_DIR/rollups/<ref>_<tf>.csv``（``jp225_m1`` 等の既存）を返す。
-
-    判定基準を「サブdir の存在」ではなく「**ファイルの存在**」にするのは、空/作りかけの
-    ``rollups/<ref>/`` がフラット CSV を無言で shadow して既存 ref を壊す事故（部分生成・誤生成）を
-    避けるため。両配置に無ければフラットパスを返す（``read`` 側が不在を 1 箇所で扱う）。
+    レイアウト（2 配置とその選び方＝**当該 CSV ファイルの存在**で選ぶ）は
+    :mod:`marketdata.rollup_paths` が唯一所有する。本関数は基点 :data:`_ROLLUPS_DIR` を渡して
+    解決させるだけで、配置の綴りを持たない（ISSUE-502 D-16）。
     """
-    subdir_csv = _ROLLUPS_DIR / ref / f"{ref}_{tf}.csv"
-    if subdir_csv.is_file():
-        return subdir_csv
-    return _ROLLUPS_DIR / f"{ref}_{tf}.csv"
+    return rollup_paths.resolve_csv(ref, tf, root=_ROLLUPS_DIR)
 
 
 def _csv_mtime(csv_path: Path) -> int | None:
