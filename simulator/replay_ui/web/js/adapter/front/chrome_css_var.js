@@ -1,1 +1,1 @@
-../../../../../../indigators/indicator_ui/web/js/adapter/front/chrome_css_var.js
+../../../../../../indigators/chart_kernel/web/js/adapter/front/chrome_css_var.js

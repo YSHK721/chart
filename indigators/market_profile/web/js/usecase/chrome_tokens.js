@@ -1,1 +1,1 @@
-../../../../indicator_ui/web/js/usecase/chrome_tokens.js
+../../../../chart_kernel/web/js/usecase/chrome_tokens.js

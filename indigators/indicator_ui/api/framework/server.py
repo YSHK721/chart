@@ -206,6 +206,7 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
 
 from marketdata import dataset  # noqa: E402
 from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
+from common.shared_web_roots import shared_web_js_roots  # noqa: E402  (共有フロント供給根の唯一源・ISSUE-502 C-4 3b)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
 from adapter.controller.live_tick_bars_controller import handle_live_tick_bar_times  # noqa: E402
 from adapter.controller.live_tick_tails_controller import handle_live_tick_tails  # noqa: E402
@@ -237,12 +238,18 @@ install_default_ports()
 # 静的配信ルート（web/）。api/ → parents[1]=api → parents[2]=indicator_ui → web。
 _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
 
-# MP frontend は別モジュール（indigators/market_profile/web/js）へ切り出し済み。present は MP を
-# 「利用する側」で、web/js 配下に MP モジュール実体を指す symlink を持つ。resolve() 後の実パスは
-# MP モジュールの js/ サブツリーへ抜けるため、配信許可根を web/ ∪ market_profile/web/js の
-# dual-root（is_relative_to 境界一致）へ拡張する。許可は js/ サブツリーに限定＝最小権限
-# （build.mjs/package.json/tests 等は露出しない）。パストラバーサルは is_relative_to で封じる。
-_MP_WEB_JS_ROOT = (_API_ROOT.parents[1] / "market_profile" / "web" / "js").resolve()
+# 共有フロント供給パッケージ（market_profile / chart_kernel …）の実体は別ツリー
+# （indigators/<pkg>/web/js）にあり、present は「利用する側」として web/js 配下に実体を指す
+# symlink を持つ。resolve() 後の実パスは供給パッケージの js/ サブツリーへ抜けるため、配信許可根を
+# web/ ∪ 各供給根の multi-root（is_relative_to 境界一致）へ拡張する。許可は js/ サブツリーに
+# 限定＝最小権限（build.mjs/package.json/tests 等は露出しない）。トラバーサルは is_relative_to で封じる。
+#
+# ISSUE-502 C-4 3b: どのパッケージが供給側かは中立核の台帳 common.shared_web_roots が単独で持つ。
+#   ここへ書き写すと同じ列挙が replay 側 static_file_server と 2 重になり、片方だけ足した日に
+#   その core だけ 404 になる（2026-09-06 実測）。
+_SHARED_WEB_JS_ROOTS = tuple(
+    root.resolve() for root in shared_web_js_roots(_API_ROOT.parents[1])
+)
 
 # POST 本文サイズ上限（§7.3・1 MiB）。超過は 413 で拒否する。
 _MAX_BODY_BYTES = 1 * 1024 * 1024
@@ -298,14 +305,14 @@ def _resolve_static(url_path: str) -> Path | None:
     if rel == "":
         rel = "index.html"
     # 正規化（``..`` を解決）した上で web/ ルート内かを厳密判定する。symlink は resolve() で
-    #   実体へ解決され、MP モジュール（market_profile/web/js）へ抜ける場合も dual-root の
+    #   実体へ解決され、共有フロント供給パッケージ（<pkg>/web/js）へ抜ける場合も multi-root の
     #   is_relative_to 境界一致で許可する（区切り境界単位・CWE-22 封じ）。
     candidate = (_WEB_ROOT / rel).resolve()
     if not (
         candidate.is_relative_to(_WEB_ROOT)
-        or candidate.is_relative_to(_MP_WEB_JS_ROOT)
+        or any(candidate.is_relative_to(root) for root in _SHARED_WEB_JS_ROOTS)
     ):
-        # 両ルート外（``..`` 等で外へ抜けた）→ 拒否。
+        # 全ルート外（``..`` 等で外へ抜けた）→ 拒否。
         return None
     if not candidate.is_file():
         return None

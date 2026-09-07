@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from common.shared_web_roots import shared_web_js_roots
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
 
 
@@ -70,3 +71,52 @@ def test_content_type_mapping(dual_root):
     assert dual_root.content_type(fp) == "application/javascript"
     idx = dual_root.resolve("/")
     assert dual_root.content_type(idx) == "text/html"
+
+
+# --------------------------------------------------------------------------- #
+# 共有フロント供給パッケージ（台帳 common.shared_web_roots）— ISSUE-502 C-4 3b
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def supply_tree(tmp_path):
+    """``<indigators>`` 形のツリーを組み、台帳が名指す供給根すべてに実体を置く。
+
+    consumer（replay）の ``web/js`` からは各供給パッケージの実体を指す symlink が生えている
+    ——これが実配置そのものの形である（``resolve()`` 後は ``<pkg>/web/js`` 配下へ抜ける）。
+    """
+    indigators = tmp_path / "indigators"
+    shared = indigators / "indicator_ui" / "web"
+    (shared / "js").mkdir(parents=True)
+    web = tmp_path / "replay_web"
+    (web / "js" / "domain").mkdir(parents=True)
+    (web / "index.html").write_text("<html>", encoding="utf-8")
+
+    linked = {}
+    for js_root in shared_web_js_roots(indigators):
+        pkg = js_root.parents[1].name
+        (js_root / "domain").mkdir(parents=True)
+        body = js_root / "domain" / f"{pkg}_body.js"
+        body.write_text(f"BODY_OF_{pkg}", encoding="utf-8")
+        # 供給パッケージの web 根直下（js の外）。許可されてはならない実在ファイル。
+        (js_root.parent / "package.json").write_text("{}", encoding="utf-8")
+        (web / "js" / "domain" / body.name).symlink_to(body)
+        linked[pkg] = body.name
+    return StaticFileServer(web.resolve(), shared.resolve()), linked
+
+
+def test_every_declared_supply_package_is_servable(supply_tree):
+    """台帳の**すべて**の供給パッケージが配信できる（1 つでも欠ければその実体が 404）。"""
+    server, linked = supply_tree
+    assert linked, "台帳が空＝本検定が恒真式に退化している"
+    for pkg, name in linked.items():
+        fp = server.resolve(f"/js/domain/{name}")
+        assert fp is not None, f"{pkg} の実体が許可根の外（台帳からの導出が効いていない）"
+        assert fp.read_text(encoding="utf-8") == f"BODY_OF_{pkg}"
+
+
+def test_supply_package_web_root_sibling_is_rejected(supply_tree):
+    """許可は ``<pkg>/web/js`` 限定＝ ``<pkg>/web/package.json`` は実在しても解決しない。"""
+    server, _linked = supply_tree
+    for pkg in _linked:
+        assert server.resolve(
+            f"/js/domain/../../../indigators/{pkg}/web/package.json"
+        ) is None, f"{pkg} の web 根全体が露出している（最小権限の逸脱）"

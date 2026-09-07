@@ -1,1 +1,1 @@
-../../../../../indicator_ui/web/js/adapter/front/pair_primitive_base.js
+../../../../../chart_kernel/web/js/adapter/front/pair_primitive_base.js

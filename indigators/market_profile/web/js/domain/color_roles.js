@@ -1,1 +1,1 @@
-../../../../indicator_ui/web/js/domain/color_roles.js
+../../../../chart_kernel/web/js/domain/color_roles.js

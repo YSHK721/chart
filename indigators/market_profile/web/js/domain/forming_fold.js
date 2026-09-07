@@ -1,1 +1,1 @@
-../../../../indicator_ui/web/js/domain/forming_fold.js
+../../../../chart_kernel/web/js/domain/forming_fold.js

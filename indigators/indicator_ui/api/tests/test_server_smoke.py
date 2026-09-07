@@ -434,10 +434,55 @@ def test_get_static_module_serves_javascript(server):
     assert "javascript" in ctype
 
 
+@pytest.mark.parametrize(
+    "url_path",
+    [
+        # chart_kernel（共有カーネル・ISSUE-502 C-4 3b で移設）の実体を指す symlink。
+        "/js/domain/color_roles.js",
+        "/js/usecase/chrome_tokens.js",
+        "/js/adapter/front/series_primitive_lifecycle.js",
+        # market_profile（既存の供給パッケージ）の実体を指す symlink。
+        "/js/adapter/front/market_profile_primitive.js",
+    ],
+)
+def test_get_shared_supply_package_module_serves_javascript(server, url_path):
+    """共有フロント供給パッケージの実体が **URL 不変のまま** 200 で配信される。
+
+    なぜ在るか（実測 2026-09-06）: これらは ``indicator_ui/web/js`` 配下の symlink で、
+    ``resolve()`` 後の実パスは ``indigators/<pkg>/web/js`` へ抜ける。許可根（台帳
+    common.shared_web_roots から導出）に当該サブツリーが無いと、URL が同じでも 404 になる。
+    C-4 3b の第 1 回は共有カーネルを台帳に足さずに移設して実際にこれを踏んだ。台帳へ 1 行
+    足すだけで配信が通ることを、供給パッケージ 2 つ分の実配信で固定する。
+    """
+    status, ctype, raw = _get(server, url_path)
+    assert status == 200, f"{url_path} が配信されない（許可根に供給パッケージが無い）"
+    assert "javascript" in ctype
+    assert raw, "本文が空"
+
+
 def test_get_path_traversal_is_rejected_404(server):
     # web/ ルート外（../../ で抜ける）は配信しない。
     status, _ctype, _raw = _get(server, "/../../../../etc/passwd")
     assert status == 404
+
+
+@pytest.mark.parametrize(
+    "url_path",
+    [
+        # 実在するが web/js の**外**（供給パッケージの web 根直下）。
+        "/../../chart_kernel/web/package.json",
+        "/../../market_profile/web/package.json",
+    ],
+)
+def test_get_outside_the_supply_js_subtree_is_rejected_404(server, url_path):
+    """供給パッケージの許可は ``<pkg>/web/js`` サブツリー限定（最小権限）である。
+
+    台帳へ根を足したことで許可が ``<pkg>/web`` 全体まで広がっていないことを実測で固定する
+    （広がると package.json / tests/ / node_modules が配信面へ露出する）。対象は**実在する
+    ファイル**であり、404 は「存在しないから」ではなく「許可根の外だから」である。
+    """
+    status, _ctype, _raw = _get(server, url_path)
+    assert status == 404, f"{url_path} が配信された（許可が web 根全体へ広がっている）"
 
 
 # --------------------------------------------------------------------------- #
