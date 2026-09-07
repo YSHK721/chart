@@ -246,8 +246,10 @@ RELATIVE_DATE_PRESETS: "frozenset[DatesPreset]" = frozenset(
 
 #: spread 依存 EA（約定式が open + spread×point を参照する 3 本・H-4 裁定）。
 #: 権威は EA ファクトリ表（`simulator.main._EA_FACTORIES` で Mt5CsvOHLCRepository を
-#: 返す 3 本）だが、本モジュールから `simulator.main` は import できない（循環）ため
-#: ここに宣言し、一致は検定（test_unsupported_spread_dependency.py）が機械で固定する。
+#: 返す 3 本）だが、それは Composition Root の**私有名**であり本モジュールは読まない
+#: （ISSUE-502 段階 3 以前はここに「循環のため import できない」と書いていたが、循環は
+#: 是正済みであり、参照しない理由は私有名への依存を作らないことである）。よってここに
+#: 宣言し、一致は検定（test_unsupported_spread_dependency.py）が機械で固定する。
 SPREAD_DEPENDENT_EA_NAMES: "frozenset[str]" = frozenset(
     {"MA_Slope_EA", "MA_Slope_Pending_EA", "StopEntryProbe_EA"}
 )

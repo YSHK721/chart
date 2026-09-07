@@ -69,6 +69,14 @@ from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
 from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import BacktestError, DataError
 from simulator.framework.config_loader import load_config
+# 規則 S（バー系列の有無と tick_model の整合）の唯一の判定点。ISSUE-502 段階 3 以前は
+# 子パッケージ側（main/tester_settings/kwargs_mapper.py）に在り、ここから
+# **関数内 import** で呼んでいた。その形は親パッケージ（`simulator.main`）と
+# 子パッケージ（`simulator.main.tester_settings`）の双方向 import＝循環であり、
+# 関数内 import はそれを隠していただけだった（SOLID 精査台帳 2026-09-06 の C-2）。
+# 判定を「どちらでもない第三の点」へ移したので、ここは module 直下 import で足りる
+# （循環は構造ごと消えた）。
+from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
 from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
@@ -670,20 +678,9 @@ def build_interactor(
     # （`POST /sim/jobs` → `run_backtest`）は `config_overrides` を素通しで渡すため、
     # そこを通ると A-1 が開いた経路が A-1 の守る不変条件（バー系列の有無と modelling の
     # 整合）の外側になっていた（実測: math + 実在 CSV で bars=0・exit=0・trades=0 と
-    # 警告も拒否も無く完走した）。判定の宣言は `kwargs_mapper` の 1 箇所に置いたままで、
-    # ここは呼ぶだけである（判定を二重化しない）。既存 4 モード（全て
+    # 警告も拒否も無く完走した）。判定の宣言は `engine_data_consistency` の 1 箇所に
+    # 置いたままで、ここは呼ぶだけである（判定を二重化しない）。既存 4 モード（全て
     # `requires_market_data=True`）は `data_path` を伴うため素通りする＝byte 等価。
-    #
-    # 関数内 import の理由: `main.tester_settings` パッケージの `__init__` は
-    # `run_from_settings` 経由で `simulator.main` を module 直下 import する
-    # （run_from_settings.py:44）。ここを module 直下 import にすると
-    # `simulator.main` が部分初期化のまま参照され ImportError になる（実測済み）。
-    # 逆向き（`kwargs_mapper.interactor_key_sets` → `build_interactor`）でも同じ理由で
-    # 関数内 import が使われており、本呼出はその既存の取り決めに合わせる。
-    from simulator.main.tester_settings.kwargs_mapper import (
-        verify_engine_data_consistency,
-    )
-
     verify_engine_data_consistency(
         tick_model=determinism.tick_model, has_data=data_path is not None
     )

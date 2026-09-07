@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from simulator.domain.exceptions import ConfigError
+from simulator.main import build_interactor
 from simulator.usecase.tester_settings import TesterInput
 
 # `Expert` / `Indicator` の値の書式（`.ini` は Windows 表記＝実測 44 / 44 件）。
@@ -118,8 +119,6 @@ def _build_interactor_annotations() -> dict[str, Any]:
     ``from __future__ import annotations`` を持つため、既定では注釈が文字列
     （``"int"``）のまま返り、型オブジェクトとして参照できない。
     """
-    from simulator.main import build_interactor
-
     signature = inspect.signature(build_interactor, eval_str=True)
     return {
         name: parameter.annotation for name, parameter in signature.parameters.items()

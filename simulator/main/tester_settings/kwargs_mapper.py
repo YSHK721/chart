@@ -23,17 +23,17 @@
 4. 依存:
     標準: dataclasses / typing
     外部: なし
-    プロジェクト内: simulator.adapter.execution.tick_model_registry（`consumes_market_data`
-                    ＝バー系列消費の要否の宣言を読む唯一の関数。規則 S はこの宣言だけを
-                    見る）/
-                    simulator.domain.exceptions / simulator.domain.tester_settings_exceptions /
+    プロジェクト内: simulator.domain.exceptions / simulator.domain.tester_settings_exceptions /
                     simulator.usecase.models（SymbolSpec）/ simulator.usecase.tester_settings
                     （DTO・列挙に加え `approximation_reason_for`＝遅延の実証状態の単一
                     ソース。宣言は `ExecutionDelay` と同じ `enums` にあり、本モジュール
                     は判定を持たず読むだけである）/
+                    simulator.main.engine_data_consistency（規則 S の唯一の判定点。
+                    `build_interactor` と本モジュールの双方が呼ぶ第三の点であり、
+                    `verify_data_consistency` はエンジン語彙へ写して委譲するだけである）/
                     simulator.main.tester_settings.unsupported / .window / .ea_input_map /
                     simulator.main（build_interactor。許容・必須キーの単一ソースは
-                    その実シグネチャであり、`interactor_key_sets` が関数内 import で読む）
+                    その実シグネチャである）
 
     `simulator.sim_ui` は import しない（不変条件 I-6）。`sim_ui` の
     `allowed_backtest_keys` / `required_backtest_keys` を呼ぶとパッケージ循環を新設する
@@ -49,12 +49,10 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Mapping
 
-from simulator.adapter.execution.tick_model_registry import consumes_market_data
 from simulator.domain.exceptions import ConfigError
-from simulator.domain.tester_settings_exceptions import (
-    SettingsActivationError,
-    SettingsKeyMissingError,
-)
+from simulator.domain.tester_settings_exceptions import SettingsKeyMissingError
+from simulator.main import build_interactor
+from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.tester_settings.ea_input_map import bind_ea_inputs, ea_stem
 from simulator.main.tester_settings.unsupported import apply_unsupported_rules
 from simulator.main.tester_settings.window import DataWindow, resolve_data_window
@@ -68,9 +66,9 @@ from simulator.usecase.tester_settings import (
     approximation_reason_for,
 )
 
-#: 実行要求時の規則 ID（基本設計 §4.5.5）。
+#: 実行要求時の規則 ID（基本設計 §4.5.5）。規則 S の ID は判定を所有する
+#: `engine_data_consistency.RULE_DATA_CONSISTENCY` にあり、ここには写さない。
 _RULE_RUNTIME_REQUIRED: str = "R"
-_RULE_DATA_CONSISTENCY: str = "S"
 
 #: 建値基準の明示値（§4.5.1・MT5 実走整合の実証値）。既定 "close" のままだと
 #: spread 無視の分岐に入り MT5 再現にならないため、Settings 経路は明示指定する。
@@ -218,39 +216,12 @@ def interactor_key_sets() -> "tuple[frozenset[str], frozenset[str]]":
     """
     import inspect
 
-    from simulator.main import build_interactor
-
     params = inspect.signature(build_interactor).parameters
     allowed = frozenset(params)
     required = frozenset(
         name for name, param in params.items() if param.default is inspect.Parameter.empty
     )
     return allowed, required
-
-
-def verify_engine_data_consistency(*, tick_model: str, has_data: bool) -> None:
-    """規則 S の**唯一の判定点**（エンジン語彙＝`tick_model` id だけで判定する）。
-
-    要否の宣言は `TickModelSpec.requires_market_data` の 1 箇所にしかなく、本関数は
-    `consumes_market_data` 経由でそれを読むだけである（`if math` を持たない＝OCP。
-    新しい modelling が増えても本関数は改変不要）。取り違え——バー系列を消費しない
-    modelling にデータを与える／消費する modelling に与えない——を E-03 で Fail-Stop する。
-
-    Settings 語彙を持たない呼出側（`build_interactor`。`config_overrides` を素通しで
-    受ける投入経路＝`POST /sim/jobs` → `run_backtest` の実体）が同じ判定へ到達できる
-    ように、入力を `EffectiveSettings` ではなく `tick_model` id にしている。判定を
-    そちらへ写して二重化しないための形である（🟡-1）。
-
-    `SettingsActivationError` は `ConfigError` の派生であり、終了コード翻訳
-    （`adapter.exit_codes`）でそのまま 2 になる。
-    """
-    if consumes_market_data(tick_model) != has_data:
-        raise SettingsActivationError(
-            field="tick_model",
-            rule_id=_RULE_DATA_CONSISTENCY,
-            tick_model=tick_model,
-            has_data=has_data,
-        )
 
 
 def verify_data_consistency(effective: EffectiveSettings, *, has_data: bool) -> None:
