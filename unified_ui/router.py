@@ -65,16 +65,27 @@ _DEFAULT_UPSTREAMS = {
 }
 
 
+def _upstream_env_key(mode):
+    """モード名 → 個別上書き用の環境変数名（live なら UNIFIED_LIVE_UPSTREAM）。
+
+    以前はモード名 → 環境変数名の literal な表を別に持っていたが、それは `_DEFAULT_UPSTREAMS`
+    と**並行する第 2 の一覧**であり、モードを足したときに片方だけ直される形だった。取り残すと
+    そのモードだけが上書き不能になり、起動は成功したまま「上書きしたはずの上流へ行かない」
+    形でしか現れない（無音の失敗）。規則 1 本に畳めば、取り残す先そのものが存在しない。
+
+    公開済みの 4 つの名前（`UNIFIED_LIVE_UPSTREAM` / `UNIFIED_REPLAY_UPSTREAM` /
+    `UNIFIED_SIM_UPSTREAM` / `UNIFIED_DASHBOARD_UPSTREAM`）は本規則から 1 文字違わず
+    再現する。名前は運用が設定する外部契約なので、規則の書き換えは
+    `tests/test_router.py::test_upstream_env_key_rule_reproduces_the_published_variable_names`
+    が literal で落とす。
+    """
+    return f"UNIFIED_{mode.upper()}_UPSTREAM"
+
+
 def default_upstreams():
     """`--upstream` 無指定時のモード → 上流 URL マッピング（環境変数で個別に上書き可）。"""
-    env_keys = {
-        "live": "UNIFIED_LIVE_UPSTREAM",
-        "replay": "UNIFIED_REPLAY_UPSTREAM",
-        "sim": "UNIFIED_SIM_UPSTREAM",
-        "dashboard": "UNIFIED_DASHBOARD_UPSTREAM",
-    }
     return {
-        mode: os.environ.get(env_keys[mode], url)
+        mode: os.environ.get(_upstream_env_key(mode), url)
         for mode, url in _DEFAULT_UPSTREAMS.items()
     }
 
@@ -83,6 +94,12 @@ def default_upstreams():
 #: モード定義表（`unified_ui/web/js/mode_table.js`）が出す `/<mode>/*` と一字一句一致する
 #: 必要がある。大文字・記号・スラッシュ入りの名前は front と一致せず、**どこにも当たらない**
 #: （無音の 404）。
+#:
+#: この一致は文章の宣言では守れない（ISSUE-502 D-11 の Python 対応物）。`_DEFAULT_UPSTREAMS`
+#: と front の表が食い違っても、どちらの側に足しても何も落ちなかったため、突合を検定へ落とす:
+#:   `tests/test_router.py::test_default_upstream_modes_match_the_front_mode_table`
+#:   `tests/test_router.py::test_default_upstream_prefixes_match_the_front_mode_table`
+#: 表の読み取りは `tests/mode_table_source.py` が唯一の口として持つ。
 _MODE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 #: モード名にできない語。prefix が静的配信面と衝突すると、その配信面が丸ごと proxy へ吸われる。

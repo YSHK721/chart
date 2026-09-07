@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import mode_table_source
 import router as router_mod
 
 WEB_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
@@ -681,9 +682,13 @@ def test_default_upstreams_pass_their_own_validation():
 def test_main_cli_defaults_include_all_four_modes():
     """`--upstream` 無指定時の既定は 4 モード（serve.sh が明示指定する値と同じ既定）。
 
-    ISSUE-452 で第 4 モード `dashboard` を足した。既定の集合は front のモード定義表
-    （`unified_ui/web/js/mode_table.js`）と 1:1 でなければならない（片方だけに在るモードは、
-    押しても 404 になるだけで何のエラーも出ない＝無音の失敗になる）。
+    本ケースが固定するのは「現に出荷している製品範囲は live/replay/sim/dashboard の 4 つ」
+    という**仕様宣言**であり、意図した写しとして literal を置く（モードの意図しない欠落・
+    増加を落とす）。モードを増やす変更では本ケースも意図的に更新する。
+
+    front のモード定義表との 1:1 は本ケースの担保範囲では**ない**（literal 同士の比較は
+    表と突き合わせていない）。その突合は
+    `test_default_upstream_modes_match_the_front_mode_table` が実際に表を読んで固定する。
     """
     # Arrange / Act
     got = router_mod.default_upstreams()
@@ -691,6 +696,143 @@ def test_main_cli_defaults_include_all_four_modes():
     assert set(got) == {"live", "replay", "sim", "dashboard"}
     assert got["sim"].endswith(":8381")
     assert got["dashboard"].endswith(":8481")
+
+
+# ---- ISSUE-502 D-11（Python 対応物）: front のモード定義表との突合 --------------
+#
+# 是正前の状態: 既定表と front の表が一致すべきことは `router.py` の docstring に**文章で
+#   宣言されているだけ**で、突合の検定は 0 だった。ルータにだけモードを足しても、front に
+#   だけ足しても、テストは 1 件も落ちない。現れ方はどちらも無音の 404 である。
+#
+# 表の読み取りは `mode_table_source` が唯一の口として持つ（読み取り式を検定へ書き写すと、
+#   是正対象と同型の「落ちない写し」を検定側に作ることになる）。
+
+
+def test_default_upstream_modes_match_the_front_mode_table():
+    """既定表のモード集合が front のモード定義表と 1:1 である。
+
+    片側にだけ在るモードは起動時に何のエラーも出さず、`/<mode>/*` が上流を持たない
+    （front 側のみ）か、誰も叩かない prefix が増える（router 側のみ）形になる。
+    """
+    # Arrange
+    front = mode_table_source.mode_ids()
+    # Act
+    back = set(router_mod._DEFAULT_UPSTREAMS)
+    # Assert
+    assert back == set(front), (
+        f"router 既定表 {sorted(back)} と front のモード定義表 {sorted(front)} が食い違う"
+        "（片側にだけ在るモードは無音の 404 になる）"
+    )
+
+
+def test_default_upstream_prefixes_match_the_front_mode_table():
+    """router が組み立てる URL prefix が front の表の prefix 属性と一字一句一致する。
+
+    router は URL prefix を "/" + mode（振り分け本体の _match_prefix）として組み立てる一方、
+    front の表は prefix を独立した属性として持つ。両者がずれると、front が出す URL に
+    router 側のどの prefix も当たらない（_MODE_NAME の docstring が文章で宣言していた不変条件）。
+    """
+    # Arrange
+    front = mode_table_source.mode_prefixes()
+    # Act: router 側の prefix 組み立て規則をそのまま適用する。
+    back = {"/" + mode for mode in router_mod._DEFAULT_UPSTREAMS}
+    # Assert
+    assert back == set(front), (
+        f"router の prefix {sorted(back)} と front の表の prefix {sorted(front)} が食い違う"
+    )
+
+
+def test_front_mode_table_names_all_pass_the_router_mode_name_validation():
+    """front の表のモード名がすべて router の受け入れ形・予約語規則を満たす。
+
+    表に `Sim` や `js` のような名前を足しても front 側は何も言わない。router 側で初めて
+    「どこにも当たらない」「静的配信面が proxy へ吸われる」として現れるため、表の側の
+    名前を router の規則で先に落とす。
+    """
+    for mode_id in sorted(mode_table_source.mode_ids()):
+        assert router_mod._MODE_NAME.match(mode_id), (
+            f"表のモード名 {mode_id!r} が ^[a-z][a-z0-9_]*$ を満たさない"
+        )
+        assert mode_id not in router_mod.RESERVED_MODE_NAMES, (
+            f"表のモード名 {mode_id!r} が静的配信面と衝突する"
+        )
+
+
+def test_upstream_env_key_rule_reproduces_the_published_variable_names():
+    """環境変数名の規則が、現に公開している 4 つの名前を 1 文字違わず再現する。
+
+    `_upstream_env_key` へ一本化したので、規則を書き換えると 4 つの名前が**同時に**変わる。
+    環境変数名は運用が設定する外部契約であり、変わっても起動は成功し、「上書きしたはずの
+    上流へ行かない」形でしか現れない。よって公開済みの名前を literal で宣言して規則の
+    書き換えを落とす（意図した仕様宣言としての写し）。
+
+    本ケースはモードを列挙しているが、全モードの網羅は主張しない（部分集合の宣言）。
+    「表の全モードが上書きできる」網羅性は
+    `test_every_default_mode_is_overridable_by_its_own_environment_variable` が担う。
+    """
+    # Arrange / Act
+    got = {
+        mode: router_mod._upstream_env_key(mode)
+        for mode in ("live", "replay", "sim", "dashboard")
+    }
+    # Assert
+    assert got == {
+        "live": "UNIFIED_LIVE_UPSTREAM",
+        "replay": "UNIFIED_REPLAY_UPSTREAM",
+        "sim": "UNIFIED_SIM_UPSTREAM",
+        "dashboard": "UNIFIED_DASHBOARD_UPSTREAM",
+    }
+
+
+def test_mode_table_is_read_once_however_many_times_the_table_is_queried(monkeypatch):
+    """計算量テスト: モード定義表の読み取り（実 I/O）に捨てられる発行が無い。
+
+    測るのは時間ではなく**回数**。突合の検定群はモードごとに問い合わせるため、問い合わせの
+    たびに読み直す形だと読み取りがモード数に比例して増える。増えた読み取りは答えを 1 文字も
+    変えないので、突合そのもの（状態検証）では**原理的に落ちない**。
+
+    固定するのは「発行した読み取り − 使った読み取り = 0」であって回数そのものではない。
+    期待値は実測した**相異なるファイル数**から導き、定数を焼き込まない（回数を焼き込むと
+    浪費が仕様へ昇格する）。
+    """
+    # Arrange: 実 I/O の唯一点を数える Test Spy へ差し替える（答えは本物と同じ）。
+    reads = []
+    real_read = mode_table_source.read_table_text
+
+    def spy():
+        reads.append(mode_table_source.TABLE_PATH)
+        return real_read()
+
+    monkeypatch.setattr(mode_table_source, "read_table_text", spy)
+
+    # Act 1: 問い合わせ 1 回。
+    mode_table_source.mode_table.cache_clear()
+    reads.clear()
+    table = mode_table_source.mode_table()
+    reads_for_one_query = len(reads)
+
+    # Act 2: 問い合わせをモード数に比例して増やす（オーダーの表明＝2 点目）。
+    many = len(table) * 3
+    mode_table_source.mode_table.cache_clear()
+    reads.clear()
+    for _ in range(many):
+        mode_table_source.mode_ids()
+        mode_table_source.mode_prefixes()
+    reads_for_many_queries = len(reads)
+
+    # Assert 1: 無駄の不在。読み取り総数 = 答えに要った相異なるファイル数（実測から導出）。
+    assert reads_for_many_queries == len(set(reads)), (
+        f"同一ファイルを {reads_for_many_queries} 回読んでいる"
+        f"（答えに要る相異なるファイルは {len(set(reads))} 個）＝捨てられる読み取りが在る"
+    )
+    # Assert 2: 問い合わせ数を増やしても発行が増えない。
+    assert reads_for_many_queries == reads_for_one_query, (
+        f"問い合わせ 1 回で {reads_for_one_query} 読み取り / {many} 回で "
+        f"{reads_for_many_queries} 読み取り＝問い合わせ数に比例して読み直している"
+    )
+
+    # 後片付け: spy 済みの結果をキャッシュへ残さない（他ケースは本物を読む）。
+    mode_table_source.mode_table.cache_clear()
 
 
 def test_default_upstreams_bind_the_dashboard_core_to_loopback_8481():
