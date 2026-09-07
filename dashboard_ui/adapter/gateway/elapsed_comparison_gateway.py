@@ -25,6 +25,7 @@ T-8（丸め禁止）: 経過割合を 0.05 / 0.10 刻みで丸める案は不�
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Mapping, Sequence
 
 from marketdata.tf_meta import period_start_unix
@@ -37,46 +38,78 @@ from dashboard_ui.usecase.sheet_models import (
     OscillatorSpec,
     SheetInstance,
 )
+from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
+from dashboard_ui.usecase.sheet_supply import SeriesSupply
 
 #: 比較の最小単位（tf >= 5m の素材）。
 _SUB_TIMEFRAME = "1m"
 
 
 class ElapsedComparisonGateway:
-    """積み上がる量の比較集合を組み立てる（P-1 を読むだけ・新しい計算を発行しない）。
+    """積み上がる量の比較集合を組み立てる（**素材を読むだけ**・新しい計算を発行しない）。
+
+    素材は口ではなく値で受け取る（ISSUE-502 F-1 と同じ形・残件 2）:
+        以前この口は P-1（`series_port`）を自分で持ち、対象の足ごとに最小単位（1m）の系列を
+        全件系列の発行で引いていた。束が 1m の同じ instance を含むとき（第 2 表は同じ
+        オシレータを 8 足ぶん並べるので**常態**である）、同じキーが `SeriesSupply` と
+        この口の両方から発行されていた。実測 2026-09-07（Spy・合成素材）:
+        束 (1m, 5m, 15m) で系列 4 発行 / ユニーク 3、8 足束で 9 発行 / ユニーク 8。
+
+        二重発行が実費用にならなかったのは、具象 gateway
+        （`adapter/gateway/indicator_ui_compute_gateway.py`）が内部に memo を持っていた
+        からである——つまりこの adapter の計算量が**具象の実装詳細に依存**していた
+        （口を差し替えれば無言の浪費が復活する形）。是正後はこの口が P-1 を持たず、
+        素材（:class:`SeriesSupply`）を値として受け取るので、二重発行は memo で消される
+        のではなく **構造的に起こりえない**。
 
     Args:
-        series_port: P-1。`sub_timeframe`: 比較の最小単位。
+        sub_timeframe: 比較の最小単位。
         store: epoch 単位で持ち越すストア（ISSUE-464 ①）。**省略時はこの口だけのストア**に
             なり、共有は 1 要求で閉じる（従来と同じ費用）。要求をまたいで共有するかどうかは
             Composition Root の決定である（adapter は自分で相手を選ばない）。
     """
 
     def __init__(
-        self, *, series_port, sub_timeframe: str = _SUB_TIMEFRAME,
+        self, *, sub_timeframe: str = _SUB_TIMEFRAME,
         store: "MaterialStore | None" = None,
     ) -> None:
-        self._series_port = series_port
         self._sub_timeframe = sub_timeframe
         self._store = store if store is not None else MaterialStore()
+
+    def sub_instances(
+        self, entries: "Sequence[tuple[SheetInstance, OscillatorSpec]]"
+    ) -> "tuple[SheetInstance, ...]":
+        """比較集合を組むのに要る最小単位の instance（供給面へ渡す**需要の宣言**）。
+
+        束に無いキー（親足 instance の 1m 系列）もここに現れる。呼び出し側はこれを
+        `SeriesSupply.extended` へ渡し、素材を確定させてから :meth:`comparisons` を呼ぶ。
+        需要の宣言と読み取りが同じ絞り（`cumulative` かつ最小単位でない）から出るので、
+        「引いたのに読まない」「読むのに引いていない」のどちらも起こらない。
+        """
+        wanted: "dict[tuple[str, str, str, str], SheetInstance]" = {}
+        for instance, spec in self._targets(entries):
+            sub = replace(instance, timeframe=self._sub_timeframe)
+            wanted.setdefault(sub.key, sub)
+        return tuple(wanted.values())
 
     def comparisons(
         self,
         *,
         dataset_ref: str,
+        series: "SeriesSupply",
         entries: "Sequence[tuple[SheetInstance, OscillatorSpec]]",
         now_unix: int,
     ) -> "Mapping[tuple[str, str, str, str], ElapsedComparison]":
         """`instance.key -> ElapsedComparison`。作れない instance はキーが無い。
 
+        Args:
+            series: 素材（:meth:`sub_instances` の需要を満たしたもの）。
+
         Raises:
-            ValueError: 宣言された系列が最小単位の供給に無いとき（黙って空にしない）。
+            SeriesSupplyUnavailable: 最小単位の系列が構造的に供給できないとき（§5.5.1）。
+            ValueError: 供給はあるが宣言された系列名が無いとき（黙って空にしない）。
         """
-        targets = [
-            (instance, spec)
-            for instance, spec in entries
-            if spec.cumulative and instance.timeframe != self._sub_timeframe
-        ]
+        targets = self._targets(entries)
         if not targets:
             return {}
 
@@ -89,7 +122,7 @@ class ElapsedComparisonGateway:
             if fold_key not in prepared:
                 prepared[fold_key] = self._prepare(
                     dataset_ref, fold_key,
-                    self._sub_units(dataset_ref, instance, spec), int(now_unix),
+                    self._sub_units(series, instance, spec), int(now_unix),
                 )
             key, epoch, completed = prepared[fold_key]
             # 親足でのまとめ（O(最小単位数)）も 1m の周期が進むまで不変なので持ち越す。
@@ -133,18 +166,35 @@ class ElapsedComparisonGateway:
         )
         return key, epoch, completed
 
+    def _targets(
+        self, entries: "Sequence[tuple[SheetInstance, OscillatorSpec]]"
+    ) -> "list[tuple[SheetInstance, OscillatorSpec]]":
+        """比較集合を作る対象（積み上がる量で、かつ最小単位そのものでない instance）。
+
+        需要の宣言（:meth:`sub_instances`）と読み取り（:meth:`comparisons`）が
+        **この 1 つの絞り**を共有するので、両者がずれない。
+        """
+        return [
+            (instance, spec)
+            for instance, spec in entries
+            if spec.cumulative and instance.timeframe != self._sub_timeframe
+        ]
+
     def _sub_units(
-        self, dataset_ref: str, instance: SheetInstance, spec: OscillatorSpec
+        self, series: "SeriesSupply", instance: SheetInstance, spec: OscillatorSpec
     ) -> "tuple[tuple[int, float], ...]":
-        """最小単位の系列（P-1 が同一キーを 1 回しか計算しないので、足ごとに再発行しない）。"""
-        series = self._series_port.full_series(
-            indicator_id=instance.indicator_id,
-            variant=instance.variant,
-            params=instance.params,
-            dataset_ref=dataset_ref,
-            timeframe=self._sub_timeframe,
-        )
-        points = series.get(spec.value_series)
+        """最小単位の系列を**素材から読む**（自分では発行しない）。
+
+        素材は :meth:`sub_instances` の需要を満たしたものである。読むだけなので、束が
+        同じキーを既に持っていれば発行は起きない（二重発行が構造的に起こりえない）。
+        """
+        sub_key = replace(instance, timeframe=self._sub_timeframe).key
+        reason = series.reason_of(sub_key)
+        if reason is not None:
+            # 当該 instance に固有の構造的除外（§5.5.1）。要求全体の失敗ではないので
+            #   型を保って投げ直す（ValueError へ落とすと縮退の扱いが変わる）。
+            raise SeriesSupplyUnavailable(reason)
+        points = series.of(sub_key).get(spec.value_series)
         if points is None:
             raise ValueError(
                 f"最小単位の系列が供給されていません: series={spec.value_series!r} "

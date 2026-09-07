@@ -54,9 +54,16 @@ class FitSpy:
 
 
 class NoElapsed:
-    """積み上がる量を持たない束の比較集合（空）。"""
+    """積み上がる量を持たない束の比較集合（空）。
 
-    def comparisons(self, *, dataset_ref, entries, now_unix):
+    本物と同じ 2 面を持つ（LSP）: 需要の宣言（`sub_instances`）と読み取り（`comparisons`）。
+    需要が空なので、供給面は最小単位の系列を 1 本も引かない。
+    """
+
+    def sub_instances(self, entries):
+        return ()
+
+    def comparisons(self, *, dataset_ref, series, entries, now_unix):
         return {}
 
 

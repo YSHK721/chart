@@ -242,13 +242,26 @@ class ReachSheetController:
             )
             for instance in instances
         }
+        elapsed_entries = [
+            (instance, specs[instance.key])
+            for instance in instances
+            if specs[instance.key] is not None
+        ]
+        # 比較集合（§5.3.3）が読む最小単位（1m）の系列も**この面から**配る（ISSUE-502 F-1
+        #   と同じ形・残件 2）。以前は口が自分で全件系列の発行を引いており、束が同じ
+        #   instance の 1m を含むとき（第 2 表は同じオシレータを 8 足並べるので常態）同じ
+        #   キーが 2 回発行されていた。実費用にならなかったのは具象 gateway の memo が
+        #   消していたからで、上位の計算量が具象の実装詳細に依存していた。素材を先に
+        #   確定させれば、二重発行は memo ではなく**構造**で起こりえなくなる。
+        series_supply = series_supply.extended(
+            request,
+            self._elapsed_gateway.sub_instances(elapsed_entries),
+            series_port=self._series_port,
+        )
         comparisons = self._elapsed_gateway.comparisons(
             dataset_ref=parsed.dataset_ref,
-            entries=[
-                (instance, specs[instance.key])
-                for instance in instances
-                if specs[instance.key] is not None
-            ],
+            series=series_supply,
+            entries=elapsed_entries,
             now_unix=now_unix,
         )
         # 投影（§5.5 の係数と分位水準の価格）はシートの出力に依存しない——先に計算し、

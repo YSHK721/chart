@@ -21,6 +21,17 @@
     `test_serve_dashboard_smoke.py` が同じ罠を明記している）。
 
 固定するのは**無駄の不在**であって回数ではない。「N 回呼ばれること」は書かない。
+
+ライブデータ依存の表明を置かない（ISSUE-503・実測 2026-09-07）:
+    本検定は実データセット `jp225_tick` を実 HTTP 経路で叩く。このデータセットは市場稼働中に
+    更新され続けるため、**応答の内容から導かれる量**を表明に使うと、検定の目的とは無関係な
+    理由で赤くなる。実際、非空虚性の担保に使っていた「束を増やせばラダーの行数も増える」は、
+    2 指標の水準が同一ラダー行へ量子化されない偶然に依存しており、同一 `bar_limits` の
+    数分間隔の再実行で行数が 3 → 1 → 2 と動いた（素材量を変えた 6 点のうち 5 点で偽）。
+
+    ここで表明してよいのは「実束縛点＋実データセットで発行が 0 であること」だけである。
+    入力量を変えたオーダーの表明のうち**行数を軸にするもの**は合成素材で決定的に測れる
+    場所（`tests/complexity/test_market_profile_computed_once.py`）が持つ。
 """
 from __future__ import annotations
 
@@ -120,24 +131,52 @@ def test_the_composition_root_does_not_wire_the_market_profile_port() -> None:
 def test_a_reach_sheet_request_issues_no_market_profile_computation(mp_surfaces) -> None:
     """§4.1: 1 要求あたりの MP 発行は **0**（畳み込み・価格レンジのどちらの面も）。
 
-    オーダーの表明は入力を変えた 2 点で行う: 束を増やせばラダーの行数（＝以前 P-MP へ
-    渡していた価格の本数）が増えるが、発行は増えない。固定するのは無駄の不在であって
-    回数ではない——「N 回呼ばれること」を書くと浪費が仕様へ昇格する。
+    オーダーの表明は入力を変えた 2 点で行う: **束の大きさ**（1 / 2 instance）と
+    **要求の繰り返し数**（1 / 4 回）。どちらを増やしても発行は 0 のままである。
+    固定するのは無駄の不在であって回数ではない——「N 回呼ばれること」を書くと浪費が
+    仕様へ昇格する。
+
+    ラダーの**行数**を軸にしたオーダーの表明はここでは行わない（ISSUE-503 で是正）:
+        以前は「束を増やせば行数も増える」を非空虚性の担保に使っていた。しかし行数は
+        (a) `jp225_tick` が市場稼働中に更新され続けること、(b) 2 つの指標の水準が同じ
+        ラダー行へ量子化されないこと、の両方に依存する**ライブデータ依存の量**である。
+        実測 2026-09-07（HEAD・同一 `bar_limits={"1m": 600}`・数分間隔）: 第 2 束の
+        行数は 3 → 1 → 2 と動き、素材量を変えた 6 点のうち 5 点で「行数が増える」は
+        **偽**だった（ma_marod の q95 / q5 の射影行が縮退の記録も無く消える）。
+        つまりこの表明は検定の目的（MP 発行が 0 であること）と無関係な理由で赤くなる。
+
+        行数を軸にしたオーダーの表明そのものは正しい不変量であり、**決定的に測れる場所**
+        に既に在る: `tests/complexity/test_market_profile_computed_once.py` の
+        test_asking_for_more_row_prices_does_not_issue_more_profiles（合成素材で行数を
+        3 / 71 に固定して 2 点表明）。e2e が担うのは「実束縛点＋実データセットで 0」で
+        あり、行数の制御はここでは原理的にできない。
+
+    非空虚性（0 が「経路が動かなかったから」でないことの担保）:
+        1. 応答が `unchanged` の短絡ではなく、実際にシートが組まれていること
+        2. 全行が mp 欄を運んでいること＝MP を消費する地点が実行され null を返した
+        3. 数えている面が要求経路から到達可能であること
+           （下の `test_the_request_path_reaches_the_counted_surfaces_when_the_port_is_wired`
+           が結線の有無だけを変えた変異で示す）
     """
     # Arrange
     folding, price_range = mp_surfaces
     smaller = dict(BODY, instances=INSTANCES[:1])
 
     # Act
+    responses = []
     with serving() as url:
-        first_status, first = post(url, "/reach_sheet", smaller)
-        second_status, second = post(url, "/reach_sheet", BODY)
+        responses.append(post(url, "/reach_sheet", smaller))
+        for _ in range(4):
+            responses.append(post(url, "/reach_sheet", BODY))
 
     # Assert
-    assert (first_status, first["ok"]) == (200, True)
-    assert (second_status, second["ok"]) == (200, True)
-    # シート自体は作られており、束を増やせば行数も増えている（空虚な 0 でない）。
-    assert first["rows"] and len(second["rows"]) > len(first["rows"])
+    for status, response in responses:
+        assert (status, response["ok"]) == (200, True)
+        # 短絡（省リソース段階 2 の unchanged）ではなく、実際にシートが組まれている。
+        assert "unchanged" not in response
+        assert response["rows"]
+        # MP を消費する地点が実行され、密度なしを返した（欄が在って null）。
+        assert all("mp" in row and row["mp"] is None for row in response["rows"])
     assert (len(folding.calls), len(price_range.calls)) == (0, 0)
 
 

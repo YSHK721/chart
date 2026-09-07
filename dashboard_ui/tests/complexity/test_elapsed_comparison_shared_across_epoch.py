@@ -28,7 +28,12 @@ from dashboard_ui.adapter.gateway.elapsed_comparison_gateway import (
     ElapsedComparisonGateway,
 )
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
-from dashboard_ui.usecase.sheet_models import OscillatorSpec, SheetInstance
+from dashboard_ui.usecase.sheet_models import (
+    OscillatorSpec,
+    ReachSheetRequest,
+    SheetInstance,
+)
+from dashboard_ui.usecase.sheet_supply import SeriesSupply
 
 REF = "jp225_tick"
 #: 2026-08-28 20:00:00 UTC（5m / 15m / 1h の境界の上）。
@@ -117,11 +122,20 @@ def _minutes(count: int) -> "list[float]":
 
 
 def _request(spy: SeriesSpy, store: MaterialStore, *, timeframes, minutes: int):
-    """要求 1 件ぶん（**口は要求ごとに組み直す**——共有するのはストアだけ）。"""
-    gateway = ElapsedComparisonGateway(series_port=spy, store=store)
+    """要求 1 件ぶん（**口も素材も要求ごとに組み直す**——共有するのはストアだけ）。
+
+    比較集合の口は P-1 を持たない: 最小単位の系列は `usecase/sheet_supply.py` が引いて
+    **値として**渡る（ISSUE-502 F-1 と同じ形）。本番の controller と同じ順序で、
+    口が宣言した需要（`sub_instances`）を満たしてから `comparisons` を呼ぶ。
+    """
+    gateway = ElapsedComparisonGateway(store=store)
+    pairs = [(_instance(tf), _spec()) for tf in timeframes]
+    request = ReachSheetRequest(dataset_ref=REF, instances=(), chart_timeframe="1m")
     return gateway.comparisons(
         dataset_ref=REF,
-        entries=[(_instance(tf), _spec()) for tf in timeframes],
+        series=SeriesSupply.load(request, gateway.sub_instances(pairs),
+                                 series_port=spy),
+        entries=pairs,
         now_unix=START + (minutes - 1) * MINUTE + 30,
     )
 

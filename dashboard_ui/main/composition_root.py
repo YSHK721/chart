@@ -146,9 +146,11 @@ def build_dashboard_app(
                 value_series_of=_value_series_of(roles), bar_limits=limits,
                 param_scopes=scopes,
             ),
-            elapsed_gateway=ElapsedComparisonGateway(
-                series_port=series_gateway, store=materials
-            ),
+            # 比較集合の口は P-1 を持たない: 最小単位（1m）の系列も controller が
+            #   `usecase/sheet_supply.py` から**値として**配る（ISSUE-502 F-1 と同じ形）。
+            #   口を持たせると同じキーが供給面とこの口の両方から発行され、具象 gateway の
+            #   memo だけが浪費を消す形になる（上位の計算量が具象の実装詳細に依存する）。
+            elapsed_gateway=ElapsedComparisonGateway(store=materials),
             is_intrabar_capable=capability,
             state=state,
             # MP 列は P-MP を**結線しない**（段階 2a・依頼者 y 2026-09-06・ISSUE-500）。

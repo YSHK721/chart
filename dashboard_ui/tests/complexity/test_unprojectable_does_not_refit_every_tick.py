@@ -96,7 +96,7 @@ def _controller(forward) -> ReachSheetController:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=forward,
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
     )
 

@@ -167,6 +167,34 @@ class SeriesSupply:
                 unavailable[key] = str(error)
         return cls(by_key=series, unavailable=unavailable)
 
+    def extended(
+        self,
+        request: ReachSheetRequest,
+        instances: "Sequence[SheetInstance]",
+        *,
+        series_port,
+    ) -> "SeriesSupply":
+        """追加の instance を足した素材を返す（既に引いたキーは **引き直さない**）。
+
+        `BarSupply.extended` と同じ形である。使うのは比較集合（§5.3.3）の最小単位のように
+        **束には無いが誰かが読む** 系列を足す場合で、束に在るキーと重なったときは既に
+        引いたものをそのまま配る——重なりを引き直さないのは費用の問題ではなく、
+        「同じキーの発行は 1 回以下」が **この面の不変条件**だからである（ISSUE-502 F-1）。
+        具象 gateway の memo に頼ると、口を差し替えた瞬間に無言の浪費が復活する。
+        """
+        wanted = [
+            instance
+            for instance in instances
+            if instance.key not in self.by_key and instance.key not in self.unavailable
+        ]
+        if not wanted:
+            return self
+        added = SeriesSupply.load(request, wanted, series_port=series_port)
+        return SeriesSupply(
+            by_key={**self.by_key, **added.by_key},
+            unavailable={**self.unavailable, **added.unavailable},
+        )
+
     def of(self, key: tuple) -> "Mapping[str, tuple[tuple[int, float], ...]]":
         """その instance の系列（供給不能・未取得は空）。"""
         return self.by_key.get(key) or {}

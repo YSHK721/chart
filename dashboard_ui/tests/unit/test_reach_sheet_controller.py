@@ -116,7 +116,7 @@ def controller_of(forward: ForwardSpy, series: SeriesPortFake) -> ReachSheetCont
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=forward,
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: indicator_id != "cvfe",
     )
 
@@ -192,7 +192,7 @@ def test_a_row_reports_the_profile_density_supplied_for_its_price() -> None:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=ForwardSpy(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
         mp_port=MarketProfilePortFake(0.75),
     )
@@ -218,7 +218,7 @@ def test_the_rows_can_be_joined_to_the_degradations() -> None:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=ForwardSpy(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: False,
     )
 
@@ -463,7 +463,7 @@ def test_the_degradations_name_the_instance_key() -> None:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=ForwardSpy(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: False,
     )
 
@@ -593,7 +593,7 @@ def test_a_supply_failure_is_reported_not_raised() -> None:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=ForwardSpy(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=SeriesPortFake({})),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
     )
 
@@ -621,7 +621,7 @@ def test_two_requests_share_the_epoch_through_the_state() -> None:
             roles=SeriesRoleTable(),
             registry=BreakpointRegistry(),
             forward_port=forward,
-            elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+            elapsed_gateway=ElapsedComparisonGateway(),
             is_intrabar_capable=lambda indicator_id, variant, params: True,
             state=state,
         )
@@ -652,7 +652,7 @@ def test_a_new_instance_gets_its_coefficients_even_on_a_tick_update() -> None:
             roles=SeriesRoleTable(),
             registry=BreakpointRegistry(),
             forward_port=forward,
-            elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+            elapsed_gateway=ElapsedComparisonGateway(),
             is_intrabar_capable=lambda indicator_id, variant, params: True,
             state=state,
         )
@@ -697,7 +697,7 @@ def test_an_instance_that_cannot_be_forward_evaluated_still_returns_a_sheet() ->
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=UnavailableForward(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
     )
 
@@ -716,7 +716,7 @@ def test_an_instance_that_cannot_be_forward_evaluated_is_named_in_the_degradatio
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=UnavailableForward(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
     )
 
@@ -770,7 +770,7 @@ def _unresolvable_controller() -> ReachSheetController:
         roles=SeriesRoleTable(),
         registry=BreakpointRegistry(),
         forward_port=ForwardSpy(),
-        elapsed_gateway=ElapsedComparisonGateway(series_port=series),
+        elapsed_gateway=ElapsedComparisonGateway(),
         is_intrabar_capable=lambda indicator_id, variant, params: True,
     )
 

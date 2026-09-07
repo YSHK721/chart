@@ -17,7 +17,12 @@ import pytest
 from dashboard_ui.adapter.gateway.elapsed_comparison_gateway import (
     ElapsedComparisonGateway,
 )
-from dashboard_ui.usecase.sheet_models import OscillatorSpec, SheetInstance
+from dashboard_ui.usecase.sheet_models import (
+    OscillatorSpec,
+    ReachSheetRequest,
+    SheetInstance,
+)
+from dashboard_ui.usecase.sheet_supply import SeriesSupply
 
 REF = "jp225_tick"
 #: 2026-08-28 20:00:00 UTC（5m 境界の上）。
@@ -51,12 +56,24 @@ def instance_of(timeframe: str) -> SheetInstance:
     return SheetInstance("tickvol", "default", {}, timeframe, intrabar_capable=True)
 
 
+def supply_for(spy: SeriesSpy, gateway: ElapsedComparisonGateway, pairs) -> SeriesSupply:
+    """口が宣言した需要（最小単位の instance）を満たした素材（本番の controller と同じ順序）。
+
+    比較集合の口は P-1 を持たない。素材は `usecase/sheet_supply.py` が唯一所有し、口へは
+    **値として**渡る（ISSUE-502 F-1 と同じ形）。Spy が数える面もそこになる。
+    """
+    request = ReachSheetRequest(dataset_ref=REF, instances=(), chart_timeframe="1m")
+    return SeriesSupply.load(request, gateway.sub_instances(pairs), series_port=spy)
+
+
 def comparisons_for(spy: SeriesSpy, *entries, minutes: int):
     """`minutes` 本目の 1m 足が形成中（＝直前までが完了）の状態で比較集合を組む。"""
-    gateway = ElapsedComparisonGateway(series_port=spy)
+    gateway = ElapsedComparisonGateway()
+    pairs = [(instance, spec()) for instance in entries]
     return gateway.comparisons(
         dataset_ref=REF,
-        entries=[(instance, spec()) for instance in entries],
+        series=supply_for(spy, gateway, pairs),
+        entries=pairs,
         now_unix=START + (minutes - 1) * MINUTE + 30,
     )
 
@@ -142,27 +159,32 @@ def test_no_completed_parent_bar_means_no_comparison() -> None:
 def test_a_non_cumulative_instance_is_not_supplied() -> None:
     """積み上がらない量に同経過の比較集合は要らない（余計な発行を作らない）。"""
     spy = SeriesSpy([1, 2, 3, 4, 5, 6])
-    gateway = ElapsedComparisonGateway(series_port=spy)
+    gateway = ElapsedComparisonGateway()
+    pairs = [(instance_of("5m"), spec(cumulative=False))]
 
     result = gateway.comparisons(
         dataset_ref=REF,
-        entries=[(instance_of("5m"), spec(cumulative=False))],
+        series=supply_for(spy, gateway, pairs),
+        entries=pairs,
         now_unix=START + 5 * MINUTE + 30,
     )
 
     assert result == {}
+    # 需要の宣言そのものが空なので、素材を作る段でも 1 本も発行されない。
+    assert gateway.sub_instances(pairs) == ()
     assert spy.issued == []
 
 
 def test_an_unknown_sub_unit_series_is_rejected() -> None:
     """宣言した系列が供給されないときは黙って空の比較集合を作らない。"""
     spy = SeriesSpy([1, 2, 3, 4, 5, 6])
-    gateway = ElapsedComparisonGateway(series_port=spy)
+    gateway = ElapsedComparisonGateway()
     declared = OscillatorSpec(value_series="missing", band_high_series="tickvol_q90",
                               q_high=0.9, window_n=500, k_events=50, cumulative=True)
+    pairs = [(instance_of("5m"), declared)]
 
     with pytest.raises(ValueError, match="missing"):
         gateway.comparisons(
-            dataset_ref=REF, entries=[(instance_of("5m"), declared)],
+            dataset_ref=REF, series=supply_for(spy, gateway, pairs), entries=pairs,
             now_unix=START + 6 * MINUTE + 30,
         )
