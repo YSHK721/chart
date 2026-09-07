@@ -10,8 +10,11 @@
 //
 // 固定するもの:
 //   R1 継承      3 primitive が SeriesPrimitiveLifecycle の実体である（定型の単一ソース化）。
-//   R2 ISP/LSP   ペア固有の公開面（setPairs / setHighlight）が、ペアでない primitive に生えない。
-//                （PairPrimitiveBase を全員に継承させる案を採ると赤になる形で書く。）
+//   R2 ISP/LSP   ペア固有の公開面（setPairs / setHighlight）を、それを使わない primitive が
+//                継承していない。（PairPrimitiveBase を全員に継承させる案を採ると赤になる。）
+//                対象は **adapter/front から構造的に収集**する（ISSUE-502 段階 3a）。以前は
+//                手書きの 2 件列挙で、実際に違反していた MarketProfileHistogramPrimitive
+//                （symlink 実体・market_profile 所有）が永久に検出されない状態だった。
 //   R3 byte 等価 抽出の前後で paneView の**キーの有無まで**一致する（zOrder はサブクラスの
 //                宣言があるときだけ生える）。renderer() が毎回新オブジェクトを返す現行契約も維持。
 //   C1-C4 計算量 状態設定 1 回あたりの再描画要求が 1（浪費の不在）であること。
@@ -22,6 +25,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import path from 'node:path';
+
+// コメント落としは js_layer_guard.mjs が唯一の実装。ここへ写経すると同じ規則の 2 つ目の実装になる。
+import { stripComments } from '../../../../tools/js_layer_guard.mjs';
 
 import { SeriesPrimitiveLifecycle } from '../js/adapter/front/series_primitive_lifecycle.js';
 import { PairPrimitiveBase } from '../js/adapter/front/pair_primitive_base.js';
@@ -120,40 +129,137 @@ test('R1 基底は装着契約（attached / detached / paneViews）を提供す�
 });
 
 // --------------------------------------------------------------------------- //
-// R2 ISP/LSP — ペア固有の公開面がペアでない primitive に生えない
+// R2 ISP/LSP — 使わないペア固有の面を継承していない
 // --------------------------------------------------------------------------- //
+//
+// なぜ対象を列挙しないか（ISSUE-502 段階 3a の実測）:
+//   ここには `[TickvolBandsPrimitive, PriceLevelLinesPrimitive]` の**手書き 2 件**が置かれていた。
+//   同じ adapter/front には MarketProfileHistogramPrimitive があり、`extends PairPrimitiveBase` /
+//   `super([]) // 基底の pairs は未使用` と自認したまま、ペア固有の面を 1 つも使わずに継承して
+//   いた——まさに本検定が「却下した案の症状」と呼ぶ形である。列挙に載っていないものは違反しても
+//   永久に検出されない（js_layer_guard.mjs:8-12 が走査対象について宣言している規律と同型）。
+//   よって対象は adapter/front の**構造**から導く。primitive が増えても本ファイルは書き換わらない。
+//
+// なぜ「継承しているか」ではなく「使っているか」で判定するか:
+//   「ペアでない primitive」を継承関係から定義すると循環する（PairPrimitiveBase を継承した時点で
+//   ペア扱いになり、どんな誤継承も自動的に正当化される）。判定できる非循環の事実は
+//   「その面を自分のソースで実際に使っているか」である。使っていないのに生えていれば ISP/LSP 違反。
+
+const FRONT_DIR = path.join(
+  path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'js', 'adapter', 'front',
+);
+
+// ペア固有の面（PairPrimitiveBase だけが足すもの）。公開面と状態の両方を見る。
+const PAIR_ONLY_MEMBERS = Object.freeze(['setPairs', 'setHighlight']);
+const PAIR_ONLY_STATE = Object.freeze(['_pairs', '_highlight']);
 
 // 「ペア固有の公開面」の有無を判定する述語（合成クラスで検出力を測れるよう純関数にする）。
 function pairOnlyMembers(primitive) {
-  return ['setPairs', 'setHighlight'].filter((name) => typeof primitive[name] === 'function');
+  return PAIR_ONLY_MEMBERS.filter((name) => typeof primitive[name] === 'function');
 }
 
-test('R2 ペアでない primitive に setPairs / setHighlight が生えていない（ISP/LSP）', () => {
-  // Arrange
-  const nonPairPrimitives = [
-    ['TickvolBandsPrimitive', new TickvolBandsPrimitive()],
-    ['PriceLevelLinesPrimitive', new PriceLevelLinesPrimitive()],
-  ];
-  // Act
-  const leaked = nonPairPrimitives
-    .map(([name, p]) => [name, pairOnlyMembers(p)])
-    .filter(([, members]) => members.length > 0)
-    .map(([name, members]) => `${name}: ${members.join(', ')}`);
-  // Assert
-  assert.deepEqual(leaked, [],
-    `ペア固有の公開面が意味の無い primitive に生えています（PairPrimitiveBase を継承させる案の症状）:\n  ${leaked.join('\n  ')}`);
+// 自ファイルがペア固有の面を実際に使っているか。コメントは宣言ではないので落として見る
+//   （price_level_lines_primitive.js は「継承しない理由」の説明で `_pairs` を**文章として**書く）。
+function usesPairFace(source) {
+  const text = stripComments(source);
+  return [...PAIR_ONLY_MEMBERS, ...PAIR_ONLY_STATE].some((name) => text.includes(name));
+}
+
+// R2 の規則そのもの（実データと合成ケースの両方が**この 1 実装**を通る）。
+//   entries: [{ className, cls, source }] → 違反の説明文の配列。
+function pairFaceOffenders(entries) {
+  return entries
+    .map(({ className, cls, source }) => ({
+      className, members: pairOnlyMembers(new cls()), uses: usesPairFace(source),
+    }))
+    .filter(({ members, uses }) => members.length > 0 && !uses)
+    .map(({ className, members }) => `${className}: ${members.join(', ')}`);
+}
+
+// adapter/front から primitive クラスを構造的に集める（名前の表を持たない）。
+//   symlink は解決して読まれる＝他パッケージ所有の実体（market_profile）も対象に入る。
+async function collectFrontPrimitives() {
+  const found = [];
+  for (const name of readdirSync(FRONT_DIR).sort()) {
+    if (!name.endsWith('.js')) {
+      continue;
+    }
+    const abs = path.join(FRONT_DIR, name);
+    const source = readFileSync(abs, 'utf8');
+    const classNames = [...stripComments(source)
+      .matchAll(/\bexport\s+class\s+([A-Za-z0-9_]*Primitive[A-Za-z0-9_]*)\b/g)]
+      .map((m) => m[1]);
+    if (classNames.length === 0) {
+      continue;
+    }
+    const mod = await import(pathToFileURL(abs).href);
+    for (const className of classNames) {
+      found.push({ className, cls: mod[className], source });
+    }
+  }
+  return found;
+}
+
+const FRONT_PRIMITIVES = await collectFrontPrimitives();
+
+test('R2 前提: 収集が構造的で、symlink 実体（market_profile 所有）まで届いている', () => {
+  // Arrange / Act
+  const names = FRONT_PRIMITIVES.map((p) => p.className);
+  // Assert — 走査が空振りしていないことの錨。ここに現れなければ規則以前に対象が届いていない。
+  assert.ok(names.length >= 5, `収集が少なすぎる（前提崩壊）: ${names.join(', ')}`);
+  assert.ok(names.includes('MarketProfileHistogramPrimitive'),
+    `旧列挙から漏れていた symlink 実体が収集されていない: ${names.join(', ')}`);
+  assert.ok(FRONT_PRIMITIVES.every(({ cls }) => typeof cls === 'function'),
+    '収集したクラス名が実体に解決していない（正規表現と export の食い違い）');
 });
 
-test('R2 検出力: PairPrimitiveBase を継承させた合成クラスは述語に捕捉される（空振りしていない）', () => {
-  // Arrange — 却下した「全員に PairPrimitiveBase を継承させる」案の再現。
-  class ForcedPairHeir extends PairPrimitiveBase {}
-  // Act
-  const members = pairOnlyMembers(new ForcedPairHeir([]));
+test('R2 使わないペア固有の公開面を継承していない（ISP/LSP）', () => {
+  // Arrange / Act
+  const leaked = pairFaceOffenders(FRONT_PRIMITIVES);
   // Assert
-  assert.deepEqual(members, ['setPairs', 'setHighlight'],
-    'ペア固有の公開面の漏れを検出できていない（R2 が空振りしている）');
+  assert.deepEqual(leaked, [],
+    'ペア固有の公開面が、それを使わない primitive に生えています'
+    + `（PairPrimitiveBase を継承させる案の症状）:\n  ${leaked.join('\n  ')}`);
+});
+
+test('R2 検出力: 是正前の MarketProfileHistogramPrimitive の形は規則に捕捉される（空振りしていない）', () => {
+  // Arrange — ISSUE-502 段階 3a の是正**前**の実体をそのまま再現する
+  //   （`extends PairPrimitiveBase` ＋ `super([]) // 基底の pairs は未使用` ＋ ペア面の使用 0）。
+  class PreFixMpPrimitive extends PairPrimitiveBase {
+    constructor() { super([]); }
+  }
+  const preFixSource = "import { PairPrimitiveBase } from './pair_primitive_base.js';\n"
+    + 'export class PreFixMpPrimitive extends PairPrimitiveBase {\n'
+    + '  constructor() {\n    super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。\n  }\n}\n';
+  // Act — 実データと同じ 1 実装（pairFaceOffenders）へ通す。
+  const offenders = pairFaceOffenders([
+    { className: 'PreFixMpPrimitive', cls: PreFixMpPrimitive, source: preFixSource },
+  ]);
+  // Assert
+  assert.deepEqual(offenders, ['PreFixMpPrimitive: setPairs, setHighlight'],
+    '是正前の形を捕捉できていない（R2 が空振りしている＝再発しても赤にならない）');
+  // 許可の側も効いていること（ペア面を実際に使う実装は静かなまま）。
+  assert.deepEqual(
+    pairFaceOffenders([{
+      className: 'RealPairHeir',
+      cls: class RealPairHeir extends PairPrimitiveBase {},
+      source: 'draw() { return this._pairs.concat(this._highlight); }',
+    }]),
+    [], 'ペア面を実際に使う primitive まで落としている（誤検出）',
+  );
   assert.deepEqual(pairOnlyMembers(new SeriesPrimitiveLifecycle()), [],
     'ライフサイクル基底そのものがペア固有の公開面を持っている');
+});
+
+test('R2 検出力: コメントだけの言及を「使用」と見なさない（文章と宣言を混ぜない）', () => {
+  // Arrange — price_level_lines_primitive.js が「継承しない理由」を文章で書いている形。
+  const commentOnly = '// pair_primitive_base は `_pairs` / `setPairs` を持つため継承しない。\n'
+    + 'export class X {}\n';
+  // Act / Assert
+  assert.equal(usesPairFace(commentOnly), false,
+    'コメント内の言及を使用と見なしている（誤って合格させる向きに緩んでいる）');
+  assert.equal(usesPairFace('draw() { return this._pairs; }'), true,
+    'コード内の使用を検出できていない（誤って落とす向きに厳しすぎる）');
 });
 
 // --------------------------------------------------------------------------- //

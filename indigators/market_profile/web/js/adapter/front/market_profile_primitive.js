@@ -1,7 +1,7 @@
 // market_profile_primitive.js — Market Profile の TPO ヒストグラムを描くカスタム ISeriesPrimitive。
 // @upstream-isolation: market_profile_primitive.js
 //
-// 設計入力: pair_primitive_base.js（attach/paneViews/_update ライフサイクルの土台）・
+// 設計入力: series_primitive_lifecycle.js（attach/paneViews/_update ライフサイクルの土台）・
 //   pair_lines_primitive.js（v5 描画作法の手本）。CHART_TRADE_MARKERS_DETAILED_DESIGN.md §10。
 //   v5 事実: attached({chart,series,requestUpdate})・paneViews()→renderer().draw(target)→
 //   target.useBitmapCoordinateSpace(scope=>scope.context 描画)・series.priceToCoordinate（範囲外 null）。
@@ -10,7 +10,15 @@
 //   として描く _draw に限定する。取得・トグル状態は market_profile_actor.js が持つ。
 //   price→y 変換は series.priceToCoordinate のみを使い（既存 primitive と同 API）、lwc への直接依存を持たない。
 
-import { PairPrimitiveBase } from './pair_primitive_base.js';
+// 基底は**ライフサイクル定型だけ**を持つ SeriesPrimitiveLifecycle である（ISSUE-502 段階 3a）。
+//   かつては PairPrimitiveBase を継承し `super([])` に「基底の pairs は未使用」と自認していた。
+//   本 class はペア固有の状態（_pairs / _highlight）も公開面（setPairs / setHighlight）も 1 つも
+//   使わない（実測: 本ファイル内の参照 0 件）。使わない公開面が生えている状態は ISP/LSP 違反で、
+//   series_primitive_lifecycle.js:9-12 と price_level_lines_primitive.js:17 が「継承すると意味の
+//   無い公開面が生える」として明示的に避けてきた形そのものだった。継承元をライフサイクル基底へ
+//   下げても、本 class が使う面（_chart / _series / _requestUpdate / _paneView / attached /
+//   detached / paneViews / _update / _draw）はすべて同じ基底が供給するため描画挙動は不変である。
+import { SeriesPrimitiveLifecycle } from './series_primitive_lifecycle.js';
 // ソース能力記述子（domain 単一情報源）: POC 描画様式（star/line）・ラベル可否を導出する
 //   （ISSUE-097 🔵-20・散在した profile.src==='zp' 述語の集約）。
 import { mpSourceCapability } from '../../domain/mp_source_capability.js';
@@ -113,9 +121,9 @@ const MP_DEFAULT_COLORS = Object.freeze(
   Object.fromEntries(MP_SLOT_IDS.map((id) => [id, CHROME_CURRENT[id]])),
 );
 
-export class MarketProfileHistogramPrimitive extends PairPrimitiveBase {
+export class MarketProfileHistogramPrimitive extends SeriesPrimitiveLifecycle {
   constructor() {
-    super([]); // 基底の pairs は未使用（本 primitive は profile を描く）。
+    super();
     // 段階 5-E: 描画色の保持（配信前＝現行リテラル）。台帳の MP 配線点だけを取り込む。
     //   保持しないと、テーマ適用が MP へ届いても次の再描画で旧色に戻る。
     this._colors = { ...MP_DEFAULT_COLORS };
