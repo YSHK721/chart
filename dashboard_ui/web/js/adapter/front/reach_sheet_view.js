@@ -21,13 +21,35 @@
 // 色は heat_scale.js が唯一源であり、本モジュールは色を作らない。
 // 発行（HTTP）も時計も持たない——描くだけ。混ぜると「描くたびに発行する」欠陥が入り込み、
 //   出力は正しいまま無駄だけが増える（ISSUE-450 と同型）。
+//
+// 責務（ISSUE-502 段階 4C・F-2 の是正後）: **DOM の構築と結線だけ**。
+//   本モジュールは規則を所有しない。以下はすべて domain の純ロジックが持ち、View は
+//   「測る・描く・押されたことを伝える」に徹する（規則は DOM 無しで単体検証できる）:
+//     - 更新頻度の統計 …… domain/tick_rate.js（createTickRateMeter）
+//     - 残光の予定表 …… domain/next_target_glow.js（createNextTargetGlow）
+//     - 表示範囲の状態機械 …… domain/ladder_scope.js（createLadderScope）
+//     - 窓の幾何 …… domain/ladder_window.js（sliceWindow / fitRadius）
+//     - 距離・差の式と台帳 …… domain/smooth_ladder.js（createSmoothLedger）
+//     - 行の論理識別子 …… domain/ladder_row.js（rowKeyOf）
+//   分割前は 1,170 行に 6 責務が同居し、変更要求元（依頼者の見た目指示 / 版面の列構成 /
+//   時間の規則）が別々の 3 アクター以上あった。同居していると、頻度の窓を変えるだけの
+//   要求が「表を描く関数」の改変として現れる（SRP 違反）。
 
 import { colorForP, colorForDensity } from './heat_scale.js';
 import { createElementWith } from './dom_element.js';
+// 操作子（期間ボタン・時間足ピル）の版面は別モジュールが所有する（F-2: 押す道具と読む表の分離）。
+import { createLadderSelectorsView } from './ladder_selectors_view.js';
 // 価格表記の唯一源（第 2 表と共有・写しを持たない）。
 import { formatPrice, formatReachTimestamp } from './format.js';
 // 足別トーン（モックの r0〜r7）の並びは列を出す側と同じ唯一源を使う（写しを持たない）。
 import { DASHBOARD_TIMEFRAMES } from './timeframes.js';
+// 規則の所有者（上記「責務」参照）。View はこれらを組み立てて使うだけで、式・閾値を持たない。
+import { rowKeyOf } from '../../domain/ladder_row.js';
+import { createTickRateMeter } from '../../domain/tick_rate.js';
+import { createNextTargetGlow } from '../../domain/next_target_glow.js';
+import { createLadderScope } from '../../domain/ladder_scope.js';
+import { createSmoothLedger } from '../../domain/smooth_ladder.js';
+import { WINDOW_RADIUS, fitRadius, sliceWindow } from '../../domain/ladder_window.js';
 
 /** 背景 3 分割の並び（§4.3 の短い順）。値は dashboard_ui/domain/horizon.py の Horizon 値。 */
 const HORIZONS = Object.freeze([
@@ -107,56 +129,11 @@ const PRICE_COLUMN_AT = COLUMNS.findIndex((column) => column.cell === 'price');
 const CURRENT_HEAD_CELLS = PRICE_COLUMN_AT;
 const CURRENT_TAIL_CELLS = COLUMNS.length - PRICE_COLUMN_AT - 1;
 
-/** ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、2 秒で
- *  フェードアウト（同日指示で 1 秒 → 2 秒）。先の「単色・中間色なし」を本指示が置換）。
- *
- *  濃度 = clamp(直近 TICK_RATE_WINDOW_SECONDS 秒の更新回数/秒 ÷ TICK_FULL_RATE, 最小, 100)%。
- *  TICK_FULL_RATE は「これ以上で最濃」となる更新頻度。再生粒度は 100ms＝最大 10 回/秒で、
- *  その半分（5 回/秒）を最濃に採った。下限は「動いたことが見える」最小濃度。
- *  フェードの時間の唯一源は CSS（dash-tick-fade・2s）。クラスの後始末は animationend。 */
-const TICK_RATE_WINDOW_SECONDS = 2;
-const TICK_FULL_RATE = 5;
-const TICK_MIN_STRENGTH = 25;
-
-/** 次のターゲット印の移動先の残光（依頼者承認 2026-08-31 →「移動した価格帯の**行全体**に
- *  色を乗せてフェードアウトせよ」で行全体へ変更）。印（horizon_marks）の持ち主行が前回
- *  応答から変わったとき、**移動先の行全体**へ地平色を乗せ、この秒数かけてフェードアウト
- *  する。視覚のフェードの実体は CSS（dash-row-glow・同じ 8s）で、本定数は
- *  「効果がもう終わった印」を再適用しないための賞味期限。再描画では負の animation-delay
- *  （--row-glow-delay）で経過を引き継ぐ（途切れ・再点滅を作らない）。 */
-const NEXT_MOVE_FADE_SECONDS = 8;
-
-/** 発光の適用を遅らせる秒数。**時間基準の統一**（依頼者指示 2026-08-31・v0.9.44）でサーバの
- *  シート計算自体が表示と同じ 12 秒遅延スナップショット（gateway の DISPLAY_DELAY_SECONDS）
- *  になったため、印の移動は検出された時点で既に表示時刻＝**遅延は 0**。
- *  （統一前はここで 12 秒遅らせて同期していた。二重に遅らせると逆に 12 秒遅れる。） */
-const NEXT_MOVE_DELAY_SECONDS = 0;
-
-/** 現在値を中心に表示する水準の本数（片側・依頼者指示 2026-08-30「表示本数が多いので調整。
- *  縦スクロールは必要なし。現在を中心に」）の**上限**。実際の半径は初回描画後に器の実高から
- *  適合させる（fitWindow・縦スクロールが出ない本数まで縮める）。窓の外は**建てない**
- *  （建ててから隠すと「作ってから捨てる」色計算が毎描画発生する・絶対命令 §4.1）。
- *  窓の外の存在は window-note が掲示する（無言の縮退禁止）。 */
-const WINDOW_RADIUS = 15;
-
-/** 期間グループ（依頼者指示 2026-08-30「切り替えできるようにしろ。短期・中期・長期・オール」→
- *  「オール」は「全期間」へ改称 → 「期間も含めて、時間足も**複数選択**できるように」）。
- *
- *  複数選択の区分として意味を持つよう、§4.3 の閾値（1h・1D）で**互いに素な時間足の帯**に
- *  区切る（短期＝1h 未満 / 中期＝1h 以上 1D 未満 / 長期＝1D 以上）。§4.3 の**地平**
- *  （短期＝すべて…・行の「次のターゲット」印）は別概念のまま変えない——地平は累積の候補集合、
- *  こちらは表示フィルタの区分である。期間ボタンはそのグループの時間足をまとめてトグルし、
- *  時間足ピルと**同一の選択集合**を操作する（別のフィルタ軸を作らない）。
- *  グループの中身は DASHBOARD_TIMEFRAMES（唯一源）から切り出す（写しを持たない）。 */
-const TF_GROUPS = (() => {
-  const mediumAt = DASHBOARD_TIMEFRAMES.indexOf('1h');
-  const longAt = DASHBOARD_TIMEFRAMES.indexOf('1D');
-  return Object.freeze([
-    { key: 'short', label: '短期', tfs: DASHBOARD_TIMEFRAMES.slice(0, mediumAt) },
-    { key: 'medium', label: '中期', tfs: DASHBOARD_TIMEFRAMES.slice(mediumAt, longAt) },
-    { key: 'long', label: '長期', tfs: DASHBOARD_TIMEFRAMES.slice(longAt) },
-  ]);
-})();
+// ティック効果（依頼者指示 2026-08-31: **更新頻度**を方向色の濃度で表現し、2 秒でフェード
+//   アウト）・残光の賞味期限・窓の上限・期間グループの切り出しは、いずれも版面ではなく
+//   規則である。所有者は domain（tick_rate / next_target_glow / ladder_window / ladder_scope）で、
+//   ここには数値を持たない。視覚のフェードの実体は CSS（dash-tick-fade・dash-row-glow）で、
+//   クラスの後始末は animationend が行う（タイマーを持たない）。
 
 /** 距離の表記（符号を必ず付ける＝上下が符号だけで読める）。 */
 function formatDistance(value) {
@@ -214,16 +191,18 @@ export function createReachSheetView({
   let tbody = null;
   let message = null;
   let windowNote = null;
-  /** 選択中の時間足（唯一の選択状態。期間ボタンも時間足ピルもこの集合を操作する）。
-   *  既定は全選択。全選択のときはフィルタ自体を通さない＝未知の時間足の行も従来どおり出る
-   *  （絞ったときだけ、選んだ足の行に限定する）。 */
-  let selectedTfs = new Set(DASHBOARD_TIMEFRAMES);
-  /** 全期間（窓なし全量）モード。選択を操作した瞬間に解除される。 */
-  let windowless = false;
-  let tfButtons = [];
+  /** 表示範囲の状態機械（選択中の時間足 ＋ 全期間モード）。規則は domain が持ち、View は
+   *  押されたことを伝えて答えを描くだけ。版面を畳んでも選択は残す（unmount で捨てない）。 */
+  const scope = createLadderScope({ timeframes: DASHBOARD_TIMEFRAMES });
   /** 切替の再描画用に直近の応答を保つ（切替は**発行を生まない**——描き直すだけ）。 */
   let lastResponse = null;
-  let scopeButtons = [];
+  /** 操作子の版面（選択が変われば直近の応答を描き直す＝発行は生まない）。 */
+  const selectors = createLadderSelectorsView({
+    doc,
+    scope,
+    timeframes: DASHBOARD_TIMEFRAMES,
+    onChange: () => { if (lastResponse) render(lastResponse); },
+  });
   /** 走査域の実体（fitWindow が高さを実測する対象）。 */
   let scrollBox = null;
   /** 器の実高に適合させた窓の半径（null＝未適合＝WINDOW_RADIUS を使う）。 */
@@ -234,31 +213,22 @@ export function createReachSheetView({
   let lastCurrentPrice = null;
   /** 直近に動いた向き（'up' | 'down' | null＝まだ動きを見ていない）。 */
   let currentDirection = null;
-  /** ティック効果の濃度（0〜100・更新頻度から算出）。0＝無色（反転帯のまま）。 */
-  let tickStrength = 0;
-  /** 直近の更新時刻（unix 秒・頻度の観測窓）。 */
-  let tickTimes = [];
+  /** ティック効果の濃度（更新頻度 → 濃度の規則は domain/tick_rate.js が持つ）。 */
+  const tickRate = createTickRateMeter();
   /** 現在値が最後に変わった時刻（unix 秒・注入時計で観測）。null＝時計なし or 未観測。 */
   let lastUpdateAt = null;
   /** なめらか再生の外部価格（唯一の書き手・依頼者指示 2026-08-31）。null＝未供給
    *  ＝従来どおり応答の current_price を表示。 */
   let externalPrice = null;
-  /** なめらか再生の水準価格（全行・サーバ並び順。差の計算は可視外の隣接行も要る）。
-   *  各要素 {key, instanceKey, series, smooth}。smooth はサーバ価格を種に tails で上書き。 */
-  let smoothRowsAll = [];
-  /** rowKey → smoothRowsAll の添字。 */
-  const fullIndexByKey = new Map();
+  /** なめらか再生の台帳と距離・差の式（domain/smooth_ladder.js が所有）。差の隣接は
+   *  サーバの全行順で決まるため、可視外の行も台帳に載る。 */
+  const smoothLedger = createSmoothLedger();
   /** 可視行の書き換え先 {fullIndex, priceEl, distanceEl, gapEl}（render で張り直す）。 */
   let levelRowRefs = [];
   /** buildPriceCell が直近に作った価格の文字（buildLevelRow が参照を拾う）。 */
   let builtPriceTextEl = null;
-  /** 次のターゲット印の前回の持ち主（markKey `horizon:side` → rowKey）。null＝初回。 */
-  let lastMarkOwners = null;
-  /** 移動した印の記録（markKey → {at: 発光を**表示する**時刻 unix 秒＝検出＋12s,
-   *  owner: 移動先 rowKey, applied: 現在の版面へ適用済みか}）。 */
-  const markMovedAt = new Map();
-  /** 描画時点の時計（unix 秒・render の冒頭で 1 回だけ取る）。null＝時計なし。 */
-  let renderNowSec = null;
+  /** 「次のターゲット」印の移動 → 行の残光の予定表（domain/next_target_glow.js が所有）。 */
+  const glow = createNextTargetGlow();
   /** MP 借用の掲示文（null＝異常なし）。書き手は合成根（setMpNote）だけ。 */
   let mpNote = null;
   /** 現在値行のその場書き換え先（毎 tick の表再構築を避ける）。 */
@@ -286,13 +256,9 @@ export function createReachSheetView({
     const head = el('div', { className: 'dash-panel-head' });
     head.appendChild(el('h2', { className: 'dash-sheet-title', textContent: '価格ラダー' }));
     // リード文（説明の段落）は出さない（依頼者指示 2026-08-31: 削除・第 2 表と同じ）。
-    // 期間と時間足は 1 行に並べる（依頼者指示 2026-08-30。境界の余白は CSS の
-    //   .dash-ladder-selectors の gap が持つ＝両グループの内側の間隔より一段広い）。
-    const selectors = el('div', { className: 'dash-ladder-selectors' });
-    selectors.appendChild(buildScopeBar());
-    selectors.appendChild(buildTfBar());
-    head.appendChild(selectors);
-    syncSelectors();   // 初期の見た目も選択状態（唯一源）から導く（再 mount でもずれない）。
+    // 期間と時間足の操作子は ladder_selectors_view が組んで所有する（版面の並びは不変）。
+    head.appendChild(selectors.build());
+    selectors.sync();   // 初期の見た目も選択状態（唯一源）から導く（再 mount でもずれない）。
     panel.appendChild(head);
 
     const scroll = el('div', { className: 'dash-scroll' });
@@ -324,105 +290,6 @@ export function createReachSheetView({
 
     host.appendChild(root);
     return root;
-  }
-
-  /** 期間の複数選択バー（短期 / 中期 / 長期 ＋ 全期間）。
-   *  期間ボタンは自分のグループの時間足を selectedTfs へまとめてトグルする（時間足ピルと
-   *  同一の選択集合＝フィルタ軸を 2 本にしない）。全期間は窓なし全量のモード。
-   *  切替は**描き直すだけ**で発行を生まない（発行判定は sheet_poller の唯一責務のまま）。 */
-  function buildScopeBar() {
-    const bar = el('div', { className: 'dash-ladder-scope', role: 'group' });
-    scopeButtons = TF_GROUPS.map((group) => {
-      const button = el('button', {
-        className: 'dash-ladder-scope-btn',
-        type: 'button',
-        textContent: group.label,
-        dataset: { scope: group.key },
-      });
-      button.addEventListener('click', () => {
-        windowless = false;
-        const allOn = group.tfs.every((tf) => selectedTfs.has(tf));
-        for (const tf of group.tfs) {
-          if (allOn) selectedTfs.delete(tf); else selectedTfs.add(tf);
-        }
-        syncSelectors();
-        if (lastResponse) render(lastResponse);
-      });
-      bar.appendChild(button);
-      return button;
-    });
-    const allButton = el('button', {
-      className: 'dash-ladder-scope-btn',
-      type: 'button',
-      textContent: '全期間',
-      dataset: { scope: 'all' },
-    });
-    allButton.addEventListener('click', () => {
-      // 全期間 = 全選択＋窓なし。もう一度押すと窓ありへ戻る（選択は全選択のまま）。
-      windowless = !windowless;
-      if (windowless) selectedTfs = new Set(DASHBOARD_TIMEFRAMES);
-      syncSelectors();
-      if (lastResponse) render(lastResponse);
-    });
-    bar.appendChild(allButton);
-    scopeButtons.push(allButton);
-    return bar;
-  }
-
-  /** 期間ボタン・全期間・時間足ピルの見た目を選択状態（唯一源）から導き直す。 */
-  function syncSelectors() {
-    for (const button of scopeButtons) {
-      const group = TF_GROUPS.find((g) => g.key === button.dataset.scope);
-      const active = group
-        ? group.tfs.every((tf) => selectedTfs.has(tf))
-        : windowless;   // 全期間ボタン。
-      button.setAttribute?.('aria-pressed', String(active));
-      if (active) button.classList.add('is-active'); else button.classList.remove('is-active');
-    }
-    for (const button of tfButtons) {
-      const timeframe = button.dataset.timeframe;
-      const tone = DASHBOARD_TIMEFRAMES.indexOf(timeframe);
-      const on = selectedTfs.has(timeframe);
-      button.setAttribute?.('aria-pressed', String(on));
-      const pill = button.children[0];
-      if (pill) {
-        if (on) pill.classList.add(`dash-tf-r${tone}`);
-        else pill.classList.remove(`dash-tf-r${tone}`);
-      }
-    }
-  }
-
-  /** 時間足の選択バー（依頼者指示 2026-08-30「時間足も選択できるように」。トグル・既定は
-   *  全選択）。見た目は行の時間足ピル（dash-tf-pill・足別トーン）と同じ語彙で、外した足は
-   *  トーンを外した無彩のピルにする（薄さで階層を作らない・規約 4）。切替は描き直すだけで
-   *  発行を生まない。 */
-  function buildTfBar() {
-    const bar = el('div', { className: 'dash-ladder-tf-bar', role: 'group' });
-    tfButtons = DASHBOARD_TIMEFRAMES.map((timeframe, tone) => {
-      const button = el('button', {
-        className: 'dash-ladder-tf-btn',
-        type: 'button',
-        dataset: { timeframe },
-      });
-      // 初期状態は selectedTfs から導く（再 mount しても選択が版面とずれない）。
-      const initiallyOn = selectedTfs.has(timeframe);
-      const pill = el('u', {
-        className: initiallyOn ? `dash-tf-pill dash-tf-r${tone}` : 'dash-tf-pill',
-        textContent: timeframe,
-      });
-      button.appendChild(pill);
-      button.setAttribute?.('aria-pressed', String(initiallyOn));
-      button.addEventListener('click', () => {
-        windowless = false;
-        if (selectedTfs.has(timeframe)) selectedTfs.delete(timeframe);
-        else selectedTfs.add(timeframe);
-        syncSelectors();
-        if (lastResponse) render(lastResponse);
-      });
-      bar.appendChild(button);
-      return button;
-    });
-    return bar;
   }
 
   /** 凡例（モックの .legend）。読み方を版面の外へ持ち出させない。 */
@@ -462,76 +329,24 @@ export function createReachSheetView({
     return holder;
   }
 
-  /** 行の論理識別子（印の持ち主の同定用）。label は同名でも時間足で別行になりうるので併記。
-   *  価格は含めない——水準の値が動いただけの行を「移動」と誤認しない。 */
-  function rowKeyOf(row) {
-    return `${row.timeframe}|${row.label}`;
-  }
-
-  /** 印（horizon:side）→ 持ち主行の対応表。側は距離の符号（buildMarks と同じ定義）。 */
-  function markOwnersOf(rows) {
-    const owners = new Map();
-    for (const row of rows) {
-      const side = Number(row.distance) >= 0 ? 'up' : 'down';
-      for (const key of (Array.isArray(row.horizon_marks) ? row.horizon_marks : [])) {
-        owners.set(`${key}:${side}`, rowKeyOf(row));
-      }
-    }
-    return owners;
-  }
-
-  /** 印の移動を検出して記録する（依頼者承認 2026-08-31）。全行（窓の外も含む）で突合する
-   *  ——移動先が窓の外なら何も光らないだけで、記録の意味は変わらない。時計が無い環境では
-   *  効果ごと出さない（経過を測れないまま光らせると消えない残光を発明する）。 */
-  function trackNextTargetMoves(rows) {
-    renderNowSec = typeof now === 'function' ? now() : null;
-    const owners = markOwnersOf(rows);
-    if (renderNowSec !== null && lastMarkOwners !== null) {
-      for (const [mark, owner] of owners) {
-        const before = lastMarkOwners.get(mark);
-        if (before !== undefined && before !== owner) {
-          // 表示は 12 秒遅延の再生系列なので、発光も同じだけ遅らせて予約する（同期）。
-          markMovedAt.set(mark, {
-            at: renderNowSec + NEXT_MOVE_DELAY_SECONDS, owner, applied: false,
-          });
-        }
-      }
-    }
-    lastMarkOwners = owners;
-    // 表を作り直すと発光のクラスも消えるので、表示中の予約は張り直し対象へ戻す
-    //   （負の delay で残り時間から続く＝再点滅にはならない）。
-    for (const entry of markMovedAt.values()) {
-      entry.applied = false;
-    }
-    if (renderNowSec === null) {
-      markMovedAt.clear();   // 時計が無い環境では効果ごと出さない（消えない残光を発明しない）。
-    }
-  }
-
   /** 予約済みの行発光のうち、表示時刻に達したものを可視行へ乗せる（render 直後と
-   *  なめらか再生の tick 適用時の両方から呼ばれる＝render の合間でも点灯する）。 */
+   *  なめらか再生の tick 適用時の両方から呼ばれる＝render の合間でも点灯する）。
+   *  「いつ・どれを一度だけ」は予定表（domain）が決め、ここは乗せるだけ。 */
   function applyDueRowGlows() {
-    if (markMovedAt.size === 0 || levelRowRefs.length === 0) {
+    if (glow.size() === 0 || levelRowRefs.length === 0) {
       return;
     }
     const clockNow = typeof now === 'function' ? now() : null;
     if (clockNow === null) {
       return;
     }
-    for (const [mark, entry] of markMovedAt) {
-      if (clockNow - entry.at >= NEXT_MOVE_FADE_SECONDS) {
-        markMovedAt.delete(mark);   // 終わった効果は再適用しない（賞味期限）。
-        continue;
-      }
-      if (entry.applied || clockNow < entry.at) {
-        continue;   // 適用済み・またはまだ表示時刻（検出＋12s）に達していない。
-      }
-      const ref = levelRowRefs.find((r) => r.rowKey === entry.owner);
+    for (const due of glow.due(clockNow)) {
+      const ref = levelRowRefs.find((r) => r.rowKey === due.owner);
       if (!ref) {
         continue;   // 窓の外＝光らせる先が無い（記録は寿命まで保つ）。
       }
-      startRowGlow(ref.tr, clockNow - entry.at);
-      entry.applied = true;
+      startRowGlow(ref.tr, due.elapsed);
+      glow.markApplied(due.mark);
     }
   }
 
@@ -665,7 +480,7 @@ export function createReachSheetView({
     tr.appendChild(gapCell);
     // なめらか再生の書き換え先（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
     //   distance の文字は下の distanceCell 内 span（既に作成済み）を使う。
-    const fullIndex = fullIndexByKey.get(rowKeyOf(row));
+    const fullIndex = smoothLedger.indexOf(rowKeyOf(row));
     if (fullIndex !== undefined) {
       levelRowRefs.push({
         fullIndex,
@@ -769,7 +584,7 @@ export function createReachSheetView({
     // なめらか再生が有効なら外部価格が唯一の書き手（参照実装 LiveTickPlayer の
     //   suppressPriceUpdate と同じ規約・依頼者指示 2026-08-31）。
     const shown = externalPrice !== null ? externalPrice : currentPrice;
-    const direction = currentDirection === null || tickStrength <= 0
+    const direction = currentDirection === null || tickRate.strength() <= 0
       ? '' : ` dash-ladder-current-${currentDirection}`;
     // 現在値の文字色は直近の向きに追従して**残る**（依頼者指示 2026-08-31。フェードで消える
     //   発光クラスとは別の恒常クラス＝animationend では外さない）。
@@ -782,7 +597,7 @@ export function createReachSheetView({
     //   CSS の時間へ正確に同期する（外し損ねたクラスは次の再構築で発光を再生してしまう）。
     if (typeof tr.addEventListener === 'function') {
       tr.addEventListener('animationend', () => {
-        tickStrength = 0;
+        tickRate.fade();
         tr.classList.remove('dash-ladder-current-up');
         tr.classList.remove('dash-ladder-current-down');
       });
@@ -862,7 +677,7 @@ export function createReachSheetView({
       }
       currentUpdateEl.textContent = `UPDATE:${formatReachTimestamp(lastUpdateAt)}`;
     }
-    if (previous !== null && currentDirection !== null && tickStrength > 0) {
+    if (previous !== null && currentDirection !== null && tickRate.strength() > 0) {
       // 現在値の文字色の恒常クラス（向きが変わったときだけ付け替える）。
       const otherDir = currentDirection === 'up' ? 'down' : 'up';
       currentRowEl.classList.remove(`dash-ladder-current-dir-${otherDir}`);
@@ -881,26 +696,18 @@ export function createReachSheetView({
     refreshSmoothNumbers();
   }
 
-  /** 更新 1 回を頻度の観測窓へ入れ、濃度を出す（時計が無い環境は最小濃度＝発明しない）。 */
+  /** 更新 1 回を頻度の計器へ入れる（規則は domain/tick_rate.js・時計は注入のまま）。 */
   function registerTickEffect() {
-    const t = typeof now === 'function' ? now() : null;
-    if (t === null) {
-      tickStrength = TICK_MIN_STRENGTH;
-      return;
-    }
-    tickTimes.push(t);
-    tickTimes = tickTimes.filter((at) => t - at < TICK_RATE_WINDOW_SECONDS);
-    const perSecond = tickTimes.length / TICK_RATE_WINDOW_SECONDS;
-    tickStrength = Math.min(100,
-      Math.max(TICK_MIN_STRENGTH, (perSecond / TICK_FULL_RATE) * 100));
+    tickRate.register(typeof now === 'function' ? now() : null);
   }
 
   /** 濃度をカスタムプロパティで渡す（色の値そのものは書かない＝色の唯一源を侵さない）。 */
   function setTickStrengthOn(row) {
+    const value = String(Math.round(tickRate.strength()));
     if (typeof row.style.setProperty === 'function') {
-      row.style.setProperty('--tick-strength', String(Math.round(tickStrength)));
+      row.style.setProperty('--tick-strength', value);
     } else {
-      row.style['--tick-strength'] = String(Math.round(tickStrength));
+      row.style['--tick-strength'] = value;
     }
   }
 
@@ -914,28 +721,24 @@ export function createReachSheetView({
   /**
    * なめらか再生の数値（価格・距離・差）を可視行へ書き直す（依頼者指示 2026-08-31）。
    *
-   * 式はサーバの参照定義（domain/price_ladder.py）そのもの:
-   *   距離 = 水準価格 − 現在値 / 差 = 直前行（サーバ全行順）の水準価格 − 自行の水準価格。
-   * ここで使う材料（水準価格＝tails・現在値＝再生価格）はどちらもサーバ計算の値であり、
-   * フロントが統計や並びを再計算するわけではない（並び・地平・p は 1s の応答描画が持ち主）。
+   * **式は持たない**——距離・差の定義（サーバの参照定義 domain/price_ladder.py と同じ）は
+   * domain/smooth_ladder.js が唯一源で、ここは受け取った数を文字にして書くだけである。
    */
   function refreshSmoothNumbers() {
-    // 発光の表示時刻（検出＋12s）は render の合間に来ることが多い。tick 適用（100ms 粒度）を
-    //   契機に予約を確認する＝発光が次の内容変化を待たされない。
+    // 発光の表示時刻は render の合間に来ることが多い。tick 適用（100ms 粒度）を契機に予約を
+    //   確認する＝発光が次の内容変化を待たされない。
     applyDueRowGlows();
     if (externalPrice === null) {
       return;
     }
     for (const ref of levelRowRefs) {
-      const entry = smoothRowsAll[ref.fullIndex];
-      if (!entry || !Number.isFinite(entry.smooth)) {
+      const numbers = smoothLedger.numbersAt(ref.fullIndex, externalPrice);
+      if (numbers === null) {
         continue;
       }
-      const prev = ref.fullIndex === 0 ? null : smoothRowsAll[ref.fullIndex - 1];
-      setTextIfChanged(ref.priceEl, formatPrice(entry.smooth));
-      setTextIfChanged(ref.distanceEl, formatDistance(entry.smooth - externalPrice));
-      setTextIfChanged(ref.gapEl, prev === null || !Number.isFinite(prev.smooth)
-        ? '' : formatGap(prev.smooth - entry.smooth));
+      setTextIfChanged(ref.priceEl, formatPrice(numbers.price));
+      setTextIfChanged(ref.distanceEl, formatDistance(numbers.distance));
+      setTextIfChanged(ref.gapEl, numbers.gap === null ? '' : formatGap(numbers.gap));
     }
   }
 
@@ -948,18 +751,10 @@ export function createReachSheetView({
    *   （View は tails のキー構造を知らない）。
    */
   function updateLevelValues(lookup) {
-    if (externalPrice === null || typeof lookup !== 'function' || smoothRowsAll.length === 0) {
+    if (externalPrice === null || typeof lookup !== 'function' || smoothLedger.size() === 0) {
       return;
     }
-    for (const entry of smoothRowsAll) {
-      if (!entry.instanceKey || !entry.series) {
-        continue;
-      }
-      const value = lookup(entry.instanceKey, entry.series);
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        entry.smooth = value;
-      }
-    }
+    smoothLedger.applyTails(lookup);
     refreshSmoothNumbers();
   }
 
@@ -996,7 +791,7 @@ export function createReachSheetView({
         registerTickEffect();
       } else {
         // 更新の無い描画周期では向きの状態だけ落とす（視覚フェードは CSS の 2 秒が完結させる）。
-        tickStrength = 0;
+        tickRate.fade();
       }
       if (Number.isFinite(currentPrice)) {
         if (lastCurrentPrice === null || currentPrice !== lastCurrentPrice) {
@@ -1008,18 +803,12 @@ export function createReachSheetView({
       }
     }
     const allRows = Array.isArray(response.rows) ? response.rows : [];
-    // 次のターゲット印の移動検出（依頼者承認 2026-08-31）。突合は表の構築前に 1 回。
-    trackNextTargetMoves(allRows);
+    // 次のターゲット印の移動検出（依頼者承認 2026-08-31）。突合は表の構築前に 1 回、全行で
+    //   （移動先が窓の外なら光らないだけ）。予定表は domain が持つ＝時計は注入のまま渡す。
+    glow.track(allRows, typeof now === 'function' ? now() : null);
     // なめらか再生の水準台帳（依頼者指示 2026-08-31: 距離・価格・差もライブチャート粒度）。
     //   種はサーバ価格。並びはサーバの全行順（差の隣接はこの順で決まる・絞り込みと無関係）。
-    smoothRowsAll = allRows.map((row) => ({
-      key: rowKeyOf(row),
-      instanceKey: Array.isArray(row.instance_key) ? row.instance_key : null,
-      series: typeof row.series === 'string' && row.series ? row.series : null,
-      smooth: Number(row.price),
-    }));
-    fullIndexByKey.clear();
-    smoothRowsAll.forEach((entry, index) => fullIndexByKey.set(entry.key, index));
+    smoothLedger.reset(allRows);
     levelRowRefs = [];
     // 契約のズレ（未知の地平キー）は色の不在として紛れるので、必ず文字で掲示する。
     const unknown = unknownHorizonKeys(allRows);
@@ -1035,25 +824,18 @@ export function createReachSheetView({
     }
     message.textContent = notes.join(' / ');
 
-    // 絞り込み: 選択中の時間足（期間ボタンとピルが操作する唯一の集合）。並びはサーバのまま
-    //   （順序を再計算しない）。全選択のときはフィルタを通さない（未知の足も従来どおり）。
-    const tfNarrowed = !windowless && selectedTfs.size !== DASHBOARD_TIMEFRAMES.length;
-    const rows = tfNarrowed
-      ? allRows.filter((row) => selectedTfs.has(String(row.timeframe)))
-      : allRows;
-    // 現在値行の位置: 全量ではサーバの current_index が唯一源（範囲外の指定は端へ倒す）。
-    //   絞った範囲では行が抜けるため、同じ定義（現在値より上＝距離が正の行数）で**数え直す**
-    //   （数値の再計算ではない。距離の符号はサーバの値そのもの）。
-    const at = tfNarrowed
-      ? rows.filter((row) => Number(row.distance) >= 0).length
-      : Math.max(0, Math.min(Number(response.current_index) || 0, rows.length));
+    // 絞り込みと現在値行の位置は状態機械（domain/ladder_scope.js）が決める。並びはサーバの
+    //   まま（順序を再計算しない）。全選択のときはフィルタを通さない（未知の足も従来どおり）。
+    const rows = scope.filter(allRows);
+    const at = scope.currentIndexOf(rows, response.current_index);
     // 現在値を中心とした窓だけを建てる（縦スクロールを不要にする）。半径は器の実高への
     //   適合値（fitWindow）を優先し、未適合は上限 WINDOW_RADIUS。窓の外の行はここで
     //   **建てない**——建ててから隠すと捨てる色計算が毎描画発生する。
     //   全期間は窓なし（全量。従来の表示に戻す選択肢）。
     const radius = fittedRadius ?? WINDOW_RADIUS;
-    const start = windowless ? 0 : Math.max(0, at - radius);
-    const end = windowless ? rows.length : Math.min(rows.length, at + radius);
+    const { start, end } = sliceWindow({
+      total: rows.length, at, radius, windowless: scope.isWindowless(),
+    });
     const visible = rows.slice(start, end);
     const currentAt = at - start;
     visible.forEach((row, index) => {
@@ -1080,27 +862,26 @@ export function createReachSheetView({
    * **一度だけ**描き直す。以後の周期描画は適合済みの半径で建てるため、描き直しは
    * 繰り返されない（縮める方向にしか動かない・再入ガードつき）。
    * 実高を測れない環境（テストダブル）は何もしない＝WINDOW_RADIUS のまま（検定は決定的）。
+   *
+   * ここが持つのは**測定**だけである（clientHeight / scrollHeight / 行の実高）。測った数から
+   * 半径を決める算術は domain/ladder_window.js の `fitRadius` が唯一源で、View は数を渡して
+   * 答えを受け取る。
    */
   function fitWindow() {
-    if (fitting || windowless || !scrollBox || !tbody) {
-      return;
-    }
-    const boxH = scrollBox.clientHeight;
-    const contentH = scrollBox.scrollHeight;
-    if (typeof boxH !== 'number' || typeof contentH !== 'number' || boxH <= 0 || contentH <= boxH) {
+    if (fitting || scope.isWindowless() || !scrollBox || !tbody) {
       return;
     }
     const first = tbody.children[0];
-    const rowH = first && typeof first.getBoundingClientRect === 'function'
-      ? first.getBoundingClientRect().height : 0;
-    if (!rowH) {
-      return;
-    }
-    const headerH = contentH - tbody.children.length * rowH;
-    const capacity = Math.floor((boxH - headerH) / rowH);
-    const next = Math.max(1, Math.floor((capacity - 1) / 2));
-    if (next >= (fittedRadius ?? WINDOW_RADIUS)) {
-      return;   // 縮める方向にしか動かない（拡縮の往復で毎描画作り直さない）。
+    const next = fitRadius({
+      boxHeight: scrollBox.clientHeight,
+      contentHeight: scrollBox.scrollHeight,
+      rowHeight: first && typeof first.getBoundingClientRect === 'function'
+        ? first.getBoundingClientRect().height : 0,
+      rowCount: tbody.children.length,
+      currentRadius: fittedRadius ?? WINDOW_RADIUS,
+    });
+    if (next === null) {
+      return;   // 溢れていない・測れない・縮まらない（拡縮の往復で毎描画作り直さない）。
     }
     fittedRadius = next;
     if (lastResponse) {
@@ -1132,22 +913,17 @@ export function createReachSheetView({
     tbody = null;
     message = null;
     windowNote = null;
-    scopeButtons = [];
-    tfButtons = [];
+    selectors.reset();
     lastResponse = null;
     scrollBox = null;
     fittedRadius = null;
     lastCurrentPrice = null;
     currentDirection = null;
-    tickStrength = 0;
-    tickTimes = [];
+    tickRate.reset();
     lastUpdateAt = null;
     externalPrice = null;
-    lastMarkOwners = null;
-    markMovedAt.clear();
-    renderNowSec = null;
-    smoothRowsAll = [];
-    fullIndexByKey.clear();
+    glow.clear();
+    smoothLedger.clear();
     levelRowRefs = [];
     builtPriceTextEl = null;
     currentRowEl = null;
