@@ -1,4 +1,4 @@
-"""``indigators/`` を dev_paths 台帳へ載せる根拠を実測で固定する（ISSUE-479 Wave2 2-1）。
+"""indigators/ を dev_paths 台帳へ載せる根拠を実測で固定する（ISSUE-479 Wave2 2-1）。
 
 なぜ台帳へ載せるのか:
     moving_averages（MQL 忠実 MA の共有実装）は indigators/moving_averages に住む
@@ -9,7 +9,7 @@
     ``tools/dev_paths.txt`` 1 点であるべきで、モジュールの副作用であってはならない。
 
 台帳の規律（``tools/dev_paths.txt`` の :17-19）との関係:
-    載せてよいのは「衝突しない固有名を露出するツリー」だけである。``indigators/`` を
+    載せてよいのは「衝突しない固有名を露出するツリー」だけである。indigators/ を
     載せると、その直下の全ディレクトリが（``__init__.py`` の有無に関わらず、PEP 420 の
     名前空間パッケージとして）トップレベル名になる。したがって「``__init__.py`` を持つ
     3 件だけを見る」調査では不十分で、**直下の全エントリが露出する名前**を対象に、
@@ -17,11 +17,11 @@
     本ファイルはその実測を検定として常設する（調査結果を文章で残すのではなく検査にする）。
 
 固定する不変条件:
-    1. 台帳が ``indigators`` を含み、そこから moving_averages が解決できる。
-    2. ``indigators/`` が露出するどのトップレベル名も、台帳へ載せる前は解決先を持たない
+    1. 台帳が indigators を含み、そこから moving_averages が解決できる。
+    2. indigators/ が露出するどのトップレベル名も、台帳へ載せる前は解決先を持たない
        （＝新規に覆い隠すものが 1 件も無い）。
-    3. 解決先はすべて ``indigators/`` ツリーの内側である。
-    4. 台帳から組み立てた ``sys.path`` に ``indigators`` が現れるのはちょうど 1 回。
+    3. 解決先はすべて indigators/ ツリーの内側である。
+    4. 台帳から組み立てた ``sys.path`` に indigators が現れるのはちょうど 1 回。
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _abs_entries(entries: "list[str]") -> "list[str]":
 
 
 def _exposed_names() -> "list[str]":
-    """``indigators/`` を ``sys.path`` へ載せたときに生まれるトップレベル名の全集合。
+    """indigators/ を ``sys.path`` へ載せたときに生まれるトップレベル名の全集合。
 
     ディレクトリは名前空間パッケージ（PEP 420）として、``.py`` はモジュールとして
     露出する。``__init__.py`` の有無で絞らないのが本関数の要点である。
@@ -118,7 +118,7 @@ def _resolve_in_subprocess(names: "list[str]", pythonpath: "list[str]", cwd: Pat
 
 
 class TestTheLedgerResolvesTheSharedIndicatorLibraries:
-    """台帳 1 点で ``indigators/`` の固有名が解決できること。"""
+    """台帳 1 点で indigators/ の固有名が解決できること。"""
 
     def test_the_ledger_carries_the_indigators_tree(self):
         assert _ENTRY in _ledger_relative(), (
@@ -148,7 +148,7 @@ class TestTheIndigatorsEntryShadowsNothing:
         )
 
     def test_no_exposed_name_had_a_resolution_before_the_entry(self, tmp_path: Path):
-        """``indigators`` を外した構成では、露出する名前が 1 つも解決しない。"""
+        """indigators を外した構成では、露出する名前が 1 つも解決しない。"""
         without = [p for p in _abs_entries(_ledger_relative()) if p != str(_INDIGATORS)]
         got = _resolve_in_subprocess(_exposed_names(), without, tmp_path)
         collisions = {n: origin for n, origin in got.items() if origin is not None}
@@ -158,7 +158,7 @@ class TestTheIndigatorsEntryShadowsNothing:
         )
 
     def test_every_exposed_name_resolves_inside_the_indigators_tree(self, tmp_path: Path):
-        """台帳込みの構成では、露出する名前がすべて ``indigators/`` の内側から解決する。"""
+        """台帳込みの構成では、露出する名前がすべて indigators/ の内側から解決する。"""
         got = _resolve_in_subprocess(
             _exposed_names(), _abs_entries(_ledger_relative()), tmp_path
         )
@@ -172,7 +172,7 @@ class TestTheIndigatorsEntryShadowsNothing:
         assert outside == {}, outside
 
     def test_the_entry_appears_exactly_once_on_the_path(self, tmp_path: Path):
-        """台帳から組み立てた ``sys.path`` に ``indigators`` はちょうど 1 回だけ現れる。"""
+        """台帳から組み立てた ``sys.path`` に indigators はちょうど 1 回だけ現れる。"""
         code = (
             "import json, sys\n"
             "print(json.dumps(sys.path))\n"

@@ -312,7 +312,7 @@ def handle_market_profile(
         barw_val = 0.0
     # to（リプレイ時間カーソル・UNIX 秒）— 不正・None は None（全期間・後方互換）。
     #   ISSUE-129: to はリプレイの単一時計（as-seen-at-t の T）。zp はこれをそのまま「現在時刻」
-    #   として読む（now=to・_handle_zp）。旧 ``asof`` パラメータは廃止（受信しても無視＝無害）。
+    #   として読む（now=to・_handle_zp）。旧 asof パラメータは廃止（受信しても無視＝無害）。
     to_ts = _parse_to(to)
     # from（ローリング窓の下限 time・増分2 A）／today（スナップショット・増分2 C）。予約語 from は kwargs 経由。
     from_ts = _parse_from(kwargs.get("from"))
@@ -454,7 +454,7 @@ def _handle_zp(
     ISSUE-129（単一時計）: ``to_ts`` はリプレイの現在時刻そのもの（as-seen-at-t の T・リビール秒粒度）。
     指定時は compute の「現在時刻」now を to_ts で読む＝境界日はライブと同一機構（未完了日の経過分
     クランプ）で [セッション始端, to] の部分 z になり、1D でも日内推移が成長する。None は実時計
-    （ライブ＝全期間・現行挙動）。旧 ``asof`` パラメータは廃止（now の二重化を排除）。
+    （ライブ＝全期間・現行挙動）。旧 asof パラメータは廃止（now の二重化を排除）。
     """
     symbol = market_profile_dwell.resolve_symbol(ref)
     if symbol is None:
