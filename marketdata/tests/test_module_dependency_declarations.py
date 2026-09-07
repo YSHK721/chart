@@ -29,6 +29,9 @@ _ALLOWED: "dict[str, set[str]]" = {
     # のみ。pandas を持ち込むと「pandas を使えない純層も同じ台帳から導出する」という分離目的
     # （ISSUE-261）が崩れる。
     "tf_ledger.py": set(),
+    # Dukascopy ネイティブ生列の唯一源（ISSUE-502 C-1）。**依存ゼロ**の定数モジュール
+    # （csv_schema と対称）。産出者 dukascopy_source と下流 ingest がここから引く。
+    "tick_raw_schema.py": set(),
     # セッション日境界の唯一源。週/月ラベル規則は resample、暦ラベル tf 集合と期間先頭日の
     # 暦算術は tf_ledger（いずれも唯一源）へ委譲する。この 2 エントリを消すと、同じ暦算術の
     # 手書き複製が本モジュールへ復活する（ISSUE-479 M-3）。

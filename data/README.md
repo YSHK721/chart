@@ -144,7 +144,7 @@ data/marketdata/
 |---|---|---|
 | `jp225_m1.csv` ＋ `rollups/jp225_m1_*` | `indigators/indicator_ui/tools/export_jp225_m1.py` | `--start/--end` 省略で最終行→最新を追記（rollups も同時更新） |
 | `jp225_daily.csv` | `indigators/indicator_ui/tools/export_jp225_csv.py` | 最新まで全件再生成（小容量） |
-| `ticks/<y/m/d>/` | `simulator/tools/fetch_ticks_ymd.py` | `--start/--end` 指定・既取得日/空日はスキップ（resume） |
+| `ticks/<y/m/d>/` | `tools/fetch_ticks_ymd.py` | `--start/--end` 指定・既取得日/空日はスキップ（resume） |
 | `jp225_tick_m1.csv` ＋ `rollups/jp225_tick/*` | `tools/build_tick_rollup.py` | 既定で増分（M1 は最終日以降を追記・rollup は state 差分）。`--full` で全再構築 |
 
 例（いずれも `PYTHONPATH=/workspaces/app` で実行）：
@@ -154,7 +154,7 @@ data/marketdata/
 python3 indigators/indicator_ui/tools/export_jp225_m1.py
 
 # ティックを期間指定で取得（y/m/d・resume 対応）
-python3 simulator/tools/fetch_ticks_ymd.py --start 2025-01-01 --end 2026-06-26 \
+python3 tools/fetch_ticks_ymd.py --start 2025-01-01 --end 2026-06-26 \
     --root data/marketdata/ticks
 
 # ティック由来：取得(append)→tick M1→上位足ロールアップ を一括（既定=増分）

@@ -71,7 +71,7 @@ pandas / lightweight-charts / Dukascopy 等の技術は adapter に隔離し、u
 | `walk_forward_cli.py` | ウォークフォワード検証。 |
 | `optimize_cli.py` | パラメータ最適化。 |
 | `run_weekly_vol_band_cli.py` | 週次ボラバンド戦略の実行。 |
-| `fetch_ticks_dukascopy.py` / `fetch_ticks_ymd.py` | ティック取得（範囲指定 / y-m-d 構成）。 |
+| `fetch_ticks_dukascopy.py` | ティック取得（範囲指定）。y-m-d 構成の取得ランナーは `tools/fetch_ticks_ymd.py`（ISSUE-502 C-1 で ops 層へ移動）。 |
 | `ingest_ticks.py` | raw ティック → canonical tick-store。 |
 | `export_trade_markers.py` | チャート用トレードマーカー出力。 |
 
