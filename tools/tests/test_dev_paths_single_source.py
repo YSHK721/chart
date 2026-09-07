@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -21,7 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.install_dev_paths import path_entries
+# 台帳の読み手は中立核が所有する（ISSUE-502 C-1）。運用スクリプト層は呼ぶだけ。
+from common.dev_paths import path_entries
 
 _ROOT = Path(__file__).resolve().parents[2]
 _LEDGER = _ROOT / "tools" / "dev_paths.txt"
@@ -61,6 +63,68 @@ def test_pth_installer_derives_from_the_ledger():
     assert '"market_profile"' not in src, (
         "install_dev_paths.py にパスの写しがあります（台帳から導出してください）"
     )
+
+
+def test_the_ledger_reader_lives_in_the_neutral_kernel():
+    """読み手の所有者が中立核である（ISSUE-502 C-1）。
+
+    識別力: ``path_entries`` の本体を ``tools/install_dev_paths.py`` へ戻すと Red になる。
+    読み手には運用スクリプト層と simulator の sim_ui という別アクターの消費者が居るため、
+    どちらかに置くと他方からの依存辺が生まれる（simulator → tools は循環になる）。
+    """
+    import common.dev_paths as neutral
+    import tools.install_dev_paths as installer
+
+    assert neutral.path_entries.__module__ == "common.dev_paths"
+    # 同一性で見る（等価な第 2 実装を「同じ」と見なさない）。運用スクリプト層が自前の
+    # def path_entries を持ち直すと、値が等しくても別オブジェクトになり本 assert が落ちる。
+    assert installer.path_entries is neutral.path_entries, (
+        "台帳の読み手が運用スクリプト層に再定義されています。"
+        " common.dev_paths.path_entries を呼ぶだけにしてください（ISSUE-502 C-1）。"
+    )
+    assert neutral.LEDGER_PATH == _LEDGER, "中立核が読む台帳が唯一源と食い違っています"
+
+
+def test_the_installer_bootstraps_without_the_pth_it_installs():
+    """**実行して固定**: .pth が未設置の環境でも .pth 生成器が起動できる（ISSUE-502 C-1）。
+
+    なぜ必要か（新しい環境でだけ死ぬ欠陥）:
+        本 repo の解決機構は venv の .pth だが、それを**設置するのが install_dev_paths.py
+        自身**である。読み手を中立核（common.dev_paths）へ移したことで、生成器は
+        `import common` を要求するようになった。この import を .pth に頼ると
+        「.pth が無いから生成器を起動する → 生成器が .pth 由来の import で死ぬ」という
+        循環になり、setup_worktree.sh の**初回実行だけ**が壊れる。スイートは緑のまま
+        人間の手順が死ぬ、ISSUE-482 と同型の欠陥である。
+
+        実測（2026-09-07・ブートストラップ 2 行を外した状態）:
+        ModuleNotFoundError: No module named 'common'。
+
+    起動形: ``-S``（site を読まない＝.pth を無効化）＋ ``-I``（cwd・呼出側 env を混ぜない）。
+    副作用を避けるためモジュール本体だけを実行し、エントリガードの内側へは入らない
+    （main() は venv へ .pth を書くため）。
+    """
+    probe = (
+        "import os, sys, runpy\n"
+        "script = sys.argv[1]\n"
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)))\n"
+        "ns = runpy.run_path(script, run_name='__pth_bootstrap_probe__')\n"
+        "print('\\n'.join(ns['LINES']))\n"
+    )
+    installer = _ROOT / "tools" / "install_dev_paths.py"
+    proc = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe, str(installer)],
+        cwd=str(_ROOT),
+        env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert proc.returncode == 0, (
+        ".pth 未設置の環境で .pth 生成器が起動できません（ブートストラップの循環）。\n"
+        f"  stderr（末尾）: {proc.stderr[-800:]}"
+    )
+    assert "ModuleNotFoundError" not in proc.stderr, proc.stderr[-800:]
+    got = proc.stdout.split()
+    want = [str(_ROOT if e == "." else _ROOT / e) for e in _ledger_relative()]
+    assert got == want, f"素の起動で導出したパスが台帳と食い違います: {got}"
 
 
 def test_pytest_pythonpath_matches_the_ledger():

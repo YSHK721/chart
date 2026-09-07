@@ -4,7 +4,8 @@
 「tick tree レイアウト ``<DATA_DIR>/ticks/YYYY/MM/DD/<symbol>_ticks.parquet`` の単一権威
 （レイアウト変更を本所 1 箇所に閉じる）」と宣言している。しかし実際には
 ``tools/acquire_marketdata.py`` / ``tools/build_tick_rollup.py`` が ``/ticks`` を、
-``simulator/tools/fetch_ticks_ymd.py`` が ``YYYY/MM/DD`` とファイル名を独自に組んでいた。
+``tools/fetch_ticks_ymd.py``（当時の所在は simulator/tools）が ``YYYY/MM/DD`` と
+ファイル名を独自に組んでいた。
 宣言は施行されていなかった。
 
 本テストはリポジトリを AST/文字列で走査し、権威モジュール以外がレイアウトを組んでいないことを

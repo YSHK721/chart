@@ -2,14 +2,24 @@
 
 各日 ``[day, day+1)``（UTC）を :class:`marketdata.DukascopyTickSource` で取得し
   ``<root>/<YYYY>/<MM>/<DD>/JP225_ticks.parquet``
-へ保存する。**resume 対応**: 既存 parquet または空日マーカー（``JP225_ticks.empty``）が
-ある日はスキップする。取得 0 件（休場/未提供）の日は空マーカーを置き再取得を防ぐ。
+へ保存する。**resume 対応**: 既存 parquet または空日マーカーが
+ある日はスキップする（空日マーカーの名は <symbol>_ticks.empty）。
+取得 0 件（休場/未提供）の日は空マーカーを置き再取得を防ぐ。
 進捗は 1 日ごとに ``print(flush=True)`` するため ``nohup`` ログで追跡できる。
 
 ベンダ隔離: dukascopy_python は marketdata adapter（DukascopyTickSource）に閉じる。
 
+所在（ISSUE-502 C-1）:
+    旧所在は simulator/tools/fetch_ticks_ymd.py だったが、本モジュールは simulator を
+    1 行も import せず（依存は marketdata と stdlib のみ）、呼出側も
+    ``tools/acquire_marketdata.py`` / ``tools/build_tick_rollup.py`` / ``tools/live_tick_watch.py``
+    の 3 本すべてが運用スクリプト層である。ベンダからの取得＋不変アーカイブへの landing は
+    ``tools/download_oanda_ticks.py`` / ``tools/ingest_oanda_archive.py`` と同一の役割であり、
+    運用スクリプト層のアクターに属する。旧所在のままだと tools → simulator の辺を 3 本
+    生み、simulator → tools（import パス台帳）と合わせて循環になっていた。
+
 使い方（バックグラウンド自走・セッション非依存）:
-  PYTHONPATH=/workspaces/app nohup python3 simulator/tools/fetch_ticks_ymd.py \
+  PYTHONPATH=/workspaces/app nohup python3 tools/fetch_ticks_ymd.py \
       --start 2025-01-01 --end 2026-06-26 --root data/marketdata/ticks \
       > /workspaces/app/data/marketdata/ticks/fetch.log 2>&1 &
 """
@@ -36,7 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def _day_paths(root: Path, day: dt.datetime) -> "tuple[Path, Path, Path]":
     """``day`` の (ディレクトリ, parquet, .empty マーカー) を返す。
 
-    レイアウトの単一権威は :func:`marketdata.tick_m1.day_parquet_path`（ISSUE-262）。
+    レイアウトの単一権威は marketdata.tick_m1 の day_parquet_path（ISSUE-262）。
     かつてここは ``root/YYYY/MM/DD/JP225_ticks.parquet`` を自前で組んでおり、権威側の宣言
     「レイアウト変更を本所 1 箇所に閉じる」が事実と食い違っていた。
     """

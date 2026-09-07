@@ -15,7 +15,7 @@
                ``marketdata.rollup.incremental_update``・専用サブ dir へ隔離）。
 
 起動時 1 回（:func:`catch_up`）: 既存 tick tree の最新取得日の翌日〜**昨日**までの丸日を
-``simulator.tools.fetch_ticks_ymd.run`` で追い付き取得する（当日は毎分の full-refresh が担当）。
+``tools.fetch_ticks_ymd.run`` で追い付き取得する（当日は毎分の full-refresh が担当）。
 
 データ保全（重要）:
   - tick parquet の再取得は同一ディレクトリの一時ファイルへ書いてから ``os.replace`` で原子
@@ -25,8 +25,9 @@
     ``jp225_m1.csv`` 系には触れない（読取＋新規追加のみ）。
 
 クリーンアーキ / 依存方向:
-  - 本モジュールは最上位の合成点（tools 層）であり marketdata / simulator.tools /
-    tools.build_tick_rollup に依存してよい（逆は無い）。ベンダ（dukascopy）は直接 import せず
+  - 本モジュールは最上位の合成点（tools 層）であり marketdata / tools.build_tick_rollup /
+    tools.fetch_ticks_ymd に依存してよい（逆は無い）。simulator への辺は ISSUE-502 C-1 で
+    0 本になった（生列は marketdata、取得ランナーは tools が所有する）。ベンダ（dukascopy）は直接 import せず
     既存アクター経由。外部・重い呼び出しは monkeypatch 可能なモジュール関数
     （``_fetch_day`` / ``_fetch_ticks_run`` / ``_compute_acquire_range`` / ``_append_m1`` /
     ``_rollup_update``）へ隔離し、遅延 import で副作用を実行時に限定する。
@@ -177,7 +178,7 @@ def _fetch_day(day: dt.date, next_day: dt.date) -> "pd.DataFrame | None":
 
 def _fetch_ticks_run(start: dt.datetime, end: dt.datetime, root: Path) -> int:
     """丸日追い付きの委譲先（既存日 skip・休場は empty マーカー）。"""
-    from simulator.tools.fetch_ticks_ymd import run as _run
+    from tools.fetch_ticks_ymd import run as _run
 
     return _run(start, end, root)
 
@@ -332,7 +333,7 @@ def catch_up(data_dir: Path, today: dt.date, *, full_start: dt.date) -> int:
     full-refresh が担当するので対象外・空 tree は no-op）。
     次に :func:`_compute_acquire_range` で範囲を算出し（``end=today-1``＝昨日まで）、
     None なら no-op（0）、あれば :func:`_fetch_ticks_run`
-    （``simulator.tools.fetch_ticks_ymd.run``・既存日 skip・休場は empty マーカー）へ委譲する。
+    （``tools.fetch_ticks_ymd.run``・既存日 skip・休場は empty マーカー）へ委譲する。
     """
     from marketdata.tick_m1 import tick_root  # 遅延: tick tree 基点の単一権威
 
@@ -401,9 +402,10 @@ _STREAM_RECONCILE_SECONDS = 1800.0   # 当日全量再取得による自己修�
 #   二度と直らない。参照実装の固定遅延と同じ根拠（5.5 + 5 + 余裕）で 12 秒待ってから確定する。
 _STREAM_M1_GRACE_SECONDS = 12.0
 
-# 日別 parquet の正準列。唯一源は simulator.tools.ingest_ticks.RAW_COLUMNS（ISSUE-262）。
+# 日別 parquet の正準列。唯一源は marketdata.tick_raw_schema.RAW_COLUMNS
+#   （ISSUE-262 で単一源化・ISSUE-502 C-1 で所有権を産出側 marketdata へ移した）。
 def _tick_columns() -> "list[str]":
-    from simulator.tools.ingest_ticks import RAW_COLUMNS
+    from marketdata.tick_raw_schema import RAW_COLUMNS
 
     return list(RAW_COLUMNS)
 

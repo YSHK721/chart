@@ -4,6 +4,8 @@
 (timestamp/bidPrice/askPrice/bidVolume/askVolume) を不変アーカイブとして保存する。
 本モジュールはその raw を tick-store の canonical スキーマ(TICK_COLUMNS:
 timestamp/bid/ask/last/volume) へ変換し ParquetTickRepository へ ingest する。
+raw 側の列（RAW_COLUMNS）の唯一源は産出側の :mod:`marketdata.tick_raw_schema` であり、
+本モジュールは import して使うだけである（ISSUE-502 C-1）。
 
 技術隔離: pandas は本ファイル内に閉じる。
 """
@@ -14,12 +16,14 @@ from typing import Any
 
 import pandas as pd
 
+# 生列（Dukascopy ネイティブ）の唯一源は産出側 marketdata が持つ（ISSUE-502 C-1）。
+# ここに書き写さない。本モジュールは canonical への**変換**の所有者であって、raw スキーマの
+# 所有者ではない（旧定義をここに置いていたため tools の検証スクリプト 3 本が simulator を
+# import し、simulator ⇄ tools の循環になっていた）。
+from marketdata.tick_raw_schema import RAW_COLUMNS
 from simulator.adapter.repository._tick_frame import TICK_COLUMNS
 from simulator.adapter.repository.tick_parquet import ParquetTickRepository
 from simulator.domain.exceptions import MissingBarError
-
-# Dukascopy raw frame の必須列（段1 fetch が保存するネイティブ列）。
-RAW_COLUMNS = ("timestamp", "bidPrice", "askPrice", "bidVolume", "askVolume")
 
 
 def to_canonical_ticks(raw_df: pd.DataFrame) -> pd.DataFrame:

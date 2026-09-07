@@ -61,8 +61,9 @@ def patched_fetch(monkeypatch):
 
 
 def test_dukascopy_tick_source_returns_raw_columns_contract(patched_fetch):
-    # H-2: 出力列が ingest の RAW_COLUMNS 契約へ直接適合する。
-    from simulator.tools.ingest_ticks import RAW_COLUMNS
+    # H-2: 出力列が RAW_COLUMNS 契約へ直接適合する。契約の唯一源は産出側 marketdata が持つ
+    #      （ISSUE-502 C-1。旧: simulator.tools.ingest_ticks＝消費側が供給規則を所有していた）。
+    from marketdata.tick_raw_schema import RAW_COLUMNS
     from marketdata.dukascopy_source import DukascopyTickSource
 
     src = DukascopyTickSource()

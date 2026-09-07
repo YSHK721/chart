@@ -186,7 +186,10 @@ class DukascopyTickSource:
     移管する。``INTERVAL_TICK`` の隔離・銘柄固定はここに閉じる。
 
     H-2: 戻り DataFrame は ``timestamp`` を**列**に持つ（``reset_index`` 済・列名 ``"timestamp"``）。
-    ``ingest.RAW_COLUMNS``（timestamp/bidPrice/askPrice/bidVolume/askVolume）契約へ直接適合する。
+    出力列の契約は本パッケージが持つ marketdata.tick_raw_schema の RAW_COLUMNS
+    （timestamp/bidPrice/askPrice/bidVolume/askVolume）である。ISSUE-502 C-1 まで、この宣言は
+    下流の消費者 simulator.tools.ingest_ticks を名指していた（産出側が消費側の定義に従う
+    という所有権の逆転であり、tools ⇄ simulator 循環の一因だった）。
 
     H-3: ``offer_side`` 単一指定は持たない。raw tick は気配側に依らず bidPrice/askPrice 両列を
     含むため、両列を常に返し last=mid=(bid+ask)/2 算出を保全する。気配側の選択は port の責務外。
@@ -202,7 +205,7 @@ class DukascopyTickSource:
         ただ 1 つ**。取得失敗（通信断・ベンダ側エラー）は例外のまま伝播させる（ISSUE-278 #1）。
 
         以前は日次ループで全例外を握り潰し「失敗＝空」に潰していた。呼出側
-        （``simulator/tools/fetch_ticks_ymd.py``）は空を「休場」と解釈して ``.empty`` マーカーを
+        （``tools/fetch_ticks_ymd.py``）は空を「休場」と解釈して ``.empty`` マーカーを
         書き、そのマーカーがある日は二度と取得しない。結果、一過性の通信断がデータ欠損として
         恒久的に焼き付き、過去日不変性の検証（``tools/verify_tick_immutability.py``）まで
         「訂正/欠落あり」と誤判定していた。失敗を成功の一種に見せないことが唯一の是正。

@@ -107,7 +107,10 @@ def test_rollup_timeframe_rule_is_not_reimplemented_in_tools():
 def test_raw_tick_columns_are_not_redefined_in_tools():
     """生ティックの正準列が tools に第 2 定義として存在しない。
 
-    唯一源は ``simulator.tools.ingest_ticks.RAW_COLUMNS``。
+    唯一源は marketdata.tick_raw_schema の RAW_COLUMNS（産出側＝生ティックを作る
+    パッケージ）。ISSUE-502 C-1 まで唯一源は simulator 側の ingest_ticks にあり、
+    消費側（tick-store 取込）が供給規則を所有していたため tools → simulator の辺を 3 本
+    生んでいた。
     """
     offenders = []
     for path in _sources():
@@ -121,7 +124,7 @@ def test_raw_tick_columns_are_not_redefined_in_tools():
                     offenders.append(f"{path.name}:{i}: {code[:80]}")
     assert not offenders, (
         f"生ティック列を tools が再定義しています:\n  " + "\n  ".join(offenders)
-        + "\n  simulator.tools.ingest_ticks.RAW_COLUMNS を import してください。"
+        + "\n  marketdata.tick_raw_schema.RAW_COLUMNS を import してください。"
     )
 
 

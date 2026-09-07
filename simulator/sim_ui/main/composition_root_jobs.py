@@ -60,12 +60,21 @@ def _dev_path_entries(root: Path) -> "list[Path]":
 
     「1 つのチェックアウトを構成する import パス」の唯一源は `tools/dev_paths.txt` で
     あり、その導出関数（.pth 生成器と同じもの）を本 Root だけが掴む。adapter に持たせると
-    simulator ⇄ 運用スクリプト層の循環辺になるため、束縛はここに閉じる（ISSUE-479 是正 1）。
+    層ゲート（sim_ui の test_launcher_path_source_injection）を破るため、束縛はここに閉じる
+    （ISSUE-479 是正 1）。
 
-    import を関数内に置く理由は `_build_ea_indicators` と同じ（本モジュールの import で
-    運用スクリプト層を引き込まない。子の環境が実際に要求された時点で解決される）。
+    束縛先は中立核 common.dev_paths の path_entries である（ISSUE-502 C-1）。かつては
+    運用スクリプト層の install_dev_paths を掴んでおり、tools → simulator（ops が
+    product を駆動する既存の向き）と合わせて **循環**していた。遅延 import で辺を封じ込めて
+    いたが、封じ込めは所有権の是正ではない。読み手は stdlib だけで書かれた汎用抽象であり
+    どちらのアクターにも属さないため、中立核へ移した（common の watch_loop と同じ解）。
+
+    import を関数内に置く理由は `_build_ea_indicators` と同じではない——中立核は stdlib のみ
+    なので import 自体は無害である。関数内に置くのは **台帳の読込を結線時に発行しない**ため
+    （sim_ui の注入検定にある計算量検定が「結線だけでは 0 回・子環境 1 個に
+    つき 1 回」を Spy で固定しており、束縛先をモジュール属性として都度解決する形が要る）。
     """
-    from tools.install_dev_paths import path_entries
+    from common.dev_paths import path_entries
 
     return path_entries(root)
 

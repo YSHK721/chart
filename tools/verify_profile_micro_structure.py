@@ -31,7 +31,7 @@ import pandas as pd  # noqa: E402
 
 from marketdata.paths import DATA_DIR  # noqa: E402
 from marketdata.tick_m1 import ts_and_mid  # noqa: E402  (mid/tz 規則の唯一源)
-from simulator.tools.ingest_ticks import RAW_COLUMNS  # noqa: E402  (生列の唯一源)
+from marketdata.tick_raw_schema import RAW_COLUMNS  # noqa: E402  (生列の唯一源)
 from marketdata.tick_m1 import day_parquet_path  # noqa: E402
 
 TFS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1D": 86400}

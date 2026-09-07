@@ -32,11 +32,11 @@ from marketdata.paths import DATA_DIR  # noqa: E402
 from marketdata.tick_m1 import day_parquet_path, tick_root  # noqa: E402
 
 TOL = 1e-6  # float 比較許容（表現差を訂正と誤認しない）
-# 生ティックの正準列の唯一源（ISSUE-262）。
-from simulator.tools.ingest_ticks import RAW_COLUMNS  # noqa: E402
+# 生ティックの正準列の唯一源（ISSUE-262・所有者は産出側 marketdata＝ISSUE-502 C-1）。
+from marketdata.tick_raw_schema import RAW_COLUMNS, RAW_VALUE_COLUMNS  # noqa: E402
 
 COLS = list(RAW_COLUMNS)
-VALUE_COLS = tuple(RAW_COLUMNS[1:])  # timestamp を除く数値列
+VALUE_COLS = RAW_VALUE_COLUMNS  # timestamp を除く数値列（唯一源から受ける）
 
 
 def _saved_days() -> list[dt.date]:

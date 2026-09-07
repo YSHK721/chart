@@ -8,7 +8,7 @@
   1. acquire : 日別ティック parquet を **追加取得**（既存日は上書きせず resume）。
                既存 tick tree があれば最新取得日の翌日〜本日+1日（増分追記）。
                tree が空（データ無し）なら full-start〜本日+1日を**全期間取得**する。
-               取得は :func:`simulator.tools.fetch_ticks_ymd.run`（DukascopyTickSource）へ委譲。
+               取得は :func:`tools.fetch_ticks_ymd.run`（DukascopyTickSource）へ委譲。
   2. m1      : 取得済みティックから tick 由来 M1（``jp225_tick_m1.csv``）を生成する。
                既定は**増分追記**（既存 M1 の最終日より後の新しい日だけ集計し末尾へ追記＝
                全 parquet を再走査しない・:func:`marketdata.tick_m1.append_m1_from_ticks`）。
@@ -24,8 +24,9 @@
     ``jp225_m1.csv`` / ``jp225_m1_<tf>.csv`` には触れない（読取＋新規追加のみ）。
 
 クリーンアーキ / 依存方向:
-  - 本モジュールは最上位の合成点（tools 層）であり marketdata / simulator.tools /
-    tools.acquire_marketdata に依存してよい（逆は無い）。ベンダ（dukascopy）は直接 import せず
+  - 本モジュールは最上位の合成点（tools 層）であり marketdata / tools.acquire_marketdata /
+    tools.fetch_ticks_ymd に依存してよい（逆は無い）。simulator への辺は ISSUE-502 C-1 で
+    0 本になった（取得ランナーは tools が所有する）。ベンダ（dukascopy）は直接 import せず
     既存アクター経由。外部・重い呼び出しは monkeypatch 可能なモジュール関数
     （``_next_tick_start_day`` / ``_fetch_ticks_run`` / ``_build_tick_m1`` / ``_rollup_build``）へ
     隔離し、遅延 import で副作用を実行時に限定する。
@@ -103,7 +104,7 @@ def _next_tick_start_day(ticks_root: Path) -> dt.datetime:
 
 
 def _fetch_ticks_run(start: dt.datetime, end: dt.datetime, root: Path) -> int:
-    from simulator.tools.fetch_ticks_ymd import run as _run
+    from tools.fetch_ticks_ymd import run as _run
 
     return _run(start, end, root)
 

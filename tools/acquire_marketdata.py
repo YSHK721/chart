@@ -96,7 +96,7 @@ def _export_jp225_csv_main(argv: List[str]) -> int:
 
 
 def _fetch_ticks_run(start: dt.datetime, end: dt.datetime, root: Path) -> int:
-    from simulator.tools.fetch_ticks_ymd import run as _run
+    from tools.fetch_ticks_ymd import run as _run
 
     return _run(start, end, root)
 

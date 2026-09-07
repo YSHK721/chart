@@ -16,6 +16,14 @@ ISSUE-479 Wave2 是正 1（コーディネータ裁定）。
     関数内 import で行う。**既定値は置かない**——既定値があると「注入し忘れても動く」
     経路が残り、逆流が黙って復活する。
 
+ISSUE-502 C-1（所有権の是正）:
+    Wave2 の時点では Composition Root だけが例外的に運用スクリプト層の install_dev_paths を掴んで
+    おり、辺そのものは残っていた（遅延 import による封じ込め）。台帳の読み手は stdlib だけで
+    書かれた汎用抽象でどちらのアクターにも属さないため、中立核 common.dev_paths へ移した。
+    結果 sim_ui 配下の本番コードは **Composition Root を含めて 1 本も** 運用スクリプト層を
+    import しない。本検定の走査は Composition Root の除外を残したまま（規律の後退を防ぐ）、
+    追加で「例外すら現に 0 件である」ことを固定する。
+
 計算量検定（絶対命令 2026-08-28）: 結線（アプリ組み立て）は台帳読込を 1 回も発行しない。
     子の環境を k 回組んだときだけ k 回発行する（発行 − 使用 = 0）。アプリ 1 個 / 4 個の
     2 点で、結線あたりの発行が増えないことを固定する。回数リテラルは焼き込まない。
@@ -138,6 +146,24 @@ def test_only_the_composition_root_knows_the_tooling_actor() -> None:
     )
 
 
+def test_not_even_the_composition_root_knows_the_tooling_actor() -> None:
+    """Composition Root すら運用スクリプト層を import しない（ISSUE-502 C-1）。
+
+    識別力: ``composition_root_jobs`` の束縛を ``from tools.install_dev_paths import
+    path_entries`` へ戻すと Red になる。台帳の読み手は中立核 ``common.dev_paths`` が所有し、
+    simulator → tools の辺は 1 本も残さない（遅延 import による封じ込めは所有権の是正ではない）。
+    """
+    offenders = sorted(
+        str(path.relative_to(_SIM_UI_ROOT))
+        for path in _production_sources()
+        if _forbidden_roots_of(path)
+    )
+    assert offenders == [], (
+        f"sim_ui の本番コードが運用スクリプト層を import しています: {offenders}。"
+        " 台帳の読み手は common.dev_paths です（simulator ⇄ tools の循環を戻さないこと）。"
+    )
+
+
 # --------------------------------------------------------------------------------------
 # 注入の強制（既定値を置かない）
 # --------------------------------------------------------------------------------------
@@ -150,7 +176,7 @@ def test_the_launcher_refuses_to_be_built_without_an_injected_path_source() -> N
 def test_the_composition_root_binds_the_real_ledger_reader(tmp_path: Path) -> None:
     """Root が台帳の実読み手を束縛する（規則の第 2 実装を作らない）。"""
     # Arrange
-    from tools.install_dev_paths import path_entries
+    from common.dev_paths import path_entries
 
     # Act
     app = build_sim_job_app(repo_root=tmp_path, web_dir=tmp_path / "web")
@@ -184,7 +210,7 @@ def test_the_injected_source_is_the_only_supplier_of_the_child_path(
 # --------------------------------------------------------------------------------------
 def _ledger_spy(monkeypatch) -> "list[Path]":
     """Composition Root が束縛する実読み手への発行を数える Spy を仕掛ける。"""
-    import tools.install_dev_paths as ledger_module
+    import common.dev_paths as ledger_module
 
     issued: "list[Path]" = []
     original = ledger_module.path_entries
