@@ -162,3 +162,26 @@ D-1〜D-17 すべて是正済み（コミット 8e5dd15 / 215892b / f214d32 / 11
 - `unified_ui/router.py:58-64` ＋ `tests/test_router.py:691` — core 集合の Python 側写し（D-11 の対応物・突合検定 0）
 - `incremental/moving_averages.py:105` — D-6 の 5 件目（契約差ありのため pin 済み）
 - `compute_rmm_level_count` 本体複製（ISSUE-175 未裁定が前提）・`resolve_times` 共有所有者 2 件・D-12 残存 3 件（成果物列名等）
+
+## 是正記録（2026-09-07・ISSUE-502 段階 3 完了）
+
+循環 4 件のうち 3 件を除去（C-1=697a0b5・C-2=46c3424・C-3=b79cdf5）。C-4 は実測により
+「2 パッケージ内に非循環解なし」（HALT 裁定）——根治は中立パッケージ新設（3b〜3d）で承認待ち。
+付随して 3a（MP primitive 基底是正・135b2f4）を実施。
+
+### 是正時の実測により訂正する台帳の記述（段階 3 分）
+- **C-2 の辺の実体**: 親→子（main/__init__.py:683）の import 先は run_from_settings ではなく
+  `kwargs_mapper.verify_engine_data_consistency`（規則 S ガード）。子→親は run_from_settings.py:49 に
+  加え run_settings_job.py:52 ほか計 4 件。
+- **C-4 の逆 import は 2 本でなく 3 本**（tf_period_tooltip.js:12 → chrome_css_var が台帳未記載）。
+- **C-1 の是正形**: 受入基準「tools→simulator 0 件」は既存規約（禁止方向は product→tools のみ）と
+  非対称のため不採用。循環除去に必要十分な simulator→tools=0 を達成し、tools→simulator 残 1 件
+  （acquire の ingest 段束縛）は宣言表制ゲートで固定。
+
+### C-4 根治の承認待ち段階（3b〜3e・要 y/n）
+- 3b: 共有カーネル（chrome_tokens/color_roles/chrome_css_var/series_primitive_lifecycle/
+  pair_primitive_base/forming_fold）を中立パッケージ（例 indigators/chart_kernel/web/js）へ移設
+- 3c: 市場データ語彙 JS（tf_meta/tf_ledger_generated/session_day/session_ohlc）を MP から中立へ
+- 3d: live core 組み立て（composition_root_front/live_public_api）の分離（要設計）
+- 3e: js_layer_guard_suite の ownCore nullable 化（2 箇所・加法）＋ MP 側層検定新設＋
+  pair_primitive_base symlink（参照 0）の削除

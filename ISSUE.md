@@ -14381,3 +14381,11 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   report_ui 268 / web 全 6 スイート緑・品質ゲート exit 0。
   台帳の訂正 4 点と新規検出の残存複製 7 件は .doc/solid_audit_20260906.md 末尾「是正記録」参照。
   次: 段階 3（循環 4 件 C-1〜C-4 の除去）。
+- **段階 3 完了（2026-09-07）**: 循環 4 件中 3 件を除去（C-1=697a0b5 所有権移動・C-2=46c3424 第三
+  モジュール抽出・C-3=b79cdf5 起動口の main 層移設＋serve.sh 追随）。C-4（JS indicator_ui⇄market_profile）
+  は実測により 2 パッケージ内に非循環解なし＝中立パッケージ新設（3b〜3e）が要承認（台帳末尾参照）。
+  付随是正 3a（MP primitive 基底・135b2f4）。再発防止: 非循環ゲート 3 本新設（HEAD 適用で検出力実証）。
+  検証: simulator 5556 / tools 621 / marketdata 925 / dashboard+unified 753 / web 全 6 スイート緑・
+  品質ゲート exit 0・baseline 陳腐化 20 件整理。
+  **運用注意: dashboard core の起動モジュールが dashboard_ui.main.serve へ変更——serve.sh の次回再起動
+  から有効（稼働中の旧スタックは Ctrl-C 停止→再起動）。**
