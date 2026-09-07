@@ -41,10 +41,8 @@ from dashboard_ui.usecase.sheet_models import (
     SheetInstance,
     UpdateGranularity,
 )
-from dashboard_ui.usecase.sheet_ports import (
-    ForwardEvaluationUnavailable,
-    SeriesSupplyUnavailable,
-)
+from dashboard_ui.usecase.sheet_ports import ForwardEvaluationUnavailable
+from dashboard_ui.usecase.sheet_supply import BarSupply, SeriesSupply
 from dashboard_ui.usecase.update_reach_sheet import ProjectionCache, refresh_projection
 
 #: 受け付ける更新モード（§7 の 2 段）。
@@ -206,9 +204,11 @@ class ReachSheetController:
             chart_timeframe=parsed.chart_timeframe,
         )
         instances = request.unique_instances()
-        chart_bars = self._bar_port.bars(
-            dataset_ref=parsed.dataset_ref, timeframe=parsed.chart_timeframe
-        )
+        # 素材は要求ごとに 1 回だけ引く（唯一の所有者は `usecase/sheet_supply.py`）。
+        #   表示足だけを先に引くのは状態トークンの材料がそれだけだからであり、束の足まで
+        #   まとめて引くと `unchanged` で返す要求でも全時間足の素材を読むことになる。
+        bar_supply = BarSupply.load(request, bar_port=self._bar_port)
+        chart_bars = bar_supply.of(parsed.chart_timeframe)
         if not chart_bars:
             raise ValueError(
                 f"表示時間足の足が供給されていません: timeframe={parsed.chart_timeframe!r}"
@@ -218,35 +218,27 @@ class ReachSheetController:
         #   （最終確定足と形成中足）。全系列はティック素材から導かれるため、表示足の形成中足が
         #   不変なら応答内容も不変である。一致なら**シートを一切計算せず** unchanged を返す
         #   （休場・閑散時は毎秒のシート計算がまるごと消える）。
-        state = _state_token(parsed, instances, chart_bars, self._bar_port.forming_bar(
-            dataset_ref=parsed.dataset_ref, timeframe=parsed.chart_timeframe,
-            now_unix=now_unix,
-        ))
+        state = _state_token(
+            parsed, instances, chart_bars,
+            bar_supply.forming(parsed.chart_timeframe),
+        )
         if parsed.known_state is not None and parsed.known_state == state:
             return {"ok": True, "unchanged": True, "state": state}
 
         # 供給不能な instance はここで畳まず素通しする: 除外の判断と縮退の記録は
         #   `build_reach_sheet` が一元的に持つ（§5.5.1・二重記録を作らない）。ここは
         #   投影・比較の材料からその instance を外すだけでよい。
-        series_by_key: "dict[tuple, dict]" = {}
-        for instance in instances:
-            try:
-                series_by_key[instance.key] = dict(
-                    self._series_port.full_series(
-                        indicator_id=instance.indicator_id, variant=instance.variant,
-                        params=instance.params, dataset_ref=parsed.dataset_ref,
-                        timeframe=instance.timeframe,
-                    )
-                )
-            except SeriesSupplyUnavailable:
-                continue
-        instances = [
-            instance for instance in instances if instance.key in series_by_key
-        ]
+        series_supply = SeriesSupply.load(
+            request, instances, series_port=self._series_port
+        )
+        instances = series_supply.available(instances)
+        # 足を足すのは**系列が届いた instance の分だけ**でよい。供給不能な instance は
+        #   シートの行にもセルにもならず（縮退だけになる）、その足は誰も読まない。
+        bar_supply = bar_supply.extended(request, instances, bar_port=self._bar_port)
         specs = {
             instance.key: self._roles.oscillator_spec(
                 instance=instance,
-                series_names=frozenset(series_by_key[instance.key]),
+                series_names=frozenset(series_supply.of(instance.key)),
             )
             for instance in instances
         }
@@ -264,12 +256,12 @@ class ReachSheetController:
         #   「ma_marod, btlm_trail_marod, profit_rsi の分位水準の価格を価格ラダーに反映」。
         #   機構は指標名に依存せず、投影できる全オシレータに効く）。
         projections, unprojectable, level_prices = self._projections_of(
-            parsed, instances, series_by_key, specs, now_unix
+            parsed, instances, series_supply, specs, bar_supply, now_unix
         )
         sheet = build_reach_sheet(
             request,
-            series_port=self._series_port,
-            bar_port=self._bar_port,
+            series=series_supply,
+            bars=bar_supply,
             roles=self._roles,
             elapsed_comparisons=comparisons,
             tail_fit_cache=self._state.tails,
@@ -345,8 +337,9 @@ class ReachSheetController:
         self,
         parsed: _Parsed,
         instances: "Sequence[SheetInstance]",
-        series_by_key: "Mapping[tuple, Mapping[str, tuple]]",
+        series_supply: SeriesSupply,
         specs: "Mapping[tuple, OscillatorSpec | None]",
+        bar_supply: BarSupply,
         now_unix: int,
     ) -> "tuple[list[InstanceProjection], dict[tuple, str], dict[tuple, float]]":
         """§5.5 の係数を（時間足ごとに）用意し、投影材料・**出せなかった理由**・
@@ -365,15 +358,12 @@ class ReachSheetController:
             ]
             cache = refresh_projection(
                 self._covering_cache(timeframe, group),
-                forming_bar=self._bar_port.forming_bar(
-                    dataset_ref=parsed.dataset_ref, timeframe=timeframe,
-                    now_unix=now_unix,
-                ),
+                forming_bar=bar_supply.forming(timeframe),
                 instances=group,
                 dataset_ref=parsed.dataset_ref,
                 forward_port=self._forward_port,
                 registry=self._registry,
-                prev_values=self._prev_values(parsed.dataset_ref, timeframe, group),
+                prev_values=self._prev_values(bar_supply, timeframe, group),
             )
             self._state.projections[timeframe] = cache
             maps.update(cache.maps)
@@ -387,7 +377,8 @@ class ReachSheetController:
             if value_map is None or spec is None:
                 continue
             scale = quantile_scale_of(
-                spec=spec, series=series_by_key[instance.key], tails=self._state.tails,
+                spec=spec, series=series_supply.of(instance.key),
+                tails=self._state.tails,
                 key=instance.key, events=self._state.events,
             )
             if scale is None:
@@ -415,7 +406,7 @@ class ReachSheetController:
                         "level": _quantile_label(spec.q_high),
                     }
             band_low = _latest_of(
-                series_by_key[instance.key].get(spec.band_low_series or "")
+                series_supply.of(instance.key).get(spec.band_low_series or "")
             )
             if band_low is not None:
                 price_low = self._level_price_of(
@@ -434,7 +425,7 @@ class ReachSheetController:
                 ("ext_hi", spec.ext_high_series), ("ext_lo", spec.ext_low_series),
             ):
                 level_value = _latest_of(
-                    series_by_key[instance.key].get(level_series or "")
+                    series_supply.of(instance.key).get(level_series or "")
                 )
                 if level_value is None:
                     continue
@@ -527,7 +518,8 @@ class ReachSheetController:
         return None if wanted - covered else cache
 
     def _prev_values(
-        self, dataset_ref: str, timeframe: str, instances: "Sequence[SheetInstance]"
+        self, bar_supply: BarSupply, timeframe: str,
+        instances: "Sequence[SheetInstance]",
     ) -> "dict[tuple, float]":
         """上下分岐の高さ（前バーの適用価格）。要らない指標は None を返すので入らない。
 
@@ -537,7 +529,7 @@ class ReachSheetController:
         が形成中バーの走行極値であることと対になっている）。`bars[-1]` を使うと、まだ動く
         値を「前バーの確定値」として区分の境目に据えることになる。
         """
-        bars = self._bar_port.bars(dataset_ref=dataset_ref, timeframe=timeframe)
+        bars = bar_supply.of(timeframe)
         if len(bars) < 2:
             return {}
         previous = bars[-2]

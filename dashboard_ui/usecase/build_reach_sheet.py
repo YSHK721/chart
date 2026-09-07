@@ -7,6 +7,11 @@
     実測（§7）: ラダーの 71 本は全指標 105 本の部分集合であり、別々に計算すると 2,316ms が
     丸ごと無駄になる（ISSUE-450 と同型）。P-1 は「1 呼出 = 1 計算 = 3 消費者で共有」の束契約。
 
+    この関数は P-1 / P-2 の**口を持たない**（引数は素材＝`SeriesSupply` / `BarSupply`）。
+    素材の取得は要求ごとに 1 回・`usecase/sheet_supply.py` が唯一の所有者であり、
+    ここから新たな発行は**構造的に起こしえない**（ISSUE-502 F-1。以前は controller と
+    この関数が同じ instance をそれぞれ発行し、具象 gateway の memo だけが救っていた）。
+
 到達の向き（§6.1）についての注記:
     設計書 §6.1 の式は `reached_t := value_t >= level_t` であり、ラダーの行はこの既定を使う。
     この向きだと「価格がその水準を上抜けている状態」が到達になり、現在値より下の行にも上の行にも
@@ -46,7 +51,7 @@ from dashboard_ui.usecase.sheet_models import (
     TrailingReading,
     UpdateGranularity,
 )
-from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
+from dashboard_ui.usecase.sheet_supply import BarSupply, SeriesSupply
 
 #: 背景ストリップの「直近の過去区間」の本数。現在区間（セルの `p`）と合わせて
 #: **10 区間**になる（依頼者指示 2026-09-04「各パネルの背景に直近の指標 10 区間分」）。
@@ -200,8 +205,8 @@ class HistoryStripCache:
 def build_reach_sheet(
     request: ReachSheetRequest,
     *,
-    series_port,
-    bar_port,
+    series: SeriesSupply,
+    bars: BarSupply,
     roles,
     elapsed_comparisons: "Mapping[tuple[str, str, str, str], ElapsedComparison] | None" = None,
     tail_fit_cache: "TailFitCache | None" = None,
@@ -212,6 +217,10 @@ def build_reach_sheet(
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
 
+    Args:
+        series: 要求ごとに 1 回だけ引いた全件系列（`usecase/sheet_supply.py`）。
+        bars: 要求ごとに 1 回だけ引いた足（同上）。
+
     Raises:
         ValueError: 表示時間足の足が 1 本も供給されないとき（現在値が決まらない）。
     """
@@ -220,9 +229,8 @@ def build_reach_sheet(
     events = event_cache if event_cache is not None else ExcessEventCache()
     history = history_cache if history_cache is not None else HistoryStripCache()
     instances = request.unique_instances()
-    bars_by_timeframe = _load_bars(request, instances, bar_port)
 
-    chart_bars = bars_by_timeframe.get(request.chart_timeframe) or ()
+    chart_bars = bars.of(request.chart_timeframe)
     if not chart_bars:
         raise ValueError(
             f"表示時間足の足が供給されていません: timeframe={request.chart_timeframe!r}"
@@ -238,27 +246,19 @@ def build_reach_sheet(
     degradations: "list[Degradation]" = []
 
     for instance in instances:
-        try:
-            series = dict(
-                series_port.full_series(
-                    indicator_id=instance.indicator_id,
-                    variant=instance.variant,
-                    params=instance.params,
-                    dataset_ref=request.dataset_ref,
-                    timeframe=instance.timeframe,
-                )
-            )
-        except SeriesSupplyUnavailable as error:
+        reason = series.reason_of(instance.key)
+        if reason is not None:
             # 供給不能はその instance の構造的除外（§5.5.1）。シート全体を落とさず、
             #   除外した instance と理由を必ず応答へ出す（§7・無言の縮退禁止）。
             degradations.append(
                 Degradation(
                     instance_key=instance.key,
                     granularity=UpdateGranularity.NONE,
-                    reason=f"系列を供給できないため除外した: {error}",
+                    reason=f"系列を供給できないため除外した: {reason}",
                 )
             )
             continue
+        points_by_series = series.of(instance.key)
         if not instance.intrabar_capable:
             degradations.append(
                 Degradation(
@@ -268,15 +268,15 @@ def build_reach_sheet(
                 )
             )
         spec = roles.oscillator_spec(
-            instance=instance, series_names=frozenset(series)
+            instance=instance, series_names=frozenset(points_by_series)
         )
         if spec is not None:
             cells.append(
-                _build_cell(instance, spec, series, comparisons.get(instance.key),
-                            tails, events, history)
+                _build_cell(instance, spec, points_by_series,
+                            comparisons.get(instance.key), tails, events, history)
             )
-        own_bars = bars_by_timeframe.get(instance.timeframe) or ()
-        for series_name, points in series.items():
+        own_bars = bars.of(instance.timeframe)
+        for series_name, points in points_by_series.items():
             level = _as_level(
                 instance, series_name, tuple(points), roles, current_price
             )
@@ -369,22 +369,6 @@ def _mp_norms(
     return tuple(
         mp_port.norms_at(dataset_ref=dataset_ref, prices=prices, now_unix=now_unix)
     )
-
-
-def _load_bars(
-    request: ReachSheetRequest, instances: "Sequence[SheetInstance]", bar_port
-) -> "dict[str, tuple[Bar, ...]]":
-    """時間足ごとに **1 回だけ** 足を取る（同じ足を 2 回取らない＝発行の畳み込み）。"""
-    wanted: "list[str]" = [request.chart_timeframe]
-    wanted.extend(instance.timeframe for instance in instances)
-    bars: "dict[str, tuple[Bar, ...]]" = {}
-    for timeframe in wanted:
-        if timeframe in bars:
-            continue
-        bars[timeframe] = tuple(
-            bar_port.bars(dataset_ref=request.dataset_ref, timeframe=timeframe)
-        )
-    return bars
 
 
 def _closes_by_time(bars: "Sequence[Bar]") -> "dict[int, float]":

@@ -28,6 +28,7 @@ from dashboard_ui.tests.complexity.conftest import (
     Roles,
     SeriesSpy,
     bars,
+    build_sheet,
     points,
     request_of,
     rsi_spec,
@@ -35,7 +36,6 @@ from dashboard_ui.tests.complexity.conftest import (
 from dashboard_ui.usecase.build_reach_sheet import (
     ExcessEventCache,
     TailFitCache,
-    build_reach_sheet,
 )
 from dashboard_ui.usecase.sheet_models import SheetInstance
 
@@ -77,7 +77,7 @@ def _series(values):
 def _request(spy: SeriesSpy, tails: TailFitCache, events: ExcessEventCache) -> None:
     """要求 1 件ぶん（第 2 表のセル ＋ 背景の目盛り＝同じ観測を読む 2 人の消費者）。"""
     roles = Roles({"profit_rsi": rsi_spec()})
-    build_reach_sheet(
+    build_sheet(
         request_of(_OSC), series_port=spy, bar_port=BarSpy({"1m": bars([100.0] * 8)}),
         roles=roles, tail_fit_cache=tails, event_cache=events,
     )

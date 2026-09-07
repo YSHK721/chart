@@ -29,6 +29,7 @@ from dashboard_ui.tests.complexity.conftest import (
     Roles,
     SeriesSpy,
     bars,
+    build_sheet,
     points,
     request_of,
     rsi_spec,
@@ -37,7 +38,6 @@ from dashboard_ui.usecase.build_reach_sheet import (
     ExcessEventCache,
     HistoryStripCache,
     TailFitCache,
-    build_reach_sheet,
 )
 from dashboard_ui.usecase.sheet_models import SheetInstance
 
@@ -97,7 +97,7 @@ class _Caches:
 
 
 def _request(spy: SeriesSpy, caches: _Caches) -> None:
-    build_reach_sheet(
+    build_sheet(
         request_of(_OSC), series_port=spy, bar_port=BarSpy({"1m": bars([100.0] * 8)}),
         roles=Roles({"profit_rsi": rsi_spec()}),
         tail_fit_cache=caches.tails, event_cache=caches.events,

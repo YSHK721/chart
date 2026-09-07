@@ -12,12 +12,14 @@ import numpy as np
 import pytest
 
 from dashboard_ui.domain.bar import Bar
+from dashboard_ui.usecase.build_reach_sheet import build_reach_sheet
 from dashboard_ui.usecase.sheet_models import (
     OscillatorSpec,
     ReachSheetRequest,
     SeriesRole,
     SheetInstance,
 )
+from dashboard_ui.usecase.sheet_supply import BarSupply, SeriesSupply
 
 NOW = 1_700_000_000
 
@@ -57,6 +59,8 @@ class BarSpy:
         self._bars_by_timeframe = dict(bars_by_timeframe)
         self._forming = bool(forming)
         self.requested: "list[str]" = []
+        #: 形成中足の要求（P-2 の第 2 の面。足と同じく時間足ごとに 1 回以下であること）。
+        self.formed: "list[str]" = []
 
     def bars(self, *, dataset_ref, timeframe):
         self.requested.append(timeframe)
@@ -64,6 +68,7 @@ class BarSpy:
 
     def forming_bar(self, *, dataset_ref, timeframe, now_unix):
         """形成中の足（既定は無し。`forming=True` のとき末尾の足を形成中として返す）。"""
+        self.formed.append(timeframe)
         supplied = self._bars_by_timeframe.get(timeframe) or ()
         return supplied[-1] if (self._forming and supplied) else None
 
@@ -127,6 +132,25 @@ class Registry:
 
     def invertible_ids(self):
         return frozenset(self._ids)
+
+
+def build_sheet(request: ReachSheetRequest, *, series_port, bar_port, roles, **rest):
+    """素材を 1 回引いてから組み立てる（本番の controller と同じ順序・ISSUE-502 F-1）。
+
+    `build_reach_sheet` は P-1 / P-2 の**口を取らない**（引数は素材＝`SeriesSupply` /
+    `BarSupply`）。発行の畳み込みは `usecase/sheet_supply.py` が唯一の所有者なので、
+    Spy が数える面もそこになる。
+    """
+    instances = request.unique_instances()
+    return build_reach_sheet(
+        request,
+        series=SeriesSupply.load(request, instances, series_port=series_port),
+        bars=BarSupply.load(request, bar_port=bar_port).extended(
+            request, instances, bar_port=bar_port
+        ),
+        roles=roles,
+        **rest,
+    )
 
 
 def request_of(*instances, chart: str = "1m") -> ReachSheetRequest:

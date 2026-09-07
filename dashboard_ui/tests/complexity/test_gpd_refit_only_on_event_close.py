@@ -19,12 +19,13 @@ from dashboard_ui.tests.complexity.conftest import (
     Roles,
     SeriesSpy,
     bars,
+    build_sheet,
     ma_instance,
     points,
     request_of,
     rsi_spec,
 )
-from dashboard_ui.usecase.build_reach_sheet import TailFitCache, build_reach_sheet
+from dashboard_ui.usecase.build_reach_sheet import TailFitCache
 from dashboard_ui.usecase.sheet_models import SheetInstance
 
 
@@ -57,7 +58,7 @@ def _series(values, bands):
 def _sheet(instances, spy, *, cache=None, extra_rows=0):
     timeframes = {instance.timeframe for instance in instances} | {"1m"}
     bar_spy = BarSpy({tf: bars([100.0] * 8) for tf in timeframes})
-    return build_reach_sheet(
+    return build_sheet(
         request_of(*instances), series_port=spy, bar_port=bar_spy,
         roles=Roles({"profit_rsi": rsi_spec()}), tail_fit_cache=cache)
 

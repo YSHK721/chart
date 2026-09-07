@@ -21,10 +21,10 @@ from dashboard_ui.tests.complexity.conftest import (
     Roles,
     SeriesSpy,
     bars,
+    build_sheet,
     points,
     request_of,
 )
-from dashboard_ui.usecase.build_reach_sheet import build_reach_sheet
 from dashboard_ui.usecase.sheet_models import OscillatorSpec, SheetInstance
 
 
@@ -68,7 +68,7 @@ def _issue_and_use(monkeypatch, *, bar_count: int, cell_count: int) -> "tuple[in
     rank_spy = RankSpy(_cq.empirical_rank)
     monkeypatch.setattr(_cq, "empirical_rank", rank_spy)
 
-    sheet = build_reach_sheet(
+    sheet = build_sheet(
         request_of(*instances),
         series_port=series_spy,
         bar_port=BarSpy({"1m": bars([100.0] * bar_count)}),

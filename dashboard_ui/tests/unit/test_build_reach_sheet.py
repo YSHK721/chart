@@ -22,6 +22,7 @@ from dashboard_ui.usecase.sheet_models import (
     SheetInstance,
     UpdateGranularity,
 )
+from dashboard_ui.usecase.sheet_supply import BarSupply, SeriesSupply
 
 _NOW = 1_700_000_000
 
@@ -97,14 +98,32 @@ def _request(*instances: SheetInstance, chart: str = "1m") -> ReachSheetRequest:
                              chart_timeframe=chart)
 
 
+def _build(request: ReachSheetRequest, *, series_port, bar_port, roles, **rest):
+    """素材を 1 回引いてから組み立てる（本番の controller と同じ順序・ISSUE-502 F-1）。
+
+    `build_reach_sheet` は P-1 / P-2 の**口を取らない**（引数は素材）。発行の畳み込みは
+    `usecase/sheet_supply.py` が唯一の所有者なので、発行回数の検定はこの経路で数える。
+    """
+    instances = request.unique_instances()
+    return build_reach_sheet(
+        request,
+        series=SeriesSupply.load(request, instances, series_port=series_port),
+        bars=BarSupply.load(request, bar_port=bar_port).extended(
+            request, instances, bar_port=bar_port
+        ),
+        roles=roles,
+        **rest,
+    )
+
+
 class TestFolding:
     def test_a_duplicated_instance_is_issued_only_once(self) -> None:
         instance = SheetInstance("moving_averages", "default", {"length": 24}, "1m")
         series = FakeSeriesPort({instance.key: {"MA": _points([99.0, 100.0, 101.0])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0, 100.0])})
 
-        build_reach_sheet(_request(instance, instance), series_port=series,
-                          bar_port=bars, roles=FakeRoles())
+        _build(_request(instance, instance), series_port=series,
+               bar_port=bars, roles=FakeRoles())
 
         assert series.issued.count(instance.key) == 1
 
@@ -117,8 +136,8 @@ class TestFolding:
         series = FakeSeriesPort({first.key: {"MA": _points([100.0, 101.0])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0]), "1D": _bars([100.0, 100.0])})
 
-        build_reach_sheet(_request(first, second), series_port=series,
-                          bar_port=bars, roles=FakeRoles())
+        _build(_request(first, second), series_port=series,
+               bar_port=bars, roles=FakeRoles())
 
         assert len(series.issued) == 1
 
@@ -131,8 +150,8 @@ class TestFolding:
         })
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        build_reach_sheet(_request(one, two), series_port=series,
-                          bar_port=bars, roles=FakeRoles())
+        _build(_request(one, two), series_port=series,
+               bar_port=bars, roles=FakeRoles())
 
         assert bars.requested.count("1m") == 1
 
@@ -147,8 +166,8 @@ class TestLadder:
         })
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(upper, lower), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(upper, lower), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert [row.price for row in sheet.rows] == [105.0, 95.0]
         assert sheet.current_price == 100.0
@@ -163,8 +182,8 @@ class TestLadder:
         }})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert [row.label.split()[1] for row in sheet.rows] == ["btlm_trail_mean"]
 
@@ -181,8 +200,8 @@ class TestLadder:
             "1m": _bars([98.0, 100.0, 103.0]),       # 水準 100.5 は 2 本目 [99,101] で初接触
         })
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert sheet.rows[0].reach.reached is True
         assert sheet.rows[0].reach.since_time == _NOW + 60
@@ -196,8 +215,8 @@ class TestLadder:
         series = FakeSeriesPort({instance.key: {"MA": _points([99.5, 99.5, 99.5])}})
         bars = FakeBarPort({"1m": _bars([98.0, 100.0, 103.0])})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert sheet.rows[0].reach.reached is False
         assert sheet.rows[0].reach.since_time is None
@@ -209,23 +228,23 @@ class TestLadder:
             "cvfe_u1": _points([101.0, float("nan")])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert sheet.rows == ()
 
     def test_an_empty_request_yields_an_empty_sheet(self) -> None:
         bars = FakeBarPort({"1m": _bars([100.0])})
 
-        sheet = build_reach_sheet(_request(), series_port=FakeSeriesPort({}),
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(), series_port=FakeSeriesPort({}),
+                       bar_port=bars, roles=FakeRoles())
 
         assert sheet.rows == () and sheet.cells == ()
 
     def test_a_chart_without_bars_is_rejected(self) -> None:
         with pytest.raises(ValueError):
-            build_reach_sheet(_request(), series_port=FakeSeriesPort({}),
-                              bar_port=FakeBarPort({}), roles=FakeRoles())
+            _build(_request(), series_port=FakeSeriesPort({}),
+                   bar_port=FakeBarPort({}), roles=FakeRoles())
 
 
 class TestDegradation:
@@ -235,8 +254,8 @@ class TestDegradation:
         series = FakeSeriesPort({instance.key: {"cvfe_u1": _points([101.0, 102.0])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert [d.instance_key for d in sheet.degradations] == [instance.key]
         assert sheet.degradations[0].granularity is UpdateGranularity.BAR_CLOSE
@@ -247,8 +266,8 @@ class TestDegradation:
         series = FakeSeriesPort({instance.key: {"MA": _points([101.0, 102.0])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert sheet.degradations == ()
 
@@ -270,8 +289,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 25.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert len(sheet.cells) == 1
         assert sheet.cells[0].value == pytest.approx(25.0)
@@ -287,8 +306,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 25.0], [90.0, 90.0, 90.0, 91.5])
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].band_high == pytest.approx(91.5)
         assert series.issued.count(instance.key) == 1
@@ -309,8 +328,8 @@ class TestOscillatorCells:
             q_high=0.9, window_n=500, k_events=50,
             band_low_series="rsi_q10", q_low=0.1)})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].band_low == pytest.approx(11.5)
         assert series.issued.count(instance.key) == 1
@@ -332,8 +351,8 @@ class TestOscillatorCells:
             q_high=0.9, window_n=500, k_events=50,
             ext_high_series="rsi_evq_ext_hi", ext_low_series="rsi_evq_ext_lo")})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].ext_high == pytest.approx(96.5)
         assert sheet.cells[0].ext_low == pytest.approx(4.5)
@@ -344,8 +363,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 25.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].ext_high is None
         assert sheet.cells[0].ext_low is None
@@ -355,8 +374,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 25.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].band_low is None
 
@@ -365,8 +384,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 25.0], [])
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].band_high is None
 
@@ -375,8 +394,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 95.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].p is None
         assert sheet.cells[0].tail_unscaled is True
@@ -390,8 +409,8 @@ class TestOscillatorCells:
             value_series="tickvol", band_high_series="tickvol_q90",
             q_high=0.9, window_n=500, k_events=50)})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert len(sheet.cells) == 1
         assert sheet.cells[0].value is None
@@ -407,8 +426,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 30.0, 40.0, 15.0, 25.0], [90.0] * 6)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         history = sheet.cells[0].history
         assert [reading.p for reading in history] == [
@@ -432,8 +451,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [float(10 + index % 50) for index in range(40)], [90.0] * 40)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert len(sheet.cells[0].history) == TRAILING_HISTORY_BARS
         assert TRAILING_HISTORY_BARS + 1 == 10
@@ -443,8 +462,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 20.0, 95.0, 25.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].history[2].p is None
         assert sheet.cells[0].history[2].tail_unscaled is True
@@ -454,8 +473,8 @@ class TestOscillatorCells:
         instance, series, bars, roles = self._rsi_setup(
             [10.0, 95.0, 10.0, 95.0], [90.0] * 4)
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].reach.reached is True
         assert sheet.cells[0].reach.since_time == _NOW + 60
@@ -484,9 +503,9 @@ class TestCumulativeCells:
             [0, 0, 0, 1, 1, 1, 2, 2, 2], [1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 9.0, 9.0, 9.0])
         comparison = ElapsedComparison(pool=pool, completed_units=2, forming_sum=11.0)
 
-        sheet = build_reach_sheet(
-            _request(instance), series_port=series, bar_port=bars, roles=roles,
-            elapsed_comparisons={instance.key: comparison})
+        sheet = _build(
+ _request(instance), series_port=series, bar_port=bars, roles=roles,
+ elapsed_comparisons={instance.key: comparison})
 
         # 経過 2 単位の過去の部分和は [2, 10, 18]。11 未満は 2 本。
         assert sheet.cells[0].p == pytest.approx(2 / 3)
@@ -498,8 +517,8 @@ class TestCumulativeCells:
         """比較集合が無いのに確定足の分布へ当てない（それが §5.3.3 のバイアスそのもの）。"""
         instance, series, bars, roles = self._setup()
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].p is None
         assert sheet.cells[0].unavailable_reason is not None
@@ -516,8 +535,8 @@ class TestCumulativeCells:
             value_series="tickvol", band_high_series="tickvol_q90",
             q_high=0.9, window_n=500, k_events=50, cumulative=True)})
 
-        sheet = build_reach_sheet(_request(instance), series_port=series,
-                                  bar_port=bars, roles=roles)
+        sheet = _build(_request(instance), series_port=series,
+                       bar_port=bars, roles=roles)
 
         assert sheet.cells[0].p is None                        # 現在区間は水準なしのまま
         assert [reading.p for reading in sheet.cells[0].history] == [
@@ -588,8 +607,8 @@ class TestRowInstanceLink:
         })
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(moving, cvfe), series_port=series,
-                                  bar_port=bars, roles=FakeRoles())
+        sheet = _build(_request(moving, cvfe), series_port=series,
+                       bar_port=bars, roles=FakeRoles())
 
         assert [row.instance_key for row in sheet.rows] == [moving.key, cvfe.key]
 
@@ -599,8 +618,8 @@ class TestRowInstanceLink:
         series = FakeSeriesPort({cvfe.key: {"cvfe_u1": _points([101.0, 102.0])}})
         bars = FakeBarPort({"1m": _bars([100.0, 100.0])})
 
-        sheet = build_reach_sheet(_request(cvfe), series_port=series, bar_port=bars,
-                                  roles=FakeRoles())
+        sheet = _build(_request(cvfe), series_port=series, bar_port=bars,
+                       roles=FakeRoles())
 
         assert sheet.rows[0].instance_key == sheet.degradations[0].instance_key
 
@@ -642,8 +661,8 @@ class TestMarketProfileColumn:
         mp_port = FakeMarketProfilePort({105.0: 0.42, 95.0: 1.0})
 
         # Act
-        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
-                                  roles=FakeRoles(), mp_port=mp_port)
+        sheet = _build(request, series_port=series, bar_port=bars,
+                       roles=FakeRoles(), mp_port=mp_port)
 
         # Assert
         assert [row.price for row in sheet.rows] == [105.0, 95.0]
@@ -658,8 +677,8 @@ class TestMarketProfileColumn:
         mp_port = FakeMarketProfilePort({105.0: 0.42})
 
         # Act
-        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
-                                  roles=FakeRoles(), mp_port=mp_port)
+        sheet = _build(request, series_port=series, bar_port=bars,
+                       roles=FakeRoles(), mp_port=mp_port)
 
         # Assert
         assert [row.mp for row in sheet.rows] == [0.42, None]
@@ -672,8 +691,8 @@ class TestMarketProfileColumn:
         request, series, bars = self._two_rows()
 
         # Act
-        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
-                                  roles=FakeRoles())
+        sheet = _build(request, series_port=series, bar_port=bars,
+                       roles=FakeRoles())
 
         # Assert
         assert [row.mp for row in sheet.rows] == [None, None]
@@ -685,8 +704,8 @@ class TestMarketProfileColumn:
         mp_port = FakeMarketProfilePort()
 
         # Act
-        sheet = build_reach_sheet(request, series_port=series, bar_port=bars,
-                                  roles=FakeRoles(), mp_port=mp_port)
+        sheet = _build(request, series_port=series, bar_port=bars,
+                       roles=FakeRoles(), mp_port=mp_port)
 
         # Assert: 記録された呼出は「全行の価格を 1 度に渡した 1 件」だけである。
         assert mp_port.calls == [

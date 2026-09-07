@@ -13,20 +13,20 @@ from dashboard_ui.tests.complexity.conftest import (
     Roles,
     SeriesSpy,
     bars,
+    build_sheet,
     ma_instance,
     points,
     request_of,
     rsi_spec,
 )
-from dashboard_ui.usecase.build_reach_sheet import build_reach_sheet
 from dashboard_ui.usecase.sheet_models import SheetInstance
 
 
 def _sheet(instances, spy: SeriesSpy, *, specs=None, chart="1m"):
     timeframes = {instance.timeframe for instance in instances} | {chart}
     bar_spy = BarSpy({tf: bars([100.0] * 6) for tf in timeframes})
-    return build_reach_sheet(request_of(*instances, chart=chart), series_port=spy,
-                             bar_port=bar_spy, roles=Roles(specs))
+    return build_sheet(request_of(*instances, chart=chart), series_port=spy,
+                       bar_port=bar_spy, roles=Roles(specs))
 
 
 def test_no_key_is_ever_issued_twice() -> None:
@@ -93,8 +93,8 @@ def test_bars_are_not_re_fetched_per_instance() -> None:
             spy.add(instance, {"MA": points([100.0 + index] * 6)})
         bar_spy = BarSpy({"1m": bars([100.0] * 6)})
 
-        build_reach_sheet(request_of(*instances), series_port=spy,
-                          bar_port=bar_spy, roles=Roles())
+        build_sheet(request_of(*instances), series_port=spy,
+                    bar_port=bar_spy, roles=Roles())
         requested[instance_count] = len(bar_spy.requested)
 
     assert requested[11] == requested[23]
