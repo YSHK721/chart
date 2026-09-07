@@ -31,7 +31,6 @@
 """
 from __future__ import annotations
 
-import datetime as dt
 import os
 import tempfile
 from pathlib import Path
@@ -40,7 +39,7 @@ from typing import Any, Iterable, Optional
 import pandas as pd
 
 from marketdata import outlier_policy, tick_m1
-from marketdata.mt5_ticks import ingest, m1_chain
+from marketdata.mt5_ticks import ingest, m1_chain, server_clock
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
 #: 差が無かった（1 バイトも書いていない）。
@@ -157,8 +156,13 @@ def rebuild_day(
 
     expected = authoritative_day_m1(day, symbol=symbol, data_dir=data_dir)
     current = _read_m1_csv(m1_path)
-    start = pd.Timestamp(dt.datetime.combine(pd.Timestamp(day).date(), dt.time(0, 0)))
-    end = start + pd.Timedelta(days=1)
+    # 日窓 ``[真夜中, 翌日の真夜中)`` の定義は :mod:`server_clock` が唯一源である
+    # （ISSUE-502 D-15）。ここで真夜中を自前で組むと第 2 定義になり、片方だけ直した日に
+    # 「置換する区間」が確定した日 partition と 1 日ずれる。M1 CSV の index は naive UTC
+    # なので、epoch ms から naive な ``Timestamp`` を起こして突き合わせる。
+    day_date = pd.Timestamp(day).date()
+    start = pd.Timestamp(server_clock.utc_day_start_ms(day_date), unit="ms")
+    end = pd.Timestamp(server_clock.utc_day_end_ms(day_date), unit="ms")
     inside = current[(current.index >= start) & (current.index < end)]
     if _same_bars(inside, expected):
         return UNCHANGED

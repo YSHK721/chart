@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 from marketdata.mt5_ticks import cursor as cursor_rules
-from marketdata.mt5_ticks import ingest, journal, m1_chain
+from marketdata.mt5_ticks import ingest, journal, m1_chain, server_clock
 from marketdata.mt5_ticks.cursor import Cursor
 from marketdata.mt5_ticks.port import Clock, IncrementalTickSource
 
@@ -121,8 +121,12 @@ class FinalizeDay:
         """``day`` を確定してよいか。"""
         if latest_observed_day is not None and latest_observed_day > day:
             return True
-        boundary = dt.datetime.combine(
-            day + dt.timedelta(days=1), dt.time(0, 0), tzinfo=dt.timezone.utc
+        # 日境界（``day`` の終端＝翌日の真夜中）の定義は :mod:`server_clock` が唯一源である
+        # （ISSUE-502 D-15）。ここで ``datetime.combine(day + 1 日, 00:00)`` を組むと第 2 定義に
+        # なり、片方だけ直した日に「確定してよい瞬間」が取り込み側の日 partition と 1 日ずれる。
+        # ``utc_day_end_ms`` は 86,400,000 の倍数なので秒への整数除算に端数は出ない。
+        boundary = dt.datetime.fromtimestamp(
+            server_clock.utc_day_end_ms(day) // 1000, dt.timezone.utc
         ) + dt.timedelta(seconds=self.grace_seconds)
         return _utc_now(self.clock) >= boundary
 
