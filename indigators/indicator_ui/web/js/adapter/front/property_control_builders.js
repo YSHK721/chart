@@ -11,9 +11,9 @@
 //
 // ホストとの結合面（ControlContext）は 4 メンバのみ:
 //   { doc, getValue(name), setValue(name, value), onChange() }
-//   値の所有者はホスト（PropertiesDialog._values）のままにする。getValue/setValue は
-//   呼び出し時に解決する遅延アクセサであり、ホスト側が _values を差し替えても（デフォルト復元）
-//   従来どおり最新の入れ物を参照する（挙動不変）。
+//   値の所有者はホスト側（usecase/property_form_state.js の PropertyFormState。PropertiesDialog は
+//   そこへ委譲する）のままにする。getValue/setValue は呼び出し時に解決する遅延アクセサであり、
+//   ホスト側が値の入れ物を差し替えても（デフォルト復元）従来どおり最新を参照する（挙動不変）。
 //
 // ★ upstream JS API（addLineSeries / applyOptions 等）は一切参照しない（properties_dialog.js §8.4 と同一規律）。
 

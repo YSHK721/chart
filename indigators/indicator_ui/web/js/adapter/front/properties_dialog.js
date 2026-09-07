@@ -6,20 +6,29 @@
 //   §5 リアルタイム検証（F-11・OK 制御）/ §6 スタイル・可視性タブ / §7 振る舞い・状態遷移
 //   §8.2 PropertiesDialog 署名 / §8.4 upstream JS API 非依存。
 //
-// 純ロジックは usecase/form_model.js（buildFormModel/computeEnabled/validateForm/resetToDefaults）
-//   へ委譲する（DOM 非依存ロジックの分離・§10.4）。本ファイルは DOM 構築・イベント配線のみ。
+// 本ファイルの責務は **DOM 構築とイベント配線のみ**（ISSUE-502 段階 4D で宣言と実装を一致させた）。
+//   値・規則・状態はいずれも協働子が所有し、本クラスはその判定を DOM へ写すだけを行う:
+//     - フォーム値の所有と検証判定  … usecase/property_form_state.js（PropertyFormState）
+//     - コントロール生成           … adapter/front/property_control_builders.js（凍結テーブル）
+//     - 行モデル（系列 → 表示行）  … usecase/form_model.js（buildSeriesStyleRows）
+//     - 表示形式の語彙と永続差分   … usecase/series_style_forms.js（台帳＋純関数）
+//     - ドラッグ移動               … adapter/front/dialog_drag_controller.js
 //
 // ★ upstream JS API（addLineSeries / createPriceLine / setData / applyOptions 等）は
 //   一切参照しない（§8.4・母体 §9 grep 0 件規律）。描画反映は onApply（→ ChartRenderer/facade 経由）。
 
+import { buildFormModel, buildSeriesStyleRows } from '../../usecase/form_model.js';
+// フォーム値の所有と検証判定（DOM 非依存）。本クラスは値を持たず、この状態器へ委譲する。
+import { PropertyFormState } from '../../usecase/property_form_state.js';
+// スタイルタブの表示形式は台帳が唯一源（選択肢・初期値・永続差分の分解が同じ宣言から出る）。
+//   ここに 'dot' / 'bar' / 線種名を直書きすると、選択肢と保存側が別々に古くなる。
 import {
-  buildFormModel,
-  buildSeriesStyleRows,
-  computeEnabled,
-  computeVisible,
-  validateForm,
-  resetToDefaults,
-} from '../../usecase/form_model.js';
+  DEFAULT_LINE_STYLE,
+  collectSeriesStyleDiff,
+  displayFormInitial,
+  displayFormOptions,
+  usesUnifiedDisplayForm,
+} from '../../usecase/series_style_forms.js';
 import { seriesKind } from '../../domain/series_kind.js';
 // control_type → コントロール生成器のテーブル（ISSUE-181・OCP）。生成手続き本体と
 //   ラベル化/色変換の純関数は adapter/front/property_control_builders.js が所有する。
@@ -29,6 +38,8 @@ import {
   humanizeKey,
   toHex,
 } from './property_control_builders.js';
+// ドラッグ移動（Pointer Events）は独立モジュールが所有する（ISSUE-502 段階 4D）。
+import { DialogDragController } from './dialog_drag_controller.js';
 // 期間プリセット（基本設計_期間プリセット.md §6.5）: 実効計算時間足の解決は usecase の純関数へ委譲する。
 import { effectiveTimeframe } from '../../usecase/period_presets.js';
 // 時間足 → 表示ラベル（'1h'→'1時間'）の単一情報源（timeframe_menu.js・ISSUE-123）。
@@ -67,34 +78,33 @@ export class PropertiesDialog {
     this._onApply = onApply;
     this._onCancel = onCancel;
 
-    // 現在のフォーム値（name -> value）。初期は instance.params 優先→default。
-    const currentParams = (instance && instance.params) || {};
-    const model = buildFormModel(def, currentParams);
-    this._values = {};
-    for (const f of model.fields) {
-      this._values[f.name] = f.value;
-    }
-
-    // バリアント（profit_band global↔robust 等）。OK 時に variant 変更を実反映する。
-    this._variants = (def.compute && def.compute.variants) || ['default'];
-    this._variant = (instance && instance.variant) || this._variants[0];
+    // フォーム値（params / variant / 未解決入力エラー）と検証判定の所有者。
+    //   本クラスは値を持たず、_values / _variant は下のアクセサでこの状態器を指す
+    //   （既存の呼び出し面を変えない）。
+    this._form = new PropertyFormState({
+      def,
+      params: (instance && instance.params) || {},
+      variant: instance && instance.variant,
+      context: this._context,
+    });
 
     this._activeTab = 'inputs';
     this._root = null; // ダイアログ最上位要素
     this._fieldEls = new Map(); // name -> { row, control, error, info }
-    // 値へ反映できていない入力エラー（name -> message）。在席中は OK を押せない。
-    this._pendingErrors = new Map();
     this._okBtn = null;
-    this._drag = null;
-    this._offset = { x: 0, y: 0 };
+    // ドラッグ移動（Pointer Events・§2.3）。パネルは open で生成されるため遅延解決で渡す。
+    this._dragController = new DialogDragController({
+      document: this._doc,
+      panel: () => this._panel,
+    });
 
-    // コントロール生成器との結合面（ControlContext）。値の所有者は本クラス（_values）のまま。
-    //   getValue/setValue は呼び出し時解決の遅延アクセサ＝デフォルト復元で _values を
+    // コントロール生成器との結合面（ControlContext）。値の所有者は PropertyFormState。
+    //   getValue/setValue は呼び出し時解決の遅延アクセサ＝デフォルト復元で値の入れ物を
     //   差し替えても従来どおり最新の入れ物を参照する（挙動不変）。
     this._controlCtx = {
       doc: this._doc,
-      getValue: (name) => this._values[name],
-      setValue: (name, value) => { this._values[name] = value; },
+      getValue: (name) => this._form.getValue(name),
+      setValue: (name, value) => this._form.setValue(name, value),
       onChange: () => this._onChange(),
       // 期間プリセットの基準（基本設計_期間プリセット.md §6.5・§8.2）。
       //   呼び出し時解決の遅延アクセサ＝ダイアログ内で `timeframe` パラメータを変えると、
@@ -107,14 +117,32 @@ export class PropertiesDialog {
       //   エラー表示のまま OK を押せてしまい、旧値が黙って確定して『設定しても元に戻る』
       //   という症状になる（2026-07-29 ユーザー報告の実体）。
       setPendingError: (name, message) => {
-        if (message) {
-          this._pendingErrors.set(name, message);
-        } else {
-          this._pendingErrors.delete(name);
-        }
+        this._form.setPendingError(name, message);
         this._revalidate();
       },
     };
+  }
+
+  // ---- フォーム値・バリアントへの呼び出し面（所有者は PropertyFormState）------
+  //   既存の消費者（テスト・コントロール）が触る名前を変えないための委譲アクセサ。
+  get _values() {
+    return this._form.values;
+  }
+
+  set _values(next) {
+    this._form.replaceValues(next);
+  }
+
+  get _variant() {
+    return this._form.variant;
+  }
+
+  set _variant(next) {
+    this._form.variant = next;
+  }
+
+  get _variants() {
+    return this._form.variants;
   }
 
   // ダイアログ DOM を生成し document.body へ追加・配線する（§2・§7）。
@@ -184,8 +212,8 @@ export class PropertiesDialog {
 
     head.append(title, close);
 
-    // ドラッグ移動（Pointer Events・ブラウザ標準のみ・§2.3）。
-    head.addEventListener('pointerdown', (ev) => this._onDragStart(ev));
+    // ドラッグ移動（Pointer Events・ブラウザ標準のみ・§2.3）は協働子が持つ。
+    head.addEventListener('pointerdown', (ev) => this._dragController.start(ev));
     return head;
   }
 
@@ -274,13 +302,6 @@ export class PropertiesDialog {
       }
     }
     return pane;
-  }
-
-  // 述語（conditionalEnable / conditionalVisible / optionEnable）へ渡す評価コンテキスト。
-  //   外部状態（timeframe / datasetRef 等）へ **選択中の variant** を重ねる。variant ごとに
-  //   受理 param が異なる（ISSUE-278 #8）ため、可視判定は variant を知る必要がある。
-  _evalContext() {
-    return { ...this._context, variant: this._variant };
   }
 
   // バリアント選択行（variant 変更は実描画反映・§9.2・H-1 対象外）。
@@ -426,7 +447,7 @@ export class PropertiesDialog {
         ...r,
         color: toHex(r.color ?? DEFAULT_SERIES_COLOR),
         width: r.width ?? 1,
-        style: r.style ?? 'solid',
+        style: r.style ?? DEFAULT_LINE_STYLE,
       }));
     } else {
       rows = (this._def.series ?? []).map((s, idx) => ({
@@ -439,7 +460,7 @@ export class PropertiesDialog {
         //   このフォールバックへ落ちていた（E-6）。席の撤去（§7.2・A-2）に伴い直に書く。
         color: toHex(DEFAULT_SERIES_COLOR),
         width: s.width ?? 1,
-        style: s.style ?? 'solid',
+        style: s.style ?? DEFAULT_LINE_STYLE,
         visible: true,
       }));
     }
@@ -493,11 +514,10 @@ export class PropertiesDialog {
       let width = null;
       let style = null;
       let unified = null;
-      // 統合 select（案A）の初期値: display=='bar' なら 'bar'、'dots' なら 'dot'、それ以外は線種。
-      //   'bar'（btlm_trail_marod・棒グラフ）と 'dot'（btlm_trail・ドット）は排他（各系列のゲート次第）。
-      const unifiedInit = (r.display === 'bar')
-        ? 'bar'
-        : (r.display === 'dots') ? 'dot' : (r.style ?? 'solid');
+      // 選択肢の集合・並び・初期値はすべて表示形式の台帳が決める（series_style_forms.js）。
+      //   第 3 の表示形式は台帳 1 エントリの追加で選択肢・初期値・永続差分の 3 つに同時に効く。
+      const unifiedInit = displayFormInitial(r);
+      const options = displayFormOptions(r);
       // 線幅入力を生成するヘルパ（line 描画時のみ・histogram は lineWidth 非適用）。
       const buildWidthInput = () => {
         const w = doc.createElement('input');
@@ -508,49 +528,39 @@ export class PropertiesDialog {
         w.value = String(r.width);
         return w;
       };
-      const lineEditable = seriesKind(r.kind).editableLineStyle;
-      if (r.pointStyleEditable || r.barStyleEditable) {
-        // 対象系列（案A）: 線種と系列表示を統合した 1 つの select を kind に依らず出す。base=[solid,dotted,
-        //   dashed]。pointStyleEditable なら先頭に 'dot'（サークル描画）＝btlm_trail の
-        //   [dot,solid,dotted,dashed] を厳密再現（挙動不変）。barStyleEditable なら末尾に 'bar'（棒グラフ・
-        //   0% 中心）＝MAROD の [solid,dotted,dashed,bar]（dot は出さない）。両ゲートは直交。棒表示中
-        //   （kind='histogram'）でも select を出して line/dot へ戻せるようにする（editableLineStyle に依存
-        //   しない＝往復可能性を担保）。線幅入力は line 描画時のみ（histogram では lineWidth 非適用）。
-        if (lineEditable) {
-          width = buildWidthInput();
-        }
-        unified = doc.createElement('select');
-        unified.className = 'prop-input prop-input-select';
-        const opts = ['solid', 'dotted', 'dashed'];
-        if (r.pointStyleEditable) opts.unshift('dot');
-        if (r.barStyleEditable) opts.push('bar');
-        for (const st of opts) {
+      const buildStyleSelect = (selected) => {
+        const sel = doc.createElement('select');
+        sel.className = 'prop-input prop-input-select';
+        for (const st of options) {
           const o = doc.createElement('option');
           o.value = st;
           o.textContent = st;
-          if (unifiedInit === st) o.selected = true;
-          unified.append(o);
+          if (selected === st) o.selected = true;
+          sel.append(o);
         }
-        unified.value = unifiedInit;
+        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
+        sel.value = selected;
+        return sel;
+      };
+      const lineEditable = seriesKind(r.kind).editableLineStyle;
+      if (usesUnifiedDisplayForm(r)) {
+        // 対象系列（案A）: 線種と系列表示を統合した 1 つの select を kind に依らず出す。並びと
+        //   ゲートは台帳が宣言する（btlm_trail は先頭に 'dot'、MAROD は末尾に 'bar'。両ゲートは直交）。
+        //   棒表示中（kind='histogram'）でも select を出して line/dot へ戻せるようにする
+        //   （editableLineStyle に依存しない＝往復可能性を担保）。線幅入力は line 描画時のみ。
+        if (lineEditable) {
+          width = buildWidthInput();
+        }
+        unified = buildStyleSelect(unifiedInit);
         if (width) {
           row.append(width, unified);
         } else {
           row.append(unified);
         }
       } else if (lineEditable) {
-        // 未付与系列（補助線・読取・全他指標）: 従来どおり 線幅 ＋ 3 択（solid/dotted/dashed）＝byte 不変。
+        // 未付与系列（補助線・読取・全他指標）: 従来どおり 線幅 ＋ 台帳のゲート無しエントリ＝byte 不変。
         width = buildWidthInput();
-        style = doc.createElement('select');
-        style.className = 'prop-input prop-input-select';
-        for (const st of ['solid', 'dotted', 'dashed']) {
-          const o = doc.createElement('option');
-          o.value = st;
-          o.textContent = st;
-          if (r.style === st) o.selected = true;
-          style.append(o);
-        }
-        // option 追加後に value を明示設定（実 DOM で選択を確定・DOM スタブでも value を保証）。
-        style.value = r.style;
+        style = buildStyleSelect(r.style);
         row.append(width, style);
       }
 
@@ -587,51 +597,23 @@ export class PropertiesDialog {
     return pane;
   }
 
-  // OK 時のスタイル/可視性差分を { seriesName: { color?, width?, style?, visible? } } に集約する。
-  //   変更が無ければ空オブジェクト。行が bucket 粒度のときは全構成系列へ展開する。
+  // OK 時のスタイル/可視性差分を { seriesName: { color?, width?, style?, display?, visible? } } に集約する。
+  //   組立規則（何を差分と見なすか・統合 select の分解）は usecase/series_style_forms.js が所有する。
+  //   本メソッドは入力要素から現在値を読み取って純関数へ渡すだけ（DOM 読み取りのみ）。
   _collectStyleChanges() {
-    const patch = {};
-    const put = (names, fields) => {
-      for (const n of names) {
-        patch[n] = { ...(patch[n] ?? {}), ...fields };
-      }
-    };
-    for (const s of this._styleState ?? []) {
-      const fields = {};
-      // heat 行は色入力を生成しない（null・ISSUE-112）＝色は差分対象外（ヒート絶対優先）。
-      if (s.color && s.color.value !== s.initial.color) {
-        fields.color = s.color.value;
-      }
-      // histogram 行は width/style 入力を生成しない（null・ISSUE-111）＝色のみ差分対象。
-      if (s.width && s.width.value !== s.initial.width && s.width.value !== '') {
-        fields.width = Number(s.width.value);
-      }
-      if (s.style && s.style.value !== s.initial.style) {
-        fields.style = s.style.value;
-      }
-      // 統合 select（案A）: dot は display=dots、bar は display=bar（棒・線種概念なし＝style を載せない）、
-      //   線種（solid/dotted/dashed）はライン描画＋当該線種へ分解する。永続化スキーマは既存の
-      //   per-series {display?, style?} のまま（display 値域に 'bar' を加算・往復整合・移行不要）。
-      if (s.unified && s.unified.value !== s.initial.unified) {
-        if (s.unified.value === 'dot') {
-          fields.display = 'dots';
-        } else if (s.unified.value === 'bar') {
-          fields.display = 'bar';
-        } else {
-          fields.display = 'line';
-          fields.style = s.unified.value;
-        }
-      }
-      if (Object.keys(fields).length > 0) {
-        put(s.names, fields);
-      }
-    }
-    for (const v of this._visibilityState ?? []) {
-      if (v.checkbox.checked !== v.initial) {
-        put(v.names, { visible: v.checkbox.checked });
-      }
-    }
-    return patch;
+    const snap = (el, initial) => (el ? { value: el.value, initial } : null);
+    return collectSeriesStyleDiff({
+      styleRows: (this._styleState ?? []).map((s) => ({
+        names: s.names,
+        color: snap(s.color, s.initial.color),
+        width: snap(s.width, s.initial.width),
+        style: snap(s.style, s.initial.style),
+        unified: snap(s.unified, s.initial.unified),
+      })),
+      visibilityRows: (this._visibilityState ?? []).map((v) => ({
+        names: v.names, checked: v.checkbox.checked, initial: v.initial,
+      })),
+    });
   }
 
   // ---- フッター（デフォルト/キャンセル/OK）-----------------------------------
@@ -674,20 +656,16 @@ export class PropertiesDialog {
     this._refreshVisible();
   }
 
-  // F-11 リアルタイム検証（§5）。違反をインライン表示し OK を制御する。
-  // 条件付き非表示（conditionalVisible=false）のフィールドは検証対象外とする
-  //   （隠れた bins が既定 60 のままなら妥当だが、空値等でも OK を阻害させないため・トグル安全化）。
+  // F-11 リアルタイム検証（§5）。判定は PropertyFormState が返し、本メソッドは
+  //   インライン表示と OK ボタンの活殺へ写すだけを行う。
   _revalidate() {
-    const { violations } = validateForm(this._def, this._values);
-    const visible = computeVisible(this._def, this._values, this._evalContext());
-    // 非表示フィールドの違反は表示せず OK も阻害しない。
-    const effective = violations.filter((v) => visible[v.param] !== false);
+    const { violations, ok } = this._form.validation();
     // 全フィールドのエラー表示をクリア。
     for (const [, els] of this._fieldEls) {
       els.error.textContent = '';
       els.row.classList.remove('is-invalid');
     }
-    for (const v of effective) {
+    for (const v of violations) {
       const els = this._fieldEls.get(v.param);
       if (els) {
         els.error.textContent = humanizeKey(v.constraint);
@@ -696,7 +674,6 @@ export class PropertiesDialog {
     }
     // 未解決の入力エラー（期間表記の換算失敗など）がある間は確定させない。
     //   当該欄のエラー文言はコントロール側が自前で表示済みのため、ここでは OK 制御のみ行う。
-    const ok = effective.length === 0 && this._pendingErrors.size === 0;
     if (this._okBtn) {
       this._okBtn.disabled = !ok;
     }
@@ -705,7 +682,7 @@ export class PropertiesDialog {
 
   // 条件付き有効化（§3.5）。disabled のフィールド行をグレーアウト。
   _refreshEnabled() {
-    const enabled = computeEnabled(this._def, this._values, this._evalContext());
+    const enabled = this._form.enablement();
     for (const [name, els] of this._fieldEls) {
       const on = enabled[name] !== false;
       els.row.classList.toggle('is-disabled', !on);
@@ -723,7 +700,7 @@ export class PropertiesDialog {
     //   （mode/timeframe 変化に動的追従＝行の conditionalEnable と同じ再評価タイミング）。
     //   選択中の値が無効化されたときは**最初の有効 option へ自動切替**する（灰色のまま選択が残ると
     //   OK で無効組合せが保存され実行時ガードで空表示になるため。切替はダイアログ上で可視＝
-    //   黙った代替ではない。例: 日別×1分で src=zp → 滞在時間 へ跳ぶ）。
+    //   黙った代替ではない。例: 日別×1分で src=zp → 滞在時間 へ跳ぶ）。判定は PropertyFormState。
     for (const pdef of this._def.params ?? []) {
       if (typeof pdef.optionEnable !== 'function') {
         continue;
@@ -735,22 +712,14 @@ export class PropertiesDialog {
       if (!sel) {
         continue;
       }
-      let firstEnabled = null;
-      let currentDisabled = false;
-      for (const opt of sel.options ?? []) {
-        const raw = (pdef.enumValues ?? []).find((v) => String(v) === opt.value) ?? opt.value;
-        const ok = !!pdef.optionEnable(raw, this._values, this._evalContext());
-        opt.disabled = !ok;
-        if (ok && firstEnabled === null) {
-          firstEnabled = raw;
-        }
-        if (!ok && String(this._values[pdef.name]) === opt.value) {
-          currentDisabled = true;
-        }
-      }
-      if (currentDisabled && firstEnabled !== null) {
-        this._values[pdef.name] = firstEnabled;
-        sel.value = String(firstEnabled);
+      const options = [...(sel.options ?? [])];
+      const decision = this._form.optionEnablement(pdef, options.map((o) => o.value));
+      options.forEach((opt, i) => {
+        opt.disabled = !decision.enabled[i];
+      });
+      if (decision.currentDisabled && decision.firstEnabled !== null) {
+        this._form.setValue(pdef.name, decision.firstEnabled);
+        sel.value = String(decision.firstEnabled);
         this._refreshVisible(); // src 連動の表示（period 行など）も追従させる。
       }
     }
@@ -760,7 +729,7 @@ export class PropertiesDialog {
   //   _refreshEnabled（グレーアウト）と対称の動的経路。range を変えた瞬間に「ビン」行が出没する。
   //   静的除外（uiVisible===false）は buildFormModel が担い、本メソッドは動的トグルのみ担う。
   _refreshVisible() {
-    const visible = computeVisible(this._def, this._values, this._evalContext());
+    const visible = this._form.visibility();
     for (const [name, els] of this._fieldEls) {
       const on = visible[name] !== false;
       els.row.style.display = on ? '' : 'none';
@@ -768,8 +737,7 @@ export class PropertiesDialog {
   }
 
   _onDefaultClick() {
-    const defaults = resetToDefaults(this._def);
-    this._values = { ...defaults };
+    this._form.resetToDefaults();
     // 再構築（フォーム内のみ・OK 押下まで適用しない・§7.1）。
     this._rebuildBody();
   }
@@ -802,28 +770,5 @@ export class PropertiesDialog {
   _onCancelClick() {
     this.close();
     this._onCancel();
-  }
-
-  // ---- ドラッグ移動（Pointer Events・§2.3）-----------------------------------
-  _onDragStart(ev) {
-    if (!this._panel) return;
-    this._drag = { startX: ev.clientX, startY: ev.clientY, baseX: this._offset.x, baseY: this._offset.y };
-    const move = (e) => this._onDragMove(e);
-    const up = () => {
-      this._doc.removeEventListener('pointermove', move);
-      this._doc.removeEventListener('pointerup', up);
-      this._drag = null;
-    };
-    this._doc.addEventListener('pointermove', move);
-    this._doc.addEventListener('pointerup', up);
-  }
-
-  _onDragMove(ev) {
-    if (!this._drag) return;
-    this._offset = {
-      x: this._drag.baseX + (ev.clientX - this._drag.startX),
-      y: this._drag.baseY + (ev.clientY - this._drag.startY),
-    };
-    this._panel.style.transform = `translate(${this._offset.x}px, ${this._offset.y}px)`;
   }
 }
