@@ -41,7 +41,12 @@ function countingIo(counter) {
  * @param {string} spec.label            報告用の core 名（テスト名に出す）。
  * @param {string} spec.jsRoot           配信根 `.../web/js` の絶対パス。
  * @param {string} spec.repoRoot         報告の相対化根。
- * @param {string} spec.ownCore          自 core の配信名（`live|replay|sim|dashboard`）。
+ * @param {?string} spec.ownCore         自 core の配信名（`live|replay|sim|dashboard`）。
+ *   **配信 core ではないパッケージ**（配信根を持たず、consumer の symlink 経由でのみ配られる
+ *   共有カーネル等）は `null` を渡す。`crossCoreModuleUrlOffenders` は既定で `null` を受け、
+ *   その場合「自 core 除外」は行われない＝どの core 名を名指しても offender になる（最も厳しい
+ *   側）。よって null は検査を緩めない。自 core 除外の自己検定だけは対象（自 core）が存在しない
+ *   ため登録しない（下の `ownCore !== null` の囲い）。
  * @param {string} spec.otherCore        自 core 除外が緩めていないことを測る**他** core の名前。
  * @param {string[]} spec.requiredLayers 構造的に見つかるべき層（前提の非空振り）。
  * @param {number} spec.minFiles         走査対象の下限（前提崩壊の検出）。
@@ -75,7 +80,9 @@ export function registerLayerDirectionSuite({
   // 検出器の自己検定 — 合成ソースで違反を実際に捕捉する
   // ------------------------------------------------------------------------- //
   const syntheticTree = () => {
-    const root = mkdtempSync(path.join(tmpdir(), `jslayer-${ownCore}-`));
+    // 一時根の名前は「どの登録の合成木か」を人が見分けるためだけのもの。ownCore は null を
+    //   取りうる（配信 core でないパッケージ）ので、常に非 null の label へ退避する。
+    const root = mkdtempSync(path.join(tmpdir(), `jslayer-${ownCore ?? label}-`));
     const js = path.join(root, 'js');
     for (const layer of ['domain', 'usecase', 'adapter', 'public']) {
       mkdirSync(path.join(js, layer), { recursive: true });
@@ -146,22 +153,29 @@ export function registerLayerDirectionSuite({
     assert.match(offenders[0], new RegExp(`/${otherCore}/js/usecase/period_presets\\.js`));
   });
 
-  test(`[${label}] 検出器は自 core（${ownCore}）の名指しを offender にしない`, () => {
-    // なぜ在るか（実測 2026-09-04）: sim の合成根は表示部品を `/sim/report-js/chart.js` の
-    //   **配信 URL** で読み込む（report 側の資源と配信根を共有するため）。これは「他 core の
-    //   内部階層を名指す」越境ではなく、自 core 内の参照である。ここを越境として落とすと、
-    //   検定は誤検出だけを出し続ける器になる。
-    const { root, js } = syntheticTree();
-    writeFileSync(
-      path.join(js, 'adapter', 'root.js'),
-      `import { c } from "/${ownCore}/report-js/chart.js";\nexport const chart = c;\n`,
-    );
-    const sources2 = collectSources([js]);
-    assert.deepEqual(crossCoreModuleUrlOffenders(sources2, root, ownCore), []);
-    // 自 core を渡さなければ従来どおり offender（加法であること＝既存呼出の挙動は不変）。
-    assert.equal(crossCoreModuleUrlOffenders(sources2, root).length, 1,
-      '自 core 除外が既定になっている（既存 core の検定を無言で緩めている）');
-  });
+  // 自 core 除外の検定は、自 core が**在る**登録にだけ意味がある。ownCore が null（配信 core で
+  //   ないパッケージ）のとき、除外対象の core 名が存在しないので、この検定は「存在しない名前を
+  //   名指した合成ソース」を測る空振りになる（`/null/...` は core 名ではないので既定でも
+  //   offender にならず、下の 2 本目の assert が必ず落ちる）。**登録しない**のが正しい形で、
+  //   ownCore を渡す既存 4 core の登録内容はこの囲いで一切変わらない（加法）。
+  if (ownCore !== null) {
+    test(`[${label}] 検出器は自 core（${ownCore}）の名指しを offender にしない`, () => {
+      // なぜ在るか（実測 2026-09-04）: sim の合成根は表示部品を `/sim/report-js/chart.js` の
+      //   **配信 URL** で読み込む（report 側の資源と配信根を共有するため）。これは「他 core の
+      //   内部階層を名指す」越境ではなく、自 core 内の参照である。ここを越境として落とすと、
+      //   検定は誤検出だけを出し続ける器になる。
+      const { root, js } = syntheticTree();
+      writeFileSync(
+        path.join(js, 'adapter', 'root.js'),
+        `import { c } from "/${ownCore}/report-js/chart.js";\nexport const chart = c;\n`,
+      );
+      const sources2 = collectSources([js]);
+      assert.deepEqual(crossCoreModuleUrlOffenders(sources2, root, ownCore), []);
+      // 自 core を渡さなければ従来どおり offender（加法であること＝既存呼出の挙動は不変）。
+      assert.equal(crossCoreModuleUrlOffenders(sources2, root).length, 1,
+        '自 core 除外が既定になっている（既存 core の検定を無言で緩めている）');
+    });
+  }
 
   test(`[${label}] 検出器は他 core の public 面の名指しを offender にしない（許可の側も効いている）`, () => {
     const { root, js } = syntheticTree();
