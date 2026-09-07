@@ -143,3 +143,22 @@
 5. **段階 5（抽象の宣言化）**: Port 冪等性宣言＋controller 経路の計算量テスト（dashboard F-1）、replay.js の port 宣言、`__getattr__` 委譲 11 件の明示面化、replay_ports の HTTP 語彙除去。
 
 各エージェントの検証記録（prompt-validation-workflow / upstream-input-validation の棄却・撤回履歴を含む）は精査時の会話ログに保存。上流想定のうち「列挙 factory」「計算と I/O 混在」「グローバル結合」「domain→framework 逆流」は実測で棄却されており、これらを前提とした是正計画は立てないこと。
+
+---
+
+## 是正記録（2026-09-07・ISSUE-502 段階 1〜2 完了）
+
+D-1〜D-17 すべて是正済み（コミット 8e5dd15 / 215892b / f214d32 / 11f0385 / e3855ad / d4f4c5b / 9aa1f9d / bc342e1 / cae64fe）。全項目で bit/byte 等価を実測し、再発は機械的検査（単一実装 AST ガード・パリティ検定・生成物 byte 一致）で遮断。品質ゲート exit 0。
+
+### 是正時の実測により訂正する台帳の記述
+- **D-12 の「q=0.995/0.99 の同名衝突」は誤り**: `int(round(0.995*100))` は偶数丸めで 100 となり `_q100`/`_q99` で別名。実使用分位 9 値の総当りで衝突 0（是正エージェント実測）。
+- **D-7 の記述は共有版の所在を 1 つ落としている**: 共有版は `common_view/lwc_adapter.py`（`str(c).lower()`）と `marketdata/time_column.py`（`c.lower()`）の 2 つ存在し、profit_hl_band/profit_hlband の自前実装は後者と AST 完全一致だった。指標層の自前実装は 0 件に到達したが、**共有所有者 2 つの一本化は未了**（marketdata が common_view へ委譲する向きのみ可・別タスク）。
+- **D-16 の構築点は 8 でなく 9**（period_presets_measure.py:85 が台帳未記載）。9 点すべて是正済み。
+- **D-17 の「二重実装」の実態**: acquire_marketdata 側は関数でなく main() へのインライン展開（_STAGE_FUNCS/_dispatch/select_stages は同一）。集約により解消。
+
+### 是正中に新規検出した残存複製（未是正・後続候補）
+- `marketdata/mt5_ticks/usecases.py:124`・`rebuild.py:160` — D-15 同型の日境界自前計算（検定内 _KNOWN_UNFIXED 台帳に登録済み・増減とも Red）
+- `dashboard_ui` の `TIMEFRAME_REFRESH_MS` — TF_LEDGER.barSec×1000 の手写し 8 本（突合検定 0・要承認）
+- `unified_ui/router.py:58-64` ＋ `tests/test_router.py:691` — core 集合の Python 側写し（D-11 の対応物・突合検定 0）
+- `incremental/moving_averages.py:105` — D-6 の 5 件目（契約差ありのため pin 済み）
+- `compute_rmm_level_count` 本体複製（ISSUE-175 未裁定が前提）・`resolve_times` 共有所有者 2 件・D-12 残存 3 件（成果物列名等）
