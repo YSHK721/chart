@@ -22,8 +22,13 @@ import pandas as pd
 # 適用価格（合成価格）は共有プリミティブ層に一本化する（自前実装を持たない）。
 #   ロード境界（adapter/compute/call_binding.py）がワークスペース根を sys.path に追加するため
 #   絶対 import で解決できる。UI のソース値 → AppliedPrice 種別の写像のみ本ファイルで持つ。
-from common.applied_price import SOURCE_TO_APPLIED, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, resolve_source_prices
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
+
+# 時刻解決の規則は共有アダプタが単一所有する（ISSUE-502 段階 2 D-7）。旧・自前実装は list を
+#   返す第 3 変種だったが、唯一の利用点 ``_emit`` は ``times[j]`` の位置参照しかしないため、
+#   index を 0..n-1 に振り直した Series でも取り出される値（Timestamp）は同一である。
+from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
 
 from .core import MA_FROM_ZERO, _MA_ON_BUFFER
 
@@ -65,41 +70,15 @@ class _Chart(Protocol):
     def create_line(self, name: str, **kwargs: object) -> _Line: ...
 
 
-def _resolve_times(df: pd.DataFrame, time_column: Optional[str]) -> list:
-    """時刻系列（位置整列の list）を解決する（time/date 列 → DatetimeIndex の順）。"""
-    lower_map = {str(c).lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return list(pd.to_datetime(df[tcol]))
-    if "time" in lower_map:
-        return list(pd.to_datetime(df[lower_map["time"]]))
-    if "date" in lower_map:
-        return list(pd.to_datetime(df[lower_map["date"]]))
-    if isinstance(df.index, pd.DatetimeIndex):
-        return list(df.index)
-    raise KeyError("時刻を解決できません（time/date 列、または DatetimeIndex が必要）。")
-
-
 def _source_prices(df: pd.DataFrame, source: str) -> np.ndarray:
     """ソース価格列（合成含む）を float 配列で返す。計算は共有 ``applied_price`` に委譲する。
 
     UI のソース値（close/open/high/low/hl2/hlc3/ohlc4/hlcc4）を ``AppliedPrice`` 種別へ写像し、
     ``applied_price(kind, open, high, low, close)`` で系列を得る（合成価格の単一定義）。
+    解決**手続き**（列名の小文字照合・欠落時の例外・抽出順）は共有
+    ``common.applied_price.resolve_source_prices`` へ 1 本化した（ISSUE-502 段階 2 D-6）。
     """
-    s = str(source).lower()
-    kind = _SOURCE_TO_APPLIED.get(s)
-    if kind is None:
-        raise ValueError(f"未知のソースです: {source}")
-    lower = {str(c).lower(): c for c in df.columns}
-
-    def col(name: str) -> np.ndarray:
-        if name not in lower:
-            raise ValueError(f"ソース計算に必要な列がありません: {name}")
-        return df[lower[name]].to_numpy(dtype=np.float64)
-
-    return applied_price(kind, col("open"), col("high"), col("low"), col("close"))
+    return resolve_source_prices(df, source)
 
 
 def _main_ma(price: np.ndarray, ma_type: str, length: int) -> np.ndarray:

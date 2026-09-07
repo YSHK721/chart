@@ -229,14 +229,17 @@ def profit_band_empty_bucket_error() -> type:
 # 参照実装 build_btlm_bands が列名を直接参照する経路をそのまま使う（byte 不変）。合成 4 択
 # （hl2/hlc3/ohlc4/hlcc4）は本結線層が共有 applied_price で列を先に合成し、その列名を price
 # として渡す（tgp_btlm src は無改変・追加拡張のみ・非破壊）。moving_averages と同一の写像。
-from common.applied_price import AppliedPrice, applied_price  # noqa: E402
+from common.applied_price import (  # noqa: E402
+    OHLC_COLUMNS,
+    SYNTHETIC_SOURCE_TO_APPLIED,
+    applied_price,
+)
 
-_BTLM_SYNTHETIC_SOURCES = {
-    "hl2": AppliedPrice.MEDIAN,
-    "hlc3": AppliedPrice.TYPICAL,
-    "ohlc4": AppliedPrice.OHLC4,
-    "hlcc4": AppliedPrice.WEIGHTED,
-}
+#: 合成が要る source → 種別。以前は本ファイルが 4 組を逐語列挙しており、共有表
+#: ``SOURCE_TO_APPLIED``（8 組）の部分写しになっていた（ISSUE-502 段階 2 D-6: 8 択解決の
+#: 第 4 の部分実装）。列挙をやめ共有側の導出値をそのまま束縛する（source を 1 つ足しても
+#: 本ファイルは改変不要）。
+_BTLM_SYNTHETIC_SOURCES = SYNTHETIC_SOURCE_TO_APPLIED
 
 
 def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
@@ -246,6 +249,13 @@ def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
     そのまま使う（byte 不変）。合成ソース（hl2/hlc3/ohlc4/hlcc4）は applied_price で列を合成し
     df のコピーへ一意列名で足し、その列名を返す。未知ソースは素通しし、build_btlm_bands の
     KeyError 契約に委ねる。
+
+    共有の解決手続き common.applied_price.resolve_source_prices へは寄せていない（ISSUE-502 段階 2 D-6
+    で差分を実測）。契約が別物であるため:
+        * 戻り値が価格配列ではなく ``(df, 列名)``（tgp_btlm src は列名で直接参照する＝byte 不変）。
+        * 既存列は**素通し**し合成しない（price="close" は同名列をそのまま使う）。
+        * 列欠落は ``ValueError`` ではなく ``KeyError``（build_btlm_bands の契約に揃える）。
+    語彙（どの source が合成を要するか・どの列が要るか）だけを共有側から受け取る。
     """
     key = str(price).lower()
     lower = {str(c).lower(): c for c in df.columns}
@@ -260,7 +270,7 @@ def _resolve_btlm_price(df: Any, price: str) -> tuple[Any, str]:
             raise KeyError(f"合成ソース計算に必要な列がありません: {name}")
         return df[lower[name]].to_numpy(dtype=float)
 
-    series = applied_price(kind, col("open"), col("high"), col("low"), col("close"))
+    series = applied_price(kind, *(col(name) for name in OHLC_COLUMNS))
     col_name = f"_btlm_src_{key}"
     df2 = df.copy()
     df2[col_name] = series

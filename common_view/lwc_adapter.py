@@ -5,6 +5,7 @@ chart を受ける」出力アダプタである（PORTING_GUIDE §2/§6）。�
 
     - :func:`resolve_times` … 時刻系列の解決順序（PORTING_GUIDE §5）
     - :func:`emit_line`     … 折れ線 1 本の生成 + NaN 除外 + ``set``
+    - :func:`quantile_series_name` … 分位バンド端の系列名の綴り（``{prefix}_q{pct}``）
     - :class:`SeriesLike`   … 系列オブジェクトの構造的契約（``set`` のみ）
 
 の 3 つは全パッケージで同一の規約であり、ISSUE-179（横断コピペ重複）時点で
@@ -25,11 +26,25 @@ chart を受ける」出力アダプタである（PORTING_GUIDE §2/§6）。�
     （``str(c).lower()`` 版・戻り値 ``pd.Series``）と、``btlm_trail_marod`` / ``ma_marod`` の
     ``_emit_line`` を **無改変で** 移設したもの。移設に伴う数値・例外挙動の変更は無い。
 
-    なお ISSUE-179 時点で以下は本モジュールへ寄せていない（挙動差が実測されたため）:
-        - ``lower_map`` を ``c.lower()`` で作る 7 パッケージ（非 str 列名で AttributeError）
-        - ``list`` を返す ``moving_averages``
-        - DatetimeIndex 経路の系列名・例外文言が異なる ``profit_band``
-    いずれも寄せると当該パッケージの観測可能な挙動が変わるため、採否の裁定を待つ。
+    ISSUE-179 時点では「c.lower() 版 7 パッケージ / list を返す moving_averages / profit_band」を
+    挙動差ゆえ未統合として残していたが、ISSUE-502 段階 2（D-7）で実測し直した結果、指標
+    パッケージ側の自前実装は **3 件**（profit_hl_band / profit_hlband / moving_averages）まで
+    減っていた（c.lower() 版の多くは marketdata.time_column へ移設済み）。この 3 件は次の実測に
+    より本モジュールへ統合した:
+
+        - profit_hl_band / profit_hlband: 公開入口（add_hl_band / add_hlband_separate）では
+          core（hl_band.py / hlband.py）が先に c.lower() で列照合するため、非 str 列名は時刻解決へ
+          到達しない＝挙動差は非到達。
+        - moving_averages: 唯一の利用点（系列 emit）は位置参照 times[j] のみで、index を 0..n-1 へ
+          振り直した Series からも同一の Timestamp が得られる。
+
+    （profit_band は ISSUE-179 以後に別途統合済み。同ファイル冒頭に挙動不変の実測記録あり。）
+    これで指標パッケージ側の自前実装は **0 件**になった。
+
+    同一規則の第 2 の所有者として marketdata.time_column.resolve_times（c.lower() 版）が存在する。
+    本モジュールと当該モジュールの一本化は marketdata 側の改変を要するため ISSUE-502 段階 2 の
+    作業範囲外（未収束・別途裁定）。両者の共存は共有層 2 件・指標層 0 件として
+    common_view/tests/test_resolve_times_single_rule.py が機械的に固定する。
 
 依存: numpy / pandas のみ（指標パッケージ・描画ライブラリへは依存しない）。
 """
@@ -112,4 +127,35 @@ def emit_line(
     return line
 
 
-__all__ = ["SeriesLike", "LineChartLike", "resolve_times", "emit_line"]
+def quantile_series_name(prefix: str, q: float) -> str:
+    """分位 ``q``（0..1）に対応するバンド端の系列名を綴る（例 ``("btlm_trail", 0.05)`` -> ``btlm_trail_q5``）。
+
+    ISSUE-502 段階 2（D-12）: btlm_trail / btlm_trail_marod / ma_marod / tickvol の 4 パッケージが
+    f"{prefix}_q{int(round(q * 100))}" を逐語複製しており、prefix だけが違った。綴りの規則
+    （百分率の整数へ丸めて接尾辞を付ける）は 1 箇所が所有し、prefix は引数で受ける。
+
+    Args:
+        prefix: 指標の系列名 prefix（呼び出し側の指標が自分の系列名を渡す）。
+        q: 分位（0..1）。
+
+    Returns:
+        ``f"{prefix}_q{int(round(q * 100))}"``。
+
+    Note:
+        本規則は百分率の整数へ丸めるため一般には非単射である（同じ 1% 幅に入る 2 つの分位は
+        同名になる。例: q=0.0 と q=0.005 はともに接尾辞 q0）。ただし ISSUE-502 段階 2 で実測した
+        ところ、実使用分位（0.005 / 0.01 / 0.05 / 0.1 / 0.5 / 0.9 / 0.95 / 0.99 / 0.995）に衝突は
+        **無い**（q=0.995 は 99.5 の偶数丸めで q100、q=0.99 は q99 で別名）。台帳
+        .doc/solid_audit_20260906.md の「q=0.995/0.99 の同名衝突」は誤りであり、実測で棄却した。
+        丸め挙動は移設元 4 実装と 1 文字も変えていない（挙動不変の移設）。
+    """
+    return f"{prefix}_q{int(round(q * 100))}"
+
+
+__all__ = [
+    "SeriesLike",
+    "LineChartLike",
+    "resolve_times",
+    "emit_line",
+    "quantile_series_name",
+]

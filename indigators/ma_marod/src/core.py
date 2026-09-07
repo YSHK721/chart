@@ -38,7 +38,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from common.applied_price import SOURCE_TO_APPLIED, AppliedPrice, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, AppliedPrice, resolve_source_prices
 from common import marod_bands as _bands
 from common import module_loader as _module_loader
 
@@ -150,20 +150,12 @@ def _ma_funcs() -> dict:
 def resolve_source(df, source: str) -> np.ndarray:
     """8 択ソース（close/open/high/low/hl2/hlc3/ohlc4/hlcc4）を float 配列で返す。
 
-    写像は moving_averages と同一（``_SOURCE_TO_APPLIED``）で、合成価格の計算は共有
-    ``applied_price`` に委譲する（計算の原子を基準線 MA と同期）。列名の大小は問わない。
+    写像は moving_averages と同一（``_SOURCE_TO_APPLIED``）。解決**手続き**（列名の小文字照合・
+    欠落時の例外・抽出順・合成価格の計算）は共有 ``common.applied_price.resolve_source_prices``
+    へ 1 本化した（ISSUE-502 段階 2 D-6）。本関数は ma_marod の呼出面を保つ束縛であり規則を
+    持たない（計算の原子は基準線 MA と同期したまま）。列名の大小は問わない。
     """
-    kind = _SOURCE_TO_APPLIED.get(str(source).lower())
-    if kind is None:
-        raise ValueError(f"未知のソースです: {source}")
-    lower = {str(c).lower(): c for c in df.columns}
-
-    def col(name: str) -> np.ndarray:
-        if name not in lower:
-            raise ValueError(f"ソース計算に必要な列がありません: {name}")
-        return df[lower[name]].to_numpy(dtype=np.float64)
-
-    return applied_price(kind, col("open"), col("high"), col("low"), col("close"))
+    return resolve_source_prices(df, source)
 
 
 def ma_series(price: np.ndarray, ma_type: str, length: int) -> np.ndarray:

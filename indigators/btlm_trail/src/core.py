@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from common.applied_price import SOURCE_TO_APPLIED, applied_price
+from common.applied_price import SOURCE_TO_APPLIED, resolve_source_prices
 from common.ols_fit import ols_fit, pred_sd_at
 
 # Acklam 有理近似の実体は共有プリミティブへ 1 本化した（ISSUE-179 項目 3）。スカラ経路が
@@ -50,20 +50,12 @@ _SOURCE_TO_APPLIED = SOURCE_TO_APPLIED
 def resolve_source(df, source: str) -> np.ndarray:
     """8 択ソース（close/open/high/low/hl2/hlc3/ohlc4/hlcc4）を float 配列で返す。
 
-    合成価格の計算は共有 ``applied_price`` に委譲する（moving_averages と同一の写像）。
-    列名の大小は問わない。
+    解決**手続き**（列名の小文字照合・欠落時の例外・抽出順・合成価格の計算）は共有
+    ``common.applied_price.resolve_source_prices`` に 1 本化した（ISSUE-502 段階 2 D-6）。
+    本関数は btlm_trail の公開面（``src/__init__`` の再エクスポート・参照実装バインディングの
+    ``TrendLineReference.resolve_source``）を保つための束縛であり、規則は持たない。
     """
-    kind = _SOURCE_TO_APPLIED.get(str(source).lower())
-    if kind is None:
-        raise ValueError(f"未知のソースです: {source}")
-    lower = {str(c).lower(): c for c in df.columns}
-
-    def col(name: str) -> np.ndarray:
-        if name not in lower:
-            raise ValueError(f"ソース計算に必要な列がありません: {name}")
-        return df[lower[name]].to_numpy(dtype=np.float64)
-
-    return applied_price(kind, col("open"), col("high"), col("low"), col("close"))
+    return resolve_source_prices(df, source)
 
 
 def window_end_scalar(z: np.ndarray) -> tuple[float, float, float, float]:

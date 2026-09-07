@@ -30,6 +30,7 @@ import pandas as pd
 from common_view.event_quantile_view import emit_event_quantile_lines
 from common_view.lwc_adapter import (  # noqa: E402
     emit_line as _emit_line,
+    quantile_series_name as _quantile_series_name_of,
     resolve_times as _resolve_times,
 )
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
@@ -62,8 +63,10 @@ def _quantile_series_name(q: float) -> str:
     """分位 q（0..1）に対応する系列名（例 0.05 -> 'btlm_trail_marod_q5'）。
 
     btlm_trail/src/lwc_chart._quantile_series_name（'btlm_trail_q{pct}'）と対称の命名。
+    綴りの規則は共有アダプタ common_view.lwc_adapter.quantile_series_name が単一所有する
+    （ISSUE-502 段階 2 D-12）。本関数は prefix を束縛するだけで規則を持たない。
     """
-    return f"{_SERIES_NAME}_q{int(round(q * 100))}"
+    return _quantile_series_name_of(_SERIES_NAME, q)
 
 
 _Line = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）

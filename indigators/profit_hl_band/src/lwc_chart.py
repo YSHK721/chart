@@ -35,6 +35,11 @@ import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
 
+# 時刻解決の規則は共有アダプタが単一所有する（ISSUE-502 段階 2 D-7）。旧・自前実装は共有版と
+#   AST 一致（``c.lower()`` 版）だったが、公開入口 ``add_hl_band`` では ``hl_band_levels`` が
+#   先に ``c.lower()`` で列を照合するため、非 str 列名は本関数へ到達しない（挙動不変）。
+from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
+
 from .core import DEFAULT_WINDOW
 from .hl_band import hl_band_levels
 
@@ -57,31 +62,6 @@ _BAND_KEYS: tuple[str, ...] = (
 @runtime_checkable
 class _Chart(Protocol):
     def horizontal_line(self, price: float, **kwargs): ...
-
-
-def _resolve_times(df: pd.DataFrame, time_column: str | None) -> pd.Series:
-    """時刻系列を解決する（明示指定 > time 列 > date 列 > DatetimeIndex の順）。
-
-    水平バンド線自体は価格軸スカラのみで描けるが、元指標が時系列チャートへの重畳
-    （chart_window）であることと、profit_hlband 先例の異常系（時刻欠落 → KeyError）に
-    合わせ、時刻解決可能性を本アダプタで検証する。
-
-    Raises:
-        KeyError: 指定時刻列が無い / time・date 列も DatetimeIndex も無い場合。
-    """
-    lower_map = {c.lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return pd.to_datetime(df[tcol]).reset_index(drop=True)
-    if "time" in lower_map:
-        return pd.to_datetime(df[lower_map["time"]]).reset_index(drop=True)
-    if "date" in lower_map:
-        return pd.to_datetime(df[lower_map["date"]]).reset_index(drop=True)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return pd.Series(df.index, name="time").reset_index(drop=True)
-    raise KeyError("時刻を解決できません（time/date 列、または DatetimeIndex が必要）。")
 
 
 def add_hl_band(

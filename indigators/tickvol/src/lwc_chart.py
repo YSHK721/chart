@@ -44,6 +44,7 @@ from common.event_quantiles import DEFAULT_K_EVENTS, DEFAULT_Q_OUT
 from common_view.event_quantile_view import EVQ_COLOR, EVQ_LINE_SPECS
 from common_view.lwc_adapter import SeriesLike  # noqa: E402
 from common_view.lwc_adapter import emit_line as _emit_line  # noqa: E402
+from common_view.lwc_adapter import quantile_series_name as _quantile_series_name_of  # noqa: E402
 from common_view.lwc_adapter import resolve_times as _resolve_times  # noqa: E402
 
 from .core import TICKVOL_COLUMN, build_tickvol
@@ -65,8 +66,10 @@ def _quantile_series_name(q: float) -> str:
     """分位 q（0..1）に対応する系列名（例 0.10 -> 'tickvol_q10'）。
 
     ``btlm_trail_marod/src/lwc_chart._quantile_series_name`` と対称の命名。
+    綴りの規則は共有アダプタ common_view.lwc_adapter.quantile_series_name が単一所有する
+    （ISSUE-502 段階 2 D-12）。本関数は prefix を束縛するだけで規則を持たない。
     """
-    return f"{TICKVOL_COLUMN}_q{int(round(q * 100))}"
+    return _quantile_series_name_of(TICKVOL_COLUMN, q)
 
 
 _Series = SeriesLike  # 共有 Protocol の別名（要求は ``set`` のみ・構造的部分型）
