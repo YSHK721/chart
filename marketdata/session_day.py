@@ -1,10 +1,14 @@
 """session_day — セッション日境界の単一定義（ISSUE-078・依頼者承認 2026-07-14）。
 
 セッション日の定義:
-    ブローカー時間（America/New_York + 7 時間 ＝ NY 17:00 が 00:00 になる座標系）の暦日。
+    ブローカー時間（:data:`marketdata.resample.BROKER_TZ_NAME` の壁時計 ＋
+    :data:`marketdata.resample.BROKER_SHIFT_HOURS` 時間 ＝ NY 17:00 が 00:00 になる座標系）の暦日。
     境界（セッション日始端）は「NY ローカル前日 17:00」＝夏 21:00 UTC / 冬 22:00 UTC。
-    米 DST の切替は IANA tz（zoneinfo 'America/New_York'）へ委譲する（自前カレンダー禁止＝
-    制度変更・歴史的切替日も tzdata が単一真実源）。
+    米 DST の切替は IANA tz へ委譲する（自前カレンダー禁止＝制度変更・歴史的切替日も tzdata が
+    単一真実源）。**座標系そのもの（tz と シフト、および写像の式）は本モジュールが持たず**、
+    :mod:`marketdata.resample` を唯一源として委譲する（ISSUE-502 D-14。以前はここに第 2 定義が
+    あり、片方だけ動かせば境界が静かに 1 時間ずれた）。本モジュールが持つのは「セッション日＝
+    その座標系の暦日」という規約と、その上の日切り・ラベル・逆写像である。
 
 採用理由（実測・ISSUE-078 調査）:
     - JP225 CFD の休場帯は夏 20:15〜22:00 / 冬 21:15〜23:00 UTC（実測）＝本境界は年間を通じ
@@ -17,7 +21,7 @@
       :func:`next_session_day_start` を使うこと（切替日に境界がずれる）。
     - NY ローカル 17:00 は DST 切替時刻（02:00）と重ならないため、曖昧・不存在時刻は生じない。
 
-依存方向: 本モジュールは stdlib（zoneinfo/datetime）・numpy・pandas と、週/月ラベル規則の唯一源
+依存方向: 本モジュールは stdlib（datetime）・numpy・pandas と、週/月ラベル規則の唯一源
 :mod:`marketdata.resample`（ISSUE-094 🟡-10a）・時間足台帳の唯一源 :mod:`marketdata.tf_ledger`
 （ISSUE-479 M-3: 暦ラベル tf 集合と期間先頭日の暦算術。依存ゼロの定数モジュール）に依存する
 （resample は pandas のみに依存する葉＝循環しない）。日切りが必要な全層
@@ -30,28 +34,36 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from marketdata import tf_ledger as _tf_ledger
-from marketdata.resample import period_label_naive
+from marketdata.resample import (
+    from_broker_naive_unix,
+    period_label_naive,
+    to_broker_time,
+)
 
-_NY = ZoneInfo("America/New_York")
-# ブローカー時間 = NY + 7h（NY 17:00 → 00:00）。セッション日ラベルはブローカー暦日。
-_BROKER_SHIFT = timedelta(hours=7)
-
-
-def _broker_date(t: "int | float") -> "datetime":
-    """UNIX 秒 → ブローカー暦日（naive date を持つ datetime・時刻部は無意味）。"""
-    return datetime.fromtimestamp(float(t), tz=_NY) + _BROKER_SHIFT
+#: UNIX 秒 → ブローカー暦日（naive date を持つ datetime・時刻部は無意味）。
+#:
+#: 座標系（基準 tz と +7h シフト）の定数も式も :mod:`marketdata.resample` が唯一源であり、
+#: 本モジュールは**同一オブジェクトを名前で受け直すだけ**である（ISSUE-502 D-14）。
+#: かつてはここに ``ZoneInfo("America/New_York")`` と ``timedelta(hours=7)`` と写像の式が
+#: 再度書かれており、片方だけ動かせばセッション境界が静かに 1 時間ずれる状態だった。
+#: 別名（def のラッパでなく代入）にしてあるのは、本関数が上位足投影の経路上にあり
+#: 1 リクエストで 25,131 回呼ばれる（ISSUE-450 実測）ため、呼び出しの段を増やさないためである。
+_broker_date = to_broker_time
 
 
 def _start_of_broker_date(y: int, m: int, d: int) -> int:
-    """ブローカー暦日 (y,m,d) のセッション始端 UNIX 秒＝NY ローカル前日 17:00。"""
-    ny_naive = datetime(y, m, d) - _BROKER_SHIFT  # 前日 17:00（naive・NY ローカル値）。
-    return int(ny_naive.replace(tzinfo=_NY).timestamp())
+    """ブローカー暦日 (y,m,d) のセッション始端 UNIX 秒＝NY ローカル前日 17:00。
+
+    ブローカー壁時計 → UNIX 秒の写像は :func:`marketdata.resample.from_broker_naive_unix`
+    （唯一源）へ委譲する。ここが持つのは「セッション始端＝その暦日の 00:00」という
+    セッション日側の規約だけである。
+    """
+    return from_broker_naive_unix(datetime(y, m, d))
 
 
 def session_day_start(t: "int | float") -> int:
@@ -92,15 +104,15 @@ def session_slot_start(t: "int | float", bar_sec: int) -> int:
     周期判定のスカラ入口。座標系は :func:`marketdata.resample.resample_ohlc_anchored` と同一
     （ブローカー時間で floor）であり、両者の一致は検定が固定する。ラベル＝期間始端（UTC）。
 
-    秋の DST 切替（NY 01:00 の重複）は fold=0（夏側）で解決する＝pandas ``ambiguous=True`` と
-    同値。切替は常に週末休場中のため、実バーの経路としては使われない（決定性のための明示）。
+    秋の DST 切替（NY 01:00 の重複）の解決（fold=0＝夏側・pandas ``ambiguous=True`` と同値）は
+    座標系の唯一源 :func:`marketdata.resample.from_broker_naive_unix` が持つ。切替は常に週末
+    休場中のため、実バーの経路としては使われない（決定性のための明示）。
     """
     b = _broker_date(t).replace(tzinfo=None)                  # ブローカー壁時計（naive）
     midnight = datetime(b.year, b.month, b.day)
     elapsed = (b - midnight).total_seconds()
     slot_start = midnight + timedelta(seconds=(int(elapsed) // int(bar_sec)) * int(bar_sec))
-    ny_naive = slot_start - _BROKER_SHIFT
-    return int(ny_naive.replace(tzinfo=_NY, fold=0).timestamp())
+    return from_broker_naive_unix(slot_start)
 
 
 def session_label_to_start(label: str) -> int:

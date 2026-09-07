@@ -30,6 +30,8 @@ WINTER_OFFSET_SECONDS = 7200
 SUMMER_OFFSET_SECONDS = 10800
 
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+_MILLISECOND = dt.timedelta(milliseconds=1)
+_MIDNIGHT = dt.time(0, 0)
 
 #: 夏時間の開始・終了を判定するラベル上の時刻。
 #:
@@ -86,6 +88,33 @@ def utc_day_of(server_label_ms: int) -> dt.date:
     まるごと 1 日ずれる。
     """
     return (_EPOCH + dt.timedelta(milliseconds=to_utc_ms(server_label_ms))).date()
+
+
+def utc_day_start_ms(day: dt.date) -> int:
+    """UTC 日 ``day`` の始端 epoch ms（半開区間 ``[start, end)`` の**左端・含む**）。
+
+    :func:`utc_day_of` と同じ「どの UTC 日に属すか」を、日付ではなく ms の閾値として述べた面で
+    ある。両者は同一の定義から出る（不変量: ``utc_day_of(l) == d`` ⟺
+    ``utc_day_start_ms(d) <= to_utc_ms(l) < utc_day_end_ms(d)``）。
+
+    なぜ本モジュールが持つか（ISSUE-502 D-15）: 取り込みの 2 経路は群の作り方が違う——増分
+    （:func:`~marketdata.mt5_ticks.ingest.split_by_utc_day`）は日付の逐次比較で切り、アーカイブ
+    （:mod:`~marketdata.mt5_ticks.archive_ingest`）は 1 パスで流すため ms の閾値で切る。**外形は
+    違ってよいが、日境界の定義は 1 つでなければならない**。かつては後者が自前の真夜中 ms を
+    持っており、片方だけ直せば日 partition がまるごと 1 日ずれた（ずれた台帳は後から
+    「取れていない」のか「壊れている」のか区別できない）。第 2 定義の再出現は
+    ``marketdata/tests/test_mt5_utc_day_boundary_single_source.py`` が AST 走査で落とす。
+    """
+    return (dt.datetime.combine(day, _MIDNIGHT, tzinfo=dt.timezone.utc) - _EPOCH) // _MILLISECOND
+
+
+def utc_day_end_ms(day: dt.date) -> int:
+    """UTC 日 ``day`` の終端 epoch ms（半開区間の**右端・含まない**＝翌日の始端）。
+
+    ちょうど真夜中の tick は**翌日**に属する（実測 2026-09-07: 増分・アーカイブの両経路で一致）。
+    比較の向きを呼び出し側に書かせないため、終端も関数として与える。
+    """
+    return utc_day_start_ms(day + dt.timedelta(days=1))
 
 
 def is_dst_transition_day(day: dt.date) -> bool:

@@ -101,9 +101,6 @@ _ARCHIVE_NAME = re.compile(
     r"^ticks_(?P<pair>[A-Z0-9]+)_(?P<year>\d{4})-(?P<month>\d{2})\.zip$"
 )
 
-_MIDNIGHT = dt.time(0, 0)
-
-
 def _name_parts(zip_path: Any) -> "re.Match":
     name = Path(zip_path).name
     matched = _ARCHIVE_NAME.match(name)
@@ -310,11 +307,6 @@ def _assert_existing_day_matches(
         )
 
 
-def _utc_midnight_ms(day: dt.date) -> int:
-    """UTC 日の 00:00 の epoch ms（日境界の比較点）。"""
-    return (dt.datetime.combine(day, _MIDNIGHT, tzinfo=dt.timezone.utc) - _EPOCH) // _MILLISECOND
-
-
 def ingest_months(
     zip_paths: "Iterable[Any]",
     *,
@@ -413,12 +405,15 @@ def ingest_months(
                         f"（{path.name}・ラベル {row[0]}）。"
                     )
                 last_utc_ms = utc_ms
+                # 日境界の定義（真夜中 ms・比較の向き・境界値の帰属）は server_clock が唯一源。
+                # ここが持つのは「1 パスで流すので日付比較でなく閾値で切る」という外形だけで、
+                # 境界そのものは持たない（ISSUE-502 D-15）。
                 if utc_ms >= day_end_ms:
                     close_day(final=False)
                     day = server_clock.utc_day_of(row[0])
                     if head_day is None:
                         head_day = day
-                    day_end_ms = _utc_midnight_ms(day + dt.timedelta(days=1))
+                    day_end_ms = server_clock.utc_day_end_ms(day)
                 day_rows.append(row)
         progress.append(MonthProgress(
             month=month_key(path),

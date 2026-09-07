@@ -133,6 +133,12 @@ def split_by_utc_day(rows: "Sequence[Row]") -> "List[Tuple[dt.date, List[Row]]]"
 
     分割の基準はラベルの日付ではなく :func:`server_clock.utc_day_of` の返す UTC 日である。
     ラベルで切ると日 partition がまるごとずれる。
+
+    :mod:`marketdata.mt5_ticks.archive_ingest` は同じ境界を **ms の閾値**
+    （:func:`server_clock.utc_day_end_ms`）で切る。
+    群の作り方が違うのは経路の都合（増分は溜めた行を後から切り、アーカイブは 1 パスで流す）で
+    あって、**日境界の定義は 1 つ**である（ISSUE-502 D-15）。両経路の日 partition 一致は
+    ``marketdata/tests/test_mt5_utc_day_boundary_single_source.py`` が固定する。
     """
     out: "List[Tuple[dt.date, List[Row]]]" = []
     for row in rows:

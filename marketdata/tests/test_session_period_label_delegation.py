@@ -11,13 +11,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from marketdata.session_day import _BROKER_SHIFT, session_period_label
+from marketdata.session_day import _broker_date, session_period_label
 
+#: 走査の起点・終点を作るためだけの tz（ラベル規則の検証対象ではない）。
 _NY = ZoneInfo("America/New_York")
-
-
-def _broker_date(t):
-    return datetime.fromtimestamp(float(t), tz=_NY) + _BROKER_SHIFT
 
 
 def _old_hand_label(tf: str, t) -> str:

@@ -18,13 +18,22 @@ indicator_ui ``dataset``（薄い再エクスポート）が共通して再利�
 ``csv_schema`` を import しており、宣言だけが事実と食い違ったまま残っていた（ISSUE-262）。
 依存を増やすときは本 docstring と当該テストの許可表を**同時に**更新する。
 
+stdlib（``datetime`` / ``zoneinfo``）も使う（ISSUE-502 D-14）: ブローカー時間座標の
+**スカラ面**（:func:`to_broker_time` / :func:`from_broker_naive_unix`）を本モジュールが持つ
+ためである。1 点ずつ問う経路（:mod:`marketdata.session_day`）に index は組めず、そこへ pandas を通すと
+呼び出しあたりの費用が桁で増える。面は 2 つでも、定数（:data:`BROKER_TZ_NAME` /
+:data:`BROKER_SHIFT_HOURS`）と規則は 1 つに保つ。
+
 時刻は解像度非依存。pandas 3 系では分/時は ``"5min"/"1h"``、週は取引週末（金曜ラベル ``W-FRI``）、
 月末は ``"ME"``（旧 ``"M"`` は廃止）。``"1m"`` は無変換（``None``＝原子そのもの）。
 """
 
 from __future__ import annotations
 
+from datetime import datetime as _datetime
+from datetime import timedelta as _timedelta
 from typing import Any
+from zoneinfo import ZoneInfo as _ZoneInfo
 
 import pandas as pd
 
@@ -73,8 +82,33 @@ CALENDAR_LABEL_TFS = _tf_ledger.CALENDAR_LABEL_CODES
 
 # セッション日起点の等間隔グリッドで切る日中足（ISSUE-489・4h）。台帳の再輸出（値を持たない）。
 SESSION_ANCHORED_TFS = _tf_ledger.SESSION_ANCHORED_CODES
-_NY_TZ = "America/New_York"
-_BROKER_SHIFT = pd.Timedelta(hours=7)  # ブローカー時間 = NY + 7h（NY17:00 → 00:00）。
+
+# --------------------------------------------------------------------------- #
+# ブローカー時間座標（NY + 7h）の唯一源（ISSUE-502 D-14・SOLID 精査 2026-09-06）
+#
+# 座標系を決めるのは 2 つの定数（基準 tz 名・シフト時間数）だけで、規則は 1 つである:
+#     ブローカー壁時計 = 基準 tz で読んだ壁時計 + シフト時間数
+# 以下の 4 関数は、この 1 規則の**面**（ベクトル / スカラ × 順 / 逆）にすぎない。面が 2 つ
+# 要るのは実行時の都合（index 全体を一括変換する pandas 面と、1 点を扱う stdlib 面）であって、
+# 規則が 2 つあるからではない。
+#
+# なぜここが唯一源か: かつて同じ 2 定数と同じ式が :mod:`marketdata.session_day` にも書かれて
+# いた（tz 名と 7h が 2 箇所）。片方だけ動かせば日足・週足・月足の境界と session_day_start が
+# 静かに 1 時間ずれ、出力はどちらも「それらしい」ので値を見ても気付けない。第 2 定義の再出現は
+# ``marketdata/tests/test_broker_time_single_source.py`` が AST 走査で落とす。
+# --------------------------------------------------------------------------- #
+
+#: ブローカー時間の基準 tz（IANA 名）。DST の切替は tzdata へ委譲する（自前カレンダー禁止＝
+#: 制度変更・歴史的切替日も tzdata が単一真実源）。**綴りはここにしか無い。**
+BROKER_TZ_NAME = "America/New_York"
+
+#: 基準 tz の壁時計へ加えるシフト時間数（NY 17:00 → 00:00）。**数値はここにしか無い。**
+BROKER_SHIFT_HOURS = 7
+
+_NY_TZ = BROKER_TZ_NAME                                     # pandas 面が受け取る tz 名
+_BROKER_SHIFT = pd.Timedelta(hours=BROKER_SHIFT_HOURS)      # pandas 面のシフト
+_NY_ZONE = _ZoneInfo(BROKER_TZ_NAME)                        # stdlib 面の tz
+_BROKER_SHIFT_TD = _timedelta(hours=BROKER_SHIFT_HOURS)     # stdlib 面のシフト
 
 
 def to_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -88,6 +122,33 @@ def to_broker_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
 
 #: 旧 private 名（**同一オブジェクト**）。既存参照を 1 箇所も変えないために温存する。
 _to_broker_naive_index = to_broker_naive_index
+
+
+def to_broker_time(t: "int | float") -> "_datetime":
+    """UNIX 秒 → ブローカー時間（:func:`to_broker_naive_index` の**スカラ面**・同一規則）。
+
+    1 点ずつ問う経路（:mod:`marketdata.session_day` の日切り・ラベル）は index を組めないため
+    stdlib で同じ規則を適用する。ベクトル面との一致は
+    ``marketdata/tests/test_broker_time_single_source.py`` が 20,034 点（DST 切替を 32 回跨ぐ
+    2012〜2027 の 7 時間刻み）で固定する。
+
+    返り値の注意（ISSUE-502 D-14 で移設した際の形をそのまま保つ）: ``tzinfo`` は基準 tz の
+    ままだが壁時計は +7h 済みであり、**両者は対応しない**。意味を持つのは壁時計（暦日・
+    時分秒）だけで、この値から ``.timestamp()`` を取ってはならない。逆写像は
+    :func:`from_broker_naive_unix`（naive を受ける）である。
+    """
+    return _datetime.fromtimestamp(float(t), tz=_NY_ZONE) + _BROKER_SHIFT_TD
+
+
+def from_broker_naive_unix(broker_naive: "_datetime") -> int:
+    """ブローカー壁時計（naive datetime）→ UNIX 秒（:func:`from_broker_naive_index` のスカラ面）。
+
+    秋 DST の重複時刻は ``fold=0``（夏側）で決定的に解決する＝ベクトル面の ``ambiguous=True``
+    と同値。ブローカー真夜中は NY 17:00 であり切替時刻（NY 02:00）と重ならないため、
+    セッション始端の経路では曖昧・不存在は生じない（決定性のための明示）。
+    """
+    ny_naive = broker_naive - _BROKER_SHIFT_TD
+    return int(ny_naive.replace(tzinfo=_NY_ZONE, fold=0).timestamp())
 
 
 def resample_ohlc_session(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
