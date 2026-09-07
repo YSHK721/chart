@@ -17,9 +17,10 @@
 //     透過ラップ）。preventDefault も戻り値の改変も行わない＝挙動を変えない。
 //   - 再生ループ中の毎フレーム記録はしない（記録自体が負荷にならないよう、操作・通信・例外に限る）。
 
-// 例外: モード集合・body クラスの単一ソースだけは参照する（§11.2 L-4）。純データの表であり、
-//   app のモジュールではない（葉モジュール同士の依存＝循環しない）。
+// 例外: モード集合・body クラスと API セグメント集合の単一ソースだけは参照する（§11.2 L-4）。
+//   いずれも純データの表であり、app のモジュールではない（葉モジュール同士の依存＝循環しない）。
 import { MODES } from './mode_table.js';
+import { apiUrlPattern } from './api_segments.js';
 
 const DEFAULT_CAPACITY = 300;
 
@@ -188,7 +189,9 @@ export function installOpLog({
   }
 
   // 3) 通信（発行と完了・所要 ms）。API だけを記録し、静的資産は記録しない（ログを埋めないため）。
-  const API = /\/(candles|compute|compute_seq|intraday|forming_bar|market_profile|market_profile_forming|available_days|catalog|live_ticks|tickvol_profile)(\?|$)/;
+  //   対象集合は api_segments.js の単一表から導出する。ここへ列挙を書き写すと sw_rewrite と
+  //   乖離する（実際に tf_period_profile が記録から漏れていた＝D-1）ため、手書きの写しは禁止。
+  const API = apiUrlPattern();
   const originalFetch = win.fetch;
   if (typeof originalFetch === 'function') {
     const wrapped = function fetchWithOpLog(...args) {

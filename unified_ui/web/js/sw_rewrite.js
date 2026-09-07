@@ -17,26 +17,9 @@
 import { MODE_PREFIXES, DEFAULT_MODE, prefixOf } from './mode_table.js';
 
 // API エンドポイントの第 1 パスセグメント（基本設計書 §2 の振り分け表）。
-// これらのみモード prefix を付与する。静的資産（js/vendor/index.html/sw.js 等）は不変。
-const API_SEGMENTS = new Set([
-  'compute',
-  'candles',
-  'live_ticks',
-  'forming_bar',
-  'tf_period_profile',
-  'catalog',
-  'intraday',
-  'available_days',
-  // 取引密度帯（時刻帯の背景色）の帯定義。ライブ core・リプレイ core の双方が同一実装を持ち
-  //   （リプレイは bridge でライブ側 controller を再利用）、同一入力で応答が byte 一致する。
-  //   よってライブ専用ではなくアクティブモードの core へ回す（/candles と同じ扱い）。
-  'tickvol_profile',
-]);
-
-// market_profile / market_profile_forming など market_profile 系はまとめて API 扱い。
-function isApiSegment(segment) {
-  return API_SEGMENTS.has(segment) || segment.startsWith('market_profile');
-}
+//   集合の定義は api_segments.js の単一表（op_log.js と共有——二重定義が実際に乖離した
+//   D-1 の是正）。これらのみモード prefix を付与し、静的資産（js/vendor/index.html/sw.js 等）は不変。
+import { isApiSegment } from './api_segments.js';
 
 // ライブ core 専用セグメント（replay core=serve_replay 未実装＝/replay だと 404）。
 //   応答は mode 非依存（完成期間の履歴プロファイル）ゆえアクティブモードに関わらず常にライブ core へ回す。

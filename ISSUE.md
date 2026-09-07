@@ -14354,3 +14354,22 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   段階 3 は不要（目標達成のため見送り。将来必要になれば別 y/n）。
   **反映には serve.sh 再起動が必要**（2 回目以降の再起動から温めが効く——初回再起動は
   台帳・素材が未記録のため従来コールドで、その要求が台帳と素材を書く）。
+
+## ISSUE-502: リポジトリ全体 SOLID 精査で違反 119 件（高 48）——単一ソース違反 17 系統・循環 4 件・神クラス 8 件
+- **ステータス**: IN_PROGRESS（2026-09-07・依頼者「進めろ」承認・段階 1 完了）
+- **発見日**: 2026-09-06（依頼者指示「リポジトリ全体の設計が SOLID の各原則に遵守しているか徹底的に精査しろ」）
+- **精査方法**: 8 系統並列・読み取り専用（全指摘 file:line 付き・高重大度は独立再検証）。
+  全文台帳: `.doc/solid_audit_20260906.md`（違反 119 件＝高 48・中 60・低 11、遵守構造、検証記録）。
+- **健全（実測）**: 共有 4 パッケージ出次数 0・simulator domain 純度完全・列挙 factory 本番 0 件。
+  依存規律の多くは機械的検査で強制済み。
+- **是正の段階分割**（台帳末尾。各段階は独立・可逆）:
+  - 段階 1: D-1（op_log ⇔ sw_rewrite の API 集合乖離＝唯一の「既に壊れている」実乖離）
+  - 段階 2: 単一ソース回復 D-2〜D-17（生成物 or 単一台帳＋機械的突合検定へ収束）
+  - 段階 3: 循環 4 件（C-1 tools⇄simulator / C-2 main⇄tester_settings / C-3 dashboard framework⇄main / C-4 JS indicator_ui⇄market_profile）
+  - 段階 4: 神クラス分割（run_backtest 940 行・build_interactor 38 引数・call_binding 986 行・reach_sheet_view 1,170 行）
+  - 段階 5: 抽象の宣言化（Port 冪等性＋計算量テストの穴・typeof 探査 18 箇所・__getattr__ 委譲 11 件・Port の HTTP 語彙除去）
+- **段階 1 完了（2026-09-07）**: `unified_ui/web/js/api_segments.js` を API セグメント集合の単一表として
+  新設し、sw_rewrite.js は `isApiSegment` を、op_log.js は `apiUrlPattern()`（表から導出）を参照する形へ。
+  是正内容: op_log に欠けていた tf_period_profile が記録対象になり、実在しない compute_seq を除去。
+  検査 4 群を新設（表の不変条件・sw_rewrite⇔op_log 判定の同義性・欠落/残骸の再発防止・
+  消費者ソースへのセグメント名リテラル復活の機械的遮断）。unified_ui/web vitest 25 ファイル 268 件緑。
