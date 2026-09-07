@@ -5,15 +5,27 @@
 （profit_hl_band / profit_hlband / moving_averages）が自前実装を保持していた。
 
   R1 OCP : 指標パッケージ（indigators 配下）に自前実装が 0 件。
-  R2 OCP : 実装の所在が共有層 2 件に固定されている（新たな所有者を無音で増やさせない）。
+  R2 OCP : 実装の所在が共有層 1 件に固定されている（新たな所有者を無音で増やさせない）。
   R3 自己検定: 検出器が正典実装を捕まえている（空振りでない）。
-  R4 契約: 委譲した 3 パッケージが共有実装と同一オブジェクトを束縛している。
+  R4 契約: 委譲した 8 パッケージが共有実装と同一オブジェクトを束縛している。
   R5 計算量: 発行した時刻変換 − 出力に使った時刻変換 = 0（入力長に依らず 1 回）。
 
-**共有層 2 件は到達点ではない**。marketdata.time_column.resolve_times（c.lower() 版）と
-common_view.lwc_adapter.resolve_times（str(c).lower() 版）は同一規則の 2 所有者であり、
-一本化には marketdata 側の改変が要る＝ISSUE-502 段階 2 の作業範囲外（未収束・別途裁定）。
-本検定は「2 件から増えない」ことだけを機械的に保証する。
+**所有者は 1 件へ収束した**（ISSUE-502 D-7 後続・2026-09-07）。かつては
+marketdata.time_column.resolve_times（c.lower() 版）が同一規則の第 2 所有者だったが、実測すると
+当該規則の利用者は 5 件すべてが indigators/*/src/lwc_chart.py ＝チャート表示アクターであり、
+市場データの語彙には属していなかった。SRP に従い所有者を本パッケージへ一本化し、
+marketdata 側からは撤去した。
+
+向きの根拠: 逆向き（marketdata が本パッケージへ委譲する）は、common に対して機械的に禁じられて
+いる表示層依存と同型の安定度逆転になる（common/tests/test_package_surface_purity.py が
+「表示層への依存は安定度逆転」として遮断・ISSUE-104）。利用者側の束縛先を替えたので、
+パッケージ間の依存辺は 1 本も増えていない（5 ファイルはいずれも SeriesLike のため
+common_view.lwc_adapter を既に import していた）。
+
+挙動不変の実測: 撤去した実装との差は c.lower() と str(c).lower() の 1 箇所のみ（AST 差分）。
+観測できる差は非 str 列名時の例外型（AttributeError → KeyError）だけで、全 5 入口で非到達
+（marketdata/ohlc_csv_loader.py の既定 cast_column_names=False が上流で先に AttributeError を
+投げる。marketdata/tests/test_csv_loader_policy.py が固定）。
 
 様式は indigators/indicator_ui/api/tests/test_call_binding_open_closed.py の
 nice_step 単一実装検定を踏襲する。
@@ -37,8 +49,8 @@ _EXCLUDED_PARTS = {
 #: （検出器は FunctionDef のみを走査する）。
 _UNRESOLVABLE_MSG = "時刻を解決できません（time/date 列、または DatetimeIndex が必要）。"
 
-#: R2 の許可リスト。同一規則を実装してよい共有層の所在。
-_SHARED_OWNERS = ("common_view/lwc_adapter.py", "marketdata/time_column.py")
+#: R2 の許可リスト。同一規則を実装してよい共有層の所在（**1 件＝収束済み**）。
+_SHARED_OWNERS = ("common_view/lwc_adapter.py",)
 
 
 def _python_sources() -> list[Path]:
@@ -99,11 +111,10 @@ def test_the_rule_is_owned_only_by_the_declared_shared_modules():
 
 
 def test_shared_owner_count_does_not_grow():
-    """2 件は未収束の到達点。増えたら Red（減るぶんには本検定は通す）。"""
+    """所有者は 1 件へ収束済み。増えたら Red（減るぶんには本検定は通す）。"""
     sites = _resolve_times_implementations()
     assert len(sites) <= len(_SHARED_OWNERS), (
-        "同一規則の所有者が増えた（marketdata 側との一本化が未了なのは既知・増加は不可）:\n"
-        + "\n".join(sites)
+        "同一規則の所有者が増えた（1 件へ収束済み・増加は不可）:\n" + "\n".join(sites)
     )
 
 
@@ -118,8 +129,21 @@ def test_detector_finds_the_canonical_shared_implementation():
 #     （静的検査で行う。indigators の src は同名パッケージ衝突を避けるため sys.path 操作を
 #      伴う動的ロードが要り、それはテストとプロダクトのモジュール同一性を崩すため採らない）
 # --------------------------------------------------------------------------- #
-#: 本 Wave（ISSUE-502 段階 2 D-7）で自前実装を撤去し共有版へ委譲したパッケージ。
-_MIGRATED = ("profit_hl_band", "profit_hlband", "moving_averages")
+#: 共有版（common_view.lwc_adapter.resolve_times）へ委譲済みのパッケージ。
+#:
+#: 前半 3 件は ISSUE-502 段階 2 D-7 で自前実装を撤去したもの。後半 5 件は同 D-7 後続
+#: （2026-09-07）で marketdata.time_column.resolve_times から束縛先を移したもので、
+#: この 5 件の移管をもって共有層の所有者が 2 件から 1 件へ収束した。
+_MIGRATED = (
+    "profit_hl_band",
+    "profit_hlband",
+    "moving_averages",
+    "tgp_btlm",
+    "profit_mfi",
+    "profit_osi_ma",
+    "profit_stc",
+    "profit_adx_needle",
+)
 
 
 def _binds_shared_resolve_times(package: str) -> bool:

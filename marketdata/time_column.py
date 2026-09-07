@@ -1,22 +1,26 @@
-"""DataFrame から値を取り出す規則（ISSUE-311 / ISSUE-314）。
+"""DataFrame から必須列を取り出す規則（ISSUE-314）。
 
-本モジュールは「列名の大小を問わず必要な列を取り出す」という**規則**だけを持つ。
-時刻系列の解決（:func:`resolve_times`）と、必須列の一括抽出（:func:`extract_columns`）は
-同じ規則（小文字化した写像で照合し、元の列名で引く）に基づく。
+本モジュールは「列名の大小を問わず必要な列を取り出す」という**規則**だけを持つ
+（小文字化した写像で照合し、元の列名で引く）。
 
----
+時刻系列の解決規則を持たない理由（ISSUE-502 D-7 の収束・2026-09-07）:
+    かつては本モジュールが「明示指定の列 > time 列 > date 列 > DatetimeIndex」の解決規則も
+    持っており（ISSUE-311）、common_view の描画アダプタにある同一規則と共有層 2 所有者の
+    状態が続いていた。実測すると当該規則の利用者は 5 件すべてが指標スライスの描画モジュール
+    ＝チャート表示アクターであり、市場データの語彙には属していなかった。SRP に従い所有者を
+    表示仕様層へ一本化し、本モジュールからは撤去した。
 
-時刻系列の解決規則（ISSUE-311）。
+    向きの根拠: 逆向き（本モジュールが表示層へ委譲する）は、計算層 common に対して機械的に
+    禁じられている表示層依存と同型の安定度逆転になる（common 側のパッケージ純度検定が
+    「表示層への依存は安定度逆転」として遮断・ISSUE-104）。利用者側の束縛先を替えれば
+    パッケージ間の依存辺は 1 本も増えない。一本化は common_view 側の単一規則検定
+    （test_resolve_times_single_rule.py）が機械的に固定する。
 
-``DataFrame`` から「その行の時刻」を取り出す規則は 1 つしかない:
+    挙動不変の実測: 2 実装の差は小文字化の 1 箇所のみ（AST 差分）。観測できる差は非 str 列名時の
+    例外型だけで、全 5 入口で非到達である（同じ marketdata の CSV ローダが既定の厳格モードで
+    上流から先に AttributeError を投げる。test_csv_loader_policy.py が固定）。
 
-    明示指定の列 > time 列 > date 列 > ``DatetimeIndex``
-
-この規則を各指標スライスの ``src/lwc_chart.py`` が個別に実装しており、うち 5 スライスは
-1 文字も違わない複製だった（codescan 実測）。規則が変わったとき複製の一部だけが直る事故を
-構造的に防ぐため、規則そのものを本モジュールに 1 つだけ置く。
-
-本モジュールは pandas のみに依存し、描画ライブラリ・指標実装を一切知らない
+本モジュールは pandas / numpy のみに依存し、描画ライブラリ・指標実装を一切知らない
 （最下層＝ marketdata に置く理由）。
 """
 from __future__ import annotations
@@ -48,31 +52,3 @@ def extract_columns(
     if missing:
         raise KeyError(f"必須列が欠落しています: {missing}")
     return tuple(df[lower_map[c]].to_numpy(dtype=np.float64) for c in required)
-
-
-def resolve_times(df: pd.DataFrame, time_column: "str | None") -> pd.Series:
-    """時刻系列を解決する（明示指定 > time 列 > date 列 > ``DatetimeIndex`` の順）。
-
-    Args:
-        df: 対象の DataFrame。
-        time_column: 明示指定する時刻列名（大小不問）。``None`` なら規約順で探す。
-
-    Returns:
-        0 起点に振り直した datetime の Series。
-
-    Raises:
-        KeyError: 指定列が存在しない場合、または時刻を解決できない場合。
-    """
-    lower_map = {c.lower(): c for c in df.columns}
-    if time_column is not None:
-        tcol = lower_map.get(time_column.lower(), time_column)
-        if tcol not in df.columns:
-            raise KeyError(f"指定された時刻列が存在しません: {time_column}")
-        return pd.to_datetime(df[tcol]).reset_index(drop=True)
-    if "time" in lower_map:
-        return pd.to_datetime(df[lower_map["time"]]).reset_index(drop=True)
-    if "date" in lower_map:
-        return pd.to_datetime(df[lower_map["date"]]).reset_index(drop=True)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return pd.Series(df.index, name="time").reset_index(drop=True)
-    raise KeyError("時刻を解決できません（time/date 列、または DatetimeIndex が必要）。")

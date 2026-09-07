@@ -23,11 +23,10 @@ import numpy as np
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH, level_colors  # noqa: E402
-from common_view.lwc_adapter import SeriesLike  # noqa: E402
+from common_view.lwc_adapter import SeriesLike, resolve_times as _resolve_times  # noqa: E402
 
 from .core import DEFAULT_PERIOD, DEFAULT_WINDOW
 from .needle import NEEDLE_COLUMN, build_adx_needle, needle_levels
-from marketdata.time_column import resolve_times as _resolve_times  # noqa: E402
 
 _COLOR = "rgba(0, 100, 0, 0.85)"        # DarkGreen
 _LEVEL_COLOR = "rgba(84, 84, 84, 0.6)"  # 元 indicator_levelcolor C'84,84,84'

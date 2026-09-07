@@ -25,11 +25,10 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
-from common_view.lwc_adapter import SeriesLike  # noqa: E402
+from common_view.lwc_adapter import SeriesLike, resolve_times as _resolve_times  # noqa: E402
 
 from .core import DEFAULT_PERIOD
 from .stc import OSC_COLUMN, build_stc, stc_levels
-from marketdata.time_column import resolve_times as _resolve_times  # noqa: E402
 
 _COLOR = "rgba(0, 100, 0, 1)"           # 元 indicator_color1 DarkGreen
 _WIDTH = 2                              # 元 indicator_width1 2

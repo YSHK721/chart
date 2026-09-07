@@ -435,7 +435,7 @@ def test_the_finalize_boundary_equals_the_legacy_expression_on_every_day() -> No
 def test_a_naive_clock_is_read_as_utc_at_the_same_boundary(
     tmp_path: Path, delta: dt.timedelta, expected: bool
 ) -> None:
-    """naive な時計（検定用の固定時計）でも同じ瞬間に反転する（``_utc_now`` の読み替え）。"""
+    """naive な時計（検定用の固定時計）でも同じ瞬間に反転する（UTC としての読み替え）。"""
     # Arrange
     day = dt.date(2026, 8, 25)
     aware = _legacy_finalize_boundary(day, 300) + delta
@@ -555,8 +555,8 @@ def test_the_clean_minutes_of_the_day_survive_the_rebuild(
 def test_the_rebuild_window_equals_the_legacy_expression_on_every_day() -> None:
     """委譲後の日窓が、是正前の式と **全 domain で** 同じ 2 点を指す。
 
-    ``rebuild_day`` を通す検定は 1 日しか見ない。また委譲後の ``Timestamp`` は解像度が
-    ``ms``（是正前は ``us``）になるため、**値の一致**と、**より細かい解像度の index に対する
+    ``rebuild_day`` を通す検定は 1 日しか見ない。また委譲後の ``Timestamp`` は解像度がミリ秒
+    （是正前はマイクロ秒）になるため、**値の一致**と、**より細かい解像度の index に対する
     半開判定が変わらないこと**の両方を固定する（pandas が解像度跨ぎの比較規則を変えたら Red）。
     """
     import pandas as pd  # 遅延 import: 本節だけが pandas を要る。

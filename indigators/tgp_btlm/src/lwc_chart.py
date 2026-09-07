@@ -19,7 +19,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
-from common_view.lwc_adapter import SeriesLike  # noqa: E402
+from common_view.lwc_adapter import SeriesLike, resolve_times as _resolve_times  # noqa: E402
 
 from .bands import build_btlm_bands
 from .core import (
@@ -30,7 +30,6 @@ from .core import (
     mean_column,
     quantile_column,
 )
-from marketdata.time_column import resolve_times as _resolve_times  # noqa: E402
 
 _COLOR = "rgba(123, 104, 238, 1)"  # MediumSlateBlue
 

@@ -26,11 +26,10 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
-from common_view.lwc_adapter import SeriesLike  # noqa: E402
+from common_view.lwc_adapter import SeriesLike, resolve_times as _resolve_times  # noqa: E402
 
 from .core import DEFAULT_MA_PERIOD, DEFAULT_MFI_PERIOD
 from .mfi import MA_COLUMN, MFI_COLUMN, build_mfi, mfi_levels
-from marketdata.time_column import resolve_times as _resolve_times  # noqa: E402
 
 _MFI_COLOR = "rgba(0, 255, 0, 1)"      # 元 indicator_color1 clrLime
 _MA_COLOR = "rgba(0, 255, 0, 1)"       # 元 indicator_color2 clrLime

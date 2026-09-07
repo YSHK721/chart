@@ -41,10 +41,25 @@ chart を受ける」出力アダプタである（PORTING_GUIDE §2/§6）。�
     （profit_band は ISSUE-179 以後に別途統合済み。同ファイル冒頭に挙動不変の実測記録あり。）
     これで指標パッケージ側の自前実装は **0 件**になった。
 
-    同一規則の第 2 の所有者として marketdata.time_column.resolve_times（c.lower() 版）が存在する。
-    本モジュールと当該モジュールの一本化は marketdata 側の改変を要するため ISSUE-502 段階 2 の
-    作業範囲外（未収束・別途裁定）。両者の共存は共有層 2 件・指標層 0 件として
-    common_view/tests/test_resolve_times_single_rule.py が機械的に固定する。
+    同一規則の第 2 の所有者だった marketdata.time_column.resolve_times（c.lower() 版）は
+    ISSUE-502 D-7 後続（2026-09-07）で撤去し、所有者は本モジュール **1 件**へ収束した。
+    利用していた 5 パッケージ（tgp_btlm / profit_mfi / profit_osi_ma / profit_stc /
+    profit_adx_needle）はいずれも SeriesLike のため本モジュールを既に import しており、
+    束縛先を移すだけでパッケージ間の依存辺は 1 本も増えていない。
+
+    向きの根拠（なぜ marketdata 側を撤去したか）: 当該規則の利用者は 5 件すべてが
+    indigators/*/src/lwc_chart.py ＝チャート表示アクターであり、市場データの語彙に属していない
+    （SRP）。逆向き（marketdata が本モジュールへ委譲する）は、common に対して機械的に
+    禁じられている表示層依存と同型の安定度逆転になる
+    （common/tests/test_package_surface_purity.py・ISSUE-104）。
+
+    挙動不変の実測: 撤去した実装との差は c.lower() と str(c).lower() の 1 箇所のみ（AST 差分）。
+    観測できる差は非 str 列名時の例外型（AttributeError → KeyError）だけで、全 5 入口で非到達
+    （marketdata/ohlc_csv_loader.py の既定 cast_column_names=False が上流で先に AttributeError を
+    投げる。marketdata/tests/test_csv_loader_policy.py が固定）。
+
+    所有者 1 件・指標層 0 件は common_view/tests/test_resolve_times_single_rule.py が
+    機械的に固定する。
 
 依存: numpy / pandas のみ（指標パッケージ・描画ライブラリへは依存しない）。
 """

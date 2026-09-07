@@ -23,11 +23,10 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from common_view import LEVEL_LINE_WIDTH  # noqa: E402
-from common_view.lwc_adapter import SeriesLike  # noqa: E402
+from common_view.lwc_adapter import SeriesLike, resolve_times as _resolve_times  # noqa: E402
 
 from .core import DEFAULT_MA_MODE, DEFAULT_MA_PERIOD
 from .osi_ma import KAIRI_COLUMN, build_osi_ma, osi_ma_levels
-from marketdata.time_column import resolve_times as _resolve_times  # noqa: E402
 
 _COLOR = "rgba(211, 47, 47, 0.85)"      # 元 indicator_color1 Red
 _LEVEL_COLOR = "rgba(84, 84, 84, 0.6)"  # 水準線（点線）
