@@ -1,1 +1,1 @@
-../../../../market_profile/web/js/domain/tf_meta.js
+../../../../chart_kernel/web/js/domain/tf_meta.js

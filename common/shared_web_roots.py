@@ -46,10 +46,15 @@ from pathlib import Path
 #: 許可根へ同時に伝播する（値を殻へ書き写さない）。第 2 の列挙が復活していないことは
 #: ``common/tests/test_shared_web_roots.py`` の単一源検定が強制する。
 #:
-#: - ``chart_kernel``  : どの機能にも属さないチャート共通部品（色役割・クロム表色・
-#:   Series Primitive の生存管理・足内畳み込み）。indicator_ui と market_profile の
-#:   双方がここへ**一方向**に依存する（C-4 の循環はこの実体が indicator_ui 側に
-#:   置かれていたことだけが原因だった）。
+#: - ``chart_kernel``  : どの機能にも属さない中立核。2 種を持つ。
+#:   (1) チャート共通部品（色役割・クロム表色・Series Primitive の生存管理・足内畳み込み）。
+#:   (2) 市場データ語彙（時間足台帳 tf_ledger_generated/tf_meta・セッション日境界 session_day・
+#:       セッション OHLC 集計 session_ohlc）。ISSUE-502 C-4 3c で market_profile から移した。
+#:       移す前は「時間足とは何か」を**機能パッケージ**（Market Profile）が所有しており、
+#:       live/replay/dashboard の 3 core がその語彙を使うためだけに market_profile へ依存して
+#:       いた（語彙の所有者と機能の所有者が同一という SRP 違反）。
+#:   indicator_ui と market_profile の双方がここへ**一方向**に依存する（C-4 の循環はこの実体が
+#:   indicator_ui 側に置かれていたことだけが原因だった）。
 #: - market_profile: Market Profile のフロント一式（actor/client/primitive/domain）。
 SHARED_WEB_PACKAGES: "tuple[str, ...]" = ("chart_kernel", "market_profile")
 

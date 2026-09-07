@@ -1,1 +1,1 @@
-../../../../market_profile/web/js/domain/session_ohlc.js
+../../../../chart_kernel/web/js/domain/session_ohlc.js

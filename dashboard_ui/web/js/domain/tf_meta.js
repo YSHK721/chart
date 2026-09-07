@@ -1,1 +1,1 @@
-../../../../indigators/indicator_ui/web/js/domain/tf_meta.js
+../../../../indigators/chart_kernel/web/js/domain/tf_meta.js

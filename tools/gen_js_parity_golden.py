@@ -35,8 +35,15 @@ from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, value_area
 from dashboard_ui.domain.horizon import TIMEFRAME_ORDER  # noqa: E402
 
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
-#: 時間足台帳の JS 生成物（実体は market_profile 側・indicator_ui からは symlink で共有）。
-JS_OUT = ROOT / "indigators" / "market_profile" / "web" / "js" / "domain" / "tf_ledger_generated.js"
+#: 時間足台帳の JS 生成物（実体は中立核 chart_kernel 側・ISSUE-502 C-4 3c）。
+#:
+#: **書き出し先は必ず実体の置き場を名指す**（consumer 側の別名 symlink 越しに書かない）。
+#: ``Path.write_text`` は symlink を追うため別名越しでも「今は」通るが、その別名がいつか
+#: 掃除された日に ``open(..., "w")`` が同じ場所へ**通常ファイルを新規作成**し、生成器は
+#: exit 0・"wrote" と出したまま実体だけが黙って古くなる（2026-09-07 実測: 別名を外して
+#: 再実行すると別名側が v3・実体が v2 で分岐し、どの検定も赤にならない）。書き手が別名を
+#: 名指す構成はこの第 2 定義を生む余地を残すので、所有者を直接名指す。
+JS_OUT = ROOT / "indigators" / "chart_kernel" / "web" / "js" / "domain" / "tf_ledger_generated.js"
 #: MP ソース能力の JS 生成物（zp 対応 tf。Python の配信 controller が唯一源）。
 MP_CAP_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
               / "mp_capability_generated.js")

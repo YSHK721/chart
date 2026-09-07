@@ -18,7 +18,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
-JS_LEDGER = ROOT / "indigators" / "market_profile" / "web" / "js" / "domain" / "tf_ledger_generated.js"
+#: 検定対象は**実体**（中立核 chart_kernel・ISSUE-502 C-4 3c）。consumer 側の別名 symlink を
+#: 読むと、万一実体と別名が分岐した場合に「別名だけ新しい」状態を緑と報告してしまう。
+JS_LEDGER = ROOT / "indigators" / "chart_kernel" / "web" / "js" / "domain" / "tf_ledger_generated.js"
 
 _ENTRY = re.compile(
     r"\{ code: '([^']+)', barSec: (\d+), floorable: (true|false), calendar: (true|false) \}"

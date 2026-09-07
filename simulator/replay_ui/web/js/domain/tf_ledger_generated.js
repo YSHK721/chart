@@ -1,1 +1,1 @@
-../../../../../indigators/market_profile/web/js/domain/tf_ledger_generated.js
+../../../../../indigators/chart_kernel/web/js/domain/tf_ledger_generated.js

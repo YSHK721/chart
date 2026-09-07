@@ -1,1 +1,1 @@
-../../../../market_profile/web/js/domain/session_day.js
+../../../../chart_kernel/web/js/domain/session_day.js
