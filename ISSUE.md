@@ -14409,3 +14409,17 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - **後続候補（未着手・別 y/n）**: C-4 3c/3d・参照 0 symlink 削除・ElapsedComparisonGateway の memo 依存・
   TIMEFRAME_REFRESH_MS 手写し・router.py の core 集合写し・既存 T8 凍結 9 件・_RunState 残滓 4 フィールド・
   dashboard e2e のライブデータ依存 flake（test_market_profile_unwired・是正前から存在・別 ISSUE 候補）。
+
+## ISSUE-503: dashboard e2e 検定にライブデータ依存の表明が混入し、目的と無関係な理由で赤くなる
+- **ステータス**: 事象 A = RESOLVED（2026-09-07・eecdad3）／事象 B = OPEN
+- **発見日**: 2026-09-07（ISSUE-502 段階 4B 是正中の A/B 実測で確定・HEAD でも赤になる回を 3 往復で実証）
+- **重大度**: 中（検定の信頼性。製品挙動への影響なし）
+- **事象 A（是正済み）**: `tests/e2e/test_market_profile_unwired.py` の `len(second["rows"]) > len(first["rows"])`。
+  行数は (a) jp225_tick が市場稼働中に更新され続けること (b) 2 指標の水準が同一ラダー行へ量子化されないこと
+  に依存。実測: 同一 bar_limits で行数 3→1→2 と変動・素材量 6 点中 5 点で表明が偽。
+  是正: 行数軸の順序表明を撤去し束の大きさ・繰り返し数の軸へ（非空虚性は unchanged 否定＋全行 mp=null で担保。
+  行数軸は合成素材の tests/complexity 側が保持）。是正後、旧偽 6 点すべて＋5 回連続で緑。
+- **事象 B（OPEN・要調査）**: `tests/e2e/test_serve_dashboard_smoke.py::test_a_repeated_tick_request_issues_no_additional_material:178`
+  の `len(issued) - warmed == 0` を 1 回赤で観測。推論（未再現・単体 30 回/全体 3 回は緑）: warm と繰り返し要求の
+  間に 1m 足が 1 本確定すると素材 epoch が進み full_compute が再発行される——仕様どおりの再構築を検定側が
+  「epoch が進まない」前提で測っているのが原因。抜本策は事象 A と同型（素材を固定するか、版の前進を検出して測り直す）。
