@@ -4,19 +4,22 @@
     PRO!fitRMM（複合レベルカウント指標）の純粋計算を numpy ＋ 共有層のみで行う層。
     入出力・描画・pandas を含まない。iRSI / iMFI / iWPR は共有 mql_builtins、採点
     （funLevelCount）・MAROD は共有 profit_system を import 再公開して in-package
-    参照面を維持する。σ 統計（oscillator_span / compute_rmm_levels）のみ本パッケージ
-    内に閉じる。EMA 平滑・typical_price は共有層を再利用する（in-package 再実装は
-    しない）。
+    参照面を維持する。σ スパン統計（series_avg / series_std / oscillator_span /
+    rolling_span）は本指標パッケージが所有する単一情報源 ``profit_rmm.span_stats``
+    へ集約し、ここでは import 再公開する（ISSUE-502 D-5: 姉妹 profit_rmm_macd との
+    verbatim 複製の解消）。σ6 水準（compute_rmm_levels）のみ本モジュール内に閉じる。
+    EMA 平滑・typical_price は共有層を再利用する（in-package 再実装はしない）。
 
 含む構造:
     compute_wpr        : 生 Williams %R（-100..0）。権威 WPR.mq5 準拠（warm-up i<period-1）。
     compute_marod      : (typical-ma)/ma*100（float 精度）。
     compute_rsi        : iRSI（共有 mql_builtins.compute_rsi の再公開）。
     compute_mfi        : iMFI（共有 mql_builtins.compute_mfi の再公開）。
-    _series_avg/_series_std : 系列平均・母標準偏差（÷N・全系列）。
+    _series_avg/_series_std : 系列平均・母標準偏差（÷N・全系列。span_stats の再公開）。
     oscillator_span    : avg±3σ のスパン（clamp で [0,100] クランプ・MAROD は非クランプ）。
     level_count_score  : funLevelCount 4 ケース（ゼロ割ガードなし 1:1）。
     compute_rmm        : 合成（iRSI/iWPR/iMFI/MAROD を採点・合算）。
+    rolling_span       : oscillator_span の因果ローリング版（span_stats の再公開）。
     compute_rmm_levels : level_count の σ6 水準（母σ÷N）。
     RmmResult          : 計算成果の不変 DTO（全 ndarray writeable=False, frozen）。
 
@@ -33,6 +36,7 @@
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
     共有: common（typical_price）, moving_averages（ma）。
+    パッケージ内: profit_rmm.span_stats（σ スパン統計の単一情報源・numpy のみ）。
     pandas/描画 import は禁止。
 """
 
@@ -52,6 +56,17 @@ from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開し
 from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
     compute_marod,
     level_count_score,
+)
+
+# σ スパン統計の単一情報源（ISSUE-502 D-5）。姉妹 profit_rmm_macd も同一モジュールを
+# import するため、実装は本リポジトリ内に 1 つしか存在しない（複製の再発は
+# profit_rmm_macd/tests/test_span_stats_single_source.py が機械的に遮断する）。
+# 旧来の in-module 名（_series_avg / _series_std）は別名で維持し、参照面を変えない。
+from profit_rmm.span_stats import (  # noqa: F401
+    oscillator_span,
+    rolling_span,
+    series_avg as _series_avg,
+    series_std as _series_std,
 )
 
 from common import typical_price
@@ -74,108 +89,10 @@ DEFAULT_WINDOW: int | None = 120
 # ===========================================================================
 # σ 統計（母σ÷N・全系列）
 # ===========================================================================
-def _series_avg(x: np.ndarray) -> float:
-    """系列平均（全系列）。"""
-    return float(np.mean(x))
-
-
-def _series_std(x: np.ndarray) -> float:
-    """母標準偏差（÷N・全系列）。"""
-    x = np.asarray(x, dtype=np.float64)
-    avg = _series_avg(x)
-    return float(np.sqrt(np.mean((x - avg) ** 2)))
-
-
-def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
-    """avg±3σ のスパン（x3p - x3m）を返す。
-
-    ``avg=_series_avg(x)``, ``dev=_series_std(x)``, ``x3p=avg+3*dev``,
-    ``x3m=avg-3*dev``。``clamp=True``（RSI/WPR/MFI）→ x3p=min(100,x3p),
-    x3m=max(0,x3m)。``clamp=False``（MAROD）→ クランプ無し。
-
-    Args:
-        x: 対象オシレーター系列。
-        clamp: True で [0,100] クランプ、False で素値。
-
-    Returns:
-        x3p - x3m（float）。
-    """
-    avg = _series_avg(x)
-    dev = _series_std(x)
-    x3p = avg + 3.0 * dev
-    x3m = avg - 3.0 * dev
-    if clamp:
-        x3p = min(100.0, x3p)
-        x3m = max(0.0, x3m)
-    return x3p - x3m
-
-
-def rolling_span(
-    x: np.ndarray, window: int, *, clamp: bool, freeze_last: bool = False
-) -> np.ndarray:
-    """``oscillator_span`` の因果ローリング版（各バーの avg±3σ スパンを直近 W 本から算出）。
-
-    バー i のスパンを区間 ``[i-window+1, i]`` の平均・母標準偏差から
-    ``(avg+3σ) - (avg-3σ)``（clamp 時は各端を [0,100] に丸め）で求める。未来を含まないため
-    確定バーのスパン＝レベルカウントは repaint しない。warm-up（``i<window-1``）は ``NaN``。
-
-    ``freeze_last``（既定 ``False``）:
-        * ``False``: 上記の通り（既定。出力は 1 ビットも変えない）。
-        * ``True``: **最終要素 ``out[-1]`` のみ** 基準窓を確定足
-          ``[n-1-window .. n-2]``（最終点を除く直前 window 本）へ差し替えてスパンを
-          算出する。``out[0..n-2]`` は ``freeze_last=False`` と完全に同一。形成中（足内）
-          の最新足をティック粒度で採点する際、スパン（採点の分母）の基準を 1 足 1 回・
-          足内で固定（凍結）する用途。平均・母標準偏差・分母 ``window``・クランプは
-          本関数の既存定義と厳密に同一で、最終点だけ窓をずらした以外は数値が一致する。
-          直前 window 本が満たせない（``n < window + 1``）場合は ``out[-1]=NaN``
-          （warm-up と同様）。これは ``profit_system._causal_z`` の freeze_last と整合する。
-
-    Args:
-        x: 対象オシレーター系列。
-        window: 過去参照本数 W（>=2）。
-        clamp: True で各端を [0,100] にクランプ（RSI/WPR/MFI）、False で素値（MAROD）。
-        freeze_last: True で最終点のスパン基準を確定足（直前 W 本）へ凍結する。既定
-            False で挙動不変。
-
-    Returns:
-        各バーのスパン（同長, float64。warm-up は NaN）。
-    """
-    a = np.asarray(x, dtype=np.float64)
-    n = a.size
-    out = np.full(n, np.nan, dtype=np.float64)
-    if window < 2 or n < window:
-        return out
-    csum = np.concatenate([[0.0], np.cumsum(a)])
-    csq = np.concatenate([[0.0], np.cumsum(a * a)])
-    for i in range(window - 1, n):
-        lo = i - window + 1
-        avg = (csum[i + 1] - csum[lo]) / window
-        var = (csq[i + 1] - csq[lo]) / window - avg * avg
-        dev = np.sqrt(var) if var > 0.0 else 0.0
-        x3p = avg + 3.0 * dev
-        x3m = avg - 3.0 * dev
-        if clamp:
-            x3p = min(100.0, x3p)
-            x3m = max(0.0, x3m)
-        out[i] = x3p - x3m
-    if freeze_last:
-        # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
-        # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
-        if n < window + 1:
-            out[-1] = np.nan  # 直前 window 本を満たせない（warmup 同様）。
-        else:
-            lo = n - 1 - window  # 直前 window 本 = a[lo:n-1]（= a[n-1-window .. n-2]）。
-            hi = n - 1  # csum 上限 index（確定足 a[lo:n-1] の和 = csum[hi]-csum[lo]）。
-            avg = (csum[hi] - csum[lo]) / window
-            var = (csq[hi] - csq[lo]) / window - avg * avg
-            dev = np.sqrt(var) if var > 0.0 else 0.0
-            x3p = avg + 3.0 * dev
-            x3m = avg - 3.0 * dev
-            if clamp:
-                x3p = min(100.0, x3p)
-                x3m = max(0.0, x3m)
-            out[-1] = x3p - x3m
-    return out
+# _series_avg / _series_std / oscillator_span / rolling_span の実装は
+# profit_rmm/span_stats.py（本パッケージ所有の単一情報源）にある。上部の import で
+# 再公開しており、``core._series_avg`` 等の従来の参照面は変わらない。
+# 実装を本モジュールへ書き戻す（＝複製の再生）ことは禁止する。
 
 
 # funLevelCount（level_count_score）は共有 profit_system へ集約済み（上部で import・再公開）。

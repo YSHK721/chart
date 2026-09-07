@@ -22,7 +22,8 @@
     ``PRO!fitRMMMACD.mq4`` を昇順=古→新へ 1:1 変換する。
 
 依存:
-    core: numpy ＋ 共有（profit_rmm 複製ロジック / moving_averages.ma・exponential_ma_on_buffer）。
+    core: numpy ＋ 共有（profit_rmm.span_stats＝σ スパン統計の単一情報源 /
+        moving_averages.ma・exponential_ma_on_buffer / mql_builtins / profit_system）。
     rmmmacd: pandas（成果物層）。loader: pandas。lwc_chart: numpy/pandas（duck typing）。
 """
 

@@ -8,6 +8,8 @@
     level_count 生成パイプライン全体を複製する（iWPR/iRSI/iMFI/
     oscillator_span/level_count_score・クランプ非対称・funLevelCount4ケース・合算・
     warm-up・iWPR 権威・flat→50/負MF==0→100 を完全保持・ロジック改変禁止）。
+    なお σ スパン統計（oscillator_span / rolling_span ほか）は複製ではなく単一情報源
+    ``profit_rmm.span_stats`` を import して共有する（ISSUE-502 D-5 で是正）。
     **ただし ``compute_rmm_level_count`` の採点ループは profit_rmm 側に無い span NaN
     伝播ブロックを持ち、構造上は verbatim ではない**（ISSUE-175・未裁定。詳細は同関数
     の docstring 参照）。
@@ -22,10 +24,11 @@
     σ 水準線は無い（元は funIndicatorSet を OnCalculate で呼ばず・水準を出力しない）。
 
 含む構造:
-    compute_wpr / compute_marod / compute_rsi / compute_mfi / oscillator_span /
-        rolling_span / level_count_score : profit_rmm の level_count 算出部の verbatim
-        複製（_series_avg/_series_std/oscillator_span/rolling_span は姉妹 profit_rmm と
-        同一実装の複製。将来の共有層集約候補。本フェーズでは集約しない）。
+    compute_wpr / compute_marod / compute_rsi / compute_mfi / level_count_score :
+        共有層（mql_builtins / profit_system）の import 再公開。
+    _series_avg / _series_std / oscillator_span / rolling_span : σ スパン統計。実装は
+        単一情報源 ``profit_rmm.span_stats`` にあり、本モジュールは import 再公開のみ
+        （ISSUE-502 D-5 で verbatim 複製 4 関数 84 行を解消。数値は bit 等価で不変）。
     compute_rmm_level_count : 上記を採点・合算して level_count を返す（複製だが span
         NaN 伝播ブロックが profit_rmm 側に無い＝ISSUE-175 未裁定。window で
         全期間スカラ span / 因果ローリング span を切替）。
@@ -43,7 +46,10 @@
 
 依存:
     標準: __future__, dataclasses, sys, pathlib / 外部: numpy
-    共有: common（typical_price）, moving_averages（ma, exponential_ma_on_buffer）。
+    共有: common（typical_price）, moving_averages（ma, exponential_ma_on_buffer）,
+        mql_builtins, profit_system, profit_rmm.span_stats（σ スパン統計の単一情報源・
+        numpy のみ。``profit_rmm.src`` 集約層は経由しないため pandas/アダプタ層を
+        連鎖 import しない）。
     pandas/描画 import は禁止。
 """
 
@@ -63,6 +69,17 @@ from mql_builtins import (  # noqa: F401  # 正準 iWPR/iRSI/iMFI（再公開し
 from profit_system import (  # noqa: F401  # 正準 funLevelCount/MAROD（再公開して in-package 参照面を維持）
     compute_marod,
     level_count_score,
+)
+
+# σ スパン統計の単一情報源（ISSUE-502 D-5 の是正）。従来は本モジュールに姉妹指標
+# profit_rmm の verbatim 複製（4 関数 84 行）を保持していたが、実装は
+# profit_rmm/span_stats.py の 1 箇所へ集約し、ここは import 再公開のみとする
+# （名前空間パッケージ直下の numpy 専用モジュール＝pandas/アダプタ層を連鎖 import しない）。
+from profit_rmm.span_stats import (  # noqa: F401
+    oscillator_span,
+    rolling_span,
+    series_avg as _series_avg,
+    series_std as _series_std,
 )
 
 from common import typical_price
@@ -87,111 +104,17 @@ DEFAULT_WINDOW: int | None = 120
 
 
 # ===========================================================================
-# σ 統計（母σ÷N・全系列）— oscillator_span 用（profit_rmm の verbatim 複製）
+# σ 統計（母σ÷N・全系列）— oscillator_span / rolling_span は単一情報源へ集約済み
 # ===========================================================================
-# 【複製の明示・将来の集約候補】
-#   _series_avg / _series_std / oscillator_span / rolling_span の 4 関数は姉妹指標
-#   profit_rmm/src/core.py と **完全に同一実装の複製**である（本フェーズで bit-for-bit
-#   一致を確認済み）。本来は共有層（例: profit_system もしくは新規 statistics モジュール）
-#   へ集約すべき重複だが、profit_system 改修は別タスクであり、共有層への破壊的波及を
-#   避けるため **今フェーズでは集約しない**。将来の集約候補としてここに明示する。
+# 【ISSUE-502 D-5 是正】
+#   _series_avg / _series_std / oscillator_span / rolling_span の 4 関数は、かつて
+#   姉妹指標 profit_rmm/src/core.py の verbatim 複製として本モジュールに置かれていた。
+#   複製は取り残しを必ず生むため、実装を profit_rmm/span_stats.py（numpy のみに依存する
+#   単一情報源）へ集約し、本モジュールは上部の import で再公開するだけにした。
+#   ``core.oscillator_span`` / ``core.rolling_span`` 等の参照面と数値は不変（bit 等価）。
+#   実装を本モジュールへ書き戻す（＝複製の再生）ことは禁止する。再発は
+#   tests/test_span_stats_single_source.py が機械的に遮断する。
 # ===========================================================================
-def _series_avg(x: np.ndarray) -> float:
-    """系列平均（全系列）。"""
-    return float(np.mean(x))
-
-
-def _series_std(x: np.ndarray) -> float:
-    """母標準偏差（÷N・全系列）。"""
-    x = np.asarray(x, dtype=np.float64)
-    avg = _series_avg(x)
-    return float(np.sqrt(np.mean((x - avg) ** 2)))
-
-
-def oscillator_span(x: np.ndarray, *, clamp: bool) -> float:
-    """avg±3σ のスパン（x3p - x3m）を返す（profit_rmm の verbatim 複製）。
-
-    ``clamp=True``（RSI/WPR/MFI）→ x3p=min(100,x3p), x3m=max(0,x3m)。
-    ``clamp=False``（MAROD）→ クランプ無し。
-    """
-    avg = _series_avg(x)
-    dev = _series_std(x)
-    x3p = avg + 3.0 * dev
-    x3m = avg - 3.0 * dev
-    if clamp:
-        x3p = min(100.0, x3p)
-        x3m = max(0.0, x3m)
-    return x3p - x3m
-
-
-def rolling_span(
-    x: np.ndarray, window: int, *, clamp: bool, freeze_last: bool = False
-) -> np.ndarray:
-    """``oscillator_span`` の因果ローリング版（profit_rmm の verbatim 複製）。
-
-    バー i のスパンを区間 ``[i-window+1, i]`` の平均・母標準偏差から
-    ``(avg+3σ) - (avg-3σ)``（clamp 時は各端を [0,100] に丸め）で求める。未来を含まない
-    ため確定バーのスパン＝レベルカウントは repaint しない。warm-up（``i<window-1``）は
-    ``NaN``。
-
-    ``freeze_last``（既定 ``False``）:
-        * ``False``: 上記の通り（既定。出力は 1 ビットも変えない）。
-        * ``True``: **最終要素 ``out[-1]`` のみ** 基準窓を確定足
-          ``[n-1-window .. n-2]``（最終点を除く直前 window 本）へ差し替えてスパンを
-          算出する。``out[0..n-2]`` は ``freeze_last=False`` と完全に同一。形成中（足内）
-          の最新足をティック粒度で採点する際、スパン（採点の分母）の基準を 1 足 1 回・
-          足内で固定（凍結）する用途。平均・母標準偏差・分母 ``window``・クランプは
-          本関数の既存定義と厳密に同一で、最終点だけ窓をずらした以外は数値が一致する。
-          直前 window 本が満たせない（``n < window + 1``）場合は ``out[-1]=NaN``
-          （warm-up と同様）。これは ``profit_system._causal_z`` の freeze_last と整合する。
-          （profit_rmm.rolling_span の freeze_last と verbatim 複製で同一実装。）
-
-    Args:
-        x: 対象オシレーター系列。
-        window: 過去参照本数 W（>=2）。
-        clamp: True で各端を [0,100] にクランプ（RSI/WPR/MFI）、False で素値（MAROD）。
-        freeze_last: True で最終点のスパン基準を確定足（直前 W 本）へ凍結する。既定
-            False で挙動不変。
-
-    Returns:
-        各バーのスパン（同長, float64。warm-up は NaN）。
-    """
-    a = np.asarray(x, dtype=np.float64)
-    n = a.size
-    out = np.full(n, np.nan, dtype=np.float64)
-    if window < 2 or n < window:
-        return out
-    csum = np.concatenate([[0.0], np.cumsum(a)])
-    csq = np.concatenate([[0.0], np.cumsum(a * a)])
-    for i in range(window - 1, n):
-        lo = i - window + 1
-        avg = (csum[i + 1] - csum[lo]) / window
-        var = (csq[i + 1] - csq[lo]) / window - avg * avg
-        dev = np.sqrt(var) if var > 0.0 else 0.0
-        x3p = avg + 3.0 * dev
-        x3m = avg - 3.0 * dev
-        if clamp:
-            x3p = min(100.0, x3p)
-            x3m = max(0.0, x3m)
-        out[i] = x3p - x3m
-    if freeze_last:
-        # 最終点 out[-1] のみ、基準窓を確定足 [n-1-window .. n-2]（最終点を除く直前
-        # window 本）へ差し替える。out[0..n-2] は上のループ結果のまま不変。
-        if n < window + 1:
-            out[-1] = np.nan  # 直前 window 本を満たせない（warmup 同様）。
-        else:
-            lo = n - 1 - window  # 直前 window 本 = a[lo:n-1]（= a[n-1-window .. n-2]）。
-            hi = n - 1  # csum 上限 index（確定足 a[lo:n-1] の和 = csum[hi]-csum[lo]）。
-            avg = (csum[hi] - csum[lo]) / window
-            var = (csq[hi] - csq[lo]) / window - avg * avg
-            dev = np.sqrt(var) if var > 0.0 else 0.0
-            x3p = avg + 3.0 * dev
-            x3m = avg - 3.0 * dev
-            if clamp:
-                x3p = min(100.0, x3p)
-                x3m = max(0.0, x3m)
-            out[-1] = x3p - x3m
-    return out
 
 
 # funLevelCount（level_count_score）は共有 profit_system へ集約済み（上部で import・再公開）。
