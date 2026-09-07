@@ -2,7 +2,7 @@
 
 ISSUE-179 項目 3 で ``tgp_btlm/src/core.py`` と ``btlm_trail/src/core.py`` に完全一致で
 複製されていた Acklam 係数 20 個・分岐しきい値 0.02425 を共有プリミティブへ 1 本化した。
-本テストは移設元（``tgp_btlm`` のベクトル版）の挙動をそのまま固定する。
+本テストは移設元（tgp_btlm のベクトル版）の挙動をそのまま固定する。
 """
 
 from __future__ import annotations

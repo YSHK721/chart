@@ -46,7 +46,7 @@ def test_母集合はライブのcatalogから導出される() -> None:
 
 
 def test_variantごとに別の申告になる() -> None:
-    """`profit_band` は global / robust の 2 variant を持つ（実測）。"""
+    """profit_band は global / robust の 2 variant を持つ（実測）。"""
     # Arrange / Act
     specs = IndicatorCatalogSource().specs()
     # Assert

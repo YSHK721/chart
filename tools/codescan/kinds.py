@@ -2,7 +2,7 @@
 
 言語ごとに別の語を作らない。同じ概念には同じ語を割り当て、言語差は
 ``ModuleFacts.language`` で区別する（例: Python の ``def`` も JS の
-``function`` 宣言も ``function``）。レポートの集計軸はこの語彙だけで決まる。
+function 宣言も同じ function 語彙）。レポートの集計軸はこの語彙だけで決まる。
 """
 from __future__ import annotations
 

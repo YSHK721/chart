@@ -49,7 +49,7 @@ class Symbol:
         path: リポジトリ根からの相対パス。
         name: 修飾名（``Outer.inner`` 形式）。
         kind: 種別。``KIND_*`` 参照。言語をまたいで同義の語を使う
-            （例: Python の ``def`` も JS の ``function`` も ``function``）。
+            （例: Python の ``def`` も JS の function 宣言も同じ function 語彙）。
         line: 定義開始行（デコレータ・修飾子を除いた宣言行）。
         end_line: 定義終了行。
         exported: 外部公開面か。Python は ``__all__``／先頭 ``_`` 規約、
@@ -160,7 +160,7 @@ class Clone:
 
     Attributes:
         clone_type: ``type-1``（完全一致）／``type-2``（識別子・リテラルのみ相違）。
-        unit: ``function``（宣言単位）／``block``（宣言をまたぐ連続領域）。
+        unit: function（宣言単位）／block（宣言をまたぐ連続領域）。
         token_count: 1 件あたりのトークン数。
         occurrences: 出現箇所。2 件以上。
         removable_lines: 単一ソース化した場合に消える行数の見積り
