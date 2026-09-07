@@ -2196,7 +2196,7 @@ ui-r2-mp-normal-1d.jpeg（🔴 復元インスタンス無描画）／ui-r2-mp-f
 - **関連**: ISSUE-176（同種の DIP 違反の別形態）・ISSUE-184。
 
 ## ISSUE-175: [潜在バグ] profit_rmm と profit_rmm_macd の複製コードが NaN 伝播で既に挙動乖離（2026-07-26）
-- **ステータス**: BLOCKED（2026-07-27・元 MQL 不在で裁定不能。裁定保留をユーザー承認）
+- **ステータス**: BLOCKED（2026-07-27 裁定保留をユーザー承認。2026-09-07 依頼者再確認「MQL は無い。保留のままでよい」＝恒久保留）
 - **事象（実測）**: `profit_rmm_macd/src/core.py:97-192, 201-302`（`_series_avg` / `_series_std` / `oscillator_span` / `rolling_span` / level_count 合算パイプライン）は `profit_rmm/src/core.py:80-181, 262-317` の複製。同 `core.py:214-216` の docstring は「verbatim 複製」と主張するが、**実測では `profit_rmm_macd/src/core.py:293-299` に span の NaN 伝播ブロックがあり、`profit_rmm/src/core.py:298-317` には存在しない**＝既に分岐している。
 - **影響**: 同一と宣言された 2 実装が異なる値を返し得る。片方だけ修正すると乖離が拡大する。同一アクター（funLevelCount / スパン定義の変更者）が 2 ファイルの同時変更を強いられる（SRP / OCP / LSP の複合違反）。
 - **未確定（要調査）**: どちらが正解かは**未確定**。元 MQL（`PRO!fitRMM.mq4` / `PRO!fitRMMMACD.mq4`）を未読のため、NaN 伝播の有無どちらが移植元の挙動かを判定できていない。
