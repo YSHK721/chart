@@ -14445,3 +14445,9 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   捕捉できたのは走査対象だった偶然）。
 - **抜本策**: 全 core の web/js を対象にした相対 import 解決可能性検定の新設＋22 本の実態調査
   （死蔵なら撤去は別 y/n・生かすなら symlink 補完）。
+- **C-4 3d 完了（2026-09-07・依頼者 y「indicator_kit で実施」・bb2b9c0）**: 共有部品を中立パッケージ
+  indigators/indicator_kit へ移動（上流想定 87 本を実測で 105 本へ是正——replay の shared_js_root
+  フォールバック経由 18 本を含む）。indicator_ui は live 配信 core 専任（残留 7 本）。逆 import 0・
+  方向検定 P-5/P-6 新設・実配信 303 URL 巡回で非 200 ゼロ・全 8 web スイート緑。
+  残る次段候補（可逆・各段別途）: (i) replay へ 18 本の symlink 直結 (ii) shared_js_root フォールバック根の
+  台帳導出化 (iii) vendor/css の帰属分類。
