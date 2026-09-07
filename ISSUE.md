@@ -14356,7 +14356,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   台帳・素材が未記録のため従来コールドで、その要求が台帳と素材を書く）。
 
 ## ISSUE-502: リポジトリ全体 SOLID 精査で違反 119 件（高 48）——単一ソース違反 17 系統・循環 4 件・神クラス 8 件
-- **ステータス**: IN_PROGRESS（2026-09-07・依頼者「進めろ」承認・段階 1 完了）
+- **ステータス**: RESOLVED（2026-09-07・段階 1〜5 完了・残件は台帳末尾の後続候補へ）
 - **発見日**: 2026-09-06（依頼者指示「リポジトリ全体の設計が SOLID の各原則に遵守しているか徹底的に精査しろ」）
 - **精査方法**: 8 系統並列・読み取り専用（全指摘 file:line 付き・高重大度は独立再検証）。
   全文台帳: `.doc/solid_audit_20260906.md`（違反 119 件＝高 48・中 60・低 11、遵守構造、検証記録）。
@@ -14389,3 +14389,23 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   品質ゲート exit 0・baseline 陳腐化 20 件整理。
   **運用注意: dashboard core の起動モジュールが dashboard_ui.main.serve へ変更——serve.sh の次回再起動
   から有効（稼働中の旧スタックは Ctrl-C 停止→再起動）。**
+- **段階 4 完了（2026-09-07）**: 神クラス 5 件を責務分割（4A=1302ba1 run_backtest 940→465 行＋EA 宣言駆動化
+  ・4B=7b15a2c call_binding 996→644 行・4C=1354245 reach_sheet_view/合成根・4D=c556b7f properties_dialog）。
+  全件 bit/byte 等価を独立実測（pristine HEAD 突合 sha256/md5 一致・実データ A/B・DOM 直列化 8,119 行一致等）。
+  EA 追加＝宣言 1 ファイル＋1 行、hook 指標追加＝1 ファイル＋表 1 行、表示系統追加＝台帳 1 行へ縮小。
+- **C-4 根治完了（2026-09-07・依頼者 y「3b＋3e」）**: 3e=ef4bf86・3b=4ffcec1。配信許可根 2 箇所の
+  ハードコード（3b 初回実施で実測 404 の原因）を common/shared_web_roots.py の台帳導出へ是正した上で
+  共有カーネル 6 モジュールを indigators/chart_kernel へ移設（18 symlink 張り替え・sha256 全一致・
+  実配信 7/7 200＋許可根外 404 維持）。market_profile 実体→indicator_ui 実体 0 本＝**循環 4 件すべて消滅**。
+  3c/3d・参照 0 symlink（pair_primitive_base）の削除は別 y/n。
+- **段階 5 完了（2026-09-07）**: 5A=d778981（series/bars 二重発行を構造的に除去・発行 6→3・応答バイト同一・
+  controller 経路の計算量検定の穴を実証つきで閉塞）。5B=6e4bf11（typeof 探査 19→0・Port の HTTP 語彙除去・
+  __getattr__ 透過 11 件全撤去・byte 等価 24/24＋46/46）。
+- **完了時検証**: 品質ゲート exit 0。simulator 5589 / replay_ui 489 / sim_ui 960 / dashboard 673 /
+  marketdata 925 / tools 621 / indicator_ui api 1104 / web 全 7 スイート緑。
+- **運用注意（要 serve.sh 再起動）**: (1) dashboard core の起動モジュールが dashboard_ui.main.serve へ変更
+  (2) 稼働中の旧プロセス（8281/8381/8481・Sep06 起動）は chart_kernel 移設 3 本を 404 する。
+  次回の serve.sh 停止（Ctrl-C）→再起動で両方とも反映される。
+- **後続候補（未着手・別 y/n）**: C-4 3c/3d・参照 0 symlink 削除・ElapsedComparisonGateway の memo 依存・
+  TIMEFRAME_REFRESH_MS 手写し・router.py の core 集合写し・既存 T8 凍結 9 件・_RunState 残滓 4 フィールド・
+  dashboard e2e のライブデータ依存 flake（test_market_profile_unwired・是正前から存在・別 ISSUE 候補）。

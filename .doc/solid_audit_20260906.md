@@ -185,3 +185,24 @@ D-1〜D-17 すべて是正済み（コミット 8e5dd15 / 215892b / f214d32 / 11
 - 3d: live core 組み立て（composition_root_front/live_public_api）の分離（要設計）
 - 3e: js_layer_guard_suite の ownCore nullable 化（2 箇所・加法）＋ MP 側層検定新設＋
   pair_primitive_base symlink（参照 0）の削除
+
+## 是正記録（2026-09-07・ISSUE-502 段階 4〜5・C-4 根治 完了）
+
+- 段階 4（神クラス分割）: 1302ba1 / 7b15a2c / 1354245 / c556b7f。全件 bit/byte 等価を独立実測。
+- C-4 根治: ef4bf86（3e）＋ 4ffcec1（3b＝許可根の台帳導出化 common/shared_web_roots.py 込み）。
+  **循環 4 件（C-1〜C-4）すべて消滅**を実測。
+- 段階 5（抽象の宣言化）: d778981（F-1）＋ 6e4bf11（typeof/HTTP 語彙/__getattr__）。
+
+### 是正時の実測により訂正する台帳の記述（段階 4〜5 分）
+- call_binding.py は 986 でなく **996 行**（L242 以降の行番号は約 10 行後ろへずれ・`_call_btlm` L765 が列挙漏れ＝指標固有構文は実測 16）。
+- build_interactor は「235 行」でなく関数全体 224 行（実行部 176 行）。
+- reach_sheet_view.js の可変クロージャは 25 でなく **28 個**（行数は 1,171/683）。
+- typeof 探査は 18 でなく **19 箇所**（view.getCandles 含む）。
+- __getattr__ 11 件のうち serve_replay.py:143 はルート App でなく _QueryStrippingStatic。
+- C-4 の逆 import は 2 本でなく 3 本（前回記録済み）。テスト stub 更新は不要だった（5 本とも必須面充足）。
+
+### 全段階完了時の残存（後続候補・ISSUE-502 末尾と同一）
+3c/3d・参照 0 symlink・ElapsedComparisonGateway・TIMEFRAME_REFRESH_MS・router.py core 集合・
+既存 T8 凍結 9 件・_RunState 残滓・dashboard e2e flake（別 ISSUE 候補）・
+D-15 同型 2 件（usecases/rebuild・検定内台帳登録済み）・profit_system への span 統計移送・
+compute_rmm_level_count 複製（ISSUE-175 裁定待ち）・resolve_times 共有所有者 2 件の一本化。
