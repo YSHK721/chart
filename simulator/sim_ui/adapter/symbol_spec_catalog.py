@@ -81,10 +81,11 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     ままであり、``to_dict()`` にキーが 1 つ増えても投入 body は不変である。
 
     ea_name 一覧は**注入**で受ける（束縛は `simulator.main.known_ea_names`・§12.1 ハードコード
-    禁止）。以前は ``from simulator.main import _EA_FACTORIES`` で私有な登録表を越境 import し、
-    ``set(_EA_FACTORIES) | {"TC24051901"}`` という列挙と既定フォールバック名を**書き写して**
-    いた（ISSUE-405）。列挙の所有者は表の所有者（`simulator.main`）であり、束ねるのは
-    Composition Root である（R-4 と同型）。他銘柄は dataset 実体が確定するまで追加しない（YAGNI）。
+    禁止）。以前は Composition Root の私有な登録表を越境 import し、「表のキー集合に既定
+    フォールバック名を足す」という列挙規則を**書き写して**いた（ISSUE-405）。列挙の所有者は
+    表の所有者、すなわち simulator/main/ea_bindings（EA ごとの宣言モジュールを登録した宣言駆動
+    の束縛表）であり、列挙は known_ea_names の 1 箇所にしか無い。束ねるのは Composition Root
+    である（R-4 と同型）。他銘柄は dataset 実体が確定するまで追加しない（YAGNI）。
 """
 from __future__ import annotations
 

@@ -344,7 +344,70 @@ class TestBothEnginesShareTheSetupStage:
         assert state.halted is False
         assert state.primed_done is False
         assert state.session_gate.closed_bars == set()
+        # 決済の呼び口は帳簿そのものである（ISSUE-308: 2 つ目の実装を作らない）。
         assert callable(state.close_trade)
+        assert state.close_trade == state.ledger.close
+
+    def test_the_state_carries_nothing_the_run_never_reads(self):
+        """開始状態の各項目が「run が読む」か「直上の宣言が固定する」かのどちらかであること。
+
+        なぜ構造で固定するか（ISSUE-502 段階 4A の残件・実測）: 協働クラスを組むためだけに
+        要った値（レバレッジ・ストップアウト水準・含み損益の評価基準・証拠金割れの方針）は、
+        渡し終えた時点で協働クラスの所有物になる。それを開始状態にも残すと同じ値が 2 箇所に
+        在ることになり、片方だけが更新される形の食い違いを招く。実際にこの 4 つは
+        **誰にも読まれないまま**残っていた（構文木で読み手 0 を実測）。読み手のいない項目は
+        出力に現れないので、数値の指紋でも状態検証でも原理的に落ちない。
+
+        期待値に焼き込むのは「読み手のいない項目が無い」ことだけである。フィールドの個数も
+        名前の一覧も固定しない（用途のある項目の追加は自由に通る）。宣言が固定する名前は
+        **直上の検定の構文木から採る**（一覧を写すと必ず取り残される）。
+        """
+        import ast
+        from pathlib import Path
+
+        def _state_attrs(node):
+            """`state.<名前>` の形で読まれている属性名の集合。"""
+            return {
+                n.attr
+                for n in ast.walk(node)
+                if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name)
+                and n.value.id == "state"
+            }
+
+        # Arrange: 開始状態が宣言するフィールド名（dataclass の注釈）。
+        engine_tree = ast.parse(Path(rb.__file__).read_text(encoding="utf-8"))
+        state_class = next(
+            n
+            for n in ast.walk(engine_tree)
+            if isinstance(n, ast.ClassDef) and n.name == "_RunState"
+        )
+        declared = [
+            s.target.id
+            for s in state_class.body
+            if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
+        ]
+        assert declared, "開始状態の宣言が読めていない（検定が何も測っていない）"
+
+        # Act: 読み手を 2 系統から集める。
+        #   1. run のライフサイクルが消費する項目（実行経路の構文木）
+        consumed = _state_attrs(engine_tree)
+        #   2. 開始状態の宣言が固定する項目（直上の検定の構文木）
+        contract_tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        contract_test = next(
+            n
+            for n in ast.walk(contract_tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "test_the_setup_stage_yields_the_state_the_run_starts_from"
+        )
+        declared_by_contract = _state_attrs(contract_test)
+
+        # Assert: どちらにも現れない項目は残滓である。
+        residue = sorted(set(declared) - (consumed | declared_by_contract))
+        assert residue == [], (
+            "run が読まず、開始状態の宣言も固定していない項目が残っている: "
+            f"{residue}（協働クラスへ渡すだけの値は協働クラスが所有する）"
+        )
 
 
 class TestTheSetupStageDoesNotWasteWork:

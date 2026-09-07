@@ -5,11 +5,12 @@
 §12.1 が「戦略ごとの明示指定リストのハードコード」を禁じているのに加え、書き写した表は
 登録表が増えた時に必ず取り残される（本リポジトリで繰り返し起きている壊れ方）。
 
-依存の向き（ISSUE-405 の是正）: 構築関数は**注入**で受ける。以前は
-``from simulator.main import _EA_FACTORIES, _factory_tc24051901`` で私有名を越境 import し、
-``_EA_FACTORIES.get(ea_name, _factory_tc24051901)`` という**選択規則そのものを書き写して**
-いた。規則の所有者は `simulator.main._select_ea_factory` の 1 箇所であり、公開アクセサ
-（`build_ea_indicators`）がそこへ委譲する。束ねるのは Composition Root（R-4 と同型）。
+依存の向き（ISSUE-405 の是正）: 構築関数は**注入**で受ける。以前は Composition Root の
+私有な登録表とその既定フォールバック用ファクトリを越境 import し、「表を ea_name で引き、
+未登録なら既定 TC 経路へ落とす」という**選択規則そのものを書き写して**いた。規則の所有者は
+simulator/main/ea_bindings（EA ごとの宣言モジュールを登録した宣言駆動の束縛表）であり、
+選択は select_ea_binding の 1 箇所にしか無い。公開アクセサ build_ea_indicators がそこへ
+委譲する。束ねるのは Composition Root（R-4 と同型・ISSUE-502 段階 4A で宣言駆動へ移行）。
 
 探索用データセットの用意は :class:`EaBuildProbe`（同 adapter）が持つ。SL 設定カタログと
 同じ段であり、ここに書くと 2 箇所に写る。

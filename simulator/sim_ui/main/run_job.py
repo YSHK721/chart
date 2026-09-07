@@ -209,9 +209,10 @@ def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
 def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
     """接点（agg.contacts）を「その run が使った EA の指標系列」から組む（FR-18・R-3）。
 
-    EA→指標の対応は `simulator.main.build_ea_indicators`（`_EA_FACTORIES` を単一ソースに
-    する公開アクセサ）から得る。算出式は adapter（contacts_supply）が report_ui の単一
-    ソースを import して持つ。ここは供給の束縛（Composition Root）だけを担う。
+    EA→指標の対応は `simulator.main.build_ea_indicators`（simulator/main/ea_bindings の
+    宣言駆動な束縛表を単一ソースにする公開アクセサ）から得る。算出式は adapter
+    （contacts_supply）が report_ui の単一ソースを import して持つ。ここは供給の束縛
+    （Composition Root）だけを担う。
 
     ``bars`` は writer が読み込み済みの int 時刻ビュー（二重ロードしない）。
     """

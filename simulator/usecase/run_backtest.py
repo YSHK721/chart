@@ -68,18 +68,22 @@ class _RunState:
 
     `close_trade` は決済呼び出しの**不変の文脈**（口座・記録先・銘柄仕様・レバレッジ）を
     束ねた呼び口である（ISSUE-308）。実体は `ledger.close` であり、2 つ目の実装は無い。
+
+    **持たないもの**: 協働クラスを組むためだけに使った値（レバレッジ・ストップアウト水準・
+    含み損益の評価基準・証拠金割れの方針）は本状態に載せない。これらは組み上がった時点で
+    協働クラスの所有物であり、run はそれらを読まずに協働クラスへ問う。載せると
+    「同じ値が 2 箇所に在る」形になり、片方だけが更新される欠陥を招く（ISSUE-502 段階 4A）。
+    この不変条件は test_run_backtest_single_engine.py の構造検定
+    （TestBothEnginesShareTheSetupStage の「run が読まない項目を持たない」検定）が
+    構文木で機械的に施行する（宣言でなく検査で強制する）。
     """
 
     bars: list
     features: RunFeatures
     spec: Any
     contract_size: float
-    leverage: float
-    stop_out_level: float
-    floating_pnl_basis: str
     account: Account
     session_gate: SessionGate
-    stop_out_policy: Any
     # 協働クラス（run の準備段で 1 度だけ組む・run のあいだ同じ実体を使い回す）。
     ledger: TradeLedger
     executor: OrderExecutor
@@ -230,12 +234,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             features=features,
             spec=spec,
             contract_size=contract_size,
-            leverage=leverage,
-            stop_out_level=stop_out_level,
-            floating_pnl_basis=floating_pnl_basis,
             account=account,
             session_gate=session_gate,
-            stop_out_policy=stop_out_policy,
             ledger=ledger,
             executor=OrderExecutor(
                 account=account,

@@ -10,9 +10,11 @@ E-3 と同じ受付検証で扱う。判定は**ハードコードの戦略リ�
 ea_name → パラメータ名の対応表を本モジュールに書き写さない。
 
 依存の向きと探索方法（ISSUE-405 の是正・実測）:
-    以前は ``getattr(sim_main, "_EA_FACTORIES", {}).get(ea_name)`` で私有な登録表を覗き、
-    ``_factory_tc24051901`` へのフォールバック規則を書き写した上で、**factory 関数の
-    ソース文字列**から戦略クラス名を推測していた（``f"{name}(" in source`` の総当たり）。
+    以前は Composition Root の私有な登録表を getattr で覗いて ea_name を引き、既定 TC 経路の
+    ファクトリへ落とすフォールバック規則を書き写した上で、**factory 関数のソース文字列**から
+    戦略クラス名を推測していた（``f"{name}(" in source`` の総当たり）。登録表と選択規則は
+    現在 simulator/main/ea_bindings（EA ごとの宣言モジュールを登録した宣言駆動の束縛表）が
+    所有し、選択は select_ea_binding の 1 箇所にしか無い（ISSUE-502 段階 4A）。
     この推測は `_factory_weekly_vol_band` で失敗する——戦略をビルダ関数
     ``make_weekly_vol_band(...)`` 経由で組むため、factory のソースに戦略クラス名が
     現れない。結果 WeeklyVolBand は「探索失敗（``None``）」に落ちていた。

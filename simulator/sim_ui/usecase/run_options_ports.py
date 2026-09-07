@@ -4,9 +4,9 @@
 データセットに紐づく **銘柄仕様の権威値**（build_interactor の default 無し 11 キー）を供給する
 境界。投入経路（SubmitJobInteractor）には足さない（既存 backtest verbatim 契約 byte 不変）。
 
-DIP: usecase は本抽象にのみ依存し、dataset_registry / _EA_FACTORIES という具体を知らない
-（供給の束縛は adapter=SymbolSpecCatalog が持つ）。プレーン DTO（RunProfile）で境界を跨ぐ
-（pydantic 型・Path を usecase へ入れない）。
+DIP: usecase は本抽象にのみ依存し、dataset_registry / EA 束縛表（simulator/main/ea_bindings
+の宣言駆動な登録表）という具体を知らない（供給の束縛は adapter=SymbolSpecCatalog が持つ）。
+プレーン DTO（RunProfile）で境界を跨ぐ（pydantic 型・Path を usecase へ入れない）。
 """
 from __future__ import annotations
 
