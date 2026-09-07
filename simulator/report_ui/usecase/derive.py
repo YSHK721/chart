@@ -10,10 +10,19 @@ from datetime import datetime, timezone
 
 # wday インデックス規約（R-2・アーキ指針 §4）: weekday() Mon=0..Sun=6（UTC 基準）。
 # front 側 `(getUTCDay()+6)%7` と単一規約で一致させる（heat 分類とフィルタ判定が同一 trade を選ぶ）。
+#
+# ISSUE-502 D-2: 本表が唯一の定義。front は写しを持たず生成物
+# （web/js/derive_constants_generated.js）を読む。生成器は
+# `simulator/report_ui/tools/gen_report_js_constants.py`。
 WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-# hold バケット定義（詳細設計 §6.2 HBUCK・試作 prep_data.py:206-207 踏襲）。
-_HBUCK = [
+# hold バケット定義（詳細設計 §6.2 HBUCK・試作 prep_data.py:206-207 踏襲）。[lo, hi) 半開区間。
+#
+# ISSUE-502 D-3: 本表が唯一の定義。かつては同じ 7 組の境界が graphs.js にも手書きで存在し、
+# 言語跨ぎの突合手段が無かった（ずれてもフロントのフィルタだけが静かに別の trade を選ぶ）。
+# front は生成物（web/js/derive_constants_generated.js）を読む。公開名なのは生成器が
+# private 名を掘らないため（ISSUE-091 A7）。
+HOLD_BUCKET_BOUNDS = [
     (0, 60, "<1m"),
     (60, 120, "1-2m"),
     (120, 300, "2-5m"),
@@ -79,10 +88,10 @@ def session_of(h):
 
 def hold_bucket(sec):
     """保有秒を HBUCK 7 区分のラベルへ写す（詳細設計 §6.2）。"""
-    for lo, hi, lab in _HBUCK:
+    for lo, hi, lab in HOLD_BUCKET_BOUNDS:
         if lo <= sec < hi:
             return lab
-    return _HBUCK[-1][2]
+    return HOLD_BUCKET_BOUNDS[-1][2]
 
 
 def reconstruct_balance_curve(exit_times, balances):
@@ -182,7 +191,7 @@ def hold_buckets(items):
     バケット境界は hold_bucket(hold_sec) を再利用（[lo,hi) 半開区間）。pl/cnt とも全 7 ラベルを
     0 埋めで確保する。
     """
-    labels = [lab for _, _, lab in _HBUCK]
+    labels = [lab for _, _, lab in HOLD_BUCKET_BOUNDS]
     pl = {lab: 0.0 for lab in labels}
     cnt = {lab: 0 for lab in labels}
     for sec, profit in items:

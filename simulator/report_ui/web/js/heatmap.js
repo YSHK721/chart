@@ -12,8 +12,10 @@
 
 import { aggOf } from "./data.js";
 
-// wday インデックス規約（Mon=0..Sun=6）。back derive.WEEK と一致させる。
-export const WEEKORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+// wday インデックス規約（Mon=0..Sun=6）。定義は back の derive.WEEK ただ 1 つで、ここは
+// その生成物を読むだけ（ISSUE-502 D-2）。再輸出は既存の公開面（heatmap.WEEKORDER）を保つため。
+import { WEEKORDER } from "./derive_constants_generated.js";
+export { WEEKORDER };
 
 // entry_time(秒・UTC) を {wday, hour} へ写す（R-2 規約: (getUTCDay()+6)%7・UTC hour）。
 export function wdayHourOf(entryTime) {

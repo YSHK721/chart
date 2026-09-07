@@ -1,83 +1,232 @@
-// レポート項目の章立て（REPORT_GROUPS）と日本語呼称（LABELS_JA）の静的辞書。
+// レポート項目の語彙表（REPORT_VOCAB）と、そこから導出する章立て（REPORT_GROUPS）・
+// 日本語呼称（LABELS_JA）・用語解説（GLOSSARY）。
 // 依存0のリーフモジュール（DOM 非依存・他 js 非 import）。compare.js（劣化比較表の章立て・
-// ラベル）と将来の用語表示が消費する。詳細設計 §11・試作 index.html:851-889 準拠。
+// ラベル）と用語表示が消費する。詳細設計 §11・試作 index.html:851-889 準拠。
 //
 // 章立て・呼称は MT5 ReportTester のラベル体系に合わせる。本番 report は BacktestStats 保持
 // 指標のみ（§4.5）のため、章立てに載るが report に無いキーは表示側で k in r フィルタにより
 // スキップされる（欠落耐性）。
 
-// [章タイトル, [英ラベル, ...]] の配列。劣化比較表・サマリー分類の表示順を規定する。
-export const REPORT_GROUPS = [
-  ["戦略・テスト設定",
-    ["Expert", "Symbol", "Period", "Inputs", "Company", "Currency",
-     "Initial Deposit", "Leverage"]],
-  ["1. 基本設定とテスト環境",
-    ["History Quality", "Bars", "Ticks", "Symbols"]],
-  ["2. 損益と資金効率",
-    ["Total Net Profit", "Gross Profit", "Gross Loss", "Profit Factor",
-     "Recovery Factor", "Sharpe Ratio", "Expected Payoff", "AHPR", "GHPR"]],
-  ["3. 取引頻度と保有時間",
-    ["Total Trades", "Total Deals", "Minimal position holding time",
-     "Average position holding time", "Maximal position holding time"]],
-  ["4. 勝率とポジション別の傾向",
-    ["Profit Trades (% of total)", "Loss Trades (% of total)",
-     "Short Trades (won %)", "Long Trades (won %)"]],
-  ["5. 勝ち負けの取引詳細",
-    ["Largest profit trade", "Average profit trade", "Largest loss trade",
-     "Average loss trade", "Maximum consecutive wins ($)",
-     "Maximum consecutive losses ($)", "Maximal consecutive profit (count)",
-     "Maximal consecutive loss (count)", "Average consecutive wins",
-     "Average consecutive losses"]],
-  ["6. リスクとドローダウン",
-    ["Balance Drawdown Absolute", "Balance Drawdown Maximal",
-     "Balance Drawdown Relative", "Equity Drawdown Absolute",
-     "Equity Drawdown Maximal", "Equity Drawdown Relative", "Margin Level"]],
-  ["7. 統計的指標と相関",
-    ["LR Correlation", "LR Standard Error", "Z-Score", "OnTester result",
-     "Correlation (Profits,MFE)", "Correlation (Profits,MAE)",
-     "Correlation (MFE,MAE)"]],
+// レポート項目の語彙表（**唯一の定義**・ISSUE-502 D-4）。
+//   1 項目 = 1 エントリ = { key: 英ラベル, ja: 日本語呼称, role: 役割, read: 見方 }。
+//   章立て（REPORT_GROUPS）・呼称表（LABELS_JA）・用語解説（GLOSSARY）は**すべてこの表から
+//   導出**する。かつては同じ 54 キーを 3 つの構造が独立に列挙しており、1 キー追加＝3 箇所の
+//   編集、片方だけ落とせば「章立てには出るが呼称も解説も出ない」が無言で成立した。
+//   表を 1 つにすれば、キーの取りこぼしは**構造的に起こり得ない**（検定ではなく形で担保する）。
+//
+//   back（build_report_payload._report）が出す report キーが本表に無いと、画面は英語ラベルの
+//   まま章立てからも解説からも漏れる。その包含関係は
+//   simulator/report_ui/tests/unit/test_report_vocab_single_source.py が機械的に落とす。
+export const REPORT_VOCAB = [
+  ["戦略・テスト設定", [
+    { key: "Expert", ja: "戦略（エキスパート）",
+      role: "検証対象の自動売買ロジック（EA）の識別子。",
+      read: "どの戦略の成績かを示す。結果はこの戦略に固有。" },
+    { key: "Symbol", ja: "銘柄",
+      role: "取引した金融商品（銘柄）。",
+      read: "対象市場を確認（JP225＝日経225）。" },
+    { key: "Period", ja: "期間",
+      role: "バックテストの時間足と対象期間。",
+      read: "M1＝1分足。検証範囲が十分かを確認。" },
+    { key: "Inputs", ja: "入力パラメータ",
+      role: "EA に与えた設定値（パラメータ）。",
+      read: "成績はこの設定に依存。再現の前提条件。" },
+    { key: "Company", ja: "会社",
+      role: "口座を提供するブローカー。",
+      read: "約定条件・スプレッドの前提。" },
+    { key: "Currency", ja: "通貨",
+      role: "損益計算に使う通貨。",
+      read: "全金額の単位（JPY）。" },
+    { key: "Initial Deposit", ja: "初期証拠金",
+      role: "検証開始時の資金。",
+      read: "損益率や％ドローダウンの基準値。" },
+    { key: "Leverage", ja: "レバレッジ",
+      role: "証拠金に対する取引可能額の倍率。",
+      read: "高いほど必要証拠金は小さくリスクは大。" },
+  ]],
+  ["1. 基本設定とテスト環境", [
+    { key: "History Quality", ja: "履歴品質",
+      role: "使用ヒストリカルデータの整合度。",
+      read: "100％が理想。低いと結果の信頼性が下がる。" },
+    { key: "Bars", ja: "バー数",
+      role: "検証に使ったローソク足の本数。",
+      read: "サンプル量の目安。" },
+    { key: "Ticks", ja: "ティック数",
+      role: "価格更新（ティック）の回数。",
+      read: "約定精度の基盤。多いほど現実に近い。" },
+    { key: "Symbols", ja: "銘柄数",
+      role: "検証した銘柄数。",
+      read: "単一銘柄なら1。" },
+  ]],
+  ["2. 損益と資金効率", [
+    { key: "Total Net Profit", ja: "総純損益",
+      role: "総利益−総損失＝最終的な純損益。",
+      read: "最重要の最終成績。プラスで収益。" },
+    { key: "Gross Profit", ja: "総利益",
+      role: "勝ち取引の利益合計。",
+      read: "収益の源泉の規模。" },
+    { key: "Gross Loss", ja: "総損失",
+      role: "負け取引の損失合計。",
+      read: "コストの規模。絶対値で評価。" },
+    { key: "Profit Factor", ja: "プロフィットファクター",
+      role: "総利益÷総損失（絶対値）。",
+      read: "1超で利益。1.3以上で良好、1未満は赤字。" },
+    { key: "Recovery Factor", ja: "リカバリーファクター",
+      role: "純益÷最大ドローダウン。",
+      read: "高いほどリスクに対し効率よく回復。" },
+    { key: "Sharpe Ratio", ja: "シャープレシオ",
+      role: "変動リスクあたりの超過収益。",
+      read: "高いほど安定。1以上で良好。" },
+    { key: "Expected Payoff", ja: "期待利得",
+      role: "1取引あたりの平均損益。",
+      read: "プラスで優位。取引コストと比較。" },
+    { key: "AHPR", ja: "AHPR（算術平均収益率）",
+      role: "1取引あたり平均収益率（算術平均）。",
+      read: "1超で平均的にプラス。" },
+    { key: "GHPR", ja: "GHPR（幾何平均収益率）",
+      role: "複利を考慮した平均収益率（幾何平均）。",
+      read: "AHPRより実態に近い。1超で資産増。" },
+  ]],
+  ["3. 取引頻度と保有時間", [
+    { key: "Total Trades", ja: "総取引数",
+      role: "決済まで完了したポジション数。",
+      read: "サンプル数。多いほど統計的に信頼。" },
+    { key: "Total Deals", ja: "総ディール数",
+      role: "約定（建て＋決済）の回数。",
+      read: "概ね取引数の約2倍。" },
+    { key: "Minimal position holding time", ja: "最小ポジション保有時間",
+      role: "最も短い保有時間。",
+      read: "瞬間的な決済の有無を確認。" },
+    { key: "Average position holding time", ja: "平均ポジション保有時間",
+      role: "平均の保有時間。",
+      read: "戦略の時間軸（スキャル/スイング）を判別。" },
+    { key: "Maximal position holding time", ja: "最大ポジション保有時間",
+      role: "最も長い保有時間。",
+      read: "塩漬けや長期保有の有無を確認。" },
+  ]],
+  ["4. 勝率とポジション別の傾向", [
+    { key: "Profit Trades (% of total)", ja: "勝率（勝ち取引）",
+      role: "勝ち取引の割合（勝率）。",
+      read: "高勝率でも損益比次第。PFと併読。" },
+    { key: "Loss Trades (% of total)", ja: "敗率（負け取引）",
+      role: "負け取引の割合（敗率）。",
+      read: "勝率の裏側。100−勝率。" },
+    { key: "Short Trades (won %)", ja: "ショートポジション勝率",
+      role: "売り取引の件数と勝率。",
+      read: "下落方向での優位性を確認。" },
+    { key: "Long Trades (won %)", ja: "ロングポジション勝率",
+      role: "買い取引の件数と勝率。",
+      read: "上昇方向での優位性を確認。" },
+  ]],
+  ["5. 勝ち負けの取引詳細", [
+    { key: "Largest profit trade", ja: "最大勝ち取引",
+      role: "単発で最大の勝ち額。",
+      read: "外れ値の影響度を把握。" },
+    { key: "Average profit trade", ja: "平均勝ち取引",
+      role: "勝ち取引の平均額。",
+      read: "平均負けとの比（損益比）で評価。" },
+    { key: "Largest loss trade", ja: "最大負け取引",
+      role: "単発で最大の負け額。",
+      read: "1回あたりリスクの上限。" },
+    { key: "Average loss trade", ja: "平均負け取引",
+      role: "負け取引の平均額。",
+      read: "平均勝ちと比較し損益比を確認。" },
+    { key: "Maximum consecutive wins ($)", ja: "最大連続勝ち数（利益）",
+      role: "最大の連勝回数（括弧内は利益）。",
+      read: "好調局面の継続性。" },
+    { key: "Maximum consecutive losses ($)", ja: "最大連続負け数（損失）",
+      role: "最大の連敗回数（括弧内は損失）。",
+      read: "ドローダウン耐性・資金管理の要。" },
+    { key: "Maximal consecutive profit (count)", ja: "最大連続利益（取引数）",
+      role: "連続利益の最大額（括弧内は取引数）。",
+      read: "最も稼いだ連続局面。" },
+    { key: "Maximal consecutive loss (count)", ja: "最大連続損失（取引数）",
+      role: "連続損失の最大額（括弧内は取引数）。",
+      read: "最も負けた連続局面。資金計画の基準。" },
+    { key: "Average consecutive wins", ja: "平均連続勝ち数",
+      role: "平均の連勝数。",
+      read: "勝ちの続きやすさ。" },
+    { key: "Average consecutive losses", ja: "平均連続負け数",
+      role: "平均の連敗数。",
+      read: "負けの続きやすさ。" },
+  ]],
+  ["6. リスクとドローダウン", [
+    { key: "Balance Drawdown Absolute", ja: "残高ベース絶対ドローダウン",
+      role: "初期資金からの最大の落ち込み額。",
+      read: "開始直後のリスクの目安。" },
+    { key: "Balance Drawdown Maximal", ja: "残高ベース最大ドローダウン",
+      role: "確定残高のピークからの最大下落（額/％）。",
+      read: "最重要のリスク指標。％が小さいほど安全。" },
+    { key: "Balance Drawdown Relative", ja: "残高ベース相対ドローダウン",
+      role: "％基準で見た最大下落。",
+      read: "資金規模に依らない下落の深さ。" },
+    { key: "Equity Drawdown Absolute", ja: "含み損ベース絶対ドローダウン",
+      role: "含み損を含む有効証拠金ベースの絶対DD。",
+      read: "未決済も含む実リスク。" },
+    { key: "Equity Drawdown Maximal", ja: "含み損ベース最大ドローダウン",
+      role: "含み損ベースの最大ドローダウン。",
+      read: "残高ベースより厳しい実際の証拠金リスク。" },
+    { key: "Equity Drawdown Relative", ja: "含み損ベース相対ドローダウン",
+      role: "含み損ベースの相対（％）DD。",
+      read: "保有中の最大リスク水準。" },
+    { key: "Margin Level", ja: "証拠金維持率",
+      role: "有効証拠金÷必要証拠金。",
+      read: "高いほど余裕。100％割れでロスカット危険。" },
+  ]],
+  ["7. 統計的指標と相関", [
+    { key: "LR Correlation", ja: "線形回帰相関",
+      role: "資産曲線の直線への当てはまり（線形回帰相関）。",
+      read: "1に近いほど滑らかな右肩上がり。" },
+    { key: "LR Standard Error", ja: "線形回帰標準誤差",
+      role: "回帰直線からのばらつき。",
+      read: "小さいほど安定した成長。" },
+    { key: "Z-Score", ja: "Zスコア",
+      role: "勝敗の連続性の偏り（統計量）。",
+      read: "連勝連敗が偶然か傾向かを判定。" },
+    { key: "OnTester result", ja: "OnTester結果",
+      role: "EAのカスタム評価関数の戻り値。",
+      read: "最適化用の独自スコア（0は未使用）。" },
+    { key: "Correlation (Profits,MFE)", ja: "相関係数（利益, MFE）",
+      role: "利益と最大含み益（MFE）の相関。",
+      read: "高いほど利を伸ばせている。" },
+    { key: "Correlation (Profits,MAE)", ja: "相関係数（利益, MAE）",
+      role: "利益と最大含み損（MAE）の相関。",
+      read: "高いと含み損が結果に影響しやすい。" },
+    { key: "Correlation (MFE,MAE)", ja: "相関係数（MFE, MAE）",
+      role: "最大含み益と最大含み損の相関。",
+      read: "値動きの振れ方の傾向。" },
+  ]],
 ];
 
+// 語彙表から 3 つの表示ビュー（章立て / 呼称 / 用語解説）を導出する純関数。
+//   1 エントリの各項目を**ちょうど 1 回ずつ**読み、3 ビューへ同時に配る（作って捨てる計算を
+//   持たない＝計算量テストが固定する不変条件）。入力を増やしても 1 エントリあたりの読み取り
+//   回数は変わらない（O(n)）。
+export function deriveVocabViews(vocab) {
+  const groups = [], labelsJa = {}, glossary = {};
+  for (const [title, items] of vocab) {
+    const keys = [];
+    for (const item of items) {
+      const { key, ja, role, read } = item;
+      keys.push(key);
+      labelsJa[key] = ja;
+      glossary[key] = { role, read };
+    }
+    groups.push([title, keys]);
+  }
+  return { groups, labelsJa, glossary };
+}
+
+const _VIEWS = deriveVocabViews(REPORT_VOCAB);
+
+// [章タイトル, [英ラベル, ...]] の配列。劣化比較表・サマリー分類の表示順を規定する。
+export const REPORT_GROUPS = _VIEWS.groups;
+
 // 英ラベル → 日本語呼称（仕様書「レポートの定義」準拠）。未登録キーは英語のまま表示する。
-export const LABELS_JA = {
-  "Expert": "戦略（エキスパート）", "Symbol": "銘柄", "Period": "期間",
-  "Inputs": "入力パラメータ", "Company": "会社", "Currency": "通貨",
-  "Initial Deposit": "初期証拠金", "Leverage": "レバレッジ",
-  "History Quality": "履歴品質", "Bars": "バー数", "Ticks": "ティック数",
-  "Symbols": "銘柄数",
-  "Total Net Profit": "総純損益", "Gross Profit": "総利益", "Gross Loss": "総損失",
-  "Profit Factor": "プロフィットファクター", "Recovery Factor": "リカバリーファクター",
-  "Sharpe Ratio": "シャープレシオ", "Expected Payoff": "期待利得",
-  "AHPR": "AHPR（算術平均収益率）", "GHPR": "GHPR（幾何平均収益率）",
-  "Total Trades": "総取引数", "Total Deals": "総ディール数",
-  "Minimal position holding time": "最小ポジション保有時間",
-  "Average position holding time": "平均ポジション保有時間",
-  "Maximal position holding time": "最大ポジション保有時間",
-  "Profit Trades (% of total)": "勝率（勝ち取引）",
-  "Loss Trades (% of total)": "敗率（負け取引）",
-  "Short Trades (won %)": "ショートポジション勝率",
-  "Long Trades (won %)": "ロングポジション勝率",
-  "Largest profit trade": "最大勝ち取引", "Average profit trade": "平均勝ち取引",
-  "Largest loss trade": "最大負け取引", "Average loss trade": "平均負け取引",
-  "Maximum consecutive wins ($)": "最大連続勝ち数（利益）",
-  "Maximum consecutive losses ($)": "最大連続負け数（損失）",
-  "Maximal consecutive profit (count)": "最大連続利益（取引数）",
-  "Maximal consecutive loss (count)": "最大連続損失（取引数）",
-  "Average consecutive wins": "平均連続勝ち数",
-  "Average consecutive losses": "平均連続負け数",
-  "Balance Drawdown Absolute": "残高ベース絶対ドローダウン",
-  "Balance Drawdown Maximal": "残高ベース最大ドローダウン",
-  "Balance Drawdown Relative": "残高ベース相対ドローダウン",
-  "Equity Drawdown Absolute": "含み損ベース絶対ドローダウン",
-  "Equity Drawdown Maximal": "含み損ベース最大ドローダウン",
-  "Equity Drawdown Relative": "含み損ベース相対ドローダウン",
-  "Margin Level": "証拠金維持率",
-  "LR Correlation": "線形回帰相関", "LR Standard Error": "線形回帰標準誤差",
-  "Z-Score": "Zスコア", "OnTester result": "OnTester結果",
-  "Correlation (Profits,MFE)": "相関係数（利益, MFE）",
-  "Correlation (Profits,MAE)": "相関係数（利益, MAE）",
-  "Correlation (MFE,MAE)": "相関係数（MFE, MAE）",
-};
+export const LABELS_JA = _VIEWS.labelsJa;
+
+// 用語解説（役割/見方）。レポート項目キー → {role, read}。
+export const GLOSSARY = _VIEWS.glossary;
 
 // 戦略名 → 戦略の説明（比較・判定タブ「戦略」セクション・約200字）。
 export const STRATEGY_INFO = {
@@ -85,64 +234,6 @@ export const STRATEGY_INFO = {
     "MAシグナルに依存せず、フラットになる度に現値の上下へ逆指値（BuyStop/SellStop）を両建てで一度だけ設置し、" +
     "片側が約定したら反対側を取消す（OCO）プローブEA。約定玉はSL200/TP500ptsで決済し、フラット復帰で再装填する。" +
     "逆指値の約定挙動・SL/TP・OCO・再アームの実MT5突合検証を目的とした動作確認用戦略。（offset100/Lot0.1/両建て）",
-};
-
-// 用語解説（役割/見方）。試作 index.html:924-979 準拠。レポート項目キー → {role, read}。
-export const GLOSSARY = {
-  "Expert": { role: "検証対象の自動売買ロジック（EA）の識別子。", read: "どの戦略の成績かを示す。結果はこの戦略に固有。" },
-  "Symbol": { role: "取引した金融商品（銘柄）。", read: "対象市場を確認（JP225＝日経225）。" },
-  "Period": { role: "バックテストの時間足と対象期間。", read: "M1＝1分足。検証範囲が十分かを確認。" },
-  "Inputs": { role: "EA に与えた設定値（パラメータ）。", read: "成績はこの設定に依存。再現の前提条件。" },
-  "Company": { role: "口座を提供するブローカー。", read: "約定条件・スプレッドの前提。" },
-  "Currency": { role: "損益計算に使う通貨。", read: "全金額の単位（JPY）。" },
-  "Initial Deposit": { role: "検証開始時の資金。", read: "損益率や％ドローダウンの基準値。" },
-  "Leverage": { role: "証拠金に対する取引可能額の倍率。", read: "高いほど必要証拠金は小さくリスクは大。" },
-  "History Quality": { role: "使用ヒストリカルデータの整合度。", read: "100％が理想。低いと結果の信頼性が下がる。" },
-  "Bars": { role: "検証に使ったローソク足の本数。", read: "サンプル量の目安。" },
-  "Ticks": { role: "価格更新（ティック）の回数。", read: "約定精度の基盤。多いほど現実に近い。" },
-  "Symbols": { role: "検証した銘柄数。", read: "単一銘柄なら1。" },
-  "Total Net Profit": { role: "総利益−総損失＝最終的な純損益。", read: "最重要の最終成績。プラスで収益。" },
-  "Gross Profit": { role: "勝ち取引の利益合計。", read: "収益の源泉の規模。" },
-  "Gross Loss": { role: "負け取引の損失合計。", read: "コストの規模。絶対値で評価。" },
-  "Profit Factor": { role: "総利益÷総損失（絶対値）。", read: "1超で利益。1.3以上で良好、1未満は赤字。" },
-  "Recovery Factor": { role: "純益÷最大ドローダウン。", read: "高いほどリスクに対し効率よく回復。" },
-  "Sharpe Ratio": { role: "変動リスクあたりの超過収益。", read: "高いほど安定。1以上で良好。" },
-  "Expected Payoff": { role: "1取引あたりの平均損益。", read: "プラスで優位。取引コストと比較。" },
-  "AHPR": { role: "1取引あたり平均収益率（算術平均）。", read: "1超で平均的にプラス。" },
-  "GHPR": { role: "複利を考慮した平均収益率（幾何平均）。", read: "AHPRより実態に近い。1超で資産増。" },
-  "Total Trades": { role: "決済まで完了したポジション数。", read: "サンプル数。多いほど統計的に信頼。" },
-  "Total Deals": { role: "約定（建て＋決済）の回数。", read: "概ね取引数の約2倍。" },
-  "Minimal position holding time": { role: "最も短い保有時間。", read: "瞬間的な決済の有無を確認。" },
-  "Average position holding time": { role: "平均の保有時間。", read: "戦略の時間軸（スキャル/スイング）を判別。" },
-  "Maximal position holding time": { role: "最も長い保有時間。", read: "塩漬けや長期保有の有無を確認。" },
-  "Profit Trades (% of total)": { role: "勝ち取引の割合（勝率）。", read: "高勝率でも損益比次第。PFと併読。" },
-  "Loss Trades (% of total)": { role: "負け取引の割合（敗率）。", read: "勝率の裏側。100−勝率。" },
-  "Short Trades (won %)": { role: "売り取引の件数と勝率。", read: "下落方向での優位性を確認。" },
-  "Long Trades (won %)": { role: "買い取引の件数と勝率。", read: "上昇方向での優位性を確認。" },
-  "Largest profit trade": { role: "単発で最大の勝ち額。", read: "外れ値の影響度を把握。" },
-  "Average profit trade": { role: "勝ち取引の平均額。", read: "平均負けとの比（損益比）で評価。" },
-  "Largest loss trade": { role: "単発で最大の負け額。", read: "1回あたりリスクの上限。" },
-  "Average loss trade": { role: "負け取引の平均額。", read: "平均勝ちと比較し損益比を確認。" },
-  "Maximum consecutive wins ($)": { role: "最大の連勝回数（括弧内は利益）。", read: "好調局面の継続性。" },
-  "Maximum consecutive losses ($)": { role: "最大の連敗回数（括弧内は損失）。", read: "ドローダウン耐性・資金管理の要。" },
-  "Maximal consecutive profit (count)": { role: "連続利益の最大額（括弧内は取引数）。", read: "最も稼いだ連続局面。" },
-  "Maximal consecutive loss (count)": { role: "連続損失の最大額（括弧内は取引数）。", read: "最も負けた連続局面。資金計画の基準。" },
-  "Average consecutive wins": { role: "平均の連勝数。", read: "勝ちの続きやすさ。" },
-  "Average consecutive losses": { role: "平均の連敗数。", read: "負けの続きやすさ。" },
-  "Balance Drawdown Absolute": { role: "初期資金からの最大の落ち込み額。", read: "開始直後のリスクの目安。" },
-  "Balance Drawdown Maximal": { role: "確定残高のピークからの最大下落（額/％）。", read: "最重要のリスク指標。％が小さいほど安全。" },
-  "Balance Drawdown Relative": { role: "％基準で見た最大下落。", read: "資金規模に依らない下落の深さ。" },
-  "Equity Drawdown Absolute": { role: "含み損を含む有効証拠金ベースの絶対DD。", read: "未決済も含む実リスク。" },
-  "Equity Drawdown Maximal": { role: "含み損ベースの最大ドローダウン。", read: "残高ベースより厳しい実際の証拠金リスク。" },
-  "Equity Drawdown Relative": { role: "含み損ベースの相対（％）DD。", read: "保有中の最大リスク水準。" },
-  "Margin Level": { role: "有効証拠金÷必要証拠金。", read: "高いほど余裕。100％割れでロスカット危険。" },
-  "LR Correlation": { role: "資産曲線の直線への当てはまり（線形回帰相関）。", read: "1に近いほど滑らかな右肩上がり。" },
-  "LR Standard Error": { role: "回帰直線からのばらつき。", read: "小さいほど安定した成長。" },
-  "Z-Score": { role: "勝敗の連続性の偏り（統計量）。", read: "連勝連敗が偶然か傾向かを判定。" },
-  "OnTester result": { role: "EAのカスタム評価関数の戻り値。", read: "最適化用の独自スコア（0は未使用）。" },
-  "Correlation (Profits,MFE)": { role: "利益と最大含み益（MFE）の相関。", read: "高いほど利を伸ばせている。" },
-  "Correlation (Profits,MAE)": { role: "利益と最大含み損（MAE）の相関。", read: "高いと含み損が結果に影響しやすい。" },
-  "Correlation (MFE,MAE)": { role: "最大含み益と最大含み損の相関。", read: "値動きの振れ方の傾向。" },
 };
 
 // グラフ/ヒートマップ/チャートの見方（取引判断の観点）。試作 index.html:980-1007 準拠。

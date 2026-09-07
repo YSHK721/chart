@@ -360,7 +360,7 @@ class TestHoldBuckets:
 
     def test_empty_zero_filled_all_buckets(self):
         agg = derive.hold_buckets([])
-        labels = [lab for _, _, lab in derive._HBUCK]
+        labels = [lab for _, _, lab in derive.HOLD_BUCKET_BOUNDS]
         assert set(agg["pl"].keys()) == set(labels)
         assert all(v == 0.0 for v in agg["pl"].values())
         assert all(v == 0 for v in agg["cnt"].values())

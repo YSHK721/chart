@@ -12,15 +12,9 @@
 //   trades は data.segments[seg].trades を読む（フラット DATA.trades 参照は移植しない）。
 
 import { aggOf } from "./data.js";
-
-// wday インデックス規約（Mon=0..Sun=6）。back derive.WEEK / heatmap.js WEEKORDER と一致。
-const WEEKORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-// hold バケット境界（back derive._HBUCK と同一・[lo,hi) 半開区間）。
-const HB = [
-  [0, 60, "<1m"], [60, 120, "1-2m"], [120, 300, "2-5m"], [300, 600, "5-10m"],
-  [600, 1800, "10-30m"], [1800, 3600, "30-60m"], [3600, 1e9, ">1h"],
-];
+// 曜日順（Mon=0..Sun=6）と hold バケット境界（[lo,hi) 半開区間）は back の derive.py が
+// 唯一の定義で、ここはその生成物を読むだけ（ISSUE-502 D-2 / D-3）。写しを置かない。
+import { WEEKORDER, HOLD_BUCKET_BOUNDS } from "./derive_constants_generated.js";
 
 // entry_time(秒・UTC) の hour（R-2 規約: getUTCHours）。
 function _entryHour(t) {
@@ -50,10 +44,10 @@ export function filterIdsByWday(trades, w) {
 
 // hold_sec が hold バケット lab（[lo,hi)）に属する trade id の Set。
 export function filterIdsByHold(trades, lab) {
-  const b = HB.find((x) => x[2] === lab);
+  const b = HOLD_BUCKET_BOUNDS.find((x) => x.label === lab);
   const ids = new Set();
   if (!b) return ids;
-  for (const t of trades || []) if (t.hold_sec >= b[0] && t.hold_sec < b[1]) ids.add(t.id);
+  for (const t of trades || []) if (t.hold_sec >= b.lo && t.hold_sec < b.hi) ids.add(t.id);
   return ids;
 }
 
