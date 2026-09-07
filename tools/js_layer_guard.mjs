@@ -16,10 +16,24 @@
 //   動的 import** であり、import 文の走査には原理的に現れない。他 core の内部階層を名指しする
 //   文字列そのものを見ないと検出できない。これが G-3 の存在理由である。
 //
-// 依存: node 標準（fs / path）のみ。読取は注入可能（計算量テストが発行回数を数えられるように）。
+// なぜ core 名の一覧を自前で持たないか（D-11・SOLID 精査 2026-09-06 の実測）:
+//   ここには `['live', 'replay', 'sim', 'dashboard']` の**列挙**が置かれていた。同じ集合は
+//   `unified_ui/web/js/mode_table.js`（唯一源）が既に持っており、列挙は第 2 の所有者である。
+//   両者を突き合わせる検査は 1 つも無かったため、モード表へ 5 つ目の行を足しても本ファイルは
+//   4 つのままで、**新 core が無音で層検査の対象外**になる（違反しても永久に検出されない）。
+//   これは本ファイル自身が上で禁じている「列挙は新規を永久に検出しない」と同じ形である。
+//   よって core 名は導出する——モード表の URL prefix（`/live`）から第 1 セグメント（`live`）を
+//   取り出す。モードが増えても本ファイルの分岐も定数も書き換わらない。
+//
+// 依存: node 標準（fs / path）と `mode_table.js`（依存を持たない純データの葉モジュール）のみ。
+//   向きは「検査器 → 検査対象の宣言」であり、core 側から統合層への逆流ではない（各 core の
+//   G-2 が禁ずるのは core の配信根 `web/js` が統合層を名指すことで、本ファイルは配信物ではない）。
+//   読取は注入可能（計算量テストが発行回数を数えられるように）。
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+
+import { MODE_PREFIXES } from '../unified_ui/web/js/mode_table.js';
 
 /** 層名 → その層が import してよい層の集合（外側ほど多くを見てよい）。 */
 export const LAYER_RULES = Object.freeze({
@@ -32,13 +46,48 @@ export const LAYER_RULES = Object.freeze({
 
 export const LAYER_NAMES = Object.freeze(Object.keys(LAYER_RULES));
 
-/** 配信上の core 名（URL の第 1 セグメント）。 */
-export const CORE_SEGMENTS = Object.freeze(['live', 'replay', 'sim', 'dashboard']);
+/**
+ * モード表の URL prefix（`'/live'`）の並びから、配信上の core 名（`'live'`）の並びを導く。
+ *
+ * 形の検査は 2 つの役目を持つ:
+ *   1. 無音の欠落を作らない——`/live/js` のような prefix は「第 1 セグメント」に落ちないので、
+ *      黙って読み替えず throw する（読み替えると検査面が意図せずずれる）。
+ *   2. 下の 2 つの正規表現は core 名を**そのまま**選択肢へ埋め込む。正規表現メタ文字を含む
+ *      名前が通ると、検査式そのものが壊れる（`.*` を含む名前なら任意の core 名に当たり、
+ *      検査は「全件違反」を吐く器に化ける——実測は
+ *      `unified_ui/web/tests/js_layer_guard_core_segments.test.js` の合成ケース）。英数字と
+ *      `_` だけに限る（`unified_ui/router.py:86` の `_MODE_NAME` はこれより狭い。ここは
+ *      「安全に埋め込めるか」だけを見る役で、命名規則の所有者はルータ側である）。
+ *
+ * @param {readonly string[]} modePrefixes モード表の `prefix` の並び。
+ * @returns {readonly string[]} core 名の並び（表の順）。
+ */
+export function coreSegmentsFromPrefixes(modePrefixes) {
+  return Object.freeze(modePrefixes.map((prefix) => {
+    const m = /^\/([A-Za-z0-9_]+)$/.exec(prefix);
+    if (m === null) {
+      throw new Error(
+        `モード prefix が /<core 名> の形ではない: ${JSON.stringify(prefix)}`
+        + '（unified_ui/web/js/mode_table.js の prefix を確認すること）',
+      );
+    }
+    return m[1];
+  }));
+}
+
+/**
+ * 配信上の core 名（URL の第 1 セグメント）。
+ * **列挙ではなくモード表からの導出**である（D-11。理由は本ファイル冒頭）。
+ */
+export const CORE_SEGMENTS = coreSegmentsFromPrefixes(MODE_PREFIXES);
+
+/** 他 core を名指してよい唯一の場所（公開面）を表す式を、core 名の並びから組む。 */
+export function buildPublicUrlRe(coreSegments) {
+  return new RegExp(`^/(?:${coreSegments.join('|')})/js/public/[^/]+\\.js$`);
+}
 
 /** 他 core を名指してよい唯一の場所（公開面）。 */
-export const PUBLIC_URL_RE = new RegExp(
-  `^/(?:${CORE_SEGMENTS.join('|')})/js/public/[^/]+\\.js$`,
-);
+export const PUBLIC_URL_RE = buildPublicUrlRe(CORE_SEGMENTS);
 
 // 他 core の**モジュール URL**（.js で終わる絶対パス文字列）。API パス（`/live/candles` 等）は
 //   公開契約であって階層の名指しではないため対象外。末尾の否定先読みは `.json` を除くためで、
@@ -53,10 +102,14 @@ export const PUBLIC_URL_RE = new RegExp(
 //   除くのは直前が「パス断片の続き」に見える文字（英数字・`_`・`.`・`-`）のときのみ。
 //   クォート直後（`'/live/...'`）とテンプレート補間直後（`` `${P}/live/...` ``）は残る
 //   ＝合成された越境 URL を取りこぼさない。
-export const CROSS_CORE_MODULE_URL_RE = new RegExp(
-  `(?<![A-Za-z0-9_.\\-])/(?:${CORE_SEGMENTS.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
-  'g',
-);
+export function buildCrossCoreModuleUrlRe(coreSegments) {
+  return new RegExp(
+    `(?<![A-Za-z0-9_.\\-])/(?:${coreSegments.join('|')})/[A-Za-z0-9_\\-./]*\\.js(?![A-Za-z0-9])`,
+    'g',
+  );
+}
+
+export const CROSS_CORE_MODULE_URL_RE = buildCrossCoreModuleUrlRe(CORE_SEGMENTS);
 
 /** 行コメント・ブロックコメントを落とす（宣言の走査に文章を混ぜない）。 */
 export function stripComments(source) {
@@ -231,7 +284,8 @@ export function coreSegmentOf(url) {
  *
  * @param {Map<string,string>} sources 走査対象（絶対パス → 本文）。
  * @param {string} repoRoot 報告用の相対化根。
- * @param {?string} [ownCore] 走査している core 自身の配信名（`'live' | 'replay' | 'sim' | 'dashboard'`）。
+ * @param {?string} [ownCore] 走査している core 自身の配信名（`CORE_SEGMENTS` の要素。名前の一覧を
+ *   ここへ書き写すと、モードが増えた日に文章だけが古くなる——一覧の所有者はモード表である）。
  *   与えると**自 core を名指す URL**を対象外にする。自 core の名指しは越境ではない——配信根が
  *   同じで、public/ を経由する必要が無い（実測: sim の合成根は `/sim/report-js/chart.js` を
  *   配信 URL で読み込む）。**省略時の挙動は従来どおり**（core を問わず全て対象＝加法）。
