@@ -35,11 +35,15 @@ from dashboard_ui.adapter.gateway.param_scopes import ParamScopes, scopes_of
 from dashboard_ui.domain.bar import Bar
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
 
-#: 表示系列の再生遅延（秒）。シートの素材をこの秒数だけ巻き戻し、フロントのなめらか再生
-#: （LiveTickPlayer・DELAY_MS=12000 が唯一源。非公開 const のため写す——変えるときは両方）と
+#: 表示系列の再生遅延（秒）。シートの素材をこの秒数だけ巻き戻し、フロントのなめらか再生と
 #: **同じ時点**で計算する（依頼者指示 2026-08-31「時間基準を統一しろ」）。統一しないと
-#: 「印はサーバの実勢・表示は 12 秒遅延」の 2 つの時計が混在し、画面上の跨ぎと印の更新が
-#: 最大 12 秒ずれる（実測: 発光が跨ぎの 12 秒前に出て消える）。
+#: 「印はサーバの実勢・表示は front の遅延」の 2 つの時計が混在し、画面上の跨ぎと印の更新が
+#: その差だけずれる（実測: 発光が跨ぎの 12 秒前に出て消える）。
+#:
+#: 遅延の**唯一源はライブ front** の `LiveTickPlayer.DELAY_MS`（値は poll 間隔・feed lag・
+#: fetch の実測から決まる front の都合）。ここはその追従側であり、言語が違って値を共有できない
+#: ため写しになる。写しの乖離は `dashboard_ui/tests/contract/test_display_delay_parity.py` が
+#: 唯一源の宣言を読んで落とす（ISSUE-502 D-8。以前は「変えるときは両方」という人手同期だった）。
 DISPLAY_DELAY_SECONDS = 12
 
 #: 系列 JSON の点の形（§6.3.2: time は UNIX 秒・value は float / 欠測は None）。

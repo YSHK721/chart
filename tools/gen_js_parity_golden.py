@@ -31,6 +31,8 @@ from marketdata import symbol_spec  # noqa: E402
 # ISSUE-091 A7: private 名でなく公開 API（value_area）を参照する。
 # ISSUE-260: VA 比率の既定は Python 唯一源。JS は生成物として読む（第 2 定義を作らない）。
 from market_profile_api.compute.market_profile import VA_PCT_DEFAULT, value_area  # noqa: E402
+# ISSUE-502 D-9: ダッシュボードの表示時間足の並びは domain（horizon）が唯一源。JS は生成物として読む。
+from dashboard_ui.domain.horizon import TIMEFRAME_ORDER  # noqa: E402
 
 OUT = ROOT / "indigators" / "market_profile" / "web" / "tests" / "fixtures" / "py_parity_golden.json"
 #: 時間足台帳の JS 生成物（実体は market_profile 側・indicator_ui からは symlink で共有）。
@@ -45,6 +47,9 @@ MP_PARAM_OUT = (ROOT / "indigators" / "market_profile" / "web" / "js" / "domain"
 #: 消費者は indicator_ui のみ（market_profile とは共有しない）ため実体をこちらに置く。
 SYMBOL_SPEC_OUT = (ROOT / "indigators" / "indicator_ui" / "web" / "js" / "domain"
                    / "symbol_spec_generated.js")
+#: ダッシュボード表示時間足の JS 生成物（並びの唯一源は dashboard_ui.domain.horizon・ISSUE-502 D-9）。
+DASHBOARD_TF_OUT = (ROOT / "dashboard_ui" / "web" / "js" / "domain"
+                    / "dashboard_timeframes_generated.js")
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -262,6 +267,33 @@ def render_symbol_spec_js(dataset_symbols: "dict[str, str]", symbol_specs: "dict
     )
 
 
+def render_dashboard_timeframes_js(order: "tuple[str, ...]") -> str:
+    """ダッシュボード表示時間足の JS モジュール（データのみ・自動生成）を組み立てる。
+
+    並びは時間足台帳（TF_LEDGER）からは導出できない**ダッシュボードの選択**である
+    （台帳 9 本のうち 30m を表示しない）。したがって選択そのものを持つのは
+    ``dashboard_ui/domain/horizon.py`` の ``TIMEFRAME_ORDER`` ただ 1 つで、JS はその射影を読む。
+    """
+    items = ", ".join(f"'{tf}'" for tf in order)
+    return (
+        "// dashboard_timeframes_generated.js — ダッシュボードの表示時間足"
+        "（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: dashboard_ui/domain/horizon.py の TIMEFRAME_ORDER。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（並びを変えたら再実行する）。\n"
+        "//\n"
+        "// なぜ生成物なのか（ISSUE-502 D-9）: 同じ 8 本を JS 側にも書くと第 2 定義になり、\n"
+        "//   片方だけ足したとき第 2 表の列（oscillator_sheet_view）と束（template_binding_reader）が\n"
+        "//   ずれる。ずれても表は表示され続けるので、出力の検査では原理的に落ちない\n"
+        "//   （ISSUE-253 / ISSUE-254 と同型の『静かなずれ』）。定義は Python ただ 1 つとし、\n"
+        "//   JS は生成された値を読むだけにする。陳腐化は\n"
+        "//   dashboard_ui/tests/contract/test_front_timeframes_parity.py が落とす。\n"
+        "//\n"
+        "//   並びは短い順。地平 3 段（短期 / 中期 / 長期）の切り出しもこの並びの添字で行う。\n"
+        "export const DASHBOARD_TIMEFRAMES = Object.freeze([" + items + "]);\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -307,6 +339,10 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"wrote {SYMBOL_SPEC_OUT}")
+    DASHBOARD_TF_OUT.write_text(
+        render_dashboard_timeframes_js(TIMEFRAME_ORDER), encoding="utf-8"
+    )
+    print(f"wrote {DASHBOARD_TF_OUT}")
 
 
 if __name__ == "__main__":

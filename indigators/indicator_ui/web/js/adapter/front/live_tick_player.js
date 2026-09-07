@@ -24,7 +24,14 @@
 
 // 固定遅延（ms）: 実測から poll 間隔 5s + feed 側 lag 最大 5.5s + fetch 最大 1.2s + 余裕 ≒ 12s。
 //   これ未満だと feed のまとめ配信（3.8〜5.5s）で枯渇する（prototype 実測 25 polls）。
-const DELAY_MS = 12000;
+//
+// **表示遅延の唯一源**（ISSUE-502 D-9 と同型の D-8）: 表示を何秒遅らせるかを決めるのは
+//   本 const だけである。ダッシュボードは「印と表示を同じ時点で計算する」ためにこの値を
+//   必要とし（`dashboard_ui/adapter/gateway/indicator_ui_compute_gateway.py` の
+//   `DISPLAY_DELAY_SECONDS`）、言語が違うため値を共有できない。写しの乖離は
+//   `dashboard_ui/tests/contract/test_display_delay_parity.py` が本宣言を読んで落とす
+//   （export はそのための公開面。名前・形を変えるときは同検定が Red になる）。
+export const DELAY_MS = 12000;
 const POLL_MS = 2500;      // フロント → served /live_ticks のポーリング間隔。
 const PLAYBACK_MS = 100;   // 「元の時間間隔どおり」に適用する再生粒度。
 // poll 1 本の打ち切り時間（ISSUE-263）。in-flight ガード（同時要求数 1）と組み合わさると、

@@ -1,15 +1,18 @@
-// timeframes（adapter/front/timeframes.js）— 表示する 8 時間足の**唯一の並び**。
+// timeframes（adapter/front/timeframes.js）— 表示時間足の front 側の入口（並びは再輸出）。
 //
 // 設計入力: 設計書 §3.4（時間足 ↔ テンプレートの紐付けの 8 本）／§5.1（第 2 表の列 = 表示
-//   時間足 8 列）／§4.7（第 1 表の時間足欄）。domain 側の唯一定義は
-//   dashboard_ui/domain/horizon.py の `TIMEFRAME_ORDER` であり、本モジュールはその表示側の対応物。
+//   時間足 8 列）／§4.7（第 1 表の時間足欄）。
 //
-// なぜ 1 か所に置くか: 束を組む側（template_binding_reader）と第 2 表の列を出す側
-//   （oscillator_sheet_view）が別々に同じ 8 本を持つと、片方だけ足したときに列と束がずれる。
-//   ずれても表は表示され続けるので、出力の検査では落ちない（MEMORY: no-hand-duplication-single-source）。
+// 並びの唯一源は dashboard_ui/domain/horizon.py の `TIMEFRAME_ORDER`（ISSUE-502 D-9）。
+//   かつては同じ 8 本を本ファイルにも書いており、Python 側と突き合わせる検定が 1 本も無かった。
+//   束を組む側（template_binding_reader）と第 2 表の列を出す側（oscillator_sheet_view）は
+//   どちらもこの並びで動くので、Python 側だけに足すと列と束が静かにずれる（表は表示され続ける
+//   ため出力の検査では原理的に落ちない。MEMORY: no-hand-duplication-single-source）。
+//   いまは `js/domain/dashboard_timeframes_generated.js`（生成物）を読むだけにし、
+//   生成物の陳腐化は dashboard_ui/tests/contract/test_front_timeframes_parity.py が落とす。
 
-/** 表示する時間足（短い順）。domain の TIMEFRAME_ORDER と同じ集合・同じ順。 */
-export const DASHBOARD_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '1h', '4h', '1D', '1W', '1M']);
+/** 表示する時間足（短い順）。domain の TIMEFRAME_ORDER の射影（生成物）をそのまま配る。 */
+export { DASHBOARD_TIMEFRAMES } from '../../domain/dashboard_timeframes_generated.js';
 
 /** チャート一覧のローソク再取得周期（ms）＝各時間足の 1 バーの長さ。
  *
