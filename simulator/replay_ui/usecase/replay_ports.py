@@ -4,10 +4,21 @@ ISP: 既存 ``simulator/usecase/ports.py`` は無改変。replay 固有の Port 
 別出しする。usecase は tick 源・resample・indicator 計算という偶有的技術を知らない。
 Protocol として注入対象を表明し、numpy/pandas をここに漏らさない（実装は adapter 側）。
 戻り値は plain 値のみ（バーは ``{"time": int, "open"/"high"/"low"/"close": float}`` の list）。
+
+DIP（ISSUE-502 段階 5B）: 外部データ源を束ねる 4 つの Port（MarketProfileFormingPort /
+MarketProfilePort / TickvolProfilePort / CatalogPort）は、以前 ``tuple[int, dict]``
+＝ **(HTTP ステータス, ボディ)** を返していた。内側の抽象定義が HTTP の語彙を持つと、
+HTTP のエラー表現を変えることが usecase の抽象の変更になる（依存の向きが反転する）。
+現在は :class:`~simulator.replay_ui.usecase.port_result.PortResult`（成否の分類 ＋ ボディ）
+を返し、**分類 → HTTP ステータスの写像は framework 層の写像関数 1 箇所**だけが持つ。
+本ファイルに HTTP ステータスは現れない
+（再出現は ``replay_ui/tests/unit/test_ports_have_no_http_vocabulary.py`` が Red で止める）。
 """
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
+
+from simulator.replay_ui.usecase.port_result import PortResult
 
 
 @runtime_checkable
@@ -196,7 +207,7 @@ class MarketProfileFormingPort(Protocol):
     """/market_profile_forming 用の MP サブバー tick 逐次成長データ源（indicator_ui bridge 委譲）。
 
     クライアント DwellAccumulator が初回取得する base（GRID_W 固定グリッド累積・不変）＋ forming 期間の
-    tick 列 ＋ active table を束ねた ``(status, body)`` を返す。``now`` は必ずリビール T を渡す
+    tick 列 ＋ active table を束ねた :class:`PortResult` を返す。``now`` は必ずリビール T を渡す
     （因果＝T 以前のみ・未来リーク防止）。実装は adapter 層（bridge 委譲）に閉じる（DIP）。
     """
 
@@ -211,8 +222,8 @@ class MarketProfileFormingPort(Protocol):
         va: Any,
         barw: Any,
         frm: Any = None,
-    ) -> "tuple[int, dict]":
-        """``(status, body)`` を返す（非 tick ref / 非対応 tf は 400 nested error）。
+    ) -> PortResult:
+        """:class:`PortResult` を返す（非 tick ref / 非対応 tf は ``validation`` 分類の失敗）。
 
         ``frm``（任意・既定 None）: セッション窓 MP の base 累積下限 time（当日始まり=floor(now,86400)）。
         指定時は base を [frm, formingStart) の当日経過ぶんへ限定する。None は従来全期間 base（後方互換）。
@@ -224,7 +235,7 @@ class MarketProfileFormingPort(Protocol):
 class MarketProfilePort(Protocol):
     """/market_profile 用の MP データ源（indicator_ui bridge 委譲・normal/sessions/replay モード）。
 
-    足ベース TPO / dwell プロファイルを ``(status, body)`` で返す。``to`` は必ずリビール T を渡す
+    足ベース TPO / dwell プロファイルを :class:`PortResult` で返す。``to`` は必ずリビール T を渡す
     （因果＝as-seen-at-t＝T 以前に観測できた足のみで集計・未来リーク防止）。実装は adapter 層
     （bridge 委譲）に閉じる（DIP）。ticklive×{1W,1M} は forming が非対応（本 Port は as-of-cursor で代替）。
     """
@@ -242,8 +253,8 @@ class MarketProfilePort(Protocol):
         frm: Any = None,
         today: Any = None,
         sessions: Any = None,
-    ) -> "tuple[int, dict]":
-        """``(status, body)`` を返す（未知 ref / 未知 tf は 400 nested error）。
+    ) -> PortResult:
+        """:class:`PortResult` を返す（未知 ref / 未知 tf は ``validation`` 分類の失敗）。
 
         ``to``（任意）: リプレイ時間カーソル（UNIX 秒・リビール秒粒度＝単一時計・ISSUE-129）。指定時は
         ``time<=to`` の足だけで集計し（as-seen-at-t）、zp は now=to として現在時刻に読む。
@@ -256,7 +267,7 @@ class MarketProfilePort(Protocol):
 class TickvolProfilePort(Protocol):
     """/tickvol_profile 用の取引密度プロファイル源（indicator_ui bridge 委譲）。
 
-    セッション日内の時刻帯別ティック密度と、そこから決まる HIGH 帯を ``(status, body)`` で返す。
+    セッション日内の時刻帯別ティック密度と、そこから決まる HIGH 帯を :class:`PortResult` で返す。
     ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に含めない
     （当日を覗かない＝因果・未来リーク防止）。実装は adapter 層（bridge 委譲）に閉じる（DIP）。
     """
@@ -267,8 +278,8 @@ class TickvolProfilePort(Protocol):
         sessions: Any = None,
         pct: Any = None,
         until: Any = None,
-    ) -> "tuple[int, dict]":
-        """``(status, body)`` を返す（未知 ref は 400 nested error）。"""
+    ) -> PortResult:
+        """:class:`PortResult` を返す（未知 ref は ``validation`` 分類の失敗）。"""
         ...
 
 
@@ -276,13 +287,13 @@ class TickvolProfilePort(Protocol):
 class CatalogPort(Protocol):
     """``GET /catalog`` 用の指標 param スキーマ源（indicator_ui bridge 委譲）。
 
-    param 既定値と **variant ごとの受理 param（paramScopes）** を ``(status, body)`` で返す。
+    param 既定値と **variant ごとの受理 param（paramScopes）** を :class:`PortResult` で返す。
     単一情報源はライブ側 back（``call_binding._TABLE``）であり、リプレイはそれを read-only
     再利用する（ISSUE-278 #8/#4）。front はこの応答で「表示するコントロール」「送信する params」を
     決めるため、経路が無いと受理しない param を送って ``validation`` エラーになる。
     実装は adapter 層（bridge 委譲）に閉じる（DIP）。
     """
 
-    def catalog(self) -> "tuple[int, dict]":
-        """``(status, body)`` を返す。"""
+    def catalog(self) -> PortResult:
+        """:class:`PortResult` を返す。"""
         ...

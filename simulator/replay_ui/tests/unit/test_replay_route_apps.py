@@ -5,6 +5,9 @@
        rpy2/R はスレッド親和で、「常に同一スレッドから呼ぶ」ことが安全性の前提である。
        App ごとにワーカーを持つとリクエストごとに実行スレッドが変わり、前提が崩れる。
        同値ではなく**同一性**（is）で固定する——等しいだけの別インスタンスでは意味が無い。
+       ISSUE-502 段階 5B: ルート App は透過委譲をやめ、業務の入口（``core``）を明示で
+       受け取るようになった。ワーカーとロックは ``core`` が 1 つだけ持ち、App は
+       それを**同じ実体として**参照する（App が自前で持つことは無い）。
     2. Handler は GET の分岐を 1 つも持たない（ルートの宣言は組み立て 1 箇所）。
     3. どのルートが存在するかは Port の注入で決まる（未注入なら静的配信へ落ちる）。
 
@@ -25,6 +28,7 @@ import pytest
 
 from simulator.replay_ui.framework import serve_replay
 from simulator.replay_ui.framework.serve_replay import ReplayApp, build_replay_routes
+from simulator.replay_ui.usecase.port_result import PortResult
 from simulator.replay_ui.framework.serve_replay_candles import ReplayCandlesApp
 from simulator.replay_ui.framework.serve_replay_catalog import ReplayCatalogApp
 from simulator.replay_ui.framework.serve_replay_intraday import ReplayIntradayApp
@@ -70,13 +74,13 @@ class _Port:
         return []
 
     def forming(self, *a, **k):
-        return (200, {})
+        return PortResult.success({})
 
     def profile(self, *a, **k):
-        return (200, {})
+        return PortResult.success({})
 
     def catalog(self):
-        return (200, {})
+        return PortResult.success({})
 
 
 def _core(tmp_path, **over):
@@ -93,27 +97,58 @@ def _core(tmp_path, **over):
 # 1. 重い処理のワーカーとロックは単一インスタンス（絶対条件）
 # --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("app_class", _ROUTE_APPS, ids=lambda c: c.__name__)
-def test_every_route_app_shares_the_one_heavy_worker(tmp_path, app_class) -> None:
-    """App ごとにワーカーを持つと「常に同一スレッド」という前提が壊れる（rpy2 スレッド親和）。"""
+def test_every_route_app_points_at_the_one_core(tmp_path, app_class) -> None:
+    """App は業務の入口を**同じ実体として**持つ（自前で組み立てない）。
+
+    ワーカーとロックは ``core`` の中にしか無いため、これが同一なら「常に同一スレッド」
+    （rpy2 スレッド親和）の前提もそのまま保たれる。
+    """
     core = _core(tmp_path)
-    app = app_class(inner=core)
-    assert app._heavy_worker is core._heavy_worker
+    app = app_class(core=core, fallback=core.static_server)
+    assert app.core is core
+    assert app.core._heavy_worker is core._heavy_worker
+    assert app.core._lock is core._lock
 
 
 @pytest.mark.parametrize("app_class", _ROUTE_APPS, ids=lambda c: c.__name__)
-def test_every_route_app_shares_the_one_heavy_lock(tmp_path, app_class) -> None:
-    """直列化ロックも同一実体でなければ、直列化はルートごとに分裂する。"""
+def test_every_route_app_refuses_a_core_missing_a_declared_member(tmp_path, app_class) -> None:
+    """宣言した要求面が 1 つでも欠けたら、**組み立てのその場で**落ちる（起動時 fail-stop）。
+
+    透過委譲だった頃は、欠落は該当ルートへ最初のリクエストが来るまで露見しなかった。
+    """
     core = _core(tmp_path)
-    app = app_class(inner=core)
-    assert app._lock is core._lock
+    missing = app_class.REQUIRED_CORE_MEMBERS[0]
+
+    class _Crippled:
+        """宣言面を 1 つだけ持たない core（他はすべて本物へ委ねる）。"""
+
+        def __getattribute__(self, name):
+            if name == missing:
+                raise AttributeError(name)
+            return getattr(core, name)
+
+    with pytest.raises(TypeError) as excinfo:
+        app_class(core=_Crippled(), fallback=core.static_server)
+    assert missing in str(excinfo.value), excinfo.value
 
 
-def test_the_whole_chain_keeps_a_single_heavy_worker(tmp_path) -> None:
-    """4 本を連結しても、末端まで同じワーカー 1 つを見ている。"""
+def test_the_whole_chain_is_built_on_the_one_core(tmp_path) -> None:
+    """連鎖の末端まで、業務の入口は 1 つ（配信面だけが数珠つなぎになる）。
+
+    見るのは **本番の App が既に据えている表**である。ここで `build_replay_routes` を
+    呼び直すと、据えた表の上へ二重に組み上がって段数が倍になる（`_declared_routes` の
+    docstring が記録している、本検定群の初版が実際にやった間違い）。
+    """
     core = _core(tmp_path)
-    chain = build_replay_routes(core)
-    assert chain._heavy_worker is core._heavy_worker
-    assert chain._lock is core._lock
+    # ルート App 4 本ぶんの fallback を辿ると末端の静的配信（クエリ除去層）に着く。
+    #   段数は App 数から導出する（分岐で辿ると、途中で切れていても最後まで行ったように見える）。
+    node = core.static_server
+    for _ in _ROUTE_APPS:
+        assert hasattr(node, "_fallback"), node
+        node = node._fallback
+    assert isinstance(node, serve_replay._QueryStrippingStatic)
+    # 組み立て関数そのものも同じ形を返す（合成根から差し替えるときの受け口）。
+    assert hasattr(build_replay_routes(core), "serve")
 
 
 def test_the_core_builds_exactly_one_heavy_worker(tmp_path) -> None:

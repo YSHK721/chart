@@ -15,6 +15,13 @@ from typing import Any
 from simulator.sim_ui.adapter.run_options_api_controller import RUN_OPTIONS_PATH
 from api_shared.json_get_routes import GetRouteResponder
 
+# 委譲面の宣言と機構は Phase 3 の 1 箇所に閉じる（本層はそれを import して宣言するだけ）。
+from simulator.sim_ui.framework.serve_sim_ea_series import SIM_EA_SERIES_SURFACE
+from simulator.sim_ui.framework.serve_sim_indicators import (
+    delegates_to_inner,
+    verify_delegated_surface,
+)
+
 # Handler・サーバ生成・起動は Phase 2 の実体をそのまま使う（複製しない）。
 from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     make_handler,
@@ -22,17 +29,26 @@ from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     serve,
 )
 
+#: `SimRunOptionsApp` が差し出す面（内側の面 ＋ 本層の追加）。外側の包み手はこれを転送する。
+SIM_RUN_OPTIONS_SURFACE: "tuple[str, ...]" = SIM_EA_SERIES_SURFACE + (
+    "run_options_controller",
+)
 
+
+@delegates_to_inner(*SIM_EA_SERIES_SURFACE)
 class SimRunOptionsApp:
     """内側アプリを包み、GET の JSON ルートを 1 本（`/run-options`）足した面。
 
     ``inner``: 内側アプリ（配信面 ＋ ジョブ実行系 ＋ 指標一覧 ＋ ea-series）。
     ``controller``: `RunOptionsApiController`（`list() -> ApiResponse`）。
+
+    内側へ転送する面は `SIM_EA_SERIES_SURFACE`（宣言）。宣言に無い名は解決しない。
     """
 
     def __init__(self, *, inner: Any, controller: Any) -> None:
         self._inner = inner
         self._controller = controller
+        verify_delegated_surface(self, inner)
         # JSON ルートを既存の static 面の前に挟む。/run-options 以外は内側へ落ちる。
         self.static_server = GetRouteResponder(
             routes={RUN_OPTIONS_PATH: lambda _path: controller.list()},
@@ -48,10 +64,3 @@ class SimRunOptionsApp:
     def run_options_controller(self) -> Any:
         """選択肢の controller（合成根の検定が実物の結線を確かめるための面）。"""
         return self._controller
-
-    def __getattr__(self, name: str) -> Any:
-        """自分が持たない属性は内側アプリへ委譲する（Handler が引く controller / result_server 等）。"""
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)

@@ -1,6 +1,7 @@
 """serve_replay の GET /market_profile_forming エンドポイント（fake forming_port 注入）。
 
-薄殻ルート: クエリ取り出し → app.market_profile_forming → usecase → Port（fake）→ (status, body)。
+薄殻ルート: クエリ取り出し → app.market_profile_forming → usecase → Port（fake）→ PortResult
+→ framework の http_response_for が (status, body) へ写す（ISSUE-502 段階 5B）。
 now は必ずリビール T を透過する（因果＝T 以前のみ・未来リーク防止）。forming_port 未注入時は
 ルート自体を持たず静的配信へフォールバック（既存 replay へ非干渉＝回帰ゼロ）。
 
@@ -16,6 +17,7 @@ from urllib.error import HTTPError
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
+from simulator.replay_ui.usecase.port_result import PortResult
 from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
     FakeCandlePort as _FakeCandlePort,
     FakeComputePort as _FakeComputePort,
@@ -33,13 +35,14 @@ class _FakeFormingPort:
         self.calls.append({"ref": ref, "timeframe": timeframe, "now": now, "base": base,
                            "since": since, "bins": bins, "va": va, "barw": barw})
         if ref != "jp225_tick":
-            return 400, {"error": {"type": "validation", "message": f"bad {ref}"}}
+            return PortResult.failure("validation", {
+                "ok": False, "error": {"type": "validation", "message": f"bad {ref}"}})
         # ticks は now 以前のみ（因果）。formingStart<=now を返す。
-        return 200, {
+        return PortResult.success({
             "ok": True, "formingStart": now - 3600, "ticks": [[now - 100, 1005.0]],
             "baseFine": [0, 0, 0], "baseKmin": 100, "priceMin": 1000.0, "priceMax": 1100.0,
             "nBins": 3, "gridW": 10, "now": now,
-        }
+        })
 
 
 def _make_app(forming_port):
@@ -123,7 +126,8 @@ class _FakeFormingPortFrm:
 
     def forming(self, ref, timeframe, now, base, since, bins, va, barw, frm=None):
         self.calls.append({"now": now, "frm": frm})
-        return 200, {"ok": True, "formingStart": now - 3600, "ticks": [], "now": now}
+        return PortResult.success(
+            {"ok": True, "formingStart": now - 3600, "ticks": [], "now": now})
 
 
 def test_forming_route_threads_from_session_window_query_to_port():

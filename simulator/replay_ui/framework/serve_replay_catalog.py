@@ -3,10 +3,15 @@
 serve_replay_candles と同じ様式で ``/catalog`` の 1 ルートだけを持つ。応答の形と例外分類は
 分割前の do_GET から逐語で移してあり、応答は 1 バイトも変わらない。
 
-Port が未注入なら本ルートを持たず静的配信へフォールバックする（分割前の
+Port が未注入なら本ルートを持たず ``fallback`` へ落ちる（分割前の
 ``and app.catalog_enabled`` と同値）。
 
-重い処理のワーカーとロックは内側の単一インスタンスを共有する（自前で作らない）。
+業務の入口（replay backend の App）は ``core`` として明示で受け取り、必要な面はクラス属性の
+宣言表で表明する（ISSUE-502 段階 5B: 透過委譲の撤去）。``core`` の catalog は成否の分類つき
+結果を返し、HTTP ステータスへの写像は ``http_response_for`` の 1 箇所へ委ねる
+（本 App は番号を持たない）。
+
+重い処理のワーカーとロックは ``core`` が 1 つだけ持つ（本 App は自前で作らない）。
 """
 from __future__ import annotations
 
@@ -14,6 +19,8 @@ from typing import Any
 
 from simulator.replay_ui.framework.serve_replay import (
     _error_response,
+    http_response_for,
+    require_core_members,
     write_replay_json,
 )
 from api_shared.json_get_routes import GetRouteResponder
@@ -23,33 +30,33 @@ CATALOG_PATH = "/catalog"
 
 
 class ReplayCatalogApp:
-    """内側 App を包み、指標カタログのルートを JSON 経路として前置きした面。"""
+    """指標カタログのルートを持ち、外れた path を ``fallback`` へ落とす面。
 
-    def __init__(self, *, inner: Any) -> None:
-        self._inner = inner
+    ``core``: 業務の入口（`ReplayApp`）。``fallback``: 1 つ前の配信面。
+    """
+
+    #: 本 App が ``core`` へ要求する面（生成時に不足を検査する＝起動時 fail-stop）。
+    REQUIRED_CORE_MEMBERS = ("catalog", "catalog_enabled")
+
+    def __init__(self, *, core: Any, fallback: Any) -> None:
+        require_core_members(core, self.REQUIRED_CORE_MEMBERS, owner=type(self).__name__)
+        self._core = core
         routes: "dict[str, Any]" = {}
-        if inner.catalog_enabled:
+        if core.catalog_enabled:
             routes[CATALOG_PATH] = self._catalog
         self.static_server = GetRouteResponder(
-            routes=routes, fallback=inner.static_server, writer=write_replay_json
+            routes=routes, fallback=fallback, writer=write_replay_json
         )
 
     @property
-    def inner(self) -> Any:
-        """包んでいる内側 App（結線を複製していないことを確かめる面）。"""
-        return self._inner
+    def core(self) -> Any:
+        """業務の入口（結線を複製していないことを確かめる面）。"""
+        return self._core
 
     def _catalog(self, _path: str) -> "tuple[int, Any]":
         # 指標 param の既定値＋variant ごとの受理 param（ISSUE-278 #8/#4）。front は
         #   これで表示コントロールと送信 params を決める。実体はライブ側 controller。
         try:
-            return self._inner.catalog()
+            return http_response_for(self._core.catalog())
         except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
             return _error_response(e)
-
-    def __getattr__(self, name: str) -> Any:
-        """自分が持たない属性は内側 App へ委譲する（結線を殺さない）。"""
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)

@@ -43,7 +43,14 @@ export function fakeChart() {
   return { timeScale: () => ts, panes: () => [], chartElement: () => null };
 }
 
-/** IndicatorController ダブル（再計算フックのみ）。 */
+/**
+ * IndicatorController ダブル（再計算フックのみ）。
+ *
+ * `js/replay/replay_controller_port.js` の **必須メンバー**（`setUntilTime` /
+ * `recomputeAllApplied`）を満たす。任意面 `revealStore`（因果リビール保管庫の 9 メソッド）と
+ * 購読スロット 2 つは**意図的に持たない**——共有ベース `IndicatorController` 相当の
+ * 「面を持たない controller」であり、契約が宣言する不在時実装が効くことの実証点になる。
+ */
 export function fakeController() {
   return {
     _timeframe: '1D', _recentBars: 0,

@@ -1,7 +1,7 @@
 """UC tickvol_profile — /tickvol_profile の usecase 結線（thin delegation）。
 
 取引密度（ティック数）の時刻帯プロファイルと HIGH 帯を返す。独自ロジックは持たず
-``TickvolProfilePort`` へ (ref, sessions, pct, until) を素通し委譲し ``(status, body)`` を返す
+``TickvolProfilePort`` へ (ref, sessions, pct, until) を素通し委譲し :class:`PortResult` を返す
 （ライブ側 handle_tickvol_profile 純ロジックを adapter 経由で再利用＝DRY・ライブと byte 一致）。
 
 ``until`` は必ずリビール T（単一時計 to）を透過する。``until`` が属するセッション日は集計に
@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from simulator.replay_ui.usecase.port_result import PortResult
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import TickvolProfilePort
@@ -27,8 +29,8 @@ class TickvolProfileRequest:
 
 def tickvol_profile(
     *, request: TickvolProfileRequest, profile_port: "TickvolProfilePort"
-) -> "tuple[int, dict]":
-    """Port へ素通し委譲して ``(status, body)`` を返す（thin・独自ロジック無し）。"""
+) -> PortResult:
+    """Port へ素通し委譲して :class:`PortResult` を返す（thin・独自ロジック無し）。"""
     return profile_port.profile(
         request.ref,
         sessions=request.sessions,

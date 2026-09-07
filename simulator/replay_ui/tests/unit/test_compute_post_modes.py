@@ -58,7 +58,7 @@ class _App:
 
 
 def _respond(app, body):
-    return ReplayComputeApp(inner=app).respond(body)
+    return ReplayComputeApp(core=app).respond(body)
 
 
 # --------------------------------------------------------------------------------------

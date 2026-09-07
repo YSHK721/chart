@@ -29,7 +29,10 @@ from pathlib import Path
 
 import pytest
 
+from api_shared.http_contract import nested_error
+from simulator.replay_ui.adapter.bridge_result import port_result_from_bridge
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
+from simulator.replay_ui.usecase.port_result import PortResult
 
 BARS = [{"time": 60, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5},
         {"time": 120, "open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0}]
@@ -52,14 +55,39 @@ class Window:
     def load_raw_ticks(self, start, end): return [(60, 1.0, 1.1)]
 class Days:
     def load_days(self, ref, tf): return ["2026-01-01"]
+# ISSUE-502 段階 5B: 4 つの Port は HTTP ステータスを返さない（PortResult＝成否の分類 ＋ ボディ）。
+# **golden の値は 1 つも動かしていない**——是正前に凍結した digest がそのまま緑であることが、
+# 応答 byte が変わっていないことの証拠である。
 class Forming:
-    def forming(self, *a, **k): return (200, {"ok": True, "forming": []})
+    def forming(self, *a, **k): return PortResult.success({"ok": True, "forming": []})
 class MP:
-    def profile(self, *a, **k): return (200, {"ok": True, "profile": []})
+    def profile(self, *a, **k): return PortResult.success({"ok": True, "profile": []})
 class TV:
-    def profile(self, *a, **k): return (200, {"ok": True, "bands": []})
+    def profile(self, *a, **k): return PortResult.success({"ok": True, "bands": []})
 class Cat:
-    def catalog(self): return (200, {"ok": True, "catalog": {}})
+    def catalog(self): return PortResult.success({"ok": True, "catalog": {}})
+
+
+# --- Port が失敗を返す／例外を投げる fake（是正前に採取した golden の対象） ---
+def _failure(error_type: str, message: str) -> PortResult:
+    """正典 nested error のボディをそのまま運ぶ失敗（bridge が返す形と同一）。"""
+    return port_result_from_bridge(nested_error(error_type, message), source="fake")
+class FormingErr:
+    def forming(self, *a, **k): return _failure("validation", "forming は非対応です")
+class MPErr:
+    def profile(self, *a, **k): return _failure("validation", "未知の datasetRef")
+class TVErr:
+    def profile(self, *a, **k): return _failure("internal", "集計に失敗しました")
+class CatErr:
+    def catalog(self): return _failure("internal", "catalog 取得に失敗しました")
+class FormingRaise:
+    def forming(self, *a, **k): raise ValueError("bad now")
+class MPRaise:
+    def profile(self, *a, **k): raise ValueError("bad tf")
+class TVRaise:
+    def profile(self, *a, **k): raise RuntimeError("kaboom")
+class CatRaise:
+    def catalog(self): raise RuntimeError("catalog boom")
 
 def build(web_dir, **over):
     kw = dict(candle_port=Candle(), compute_port=Compute(), window_port=Window(),
@@ -255,3 +283,99 @@ def test_the_heavy_issue_count_does_not_grow_with_the_number_of_routes(tmp_path)
         measured[label] = spy.computed
     # Assert
     assert measured["few"] == measured["all"], measured
+
+
+# --------------------------------------------------------------------------------------
+# 5. Port の失敗経路の golden（ISSUE-502 段階 5B・是正前に採取）
+# --------------------------------------------------------------------------------------
+#   上の _GOLDEN は Port の**成功系**しか通っていない。Port が nested error を返す経路と
+#   Port が例外を投げる経路は、HTTP 語彙の除去（Port の戻り型 (status, body) → PortResult）で
+#   最も壊れやすい。**是正に着手する前**に実測して凍結した値を、ここへ置く。
+#
+#   採取条件（2026-09-07・是正前のコードで実行）: 下の fake Port を注入した ReplayApp を
+#   実サーバとして起動し、`capture` と同じ手順（ステータス行 ＋ Date/Server 以外のヘッダ ＋
+#   ボディ全 byte の sha256）で採った。
+_PORT_FAILURE_GOLDEN = {
+    "mp_port_error": ("90450d795bc432335f51d9e110736673ec6c05c1f164815fed041a97b451425d", 400, 125),
+    "mp_forming_port_error": ("aef01010387176ece72605c73806255a58000beb879874088043498d1cc6dd36", 400, 140),
+    "tickvol_port_error": ("6095dbe853447153594f915842d39f6fbe55714b8d2ee22ca80721363c50bee5", 500, 148),
+    "catalog_port_error": ("0e0b2602340b6e6ed6626e8a89a42869bce6cb499610ebc947a78cba4efdf9f3", 500, 156),
+    "mp_port_raises_value": ("4d214a801c59fc41274d2f2614e03ff6e115e6a6e39ced00556cc3c9e1333a6e", 400, 102),
+    "mp_forming_port_raises_value": ("a807c838d1c72d4efbcdc60dda7f4d4607369929e5c2f76b705a385eb6e421fa", 400, 103),
+    "tickvol_port_raises_runtime": ("9dd80470506adea2606434fd0d43bc18e72ea65f01e464b72cf896da441e7395", 500, 100),
+    "catalog_port_raises_runtime": ("33377612058f2bb8503e98f5a47fc4c5078ddf090849261b2581ddf4c6ab8611", 500, 106),
+}
+
+_FAILURE_CASES = [
+    ("mp_port_error", "GET", "/market_profile?datasetRef=x&timeframe=5m", None),
+    ("mp_forming_port_error", "GET", "/market_profile_forming?datasetRef=x&now=60", None),
+    ("tickvol_port_error", "GET", "/tickvol_profile?datasetRef=x", None),
+    ("catalog_port_error", "GET", "/catalog", None),
+]
+_RAISE_CASES = [
+    ("mp_port_raises_value", "GET", "/market_profile?datasetRef=x&timeframe=5m", None),
+    ("mp_forming_port_raises_value", "GET", "/market_profile_forming?datasetRef=x&now=60", None),
+    ("tickvol_port_raises_runtime", "GET", "/tickvol_profile?datasetRef=x", None),
+    ("catalog_port_raises_runtime", "GET", "/catalog", None),
+]
+
+
+def _capture_cases(app, cases):
+    """`capture` と同じ手順で、指定したケースだけを採る。"""
+    server = make_server(app, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    out = {}
+    try:
+        for name, method, path, _body in cases:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+            conn.request(method, path)
+            r = conn.getresponse()
+            data = r.read()
+            hdrs = tuple(sorted((k, v) for k, v in r.getheaders()
+                                if k.lower() not in ("date", "server")))
+            out[name] = (r.status, hdrs, data)
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    return out
+
+
+@pytest.fixture(scope="module")
+def captured_failures(tmp_path_factory):
+    """失敗系 8 ケースを 1 回だけ採取する（1 ケース 1 リクエスト）。"""
+    got = {}
+    got.update(_capture_cases(
+        build(tmp_path_factory.mktemp("web_err"), forming_port=FormingErr(),
+              market_profile_port=MPErr(), tickvol_profile_port=TVErr(), catalog_port=CatErr()),
+        _FAILURE_CASES))
+    got.update(_capture_cases(
+        build(tmp_path_factory.mktemp("web_raise"), forming_port=FormingRaise(),
+              market_profile_port=MPRaise(), tickvol_profile_port=TVRaise(),
+              catalog_port=CatRaise()),
+        _RAISE_CASES))
+    return got
+
+
+@pytest.mark.parametrize("name", sorted(_PORT_FAILURE_GOLDEN))
+def test_the_port_failure_response_matches_the_frozen_golden(captured_failures, name: str) -> None:
+    """Port の失敗（分類つき応答・例外の双方）の応答 byte が是正前と完全一致する。
+
+    分類 → HTTP ステータスの写像を framework の 1 箇所へ移したことで番号が変わっていないか、
+    ボディが再整形されて 1 バイトずれていないかを、ここが押さえる。
+    """
+    status, hdrs, body = captured_failures[name]
+    want_digest, want_status, want_len = _PORT_FAILURE_GOLDEN[name]
+    assert (status, len(body)) == (want_status, want_len), (name, hdrs, body[:300])
+    assert _digest(status, hdrs, body) == want_digest, (name, status, hdrs, body[:300])
+
+
+def test_the_failure_case_table_covers_every_port_route() -> None:
+    """走査が痩せていないこと（4 ルート × 分類つき応答 / 例外 の 2 経路）。"""
+    assert set(_PORT_FAILURE_GOLDEN) == {n for n, *_ in _FAILURE_CASES + _RAISE_CASES}
+    covered = {path.split("?")[0] for _n, _m, path, _b in _FAILURE_CASES}
+    assert covered == {"/market_profile", "/market_profile_forming",
+                       "/tickvol_profile", "/catalog"}
+    assert covered == {path.split("?")[0] for _n, _m, path, _b in _RAISE_CASES}

@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
+from simulator.replay_ui.usecase.port_result import PortResult
 from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
     FakeCandlePort as _FakeCandlePort,
     FakeComputePort as _FakeComputePort,
@@ -21,13 +22,14 @@ from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
 
 
 class _FakeTickvolPort:
-    """(ref, sessions, pct, until) を記録し、固定の (status, body) を返す。"""
+    """(ref, sessions, pct, until) を記録し、固定の PortResult を返す。"""
 
     def __init__(self, ret=None):
         self.calls = []
-        self.ret = ret or (200, {"ok": True, "binSec": 900, "sessions": 20,
-                                 "bands": [{"startOff": 10800, "endOff": 19800}],
-                                 "bins": [], "threshold": 1.0})
+        self.ret = ret or PortResult.success(
+            {"ok": True, "binSec": 900, "sessions": 20,
+             "bands": [{"startOff": 10800, "endOff": 19800}],
+             "bins": [], "threshold": 1.0})
 
     def profile(self, ref, sessions=None, pct=None, until=None):
         self.calls.append({"ref": ref, "sessions": sessions, "pct": pct, "until": until})

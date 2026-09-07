@@ -1,7 +1,8 @@
 """MarketProfileFormingGateway: bridge 委譲の検証（fake bridge 注入）＋ 実 bridge export 到達性。
 
 Gateway は ``api_loader`` の ``handle_market_profile_forming``（indicator_ui controller の
-純ロジック）へ委譲し、(status, body) を返す。serve は本 gateway を Port として注入し、bridge を
+純ロジック）へ委譲し、bridge の (status, body) を PortResult へ翻訳して返す（ISSUE-502 段階 5B）。
+serve は本 gateway を Port として注入し、bridge を
 直 import しない（DIP）。実 bridge が当該シンボルを export していることも到達性テストで固定する。
 
 ★この時点で simulator/replay_ui/adapter/market_profile_forming_gateway.py は未実装（Red）。
@@ -44,19 +45,19 @@ def test_gateway_delegates_to_bridge_handle_and_threads_now_T():
     calls = []
     gw = MarketProfileFormingGateway(bridge_loader=_fake_bridge_loader(calls))
     # Act
-    status, body = gw.forming(
+    result = gw.forming(
         ref="jp225_tick", timeframe="1h", now=1704074400, base=1,
         since=None, bins=None, va=None, barw=None,
     )
-    # Assert: bridge.handle_market_profile_forming へ正しい引数で委譲し (status, body) を返す。
-    assert status == 200
-    assert body["formingStart"] == 555
+    # Assert: bridge.handle_market_profile_forming へ正しい引数で委譲し PortResult を返す。
+    assert result.ok
+    assert result.payload["formingStart"] == 555
     assert calls == [{
         "ref": "jp225_tick", "timeframe": "1h", "since": None, "base": 1,
         "now": 1704074400, "bins": None, "va": None, "barw": None,
     }]
     # now（リビール T）が bridge へ透過している（因果・未来リーク防止）。
-    assert body["now"] == 1704074400
+    assert result.payload["now"] == 1704074400
 
 
 def _fake_bridge_loader_frm(recorder):
@@ -78,12 +79,12 @@ def test_gateway_threads_frm_session_window_to_bridge():
     calls = []
     gw = MarketProfileFormingGateway(bridge_loader=_fake_bridge_loader_frm(calls))
     # Act: セッション窓 base 下限 frm（当日始まり）を渡す。
-    status, _ = gw.forming(
+    result = gw.forming(
         ref="jp225_tick", timeframe="1h", now=1704074400, base=1,
         since=None, bins=None, va=None, barw=None, frm=1704067200,
     )
     # Assert: bridge.handle_market_profile_forming へ frm が透過する。
-    assert status == 200
+    assert result.ok
     assert calls[0]["frm"] == 1704067200
 
 
@@ -92,12 +93,12 @@ def test_gateway_frm_omitted_does_not_pass_frm_backward_compat():
     calls = []
     gw = MarketProfileFormingGateway(bridge_loader=_fake_bridge_loader(calls))
     # Act
-    status, _ = gw.forming(
+    result = gw.forming(
         ref="jp225_tick", timeframe="1h", now=1704074400, base=1,
         since=None, bins=None, va=None, barw=None,
     )
     # Assert: frm 未指定 → 既存 8 引数 bridge でも TypeError にならない。
-    assert status == 200
+    assert result.ok
     assert calls[0]["now"] == 1704074400
 
 

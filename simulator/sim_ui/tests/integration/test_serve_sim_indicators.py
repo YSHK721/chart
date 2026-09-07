@@ -8,8 +8,9 @@
     3. **既存の静的配信面は 1 バイトも変わらない**（Phase 1 / Phase 2 と同一）。
        パストラバーサル防御（CWE-22）もそのまま効く。
     4. **既存のジョブ API 経路が不変**。`SimIndicatorApp` は `SimJobApp` を継承せず
-       委譲で包むため、`app.controller` / `app.result_server` が `__getattr__` 経由で
-       解決されることを実 HTTP で実証する（受け口だけ作って結線が死ぬ形＝ISSUE-291 防止）。
+       委譲で包むため、`app.controller` / `app.result_server` が**宣言済みの委譲面**
+       （`SIM_CORE_SURFACE`）として解決されることを実 HTTP で実証する
+       （受け口だけ作って結線が死ぬ形＝ISSUE-291 防止）。
     5. `POST /indicators` は作らない（YAGNI）。
 
 方式: 実 HTTP（port=0 の空きポート。固定ポートを掴まない）。既存
@@ -299,7 +300,7 @@ def _submit(base):
 
 
 def test_ジョブ投入は委譲後も動く(server) -> None:
-    """`app.controller` が `__getattr__` 経由で解決されること。"""
+    """`app.controller` が宣言済みの委譲面として解決されること。"""
     base, _l, launcher = server
     status, got = _submit(base)
     assert status == 202

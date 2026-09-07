@@ -2,13 +2,15 @@
 
 MP サブバー tick 逐次成長のための base + forming tick 列 + active table を返す。独自ロジックは持たず
 ``MarketProfileFormingPort`` へ (ref,timeframe,now,base,since,bins,va,barw) を素通し委譲し、
-``(status, body)`` をそのまま返す（indicator_ui の handle_market_profile_forming 純ロジックを adapter
+:class:`PortResult` をそのまま返す（indicator_ui の handle_market_profile_forming 純ロジックを adapter
 経由で再利用＝DRY）。``now`` は必ずリビール T を透過する（因果＝T 以前のみ・未来リーク防止）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from simulator.replay_ui.usecase.port_result import PortResult
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import MarketProfileFormingPort
@@ -30,8 +32,8 @@ class MarketProfileFormingRequest:
 
 def market_profile_forming(
     *, request: MarketProfileFormingRequest, forming_port: "MarketProfileFormingPort"
-) -> "tuple[int, dict]":
-    """Port へ素通し委譲して ``(status, body)`` を返す（thin・独自ロジック無し）。
+) -> PortResult:
+    """Port へ素通し委譲して :class:`PortResult` を返す（thin・独自ロジック無し）。
 
     ``frm``（セッション窓 base 下限・当日始まり）は None のとき Port へ渡さない（既存 8 引数実装を壊さない
     ＝後方互換）。非 None のときのみ keyword で透過する（additive）。

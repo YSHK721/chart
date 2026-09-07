@@ -2,7 +2,8 @@
 
 CLEAN_ARCH §6: MP forming の計算（forming_bar / market_profile_forming / market_profile_dwell）は
 indicator_ui の ``handle_market_profile_forming`` 純ロジックに一元化されている。本 gateway はそれを
-``api_loader`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す（DRY・無改変）。
+``api_loader`` 経由で read-only 再利用し、bridge の ``(status, body)`` を
+:class:`~simulator.replay_ui.usecase.port_result.PortResult` へ翻訳して usecase へ返す（DRY・無改変）。
 serve は本 gateway を Port として注入し、bridge を直 import しない（DIP）。
 
 ``now`` は必ずリビール T を渡す（因果＝T 以前のみ・未来リーク防止）。base は controller が
@@ -13,6 +14,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from indigators.indicator_ui import api_loader
+
+from simulator.replay_ui.adapter.bridge_result import port_result_from_bridge
+from simulator.replay_ui.usecase.port_result import PortResult
 
 
 class MarketProfileFormingGateway:
@@ -43,12 +47,16 @@ class MarketProfileFormingGateway:
         va: Any,
         barw: Any,
         frm: Any = None,
-    ) -> "tuple[int, dict]":
+    ) -> PortResult:
         bridge = self._loader(self._api_path, self._repo_root)
         # frm（セッション窓 base 下限・当日始まり）は None のとき bridge へ渡さない（既存 export の後方互換）。
         #   非 None のときのみ keyword で透過する（additive）。controller が予約語 from へ写像する。
         extra = {} if frm is None else {"frm": frm}
-        return bridge.handle_market_profile_forming(
-            ref, timeframe=timeframe, since=since, base=base, now=now, bins=bins, va=va, barw=barw,
-            **extra,
+        return port_result_from_bridge(
+            bridge.handle_market_profile_forming(
+                ref, timeframe=timeframe, since=since, base=base, now=now, bins=bins,
+                va=va, barw=barw,
+                **extra,
+            ),
+            source="handle_market_profile_forming",
         )

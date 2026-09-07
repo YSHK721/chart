@@ -1,7 +1,7 @@
 """UC market_profile — /market_profile の usecase 結線（thin delegation）。
 
 normal/sessions/replay モードの Market Profile を返す。独自ロジックは持たず ``MarketProfilePort`` へ
-(ref,timeframe,limit,bins,va,src,barw,to,frm,today,sessions) を素通し委譲し、``(status, body)`` を
+(ref,timeframe,limit,bins,va,src,barw,to,frm,today,sessions) を素通し委譲し、:class:`PortResult` を
 そのまま返す（indicator_ui の handle_market_profile 純ロジックを adapter 経由で再利用＝DRY）。
 ``to`` は必ずリビール T を透過する（因果＝as-seen-at-t・T 以前のみ・未来リーク防止）。
 """
@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from simulator.replay_ui.usecase.port_result import PortResult
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import MarketProfilePort
@@ -32,8 +34,8 @@ class MarketProfileRequest:
 
 def market_profile(
     *, request: MarketProfileRequest, profile_port: "MarketProfilePort"
-) -> "tuple[int, dict]":
-    """Port へ素通し委譲して ``(status, body)`` を返す（thin・独自ロジック無し）。"""
+) -> PortResult:
+    """Port へ素通し委譲して :class:`PortResult` を返す（thin・独自ロジック無し）。"""
     return profile_port.profile(
         request.ref,
         request.timeframe,

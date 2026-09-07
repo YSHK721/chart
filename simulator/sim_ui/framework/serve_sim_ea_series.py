@@ -5,7 +5,7 @@ Phase 3 の `serve_sim_indicators.SimIndicatorApp` を **継承ではなく委�
 
     SimIndicatorApp ──(委譲)── SimEaSeriesApp
                                static_server だけ GetRouteResponder へ差し替える
-                               それ以外の属性は __getattr__ で内側へ委譲する
+                               それ以外の面は**宣言した名だけ**を内側へ転送する
 
 **Handler もサーバ生成も Phase 2 の実体をそのまま再利用する**（下の re-export）。Handler は
 `app.static_server` / `app.controller` / `app.result_server` を属性で引くだけなので、同じ属性を
@@ -29,6 +29,13 @@ from typing import Any
 from simulator.sim_ui.adapter.ea_series_api_controller import EA_SERIES_PATH
 from api_shared.json_get_routes import GetRouteResponder
 
+# 委譲面の宣言と機構は Phase 3 の 1 箇所に閉じる（本層はそれを import して宣言するだけ）。
+from simulator.sim_ui.framework.serve_sim_indicators import (
+    SIM_INDICATOR_SURFACE,
+    delegates_to_inner,
+    verify_delegated_surface,
+)
+
 # Handler・サーバ生成・起動は Phase 2 の実体をそのまま使う（複製しない）。
 from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     make_handler,
@@ -36,17 +43,26 @@ from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     serve,
 )
 
+#: `SimEaSeriesApp` が差し出す面（内側の面 ＋ 本層の追加）。外側の包み手はこれを転送する。
+SIM_EA_SERIES_SURFACE: "tuple[str, ...]" = SIM_INDICATOR_SURFACE + (
+    "ea_series_controller",
+)
 
+
+@delegates_to_inner(*SIM_INDICATOR_SURFACE)
 class SimEaSeriesApp:
     """内側アプリを包み、GET の JSON ルートを 1 本（`/ea-series/{ea_name}`）足した面。
 
     ``inner``: 内側アプリ（`SimIndicatorApp` 等・配信面 ＋ ジョブ実行系 ＋ 指標一覧）。
     ``controller``: `EaSeriesApiController`（`list_for(path) -> ApiResponse`）。
+
+    内側へ転送する面は `SIM_INDICATOR_SURFACE`（宣言）。宣言に無い名は解決しない。
     """
 
     def __init__(self, *, inner: Any, controller: Any) -> None:
         self._inner = inner
         self._controller = controller
+        verify_delegated_surface(self, inner)
         # JSON ルートを既存の static 面の前に挟む。静的配信・許可根・CWE-22 防御は内側の
         # 単一ソースのまま。/ea-series 以外は fallback（内側の static_server）へ落ちる。
         self.static_server = GetRouteResponder(
@@ -63,14 +79,3 @@ class SimEaSeriesApp:
     def ea_series_controller(self) -> Any:
         """系列一覧の controller（合成根の検定が実物の結線を確かめるための面）。"""
         return self._controller
-
-    def __getattr__(self, name: str) -> Any:
-        """自分が持たない属性は内側アプリへ委譲する。
-
-        Handler は `app.controller`（ジョブ API）・`app.result_server`（`/data/*`）を属性で
-        引く。ここが解決できないと、受け口はあるのに結線が死ぬ（ISSUE-291 の形）。
-        """
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)

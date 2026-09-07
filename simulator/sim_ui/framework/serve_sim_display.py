@@ -5,7 +5,7 @@ Phase 3 は 1 バイトも変えない。
 
     SimIndicatorApp ──(委譲)── SimDisplayApp
                                static_server だけ StaticPrefixRoutes へ差し替える
-                               それ以外の属性は __getattr__ で内側へ委譲する
+                               それ以外の面は**宣言した名だけ**を内側へ転送する
 
 **Handler もサーバ生成も Phase 2 の実体をそのまま使う**（下の re-export）。Handler は
 `app.static_server` / `app.controller` / `app.result_server` を属性で引くだけなので、
@@ -22,24 +22,40 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+# 委譲面の宣言と機構は Phase 3 の 1 箇所に閉じる（本層はそれを import して宣言するだけ）。
+from simulator.sim_ui.framework.serve_sim_indicators import (
+    delegates_to_inner,
+    verify_delegated_surface,
+)
+
 # Handler・サーバ生成・起動は Phase 2 の実体をそのまま使う（複製しない）。
 from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     make_handler,
     make_server,
     serve,
 )
+from simulator.sim_ui.framework.serve_sim_settings_schema import (
+    SIM_SETTINGS_SCHEMA_SURFACE,
+)
 from simulator.sim_ui.framework.static_prefix_routes import StaticPrefixRoutes
 
+#: `SimDisplayApp` が差し出す面。本層は API を 1 本も足さないので、内側の面と同一である。
+SIM_DISPLAY_SURFACE: "tuple[str, ...]" = SIM_SETTINGS_SCHEMA_SURFACE
 
+
+@delegates_to_inner(*SIM_SETTINGS_SCHEMA_SURFACE)
 class SimDisplayApp:
     """`SimIndicatorApp` を包み、静的配信の根を prefix で足したアプリケーション面。
 
     ``inner``: `SimIndicatorApp`（配信面 ＋ ジョブ実行系 ＋ 指標一覧）。
     ``static_routes``: ``{prefix: serve(handler, path) を持つ配信器}``。
+
+    内側へ転送する面は `SIM_SETTINGS_SCHEMA_SURFACE`（宣言）。宣言に無い名は解決しない。
     """
 
     def __init__(self, *, inner: Any, static_routes: "Mapping[str, Any]") -> None:
         self._inner = inner
+        verify_delegated_surface(self, inner)
         # 既存の静的面（JSON ルート層を含む）を fallback にする。既存経路の応答 byte・
         # 許可根・CWE-22 防御は内側の単一ソースのまま変わらない。
         self.static_server = StaticPrefixRoutes(
@@ -50,14 +66,3 @@ class SimDisplayApp:
     def inner(self) -> Any:
         """包んでいる `SimIndicatorApp`（結線を複製していないことを確かめる面）。"""
         return self._inner
-
-    def __getattr__(self, name: str) -> Any:
-        """自分が持たない属性は内側の `SimIndicatorApp` へ委譲する。
-
-        Handler は `app.controller`（ジョブ API）・`app.result_server`（`/data/*`）を
-        属性で引く。ここが解決できないと、受け口はあるのに結線が死ぬ（ISSUE-291 の形）。
-        """
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)

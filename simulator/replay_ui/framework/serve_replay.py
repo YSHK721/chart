@@ -28,7 +28,9 @@ from urllib.parse import urlparse
 
 # 正典エラー契約（ISSUE-091 A2 / ISSUE-094 🔵-11）: status 翻訳・nested ボディとも中立共有
 #   パッケージ api_shared.http_contract の単一定義を直参照する。
-from api_shared.http_contract import nested_error
+from api_shared.http_contract import ERROR_STATUS, nested_error
+
+from simulator.replay_ui.usecase.port_result import PortResult
 
 # 静的資産配信＋パストラバーサル防御（ISSUE-094 🟡-8: 殻から独立クラスへ抽出）。
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
@@ -102,6 +104,52 @@ def _error_response(
     return nested_error(error_type, message, generation=generation)
 
 
+def require_core_members(core: Any, members: "tuple[str, ...]", *, owner: str) -> None:
+    """ルート App が ``core`` へ要求する面が揃っているかを**生成時に**検査する。
+
+    ISSUE-502 段階 5B: ルート App は以前、内側へ全属性を透過させる委譲フックを持っており、
+    「自分が何を必要としているか」がどこにも宣言されていなかった。透過は委譲の欠落を
+    **リクエスト時**まで隠す——受け口はあるのに結線が死ぬ（ISSUE-291 の形）。
+    同型の壊れ方は sim_ui の adapter 層（計算源ロードの明示合成）が対照実験で実測済みである
+    （明示委譲を 1 面落としても動的フォールバックが拾い、検定が緑のまま通った）。
+
+    現在は各 App が要求面の宣言（クラス属性 REQUIRED_CORE_MEMBERS）を持ち、本関数が生成時に
+    照合する。欠けていれば組み立てのその場で ``TypeError``（欠落名つき）＝ fail-stop。
+
+    計算量: 検査は **App の生成 1 回につき 1 回**（宣言した名の数だけ ``hasattr``）。
+    リクエストごとには 1 度も走らない（``replay_ui/tests/unit/test_route_app_core_contract.py``
+    が Spy で固定する）。
+    """
+    missing = [name for name in members if not hasattr(core, name)]
+    if missing:
+        raise TypeError(
+            f"{owner}: core に要求面がありません: {missing}。"
+            f" 要求面の宣言は {owner}.REQUIRED_CORE_MEMBERS（透過委譲は置かない）。"
+        )
+
+
+#: 成功応答の HTTP ステータス。分類なし（``PortResult.ok``）はここへ写る。
+_OK_STATUS = 200
+
+
+def http_response_for(result: PortResult) -> "tuple[int, dict[str, Any]]":
+    """:class:`PortResult` を ``(status, body)`` へ写す**唯一の地点**（ISSUE-502 段階 5B）。
+
+    是正前は 4 つの usecase Port が ``tuple[int, dict]``＝(HTTP ステータス, ボディ) を返しており、
+    HTTP のエラー表現を変えることが**内側の抽象定義の変更**になっていた（DIP 違反）。
+    現在は内側が「成功か、失敗ならどの**分類**か」だけを返し、番号への写像は本関数だけが持つ。
+
+    写像の規則は正典表 ``api_shared.http_contract.ERROR_STATUS`` を引くだけである
+    （番号の第 2 の定義を作らない）。未知の分類は 500（``nested_error`` と同じ既定）。
+
+    ボディは**触らずにそのまま**返す。整形をここでやり直すと、外部（indicator_ui bridge）が
+    組み立てたボディと 1 バイトでもずれた瞬間に front の契約が壊れる。
+    """
+    if result.ok:
+        return _OK_STATUS, result.payload
+    return ERROR_STATUS.get(result.error_type, 500), result.payload
+
+
 def write_replay_json(handler: Any, response: "tuple[int, Any]") -> None:
     """replay の JSON 応答を書き出す（応答 byte の**唯一の定義**・ISSUE-479 Wave2 3-4）。
 
@@ -132,20 +180,23 @@ class _QueryStrippingStatic:
     含む path を解決できず、渡せば静かに 404 になる。
 
     `StaticFileServer` そのものは触らない（応答 byte・許可根・CWE-22 防御は単一ソースのまま）。
+
+    **公開する面は ``serve`` ただ 1 つ**（ISSUE-502 段階 5B）。以前は内側の全属性を透過させる
+    委譲フックを持っていたが、透過は「この装飾子が何を提供するか」を型にも読みにも出さないまま、
+    委譲の欠落をリクエスト時まで隠す（sim_ui の adapter 層が対照実験で実測した壊れ方と同型）。
+    実測（2026-09-07・全 py の grep）: 本クラスから引かれている属性は ``serve`` だけで、
+    透過は 1 件も使われていなかった。使われていない透過は消す。
     """
 
     def __init__(self, inner: Any) -> None:
+        if not callable(getattr(inner, "serve", None)):
+            raise TypeError(
+                f"_QueryStrippingStatic: 内側に serve が必要です: {type(inner).__name__}"
+            )
         self._inner = inner
 
     def serve(self, handler: Any, path: str) -> None:
         return self._inner.serve(handler, path.split("?", 1)[0])
-
-    def __getattr__(self, name: str) -> Any:
-        """解決・許可根などの面は内側の単一ソースへ委譲する。"""
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)
 
 
 class _HeavyWorker:
@@ -251,7 +302,7 @@ class ReplayApp:
         #   どのルートが存在するかは `build_replay_routes` だけが決める（上の *_enabled を読む）。
         #   フォールバックの末端は上で作った `StaticFileServer` そのもので、静的配信の
         #   応答 byte・許可根・CWE-22 防御は単一ソースのまま変わらない。
-        self.static_server = build_replay_routes(self).static_server
+        self.static_server = build_replay_routes(self)
 
     def candles(
         self,
@@ -382,7 +433,7 @@ class ReplayApp:
     def market_profile_forming(
         self, ref: str, timeframe: "str | None", now: "int | None",
         base: Any, since: Any, bins: Any, va: Any, barw: Any, frm: Any = None,
-    ) -> "tuple[int, dict]":
+    ) -> PortResult:
         """MP サブバー tick 逐次成長データを返す（now は必ずリビール T＝因果・未来リーク防止）。
 
         ``frm``（任意・既定 None）: セッション窓 MP の base 累積下限 time（当日始まり=floor(now,86400)）。
@@ -399,7 +450,7 @@ class ReplayApp:
         self, ref: str, timeframe: "str | None", limit: Any, bins: Any, va: Any,
         src: Any, barw: Any, to: Any, frm: Any = None, today: Any = None,
         sessions: Any = None,
-    ) -> "tuple[int, dict]":
+    ) -> PortResult:
         """MP normal/sessions/replay データを返す（to は必ずリビール T＝as-seen-at-t・未来リーク防止）。
 
         ``to`` 指定時は ``time<=to`` の足だけで集計する（因果）。``to`` はリプレイの単一時計
@@ -415,7 +466,7 @@ class ReplayApp:
 
     def tickvol_profile(
         self, ref: str, sessions: Any = None, pct: Any = None, until: Any = None
-    ) -> "tuple[int, dict]":
+    ) -> PortResult:
         """取引密度の時刻帯プロファイル（背景色帯）を返す。
 
         ``until`` は必ずリビール T（単一時計 to）を渡す。``until`` が属するセッション日は集計に
@@ -425,7 +476,7 @@ class ReplayApp:
         with self._lock:  # 1 分足全期間の集計を直列化（OOM 防止・他の重い処理と同規律）
             return tickvol_profile(request=req, profile_port=self._tickvol_profile_port)
 
-    def catalog(self) -> "tuple[int, dict]":
+    def catalog(self) -> PortResult:
         """指標 param の既定値と variant ごとの受理 param（paramScopes）を返す。
 
         入力を持たず（dict の deep copy のみ）計算も伴わないため、重い処理の直列化錠は取らない。
@@ -434,34 +485,46 @@ class ReplayApp:
         return self._catalog_port.catalog()
 
 
-def build_replay_routes(inner: Any) -> Any:
-    """機能別ルート App を連結して返す（ISSUE-479 Wave2 3-4・ルート構成の唯一の宣言）。
+def build_replay_routes(core: Any) -> Any:
+    """機能別ルート App を連結し、**先頭の配信面**を返す（ルート構成の唯一の宣言）。
 
-    各 App は内側を包み、自分のルートを JSON 経路として ``static_server`` の前へ挟む。
-    外れた path は内側の ``static_server`` へ落ち、最終的に `StaticFileServer` に着く。
+    各 App は自分のルートを JSON 経路として持ち、外れた path を fallback へ落とす。
+    末端は `ReplayApp` が作った `StaticFileServer`（クエリ除去層つき）で、静的配信の
+    応答 byte・許可根・CWE-22 防御は単一ソースのまま変わらない。
     どのルートが存在するかは**この関数だけ**が決める（Handler は分岐を持たない）。
 
     import を関数内に置くのは、各ルート App が本モジュールの `write_replay_json` /
-    `_error_response` を参照するためである（module-level import にすると循環になる）。
+    `_error_response` / `http_response_for` を参照するためである（module-level import に
+    すると循環になる）。
 
     呼ぶのは `ReplayApp.__init__` の末尾 1 箇所である。ルート構成を外（合成根）へ出さないのは、
     ``ReplayApp`` を組んだだけで API ルートを持たない殻ができてしまうと、結線し忘れが
     「受け口はあるのに無言で 404」という形で表に出るからである（ISSUE-291 と同型の壊れ方）。
     差し替えたいときは本関数を差し替える（ルートの宣言は依然としてここ 1 箇所だけ）。
 
-    重い処理のワーカーとロックは ``inner`` の**単一インスタンスを全 App が共有**する。
-    各 App は自前で作らず属性委譲で内側のものを引く——rpy2/R はスレッド親和で、App ごとに
-    ワーカーを持つと「常に同一スレッドで実行する」という前提が壊れるからである（絶対条件）。
+    ## 連鎖の形（ISSUE-502 段階 5B で是正）
+
+    是正前は各 App が**内側の App を包み**、自分が持たない属性を委譲フックで内側へ
+    透過させていた。プロファイル系 App が内側の market_profile を呼べていたのは 2 段内側の
+    `ReplayApp` まで透過が伝わっていたからで、**誰が誰の何を必要としているかがどこにも
+    宣言されていなかった**（委譲の欠落はリクエスト時まで露見しない）。
+
+    現在は各 App が必要なものを 2 つとも明示で受け取る:
+        * ``core`` — 業務の入口（`ReplayApp`）。App はここへ**直接**呼ぶ。
+        * 落とし先（引数 fallback） — 自分のルートから外れた path を渡す先（1 つ前の配信面）。
+    包む関係が無くなったので、透過委譲は 1 つも要らない。重い処理のワーカーとロックは
+    ``core`` が 1 つだけ持ち、App は自前で作らない（rpy2/R のスレッド親和は ``core`` の
+    メソッド内で守られる）。
     """
     from simulator.replay_ui.framework.serve_replay_candles import ReplayCandlesApp
     from simulator.replay_ui.framework.serve_replay_catalog import ReplayCatalogApp
     from simulator.replay_ui.framework.serve_replay_intraday import ReplayIntradayApp
     from simulator.replay_ui.framework.serve_replay_profiles import ReplayProfilesApp
 
-    app = ReplayCandlesApp(inner=inner)
-    app = ReplayIntradayApp(inner=app)
-    app = ReplayProfilesApp(inner=app)
-    return ReplayCatalogApp(inner=app)
+    serving = core.static_server
+    for app_class in (ReplayCandlesApp, ReplayIntradayApp, ReplayProfilesApp, ReplayCatalogApp):
+        serving = app_class(core=core, fallback=serving).static_server
+    return serving
 
 
 def make_handler(app: ReplayApp):
@@ -470,7 +533,7 @@ def make_handler(app: ReplayApp):
     #   （module-level import にすると循環になる）。
     from simulator.replay_ui.framework.serve_replay_compute import ReplayComputeApp
 
-    compute_app = ReplayComputeApp(inner=app)
+    compute_app = ReplayComputeApp(core=app)
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, code: int, obj: Any) -> None:

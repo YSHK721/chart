@@ -26,6 +26,7 @@ import { PlaybackTempo } from './replay/playback_tempo.js';
 import { FormingPlanCache } from './replay/forming_plan_cache.js';
 import { FormingAnimator } from './replay/forming_animator.js';
 import { ReplayCursor } from './replay/replay_cursor.js';
+import { createReplayControllerPort } from './replay/replay_controller_port.js';
 
 const DAY = 86400;
 // 表示レンジ・テンプレート（時間足別）。期間は「秒」で持ち t 起点で [t-期間, t] を毎回算出。null=全期間。
@@ -60,6 +61,13 @@ const boundFetch = (typeof globalThis !== 'undefined' && globalThis.fetch)
 
 export async function setupReplay({ chart, mainSeries, controller, renderer, datasetRef, recentBars, document: doc, fetchImpl = boundFetch, marketProfile = null }) {
   const view = new ReplayView({ chart, mainSeries, renderer, document: doc });
+  // controller の面の突き合わせは**ここ 1 回だけ**（ISSUE-502 段階 5B）。以後は port を直接呼ぶ。
+  //   旧実装は controller のメソッド有無を呼ぶ直前に毎回問い合わせる実行時能力探査を 19 箇所へ
+  //   散らしていた（要求する面がどこにも宣言されず、面の部分実装も無言で受理していた）。要求は
+  //   replay/replay_controller_port.js の宣言 1 箇所が持ち、欠落・部分実装は接続時に落ちる。
+  //   フィールド面（_timeframe / _recentBars / _state / _meta / _isMarketProfile / applyIndicator /
+  //   setTimeframe）は本 port の対象外＝従来どおり controller へ直接触れる。
+  const port = createReplayControllerPort(controller);
   const fmt = (t) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
   const setStatus = (text) => view.setText('rp-status', text);
   // MP tick-live 有効判定（未配線=null は常に false＝既存 replay へ非干渉）。駆動結線の各所で共用する。
@@ -105,10 +113,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   壊れる (2) 復元漏れが静かに残る (3) subclass の override と二重に噛む、という脆さがある。
   //   controller が公開する購読スロット（`setAppliedObserver`・`setTimeframeObserver` と同型）へ
   //   置き換えた。通知は適用/削除の**完了後**に 1 回で、monkeypatch 時代と同じ位置に入る。
-  const hasAppliedObserver = typeof controller.setAppliedObserver === 'function';
+  const hasAppliedObserver = port.supports.setAppliedObserver;
   if (hasAppliedObserver) {
     // [ISSUE-232] 指標の適用/削除は足内一括計算の計画を陳腐化させる（対象集合が変わる）→ 破棄。
-    controller.setAppliedObserver(() => { invalidatePlans(); syncBoundary(); });
+    port.setAppliedObserver(() => { invalidatePlans(); syncBoundary(); });
   }
 
   // ---- データ取得 ----
@@ -165,27 +173,27 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     updatePlayEnabled();
     const t = cursor.candles()[cursor.bar()].time;
 
-    controller.setUntilTime(t);
-    controller._recentBars = cursor.bar() + 1; // 計算窓＝リビール範囲
+    port.setUntilTime(t);
+    controller._recentBars = cursor.bar() + 1; // 計算窓＝リビール範囲（フィールド面は port 対象外）
     // [ISSUE-296] present（窓の末尾＝ライブ現在）のフレームは、ライブが既に算出した全長系列と
     //   同じもの（実測: 全点一致）。保管庫にあるぶんは計算を発行せず、preRender 内で同期描画する。
     //   窓が動いていればキーが合わず取り出せない＝従来どおり計算する（fail-closed）。
-    const presentToken = (cursor.bar() === cursor.candles().length - 1
-      && typeof controller.windowTokenOf === 'function')
-      ? controller.windowTokenOf(cursor.timeframe(), cursor.candles())
+    //   面（revealStore）が無い controller では windowTokenOf が宣言済みの不在時実装（null）を
+    //   返すため、presentToken は null＝以降の保管庫経路を 1 つも通らない（旧 typeof 分岐と同値）。
+    const presentToken = (cursor.bar() === cursor.candles().length - 1)
+      ? port.windowTokenOf(cursor.timeframe(), cursor.candles())
       : null;
-    if (presentToken && typeof controller.seedRevealFromStore === 'function') {
-      controller.seedRevealFromStore(presentToken);   // 一括リビール基底も保管庫から埋める
+    if (presentToken) {
+      port.seedRevealFromStore(presentToken);   // 一括リビール基底も保管庫から埋める
     }
-    const storedIds = (presentToken && typeof controller.storedInstanceIds === 'function')
-      ? controller.storedInstanceIds(presentToken) : null;
+    const storedIds = presentToken ? port.storedInstanceIds(presentToken) : null;
     // [ISSUE-158 ②] 一括リビール基底: 登録指標（causal_reveal_ids）は全レンジを 1 回だけ計算して
     //   キャッシュし、以降のバー送りは同期スライス描画のみ（per-step HTTP を発行しない）。
     //   必要時（時間足切替・指標追加・params 変更後の初回フレーム）のみ構築する。
-    if (typeof controller.revealNeedsBuild === 'function' && controller.revealNeedsBuild()) {
+    if (port.revealNeedsBuild()) {
       setStatus(`${fmt(t)} 一括計算中…`);
       try {
-        await controller.buildRevealBase(cursor.candles()[cursor.candles().length - 1].time, cursor.candles().length);
+        await port.buildRevealBase(cursor.candles()[cursor.candles().length - 1].time, cursor.candles().length);
       } catch (e) {
         // 構築失敗は per-step 計算へフォールバック（描画は止めない）。
       }
@@ -196,22 +204,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     try {
       // 計算後、preRender（足リビール＋ビュー＋一括リビール）→ 帯描画が await を挟まず
       //   1 ブロック＝アトミック（完成足チラ見せ防止の不変条件は revealTo が同期のため保たれる）。
-      const batch = await controller.recomputeAllApplied({
+      const batch = await port.recomputeAllApplied({
         mode: 'full',
         // 一括リビール済み指標は per-step 計算から除外（revealTo が同フレームで描画する）。
         //   [ISSUE-296] 保管庫の全長系列で描けるぶん（present のみ）も同様に除外する。
-        skip: (inst) => (typeof controller.hasRevealFor === 'function'
-          && controller.hasRevealFor(inst.instanceId))
+        skip: (inst) => port.hasRevealFor(inst.instanceId)
           || (storedIds !== null && storedIds.has(inst.instanceId)),
         preRender: () => {
           const saved = (!autoFrame) ? view.getVisibleLogicalRange() : null;
           view.setCandles(cursor.candles().slice(0, cursor.bar() + 1));
           if (saved) { view.setVisibleLogicalRange(saved); }
           else applyView();
-          if (typeof controller.revealTo === 'function') controller.revealTo(t);
+          port.revealTo(t);
           // [ISSUE-296] 保管庫からの同期描画（revealTo と同じく await を挟まない）。
-          if (storedIds && storedIds.size && typeof controller.renderStored === 'function') {
-            controller.renderStored(presentToken);
+          if (storedIds && storedIds.size) {
+            port.renderStored(presentToken);
           }
         },
       });
@@ -287,7 +294,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     rangeMenu.invalidateDays();
     syncRangeMenu();
     // [ISSUE-158 ②] 時間足切替で一括リビール基底を全破棄（次フレームで新 tf のレンジを再構築）。
-    if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
+    port.clearRevealCache();
     invalidatePlans();  // [ISSUE-232] 時間足が変われば足内の窓も計画も別物＝破棄
     // [ISSUE-296] candles を渡された場合は取り直さない（リプレイ開始＝ライブで表示中の窓を
     //   そのまま引き継ぐ場合のみ。時間足切替・カレンダーは従来どおり取得する）。
@@ -300,7 +307,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // カレンダーで選んだ日を再生開始日にする。窓ごと取り直し（present 窓の外の過去日も選べる）、
   //   その日の最初の足を再生開始点（減光境界）にして、そこから再生できる状態にする。
   async function loadFromDate(startUnix, key) {
-    if (typeof controller.clearRevealCache === 'function') controller.clearRevealCache();
+    port.clearRevealCache();
     invalidatePlans();  // [ISSUE-232] 窓を取り直す＝既存計画は無効
     const loaded = await fetchCandles(cursor.timeframe(), startUnix);
     if (!loaded.length) return; // 取得できないときは現状維持（ビューを勝手に動かさない）
@@ -465,10 +472,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   //   （render → preRender でローソク＋指標を await を挟まず同期一括描画）へ一本化する。
   //   時間足の確定（_timeframe 更新・ボタン active 同期・スケールリセット・永続化・購読者通知）は
   //   共有ベース側が従来どおり担う（＝ライブと同一の入口・リプレイは反映方法だけが異なる）。
-  if (typeof controller.setTimeframeApplier === 'function') {
-    controller.setTimeframeApplier(loadTimeframe);
-    disposers.push(() => controller.setTimeframeApplier(null));
-  }
+  //   反映役スロットを持たない controller では宣言済みの不在時実装（何もしない）が入るため、
+  //   登録も解除も観測される副作用を持たない（旧 typeof 分岐と同値）。
+  port.setTimeframeApplier(loadTimeframe);
+  disposers.push(() => port.setTimeframeApplier(null));
   view.bindManualBrowse(() => { autoFrame = false; });
   // onclick 代入系（rp-play/next/prev/view-left/view-right）を destroy で解除する。
   disposers.push(() => {
@@ -505,10 +512,8 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     settleFrameWait();                              // フレーム待機を即解除
     invalidatePlans();                              // [ISSUE-232] 足内計画を破棄（ライブでは使わない）
     // 時間足切替の反映役を外す＝ライブ既定経路（ISSUE-196）へ戻す（ISSUE-231）。
-    if (typeof controller.setTimeframeApplier === 'function') {
-      controller.setTimeframeApplier(null);
-    }
-    controller.setUntilTime(undefined);             // ライブ等価（undefined＝!==undefined gate で不送信）
+    port.setTimeframeApplier(null);
+    port.setUntilTime(undefined);                   // ライブ等価（undefined＝!==undefined gate で不送信）
     controller._recentBars = liveDefaultRecentBars; // 計算窓を live 既定へ復帰
     // reveal トリム未発生（初期 mount 等・enable 未経由）なら全長復帰は不要＝軽量停止のみ。
     if (!wasEnabled) {
@@ -538,15 +543,16 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   // [ISSUE-296] 離脱前のライブ窓＋保管庫の全長系列で表示を復帰する（同期・HTTP なし）。
   //   全ての適用指標（MP を除く）を描けたときだけ true。
   function restoreLiveViewFromStore() {
-    if (typeof controller.windowTokenOf !== 'function' || typeof controller.renderStored !== 'function') {
+    // 面が無い controller では保管庫そのものが存在しない＝復帰できない（旧 typeof 2 件と同値）。
+    if (!port.supports.revealStore) {
       return false;
     }
     const candles = cursor.candles();
-    const token = controller.windowTokenOf(controller._timeframe, candles);
+    const token = port.windowTokenOf(controller._timeframe, candles);
     if (!token) {
       return false;
     }
-    const drawn = controller.renderStored(token);
+    const drawn = port.renderStored(token);
     if (drawn.size === 0) {
       return false;
     }
@@ -555,7 +561,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     view.setRangeLabel('全期間');
     view.setCandles(candles);   // リビールのトリム解除（窓は離脱前と同一＝系列と時間軸が完全一致）
     syncBoundary();             // 減光境界を全長（末尾）へ＝リプレイ減光の消去
-    return controller.storedInstanceIds(token).size === drawn.size
+    return port.storedInstanceIds(token).size === drawn.size
       && drawn.size === appliedComputedCount();
   }
 
@@ -581,11 +587,10 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
         syncBoundary();           // 減光境界を全長（末尾）へ＝リプレイ減光の消去
       }
       // 新しい窓で保管庫が使えるものは計算しない（窓が変わっていなければ全件＝再計算 0 件）。
-      const token = typeof controller.windowTokenOf === 'function'
-        ? controller.windowTokenOf(controller._timeframe, cursor.candles()) : null;
-      const drawn = (token && typeof controller.renderStored === 'function')
-        ? controller.renderStored(token) : null;
-      await controller.recomputeAllApplied({
+      //   面が無ければ windowTokenOf は null を返す＝drawn も null（旧 typeof 2 件と同値）。
+      const token = port.windowTokenOf(controller._timeframe, cursor.candles());
+      const drawn = token ? port.renderStored(token) : null;
+      await port.recomputeAllApplied({
         mode: 'full',
         skip: (inst) => !!(drawn && drawn.has(inst.instanceId)),
       });
@@ -596,9 +601,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
   async function enable() {
     wasEnabled = true;
     // 時間足切替の反映役を再登録＝リプレイ単一経路（同期一括描画）へ戻す（ISSUE-231）。
-    if (typeof controller.setTimeframeApplier === 'function') {
-      controller.setTimeframeApplier(loadTimeframe);
-    }
+    port.setTimeframeApplier(loadTimeframe);
     // 現在の live データから再取得して present（最新足）へ駆動する（＝リプレイ現在バー＝ライブ最新）。
     //   loadTimeframe は既存の入口（fetch＋slider/preset 同期＋drive(present)）で、drive→render が
     //   :128-129（setUntilTime(現在バー)＋_recentBars=cursor.bar()+1）を確立する。値算出・分岐は無改変。
@@ -610,17 +613,21 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
 
   // [ISSUE-296] ライブで表示中の窓（保管庫が全指標を賄えるときだけ返す。それ以外は null＝取得）。
   function liveWindowIfStored() {
-    if (typeof view.getCandles !== 'function' || typeof controller.windowTokenOf !== 'function') {
+    // 面が無い controller では保管庫が存在しない＝引き継げない（旧 typeof 2 件と同値）。
+    //   旧実装が併記していた view.getCandles の存在探査は**到達しない条件**であった:
+    //   view は本関数と同じ setupReplay が組み立てた ReplayView であり、getCandles はクラスの
+    //   メソッドとして常に存在する（未提供 renderer では ReplayView 自身が [] を返す）。
+    if (!port.supports.revealStore) {
       return null;
     }
     const candles = view.getCandles();
-    const token = controller.windowTokenOf(controller._timeframe, candles);
-    if (!token || typeof controller.storedInstanceIds !== 'function') {
+    const token = port.windowTokenOf(controller._timeframe, candles);
+    if (!token) {
       return null;
     }
     // 複製して渡す（renderer の基準配列を共有すると、ライブ側の末尾差分がリプレイの窓を
     //   その場で書き換えうる）。
-    return controller.storedInstanceIds(token).size === appliedComputedCount()
+    return port.storedInstanceIds(token).size === appliedComputedCount()
       ? candles.slice() : null;
   }
   function destroy() {
@@ -628,7 +635,7 @@ export async function setupReplay({ chart, mainSeries, controller, renderer, dat
     for (const off of disposers) { try { off(); } catch (_e) { /* noop */ } }
     disposers.length = 0;
     if (hasAppliedObserver) {
-      controller.setAppliedObserver(null);   // ISSUE-037: 購読解除（monkeypatch 復元の置き換え）。
+      port.setAppliedObserver(null);   // ISSUE-037: 購読解除（monkeypatch 復元の置き換え）。
     }
   }
 

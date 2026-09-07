@@ -2,7 +2,8 @@
 
 CLEAN_ARCH §6: MP の計算（compute_candle_profile / market_profile_dwell / as-seen-at-t 切断）は
 indicator_ui の ``handle_market_profile`` 純ロジックに一元化されている。本 gateway はそれを
-``api_loader`` 経由で read-only 再利用し、usecase へ ``(status, body)`` を返す（DRY・無改変）。
+``api_loader`` 経由で read-only 再利用し、bridge の ``(status, body)`` を
+:class:`~simulator.replay_ui.usecase.port_result.PortResult` へ翻訳して usecase へ返す（DRY・無改変）。
 serve は本 gateway を Port として注入し、bridge を直 import しない（DIP・market_profile_forming_gateway と同型）。
 
 ``to`` は必ずリビール T を渡す（因果＝as-seen-at-t＝T 以前に観測できた足のみ・未来リーク防止）。予約語
@@ -14,6 +15,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from indigators.indicator_ui import api_loader
+
+from simulator.replay_ui.adapter.bridge_result import port_result_from_bridge
+from simulator.replay_ui.usecase.port_result import PortResult
 
 
 class MarketProfileGateway:
@@ -46,12 +50,15 @@ class MarketProfileGateway:
         frm: Any = None,
         today: Any = None,
         sessions: Any = None,
-    ) -> "tuple[int, dict]":
+    ) -> PortResult:
         bridge = self._loader(self._api_path, self._repo_root)
         # 予約語 from は kwargs 経由で透過する（present server の呼び出しと同一・handle_market_profile が
         #   from/today/sessions を **kwargs で受ける）。None も透過（handle 側で現行挙動＝後方互換）。
-        return bridge.handle_market_profile(
-            ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,
-            barw=barw, to=to,
-            **{"from": frm, "today": today, "sessions": sessions},
+        return port_result_from_bridge(
+            bridge.handle_market_profile(
+                ref, timeframe=timeframe, limit=limit, bins=bins, va=va, src=src,
+                barw=barw, to=to,
+                **{"from": frm, "today": today, "sessions": sessions},
+            ),
+            source="handle_market_profile",
         )

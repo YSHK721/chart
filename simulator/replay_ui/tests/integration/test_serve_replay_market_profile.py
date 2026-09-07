@@ -1,6 +1,7 @@
 """serve_replay の GET /market_profile エンドポイント（fake market_profile_port 注入）。
 
-薄殻ルート: クエリ取り出し → app.market_profile → usecase → Port（fake）→ (status, body)。
+薄殻ルート: クエリ取り出し → app.market_profile → usecase → Port（fake）→ PortResult
+→ framework の http_response_for が (status, body) へ写す（ISSUE-502 段階 5B）。
 to は必ずリビール T を透過する（因果＝as-seen-at-t＝time<=to のみ・未来リーク防止）。
 market_profile_port 未注入時はルート自体を持たず静的配信へフォールバック（既存 replay へ非干渉＝回帰ゼロ）。
 
@@ -16,6 +17,7 @@ from urllib.error import HTTPError
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
+from simulator.replay_ui.usecase.port_result import PortResult
 from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
     FakeCandlePort as _FakeCandlePort,
     FakeComputePort as _FakeComputePort,
@@ -35,15 +37,16 @@ class _FakeProfilePort:
                            "bins": bins, "va": va, "src": src, "barw": barw, "to": to,
                            "frm": frm, "today": today, "sessions": sessions})
         if ref != "jp225_tick":
-            return 400, {"ok": False, "error": {"type": "validation", "message": f"bad {ref}"}}
+            return PortResult.failure("validation", {
+                "ok": False, "error": {"type": "validation", "message": f"bad {ref}"}})
         # ticklive×{1W,1M} は forming 非対応だが、本 as-of-cursor 経路（candle resample）は全 TF 成立。
-        return 200, {
+        return PortResult.success({
             "ok": True,
             "profile": {"bins": [{"price": 1000.0, "tpo": 3, "norm": 1.0}],
                         "poc": 1000.0, "va_low": 995.0, "va_high": 1005.0,
                         "price_min": 990.0, "price_max": 1010.0, "tpo_units": 3, "n_bins": 3},
             "src": src or "candle", "atom": "足レンジ", "bar_width": 6.67,
-        }
+        })
 
 
 def _make_app(profile_port, **kw):

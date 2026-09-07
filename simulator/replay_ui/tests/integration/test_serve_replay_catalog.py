@@ -17,6 +17,7 @@ from urllib.error import HTTPError
 import pytest
 
 from simulator.replay_ui.framework.serve_replay import ReplayApp, make_server
+from simulator.replay_ui.usecase.port_result import PortResult
 from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
     FakeCandlePort as _FakeCandlePort,
     FakeComputePort as _FakeComputePort,
@@ -25,12 +26,12 @@ from simulator.replay_ui.tests.integration._fake_ports import (  # noqa: E402
 
 
 class _FakeCatalogPort:
-    """ライブ controller の戻り（status, body）を模す。呼出回数を記録する。"""
+    """ライブ controller の戻り（PortResult）を模す。呼出回数を記録する。"""
 
     def __init__(self, ret=None, boom=False):
         self.calls = 0
         self.boom = boom
-        self.ret = ret or (200, {
+        self.ret = ret or PortResult.success({
             "ok": True,
             "catalog": {"profit_band": {"probabilities": [0.95], "timeframe": "chart"}},
             "paramScopes": {"profit_band": {

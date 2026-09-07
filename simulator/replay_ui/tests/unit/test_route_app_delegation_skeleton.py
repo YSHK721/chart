@@ -1,35 +1,32 @@
-"""機能別ルート App の委譲骨格の同一性を AST で固定する（ISSUE-479 Wave2 再レビュー 🟡-2）。
+"""ルート App が**透過委譲を持たない**ことを固定する（ISSUE-502 段階 5B）。
 
-固定する規則:
-    5 本のルート App（candles / compute / intraday / profiles / catalog）は、内側 App を
-    包んで「自分が持たない属性は内側へ委譲する」という同一の骨格を持つ。その骨格——
-    「inner」 プロパティと 「__getattr__」——の**コードが 5 本で 1 文字も食い違わない**
-    ことを AST で突き合わせる。
+## 本ファイルが固定していた旧規則と、それを差し替えた理由
 
-なぜ基底クラスを抽出しないのか（レビュー提示の代替案の採用理由）:
-    重複を消す素直な手は共通基底の抽出だが、それは 5 本に**継承を強制**する。同型の判断は
-    本 ISSUE の J-6 で既に下されており（強制継承を棄却）、ここで逆の判断を採ると設計が割れる。
-    重複そのものが害なのではなく、**片方だけが書き換わって食い違うこと**が害である。よって
-    消すのではなく、食い違いを機械的に検出する。規約は宣言でなく検査で強制する。
+旧版（ISSUE-479 Wave2 再レビュー 🟡-2）は、5 本のルート App が内側 App を包み
+「自分が持たない属性は内側へ委譲する」という同一の骨格（inner / __getattr__）を持つ、
+という前提に立ち、**その骨格が 5 本で 1 文字も食い違わないこと**を AST で突き合わせていた。
+「重複そのものが害なのではなく、片方だけが書き換わって食い違うことが害である」という判断で、
+重複を消さずに食い違いを検出する形を採っていた。
 
-なぜ docstring を比較から外すのか（実測に基づく）:
-    5 本の 「__getattr__」 のうち ``serve_replay_candles`` だけが長い docstring を持つ
-    （「Handler と他のルート App は compute / _heavy_worker / 各 *_enabled を属性で引く」）。
-    つまり「完全一致」が成り立つのは**コード**であって散文ではない。散文まで固定すると、
-    その 1 本の説明を消す圧力になる（説明を消すのは是正ではない）。畳むのは docstring だけで、
-    文・式・引数・デコレータ・注釈はすべて比較対象に残す。
+その判断は「透過委譲を持つ」ことを所与としていた。段階 5B はその所与のほうを外した。
 
-検出力の実測（本ガードが空振りでないことの証拠・2026-09-04）:
-    ``serve_replay_intraday`` の 「__getattr__」 へ無害な差異（``probe = inner`` の 1 文を挟む・
-    振る舞いは不変）を注入すると **2 failed / 5 passed**——落ちたのは
-    ``...shares_the_identical_delegation_skeleton[__getattr__]`` と
-    ``...docstring_is_outside_the_comparison``。Edit で戻すと **7 passed**。差異の注入は git の
-    破壊的コマンドを使わず Edit で行い、復元後に ``git status`` へ実装差分が残らないことを確認した。
-    ＝本ガードは「振る舞いが変わらない片側変更」を検出する（状態検証では落ちない類の差分）。
+透過委譲（__getattr__ で内側へ全属性を流す）の害は、5 本の食い違いではなく
+**委譲の欠落がリクエスト時まで露見しないこと**である。同型の壊れ方は
+``sim_ui/adapter/causal_compute_ports.py`` が対照実験で実測済みで、明示委譲を 1 面
+（period_start）落としても動的フォールバックが拾い、既存検定は緑のまま通った。
 
-計算量検定（絶対命令 2026-08-28）: 骨格の採取はモジュール 1 本につき parse 1 回
-    （発行 − 使用 = 0）。素朴に書くと突き合わせのたびに parse し直して O(n^2) になるため、
-    モジュール数を変えた 2 点で「parse 回数 − モジュール数 = 0」を固定する。
+現在の形: ルート App は「業務の入口（core）」と「外れた path を渡す先（fallback）」を
+**明示で受け取る**。包む関係が無くなったので透過委譲は 1 つも要らない。必要な面は
+REQUIRED_CORE_MEMBERS で宣言し、生成時に照合する（欠落は起動時 ``TypeError``）。
+
+## 本ファイルが固定する規則
+
+1. framework 層のどのモジュールにも __getattr__ が定義されていない（再出現の Red）。
+2. 全ルート App が REQUIRED_CORE_MEMBERS を宣言し、それが空でない。
+3. ルート App が core から引く名は、宣言した面の中にある（宣言外の名を掘らない）。
+
+計算量検定（絶対命令 2026-08-28）: 走査はモジュール 1 本につき parse 1 回
+    （発行 − モジュール数 = 0）。モジュール数を変えた 2 点で固定する。
 """
 
 from __future__ import annotations
@@ -41,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from simulator.replay_ui.framework import (
+    serve_replay,
     serve_replay_candles,
     serve_replay_catalog,
     serve_replay_compute,
@@ -48,7 +46,17 @@ from simulator.replay_ui.framework import (
     serve_replay_profiles,
 )
 
-#: 委譲骨格を共有する 5 本（モジュール, App クラス名）。App を増やしたらここへ 1 行足す。
+#: 透過委譲の不在を要求する framework モジュール（App を増やしたらここへ 1 行足す）。
+_FRAMEWORK_MODULES = (
+    serve_replay,
+    serve_replay_candles,
+    serve_replay_compute,
+    serve_replay_intraday,
+    serve_replay_profiles,
+    serve_replay_catalog,
+)
+
+#: ルート App（モジュール, クラス名）。宣言面と core 参照を突き合わせる対象。
 _ROUTE_APP_MODULES = (
     (serve_replay_candles, "ReplayCandlesApp"),
     (serve_replay_compute, "ReplayComputeApp"),
@@ -57,10 +65,6 @@ _ROUTE_APP_MODULES = (
     (serve_replay_catalog, "ReplayCatalogApp"),
 )
 
-#: 同一であることを要求する骨格メンバー。「__init__」 は App ごとにルート表が違うので**入れない**
-#: （そこは同一でなく、同一を要求すると誤検出になる）。
-_SKELETON_MEMBERS = ("inner", "__getattr__")
-
 
 def _module_path(module) -> Path:
     src = inspect.getsourcefile(module)
@@ -68,143 +72,135 @@ def _module_path(module) -> Path:
     return Path(src)
 
 
-def _without_docstring(body: "list[ast.stmt]") -> "list[ast.stmt]":
-    """先頭の docstring 文だけを落とした本体を返す（parse し直さない）。"""
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        return body[1:]
-    return body
-
-
-def _normalize(fn: ast.FunctionDef) -> str:
-    """比較用の正規形。docstring だけを外し、他（引数・注釈・デコレータ・文）は残す。"""
-    fn.body = _without_docstring(fn.body)
-    assert fn.body, f"docstring を外すと本体が空になる: {fn.name}"
-    return ast.dump(fn)
-
-
-def _skeleton_of(module, class_name: str, *, parse=ast.parse) -> "dict[str, str]":
-    """1 モジュールを **1 回だけ** parse し、骨格メンバーの正規化 AST を返す。"""
-    path = _module_path(module)
-    tree = parse(path.read_text(encoding="utf-8"))
-    klass = next(
-        (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name),
-        None,
-    )
-    assert klass is not None, f"クラスが見つからない: {class_name} in {path}"
-    found = {
-        m.name: m
-        for m in klass.body
-        if isinstance(m, ast.FunctionDef) and m.name in _SKELETON_MEMBERS
-    }
-    missing = [m for m in _SKELETON_MEMBERS if m not in found]
-    assert not missing, f"{class_name} に骨格メンバーが無い: {missing}"
-    return {name: _normalize(fn) for name, fn in found.items()}
+def _tree_of(module, *, parse=ast.parse) -> ast.Module:
+    """1 モジュールを **1 回だけ** parse して木を返す。"""
+    return parse(_module_path(module).read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
-def skeletons() -> "dict[str, dict[str, str]]":
-    return {
-        cls: _skeleton_of(mod, cls) for mod, cls in _ROUTE_APP_MODULES
+def trees() -> "dict[str, ast.Module]":
+    return {m.__name__: _tree_of(m) for m in _FRAMEWORK_MODULES}
+
+
+# --------------------------------------------------------------------------------------
+# 1. 透過委譲の再出現 Red
+# --------------------------------------------------------------------------------------
+def _getattr_defs(tree: ast.Module) -> "list[str]":
+    """__getattr__ を定義しているクラス名を返す（モジュール直下の関数も拾う）。"""
+    found: "list[str]" = []
+    # モジュール直下の __getattr__（PEP 562・モジュール属性の透過）。
+    #   ``ast.walk`` ではなく直下の body を見る——walk はクラス内の定義も同じ節点として
+    #   拾うため、同じ 1 件を 2 度数えてしまう（初版が実際にそうなった）。
+    found += [
+        "<module>"
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__getattr__"
+    ]
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for member in node.body:
+            if isinstance(member, ast.FunctionDef) and member.name == "__getattr__":
+                found.append(node.name)
+    return found
+
+
+@pytest.mark.parametrize("module", _FRAMEWORK_MODULES, ids=lambda m: m.__name__.rsplit(".", 1)[-1])
+def test_the_framework_module_defines_no_transparent_delegation(trees, module) -> None:
+    """__getattr__ は 1 つも無い。
+
+    透過委譲は「この殻が何を提供するか」を型にも読みにも出さないまま、委譲の欠落を
+    リクエスト時まで隠す。必要なものは REQUIRED_CORE_MEMBERS で宣言する。
+    """
+    defined = _getattr_defs(trees[module.__name__])
+    assert defined == [], (
+        f"{module.__name__} に __getattr__ が再出現している: {defined}。"
+        " 透過委譲は置かない（要求面は REQUIRED_CORE_MEMBERS で宣言する）。"
+    )
+
+
+def test_the_detector_can_see_a_transparent_delegation() -> None:
+    """検出器の空振り検定: 変異体（__getattr__ を持つクラス）を与えれば検出する。"""
+    mutated = ast.parse(
+        "class Wrapper:\n"
+        "    def __getattr__(self, name):\n"
+        '        return getattr(self._inner, name)\n'
+    )
+    assert _getattr_defs(mutated) == ["Wrapper"], "検出器が透過委譲を見落としている（ガードが空虚）"
+
+
+# --------------------------------------------------------------------------------------
+# 2. 要求面の宣言（存在と非空）
+# --------------------------------------------------------------------------------------
+@pytest.mark.parametrize("module,class_name", _ROUTE_APP_MODULES, ids=lambda v: getattr(v, "__name__", v))
+def test_every_route_app_declares_the_core_members_it_requires(module, class_name) -> None:
+    """要求面が宣言されており、空でない（宣言が空だと検査が素通りする）。"""
+    app_class = getattr(module, class_name)
+    declared = getattr(app_class, "REQUIRED_CORE_MEMBERS", None)
+    assert isinstance(declared, tuple) and declared, (
+        f"{class_name}.REQUIRED_CORE_MEMBERS が宣言されていない（または空）: {declared!r}"
+    )
+    assert all(isinstance(name, str) and name for name in declared), declared
+
+
+# --------------------------------------------------------------------------------------
+# 3. 宣言外の名を core から掘らない
+# --------------------------------------------------------------------------------------
+def _core_attribute_names(tree: ast.Module, class_name: str) -> "set[str]":
+    """クラス本体で ``self._core.<name>`` として読まれている名を集める。"""
+    klass = next(
+        (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name), None
+    )
+    assert klass is not None, f"クラスが見つからない: {class_name}"
+    names: "set[str]" = set()
+    for node in ast.walk(klass):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "_core"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "self"
+        ):
+            names.add(node.attr)
+    return names
+
+
+@pytest.mark.parametrize("module,class_name", _ROUTE_APP_MODULES, ids=lambda v: getattr(v, "__name__", v))
+def test_the_app_reads_only_the_core_members_it_declared(trees, module, class_name) -> None:
+    """``self._core.<name>`` で読む名は、すべて宣言済みの要求面に含まれる。
+
+    宣言していない名を掘ると、生成時の照合を素通りして実行時に落ちる（透過委譲と同じ壊れ方）。
+    """
+    app_class = getattr(module, class_name)
+    declared = set(app_class.REQUIRED_CORE_MEMBERS)
+    used = _core_attribute_names(trees[module.__name__], class_name)
+    undeclared = sorted(used - declared)
+    assert undeclared == [], (
+        f"{class_name} が宣言外の core メンバーを読んでいる: {undeclared}。"
+        f" REQUIRED_CORE_MEMBERS へ足すこと（現在の宣言: {sorted(declared)}）。"
+    )
+
+
+def test_the_core_attribute_scanner_is_not_vacuous(trees) -> None:
+    """走査器の空振り検定: 実際に名を採れている（空集合どうしの比較で緑にならない）。"""
+    collected = {
+        cls: _core_attribute_names(trees[mod.__name__], cls) for mod, cls in _ROUTE_APP_MODULES
     }
+    # ReplayComputeApp だけは表引き（getattr(self._core, method)）なので静的には採れない。
+    assert collected["ReplayCandlesApp"] >= {"candles", "available_days"}
+    assert collected["ReplayProfilesApp"] >= {"market_profile", "tickvol_profile"}
+    assert collected["ReplayCatalogApp"] >= {"catalog"}
+    assert collected["ReplayIntradayApp"] >= {"intraday"}
 
 
 # --------------------------------------------------------------------------------------
-# 1. 骨格の同一性
+# 4. 計算量検定（Test Spy・発行 − 使用 = 0）
 # --------------------------------------------------------------------------------------
-@pytest.mark.parametrize("member", _SKELETON_MEMBERS)
-def test_every_route_app_shares_the_identical_delegation_skeleton(skeletons, member) -> None:
-    """5 本の 「inner」 / 「__getattr__」 のコードが 1 つの実体へ畳まれる。
+@pytest.mark.parametrize("modules_requested", [2, 6], ids=["parse_2", "parse_6"])
+def test_the_source_is_parsed_once_per_module(modules_requested: int) -> None:
+    """モジュール 2 本 / 6 本の 2 点で「parse 回数 − モジュール数 = 0」。
 
-    片方だけが書き換わると、委譲が App ごとに食い違って「受け口はあるのに結線が死ぬ」
-    （ISSUE-291 の形）が 1 本だけで起きる。差分は読み手に見える形で提示する。
-    """
-    # Arrange
-    reference_class, *others = [cls for _, cls in _ROUTE_APP_MODULES]
-    reference = skeletons[reference_class][member]
-    # Act
-    diverged = [cls for cls in others if skeletons[cls][member] != reference]
-    # Assert
-    assert diverged == [], (
-        f"{member} が {reference_class} と食い違う App: {diverged}。"
-        " 5 本は同一の委譲骨格を持つ規約である（片側だけの変更を通さない）。"
-    )
-
-
-def test_the_skeleton_extractor_is_not_vacuous(skeletons) -> None:
-    """抽出器の空振り検出: 5 本ぶん・骨格 2 面が実際に採れている。
-
-    抽出に失敗して空の集合どうしを比べると、上のテストは常に緑になる（ガードが死ぬ）。
-    """
-    # Arrange / Act
-    classes = [cls for _, cls in _ROUTE_APP_MODULES]
-    # Assert
-    assert sorted(skeletons) == sorted(classes)
-    for cls in classes:
-        assert sorted(skeletons[cls]) == sorted(_SKELETON_MEMBERS), cls
-        for member in _SKELETON_MEMBERS:
-            assert skeletons[cls][member], f"{cls}.{member} の正規化結果が空"
-
-
-def test_the_skeleton_comparison_can_see_a_difference(skeletons) -> None:
-    """比較器の検出力: 1 文の違いを別物として見る（同一性の主張が空虚でないこと）。
-
-    上の同一性テストは「差が無い」ことを主張する。差を見せたときに落ちる比較器で
-    測っていることを、ここで自己検定する（変異注入の常設版）。
-    """
-    # Arrange: 実物の __getattr__ に 1 文だけ足した変異体。
-    reference_class = _ROUTE_APP_MODULES[0][1]
-    reference = skeletons[reference_class]["__getattr__"]
-    mutated_src = (
-        "def __getattr__(self, name: str) -> Any:\n"
-        '    inner = self.__dict__.get("_inner")\n'
-        "    if inner is None:\n"
-        "        raise AttributeError(name)\n"
-        "    probe = inner\n"          # ← 無害だが骨格としては別物
-        "    return getattr(probe, name)\n"
-    )
-    mutated_fn = ast.parse(mutated_src).body[0]
-    assert isinstance(mutated_fn, ast.FunctionDef)
-    # Act
-    mutated = _normalize(mutated_fn)
-    # Assert
-    assert mutated != reference, "比較器が別物の骨格を同一とみなしている（ガードが空虚）"
-
-
-def test_the_docstring_is_outside_the_comparison(skeletons) -> None:
-    """散文の差は比較対象外（実測: candles の 「__getattr__」 だけ docstring が長い）。
-
-    この前提が崩れる（5 本の docstring が揃う）と、上の「docstring を外す」という
-    設計判断の根拠が消える。根拠が消えたことに気付けるよう、前提そのものを固定する。
-    """
-    # Arrange
-    docstrings = {}
-    for mod, cls in _ROUTE_APP_MODULES:
-        tree = ast.parse(_module_path(mod).read_text(encoding="utf-8"))
-        klass = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
-        fn = next(m for m in klass.body if isinstance(m, ast.FunctionDef) and m.name == "__getattr__")
-        docstrings[cls] = ast.get_docstring(fn)
-    # Act / Assert: 散文は割れているのに、骨格（比較対象）は割れていない。
-    assert len(set(docstrings.values())) > 1, (
-        "5 本の __getattr__ docstring が揃った。docstring を比較から外す理由"
-        " （散文の差を是正圧力にしない）が消えたので、本モジュールの設計判断を見直すこと。"
-    )
-    reference = skeletons[_ROUTE_APP_MODULES[0][1]]["__getattr__"]
-    assert all(s["__getattr__"] == reference for s in skeletons.values())
-
-
-# --------------------------------------------------------------------------------------
-# 2. 計算量検定（Test Spy・発行 − 使用 = 0）
-# --------------------------------------------------------------------------------------
-@pytest.mark.parametrize("modules_requested", [2, 5], ids=["parse_2", "parse_5"])
-def test_the_skeleton_is_parsed_once_per_module(modules_requested: int) -> None:
-    """モジュール 2 本 / 5 本の 2 点で「parse 回数 − モジュール数 = 0」。
-
-    突き合わせのたびに parse し直す（O(n^2)）形になっていないことだけを固定する。
+    走査のたびに parse し直す（O(n^2)）形になっていないことだけを固定する。
     回数リテラルは焼き込まず、要求したモジュール数から導出する。
     """
     # Arrange
@@ -214,11 +210,11 @@ def test_the_skeleton_is_parsed_once_per_module(modules_requested: int) -> None:
         parsed.append(len(source))
         return ast.parse(source, *args, **kwargs)
 
-    targets = _ROUTE_APP_MODULES[:modules_requested]
+    targets = _FRAMEWORK_MODULES[:modules_requested]
     # Act
-    skeletons = {cls: _skeleton_of(mod, cls, parse=_spy) for mod, cls in targets}
+    collected = {m.__name__: _tree_of(m, parse=_spy) for m in targets}
     # Assert
-    assert len(skeletons) == modules_requested
+    assert len(collected) == modules_requested
     assert len(parsed) - modules_requested == 0, (
         f"モジュール {modules_requested} 本に対し parse が {len(parsed)} 回発行された"
         "（採取した木を使い回さず作り直して捨てている）"

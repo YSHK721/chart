@@ -8,11 +8,16 @@ serve_replay_candles と同じ様式で 3 ルートを持つ:
 3 つを 1 つの App に束ねるのは、いずれも「価格帯に沿った集計」という同じ関心事で、
 変更が同時に来るからである（別々の App にすると 3 箇所を同じ理由で触ることになる）。
 
-クエリ解釈・既定値・例外分類・応答の形は分割前の do_GET から逐語で移してあり、応答は
-1 バイトも変わらない。各ルートは Port が注入されているときだけ持つ（未注入なら静的配信へ
-フォールバック＝分割前の ``and app.*_enabled`` と同値）。
+業務の入口（replay backend の App）は ``core`` として明示で受け取り、必要な面は
+クラス属性の宣言表で表明する（ISSUE-502 段階 5B: 透過委譲の撤去）。3 ルートはいずれも
+成否の分類つき結果を受け取り、HTTP ステータスへの写像は ``http_response_for`` の 1 箇所へ
+委ねる（本 App は番号を持たない）。
 
-重い処理のワーカーとロックは内側の単一インスタンスを共有する（自前で作らない）。
+クエリ解釈・既定値・例外分類・応答の形は分割前の do_GET から逐語で移してあり、応答は
+1 バイトも変わらない。各ルートは Port が注入されているときだけ持つ（未注入なら ``fallback`` へ
+落ちる＝分割前の ``and app.*_enabled`` と同値）。
+
+重い処理のワーカーとロックは ``core`` が 1 つだけ持つ（本 App は自前で作らない）。
 """
 from __future__ import annotations
 
@@ -21,6 +26,8 @@ from urllib.parse import parse_qs, urlparse
 
 from simulator.replay_ui.framework.serve_replay import (
     _error_response,
+    http_response_for,
+    require_core_members,
     write_replay_json,
 )
 from api_shared.json_get_routes import GetRouteResponder
@@ -32,25 +39,36 @@ TICKVOL_PROFILE_PATH = "/tickvol_profile"
 
 
 class ReplayProfilesApp:
-    """内側 App を包み、プロファイル系のルートを JSON 経路として前置きした面。"""
+    """プロファイル系のルートを持ち、外れた path を ``fallback`` へ落とす面。
 
-    def __init__(self, *, inner: Any) -> None:
-        self._inner = inner
+    ``core``: 業務の入口（`ReplayApp`）。``fallback``: 1 つ前の配信面。
+    """
+
+    #: 本 App が ``core`` へ要求する面（生成時に不足を検査する＝起動時 fail-stop）。
+    REQUIRED_CORE_MEMBERS = (
+        "tickvol_profile", "tickvol_profile_enabled",
+        "market_profile", "market_profile_enabled",
+        "market_profile_forming", "forming_enabled",
+    )
+
+    def __init__(self, *, core: Any, fallback: Any) -> None:
+        require_core_members(core, self.REQUIRED_CORE_MEMBERS, owner=type(self).__name__)
+        self._core = core
         routes: "dict[str, Any]" = {}
-        if inner.tickvol_profile_enabled:
+        if core.tickvol_profile_enabled:
             routes[TICKVOL_PROFILE_PATH] = self._tickvol_profile
-        if inner.market_profile_enabled:
+        if core.market_profile_enabled:
             routes[MARKET_PROFILE_PATH] = self._market_profile
-        if inner.forming_enabled:
+        if core.forming_enabled:
             routes[MARKET_PROFILE_FORMING_PATH] = self._market_profile_forming
         self.static_server = GetRouteResponder(
-            routes=routes, fallback=inner.static_server, writer=write_replay_json
+            routes=routes, fallback=fallback, writer=write_replay_json
         )
 
     @property
-    def inner(self) -> Any:
-        """包んでいる内側 App（結線を複製していないことを確かめる面）。"""
-        return self._inner
+    def core(self) -> Any:
+        """業務の入口（結線を複製していないことを確かめる面）。"""
+        return self._core
 
     def _tickvol_profile(self, path: str) -> "tuple[int, Any]":
         # 取引密度ハイライト（時刻帯の背景色）の帯定義。until はリビール T（単一時計 to）。
@@ -61,7 +79,7 @@ class ReplayProfilesApp:
         pct = (q.get("pct") or [None])[0]
         until = (q.get("until") or [None])[0]
         try:
-            return self._inner.tickvol_profile(ref, sessions, pct, until)
+            return http_response_for(self._core.tickvol_profile(ref, sessions, pct, until))
         except Exception as e:  # noqa: BLE001 — 例外分類は _error_response へ集約（ISSUE-097 🟡-4）
             return _error_response(e)
 
@@ -81,10 +99,9 @@ class ReplayProfilesApp:
         today = (q.get("today") or [None])[0]
         sessions = (q.get("sessions") or [None])[0]
         try:
-            status, payload = self._inner.market_profile(
+            return http_response_for(self._core.market_profile(
                 ref, tf, limit, bins, va, src, barw, to,
-                frm=frm, today=today, sessions=sessions)
-            return (status, payload)
+                frm=frm, today=today, sessions=sessions))
         except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
             return _error_response(e)
 
@@ -104,15 +121,7 @@ class ReplayProfilesApp:
         # from（セッション窓 base 下限・当日始まり）。省略時 None＝従来全期間 base（後方互換）。
         frm = (q.get("from") or [None])[0]
         try:
-            status, payload = self._inner.market_profile_forming(
-                ref, tf, now, base, since, bins, va, barw, frm)
-            return (status, payload)
+            return http_response_for(self._core.market_profile_forming(
+                ref, tf, now, base, since, bins, va, barw, frm))
         except Exception as e:  # noqa: BLE001 — ValueError→validation 欠落を是正し中央翻訳へ集約（ISSUE-097 🟡-4）
             return _error_response(e)
-
-    def __getattr__(self, name: str) -> Any:
-        """自分が持たない属性は内側 App へ委譲する（結線を殺さない）。"""
-        inner = self.__dict__.get("_inner")
-        if inner is None:  # __init__ 完了前・複製時の再帰防止
-            raise AttributeError(name)
-        return getattr(inner, name)
