@@ -14411,7 +14411,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   dashboard e2e のライブデータ依存 flake（test_market_profile_unwired・是正前から存在・別 ISSUE 候補）。
 
 ## ISSUE-503: dashboard e2e 検定にライブデータ依存の表明が混入し、目的と無関係な理由で赤くなる
-- **ステータス**: 事象 A = RESOLVED（2026-09-07・eecdad3）／事象 B = OPEN
+- **ステータス**: 事象 A = RESOLVED（2026-09-07・eecdad3）／事象 B = RESOLVED（2026-09-08・6 工程パイプライン）
 - **発見日**: 2026-09-07（ISSUE-502 段階 4B 是正中の A/B 実測で確定・HEAD でも赤になる回を 3 往復で実証）
 - **重大度**: 中（検定の信頼性。製品挙動への影響なし）
 - **事象 A（是正済み）**: `tests/e2e/test_market_profile_unwired.py` の `len(second["rows"]) > len(first["rows"])`。
@@ -14423,6 +14423,15 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   の `len(issued) - warmed == 0` を 1 回赤で観測。推論（未再現・単体 30 回/全体 3 回は緑）: warm と繰り返し要求の
   間に 1m 足が 1 本確定すると素材 epoch が進み full_compute が再発行される——仕様どおりの再構築を検定側が
   「epoch が進まない」前提で測っているのが原因。抜本策は事象 A と同型（素材を固定するか、版の前進を検出して測り直す）。
+- **事象 B 是正（2026-09-08・fix/issue-503b-504-deterministic-e2e-and-import-closure）**: 原因を実測で確定
+  （素材前進の変異注入で同一検定が決定的に赤くなることを再現＝推論を実測へ格上げ）。是正は注入の pass-through：
+  gateway に既在した seam（bridge=/now=・indicator_ui_compute_gateway.py:70-77）を build_dashboard_app が
+  最外殻まで通し、検定は固定素材 bridge（合成 1m 足 600 本・data/ 不読）＋固定時計を注入。monkeypatch は
+  Composition Root 迂回＝依存方向違反として撤去。既定経路は無改変（bridge/now 未指定で従来どおり adapter が
+  遅延解決・R3 検定緑）。同型のライブ依存表明 3 件（p is not None ほか）も固定素材殻へ移設（アサーション無変更・
+  実データ被覆は test_the_reach_sheet_answers_with_real_material を base に残置して維持）。
+  実測: 30 回連続緑＋10 回×2 巡緑・now 結線検定は変異（now= 除去）で赤・full_compute 追加発行 0 を
+  繰り返し 3/12 の 2 点で表明・warmed>0 かつ degradations==[] で空虚性排除。dashboard 系 1692 緑・gate exit 0。
 - **後続候補の是正完了（2026-09-07・依頼者「続けろ」承認）**: 46f2e85（router core 集合突合＋env_keys 導出）・
   e36ed7f（C-4 3c＝市場データ語彙 4 本を chart_kernel へ・参照 0 symlink 1 本削除。color_roles は方向検定が
   参照 1 を実捕捉し削除撤回＝台帳の「参照 0」認定は誤り）・e869362（D-15 同型 2 件）・eecdad3（dashboard 3 点）・
@@ -14436,7 +14445,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   JS モード表パーサの二重化（tools/tests 側）・ISSUE-503 事象 B。
 
 ## ISSUE-504: replay_ui に解決不能な相対 import 22 本が既存残存・core 側 symlink 閉包の機械的検査が無い
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-08・6 工程パイプライン・事象記述の 2 点を実測で訂正のうえ是正）
 - **発見日**: 2026-09-07（C-4 3c 是正中の全数走査で検出・是正起因ではないことを git ls-files で確認済み）
 - **事象**: replay_ui の JS 22 本が指す相対 import 先が git に一度も存在しない（例: mp_session_tiles.js →
   ../../domain/session_ohlc.js の symlink 閉包漏れと同型）。該当モジュールは実行グラフに乗っておらず実害なし。
@@ -14451,3 +14460,22 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
   方向検定 P-5/P-6 新設・実配信 303 URL 巡回で非 200 ゼロ・全 8 web スイート緑。
   残る次段候補（可逆・各段別途）: (i) replay へ 18 本の symlink 直結 (ii) shared_js_root フォールバック根の
   台帳導出化 (iii) vendor/css の帰属分類。
+- **是正（2026-09-08・fix/issue-503b-504-deterministic-e2e-and-import-closure）**: 事象記述 2 点が実測で不成立と
+  確定し、真の欠陥へ再定義して是正。(1)「解決不能 22 本」→ 実測 0 本。既存検定
+  （indicator_ui/web/tests/served_import_resolution.test.js）がフォールバック規則込みで replay を検査済み・緑。
+  22 本の正体は「replay 自根に無く shared_js_root フォールバック（indicator_ui/web）に救われている辺」
+  （22 辺＝19 ファイル）。(2)「実行グラフに乗っておらず実害なし」→ 全 22 辺が replay index.html 起点の
+  推移閉包に到達。真の欠陥は (a) 走査根が列挙で dashboard/sim/unified の 3 根が無検査 (b) フォールバック依存の
+  脆さ（自根だけで解決できるか）を測る面が無いこと。
+  是正: 所有者実体への相対 symlink 20 本（19＋閉包新出の symbol_spec_generated.js 1）を replay 自根へ加法直結
+  （22 辺との差は辺→ファイルの多対一。所有者内訳 indicator_kit 18／chart_kernel 1／market_profile 1・
+  core→core の辺 0）。common/core_web_topology.{json,py} 台帳を新設し 4 Composition Root の
+  indicator_ui/web リテラル 4 重所有を解消（解決 Path は前後 7 値完全一致・上記 (ii) を実施）。
+  unified_ui/web/tests/served_import_resolution_all_cores.test.js が全 5 根で「解決不能 0」と
+  「フォールバック依存台帳との完全一致（増減とも Red）」を機械強制（凍結台帳は空）。
+  JS/Python の解決結果 360 辺突合で不一致 0。計算量ゲートは読取・dir 列挙・存在確認の 3 軸で発行−対象=0
+  （導入時に実在した dir 二重列挙 4 件を検出し純減）。全 8 web スイート 4606 緑・Python 1692/1449 緑・gate exit 0。
+- **残置（別裁定）**: 旧 served_import_resolution.test.js の規則実装 2 枚目の集約（ファイル削除を伴う）・
+  core_public_facades.test.js の CORE_WEB_ROOT 台帳導出化・js_package_direction.test.js の PACKAGE_ROOTS
+  台帳導出（段階 3）。未検証: 実 UI（serve.sh 再起動後の実起動・配信 URL 巡回＝ユーザー実施）。
+  別調査: ライブ素材 600 本で p が全区間 null（tail_unscaled）になる条件の解明。
