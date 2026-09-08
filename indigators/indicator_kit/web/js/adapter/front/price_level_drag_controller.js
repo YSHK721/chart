@@ -30,6 +30,17 @@
 
 import { withPriceAt } from '../../domain/price_levels.js';
 
+// renderer に要求する面（ISSUE-431・ISP）。契約はクライアント（本 class）が所有し、結線側が
+//   `createHostView(renderer, PRICE_LEVEL_DRAG_HOST_CONTRACT)` で射影して渡す。ピッカーの契約
+//   （PRICE_PICK_HOST_CONTRACT）を使い回さない: drag は候補列挙もペイン判定もしないため、
+//   共有すると「drag が使っていない面」が 2 つ開いたままになる（ISP の縮小が半分になる）。
+export const PRICE_LEVEL_DRAG_HOST_CONTRACT = Object.freeze({
+  role: 'PriceLevelDragRenderer',
+  methods: Object.freeze(['priceAtCoordinate', 'suppressInteraction']),
+  fields: Object.freeze([]),
+  optionalFields: Object.freeze([]),
+});
+
 // 掴み許容（px）。既定は線の視認幅より広く取る（細い線をピクセル単位で狙わせない）。
 const DEFAULT_GRAB_TOLERANCE_PX = 6;
 

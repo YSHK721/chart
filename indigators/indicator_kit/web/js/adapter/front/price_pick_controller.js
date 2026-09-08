@@ -31,6 +31,21 @@ import {
   MSG_OTHER_PANE, MSG_NO_PRICE, MSG_NO_SYMBOL_SPEC, DEFAULT_PICK_TOLERANCE_PX,
 } from './price_pick_resolver.js';
 
+// renderer に要求する面（ISSUE-431・ISP）。契約はクライアント（本 class）が所有し、結線側が
+//   `createHostView(renderer, PRICE_PICK_HOST_CONTRACT)` で射影して渡す（同一配線内の正解形
+//   COLOR_THEME_HOST_CONTRACT と同じ規約）。ChartRenderer 実体を丸ごと受けると、renderer 側の
+//   無関係な変更（movePane / barInfoAt 等）が本 class と検定の fake へ波及する。
+//   内訳: suppressInteraction は本 class 自身、残り 3 面は resolver（price_pick_resolver.js:74-106）
+//   が要求する（実測 grep）。面を足すときは実際の使用箇所を添えてここへ足す。
+export const PRICE_PICK_HOST_CONTRACT = Object.freeze({
+  role: 'PricePickRenderer',
+  methods: Object.freeze([
+    'priceAtCoordinate', 'paneIndexAtCoordinate', 'snapCandidatesAt', 'suppressInteraction',
+  ]),
+  fields: Object.freeze([]),
+  optionalFields: Object.freeze([]),
+});
+
 const HOST_CLASS = 'price-pick-ghost';
 
 // OHLC 候補の label はフィールド名（表示文言は View の責務＝8-b の取り決め）。ここで日本語へ写す。

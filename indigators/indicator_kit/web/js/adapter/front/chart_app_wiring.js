@@ -59,8 +59,8 @@ import { PositionSizingMenu } from './position_sizing_menu.js';
 import { PositionSizingDialog, defaultParams, defaultLevels } from './position_sizing_dialog.js';
 import { PositionSizingController } from './position_sizing_controller.js';
 import { PriceLevelLinesPrimitive } from './price_level_lines_primitive.js';
-import { PriceLevelDragController } from './price_level_drag_controller.js';
-import { PricePickController } from './price_pick_controller.js';
+import { PriceLevelDragController, PRICE_LEVEL_DRAG_HOST_CONTRACT } from './price_level_drag_controller.js';
+import { PricePickController, PRICE_PICK_HOST_CONTRACT } from './price_pick_controller.js';
 import { McWorkerGateway } from './mc_worker_gateway.js';
 import { createPriceContextItems, liveMenuItems } from './position_sizing_context_items.js';
 import { resolvePickedPrice, MSG_NO_SYMBOL_SPEC } from './price_pick_resolver.js';
@@ -621,9 +621,12 @@ function createPositionSizingCollaborators({
   });
 
   // ピッカーの確定はモーダルへ書き戻す（`controller` は直後に確定する＝呼び出し時解決）。
+  //   renderer は**契約面へ射影して**渡す（ISSUE-431・ISP）。ChartRenderer 実体を丸受けさせると
+  //   renderer 側の無関係な変更が協働子と検定の fake へ波及する。正解形は本ファイルの
+  //   `createHostView(controller, COLOR_THEME_HOST_CONTRACT)` と同じ（契約はクライアント所有）。
   const picker = new PricePickController({
     container,
-    renderer,
+    renderer: renderer ? createHostView(renderer, PRICE_PICK_HOST_CONTRACT) : renderer,
     document: doc,
     registerVerticalPanBlocker,
     onConfirm: (target, price) => controller.confirmPick(target, price),
@@ -642,9 +645,10 @@ function createPositionSizingCollaborators({
   });
 
   // 水準線 drag（スライス 4）。掴む対象の座標源は primitive、水準の実体は協働子から得る。
+  //   renderer の射影は drag 自身の契約で行う（ピッカーの契約を使い回さない理由は契約側に記載）。
   const drag = new PriceLevelDragController({
     container,
-    renderer,
+    renderer: renderer ? createHostView(renderer, PRICE_LEVEL_DRAG_HOST_CONTRACT) : renderer,
     primitive,
     getLevels: () => controller.levels(),
     onLevelsChange: (next) => controller.applyLevels(next),
