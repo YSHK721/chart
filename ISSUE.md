@@ -8364,7 +8364,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-419: [設計] Tester フォームが規則 B（Optimization != 0 のとき Visual を送らない）を守らない（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 8 スライス 5 の設計判断として意図的に残した差分）
+- **ステータス**: RESOLVED（2026-09-08。対策どおりの宣言（activation: Visual→Optimization on_tokens[DISABLED]/omit）は afe01d9 で実装済み・front は宣言評価のみ（規則の第 2 実装なし）。未固定だった宣言自体を変異実測（削除で 623 緑＝無検査）で確認し、test_rule_b_exclusion_is_declared_for_visual で enums 導出の期待値により機械固定（削除変異で赤を実測）。sim_ui 988 緑）
 - **重大度**: Low（沈黙失敗ではない。応答の rule_id が利用者の関心とずれるだけ）
 - **事実**:
   1. `sim_tester_settings_panel_view.js` は `Visual` を常に送る。`Optimization` を既定以外に
@@ -8380,7 +8380,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-420: [申し送り] sim Phase 8（MT5 Tester Settings の UI 結線）レビュー残項目 5 件（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。いずれもマージ非阻害・レビュー最終リスト C〜G）
+- **ステータス**: 一部 RESOLVED（2026-09-08。1=front メンバ名ガード新設（enums 導出・変異注入で赤実測）、2=expert_only docstring を実態（front 消費者 0・落とすか使うかは要裁定）へ是正、5=E2E に required_keys⊆tester⊆key_order を宣言導出で追加（Currency/Visual 落とし変異で赤実測）。残: 3=present_outputs 一本化（simulator/main 側）と 4=写像層公開アクセサ（承認事項）＝要裁定）
 - **重大度**: Low（各項目の根拠・実測はレビュー記録および基本設計書 §18.5 参照）
 - **項目**:
   1. front 語彙ガードが列挙メンバ名（`EVERY_TICK` 等）の複製を検出しない（§18.3 走査要件の残余。
@@ -8398,7 +8398,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-421: [設計] `reportViewUrl` が 2 モジュールで同名別実装（同一概念に 2 つの意味）（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 9 設計調査 R-h・段階 1 の対象外）
+- **ステータス**: RESOLVED（2026-09-08。URL 導出を report_view_url.js（純関数・依存 0）へ集約し両モジュールが同一実体を import する形に。値の差（絶対パス/相対クエリ）は base 引数 1 つの表記差へ還元。第 2 実装の再発は import_source.test.js の「?job= 組み立ては 1 モジュールのみ」走査（検出器自己検定付き）が Red で遮断。既存アサーション無変更・web 461 緑）
 - **重大度**: Low
 - **事実（実読 2026-08-19）**: `simulator/sim_ui/web/js/adapter/front/sim_frame_view.js:29`（絶対パス版）と
   `composition_root_execution.js:27`（相対クエリ版）に同名 `reportViewUrl` が別実装で存在する。
