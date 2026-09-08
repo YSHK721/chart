@@ -16,6 +16,8 @@ from typing import Any
 import pandas as pd
 
 from indigators.indicator_ui import api_loader
+# timestamp → epoch 秒の唯一実体（ISSUE-410: 規則を書き写さず同一オブジェクトを読む）。
+from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 
@@ -143,7 +145,8 @@ class CausalComputeGateway:
         # ISSUE-158 ①: 列単位ベクトル化（旧: 行ループ df.iloc＝50k 行で ~1.2s・compute 1 回の 69%）。
         #   出力は旧実装と完全同一（キー順 time→列順・time は int・値は float。等価性は
         #   tests/unit/test_plain_bars_vectorized.py が参照実装との一致で固定）。
-        secs = df.index.values.astype("datetime64[s]").astype("int64")
+        # epoch 秒化は共有実体 timestamp_epoch_seconds へ委譲（規則の写しを持たない・ISSUE-410）。
+        secs = timestamp_epoch_seconds(df.index.to_series()).to_numpy()
         keys = ["time"] + [str(c).lower() for c in df.columns]
         columns = [secs.tolist()] + [
             df[c].to_numpy(dtype="float64").tolist() for c in df.columns

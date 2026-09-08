@@ -21,6 +21,8 @@ from typing import Any, Callable
 import pandas as pd
 
 from indigators.indicator_ui import api_loader
+# timestamp → epoch 秒の唯一実体（ISSUE-410: 規則を書き写さず同一オブジェクトを読む）。
+from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort
 
 _M1_CAP = 1500
@@ -99,7 +101,9 @@ class IntrabarWindowRepository:
         if not frames:
             return []
         tdf = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
-        secs = tdf["timestamp"].dt.tz_localize(None).values.astype("datetime64[s]").astype("int64")
+        # epoch 秒化は共有実体 timestamp_epoch_seconds へ委譲（規則の写しを持たない・
+        # ISSUE-410。aware/naive・解像度 ms/us/ns の正規化は共有実体が持つ）。
+        secs = timestamp_epoch_seconds(tdf["timestamp"]).to_numpy()
         bid = tdf["bidPrice"].tolist()
         ask = tdf["askPrice"].tolist()
         return [(int(secs[i]), float(bid[i]), float(ask[i])) for i in range(len(tdf))]

@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from indigators.indicator_ui import api_loader
+# timestamp → epoch 秒の唯一実体（ISSUE-410: 規則を書き写さず同一オブジェクトを読む）。
+from simulator.adapter.repository.tick_parquet import timestamp_epoch_seconds
 from simulator.replay_ui.adapter.dataset_ports import OhlcSupplyPort, RefValidationPort
 
 class CausalCandleRepository:
@@ -59,8 +61,12 @@ class CausalCandleRepository:
 
     @staticmethod
     def _index_secs(df):
-        """DataFrame の index（UTC 時刻）を UNIX 秒の ndarray で返す。"""
-        return df.index.values.astype("datetime64[s]").astype("int64")
+        """DataFrame の index（UTC 時刻）を UNIX 秒の ndarray で返す。
+
+        epoch 秒化は共有実体 timestamp_epoch_seconds へ委譲する（規則の写しを
+        持たない・ISSUE-410）。
+        """
+        return timestamp_epoch_seconds(df.index.to_series()).to_numpy()
 
     # ---- CausalCandlePort ----
 
