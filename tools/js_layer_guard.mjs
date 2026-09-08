@@ -116,7 +116,12 @@ export function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
-const DEFAULT_IO = Object.freeze({
+/**
+ * 走査の実 I/O（既定）。**export しているのは写しを作らせないため**である（是正レビュー Y-6）:
+ * 同じ 3 フィールドを別の検査器が書き直すと、読取口の定義が 2 か所になり、計算量ゲートが
+ * 数える先と実際に読む先がずれうる。相手を足したい検査器は展開して 1 フィールドだけ足す。
+ */
+export const DEFAULT_IO = Object.freeze({
   readFile: (p) => readFileSync(p, 'utf8'),
   readDir: (p) => readdirSync(p),
   statOf: (p) => statSync(p),

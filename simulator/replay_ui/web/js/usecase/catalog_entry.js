@@ -1,0 +1,1 @@
+../../../../../indigators/market_profile/web/js/usecase/catalog_entry.js

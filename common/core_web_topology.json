@@ -1,0 +1,26 @@
+{
+  "cores": {
+    "live": {
+      "web": "indigators/indicator_ui/web",
+      "fallbacks": []
+    },
+    "replay": {
+      "web": "simulator/replay_ui/web",
+      "fallbacks": ["indigators/indicator_ui/web"]
+    },
+    "sim": {
+      "web": "simulator/sim_ui/web",
+      "fallbacks": ["indigators/indicator_ui/web"]
+    },
+    "dashboard": {
+      "web": "dashboard_ui/web",
+      "fallbacks": ["indigators/indicator_ui/web"]
+    }
+  },
+  "integration": {
+    "unified": {
+      "web": "unified_ui/web",
+      "fallbacks": []
+    }
+  }
+}

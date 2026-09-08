@@ -31,6 +31,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from common import core_web_topology
+
 from dashboard_ui.adapter.breakpoints import BreakpointRegistry
 from dashboard_ui.adapter.controller.demand_ledger import (
     DemandRecordingController,
@@ -65,6 +67,10 @@ from dashboard_ui.usecase.sheet_models import SheetInstance
 # repo 根 = dashboard_ui/main/composition_root.py の parents[2]。
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: 配信トポロジ台帳（common/core_web_topology.json）における自分の行。配信根と共有根の
+#: 実体はそこが単独で持つ——ここへ書き写すと同じ事実の所有者が 5 人目になる（ISSUE-504 (ii)）。
+CORE_NAME = "dashboard"
+
 #: 足ごとに読む本数（参照実装 probe_inverse.py:41-42 の本数表と同値）。
 BAR_LIMITS: "Mapping[str, int]" = {
     "1m": 3000, "5m": 3000, "15m": 3000, "1h": 2000,
@@ -83,13 +89,15 @@ def build_dashboard_app(
     persist: bool = False,
     persist_dir: Any = None,
     warmup: bool = False,
+    bridge: Any = None,
+    now: Any = None,
 ) -> DashboardApp:
     """dashboard core のアプリケーションを組み立てる。
 
     Args:
         repo_root: リポジトリ根（既定は本ファイルから解決）。
-        web_dir: フロントの配信根（既定は `dashboard_ui/web`。無ければ静的配信無効）。
-        shared_js_root: 単一ソース共有の根（既定は `indigators/indicator_ui/web`）。
+        web_dir: フロントの配信根（既定は配信トポロジ台帳の自分の行。無ければ静的配信無効）。
+        shared_js_root: 単一ソース共有の根（既定は同台帳のフォールバック根）。
         bar_limits: 足ごとに読む本数（既定は :data:`BAR_LIMITS`）。
         persist: True なら確定素材と需要台帳をディスクへ持ち越す（置き場は adapter の
             :func:`default_spill_dir`＝DATA_DIR 配下・ISSUE-501 段階 2・依頼者承認
@@ -98,17 +106,31 @@ def build_dashboard_app(
         persist_dir: 置き場の明示指定（検定用。指定時は `persist` に依らず持ち越す）。
         warmup: True なら起動時に需要台帳の束を別スレッドで 1 回再演して温める
             （待受け開始はブロックしない）。持ち越しなしでは温める材料が無いので無効。
+        bridge: dataset ＋ 計算面の namespace（既定 None＝各 gateway が従来どおり
+            ライブ core の単一ソースを**自分で遅延解決**する）。本 Root は bridge を
+            **作らない**——技術（指標計算 Facade・素材）を知ってよいのは adapter だけで
+            あり、main がそれを import すると層の規則 R3 が落ちる
+            （dashboard_ui/tests/unit/test_dashboard_import_direction.py の
+            test_only_the_adapter_layer_knows_pandas_and_the_compute_bridge）。
+            ここが持つのは「別の相手を運べる」ことだけである（store と同じ規律）。
+        now: 時刻の供給（引数なしで UNIX 秒を返す呼び出し可能。既定 None＝壁時計）。
+            素材の表示時点への巻き戻しがこれを読む。検定が素材と時刻の両方を支配できないと、
+            観測の途中で足が確定して素材の版が進み、計算量の表明が**目的と無関係な理由で**
+            赤くなる（ISSUE-503 事象 B）。
     """
     root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
     limits = dict(BAR_LIMITS if bar_limits is None else bar_limits)
-    web = Path(web_dir).resolve() if web_dir is not None else root / "dashboard_ui" / "web"
+    web = (
+        Path(web_dir).resolve() if web_dir is not None
+        else core_web_topology.web_root(CORE_NAME, root)
+    )
     shared = (
         Path(shared_js_root).resolve()
         if shared_js_root is not None
-        else root / "indigators" / "indicator_ui" / "web"
+        else core_web_topology.primary_fallback_root(CORE_NAME, root)
     )
     registry = BreakpointRegistry()
-    capability = IntrabarCapabilityGateway()
+    capability = IntrabarCapabilityGateway(bridge=bridge)
     state = SheetState()
     if persist_dir is not None:
         spill = Path(persist_dir).resolve()
@@ -120,12 +142,18 @@ def build_dashboard_app(
         MaterialStore() if spill is None
         else PersistentMaterialStore(MaterialStore(), spill_dir=spill)
     )
-    scopes = ParamScopes()
+    # 受理集合の取得元も注入された bridge にする（既定 None＝従来どおり adapter が
+    #   ライブ core の単一ソースを自分で解決する）。ここで差し替えないと、素材だけ
+    #   固定しても param の絞り込みだけがライブ core を触りに行く。
+    #   **取得手順そのものは型の側が持つ**——ここへ書き写すと同じ 1 行の
+    #   3 枚目の所有者になる（是正レビュー Y-1）。
+    scopes = ParamScopes(bridge=bridge)
     roles = SeriesRoleTable(store=materials)
 
     def controller_factory():
         series_gateway = IndicatorUiComputeGateway(
-            bar_limits=limits, store=materials, param_scopes=scopes
+            bar_limits=limits, store=materials, param_scopes=scopes,
+            bridge=bridge, now=now,
         )
         controller = _build_controller(series_gateway)
         if spill is None:
@@ -144,7 +172,7 @@ def build_dashboard_app(
             registry=registry,
             forward_port=ForwardEvaluationGateway(
                 value_series_of=_value_series_of(roles), bar_limits=limits,
-                param_scopes=scopes,
+                param_scopes=scopes, bridge=bridge,
             ),
             # 比較集合の口は P-1 を持たない: 最小単位（1m）の系列も controller が
             #   `usecase/sheet_supply.py` から**値として**配る（ISSUE-502 F-1 と同じ形）。

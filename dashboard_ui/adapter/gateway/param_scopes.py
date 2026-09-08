@@ -55,11 +55,24 @@ class ParamScopes:
     Args:
         source: 受理集合の取得手順（省略時はライブ core の単一ソースを bridge 越しに読む）。
             **この手順は高々 1 回しか呼ばれない**。
+        bridge: 受理集合の取得元そのもの（namespace）。手順を包むラムダを呼ぶ側に書かせない
+            ための束縛点である——同じ 1 行の写しが増えると「どこで絞っているか」の所有者が
+            散り、片方だけ直した日に片方の口だけがライブ core を触りに行く（是正レビュー
+            Y-1）。`source` とは排他（両方渡すと TypeError）。
     """
 
     def __init__(
-        self, *, source: "Callable[[], Mapping[str, Mapping[str, object]]] | None" = None
+        self, *,
+        source: "Callable[[], Mapping[str, Mapping[str, object]]] | None" = None,
+        bridge: Any = None,
     ) -> None:
+        if source is not None and bridge is not None:
+            # `source` と `bridge` は同じ 1 つのこと（どこから受理集合を取るか）を指す。
+            #   両方を受けると「どちらが勝つか」という規則が新たに生まれ、その規則を知らない
+            #   呼び出し側が静かに無視される方を渡す。規則を作らずその場で落とす。
+            raise TypeError("source と bridge は同時に指定できません（どちらか一方）")
+        if bridge is not None:
+            source = lambda: scopes_of(bridge)  # noqa: E731 — 1 行の束縛（名前を増やさない）
         self._source = source if source is not None else _bridge_source
         self._table: "Mapping[str, Mapping[str, object]] | None" = None
 

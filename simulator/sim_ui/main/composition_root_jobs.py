@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from common import core_web_topology
 from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
 from simulator.sim_ui.adapter.ea_registry_series_catalog import EaRegistrySeriesCatalog
 from simulator.sim_ui.adapter.ea_stop_loss_param_catalog import EaStopLossParamCatalog
@@ -36,6 +37,7 @@ from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
     TesterSettingsSchemaCatalog,
 )
 from simulator.sim_ui.framework.serve_sim_jobs import SimJobApp
+from simulator.sim_ui.main.composition_root import CORE_NAME
 from simulator.sim_ui.usecase.job_ports import EaSubjectPort
 
 # repo 根 = simulator/sim_ui/main/composition_root_jobs.py の parents[3]。
@@ -252,7 +254,7 @@ def build_sim_job_app(
     shared_js = (
         Path(shared_js_root).resolve()
         if shared_js_root is not None
-        else root / "indigators" / "indicator_ui" / "web"
+        else core_web_topology.primary_fallback_root(CORE_NAME, root)
     )
     jobs_root = (
         Path(data_root).resolve()
