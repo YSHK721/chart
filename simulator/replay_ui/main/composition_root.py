@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from common import core_web_topology
 from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import RefValidationPort
 from simulator.replay_ui.adapter.causal_candle_repository import CausalCandleRepository
@@ -26,6 +27,10 @@ from simulator.replay_ui.framework.serve_replay import ReplayApp
 # repo 根 = simulator/replay_ui/main/composition_root.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
+#: 配信トポロジ台帳（common/core_web_topology.json）における自分の行。共有根の実体は
+#: そこが単独で持つ——ここへ書き写すと同じ事実の所有者が増える（ISSUE-504 (ii)）。
+CORE_NAME = "replay"
+
 
 def build_replay_app(
     *,
@@ -39,7 +44,7 @@ def build_replay_app(
 
     ``data_dir``: tick 由来データ根（既定 ``<repo>/data/marketdata``）。リプレイ固有フィードの
     ``ticks/``（tick parquet）を含む（m1/candle は dataset 単一権威へ委譲済み・ISSUE-131/132）。``web_dir``: 静的フロント配信ディレクトリ（任意・None で静的配信無効）。
-    ``shared_js_root``: 単一ソース共有のフォールバック根（既定 ``<repo>/indigators/indicator_ui/web``）。
+    ``shared_js_root``: 単一ソース共有のフォールバック根（既定は配信トポロジ台帳の自分の行）。
     ただし配信を許可するのは本根の **``js/``・``css/``・``vendor/`` サブツリーのみ**（serve_replay で
     許可根を限定＝最小権限。build.mjs/package.json/data/tests/node_modules 等は露出しない）。replay
     web_dir で miss したフロント資産（js/css/vendor）をここから配信し、web_dir/{js,css,vendor} 配下の
@@ -51,7 +56,7 @@ def build_replay_app(
     shared_js = (
         Path(shared_js_root).resolve()
         if shared_js_root is not None
-        else root / "indigators" / "indicator_ui" / "web"
+        else core_web_topology.primary_fallback_root(CORE_NAME, root)
     )
     # ISSUE-131/132: candle・m1 の供給は dataset（単一権威）へ完全委譲済み＝CSV パスの結線は
     #   リプレイ固有フィードの tick parquet 根のみ。

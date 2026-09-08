@@ -123,6 +123,14 @@ data/marketdata
 #   生成物ではあるが**移設前の挙動の記録そのもの**なので、blanket `*.json` から除外して追跡する。
 !tools/tests/fixtures/
 !tools/tests/fixtures/**
+# 配信トポロジ台帳（ISSUE-504）。どの core がどこから配信しどこへ落ちるかの**唯一源**であり、
+#   Python（4 つの Composition Root）と JS（配信検定）の両方がこれを読む。追跡しないと
+#   clean clone で common/core_web_topology.py が読む先を失い、全 core が起動しない。
+#   生成物ではなく規則そのものなので、blanket `*.json` から除外して追跡する。
+!common/core_web_topology.json
+# フォールバック依存の凍結台帳（同上）。追跡しないと clean clone で「凍結 0 件」ではなく
+#   **台帳ファイル不在**になり、増減とも Red にする検定そのものが実行できなくなる。
+!unified_ui/web/tests/served_import_fallback_ledger.json
 # 銘柄仕様スナップショット（ISSUE-445 段階 2・供給元 MT5 の権威値を機械取得した台帳）。
 #   時系列データではなく**版管理する台帳**であり、上の blanket `*.json` から除外する。
 #   これに巻き込まれると台帳が clean clone に無く、銘柄仕様の唯一の権威が消える。

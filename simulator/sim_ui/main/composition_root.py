@@ -12,10 +12,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from common import core_web_topology
 from simulator.sim_ui.framework.serve_sim import SimApp
 
 # repo 根 = simulator/sim_ui/main/composition_root.py の parents[3]。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: 配信トポロジ台帳（common/core_web_topology.json）における自分の行。共有根の実体は
+#: そこが単独で持つ——ここへ書き写すと同じ事実の所有者が増える（ISSUE-504 (ii)）。
+CORE_NAME = "sim"
 
 
 def build_sim_app(
@@ -28,8 +33,8 @@ def build_sim_app(
 
     ``web_dir``: sim フロントの配信根（`simulator/sim_ui/web`）。None で静的配信無効
     （replay と同一規約。起動スクリプトが明示的に渡す）。
-    ``shared_js_root``: 単一ソース共有のフォールバック根（既定
-    ``<repo>/indigators/indicator_ui/web``）。ただし配信を許可するのは本根の
+    ``shared_js_root``: 単一ソース共有のフォールバック根（既定は配信トポロジ台帳の
+    自分の行）。ただし配信を許可するのは本根の
     ``js/``・``css/``・``vendor/`` サブツリーのみで、build.mjs / package.json / data /
     tests / node_modules 等は露出しない（最小権限＝StaticFileServer が許可根を限定する）。
     ``repo_root``: 既定値の導出元。差し替えると shared_js_root の既定も追随する
@@ -39,6 +44,6 @@ def build_sim_app(
     shared_js = (
         Path(shared_js_root).resolve()
         if shared_js_root is not None
-        else root / "indigators" / "indicator_ui" / "web"
+        else core_web_topology.primary_fallback_root(CORE_NAME, root)
     )
     return SimApp(web_dir=web_dir, shared_js_root=shared_js)
