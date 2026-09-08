@@ -138,6 +138,43 @@ def test_serve_sh_stops_the_dashboard_core_when_taking_over_another_tree():
     assert 'stop_dashboard_core_if_up "$root"' in stop_stack
 
 
+@pytest.mark.parametrize(
+    "core_var,port_var",
+    [("LIVE_SERVE", "LIVE_PORT"), ("REPLAY_SERVE", "REPLAY_PORT")],
+)
+def test_serve_sh_guards_the_core_ports_before_delegating_to_the_core_serve_sh(
+    core_var, port_var
+):
+    # Arrange / Act / Assert（ISSUE-355）: 既存 core serve.sh は「URL が応答するか」しか見ずに
+    #   『既に起動済みです』と no-op する（indigators/indicator_ui/serve.sh・
+    #   simulator/replay_ui/serve.sh の二重起動ガード）。よって 8001/8281 を**別ツリー**の core が
+    #   握っていると、本スクリプトは何も起動しないまま wait_up が成功し、router は別ツリーの
+    #   core を proxy する。「呼ぶ側は新しく呼ばれる側は古い」モジュール合成
+    #   （setColorThemeProvider is not a function）はこの黙認の帰結である。
+    #   sim / dashboard に入れた占有ガードを live / replay にだけ入れ忘れると、
+    #   同じ事故がモード 2 つぶん残る。
+    # di-ok(C2): serve.sh は起動スクリプトで、実行以外に観測手段が無い（本文が検査対象）
+    assert "ensure_core_port_free()" in SERVE_SH
+    call = f'ensure_core_port_free "${{{core_var}}}" "${{{port_var}}}"'
+    # di-ok(C2): 同上
+    assert call in SERVE_SH, f"serve.sh が {port_var} の占有ガードを呼んでいない"
+    # 起動より **前** に判定する（core serve.sh へ委譲してからでは黙った再利用が先に起きる）。
+    start_call = SERVE_SH.index(f'"$(start_core "${core_var}"')
+    # di-ok(C2): 同上
+    assert SERVE_SH.index(call) < start_call
+
+
+def test_serve_sh_core_port_guard_stops_own_remnants_and_aborts_on_a_foreign_tree():
+    # Arrange / Act / Assert（ISSUE-355 抜本策 1）: 占有者の**配信ツリー**を argv で確かめ、
+    #   自ツリーの残骸なら停止して進み、そうでなければ黙って再利用せず中止して報告する。
+    #   停止側と同じ argv 断片（`<core_sh の絶対パス> <port>`）で引くから、どのツリーの core かが
+    #   一意に決まる（ISSUE-348 / sim / dashboard と同じ規律）。
+    body = SERVE_SH.split("ensure_core_port_free()", 1)[1].split("\n}", 1)[0]
+    assert 'pids_with "${core_sh} ${port}"' in body, "占有者のツリーを argv で判定していない"
+    assert "stop_core_if_up" in body, "自ツリーの残骸を停止する経路が無い"
+    assert "exit 1" in body, "別ツリー占有時に中止していない（黙った再利用が残る）"
+
+
 def test_serve_sh_announces_the_dashboard_route_to_the_operator():
     # Arrange / Act / Assert: 起動時に出す経路一覧へ第 4 モードが載っている
     #   （どのモードがどの core へ行くかは検証の前提・ISSUE-348）。

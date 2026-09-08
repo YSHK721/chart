@@ -297,6 +297,38 @@ if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev
   fi
 fi
 
+# 8001 / 8281 が誰かに握られたまま core serve.sh へ委譲しないようにする（ISSUE-355）。
+#
+# なぜ要るか: 既存 core serve.sh（indigators/indicator_ui/serve.sh・simulator/replay_ui/serve.sh）
+#   は「URL が応答するか」しか見ずに『既に起動済みです』と no-op する。よって別ツリーの core が
+#   8001/8281 を握っていると、本スクリプトは何も起動しないまま wait_up が成功し、router は
+#   **別ツリーの core** を proxy する。unified_root.js は 2 つの core からモジュールを混ぜて
+#   読み込むため、「呼ぶ側は新しく呼ばれる側は古い」クラスが 1 ページ上で合成される
+#   （実測: setColorThemeProvider is not a function・ISSUE-355）。
+#
+# 占有者の配信ツリーは argv で判定する（sim / dashboard と同じ規律・ISSUE-348）: core serve.sh は
+#   必ず `bash <ツリー絶対パス>/…/serve.sh <port>` の argv を持つので、停止側 stop_core_if_up と
+#   同じ断片 `${core_sh} ${port}` で引けば、どのツリーの core かが一意に決まる。自ツリーの残骸なら
+#   停止して進み、別ツリー（または argv からツリーを特定できない占有者）なら黙って再利用せず
+#   中止して報告する。停止するかどうかは人の判断に残す（8000 / 8381 / 8481 と同じ規律）。
+ensure_core_port_free() {
+  local core_sh="$1" port="$2"
+  curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${port}/" 2>/dev/null || return 0
+  if [ -n "$(pids_with "${core_sh} ${port}")" ]; then
+    echo "▶ ${port} を自ツリーの core が握っています。停止してから起動します..."
+    stop_core_if_up "$core_sh" "$port"
+    return 0
+  fi
+  echo "エラー: ${port} は**別のツリー**（または出所不明）の core が占有しています。起動を中止しました。" >&2
+  echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
+  echo "       そのまま進むと core serve.sh が『既に起動済み』として黙って再利用し、" >&2
+  echo "       このツリーの変更が入っていない core を検証することになります（ISSUE-355）。" >&2
+  echo "       占有プロセス:" >&2
+  ps -eo pid,args 2>/dev/null | grep -E "serve\.sh ${port}|framework\.server ${port}|port=${port}" \
+    | grep -v grep >&2 || true
+  exit 1
+}
+
 # 8381 が誰かに握られたまま起動しないようにする（ISSUE-348 と同型の防御）。
 #
 # なぜ 8000 の判定だけでは足りないか: 8000 が空いていても 8381 に**別ツリーの** sim core が
@@ -404,8 +436,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+ensure_core_port_free "${LIVE_SERVE}" "${LIVE_PORT}"
 echo "▶ ライブ core を起動（既存 serve.sh ${LIVE_PORT}・データ watch 併走）..."
 LIVE_PGID="$(start_core "$LIVE_SERVE" "$LIVE_PORT")"
+ensure_core_port_free "${REPLAY_SERVE}" "${REPLAY_PORT}"
 echo "▶ リプレイ core を起動（既存 serve.sh ${REPLAY_PORT}）..."
 REPLAY_PGID="$(start_core "$REPLAY_SERVE" "$REPLAY_PORT")"
 ensure_sim_port_free
