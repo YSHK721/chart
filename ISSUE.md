@@ -8250,7 +8250,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-413: [申し送り] ISSUE-403 ブランチレビューの推奨事項（マージ後追随・7 件）（2026-08-18）
 
-- **ステータス**: OPEN（新規起票。レビュー判定は「条件付き承認」・条件は台帳更新のみ＝本コミットで充足。2026-09-08 調査: 7 件全ての対象実体が simulator/ 配下と確定。項目 5（_M1_SECONDS 分散＝注入 or fail-fast の設計裁定）のみ要承認・他 6 件は simulator スコープで是正可＝別波で実施中）
+- **ステータス**: 一部 RESOLVED（2026-09-08・項目 5 を除く 6 件完了）。1=ConfigError/exit2 固定テスト 3 件（unit×2＋real_ticks 統合・ValueError 化変異 2 種で赤実測）。2=mask≡contains ゲート（期待値を contains から導出・閉区間化変異で赤実測）。3=遅延 import ゲート（AST 走査＋自己検定・持ち上げ変異で赤実測）。4=ticks_of を searchsorted 化（99 呼出 357 tick で bit 等価実測・計算量テスト＝掃引 Spy 2 点オーダー{32,1024}同値＋発行−使用=0・mask 復元/side 反転変異で赤実測・952k 行×2000 bar 実測 7.58s→0.82s）。6=長行コメント 7 ファイル統一（sim_ui の 1 件はスコープ外残）。7=int 直接比較化・開始境界標本・未使用 import 除去（main:274 の np は ISSUE-479 で消滅済み／_tick_frame 直接参照は便益 0 で現状維持）。検証: pytest simulator 5847 緑・品質ゲート exit 0。残（要裁定）: 項目 5（_M1_SECONDS 分散＝注入 or fail-fast）・項目 7d（epoch 列 2 重計算＝load_ticks 出力契約の変更を要す）
 - **重大度**: Low〜Medium（いずれもマージブロッカーではない。番号はレビュー指摘に対応）
 - **項目（各 file:line と実測根拠はレビュー記録参照）**:
   1. 受理入力の狭まり（ISO 文字列 comma CSV → `ConfigError`/exit 2）の**固定テスト**追加（文書化は
