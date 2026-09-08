@@ -13106,7 +13106,7 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 
 ## ISSUE-473: [設計] live core の静的配信が /tests/*.test.js を 200 で露出する（最小権限化の未適用）
 
-- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 表示結線の配信経路実測で発見）
+- **ステータス**: RESOLVED（2026-09-08。統合ルータ（ISSUE-278 #9）・replay StaticFileServer と同じ許可規則を live core _resolve_static へ適用（許可面＝index.html＋js/css/vendor/data＋共有供給根。data/ は index.html の tradeMarkers.load 実要求で存続）。是正前実測: /tests/catalog.test.js・/package.json・/ISSUE.md・/prototype_* が 200／是正後 404（resolve 後の is_relative_to 境界一致で .. 逸脱も封止）。test_static_minimal_privilege.py 13 件で固定・api 1122 件緑）
 - **重大度**: 低（ローカル配信のみ。ただし記述と実装の不一致）
 - **実測**: live core の `_handle_static` は `_resolve_static` 以外の絞り込みを持たず、
   `/tests/*.test.js` が 200 で配信される。同ファイル :243 の「tests 等は露出しない」記述と不一致。
@@ -13116,7 +13116,7 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 
 ## ISSUE-474: [不具合] /candles が M1 未配備を「internal」500 で返し、構成状態と障害を区別できない
 
-- **ステータス**: OPEN（2026-09-01 起票。ISSUE-447 A-1 の不在時挙動調査で発見）
+- **ステータス**: RESOLVED（2026-09-08。FileNotFoundError を serve_candles で not_provisioned（正典表 404・additive 追加）へ分類し、メッセージへ datasetRef/timeframe と実際に開こうとした経路（exc.filename）を明示。是正前実測 500 internal→是正後 404 not_provisioned＋経路入り。test_candles_not_provisioned.py 5 件で固定・関連 4 スイート計 2,066 件緑。serve_forming_bar の同型包括 except は射程外＝残課題）
 - **重大度**: 低（fail-close は機能。プロセス死・キャッシュ汚染・古い断面の配信は無しを実測済み）
 - **実測**: 登録済み ref の M1 CSV が未配備のとき `FileNotFoundError` が
   `serve_candles.py:109` の包括 except で `internal` に潰れ 500 になる。また `5m` 等では
@@ -13782,7 +13782,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 
 ## ISSUE-484: [検定] chart_template_persistence_integration の MP 失敗経路（TC-P05 / TC-P08）が MP アクター不在でも緑
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-08。fakeMpActor へ呼出記録（setEnabledCalls）と失敗実在（enableFailures）を計装し、TC-P05/TC-P08 が「MP 復元の失敗が実際に起きた」ことを assert してから applied を観測する形へ強化（既存 assert 弱化 0）。actor:null 変異で 2 件赤を実測（是正前は 8/8 緑＝検出力ゼロ）・復元後 8/8 緑・web 2621 件緑）
 - **重大度**: 中（検査の空振り。実害は「MP 復元失敗時の構成消失（D-1）」の回帰を検出できないこと）
 - **発見**: ISSUE-479 Wave2b J-1 S3 のテスト移行中（2026-09-04）。
 - **実測**: `registerMarketProfile(controller, { actor: marketProfile })` を
