@@ -4,7 +4,7 @@
 
 - 概要：`programmer` サブエージェントが現 Claude Code セッションのエージェントレジストリに未登録のため起動できない
 - 重大度：中（動作確認不能）
-- ステータス：OPEN
+- ステータス：RESOLVED（2026-09-08 確認。`programmer` は `programmer-executor` として `.claude/agents/programmer-executor.md` に定義・git 追跡済み（03e4ea3・2026-07-08）。レジストリ登録済みで ISSUE-479 Wave2 では 7 体並列の実運用実績あり）
 - 検出日：2026-05-05
 - 検出経路：メイン会話からの動作確認指示に対し `Agent({ subagent_type: "programmer" })` 呼び出しが「Agent type 'programmer' not found」で失敗
 - 再現条件：
@@ -444,7 +444,7 @@
 
 ## ISSUE-029: 1分足の再生バグ＋足内形成の全時間足対応（足内データ窓が「1日固定」）
 - **重大度**: High（1m 再生が誤動作。日足以外で足内形成が破綻）
-- **ステータス**: IN_PROGRESS（増分1=1m〜1D 完了／増分2=1W・1M・モードUI連動 残）
+- **ステータス**: RESOLVED（2026-09-08 記録整合。増分1 は cb05183 で完了、増分2 は ISSUE-030 へ分離起票（86875c9）し 2a（a561ce1・develop マージ a71721e）で完了。残る 2b は ISSUE-030 側の任意項目として管理）
 - **検出**: ユーザー（1分足再生で挙動異常を確認・2026-06-28）＋コード確証。
 - **原因**: `prototype_260626-01/web/js/replay.js:399` の `buildStream` が足内データを常に `/intraday?start=cd.time&end=cd.time+DAY_SECS`（1日固定）で取得している。1D は「足の期間＝1日」で正しいが他足で破綻：
   - 1m：1分足なのに丸1日分のティック/m1 を流す（誤形成）。
@@ -599,7 +599,7 @@
 
 ## ISSUE-040: indicator_ui — SRP整理3件（DIルート/dwellキャッシュ/chart_renderer内部分割）※低優先
 - **重大度**: Low
-- **ステータス**: IN_PROGRESS（(a) RESOLVED・(b)(c) OPEN）。**(a) 完了(2026-07-05)**: チャート操作(swipe scrub/価格pan/wheelズーム/dblclick reset/2Dドラッグ)を `ChartInteractionController`(adapter/front) へ抽出、composition_root_front を配線専用に縮小(454→328行)。回帰ゼロ(unit11/11・present web633・replay162/162)、code-review 承認可(🔴0・byte不変を triangulation 実証)、ブラウザ目視合格(wheel/drag/dblclick・canvas健全・console0)。develop 4fc43af マージ・push 済(92ca8fc+8a7237c)。**(b) 完了(2026-07-05)**: dwell ディスクキャッシュを `DwellRollupStore`(adapter/compute) へ分離、`market_profile_dwell.py` は集計数学を残し委譲(622→569行)。公開API/出力 byte 不変(parity 実証・黄金値は改変前採取)、api 486→504・replay 144 緑、code-review 承認可(🔴0・triangulation)、develop マージ(0271b75+81da98e)。**(c) chart_renderer 内部分割(PriceScaleController)は保留＝監査自身が「任意・低優先／隔離境界の価値は高く分割不要」と明記。実需(その領域の機能追加)が出た時に対応**。
+- **ステータス**: RESOLVED（2026-09-08 記録是正。(a)(b) とも 2026-07-05 完了・develop マージ済みを git で実測確認（4fc43af／0271b75+81da98e）。DwellRollupStore は MP モジュール再編後も market_profile_api/gateway/dwell_rollup_store.py に現存・parity テスト 2 本維持。(c) は保留裁定どおり実需発生時に別 Issue とする）。**(a) 完了(2026-07-05)**: チャート操作(swipe scrub/価格pan/wheelズーム/dblclick reset/2Dドラッグ)を `ChartInteractionController`(adapter/front) へ抽出、composition_root_front を配線専用に縮小(454→328行)。回帰ゼロ(unit11/11・present web633・replay162/162)、code-review 承認可(🔴0・byte不変を triangulation 実証)、ブラウザ目視合格(wheel/drag/dblclick・canvas健全・console0)。develop 4fc43af マージ・push 済(92ca8fc+8a7237c)。**(b) 完了(2026-07-05)**: dwell ディスクキャッシュを `DwellRollupStore`(adapter/compute) へ分離、`market_profile_dwell.py` は集計数学を残し委譲(622→569行)。公開API/出力 byte 不変(parity 実証・黄金値は改変前採取)、api 486→504・replay 144 緑、code-review 承認可(🔴0・triangulation)、develop マージ(0271b75+81da98e)。**(c) chart_renderer 内部分割(PriceScaleController)は保留＝監査自身が「任意・低優先／隔離境界の価値は高く分割不要」と明記。実需(その領域の機能追加)が出た時に対応**。
 - **検出**: 同監査（🟡-2/🟡-3/🟡-4・2026-07-05）。
 - **背景**: (a) `web/js/adapter/front/composition_root_front.js` L242-381(~140行) が pointer swipe スクラブ/縦価格パン/wheel価格ズームの**振る舞い**を実装＝DIルートに配線以外が混入。(b) `api/adapter/compute/market_profile_dwell.py`(622行) が集計ロジックとディスクキャッシュ Repository(`_save_day_rollup`:284/`_load_day_rollup`:316/署名) の同居（変更軸が別）。(c) `web/js/adapter/front/chart_renderer.js`(998行) は lwc隔離という単一軸は妥当だが内部で系列描画/価格ズーム座標数学(`handlePriceWheel`:353/`panPriceByPixels`:408)/クロスヘアDTO(`_buildReadoutDto`:872)が混在。
 - **対策（提案）**: (a) `ChartInteractionController` 抽出・root は配線のみ。(b) 日次rollupを `DwellRollupStore`(Gateway) 分離し Output境界越し注入。(c) 価格スケール操作を `PriceScaleController` へ内部分割（隔離境界の価値は高く任意・低優先）。
@@ -6099,7 +6099,7 @@ ISSUE-319 〜 ISSUE-340 は 2026-08-09 の「テストコードと実装コー�
 - **備考**: 初版では捕捉方式で足りる（実 UI 実測で停止残りは再現せず）。恒久設計として次段で扱う。
 ## ISSUE-346: [欠陥] 導出既定値 `muted` が混合比で定義されており、地を変えると自分の診断 W-C2 を割り込む（2026-08-09）
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-08-09・70d6226＝v0.4.0 段階 5-C-1。muted/level を混合比から目標 CR 方式へ是正（CR_MUTED=3.3・CR_LEVEL_MAX=5.249・color_value.js:77-127）。全 16,777,216 地の全数走査で W-C2（CR<3.0）0 件を実測。残る text の同病因は ISSUE-349 で管理。行の更新漏れを 2026-09-08 に是正）
 - **重大度**: 中
 - **検出**: v0.4.0 段階 5-B（導出・診断）完了後の自己検証（実測 2026-08-09）
 - **現象**: 基点 5 語だけを宣言したテーマで、導出された `muted` が地とのコントラスト比 W-C2
@@ -8513,7 +8513,7 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 
 ## ISSUE-427: [検定] `test_composition_root_arg_parity` の既存赤 1 件（ChartToastView/ClipboardGateway のテスト専用引数）（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。段階 3 TDD 工程中に発見・本ブランチ起因ではない）
+- **ステータス**: RESOLVED（2026-09-08 確認。ISSUE-492 の d72320a（本番形＝キー不在の構築テストを各 1 件追加・2026-09-06）で是正済み。2026-09-08 実測で test_composition_root_arg_parity 7 passed / 0 failed）
 - **重大度**: Medium（ゲート検定が恒常赤＝ゲートとして機能していない）
 - **事実（実測 2026-08-19）**: `tools/tests/test_composition_root_arg_parity.py::test_no_test_only_precondition_without_production_form` が
   `ChartToastView.{setTimeout,clearTimeout,durationMs}`・`ClipboardGateway.navigator` の 4 違反で失敗
@@ -13221,7 +13221,7 @@ ISSUE-452（仕様源・不変条件）・ISSUE-460（置き場所と「未実�
 
 ## ISSUE-479: [監査] リポジトリ全体 SOLID 実測監査 — 違反 57 件（重複統合後）で総合不合格
 
-- **ステータス**: OPEN（2026-09-02 起票。architecture-executor 7 並列による全域実測・全指摘 file:line＋実コード引用付き）
+- **ステータス**: RESOLVED（2026-09-08 突合確定。57 件は Wave 1/1b/2/2b（run_backtest 798→248 行・chart_renderer 1799→1070 行・.pth 化・JS 方向検定新設ほか・全 develop マージ済み）と上位監査 ISSUE-502（119 件・2026-09-07 RESOLVED・循環 4 件全消滅）で全数消化。残る小粒は ISSUE-502 後続候補台帳と ISSUE-484 へ移管済みで本件固有の未処理は 0 件）
 - **重大度**: 高（依存循環 2 件・DIP 逆流・単一ソース破れを含む。LSP は全域 0 件）
 - **違反件数（領域別・延べ 61 → 領域間重複 4 件統合後 57）**:
   - simulator 14（DIP 3・SRP 3・OCP 7・ISP 1）／indigators 12（DIP 2・OCP 6・SRP 4）
