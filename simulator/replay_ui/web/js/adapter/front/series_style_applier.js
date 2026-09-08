@@ -1,0 +1,1 @@
+../../../../../../indigators/indicator_kit/web/js/adapter/front/series_style_applier.js
