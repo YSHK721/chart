@@ -301,6 +301,35 @@ def test_activation_rules_bind_existing_keys_with_trigger_vocabulary(catalog) ->
         assert rule["tokens"], f"{target} のトークン集合が空です"
 
 
+def test_rule_b_exclusion_is_declared_for_visual(catalog) -> None:
+    """規則 B（Optimization != 0 のとき Visual を送らない）の宣言が schema に載ること。
+
+    ISSUE-419 の抜本解: front は規則 B を実装せず、この宣言を評価するだけで守る。
+    宣言が消えると front は Visual を常に送り、最適化を選んだ投入が規則 B の 400 に
+    戻る——のに既存の総称検定は緑のままだった（変異実測 2026-09-08: `Visual` 行を
+    消して 623 passed）。期待値は enums から導く（数値リテラルを書かない）。
+    """
+    # Arrange
+    from simulator.main.tester_settings.unsupported import (
+        UI_TRIGGER_EXCEPT_TOKENS,
+        UI_TRIGGER_ON_TOKENS,
+    )
+
+    disabled = str(int(OptimizationMode.DISABLED))
+    # Act
+    activation = catalog.activation()
+    # Assert: Visual は「最適化が無効のときだけ活性＝それ以外は本文から外す」
+    assert activation["Visual"] == {
+        "key": "Optimization", "mode": UI_TRIGGER_ON_TOKENS,
+        "tokens": [disabled], "effect": "omit",
+    }
+    # 対で成る規則 H 側: 評価軸は表示だけ隠し、本文には載せ続ける（omit だと E-08 で必ず失敗）
+    assert activation["OptimizationCriterion"] == {
+        "key": "Optimization", "mode": UI_TRIGGER_EXCEPT_TOKENS,
+        "tokens": [disabled], "effect": "display",
+    }
+
+
 def test_execution_mode_spec_carries_the_ui_labels(catalog) -> None:
     """延滞のラベルは enums の実測写像の写しであること（発明しない）。"""
     # Arrange / Act
