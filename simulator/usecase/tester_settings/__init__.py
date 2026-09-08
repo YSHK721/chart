@@ -13,7 +13,7 @@
     列挙     : Timeframe / TickModel / DateRangeKind / DatesPreset / ForwardMode /
                OptimizationMode / OptimizationCriterion / SubjectKind / InputForm
     定数     : ExecutionDelay / TIMEFRAME_INI_LABELS / INI_LABEL_TO_TIMEFRAME /
-               TICK_MODEL_ENGINE_IDS
+               TICK_MODEL_ENGINE_IDS / SUBJECT_SUFFIX
     実証状態 : PROVEN_EXECUTION_DELAYS / PROVISIONAL_EXECUTION_DELAYS /
                approximation_reason_for（`ExecutionDelay` と同じ宣言サイト）
 
@@ -48,6 +48,7 @@ from simulator.usecase.tester_settings.enums import (
 )
 from simulator.usecase.tester_settings.models import (
     INERT_FIELDS,
+    SUBJECT_SUFFIX,
     DateRange,
     EffectiveSettings,
     IniDocument,
@@ -84,6 +85,7 @@ __all__ = [
     "DateRange",
     "EffectiveSettings",
     "INERT_FIELDS",
+    "SUBJECT_SUFFIX",
     "SettingsPayload",
     "TesterInput",
     "TesterSettings",

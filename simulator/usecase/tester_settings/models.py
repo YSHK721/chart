@@ -48,6 +48,14 @@ from simulator.usecase.tester_settings.enums import (
     Timeframe,
 )
 
+#: テスト対象ファイル（`Expert` / `Indicator` の値）の接尾辞。**字形の宣言はここ 1 箇所**
+#: （ISSUE-416: 以前は main 層の束縛表と framework 層の受理正規表現の 2 箇所に分かれ、
+#: 字形を変えると片方だけが腐る構造だった。framework は main を import できない＝
+#: 依存方向の制約があるため、宣言を内側の本層へ置き、双方がここを参照する）。
+#: 語幹抽出（main 層 ea_stem）と受理書式検査（framework 層 validation の pattern 導出）が
+#: 読む。単一宣言は `test_subject_suffix_single_source.py` が機械的に検査する。
+SUBJECT_SUFFIX: str = ".ex5"
+
 #: `Math calculations` のとき参照してはならない（inert な）フィールド名。
 #: 規則 A の 10 フィールド ＋ 規則 C の `visual`（基本設計 §4.5.5）。
 INERT_FIELDS: tuple[str, ...] = (

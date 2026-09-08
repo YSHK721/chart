@@ -96,11 +96,18 @@ from simulator.domain.tester_settings_exceptions import (
 )
 from simulator.usecase.tester_settings import enums
 from simulator.usecase.tester_settings.models import (
+    SUBJECT_SUFFIX,
     DateRange,
     IniDocument,
     TesterInput,
     TesterSettings,
 )
+
+# 対象接尾辞（`Expert` / `Indicator`）の受理書式。字形の宣言は usecase 層の
+# SUBJECT_SUFFIX 1 箇所であり、本モジュールはそこから**導出**する（ISSUE-416:
+# 以前は正規表現リテラルとして字形を書き写しており、接尾辞が変わると片方だけが
+# 腐る 2 重宣言だった）。
+_SUBJECT_PATTERN: str = re.escape(SUBJECT_SUFFIX) + "$"
 
 # ---------------------------------------------------------------------------
 # 書式（R7・R10・R11）。モジュール読込時に 1 度だけコンパイルする（§7.1）。
@@ -370,8 +377,12 @@ class _TesterIniModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    Expert: Annotated[str | None, Field(min_length=1, max_length=255, pattern=r"\.ex5$")] = None
-    Indicator: Annotated[str | None, Field(min_length=1, max_length=255, pattern=r"\.ex5$")] = None
+    Expert: Annotated[
+        str | None, Field(min_length=1, max_length=255, pattern=_SUBJECT_PATTERN)
+    ] = None
+    Indicator: Annotated[
+        str | None, Field(min_length=1, max_length=255, pattern=_SUBJECT_PATTERN)
+    ] = None
     Symbol: Annotated[str, Field(min_length=1, max_length=31)]
     Period: Annotated[enums.Timeframe, _TimeframeLabel]
     Optimization: Annotated[enums.OptimizationMode | None, _StrictInt] = None

@@ -8,7 +8,7 @@
 
 2. 含む構造:
     SUBJECT_SUFFIX      : テスト対象ファイルの接尾辞（`Expert` / `Indicator` の値）。
-                          字形の宣言はここ 1 箇所（Phase 8 裁定 T-6 で公開）。
+                          宣言は usecase 層 1 箇所で、ここは再輸出（ISSUE-416）。
     EaInputBinding      : 引数名 ＋ 変換器の 2 項束縛（1 入力＝1 エントリ）。
     EA_INPUT_BINDINGS   : ea_name → {`.ini` 入力名: 束縛}。**初期は空**（後述）。
     SCALAR_CONVERTERS   : 注釈型 → 変換器の登録表（型の追加＝1 エントリ追加）。
@@ -44,18 +44,15 @@ from typing import Any, Callable
 
 from simulator.domain.exceptions import ConfigError
 from simulator.main import build_interactor
-from simulator.usecase.tester_settings import TesterInput
+# 接尾辞の字形の宣言は usecase 層 1 箇所（ISSUE-416）。本モジュールは既存の公開面
+# （sim_ui の schema 供給などが `ea_input_map.SUBJECT_SUFFIX` を読む・Phase 8 裁定 T-6）を
+# 保つために**同一オブジェクトを再輸出**する。字形をここへ書き写さない。
+from simulator.usecase.tester_settings import SUBJECT_SUFFIX, TesterInput
 
 # `Expert` / `Indicator` の値の書式（`.ini` は Windows 表記＝実測 44 / 44 件）。
 # `pathlib.Path` を経由しない: POSIX の Path は `\` を区切りとして扱わないため、
 # `..\..\etc\passwd.ex5` が 1 つの名前として残り、語幹抽出が破れる（§7.2）。
 _WINDOWS_PATH_SEPARATOR: str = "\\"
-#: テスト対象ファイルの接尾辞（`Expert` / `Indicator` の値）。**公開**しているのは、
-#: 対象の候補（`EA 名 + 接尾辞`）を組み立てる側（sim_ui の schema 供給・Phase 8 裁定 T-6）が
-#: 字形を書き写さずに済むようにするためである。字形の宣言はここ 1 箇所に保つ。
-#: 正規表現側（`framework/tester_settings/validation.py` の `pattern=r"\.ex5$"`）との
-#: 統合は別 ISSUE 申し送り（T-6）。
-SUBJECT_SUFFIX: str = ".ex5"
 
 # 変換器が受理する書式（§4.4.1 の表。沈黙変換を禁止するため厳密に固定する）。
 _INT_PATTERN = re.compile(r"^[+-]?\d+$")
