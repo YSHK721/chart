@@ -34,17 +34,38 @@ export class FormingPlanCache {
 
     this._cache = new Map();     // idx -> { mode, tf, sig, prices, secs, steps: Map(i -> {instanceId: series}) }
     this._pending = new Map();   // idx -> Promise（二重発行の防止 ＋ 使用時の待ち合わせ）
+    // [ISSUE-285] 世代トークンと打ち切り。invalidate（停止・モード切替・窓替え）で世代を進め、
+    //   旧世代の in-flight は AbortController で殺し、遅延していた続き（/compute 発行・キャッシュ
+    //   格納）は世代照合で発行させない。ゲート（発火条件）を増やすのではなく「無効になった要求は
+    //   必ず死ぬ」構造にする（モード遷移の瞬間に残る要求がライブ core へ回って 404 になっていた）。
+    this._generation = 0;
+    this._aborter = null;        // 現世代の in-flight を束ねる（要求発行時に遅延生成）
   }
 
   invalidate() {
+    this._generation += 1;
+    if (this._aborter) {
+      this._aborter.abort();
+      this._aborter = null;
+    }
     this._cache.clear();
     this._pending.clear();
+  }
+
+  // 現世代の打ち切り信号（要求発行時に遅延生成）。AbortController が無い環境では undefined
+  //   （＝信号なしで発行。世代照合による遅延発行の遮断は変わらず効く）。
+  _signal() {
+    if (!this._aborter && typeof AbortController === 'function') {
+      this._aborter = new AbortController();
+    }
+    return this._aborter ? this._aborter.signal : undefined;
   }
 
   // ---- 足内ティック列（MT5 モデリング 5 モード相当） ----
   //   idx を明示で受ける（先読みが「次のバー」の窓を作れるようにするため。現在バー固定だった
   //   旧シグネチャ buildStream(cd, mode) は idx=bar 指定と等価＝窓の算出規則は不変）。
   async buildStream(idx, mode) {
+    const gen = this._generation;   // [ISSUE-285] 発行時点の世代（応答が旧世代なら値を使わせない）
     const candles = this._getCandles();
     const timeframe = this._getTimeframe();
     const cd = candles[idx];
@@ -62,8 +83,13 @@ export class FormingPlanCache {
     const wantSecs = mode === 'real_ticks';
     let url = `/intraday?datasetRef=${encodeURIComponent(this._datasetRef)}&start=${winStart}&end=${winEnd}&mode=${encodeURIComponent(mode)}`;
     if (wantSecs) url += '&secs=1';
+    // [ISSUE-285] 現世代の打ち切り信号を添える＝invalidate（モード切替等）で in-flight が必ず死ぬ。
+    const signal = this._signal();
     let resp = {};
-    try { resp = await (await this._fetch(url)).json(); } catch (_e) { /* noop */ }
+    try { resp = await (await this._fetch(url, signal ? { signal } : {})).json(); } catch (_e) { /* noop */ }
+    if (gen !== this._generation) {
+      return { prices: [], secs: [] };   // 旧世代の応答＝破棄（遅延して届いた値を使わせない）
+    }
     // winStart/winEnd を渡し every_tick/ohlc_1min は合成 dwell secs（窓等分・クライアント合成）を並走取得する。
     //   real_ticks は実 tick_secs のまま（byte 不変・窓は無視）。open_only/math は上で短絡済み。
     return buildStreamFromResponse({
@@ -94,6 +120,7 @@ export class FormingPlanCache {
   // 計画の構築（ティック列の取得 → 各時点の指標値を 1 リクエストで一括計算）。
   //   失敗しても例外を投げない（計画なし＝従来経路。再生は止めない）。
   async build(idx, mode) {
+    const gen = this._generation;   // [ISSUE-285] 世代照合＝旧世代の遅延要求（/compute）を発行させない
     const candles = this._getCandles();
     const timeframe = this._getTimeframe();
     const cd = candles[idx];
@@ -101,6 +128,9 @@ export class FormingPlanCache {
       return null;
     }
     const { prices, secs } = await this.buildStream(idx, mode);
+    if (gen !== this._generation) {
+      return null;   // invalidate 済み＝この続き（一括計算の発行・キャッシュ格納）は死ぬ
+    }
     const base = { mode, tf: timeframe, prices, secs, steps: null, sig: null };
     const sigInfo = this.signatureFor(idx);
     if (!sigInfo || !Array.isArray(prices) || prices.length === 0) {
@@ -123,7 +153,11 @@ export class FormingPlanCache {
       })),
       datasetRef: this._datasetRef, timeframe, limit: idx + 1, untilTime: cd.time, formingSeq,
       winStart, winEnd,
+      signal: this._signal(),   // [ISSUE-285] in-flight の一括計算も invalidate で必ず死ぬ
     }).catch(() => ({}));
+    if (gen !== this._generation) {
+      return null;   // 一括計算中に invalidate された＝旧世代の値をキャッシュへ入れない
+    }
     const steps = new Map();
     indices.forEach((i, k) => {
       const byInstance = {};
@@ -146,10 +180,12 @@ export class FormingPlanCache {
     if (running) {
       return running;
     }
+    const gen = this._generation;   // [ISSUE-285] 旧世代の計画は invalidate 後のキャッシュへ入れない
     const p = this.build(idx, mode)
-      .then((plan) => { if (plan) { this._cache.set(idx, plan); } })
+      .then((plan) => { if (plan && gen === this._generation) { this._cache.set(idx, plan); } })
       .catch(() => { /* 構築失敗は計画なし（呼び出し側が判断する） */ })
-      .finally(() => { this._pending.delete(idx); });
+      // invalidate 後に新世代が同じ idx を張り直していたら、それを消さない（自分の登録だけ外す）。
+      .finally(() => { if (this._pending.get(idx) === p) { this._pending.delete(idx); } });
     this._pending.set(idx, p);
     return p;
   }

@@ -22,16 +22,17 @@ export class FormingSeqClient {
   //   指標ごとに 1 本ずつ投げると、サーバは指標の数だけ窓ロードの固定費（実測 0.14〜0.28 秒/指標）を
   //   払う。1 スレッド直列で捌く以上、この固定費 × 指標数がそのまま 1 足の所要になる。
   //   specs: [{ instanceId, indicatorId, variant, params, computeTimeframe }]
+  //   signal（任意）: 呼び出し側の打ち切り信号（ISSUE-285・モード遷移で in-flight を必ず殺す）。
   async computeSeqMulti({
     specs, datasetRef, timeframe, limit, untilTime, formingSeq,
-    winStart = null, winEnd = null,
+    winStart = null, winEnd = null, signal = null,
   } = {}) {
     const body = JSON.stringify({
       mode: 'latest_seq_multi', generation: 0,
       specs, datasetRef, timeframe, limit, untilTime, formingSeq,
       ...(winStart != null && winEnd != null ? { winStart, winEnd } : {}),
     });
-    const payload = await this._post(body);
+    const payload = await this._post(body, signal);
     return (payload && payload.results && typeof payload.results === 'object') ? payload.results : {};
   }
 
@@ -55,10 +56,20 @@ export class FormingSeqClient {
   }
 
   // POST の実体（タイムアウト・呼出規約・エラー翻訳の唯一源）。単発と一括が共有する。
-  async _post(body) {
+  //   outerSignal（任意）: 呼び出し側の打ち切り信号（ISSUE-285）。タイムアウト用の内部 aborter へ
+  //   連結する（発火済みなら即時打ち切り）。fetch へ渡す signal は従来どおり内部 aborter の 1 本。
+  async _post(body, outerSignal = null) {
     const hasAbort = typeof AbortController === 'function';
     const aborter = hasAbort ? new AbortController() : null;
     const timerId = aborter ? setTimeout(() => aborter.abort(), this._timeoutMs) : null;
+    const onOuterAbort = (aborter && outerSignal) ? () => aborter.abort() : null;
+    if (onOuterAbort) {
+      if (outerSignal.aborted) {
+        aborter.abort();
+      } else {
+        outerSignal.addEventListener('abort', onOuterAbort, { once: true });
+      }
+    }
     try {
       // ISSUE-233（実 UI 実測で確定した不具合）: `this._fetch(...)` はレシーバ付き呼出になり、
       //   注入されたのがブラウザの素の `fetch`（replay.js の既定値 `fetchImpl = fetch`）のとき
@@ -82,6 +93,9 @@ export class FormingSeqClient {
     } finally {
       if (timerId != null) {
         clearTimeout(timerId);
+      }
+      if (onOuterAbort) {
+        outerSignal.removeEventListener('abort', onOuterAbort);
       }
     }
   }
