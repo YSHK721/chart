@@ -22,6 +22,8 @@ def test_error_status_table_is_the_expected_mapping() -> None:
         "missing_column": 400,
         "missing_time": 400,
         "empty_series": 422,
+        # ISSUE-474: 登録済み ref の素材未配備（既知の構成状態）は障害と区別して 404。
+        "not_provisioned": 404,
         "backend_unavailable": 500,
         "internal": 500,
     }

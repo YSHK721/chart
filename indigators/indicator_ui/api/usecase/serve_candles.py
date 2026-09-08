@@ -106,6 +106,19 @@ def serve_candles(
 
     try:
         candles = port.load_candles(request.dataset_ref, request.timeframe, request.limit)
+    except FileNotFoundError as exc:
+        # ISSUE-474: 登録済み ref の素材（M1/ロールアップ CSV）未配備は既知の構成状態であり、
+        #   障害（internal 500）と区別して分類する。メッセージには「実際に開こうとした経路」
+        #   （exc.filename）を載せる — ロールアップは配置解決（subdir/flat フォールバック）を
+        #   挟むため、要求から経路を推測させると診断を誤る（flat 経路名の罠・実測 2026-09-01）。
+        attempted = exc.filename if exc.filename else str(exc)
+        return CandlesResult(
+            error_type="not_provisioned",
+            error_message=(
+                f"データセット素材が未配備です: datasetRef={request.dataset_ref!r} "
+                f"timeframe={request.timeframe!r}（開こうとした経路: {attempted}）"
+            ),
+        )
     except Exception as exc:  # noqa: BLE001（業務手順の最後の砦・error 表現へ翻訳して返す）
         return CandlesResult(
             error_type="internal", error_message=f"candles 取得に失敗しました: {exc}"

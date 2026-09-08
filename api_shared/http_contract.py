@@ -19,6 +19,9 @@ ERROR_STATUS: "dict[str, int]" = {
     "missing_column": 400,
     "missing_time": 400,
     "empty_series": 422,
+    # ISSUE-474: 登録済み ref の素材（M1/ロールアップ CSV）が未配備＝既知の構成状態。
+    #   障害（internal 500）と区別し、要求された素材の不在として 404 で返す（additive）。
+    "not_provisioned": 404,
     "backend_unavailable": 500,
     "internal": 500,
 }
