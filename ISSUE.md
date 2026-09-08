@@ -4921,7 +4921,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-283（無駄な再要求）／ISSUE-278 #3（無言の except で握り潰す型）。
 
 ## ISSUE-285: [不具合・実測] モード遷移時にリプレイ層の要求がライブ core へ回り 404 になる（2026-08-08）
-- **ステータス**: OPEN
+- **ステータス**: OPEN（2026-09-08 実装点確定: simulator/replay_ui/web/js/replay.js・replay/forming_plan_cache.js・unified_ui/web/js/sw_rewrite.js に閉じる（indigators 配下に /intraday 発行 0 件を grep 実測）。是正は別波で実施中）
 - **重大度**: Medium（足内アニメーションの素材取得が失敗する。再生の見た目が劣化する）
 - **事象（利用者報告）**: `GET /intraday?...` が **404**（3 連続）。発生位置は compute エラー群の直後＝再生終了・モード切替の前後。
 - **実測**: リプレイモード（`body.um-mode-replay`）では SW が `/replay/intraday` へ書換え **200**。一方 `/intraday`（書換なし）と `/live/intraday` は **404**（リプレイ core にしか実装が無い）。つまり 404 は「リプレイ層の要求が **live モードとして**書き換えられた」ことを意味する。
@@ -8576,7 +8576,7 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 
 ## ISSUE-430: [検定] upstream 隔離ガードが座標系 API を施行対象にしていない（2026-08-20）
 
-- **ステータス**: OPEN（新規起票。ISSUE-368 ピッカー経路検証の副産物・本件と独立の既存の穴）
+- **ステータス**: RESOLVED（2026-09-08。UPSTREAM_API へ coordinateToPrice/coordinateToTime/coordinateToLogical/data の 4 名を追加し、chart_renderer.js 冒頭の宣言も同時更新（宣言と施行の一致検定が片側更新を Red で遮断することを実測）。施行下での隔離単位外の違反 0 件・indicator_ui web 2637 件緑）
 - **重大度**: Low（現時点の違反 0 件を実測済み。ただし恒久的性質ではない）
 - **事実（実測 2026-08-20）**: `upstream_isolation_declaration.test.js:28-33` の `UPSTREAM_API` に
   `coordinateToPrice`・`coordinateToTime`・`coordinateToLogical`・`data` が不在。隔離単位の外の
@@ -8588,7 +8588,7 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 
 ## ISSUE-431: [設計] 新規協働子が ChartRenderer 実体を丸ごと受け取る（ISP）
 
-- **ステータス**: OPEN（2026-08-20 起票。ISSUE-368 工程 5 レビュー 🟡-4）
+- **ステータス**: RESOLVED（2026-09-08。契約をクライアント所有で新設（PRICE_PICK_HOST_CONTRACT=4 メソッド・PRICE_LEVEL_DRAG_HOST_CONTRACT=2 メソッド＝実測使用面）し、chart_app_wiring.js が createHostView で射影して注入。契約外アクセスは例外・契約面は値素通り（挙動不変）を position_sizing_renderer_contract.test.js 4 件で固定・全 8 web スイート緑）
 - **重大度**: 低（現時点の誤動作は無い。将来の変更波及の問題）
 - **内容**: `chart_app_wiring.js` の `PricePickController` / `PriceLevelDragController` は
   `ChartRenderer` 実体をそのまま受け取るが、実際に使うのは 5 メソッドのみ
@@ -8683,6 +8683,12 @@ profile===null では成立しない（`sim_tester_settings_panel_view.js:371-37
 - **ステータス**: IN_PROGRESS（2026-08-21・依頼者指示。ブランチ `feature/issue-435-level-labels-and-clear`。
   **実装 1（解除導線）は完了・実 UI 動作確認済み。実装 2（ラベル）は読める状態まで到達し保全済み。
   残件 2 点は下記「残件」**）
+- **残件 2 点 完了（2026-09-08・裁定済み範囲内・実 UI 確認待ち）**: 残件 1=タグ専用 paneView を追加し
+  zOrder='top' を宣言（線の面は無宣言＝描画順不変・chart_renderer.js 不可侵で実現。タグ工程は線工程の
+  y 表を唯一の座標源とし座標を再発行しない＝計算量テストで固定）。残件 2=タグ塗りを裁定どおり半透明化
+  （不透明度は決め打ちせず、下地との合成後実効コントラストが AA 4.5 を割らない最小値を color_value.js で
+  導出＝現行パレット実測 0.92・最小 CR 4.507。抜き文字は不透明・到達不能時は不透明へ縮退・導出は色変化時のみ）。
+  price_level_lines_tag_layering.test.js 12 件で固定。dpr>1 と実際の見え方は実 UI 検証待ち。
 - **重大度**: 中（入力はできるが取り消せない／線の意味が読めない）
 - **到達点**（実 UI 実測 2026-08-21・ライブ 8000/live・1600×1000・dpr=1）:
   - 解除項目: 未設定時は既存 3 項目のみ。損切りを設定すると「損切りを解除」が現れる。
