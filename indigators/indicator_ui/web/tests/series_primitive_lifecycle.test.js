@@ -298,18 +298,28 @@ test('R3 zOrder を宣言した primitive だけが zOrder を返す（宣言フ
     '宣言していない primitive に zOrder キーが生えている');
 });
 
-test('R3 paneView は単一インスタンス・renderer() は毎回新オブジェクト（現行契約の維持）', () => {
+// 面の数は primitive ごとの宣言（基底は 1・PriceLevelLines は ISSUE-435 残件 1 で
+//   線＋タグの 2 面）。数そのものもここで固定する＝黙って面が増減したら落ちる。
+const PANE_VIEW_COUNT = Object.freeze({
+  'PairLinesPrimitive.setPairs': 1,
+  'TickvolBandsPrimitive.setRanges': 1,
+  'PriceLevelLinesPrimitive.setLevels': 2,
+});
+
+test('R3 paneView は安定インスタンス・renderer() は毎回新オブジェクト（現行契約の維持）', () => {
   for (const { name, make } of STATE_SETTERS) {
     // Arrange
     const primitive = make();
     // Act
     const first = primitive.paneViews();
     const second = primitive.paneViews();
-    // Assert
-    assert.equal(first.length, 1, `${name}: paneViews() が単一でない`);
-    assert.equal(first[0], second[0], `${name}: paneView が呼ぶたびに作り直されている`);
-    assert.notEqual(first[0].renderer(), first[0].renderer(),
-      `${name}: renderer() が使い回されている（現行は毎回新オブジェクト）`);
+    // Assert（不変条件は全面に課す: 呼ぶたびに作り直さない・renderer() は毎回新オブジェクト）
+    assert.equal(first.length, PANE_VIEW_COUNT[name], `${name}: paneViews() の面の数が宣言と違う`);
+    for (let i = 0; i < first.length; i += 1) {
+      assert.equal(first[i], second[i], `${name}: paneView[${i}] が呼ぶたびに作り直されている`);
+      assert.notEqual(first[i].renderer(), first[i].renderer(),
+        `${name}: renderer() が使い回されている（現行は毎回新オブジェクト）`);
+    }
   }
 });
 

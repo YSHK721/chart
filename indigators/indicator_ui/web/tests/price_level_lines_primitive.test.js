@@ -217,12 +217,19 @@ test('paneViews / detached は lwc プリミティブ契約を満たす', () => 
   const p = new PriceLevelLinesPrimitive();
   attach(p);
   p.setLevels(LEVELS);
-  // Act / Assert
+  // Act / Assert: 線＋タグの 2 面（ISSUE-435 残件 1・タグだけ前面）。仕様の全量は
+  //   price_level_lines_tag_layering.test.js（TC-TL01〜04）が固定し、ここでは lwc 契約
+  //   （renderer().draw が関数・detach 後は全面が止まる）だけを見る。
   const views = p.paneViews();
-  assert.equal(views.length, 1);
-  assert.equal(typeof views[0].renderer().draw, 'function');
+  assert.equal(views.length, 2);
+  for (const view of views) {
+    assert.equal(typeof view.renderer().draw, 'function');
+  }
+  views[0].renderer().draw(fakeTarget());   // 一度描いてタグ素材を作る（detach が捨てる対象）
   p.detached();
   const target = fakeTarget();
-  views[0].renderer().draw(target);
+  for (const view of views) {
+    view.renderer().draw(target);
+  }
   assert.deepEqual(target.ops, [], 'detach 後は描かない');
 });

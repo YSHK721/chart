@@ -29,6 +29,10 @@
 // 単体検証は fake target/series で座標・色を観測し、canvas 実描画は実 UI 検証へ委譲する。
 
 import { CHROME_CURRENT } from '../../usecase/chrome_tokens.js';
+// タグ不透明度の選定（ISSUE-435 残件 2）に使う色の数学は domain の単一ソースから取る。
+//   合成（mixChannels＝8bit 丸め・canvas と同じ階調）とコントラスト比（WCAG 2.x）の
+//   第 2 実装をここへ作らない。
+import { contrastRatio, mixChannels, normalizeHexColor } from '../../domain/color_value.js';
 // ラベルの**表示名と価格書式**は単一ソースから取る（ISSUE-435）。ここへ書き写すと、
 //   モーダルの欄・アーム中バー・右クリックの解除項目と同じ表が 4 つ目に増え、
 //   ゴーストと線で価格の書式が割れる（ISSUE-368 で実際に起きた症状と同型）。
@@ -78,8 +82,88 @@ const TAG_GAP = 2;                 // タグと線・タグとタグのすき間
 //   1540px で終わり、軸は 1540px から始まる）。幅の内側に収める限り食い込まない。
 const RIGHT_MARGIN_PX = 6;
 
+// タグの不透明度の下限規準（WCAG AA・依頼者裁定 2026-08-21「割るなら報告して止める」）。
+const TAG_CONTRAST_FLOOR = 4.5;
+// 不透明度の走査刻み。canvas の合成は 8bit なので 1/100 より細かくしても見た目の階調が増えない。
+const TAG_ALPHA_STEP = 0.01;
+
+/**
+ * 半透明色を地へ合成して不透明 hex にする（全域的・解釈できなければ null）。
+ *
+ * `rgba(r,g,b,a)` の a を読み、`mixChannels(base, rgb, a)` で 8bit 合成する。不透明色は
+ * 正規化だけして素通しする。domain の normalizeHexColor は方針として α を捨てる（§4.7）ため、
+ * 「α を合成で消してから domain の 1 形式（hex6）へ落とす」変換をここ 1 か所に置く。
+ */
+export function flattenColorOverBase(color, base) {
+  if (typeof color !== 'string') {
+    return null;
+  }
+  const m = color.match(/^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)$/i);
+  const rgb = normalizeHexColor(color);
+  if (rgb === null) {
+    return null;
+  }
+  if (!m) {
+    return rgb;   // α を持たない色はそのまま（rgb()/hex）。
+  }
+  const alpha = Number(m[1]);
+  const baseHex = normalizeHexColor(base);
+  if (!Number.isFinite(alpha) || baseHex === null) {
+    return null;
+  }
+  return mixChannels(baseHex, rgb, Math.min(1, Math.max(0, alpha)));
+}
+
+/**
+ * タグ塗りの「AA を割らない範囲で最も透ける」不透明度を選ぶ（ISSUE-435 残件 2・裁定 2026-08-21）。
+ *
+ * 決め打ちにしない理由（裁定そのもの）: 下に来る現実の色（地・陽線/陰線・取引密度帯）は
+ * テーマで変わる。固定値はテーマ変更で AA を割るか、必要以上に不透明になるかのどちらかに倒れる。
+ *
+ * 規則: a を 0 から 1 へ TAG_ALPHA_STEP 刻みで走査し、全〈塗り × 下地〉の合成色に対する
+ * 抜き文字のコントラスト比の最小値が floor 以上になる**最初の a** を返す（＝定義どおり最小）。
+ * 合成色のコントラストは a について単調と仮定しない（mixAtContrast と同じ理由: ランプが
+ * 文字色を横切ると比が 1 で底を打つ）ため、早期打切りは「最初に満たした a を返す」だけに留める。
+ *
+ * 全域性（縮退規則）: 解釈できない色が混ざる・どの a でも floor に届かない場合は **1（不透明）**
+ * を返す。不透明は従来（半透明化前）と同一の見た目＝機能を落とさず安全側へ倒す。
+ */
+export function mostTransparentTagAlpha(inputs) {
+  if (!inputs || typeof inputs !== 'object') {
+    return 1;
+  }
+  const { fills, textColor, underlays, floor = TAG_CONTRAST_FLOOR, step = TAG_ALPHA_STEP } = inputs;
+  const text = normalizeHexColor(textColor);
+  const fillHexes = Array.isArray(fills) ? fills.map((c) => normalizeHexColor(c)) : null;
+  const underHexes = Array.isArray(underlays) ? underlays.map((c) => normalizeHexColor(c)) : null;
+  if (text === null || !fillHexes || !underHexes
+    || fillHexes.some((c) => c === null) || underHexes.some((c) => c === null)
+    || fillHexes.length === 0 || underHexes.length === 0) {
+    return 1;
+  }
+  const steps = Math.round(1 / step);
+  for (let i = 0; i <= steps; i += 1) {
+    const a = i / steps;
+    let min = Infinity;
+    for (const fill of fillHexes) {
+      for (const under of underHexes) {
+        min = Math.min(min, contrastRatio(text, mixChannels(under, fill, a)));
+      }
+    }
+    if (min >= floor) {
+      return a;
+    }
+  }
+  return 1;
+}
+
 export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
-  constructor() {
+  /**
+   * @param {object} [deps]
+   * @param {Function} [deps.computeTagAlpha] 不透明度の選定（既定は mostTransparentTagAlpha）。
+   *   注入可能なのは検定（発行回数の Spy）のためで、本番結線は引数なしで生成する。
+   */
+  constructor({ computeTagAlpha = mostTransparentTagAlpha } = {}) {
     super();
     this._levels = null;
     // 直近の描画で確定した y 座標表（掴み判定の唯一の根拠）。[{ kind, index, y }]
@@ -94,21 +178,47 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
     this._tagTextColor = CHROME_CURRENT.layoutBackground;
     // 価格の表示桁（銘柄仕様）。解決できないときは undefined＝参照実装どおり整数表示。
     this._digits = undefined;
+    // タグの下に来る現実の色（裁定 2026-08-21: 地・陽線/陰線・取引密度帯）。既存スロットのみ。
+    this._underCandleUp = CHROME_CURRENT.candleUp;
+    this._underCandleDown = CHROME_CURRENT.candleDown;
+    this._underBand = CHROME_CURRENT.tickvolBand;
+    // タグ塗りの不透明度（残件 2）。導出は色が変わったときだけ（描画のたびに再導出しない）。
+    this._computeTagAlpha = typeof computeTagAlpha === 'function'
+      ? computeTagAlpha : mostTransparentTagAlpha;
+    this._tagAlpha = 1;
+    this._tagAlphaKey = null;
+    this._refreshTagAlpha();
+    // 直近の線工程で確定した可視線（タグ工程の唯一の座標源・媒体座標）。
+    this._tagLines = [];
+    // タグ専用 paneView（残件 1・裁定「線は従来のまま・タグだけ前面」）。
+    //   線の paneView（基底の単一 view・zOrder 無宣言＝'normal' 既定）はそのままにし、
+    //   タグだけを 'top' で描く。vendor は 'top' を同一フレームの最後（系列・指標の上）に描く。
+    this._tagsPaneView = {
+      renderer: () => ({ draw: (target) => this._drawTagsPass(target) }),
+      zOrder: () => 'top',
+    };
   }
 
   // ---- lwc ISeriesPrimitive ライフサイクル ----
 
-  // 座標源を手放したら y 表も捨てる（描いていない線を掴めてはならない）。
+  // 座標源を手放したら y 表とタグ素材も捨てる（描いていない線を掴めても・名指しできてもならない）。
   //   ライフサイクルの他の 3 項目（chart/series/requestUpdate の授受）は基底が持つ。
   detached() {
     super.detached();
     this._handleYs = [];
+    this._tagLines = [];
   }
 
-  // 基底の paneView が呼ぶ描画フック。実体は公開 `draw(target)` のまま置く——単体検定が
-  //   `primitive.draw(target)` を直接叩いており、これは既存の公開契約である。
+  // 基底の paneView（線）にタグ専用 paneView を足す（ISSUE-435 残件 1）。
+  //   基底の「単一 paneView」契約から離れるのはタグの zOrder（'top'）が線（無宣言＝既定）と
+  //   異なるためで、1 つの view では「線は背面のまま・タグだけ前面」（裁定）を表現できない。
+  paneViews() {
+    return [...super.paneViews(), this._tagsPaneView];
+  }
+
+  // 基底の paneView が呼ぶ描画フック＝**線工程のみ**（タグは _tagsPaneView が 'top' で描く）。
   _draw(target) {
-    this.draw(target);
+    this._drawLinesPass(target);
   }
 
   // ---- 状態 ----
@@ -149,7 +259,39 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
     if (typeof slots.layoutBackground === 'string') {
       this._tagTextColor = slots.layoutBackground;
     }
+    // タグの下地（残件 2 の選定入力）。塗り・文字と同じ全域性（非文字列は現行値を保つ）。
+    if (typeof slots.candleUp === 'string') {
+      this._underCandleUp = slots.candleUp;
+    }
+    if (typeof slots.candleDown === 'string') {
+      this._underCandleDown = slots.candleDown;
+    }
+    if (typeof slots.tickvolBand === 'string') {
+      this._underBand = slots.tickvolBand;
+    }
+    this._refreshTagAlpha();
     this._update();
+  }
+
+  // タグ不透明度の再導出（色が実際に変わったときだけ発行する＝描画・同値配信では発行しない）。
+  //   入力キーが同じなら前回の採用値を保つ。導出そのものは注入された純関数（単一ソース）。
+  _refreshTagAlpha() {
+    const inputs = {
+      fills: [this._entryColor, this._stopColor, this._takeColor, this._losscutColor],
+      textColor: this._tagTextColor,
+      underlays: [
+        this._tagTextColor,   // 地（抜き文字と同じスロット layoutBackground）
+        this._underCandleUp,
+        this._underCandleDown,
+        flattenColorOverBase(this._underBand, this._tagTextColor),
+      ],
+    };
+    const key = JSON.stringify(inputs);
+    if (key === this._tagAlphaKey) {
+      return;
+    }
+    this._tagAlphaKey = key;
+    this._tagAlpha = this._computeTagAlpha(inputs);
   }
 
   // ---- 掴み判定 ----
@@ -175,7 +317,19 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
 
   // ---- 描画 ----
 
+  // 公開契約: 1 フレームぶんの全描画（線 → タグ）。単体検定・結線検定が「この target に
+  //   何が描かれるか」を 1 呼び出しで観測するための面で、本番（lwc）は paneView ごとに
+  //   _drawLinesPass（線・既定 zOrder）→ _drawTagsPass（タグ・'top'）の順で呼ぶ。
+  //   lwc は同一フレームで 'top' を最後に描くため、順序はここと同じになる。
   draw(target) {
+    this._drawLinesPass(target);
+    this._drawTagsPass(target);
+  }
+
+  // 線工程: 座標（priceToCoordinate）を発行する唯一の工程。可視線の表（_tagLines）と
+  //   掴み判定の y 表（_handleYs）をここで確定させる。タグ工程は再発行せずこの表を使う
+  //   （描画・掴み・タグの座標源を 1 つに保つ＝計算量テストが再発行の不在を固定する）。
+  _drawLinesPass(target) {
     if (!this._chart || !this._series || !this._levels) {
       return;   // attach 前・水準未設定は座標源が無いので描かない（防御）。
     }
@@ -191,13 +345,13 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
         this._handleYs.push({ kind: spec.kind, index: spec.index, y });
       }
     }
+    this._tagLines = lines;
     target.useBitmapCoordinateSpace((scope) => {
       const ctx = scope.context;
       const width = this._extentWidth(scope);
       // 媒体（CSS）座標 → 装置ピクセル。`priceToCoordinate` は媒体座標を返すのに対し、
       //   `useBitmapCoordinateSpace` は変換を単位行列へ戻す（vendor 実測: 下の注記）ため、
       //   dpr を掛けないと dpr>1 で線もラベルも半分の位置・半分の大きさになる。
-      const hr = scale(scope.horizontalPixelRatio);
       const vr = scale(scope.verticalPixelRatio);
       for (const line of lines) {
         ctx.save();
@@ -212,7 +366,22 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
         ctx.stroke();
         ctx.restore();
       }
-      this._drawTags(ctx, lines, { width, hr, vr });
+    });
+  }
+
+  // タグ工程（'top' の paneView が呼ぶ）: 線工程が確定させた可視線をタグにして前面へ描く。
+  //   座標を再発行しない（線工程の _tagLines が唯一の座標源）。線工程が一度も走っていない・
+  //   detach 済みのときは素材が空＝何も描かない。
+  _drawTagsPass(target) {
+    if (this._tagLines.length === 0) {
+      return;
+    }
+    target.useBitmapCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const width = this._extentWidth(scope);
+      const hr = scale(scope.horizontalPixelRatio);
+      const vr = scale(scope.verticalPixelRatio);
+      this._drawTags(ctx, this._tagLines, { width, hr, vr });
     });
   }
 
@@ -235,7 +404,12 @@ export class PriceLevelLinesPrimitive extends SeriesPrimitiveLifecycle {
       const h = TAG_H * vr;
       const y = top * vr;
       ctx.fillStyle = line.color;          // 塗り＝線と同色（どの線のタグかが色で分かる）
+      // 塗りだけ半透明（残件 2・裁定「右端のままで半透明にする」）。不透明度は決め打ちでなく
+      //   _refreshTagAlpha が「AA 4.5 を割らない最も透ける値」を下地の現実の色から導出した値。
+      //   抜き文字まで透かすと合成色が文字色へ寄って自分のコントラストを壊すため、文字は不透明。
+      ctx.globalAlpha = this._tagAlpha;
       ctx.fillRect(right - w, y, w, h);
+      ctx.globalAlpha = 1;
       ctx.fillStyle = this._tagTextColor;  // 抜き文字＝地の色
       ctx.fillText(text, right - TAG_PAD_X * hr, y + h / 2);
     }
