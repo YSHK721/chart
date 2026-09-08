@@ -170,7 +170,9 @@ class RealTickModel(TickModelPort):
 
         # timestamp → epoch 秒は **1 回だけ**前計算する。ticks_of は 1 run につきバー本数回
         # （実データで 28097 回）呼ばれるため、毎回の列変換は run 全体に効く。
-        self._ts_epoch = timestamp_epoch_seconds(self._frame["timestamp"])
+        # 直上で timestamp 昇順へソート済みなので epoch 列も昇順＝二分探索の前提が立つ。
+        # ndarray 化は `searchsorted` を pandas ラッパを経ずに引くため（値は同一）。
+        self._ts_epoch = timestamp_epoch_seconds(self._frame["timestamp"]).to_numpy()
 
     def ticks_of(self, bar: Any, prev_close: float) -> Iterable[tuple]:
         # 半開区間 [bar.time, bar.time+足長) を epoch 秒で決定論的にスライスする。窓の定義
@@ -181,11 +183,16 @@ class RealTickModel(TickModelPort):
         # ``np.datetime64(np.int64)`` の ``ValueError`` で落ちていた（ISSUE-403）。
         start = epoch_seconds(bar.time)
         window = HalfOpenEpochWindow(start, start + _M1_SECONDS)
-        # 判定は `window.contains` と同一規則をベクトル化したものである。`.map(contains)` は
-        # per-bar 呼出（1 run = 28097 回）× 行数ぶんの Python 関数呼出になるため使わない
-        # （`load_ticks` は 1 run に 1 回なので `.map` で可＝呼出頻度が 4 桁違う）。
-        mask = (self._ts_epoch >= window.start) & (self._ts_epoch < window.end)
-        sliced = self._frame.loc[mask]
+        # 選ぶ集合の定義は `window.contains`（半開 [start, end)）であり、その定義との一致は
+        # `test_tick_model.py` の contains ゲート（ISSUE-413-2）が機械的に固定する。実装は
+        # epoch 列が昇順（構築時ソート済み）であることを使い、二分探索で区間 [lo, hi) を
+        # 切り出す（ISSUE-413-4）。是正前の全行掃引 mask（`>=` & `<`）は per-bar O(全行) で、
+        # 1 run = バー本数回の呼出により O(全行×バー数) を浪費していた（掃引の不在は
+        # 計算量テストが固定する）。`side="left"` で左端ちょうどは含み、終端ちょうど
+        # （= end と等値）は含まない＝contains と同じ半開規則になる。
+        lo = int(self._ts_epoch.searchsorted(window.start, side="left"))
+        hi = int(self._ts_epoch.searchsorted(window.end, side="left"))
+        sliced = self._frame.iloc[lo:hi]
         return [
             (row.last, row.bid, row.ask, _to_domain_time(row.timestamp))
             for row in sliced.itertuples(index=False)

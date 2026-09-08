@@ -383,3 +383,251 @@ def test_real_tick_epoch_bar_time_honours_the_half_open_interval():
     prices = [t[0] for t in model.ticks_of(_np_int64_bar_at(1), prev_close=1.0)]
     # Assert
     assert prices == [1.21]
+
+
+def test_real_tick_includes_the_tick_exactly_at_the_bar_start_boundary():
+    # 開始境界ちょうど（timestamp == bar.time）のティックは区間に**含まれる**
+    #   （半開 [start, end) の左端。ISSUE-413-7: 従来の標本は 00:00:10 以降のみで、
+    #   左端ちょうどの包含が未固定だった）。終端ちょうど（次バー始端）は含まれない。
+    import pandas as pd
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": [
+                np.datetime64("2024-01-01T00:01:00"),  # bar1 の始端ちょうど
+                np.datetime64("2024-01-01T00:01:59"),  # bar1 の終端 1 秒前
+                np.datetime64("2024-01-01T00:02:00"),  # bar2 の始端＝bar1 に含まない
+            ],
+            "bid": [1.10, 1.20, 1.30],
+            "ask": [1.12, 1.22, 1.32],
+            "last": [1.11, 1.21, 1.31],
+            "volume": [1.0, 2.0, 3.0],
+        }
+    )
+
+    times = [t[3] for t in RealTickModel(frame).ticks_of(_bar_at(1), prev_close=1.0)]
+
+    assert times == [
+        np.datetime64("2024-01-01T00:01:00"),
+        np.datetime64("2024-01-01T00:01:59"),
+    ]
+
+
+# --- 受理入力の狭まりの固定（ISSUE-403 互換性影響・ISSUE-413-1）-----------------
+# ISO 文字列の `time` は元より `Bar.time` 契約違反であり、ISSUE-403 の是正で real_ticks
+# 経路は **翻訳済み `ConfigError`**（終了コード表で exit 2）として拒否するようになった。
+# 是正前の「翻訳されない ValueError が漏れる」挙動へ戻る退行を禁じる。
+
+
+def test_real_tick_iso_string_bar_time_raises_a_translated_config_error():
+    # Arrange: `Bar` は構築時契約検査（ISSUE-411）で str を拒否するため、tick_model の
+    #   正規化点（`epoch_seconds`）そのものを固定するにはバー代替物で time=ISO 文字列を渡す。
+    from types import SimpleNamespace
+
+    import pytest
+
+    from simulator.adapter.execution.tick_model import RealTickModel
+    from simulator.domain.exceptions import ConfigError
+
+    bar = SimpleNamespace(
+        time="2024-01-01T00:00:00",
+        open=1.1, high=1.3, low=1.0, close=1.2, volume=10.0, spread=0,
+    )
+
+    # Act / Assert: 翻訳済み ConfigError（生 ValueError ではない）。
+    with pytest.raises(ConfigError):
+        RealTickModel(_tick_frame()).ticks_of(bar, prev_close=1.0)
+
+
+def test_bar_construction_rejects_iso_string_time_with_config_error():
+    # comma 形式 CSV の ISO 文字列 `time` は Bar 構築段（契約検査・ISSUE-411）で既に
+    #   ConfigError になる。real_ticks 経路の拒否が「どの段でも翻訳済み」であることの固定。
+    import pytest
+
+    from simulator.domain.exceptions import ConfigError
+
+    with pytest.raises(ConfigError):
+        Bar(
+            time="2024-01-01T00:00:00",
+            open=1.1, high=1.3, low=1.0, close=1.2, volume=10.0, spread=0,
+        )
+
+
+# --- RealTickModel の区間判定 ≡ HalfOpenEpochWindow.contains（ISSUE-413-2 ゲート）----
+# tick_model の per-bar 判定は `HalfOpenEpochWindow.contains` と同一規則の等価実装である
+# （実装は速度のためベクトル化/区間切り出しでよいが、選ぶ集合は contains が定義する）。
+# 期待値をリテラルで書かず **contains そのものから導出**することで、半開規則が変更された
+# とき（ISSUE-407/408 の系統）に実装との乖離を機械的に検出する。
+
+
+def _boundary_epochs(start: int, bar_seconds: int) -> "list[int]":
+    """窓の両端 ±1 秒・端ちょうど・中央を網羅する epoch 列（昇順）。"""
+    end = start + bar_seconds
+    return [start - 1, start, start + 1, start + bar_seconds // 2, end - 1, end, end + 1]
+
+
+def test_real_tick_selection_is_defined_by_the_contains_predicate():
+    # Arrange: 境界網羅の epoch 列を持つ frame（期待値は contains から導出する）。
+    import pandas as pd
+    from datawindow.half_open import HalfOpenEpochWindow
+    from marketdata.tf_ledger import TF_BAR_SEC
+    from simulator.adapter.execution.tick_model import RealTickModel
+    from simulator.domain.bar_time import epoch_seconds
+
+    bar = _np_int64_bar_at(1)
+    start = epoch_seconds(bar.time)
+    bar_seconds = TF_BAR_SEC["1m"]
+    epochs = _boundary_epochs(start, bar_seconds)
+    frame = pd.DataFrame(
+        {
+            "timestamp": [np.datetime64(e, "s") for e in epochs],
+            "bid": [float(i) for i in range(len(epochs))],
+            "ask": [float(i) + 0.5 for i in range(len(epochs))],
+            "last": [float(i) + 0.25 for i in range(len(epochs))],
+            "volume": [1.0] * len(epochs),
+        }
+    )
+    window = HalfOpenEpochWindow(start, start + bar_seconds)
+    expected = [e for e in epochs if window.contains(e)]
+    # 自明合格の防止: 窓外の標本が両側に実在すること（全含み/全外れで通る当たりを塞ぐ）。
+    assert expected and len(expected) < len(epochs)
+
+    # Act
+    ticks = list(RealTickModel(frame).ticks_of(bar, prev_close=1.0))
+
+    # Assert: 選ばれる集合（と順序）は contains の定義と一致する。
+    got = [int(t[3].astype("datetime64[s]").astype("int64")) for t in ticks]
+    assert got == expected
+
+
+def test_real_tick_selection_matches_contains_for_every_bar_offset():
+    # 同じ frame を隣接バー（前後 1 本）でも判定し、窓の位置に依らず contains と一致する
+    #   ことを固定する（境界規則の乖離は隣接バーへの取りこぼし/二重取りとして現れる）。
+    import pandas as pd
+    from datawindow.half_open import HalfOpenEpochWindow
+    from marketdata.tf_ledger import TF_BAR_SEC
+    from simulator.adapter.execution.tick_model import RealTickModel
+    from simulator.domain.bar_time import epoch_seconds
+
+    bar_seconds = TF_BAR_SEC["1m"]
+    anchor = epoch_seconds(_np_int64_bar_at(1).time)
+    epochs = _boundary_epochs(anchor, bar_seconds)
+    frame = pd.DataFrame(
+        {
+            "timestamp": [np.datetime64(e, "s") for e in epochs],
+            "bid": [1.0] * len(epochs),
+            "ask": [1.0] * len(epochs),
+            "last": [1.0] * len(epochs),
+            "volume": [1.0] * len(epochs),
+        }
+    )
+    model = RealTickModel(frame)
+
+    for minute in (0, 1, 2):
+        bar = _np_int64_bar_at(minute)
+        start = epoch_seconds(bar.time)
+        window = HalfOpenEpochWindow(start, start + bar_seconds)
+        expected = [e for e in epochs if window.contains(e)]
+
+        got = [
+            int(t[3].astype("datetime64[s]").astype("int64"))
+            for t in model.ticks_of(bar, prev_close=1.0)
+        ]
+        assert got == expected, f"minute={minute}"
+
+
+# --- RealTickModel.ticks_of の計算量（ISSUE-413-4・計算量テスト規約 2026-08-28）--------
+# ticks_of は 1 run につきバー本数回（実データ 28097 回）呼ばれる。per-bar の仕事量が
+# frame **全長**に比例する実装（全行掃引の mask）は、出力が正しいまま O(全行×バー数) を
+# 浪費する——状態検証では原理的に落ちない欠陥なので、掃引の不在を Spy で機械的に固定する。
+# 回数そのものは期待値に焼き込まない（「N 回」の固定は浪費の仕様化）。固定するのは
+# 「入力（区間外の行数）を増やしても per-bar の掃引量が増えない」というオーダーの表明と、
+# 「発行した行 − 出力に使った行 = 0」（作ってから捨てる行がない）の 2 点である。
+
+
+class _SweepCountingArray(np.ndarray):
+    """要素ごと ufunc 演算（全行掃引）で触れた要素数を数える epoch 配列の Spy。
+
+    全行掃引（`>=` / `<` の要素ごと比較）は ufunc として観測される。区間切り出し
+    （searchsorted 系）は要素ごと演算を発行しないため計数 0 になる。
+    """
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        self.sweep_counter["elements"] += max(
+            (i.size for i in inputs if isinstance(i, np.ndarray)), default=0
+        )
+        plain = tuple(
+            i.view(np.ndarray) if isinstance(i, _SweepCountingArray) else i
+            for i in inputs
+        )
+        return getattr(ufunc, method)(*plain, **kwargs)
+
+
+def _boundary_rich_model_with_sweep_spy(n_outside: int):
+    """窓内 2 ティック固定＋窓外 `n_outside` ティックの model と掃引カウンタを返す。"""
+    import pandas as pd
+
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    base = 1_704_067_200  # 2024-01-01T00:00:00Z（分アライン）
+    inside = [base + 60 + 10, base + 60 + 50]  # bar minute=1 の区間 [60, 120) 内
+    outside = [base + 300 + i for i in range(n_outside)]  # 遠方の別区間
+    epochs = inside + outside
+    frame = pd.DataFrame(
+        {
+            "timestamp": [np.datetime64(e, "s") for e in epochs],
+            "bid": [1.0] * len(epochs),
+            "ask": [1.0] * len(epochs),
+            "last": [1.0] * len(epochs),
+            "volume": [1.0] * len(epochs),
+        }
+    )
+    model = RealTickModel(frame)
+    counter = {"elements": 0}
+    # epoch 前計算列を Spy 配列へ差し替える（値は同一・演算の観測だけを足す）。
+    spy = np.asarray(model._ts_epoch).view(_SweepCountingArray)
+    spy.sweep_counter = counter
+    model._ts_epoch = spy
+    return model, counter
+
+
+def test_ticks_of_per_bar_work_does_not_grow_with_out_of_window_rows():
+    # オーダーの表明（2 点）: 区間外の行数を 32 → 1024 に増やしても、1 回の ticks_of が
+    #   epoch 列に発行する要素ごと演算量は増えない（全行掃引の不在）。出力は両点で同一。
+    counts = {}
+    outputs = {}
+    for n_outside in (32, 1024):
+        model, counter = _boundary_rich_model_with_sweep_spy(n_outside)
+        bar = _np_int64_bar_at(1)
+        outputs[n_outside] = list(model.ticks_of(bar, prev_close=1.0))
+        counts[n_outside] = counter["elements"]
+
+    assert len(outputs[32]) == 2  # 窓内 2 ティックは両点で同一に返る
+    assert outputs[32] == outputs[1024]
+    assert counts[32] == counts[1024], (
+        f"per-bar の掃引量が frame 全長に比例している: {counts}"
+    )
+
+
+def test_ticks_of_materializes_no_row_it_does_not_emit(monkeypatch):
+    # 発行 − 使用 = 0: frame から実体化（itertuples で走査）した行数と、返した tick 数が
+    #   一致する（作ってから捨てる行が 1 行もない）。窓内外が混在する標本で測る。
+    import pandas as pd
+
+    from simulator.adapter.execution.tick_model import RealTickModel
+
+    issued = {"rows": 0}
+    real_itertuples = pd.DataFrame.itertuples
+
+    def _spy_itertuples(self, *args, **kwargs):
+        issued["rows"] += len(self)
+        return real_itertuples(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "itertuples", _spy_itertuples)
+
+    model = RealTickModel(_tick_frame())  # 窓内 2 件・窓外 2 件（既存の境界標本）
+    ticks = list(model.ticks_of(_bar_at(0), prev_close=1.0))
+
+    assert len(ticks) == 2
+    assert issued["rows"] - len(ticks) == 0

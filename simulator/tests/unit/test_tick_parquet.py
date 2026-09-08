@@ -511,6 +511,83 @@ def _runtime_top_level_imports(module_file: str) -> set[str]:
     return mods
 
 
+def _module_level_import_modules(module_file: str) -> set[str]:
+    """モジュール**直下**（関数・メソッド内を除く）の import のフル dotted 名を返す。
+
+    `_runtime_top_level_imports` はトップレベル**名**（`pandas` 等）しか見ないため、
+    `simulator.adapter.repository.tick_parquet` のようなプロジェクト内モジュールの
+    遅延 import 規律は判定できない。本ヘルパーは関数内 import を「遅延」とみなして
+    除外し、モジュール読み込み時に評価される import だけを列挙する。
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(module_file).read_text())
+
+    lazy_nodes: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                lazy_nodes.add(id(child))
+
+    mods: set[str] = set()
+    for node in ast.walk(tree):
+        if id(node) in lazy_nodes:
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                mods.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            mods.add(node.module)
+    return mods
+
+
+def test_tick_model_module_keeps_tick_store_imports_lazy():
+    # ISSUE-413-3: `tick_model` の tick-store 依存（`tick_parquet` 経由の pyarrow /
+    #   parquet・pandas）は RealTickModel 構築時の**関数内 import** に留める。
+    #   module-level へ持ち上げると `simulator.main` の遅延 import 設計
+    #   （既定経路＝real_ticks 以外に tick-store 依存を載せない）が黙って壊れるため、
+    #   本テストが規律を機械的に守らせる（`ports.py` の走査と同じ流儀・AST 静的解析）。
+    import simulator.adapter.execution.tick_model as tick_model_mod
+
+    mods = _module_level_import_modules(tick_model_mod.__file__)
+
+    # tick-store 実装（repository 配下）への module-level import を持たない。
+    offenders = {m for m in mods if m.startswith("simulator.adapter.repository")}
+    assert offenders == set(), f"tick-store 依存が module-level に持ち上がった: {offenders}"
+    # 技術ドライバ（pandas / pyarrow）も module-level では読まない。
+    top_level = {m.split(".")[0] for m in mods}
+    assert "pandas" not in top_level
+    assert "pyarrow" not in top_level
+
+
+def _lazy_import_modules(module_file: str) -> set[str]:
+    """関数・メソッド**内**（= 遅延評価される）import のフル dotted 名を返す。"""
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(module_file).read_text())
+    lazy_mods: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if isinstance(child, ast.ImportFrom) and child.module:
+                    lazy_mods.add(child.module)
+    return lazy_mods
+
+
+def test_the_lazy_import_gate_scans_the_real_module_shape():
+    # 検出器の自己検定: `tick_model` が実際に関数内 import（遅延）で
+    #   `simulator.adapter.repository.tick_parquet` を読んでいることを源泉から確認する。
+    #   （走査対象を誤って「import が 1 件もないファイル」に向けても上のテストは緑に
+    #   なるため、遅延 import の実在を対で固定して走査の空振りを塞ぐ。）
+    import simulator.adapter.execution.tick_model as tick_model_mod
+
+    lazy_mods = _lazy_import_modules(tick_model_mod.__file__)
+
+    assert "simulator.adapter.repository.tick_parquet" in lazy_mods
+
+
 def test_no_usecase_module_imports_pandas_or_pyarrow_at_runtime():
     import pathlib
 

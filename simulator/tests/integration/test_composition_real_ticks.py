@@ -193,6 +193,32 @@ class TestRealTicksWiring:
         assert trade.exit_price != pytest.approx(1.3333)        # 罠ティック bid
         assert trade.exit_time == request.bars[4].time
 
+    def test_real_ticks_rejects_iso_string_comma_csv_with_exit_code_2(self, tmp_path):
+        # ISSUE-403 の互換性影響（受理入力の狭まり）の固定（ISSUE-413-1）:
+        #   ISO 文字列 `time` の comma 形式 CSV は元より Candle 契約 §2.1 / `Bar.time`
+        #   契約違反であり、real_ticks 経路では **翻訳済み ConfigError → exit 2** で
+        #   拒否される。是正前の「翻訳されない ValueError が漏れる」挙動へ戻る退行を
+        #   終了コードの水準で禁じる（終了コードの規約は `simulator.adapter.exit_codes`）。
+        from simulator.main import run_backtest
+
+        lines = ["time,open,high,low,close,volume,spread"]
+        for i, (_t, o, h, l, c, v, s) in enumerate(_ROWS):
+            lines.append(f"2024-01-01T00:{i:02d}:00,{o},{h},{l},{c},{v},{s}")
+        csv_path = tmp_path / "iso_time_m1.csv"
+        csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tick_root = _write_tick_store(tmp_path / "ticks")
+
+        exit_code, result = run_backtest(
+            **_meta(
+                csv_path,
+                config_overrides={"tick_model": "real_ticks"},
+                tick_store_root=tick_root,
+            )
+        )
+
+        assert exit_code == 2  # ConfigError の翻訳（exit_codes の規約）
+        assert result is None
+
     def test_default_tick_model_build_unchanged(self, tmp_path):
         # Arrange / Act: 既定（ohlc_expand）は従来どおり OhlcExpandTickModel。
         from simulator.adapter.execution.tick_model import (
