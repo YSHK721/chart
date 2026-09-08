@@ -10,7 +10,7 @@
 //
 // 除去する原因（ISSUE-368 実 UI 実測 2026-08-20）:
 //   チャートから拾った価格が生の浮動小数 `62707.710070965324` のままモーダルへ書き戻り、
-//   ゴーストラベルの表示 `62,708` と食い違っていた。
+//   ゴーストラベルの表示（刻みへ丸めた整数の桁区切り表示）と食い違っていた。
 //
 // 観点: ソース走査だけでは「渡してはいるが繋がっていない」を見逃す（ISSUE-291）。実物の共有配線で
 //   組み上げ、**押した結果どの値が欄と水準に入るか**まで見る。
@@ -28,12 +28,18 @@ import {
 import { MSG_NO_SYMBOL_SPEC, MSG_OTHER_PANE } from '../js/adapter/front/price_pick_resolver.js';
 import { lookupSymbolSpec } from '../js/adapter/front/symbol_spec_catalog.js';
 import { priceOnLine } from '../js/adapter/front/price_format.js';
+import { quantize } from '../js/domain/price_quantize.js';
 
 // 実 UI 実測の生値（小数部まで同じ）。y=0 をこの価格として 1px = 1 価格で下がる線形。
 const RAW_TOP = 62707.710070965324;
 // JP225 を載せた datasetRef（台帳＝生成物が権威。ここで tick の数値は書かない）。
 const JP225_REF = 'jp225_tick';
 const JP225_TICK = lookupSymbolSpec(JP225_REF).tick;
+
+// 台帳導出の期待値（ISSUE-432: 量子化済みの数値を直書きしない。期待値の所有者は台帳だけ。
+//   量子化の正しさ自体は price_quantize.test.js が入力・出力とも自前の値で固定している）。
+const Q_TOP = quantize(RAW_TOP, JP225_TICK);        // y=0 の素の価格を台帳の刻みへ
+const Q_Y10 = quantize(RAW_TOP - 10, JP225_TICK);   // y=10 の素の価格を台帳の刻みへ
 
 class El {
   constructor() {
@@ -205,8 +211,8 @@ test('TC-SQ01 ピッカー確定でモーダルへ入る値とゴーストの表
     Number(ghost.replace(/,/g, '')),
     `ゴーストの表示（${ghost}）とモーダルの値（${written}）が食い違っている`,
   );
-  assert.equal(ctx.positionSizing.levels().stopPrice, 62708, '水準が刻み上にない');
-  assert.equal(ghost, priceOnLine(62708), 'ゴーストは量子化された価格の書式（参照実装 :777）');
+  assert.equal(ctx.positionSizing.levels().stopPrice, Q_TOP, '水準が刻み上にない');
+  assert.equal(ghost, priceOnLine(Q_TOP), 'ゴーストは量子化された価格の書式（参照実装 :777）');
 });
 
 test('TC-SQ02 右クリックの 3 項目で入る価格も刻み上（経路 5）', () => {
@@ -217,8 +223,8 @@ test('TC-SQ02 右クリックの 3 項目で入る価格も刻み上（経路 5�
   // Act: 「この価格を損切りに設定」を y=10（素の価格 62697.710070965324）で選ぶ。
   items[0].onSelect({ x: 100, y: 10 });
   // Assert
-  assert.equal(priceInput(ctx, 'stop').value, '62698');
-  assert.equal(ctx.positionSizing.levels().stopPrice, 62698);
+  assert.equal(priceInput(ctx, 'stop').value, String(Q_Y10));
+  assert.equal(ctx.positionSizing.levels().stopPrice, Q_Y10);
 });
 
 test('TC-SQ03 右クリック「建値に追加」も刻み上（K を増やす経路でも取り残さない）', () => {
@@ -229,7 +235,7 @@ test('TC-SQ03 右クリック「建値に追加」も刻み上（K を増やす�
   contextItems(ctx)[1].onSelect({ x: 100, y: 10 });
   // Assert
   const entries = ctx.positionSizing.levels().entryPrices;
-  assert.equal(entries[entries.length - 1], 62698, '追加した建値が刻み上にない');
+  assert.equal(entries[entries.length - 1], Q_Y10, '追加した建値が刻み上にない');
 });
 
 test('TC-SQ04 水準線 drag が作った水準も刻み上（resolver を通らない経路 6・domain の関門）', () => {
@@ -240,7 +246,7 @@ test('TC-SQ04 水準線 drag が作った水準も刻み上（resolver を通ら
   // Act
   ctx.positionSizing.applyLevels(levels.withStop(RAW_TOP));
   // Assert: 初期水準に刻みが注入されていなければ生値のまま入る。
-  assert.equal(ctx.positionSizing.levels().stopPrice, 62708);
+  assert.equal(ctx.positionSizing.levels().stopPrice, Q_TOP);
 });
 
 // ---------------------------------------------------------------------------
@@ -252,12 +258,14 @@ test('TC-SQ05 文字列の手入力が数値として量子化されて水準へ
   const ctx = boot(JP225_REF);
   openDialog(ctx);
   const stop = priceInput(ctx, 'stop');
+  const typed = '58700.4';
   // Act
-  stop.value = '58700.4';
+  stop.value = typed;
   stop.fire('input');
   // Assert: 文字列のまま domain へ渡すと `quantize` は「非有限な数ではない」ため素通しし、
   //   刻みに乗らない値が水準へ入る（domain の契約どおりの穴）。数値化は front の責務。
-  assert.equal(ctx.positionSizing.levels().stopPrice, 58700);
+  //   期待値は打った値を台帳の刻みへ量子化して導出する（ISSUE-432）。
+  assert.equal(ctx.positionSizing.levels().stopPrice, quantize(Number(typed), JP225_TICK));
 });
 
 test('TC-SQ06 空欄は従来どおり null のまま（入力途中を勝手に 0 へ倒さない）', () => {
@@ -370,4 +378,31 @@ test('TC-SQ15 ChartRenderer は銘柄仕様を知らない（upstream 隔離点�
   const src = readFileSync(fileURLToPath(new URL('../js/adapter/front/chart_renderer.js', import.meta.url)), 'utf8');
   // Assert
   assert.equal(/symbol_spec|quantize/.test(src), false, 'renderer が銘柄仕様・丸めを知っている');
+});
+
+test('TC-SQ16 台帳から導出できる期待値を直書きで所有する検定源が無い（第 2 の期待値所有者を作らない・ISSUE-432）', () => {
+  // Arrange: 台帳の刻みから、チャート由来の量子化済み価格（y=0 / y=10）とその表示形を導出する。
+  //   これらの値が検定源へ直書きされると、台帳と独立に緑/赤が決まる「第 2 の期待値所有者」になり、
+  //   tick の訂正が台帳＋生成物で閉じない（訂正コストが高いほど訂正されず残る＝ISSUE-432）。
+  //   裁定値ピンは marketdata/tests/test_symbol_spec_ledger.py の 1 本だけ（意図的な直書き）。
+  const derived = [quantize(RAW_TOP, JP225_TICK), quantize(RAW_TOP - 10, JP225_TICK)];
+  const texts = [...derived.map(String), ...derived.map((v) => priceOnLine(v))];
+  //   前後に数字・小数点・桁区切りが続く出現（入力値 62707.710070965324 や候補 62708.3 の一部）は
+  //   別の値なので除外し、値そのものの出現だけを見る。
+  const asBareLiteral = (t) => new RegExp(`(?<![\\d.,])${t.replace(/\./g, '\\.')}(?![\\d.,])`);
+  const patterns = texts.map(asBareLiteral);
+  // Act: 計算機まわりの検定源（tests/ 直下と tests/support/ の position_sizing*）を走査する。
+  const testsDir = fileURLToPath(new URL('./', import.meta.url));
+  const sources = [
+    ...readdirSync(testsDir).filter((n) => n.startsWith('position_sizing') && n.endsWith('.js')),
+    ...readdirSync(join(testsDir, 'support'))
+      .filter((n) => n.startsWith('position_sizing') && n.endsWith('.js'))
+      .map((n) => join('support', n)),
+  ];
+  const offenders = sources.filter((n) => {
+    const src = readFileSync(join(testsDir, n), 'utf8');
+    return patterns.some((re) => re.test(src));
+  });
+  // Assert: 期待値の所有者は台帳（生成物）だけ。直書きが増えたらここが赤になる。
+  assert.deepEqual(offenders, [], `台帳から導出すべき期待値が直書きされている: ${offenders.join(', ')}`);
 });

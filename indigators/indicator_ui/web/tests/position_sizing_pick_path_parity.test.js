@@ -21,16 +21,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { lookupSymbolSpec } from '../js/adapter/front/symbol_spec_catalog.js';
+import { priceOnLine } from '../js/adapter/front/price_format.js';
+import { quantize } from '../js/domain/price_quantize.js';
 import {
-  boot, flatten, dialogRoot, priceInput, ghostLabel, contextItems,
+  boot, flatten, dialogRoot, priceInput, ghostLabel, contextItems, RAW_TOP,
 } from './support/position_sizing_boot.js';
 
 const JP225_REF = 'jp225_tick';   // 台帳: tick=1.0 / digits=0
 const TSLA_REF = 'sample';        // 台帳: tick=0.01 / digits=2
 
+// 台帳導出の期待値（ISSUE-432: 量子化済みの数値を直書きしない。期待値の所有者は台帳だけ）。
+const JP225_SPEC = lookupSymbolSpec(JP225_REF);
+const Q = (price) => quantize(price, JP225_SPEC.tick);
+
 // 量子化で**勝つ候補が入れ替わる**近接 2 候補（値は台帳の刻み 1.0 に対して設計した）。
 //   素の価格 62707.710070965324 からの距離: 安値 0.51007 < 高値 0.58993 → 量子化しないと「安値」。
-//   刻み 1.0 で丸めると 62708 に対し 安値 62707（距離 1）・高値 62708（距離 0）→「高値」。
+//   刻み 1.0 で丸めると、量子化済みクリック価格に対し 安値は距離 1・高値は距離 0 →「高値」。
 //   差は 0.08 と 1.0 で、浮動小数の誤差（~1e-11）とは桁が 9 つ違う＝境界のきわどさに依存しない。
 const NEAR_CANDIDATES = Object.freeze([
   Object.freeze({ kind: 'ohlc', label: 'low', price: 62707.2 }),
@@ -66,16 +72,23 @@ test('TC-PP01 同一座標・同一候補で、右クリックとピッカーが
     byPicker.price, byMenu,
     `同じ座標なのに経路で価格が違う（右クリック=${byMenu} / ピッカー=${byPicker.price}）`,
   );
-  assert.equal(byMenu, 62708, '右クリック経路が刻み上の候補を選んでいない（前提の崩れ）');
+  assert.equal(
+    byMenu, Q(NEAR_CANDIDATES[1].price),
+    '右クリック経路が刻み上の候補（量子化で勝つ「高値」）を選んでいない（前提の崩れ）',
+  );
 });
 
 test('TC-PP02 ピッカーは右クリックと同じ候補へ吸う（ゴーストが名指す候補が一致する）', () => {
-  // Arrange: 量子化すると「高値」（62708.3 → 62708）が勝つ。量子化しないと「安値」（62707.2）。
+  // Arrange: 量子化すると「高値」（62708.3）が勝つ。量子化しないと「安値」（62707.2）。
   const ctx = boot(JP225_REF, NEAR_CANDIDATES);
   // Act
   const { ghost } = pickByPicker(ctx, 0);
   // Assert: 候補名まで一致していないと「同じ値になったのはたまたま」を見逃す。
-  assert.equal(ghost, '62,708（高値）', `ピッカーが別の候補へ吸っている: ${ghost}`);
+  assert.equal(
+    ghost,
+    `${priceOnLine(Q(NEAR_CANDIDATES[1].price), JP225_SPEC.digits)}（高値）`,
+    `ピッカーが別の候補へ吸っている: ${ghost}`,
+  );
 });
 
 test('TC-PP03 銘柄仕様が解決できるとき、ゴーストの表示と欄へ入る値が一致する（候補あり）', () => {
@@ -101,15 +114,15 @@ test('TC-PP04 digits=2 の銘柄ではゴーストが小数 2 桁で出る（整
   const ctx = boot(TSLA_REF, []);
   // Act
   const { ghost, price } = pickByPicker(ctx, 0);
-  // Assert: 刻み 0.01 で入る値は 62707.71。整数固定のままだとゴーストは '62,708' で表示と値が乖離する。
+  // Assert: 刻み 0.01 で入る値は 62707.71。整数固定のままだとゴーストは丸めた整数表示になり値と乖離する。
   assert.equal(price, 62707.71, '刻み 0.01 で量子化されていない');
   assert.equal(ghost, '62,707.71', `ゴーストの表示桁が台帳の digits に従っていない: ${ghost}`);
   assert.equal(Number(ghost.replace(/,/g, '')), Number(priceInput(ctx, 'stop').value));
 });
 
 test('TC-PP05 digits=0 の銘柄ではゴーストは従来どおり整数（見た目の変化 0）', () => {
-  // Arrange / Act
+  // Arrange / Act: 候補なし＝素のクリック価格（y=0 は RAW_TOP）を台帳の刻みへ量子化した表示。
   const { ghost } = pickByPicker(boot(JP225_REF, []), 0);
   // Assert
-  assert.equal(ghost, '62,708');
+  assert.equal(ghost, priceOnLine(Q(RAW_TOP), JP225_SPEC.digits));
 });

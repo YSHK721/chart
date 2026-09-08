@@ -19,10 +19,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { lookupSymbolSpec } from '../js/adapter/front/symbol_spec_catalog.js';
+import { quantize } from '../js/domain/price_quantize.js';
 import { boot, priceInput, dialogRoot, flatten } from './support/position_sizing_boot.js';
 
 const JP225_REF = 'jp225_tick';        // 台帳: tick=1.0（刻み 1）
 const UNKNOWN_REF = 'unknown_dataset_ref';   // 銘柄仕様が解決できない ref
+
+// 台帳導出の期待値（ISSUE-432: 量子化済みの数値を直書きしない。期待値の所有者は台帳だけ）。
+//   打った文字列（入力）はテストが所有し、確定後のモデル値・表示は「入力を台帳の刻みへ
+//   量子化した値」として導出する。tick の訂正時にここの期待値は台帳へ自動追随する。
+const JP225_TICK = lookupSymbolSpec(JP225_REF).tick;
+const Q = (typed) => quantize(Number(typed), JP225_TICK);
 
 // 実 DOM の入力手順: 1 文字ずつ 'input' が出て、確定（blur / Enter）で 'change' が出る。
 function type(el, text) {
@@ -43,9 +51,9 @@ test('TC-PI01 刻みの外の値を打って確定すると、欄の表示がモ
   // Act
   type(stop, '58700.4');
   commit(stop);
-  // Assert: モデルは既に 58700（domain の関門）。表示もそれに一致する。
-  assert.equal(ctx.positionSizing.levels().stopPrice, 58700, '水準が刻み上にない（前提の崩れ）');
-  assert.equal(stop.value, '58700', `欄の表示がモデル値に合っていない: ${stop.value}`);
+  // Assert: モデルは既に打った値の量子化値（domain の関門）。表示もそれに一致する。
+  assert.equal(ctx.positionSizing.levels().stopPrice, Q('58700.4'), '水準が刻み上にない（前提の崩れ）');
+  assert.equal(stop.value, String(Q('58700.4')), `欄の表示がモデル値に合っていない: ${stop.value}`);
 });
 
 test('TC-PI02 建値欄でも同じ（stop だけを直して取り残さない）', () => {
@@ -56,7 +64,7 @@ test('TC-PI02 建値欄でも同じ（stop だけを直して取り残さない�
   type(entry, '58700.4');
   commit(entry);
   // Assert
-  assert.equal(entry.value, '58700');
+  assert.equal(entry.value, String(Q('58700.4')));
 });
 
 test('TC-PI03 利確欄でも同じ（3 種の入力先すべてが同じ規則で動く）', () => {
@@ -67,7 +75,7 @@ test('TC-PI03 利確欄でも同じ（3 種の入力先すべてが同じ規則�
   type(take, '59000.7');
   commit(take);
   // Assert
-  assert.equal(take.value, '59001');
+  assert.equal(take.value, String(Q('59000.7')));
 });
 
 // ---------------------------------------------------------------------------
@@ -82,7 +90,7 @@ test('TC-PI04 入力途中（input）では書き戻さない（打っている�
   type(stop, '58700.4');
   // Assert: 表示は打ったまま。モデルだけが刻みへ丸まっている。
   assert.equal(stop.value, '58700.4', '入力途中で書き戻してカーソルを奪っている');
-  assert.equal(ctx.positionSizing.levels().stopPrice, 58700);
+  assert.equal(ctx.positionSizing.levels().stopPrice, Q('58700.4'));
 });
 
 test('TC-PI05 打ち進める途中の各文字で書き戻さない（1 文字ごとに値が飛ばない）', () => {
@@ -182,7 +190,7 @@ test('TC-PI10 価格の確定で K（分割本数）と建値欄が巻き戻ら�
   commit(stop);
   // Assert: K も欄も残り、3 本目はモデル値（刻み上）で表示される。
   assert.equal(splits.value, '3', 'K が巻き戻っている');
-  assert.equal(priceInput(ctx, 'entry:2')?.value, '58801', '建値欄が消えた／値が失われた');
+  assert.equal(priceInput(ctx, 'entry:2')?.value, String(Q('58800.6')), '建値欄が消えた／値が失われた');
 });
 
 test('TC-PI11 価格の確定でパラメータ欄（勝率など）を巻き添えにしない', () => {
