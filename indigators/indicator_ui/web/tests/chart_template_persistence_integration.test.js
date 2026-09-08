@@ -249,14 +249,22 @@ const TEMPLATE_MA_MP = {
 };
 
 // MP アクター（setEnabled(true) で失敗させられる）。
+//
+// ISSUE-484: 失敗経路の検定（TC-P05/TC-P08）は「MP 復元が実際に失敗したこと」を前提として
+//   applied を見る必要がある。従来は注入の到達を観測しておらず、actor: null の変異でも 8/8 緑
+//   （検出力ゼロ）だった。呼出（setEnabledCalls）と例外発生（enableFailures）を記録し、
+//   検定側が「失敗が実在した」ことを assert してから結果（applied）を見る。
 function fakeMpActor({ failOnEnable = false } = {}) {
   return {
     enabled: false,
+    setEnabledCalls: [],   // setEnabled(on) に渡った on の記録（到達の観測点）。
+    enableFailures: 0,     // setEnabled(true) が実際に throw した回数（失敗の実在の観測点）。
     setParams: () => {},
     applyGrowthState: () => {},
     isEnabled() { return this.enabled; },
     async setEnabled(on) {
-      if (on && failOnEnable) { throw new Error('MP fetch failed'); }
+      this.setEnabledCalls.push(on);
+      if (on && failOnEnable) { this.enableFailures += 1; throw new Error('MP fetch failed'); }
       this.enabled = on;
     },
     detach: () => {},
@@ -266,14 +274,26 @@ function fakeMpActor({ failOnEnable = false } = {}) {
 
 test('TC-P05 MP 復元が失敗しても applied.v1 は空のままにならない（D-1 根本原因の回帰・F-T4）', async () => {
   // Arrange: 実 UI 検証と同型（MP 入りテンプレートが 1m へ紐付け・MP 復元が失敗する）
+  const mpActor = fakeMpActor({ failOnEnable: true });
   const { controller, persistence } = await buildWiring({
     bindings: { '1m': 'tpl#1' },
     templateSet: [TEMPLATE_MA_MP],
-    marketProfile: fakeMpActor({ failOnEnable: true }),
+    marketProfile: mpActor,
   });
   await controller.applyIndicator('ma_marod', 'default'); // 5m の既存構成
   // Act
   await controller.setTimeframe('1m');
+  // Assert（前提の観測・ISSUE-484）: MP 復元経路が actor へ実際に到達し、失敗が実在した。
+  //   actor が結線されない変異（registerMarketProfile へ null）では呼出 0 件になり、ここで赤になる
+  //   （検出力の固定。回数は焼き込まず「有効化が試みられ・失敗した」ことだけを固定する）。
+  assert.ok(
+    mpActor.setEnabledCalls.includes(true),
+    `MP 復元経路が actor.setEnabled(true) へ到達している（実際: ${JSON.stringify(mpActor.setEnabledCalls)}）`,
+  );
+  assert.ok(
+    mpActor.enableFailures >= 1,
+    `MP 復元の失敗（setEnabled(true) の throw）が実際に発生している（実際: ${mpActor.enableFailures} 回）`,
+  );
   // Assert: 除去が永続化した [] が最終値として残らない（リロードで構成が消えない）
   const saved = lastSavedApplied(persistence);
   assert.deepEqual(
@@ -334,15 +354,26 @@ const TEMPLATE_MP_FIRST = {
 
 test('TC-P08 MP 復元が失敗しても宣言順で後続の指標は計算・描画される（C-2 回帰・F-T4）', async () => {
   // Arrange: MP が先頭・その setEnabled(true) が失敗する
+  const mpActor = fakeMpActor({ failOnEnable: true });
   const { controller, persistence, renderer, computeCalls } = await buildWiring({
     bindings: { '1m': 'tpl#1' },
     templateSet: [TEMPLATE_MP_FIRST],
-    marketProfile: fakeMpActor({ failOnEnable: true }),
+    marketProfile: mpActor,
   });
   computeCalls.length = 0;
   renderer.log.length = 0;
   // Act
   await controller.setTimeframe('1m');
+  // Assert（前提の観測・ISSUE-484）: 「MP の失敗」が実在してこそ「後続の巻き添え無し」に意味がある。
+  //   actor 不在の変異（registerMarketProfile へ null）では到達 0 件になり、ここで赤になる。
+  assert.ok(
+    mpActor.setEnabledCalls.includes(true),
+    `MP 復元経路が actor.setEnabled(true) へ到達している（実際: ${JSON.stringify(mpActor.setEnabledCalls)}）`,
+  );
+  assert.ok(
+    mpActor.enableFailures >= 1,
+    `MP 復元の失敗が実際に発生している（実際: ${mpActor.enableFailures} 回）`,
+  );
   // Assert: 失敗は MP の 1 件に閉じ、後続の ma_marod は計算も描画もされる
   assert.deepEqual(
     computeCalls.map((c) => c.indicatorId), ['ma_marod'],
