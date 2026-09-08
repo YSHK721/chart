@@ -166,6 +166,121 @@ def test_the_header_is_written_once_and_only_once(store):
 
 
 # =====================================================================
+# ISSUE-477: 追記側の重複ガード（last_date の等号側）と境界分の切り出し
+# =====================================================================
+
+def test_a_minute_already_settled_in_the_csv_is_not_appended_again(store):
+    """既存 M1 の最終 date と**同じ分**の行が再び届いても二重に書かない（等号側ガード）。
+
+    分内再起動の pending 再種付け（ISSUE-477）は、境界分が既に確定済みでもその分の
+    ティックをもう一度畳みへ流す。追記側が last_date の等号側を落とさないと、
+    同じ date の M1 行が 2 行になる（2026-09-01 23:48 の volume 44+28 と同型）。
+    """
+    # Arrange: 09:00 を確定させる。
+    rows = _rows_for_minutes(start=_START, minutes=1, per_minute=4)
+    first = m1_chain.append_m1_for_closed_minutes(
+        rows, until=pd.Timestamp("2026-08-25 09:01", tz="UTC"), **store
+    )
+    assert first.bars == 1
+    # Act: 同じ分の行がそのまま再種付けで届く。
+    again = m1_chain.append_m1_for_closed_minutes(
+        rows, until=pd.Timestamp("2026-08-25 09:02", tz="UTC"), **store
+    )
+    # Assert: 追記 0・CSV は 1 行のまま。
+    assert again.bars == 0
+    csv = pd.read_csv(tick_m1.m1_csv_path(ref=_REF, data_dir=store["data_dir"]))
+    assert list(csv["date"]) == ["2026-08-25 09:00:00"]
+
+
+def test_settled_rows_are_dropped_while_genuinely_new_minutes_still_append(store):
+    """確定済みの分と新しい分が混ざった入力で、新しい分だけが追記される。"""
+    # Arrange: 09:00 を確定させる。
+    settled = _rows_for_minutes(start=_START, minutes=1, per_minute=4)
+    m1_chain.append_m1_for_closed_minutes(
+        settled, until=pd.Timestamp("2026-08-25 09:01", tz="UTC"), **store
+    )
+    # Act: 再種付けされた 09:00 の行＋新着の 09:01 の行。
+    fresh = _rows_for_minutes(
+        start=_START + dt.timedelta(minutes=1), minutes=1, per_minute=3
+    )
+    got = m1_chain.append_m1_for_closed_minutes(
+        settled + fresh, until=pd.Timestamp("2026-08-25 09:02", tz="UTC"), **store
+    )
+    # Assert: 09:01 だけが 1 行増える（09:00 は 1 行のまま）。
+    assert got.bars == 1
+    csv = pd.read_csv(tick_m1.m1_csv_path(ref=_REF, data_dir=store["data_dir"]))
+    assert list(csv["date"]) == ["2026-08-25 09:00:00", "2026-08-25 09:01:00"]
+    assert list(csv["volume"]) == [4.0, 3.0]
+
+
+def test_rows_of_last_minute_returns_exactly_the_forming_minutes_rows():
+    """境界分（最後の UTC 分）の行だけが返る（pending 再種付けの素材・分の定義は畳みと同一）。"""
+    rows = _rows_for_minutes(start=_START, minutes=3, per_minute=4, last=2)
+    assert m1_chain.rows_of_last_minute(rows) == rows[-2:]
+
+
+def test_rows_of_last_minute_of_nothing_is_nothing():
+    assert m1_chain.rows_of_last_minute([]) == []
+
+
+def test_duplicate_only_input_issues_no_folding_at_all(store, monkeypatch):
+    """CX（発行 − 使用 = 0）: 出力に使われない入力（全行が確定済みの分）は畳みを発行しない。
+
+    「畳んでから落とす」形は出力が正しいままなので状態検証では原理的に落ちない
+    （ISSUE-450 と同型）。ガードは畳みの**前**で行単位に落ちることを Spy で固定する。
+    """
+    from marketdata.mt5_ticks import fakes
+
+    rows = _rows_for_minutes(start=_START, minutes=1, per_minute=4)
+    m1_chain.append_m1_for_closed_minutes(
+        rows, until=pd.Timestamp("2026-08-25 09:01", tz="UTC"), **store
+    )
+    folds = fakes.CallSpy(tick_m1.ticks_to_m1)
+    monkeypatch.setattr(tick_m1, "ticks_to_m1", folds)
+
+    got = m1_chain.append_m1_for_closed_minutes(
+        rows, until=pd.Timestamp("2026-08-25 09:02", tz="UTC"), **store
+    )
+
+    assert got.bars == 0
+    assert folds.count == 0
+
+
+def test_the_dedupe_guard_reads_only_the_tail_regardless_of_csv_size(tmp_path, monkeypatch):
+    """CX（2 点オーダー）: ガードの既存 CSV 読みは蓄積（既存バー数）に比例しない。
+
+    回数そのものは期待値に焼き込まない。蓄積 2 点（2 バー / 40 バー）で
+    「読みの発行が増えないこと」と「要求した行数が増えないこと」だけを固定する。
+    """
+    from marketdata import tail_reader
+    from marketdata.mt5_ticks import fakes
+
+    def _probe(sub: str, bars: int):
+        data_dir = tmp_path / sub
+        seed = _rows_for_minutes(start=_START, minutes=bars, per_minute=2)
+        m1_chain.append_m1_for_closed_minutes(
+            seed, until=pd.Timestamp(_START + dt.timedelta(minutes=bars), tz="UTC"),
+            ref=_REF, data_dir=data_dir,
+        )
+        spy = fakes.CallSpy(tail_reader.read_tail, measure=lambda p, n: n)
+        monkeypatch.setattr(tail_reader, "read_tail", spy)
+        try:
+            fresh = _rows_for_minutes(
+                start=_START + dt.timedelta(minutes=bars), minutes=1, per_minute=2
+            )
+            got = m1_chain.append_m1_for_closed_minutes(
+                fresh, until=pd.Timestamp(_START + dt.timedelta(minutes=bars + 1), tz="UTC"),
+                ref=_REF, data_dir=data_dir,
+            )
+        finally:
+            monkeypatch.setattr(tail_reader, "read_tail", spy.target)
+        assert got.bars == 1
+        return (spy.count, spy.total)
+
+    assert _probe("small", 2) == _probe("large", 40)
+
+
+# =====================================================================
 # rollup 差分更新
 # =====================================================================
 

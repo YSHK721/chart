@@ -200,3 +200,68 @@ def test_restore_without_any_journal_yields_no_cursor(tmp_path):
     """暗黙既定を作らない＝コールドスタートは呼び出し側の明示（``--from``）を要求する。"""
     restore = usecases.RestoreCursor(token=_TOKEN, data_dir=tmp_path)
     assert restore(days=[_DAY]) is None
+
+
+# =====================================================================
+# UC-06 ReseedPending（ISSUE-477: 分内再起動の pending 再種付け）
+# =====================================================================
+
+def test_reseed_returns_every_journaled_tick_of_the_boundary_minute(tmp_path):
+    """境界分（最後の UTC 分）の**全行**が持ち越しとして返る。
+
+    pending はメモリにしか無く再起動で失われる。ジャーナルに在る停止前ティックを最初の周期の
+    畳みへ再供給しないと、境界分が「停止前だけ」「再開後だけ」の 2 本の部分バーに割れる
+    （ISSUE-477 実測: volume 44+28）。
+    """
+    # Arrange: 08:59:00〜09:00:29 の 90 行（境界分 09:00 は 30 行）。
+    tape = _tape(dt.datetime(2026, 8, 25, 8, 59), 90)
+    journal.append(_DAY, tape, symbol=_TOKEN, data_dir=tmp_path)
+    # Act
+    got = usecases.ReseedPending(token=_TOKEN, data_dir=tmp_path)(days=[_DAY])
+    # Assert: 09:00 の行だけが（欠けず・混ざらず）返る。
+    assert got == tape[60:]
+
+
+def test_reseed_without_any_journal_yields_nothing(tmp_path):
+    """コールドスタート（ジャーナル不在）では何も種付けしない。"""
+    assert usecases.ReseedPending(token=_TOKEN, data_dir=tmp_path)(days=[_DAY]) == []
+
+
+def test_reseed_reads_the_newest_journaled_day_in_the_window(tmp_path):
+    """再開点の復元（UC-04）と同じく、窓内で最新のジャーナル日から種付けする。"""
+    # Arrange: 前日と当日の両方にジャーナルが在る。
+    old = _tape(dt.datetime(2026, 8, 24, 9, 0), 4)
+    new = _tape(dt.datetime(2026, 8, 25, 9, 0), 4)
+    journal.append(dt.date(2026, 8, 24), old, symbol=_TOKEN, data_dir=tmp_path)
+    journal.append(_DAY, new, symbol=_TOKEN, data_dir=tmp_path)
+    # Act
+    got = usecases.ReseedPending(token=_TOKEN, data_dir=tmp_path)(
+        days=[dt.date(2026, 8, 24), _DAY]
+    )
+    # Assert: 当日の境界分（09:00 の 4 行）が返り、前日は混ざらない。
+    assert got == new
+
+
+@pytest.mark.parametrize("stored_days", [5, 50])
+def test_reseed_issues_reads_bounded_by_the_window_not_the_ledger(tmp_path, monkeypatch, stored_days):
+    """CX（2 点オーダー）: 種付けの読み発行は保存済み日数に比例しない（窓で決まる）。
+
+    回数そのものは期待値に焼き込まない。蓄積 2 点（5 日 / 50 日）で「発行が増えないこと」を
+    固定し、読んだ日の行が**そのまま**持ち越しの素材に使われること（発行 − 使用 = 0 の形）を
+    最新日 1 日で確かめる。
+    """
+    root = tmp_path / f"stored{stored_days}"
+    for offset in range(stored_days):
+        day = _DAY - dt.timedelta(days=offset)
+        when = dt.datetime(day.year, day.month, day.day, 9, 0)
+        journal.append(day, _tape(when, 4), symbol=_TOKEN, data_dir=root)
+    reads = fakes.CallSpy(journal.read_rows)
+    monkeypatch.setattr(journal, "read_rows", reads)
+
+    got = usecases.ReseedPending(token=_TOKEN, data_dir=root)(
+        days=[_DAY - dt.timedelta(days=1), _DAY]
+    )
+
+    # 読んだのは最新日 1 日だけ（窓の中で最初に見つかった日で止まる）。
+    assert reads.count == 1
+    assert got == _tape(dt.datetime(2026, 8, 25, 9, 0), 4)

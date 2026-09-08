@@ -57,24 +57,67 @@ def rollup_dir(*, ref: str, data_dir: Any) -> Path:
     return rollup_paths.ref_dir(ref, data_dir=data_dir)
 
 
+def _utc_minute(row: Row) -> pd.Timestamp:
+    """行が属する UTC 分（畳みの分割キー）。**分境界の定義はここ 1 箇所**である。
+
+    再種付け（:func:`rows_of_last_minute`）と閉じた分の判定が別の定義を持つと、
+    「種にした行」と「畳まれる行」の分け方が食い違い、境界分の欠け・重複が静かに戻る。
+    """
+    return pd.Timestamp(server_clock.to_utc_ms(row[0]), unit="ms", tz="UTC").floor("min")
+
+
+def rows_of_last_minute(rows: "Sequence[Row]") -> "List[Row]":
+    """``rows`` のうち**最後の UTC 分**（＝形成中だった境界分）に属する行だけを返す。
+
+    用途は再起動時の pending 再種付け（ISSUE-477・UC-06）である。pending はメモリにしか
+    無く再起動で失われるため、ジャーナル末尾からこの分の全行を読み直して最初の周期の畳みに
+    混ぜる。分の定義は畳み（:func:`append_m1_for_closed_minutes`）と同じ :func:`_utc_minute`
+    であり、第 2 の分境界定義を作らない。
+    """
+    rows = list(rows)
+    if not rows:
+        return []
+    minutes = [_utc_minute(r) for r in rows]
+    last = max(minutes)
+    return [r for r, minute in zip(rows, minutes) if minute == last]
+
+
 def append_m1_for_closed_minutes(
     rows: "Sequence[Row]", *, ref: str, data_dir: Any, until: Any
 ) -> AppendResult:
     """``until`` より前の分（＝閉じた分）だけを畳んで M1 CSV へ追記する。
 
     ``rows`` は**新着分のみ**（前周期からの持ち越しを含む）。畳みに渡すのは閉じた分の行だけで、
-    当日の累積は 1 行も読み直さない。
+    当日の累積は 1 行も読み直さない（既存側は末尾 1 行だけを見る・下記ガード）。
+
+    重複ガード（ISSUE-477・**last_date の等号側**）:
+        既存 M1 の最終 date と同じ分（またはそれ以前）の行は、既に確定済みであり畳まない・
+        書かない。再起動時の pending 再種付け（UC-06）は「ジャーナルの最後の分」を機械的に
+        種にするため、その分が停止前に確定済みでもティックがもう一度届く。ここで落とさないと
+        同じ date の M1 行が 2 行になる（実測: volume 44+28 の 2 行割れ）。落とすのは畳みの
+        **前**（行単位）である — 畳んでから捨てると、出力に使わない計算を毎起動発行する
+        （ISSUE-450 と同型・計算量検定が固定する）。既存側の読みは
+        :func:`marketdata.tick_m1.last_m1_date`（末尾 1 行・メモリ有界）だけで、
+        規則は :func:`marketdata.tick_m1.append_m1_from_ticks` の ``index > last_date``
+        と同じ「date 狭義単調増加」である。
     """
     rows = list(rows)
+    if not rows:
+        return AppendResult(bars=0, pending_rows=[])  # 行 0 なら既存側の読みも発行しない。
     boundary = pd.Timestamp(until)
     if boundary.tzinfo is None:
         boundary = boundary.tz_localize("UTC")
 
+    settled = tick_m1.last_m1_date(tick_m1.m1_csv_path(ref=ref, data_dir=data_dir))
+    if settled is not None and settled.tzinfo is None:
+        settled = settled.tz_localize("UTC")  # M1 CSV の date は naive=UTC（既存契約）。
+
     closed: "List[Row]" = []
     pending: "List[Row]" = []
     for row in rows:
-        utc_ms = server_clock.to_utc_ms(row[0])
-        minute = pd.Timestamp(utc_ms, unit="ms", tz="UTC").floor("min")
+        minute = _utc_minute(row)
+        if settled is not None and minute <= settled:
+            continue  # 確定済みの分（等号側を含む）＝重複。畳みへ入れない。
         (closed if minute < boundary else pending).append(row)
 
     if not closed:

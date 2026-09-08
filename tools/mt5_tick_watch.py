@@ -363,8 +363,18 @@ def run(
     if seeded:
         _stderr(f"未確定の日を引き継ぎます: {[str(d) for d in seeded]}")
 
+    # 分内再起動で失われた持ち越し（形成中の分）をジャーナルから再種付けする（ISSUE-477・UC-06）。
+    #   種付けしないと、境界分の M1 が「停止前だけ」「再開後だけ」の 2 本の部分バーに割れる。
+    #   畳まない運用（--no-publish）では種付けしない — 出力に使わない行を持ち続けるのは、
+    #   作ってから捨てる計算と同じ欠陥である（pending の扱いと同じ規律）。
+    pending: "List[Row]" = []
+    if settings.publish:
+        pending = usecases.ReseedPending(token=token, data_dir=settings.data_dir)(days=window)
+        if pending:
+            _stderr(f"境界分（形成中だった分）のティックを再種付けします: {len(pending)} 行")
+
     cycle = build_cycle(settings, source=source, token=token, clock=clock)
-    state = WatchState(cursor=start, pending=[], days=set(seeded), latest_day=None)
+    state = WatchState(cursor=start, pending=pending, days=set(seeded), latest_day=None)
     done = 0
     failures = 0
 

@@ -207,3 +207,34 @@ class UnfinalizedDays:
             if journal.has_journal(day, symbol=self.token, data_dir=self.data_dir)
             and not journal.is_finalized(day, symbol=self.token, data_dir=self.data_dir)
         ]
+
+
+@dataclass
+class ReseedPending:
+    """UC-06: 分内再起動で失われた持ち越し（pending）をジャーナルから再種付けする（ISSUE-477）。
+
+    pending（形成中の分の持ち越し）はメモリにしか無く、再起動で失われる。ジャーナルには
+    停止前のティックが残っているのに M1 の畳みへ再供給されないため、境界の 1 分が
+    「停止前ティックだけの部分バー」と「再開後ティックだけの部分バー」の 2 行に割れる
+    （実測 2026-09-01 23:48: volume 44+28）。起動時 1 回、ジャーナル末尾から**境界分
+    （最後の UTC 分）の全ティック**を読み、最初の周期の畳みに混ぜる。
+
+    探索窓は再開点の復元（UC-04）と同じ ``days`` を使う（窓が別だと片方だけ遡れる日ができ、
+    「再開はできるのに種は無い」状態を作る）。境界分の切り出しは
+    :func:`marketdata.mt5_ticks.m1_chain.rows_of_last_minute` へ委譲する（分境界の定義は
+    畳みと同一・第 2 定義を作らない）。
+
+    境界分が停止前に**確定済み**だった場合、その分のティックがもう一度畳みへ流れるが、
+    追記側の重複ガード（:func:`m1_chain.append_m1_for_closed_minutes` の last_date 等号側）が
+    行単位で落とす。再種付けとガードは対で 1 つの対策である。
+    """
+
+    token: str
+    data_dir: Any
+
+    def __call__(self, *, days: "Iterable[dt.date]") -> "List[Row]":
+        for day in sorted(set(days), reverse=True):
+            rows = journal.tail_rows(day, symbol=self.token, data_dir=self.data_dir)
+            if rows:
+                return m1_chain.rows_of_last_minute(rows)
+        return []

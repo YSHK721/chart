@@ -385,6 +385,136 @@ def test_a_day_that_is_still_open_is_not_finalized(tmp_path, secret):
 
 
 # =====================================================================
+# ISSUE-477: 分内再起動と境界分の M1（pending 再種付け＋重複の不在）
+# =====================================================================
+
+def test_a_mid_minute_restart_still_produces_one_complete_boundary_bar(tmp_path, secret):
+    """分の途中で止めて再起動しても、境界分の M1 が部分バーに割れない。
+
+    pending（形成中の分の持ち越し）はメモリにしか無く、再起動で失われる。ジャーナルには
+    停止前のティックが残っているのに畳みへ再供給されないと、境界分は再開後ティックだけの
+    部分バーとして確定する（ISSUE-477 実測 2026-09-01 23:48: volume 44+28 の 2 行割れ）。
+    抜本策は起動時 1 回、ジャーナル末尾から境界分の全ティックを pending へ再種付けすること。
+    """
+    # Arrange — セッション 1: 08:59 は満杯・09:00 は前半 4 本を受け、分の途中（09:00:50）で停止。
+    tape = _tape(dt.datetime(2026, 8, 25, 8, 59), minutes=2)  # 08:59:00〜09:00:45
+    clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 0, 50, tzinfo=dt.timezone.utc))
+    code = watch.main(
+        _argv(tmp_path, "--from", "2026-08-25 11:59:00"),
+        source=fakes.FakeTickSource(tape), clock=clock,
+    )
+    m1 = pd.read_csv(tick_m1.m1_csv_path(ref="jp225_mt5", data_dir=tmp_path))
+    assert code == 0
+    assert list(m1["date"]) == ["2026-08-25 08:59:00"]  # 09:00 は形成中＝未確定
+
+    # Act — セッション 2: 分内再起動。09:00 の残り 2 本と 09:01 の 1 本が届き、09:01:30 に畳む。
+    tape += [
+        (_label_ms(dt.datetime(2026, 8, 25, 9, 0, 50)), 66100.0, 66110.0),
+        (_label_ms(dt.datetime(2026, 8, 25, 9, 0, 55)), 66101.0, 66111.0),
+        (_label_ms(dt.datetime(2026, 8, 25, 9, 1, 5)), 66102.0, 66112.0),
+    ]
+    clock2 = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 1, 30, tzinfo=dt.timezone.utc))
+    code = watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock2)
+
+    # Assert: 境界分 09:00 は「停止前 4 本＋再開後 2 本」の合算 1 行になる。
+    m1 = pd.read_csv(tick_m1.m1_csv_path(ref="jp225_mt5", data_dir=tmp_path))
+    boundary = m1[m1["date"] == "2026-08-25 09:00:00"]
+    assert code == 0
+    assert len(boundary) == 1
+    assert boundary["volume"].iloc[0] == 6.0
+    assert boundary["open"].iloc[0] == pytest.approx(66001.0)   # 停止前の始値が残る
+    assert boundary["close"].iloc[0] == pytest.approx(66101.0)  # 再開後の終値で閉じる
+
+
+def test_a_restart_after_the_minute_closed_does_not_duplicate_the_boundary_bar(tmp_path, secret):
+    """境界分が既に確定済みなら、再種付けが同じ date の 2 行目を作らない（重複の不在）。
+
+    再種付けは「ジャーナルの最後の分」を機械的に種にするため、その分が停止前に確定済みでも
+    ティックがもう一度畳みへ流れる。追記側の重複ガード（last_date の等号側・閉じた分の畳みを
+    持つ marketdata の m1_chain 側）が落とすことで、M1 の date は狭義単調増加のまま保たれる。
+    再種付けとガードは対で 1 つの対策である（ISSUE-477）。
+    """
+    # Arrange — セッション 1: 09:00 まで畳み切ってから停止（ジャーナル末尾の分＝確定済みの分）。
+    tape = _tape(dt.datetime(2026, 8, 25, 8, 59), minutes=2)  # 08:59:00〜09:00:45
+    clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 1, 10, tzinfo=dt.timezone.utc))
+    watch.main(
+        _argv(tmp_path, "--from", "2026-08-25 11:59:00"),
+        source=fakes.FakeTickSource(tape), clock=clock,
+    )
+    m1 = pd.read_csv(tick_m1.m1_csv_path(ref="jp225_mt5", data_dir=tmp_path))
+    assert list(m1["date"]) == ["2026-08-25 08:59:00", "2026-08-25 09:00:00"]
+
+    # Act — セッション 2: 再起動して 09:01 が届く。
+    tape += _tape(dt.datetime(2026, 8, 25, 9, 1), minutes=1)
+    clock2 = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, 10, tzinfo=dt.timezone.utc))
+    code = watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock2)
+
+    # Assert: date に重複が無く、確定済みの 09:00 は 1 行のまま（volume も不変）。
+    m1 = pd.read_csv(tick_m1.m1_csv_path(ref="jp225_mt5", data_dir=tmp_path))
+    assert code == 0
+    assert list(m1["date"]) == [
+        "2026-08-25 08:59:00", "2026-08-25 09:00:00", "2026-08-25 09:01:00"
+    ]
+    assert list(m1["volume"]) == [4.0, 4.0, 4.0]
+
+
+def test_no_publish_does_not_reseed_the_pending_rows(tmp_path, secret):
+    """``--no-publish`` では再種付けしない（畳まない運用で持ち越しを溜め込まない）。"""
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    tape = _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=1)
+    journal.append(dt.date(2026, 8, 25), tape, symbol=token, data_dir=tmp_path)
+    clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc))
+
+    code = watch.main(
+        _argv(tmp_path, "--no-publish"), source=fakes.FakeTickSource(tape), clock=clock
+    )
+
+    assert code == 0
+    assert not tick_m1.m1_csv_path(ref="jp225_mt5", data_dir=tmp_path).exists()
+
+
+def _restart_with_publish(root: Path, *, stored_days: int, monkeypatch) -> int:
+    """``stored_days`` 日ぶんのジャーナルを置き、publish 有効のまま 1 周期だけ再起動する。
+
+    返すのは起動〜1 周期で発行されたジャーナル読み（``journal.read_rows``）の回数である。
+    再開点の復元・pending 再種付け・日次確定のすべてがここを通るため、台帳の大きさに
+    比例しないことを 1 つの数で表明できる。
+    """
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    root.mkdir(parents=True, exist_ok=True)
+    for offset in range(stored_days):
+        day = dt.date(2026, 8, 25) - dt.timedelta(days=offset)
+        journal.append(
+            day, _tape(dt.datetime(day.year, day.month, day.day, 9, 0), minutes=1),
+            symbol=token, data_dir=root,
+        )
+    reads = fakes.CallSpy(journal.read_rows)
+    monkeypatch.setattr(journal, "read_rows", reads)
+    monkeypatch.setattr(rebuild, "rebuild_days", lambda *a, **kw: None)
+
+    tape = (
+        _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=1)
+        + _tape(dt.datetime(2026, 8, 25, 9, 1), minutes=1)
+    )
+    code = watch.main(
+        ["--data-dir", str(root), "--once"],
+        source=fakes.FakeTickSource(tape),
+        clock=fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc)),
+    )
+    assert code == 0
+    return reads.count
+
+
+def test_reseeding_at_startup_is_bounded_by_the_lookback_window(tmp_path, secret, monkeypatch):
+    """CX（2 点オーダー）: publish 有効の再起動でも、起動時のジャーナル読みは保存済み日数に
+    比例しない（回数は期待値に焼き込まず、蓄積 2 点で「増えないこと」だけを固定する）。"""
+    small = _restart_with_publish(tmp_path / "stored5", stored_days=5, monkeypatch=monkeypatch)
+    large = _restart_with_publish(tmp_path / "stored50", stored_days=50, monkeypatch=monkeypatch)
+
+    assert large == small
+
+
+# =====================================================================
 # 失敗の扱い（待てば直る／直らない）
 # =====================================================================
 
@@ -521,12 +651,19 @@ def test_one_cycle_issues_one_fetch_regardless_of_stored_days(tmp_path, secret, 
 
 
 def test_a_cycle_without_new_rows_writes_nothing(tmp_path, secret):
-    """CX-b: 新着 0 の周期は journal も M1 も rollup も書かない。"""
+    """CX-b: 新着 0 の周期は journal も M1 も rollup も書かない。
+
+    再種付け（ISSUE-477）の導入後も成り立つことを固定する: 起動のたびに境界分が
+    再種付けされても、その分が既に確定済みなら追記側の重複ガードが**行単位で**落とし、
+    書込（M1・rollup・journal）は 1 バイトも発行されない。1 回目の起動は再種付けされた
+    境界分を確定するところまで進める（そこまでが定常状態への到達）。
+    """
     token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
     tape = _tape(dt.datetime(2026, 8, 25, 9, 0), minutes=2)
     journal.append(dt.date(2026, 8, 25), tape, symbol=token, data_dir=tmp_path)
-    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
     clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 5, tzinfo=dt.timezone.utc))
+    watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
+    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
 
     watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
 
