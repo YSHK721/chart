@@ -4921,7 +4921,7 @@ indicator_ui Python 639 / replay_ui Python 202 / btlm_trail 31 / moving_averages
 - **関連**: ISSUE-283（無駄な再要求）／ISSUE-278 #3（無言の except で握り潰す型）。
 
 ## ISSUE-285: [不具合・実測] モード遷移時にリプレイ層の要求がライブ core へ回り 404 になる（2026-08-08）
-- **ステータス**: OPEN（2026-09-08 実装点確定: simulator/replay_ui/web/js/replay.js・replay/forming_plan_cache.js・unified_ui/web/js/sw_rewrite.js に閉じる（indigators 配下に /intraday 発行 0 件を grep 実測）。是正は別波で実施中）
+- **ステータス**: RESOLVED（2026-09-08。FormingPlanCache に世代トークン＋AbortController を実装。invalidate（disable・rp-mode・時間足/カレンダー/速度軸切替）で世代を進めて in-flight の /intraday・/compute（latest_seq_multi）を打ち切り、旧世代の遅延発行（/intraday 解決後の /compute・キャッシュ再流入）は世代照合で遮断＝「無効になった要求は必ず死ぬ」構造。3 連続 404 は PREFETCH_DEPTH=3 の先読みが遷移窓に残ったものと特定。404 の握り潰しは追加していない。replay_plan_generation_abort.test.js 6 件（計算量テスト＝打ち切り後発行 0 を depth 1/3×窓長 2 点で固定）・replay 386 件・全 8 スイート緑。正常時の取得挙動は不変）
 - **重大度**: Medium（足内アニメーションの素材取得が失敗する。再生の見た目が劣化する）
 - **事象（利用者報告）**: `GET /intraday?...` が **404**（3 連続）。発生位置は compute エラー群の直後＝再生終了・モード切替の前後。
 - **実測**: リプレイモード（`body.um-mode-replay`）では SW が `/replay/intraday` へ書換え **200**。一方 `/intraday`（書換なし）と `/live/intraday` は **404**（リプレイ core にしか実装が無い）。つまり 404 は「リプレイ層の要求が **live モードとして**書き換えられた」ことを意味する。
