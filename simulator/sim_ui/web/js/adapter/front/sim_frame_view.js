@@ -18,17 +18,14 @@
 //
 // job_id は URL クエリで子へ渡す（子は自分で `?job=` を読む＝親子で読み方を二重化しない）。
 
-/** 子文書（表示の実体）のパス。 */
-export const SIM_REPORT_VIEW_PATH = "/sim/report_view.html";
+import { SIM_REPORT_VIEW_PATH, reportViewUrl } from "./report_view_url.js";
+
+// 子文書パスの再輸出（定義は report_view_url.js が唯一持つ。既存の輸入元を保つ）。
+export { SIM_REPORT_VIEW_PATH };
 /** sim 所有 CSS（器の寸法だけを持つ）。統合ページと子文書の両方が読む。 */
 export const SIM_FRAME_CSS = "/sim/css/sim_display.css";
 /** 器の id（統合ページ側で唯一の sim 由来要素）。 */
 export const SIM_FRAME_ID = "sim-display";
-
-/** `?job=<id>` を付けた子文書 URL を作る（id 不在ならクエリなし）。 */
-export function reportViewUrl(jobId) {
-  return jobId ? `${SIM_REPORT_VIEW_PATH}?job=${encodeURIComponent(jobId)}` : SIM_REPORT_VIEW_PATH;
-}
 
 /** 統合ページ側の器（#sim-display ＋ iframe）を生成・破棄する View を返す。 */
 export function createSimFrameView({ doc } = {}) {

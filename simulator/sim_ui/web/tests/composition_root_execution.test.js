@@ -836,6 +836,11 @@ test("dispose is available even when the assembly failed (解体口は常に在�
 });
 
 test("reportViewUrl builds the ?job= dispatch url", async () => {
-  const { reportViewUrl } = await import("../js/adapter/front/composition_root_execution.js");
-  assert.equal(reportViewUrl("abc"), "?job=abc");
+  // 導出の単一ソース（ISSUE-421）。合成根は base="" の相対クエリ形で呼ぶ（遷移の実値は
+  // 上の nav 検定（"?job=abc"）が本番結線ごと固定している）。
+  const { reportViewUrl, SIM_REPORT_VIEW_PATH } =
+    await import("../js/adapter/front/report_view_url.js");
+  assert.equal(reportViewUrl("abc", ""), "?job=abc");
+  assert.equal(reportViewUrl("abc"), `${SIM_REPORT_VIEW_PATH}?job=abc`);
+  assert.equal(reportViewUrl(null, ""), "", "id 不在の相対形はクエリを組み立てない");
 });

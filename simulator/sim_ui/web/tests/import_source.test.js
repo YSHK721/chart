@@ -62,6 +62,8 @@ const RUN_STATUS = "sim_run_status_view.js";
 const STATUS_CLIENT = "job_status_client.js";
 // ISSUE-441: 投入フォームの版面（設定 / 入力の 2 列・DOM だけ・面の実装を 1 つも知らない）。
 const RUN_LAYOUT = "sim_run_layout_view.js";
+// ISSUE-421: 結果ビューア URL の単一ソース（純関数・依存 0）。
+const REPORT_VIEW_URL = "report_view_url.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -80,7 +82,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     SUBMIT_CLIENT, RUN_ACTION, EXEC_ROOT,
     SETTINGS_CLIENT, TESTER_PANEL, DATE_PICKER,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
-    RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT,
+    RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
   ].sort());
 });
 
@@ -336,6 +338,33 @@ test("no front module pairs a Tester enum key with a numeric literal", () => {
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+// --- 2c. 結果ビューア URL の導出は 1 箇所（ISSUE-421・複製ゼロの機械検査）--------------
+// 同一概念（結果ビューアの URL）の導出規則（`?job=<id>` の組み立て）は
+// report_view_url.js だけが持つ。第 2 実装が front のどこかに現れた時点で、
+// 値も規則も静かに分岐する（実測: 絶対パス版と相対クエリ版の同名 2 実装が併存していた）。
+
+/** `?job=` クエリを**組み立てる**実行コードの形（読む側 `params.get("job")` は当たらない）。 */
+const JOB_QUERY_BUILD = /job=/;
+
+test("the job-query detector actually sees a second implementation (自己検定)", () => {
+  // 変異 1 点: 実際に存在していた第 2 実装の形（相対クエリ版）。
+  assert.ok(JOB_QUERY_BUILD.test('return `?job=${encodeURIComponent(jobId)}`;'),
+    "検出器が URL 組み立てを見逃しています（下の走査は無意味）");
+  // 読む側の正しい形は挙げない（過検出で読み取りを禁じない）
+  assert.ok(!JOB_QUERY_BUILD.test('const raw = params.get("job");'));
+});
+
+test("the report view url derivation lives in exactly one module (単一ソース)", () => {
+  assert.ok(FRONT_FILES.includes(REPORT_VIEW_URL),
+    `${REPORT_VIEW_URL} がありません（単一ソースの置き場が消えています）`);
+  assert.ok(JOB_QUERY_BUILD.test(read(REPORT_VIEW_URL)),
+    `${REPORT_VIEW_URL} に導出がありません（検定の空振り）`);
+  const offenders = FRONT_FILES.filter(
+    (name) => name !== REPORT_VIEW_URL && JOB_QUERY_BUILD.test(read(name)));
+  assert.deepEqual(offenders, [],
+    "結果ビューア URL の第 2 実装があります（report_view_url.js から import すること）");
 });
 
 // --- 3. v4 vendor への参照が無い（NFR-07）----------------------------------------

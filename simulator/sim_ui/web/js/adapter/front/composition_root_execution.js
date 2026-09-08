@@ -15,12 +15,7 @@ import { createSimRunLayoutView } from "./sim_run_layout_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
 import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
-
-/** 投入した job_id を閲覧するビューアの URL（report_view.html の `?job=` dispatch）。
- *  相対クエリのみ（同一文書内で dispatch＝フォーム→ビューアに切り替わる）。 */
-export function reportViewUrl(jobId) {
-  return `?job=${encodeURIComponent(jobId)}`;
-}
+import { reportViewUrl } from "./report_view_url.js";
 
 /**
  * 投入フォームの 4 面（M1/M2/M3・schema を取れなければ M4）と掲示面（M6）を host へ組み、
@@ -179,7 +174,8 @@ export async function mountSimExecutionPanel({
 
     // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
     // 実行指示面が持ち、ここは「押されたらどこへ行くか」だけを決める。
-    view.onViewResult((jobId) => { goTo(reportViewUrl(jobId)); });
+    // 相対クエリ形（base=""）: 同一文書内で dispatch＝フォーム→ビューアに切り替わる。
+    view.onViewResult((jobId) => { goTo(reportViewUrl(jobId, "")); });
 
     // 実行状態の監視は**同時 1 本**（§19.6 S4）。実行指示面は再投入を許すため、落とさずに
     // 新しい監視を足すと、前の run の状態が新しい run の掲示を上書きし続ける

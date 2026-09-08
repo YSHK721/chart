@@ -24,6 +24,12 @@ import {
   createSimFrameView,
   waitForContent,
 } from "../js/adapter/front/sim_frame_view.js";
+import { SIM_REPORT_VIEW_PATH as CANONICAL_PATH } from "../js/adapter/front/report_view_url.js";
+
+// 再輸出が単一ソース（report_view_url.js）と同一実体であること（ISSUE-421）。
+test("SIM_REPORT_VIEW_PATH is re-exported from the single source", () => {
+  assert.equal(SIM_REPORT_VIEW_PATH, CANONICAL_PATH);
+});
 
 
 function mounted(jobId = "job-1") {
