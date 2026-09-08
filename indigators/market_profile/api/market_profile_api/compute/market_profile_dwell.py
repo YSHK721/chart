@@ -136,6 +136,14 @@ _OUTLIER_FRAC = 0.30      # 窓内 mid 中央値 ±30% の外れ値除去（tick
 _DAY_CACHE: dict[tuple[str, int], "DayRollup | None"] = {}      # (symbol, day_start) → rollup or None
 _PARTIAL_CACHE: dict[tuple[str, int, int], "DayRollup | None"] = {}  # (symbol, lo, hi) → rollup or None
 _ACTIVE_TABLE: dict[str, np.ndarray] = {}                  # symbol → 7×24 bool 活動テーブル
+# ISSUE-364: 完了空日の「空」という答えを、その答えを確定させた**素材署名**とともに記憶する
+#   （(symbol, day_start) → sig）。全期間集計は週末・休場の完了空日を毎リクエスト歩き直すが、
+#   npz の中身は「署名が同じなら None」と確定しており、読み直しても新しい情報は無い
+#   （実測 2026-09-08: 120 日窓で 1 リクエストあたり 35 回・1 日 0.206 ms＝再発費用の約 8 割）。
+#   署名の取得（tick parquet の stat）は残す＝🟡-1 の鮮度契約（同一プロセス内のティック到着で
+#   再計算する）は不変。署名が変われば従来どおりディスク照合 → 再計算に落ちる。
+#   _DAY_CACHE と別建てにするのは「空はメモリにメモ化しない（🟡-1）」の検査面を変えないため。
+_EMPTY_DAY_SIGS: dict[tuple[str, int], str] = {}
 
 _EMPTY_SECS = np.array([], dtype=np.int64)
 _EMPTY_MIDS = np.array([], dtype=np.float64)
@@ -165,6 +173,7 @@ def _reset_caches() -> None:
     _DAY_CACHE.clear()
     _PARTIAL_CACHE.clear()
     _ACTIVE_TABLE.clear()
+    _EMPTY_DAY_SIGS.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -303,24 +312,36 @@ def _day_rollup(symbol: str, day_start: int, table: "np.ndarray | None", now: fl
     completed = day_end <= now  # 完了セッションのみ永続化対象。
     path = _cache_path(symbol, int(day_start))
     cur_sig = _day_source_signature(symbol, int(day_start)) if completed else ""
-    if completed:  # ディスク（プロセス跨ぎ・ウォーム済みなら高速）。
-        disk, cached_sig = _load_day_rollup(path)
+    if completed:
+        # ISSUE-364: 完了空日の答えは素材署名が決める。署名が前回確定時と同じなら、同じ答え
+        #   （None）しか入っていない npz を読み直さない（発行しても使わない読取の除去）。
+        #   署名が変わっていれば下のディスク照合 → 再計算へ落ちる（🟡-1 の鮮度契約は不変）。
+        if _EMPTY_DAY_SIGS.get(key) == cur_sig:
+            return None
+        disk, cached_sig = _load_day_rollup(path)  # ディスク（プロセス跨ぎ・ウォーム済みなら高速）。
         # ソースティック署名が一致するときのみディスクを信頼する。空でキャッシュした完了日に後から
         #   ティックが届く/更新された場合は署名が変わり再計算する（stale-empty の無効化）。
         if disk is not dwell_cache_miss() and cached_sig == cur_sig:
             if disk is not None:
                 _DAY_CACHE[key] = disk  # 非空のみメモ化。
+            else:
+                _EMPTY_DAY_SIGS[key] = cur_sig  # 空は「署名つき」で記憶（ISSUE-364）。
             return disk
     secs, mids = _load_window_ticks(symbol, day_start, day_end)  # 計算。
     # ISSUE-089: 表は「日の属する月初」アンカーで内部導出する（呼び出し側の table は使わない＝
     #   キャッシュへ焼き込む値をリクエスト窓/プロセス履歴から独立させる。引数は互換のため残置）。
     roll = _rollup_ticks(secs, mids, _table_for_day(symbol, int(day_start)))
     if completed:
-        # ★空(None)はメモリにメモ化しない。ティック未着で空になった完了日を常駐プロセスがメモ保持すると、
-        #   後からティックが届いても line 337 で早期 return し stale-empty が残るため（ディスクは署名照合で
-        #   再計算されるので、空日は毎回ディスク照合に委ねる）。非空は従来どおりメモ化して高速維持。
+        # ★空(None)は _DAY_CACHE にメモ化しない（🟡-1）。ティック未着で空になった完了日を無条件で
+        #   メモ保持すると、後からティックが届いても冒頭の早期 return で stale-empty が残るため。
+        #   ISSUE-364: 代わりに「空＋その答えを確定させた素材署名」を _EMPTY_DAY_SIGS に記憶する。
+        #   署名が同じ限り npz を読み直さず（読んでも同じ None しか入っていない）、署名が変われば
+        #   従来どおりディスク照合 → 再計算に落ちる＝🟡-1 の鮮度契約はそのまま。
         if roll is not None:
             _DAY_CACHE[key] = roll
+            _EMPTY_DAY_SIGS.pop(key, None)  # 空 → 非空へ転じた日の古い空記憶は捨てる。
+        else:
+            _EMPTY_DAY_SIGS[key] = cur_sig
         try:
             _save_day_rollup(path, roll, cur_sig)  # 完了日のみ保存（署名併記・保存失敗は次回吸収）。
         except Exception:
