@@ -249,7 +249,7 @@
 
 - 概要：tick_model の許容値表記が一次情報間で不一致。PROCESS §7 #1 は「全ティック/OHLC4展開/始値のみ」（正準＝every_tick/ohlc_expand/open_only）だが、DESIGN §7.2:290 のドメインモデル・スケッチは `Literal["ohlc_simulate"]` と別名
 - 重大度：低（config_loader 実装は PROCESS §7 正準名に準拠＝正しい。将来 Engine 側が DESIGN §7.2 名を期待すると不整合になる潜在リスクのみ）
-- ステータス：OPEN
+- ステータス：RESOLVED（2026-09-08。DESIGN §7.2 の Literal["ohlc_simulate"] を実装実測（tick_model_registry.TICK_MODEL_IDS＝every_tick/ohlc_expand/open_only/real_ticks/math_calculations・既定 every_tick＝config_loader.py:46）へ訂正。なお同名は §5.1/§6.3/§7.4 にも残存＝本エントリ範囲外・必要なら別途）
 - 検出日：2026-06-17
 - 検出経路：backtest framework 層 config_loader のコードレビュー（重点観点2 の許容値照合）
 - 対策（要文書修正）：DESIGN §7.2 のスケッチ値 `ohlc_simulate` を PROCESS §7 の正準名（every_tick/ohlc_expand/open_only）へ追従更新する。コードは現状維持で可
@@ -6609,7 +6609,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
   段階 3 のスコープを超える。段階 4 か独立の是正として、テンプレート側の回帰を固定してから実施する。
 
 ## ISSUE-359: [計測誤り] §2.2 E-21 のアプリ UI 色リテラル計測が陳腐化し、8 桁 hex を構造的に取りこぼしていた（2026-08-09）
-- **ステータス**: OPEN（v0.4.0 の設計評価で検出・文書是正は v0.4.0 で行う）
+- **ステータス**: RESOLVED（2026-09-08。基本設計_指標カラーテーマ.md の E-21・U-9 を 8 桁 hex を含む 4 形式の再計測値（6 桁 280/36・8 桁 1/1・3 桁 0・rgba 23/10）へ訂正、改訂履歴 v0.3.4 に「置換完了判定は同 4 形式で再計測」を明記。§2.3/§8 の派生集計と E-22（JS 側・現行 176/70）は v0.2.0 値のまま＝残作業）
 - **重大度**: 中（撤回対象の規模を 3 割ほど過小に見せていた）
 - **実測（2026-08-09・現ツリー）**: `indigators/indicator_ui/web/css/app.css`
   | 形式 | 出現 | 相異 |
@@ -7580,7 +7580,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-389: [不整合] TESTER_SETTINGS 基本設計書のキー数・時間足数の記載が corpus 実測と不一致（2026-08-17・OPEN）
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-08・既是正の確認のみ。基本設計書は v1.1.1 で 18 キー・21 時間足へ訂正済みを確認し、corpus 44 件（相異キー 18）と Timeframe enum（21 値）の再実測で文書＝実装の一致を裏取り。編集なし）
 - **重大度**: Low（規則の内容は正しく、影響は員数記載のみ。ただし規則 P「17 キーに限る」を
   そのまま実装すると 1 キーを未知キーとして拒否する誤りに直結する）
 - **事実（すべて実測 2026-08-17）**:

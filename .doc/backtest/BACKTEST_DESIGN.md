@@ -289,7 +289,10 @@ class BacktestConfig(BaseModel):
     timeframe: str
     ea_name: str
     ea_params: dict
-    tick_model: Literal["ohlc_simulate"] = "ohlc_simulate"
+    # 許容値は実装の単一情報源 tick_model_registry.TICK_MODEL_IDS から導出（ISSUE-014 訂正・実装実測 2026-09-08）
+    tick_model: Literal[
+        "every_tick", "ohlc_expand", "open_only", "real_ticks", "math_calculations"
+    ] = "every_tick"
     stop_out_level: float = 50.0  # margin_level (%)
 
 class Bar(BaseModel):
