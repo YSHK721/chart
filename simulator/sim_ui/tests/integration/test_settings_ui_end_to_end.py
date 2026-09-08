@@ -165,6 +165,16 @@ def test_Testerフォーム込みの投入が完了し成果物が生成され�
     assert body["settings"]["tester"], observed
     assert all(isinstance(v, str) for v in body["settings"]["tester"].values())
     assert body["settings"]["inputs"] == []
+    # キー集合の網羅（ISSUE-420 残項目 5）: 従来は「tester が空でない」だけの固定であり、
+    # front がキーを 1 つ落としても緑のままだった。期待集合は**配られた宣言そのもの**から
+    # 導く（front の組み立て規則をここへ書き写さない＝第 2 実装を作らない）:
+    #   下界 = required_keys（無条件必須・検証層の宣言の写し） / 上界 = key_order（標準キー順）
+    _, schema_payload = _json(stack, "/sim/settings-schema")
+    tester_keys = set(body["settings"]["tester"])
+    missing = set(schema_payload["required_keys"]) - tester_keys
+    assert not missing, f"front が無条件必須キーを落としています: {sorted(missing)}"
+    unknown = tester_keys - set(schema_payload["key_order"])
+    assert not unknown, f"front が標準キー順に無いキーを送っています: {sorted(unknown)}"
     # T-4: 同一概念の入力欄は 1 つ（重複欄は器から消える）
     assert observed["tester_panel_present"] is True
     assert observed["legacy_ea_field_present"] is False

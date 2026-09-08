@@ -238,8 +238,10 @@ class TesterSettingsSchemaCatalog(SettingsSchemaPort):
     def scalar_specs(self) -> "dict[str, dict]":
         """列挙でないキーの仕様（標準キー順の並びを保つ）。
 
-        ``expert_only``: 注入された Expert 専用キー集合に属するか（Indicator テストでは
-        持てないキーであることを UI が投入前に示せるようにする＝規則 G）。
+        ``expert_only``: 注入された Expert 専用キー集合（検証層の規則 G/H の宣言）に
+        属するかの写し。**front に消費者は現状 0 件**である（実測 2026-09-08・
+        ISSUE-420 残項目 2。schema から落とすか表示へ使うかは要裁定＝ここでは決めない。
+        本 docstring は実態の記述であり、UI が使うという約束ではない）。
         ``value_type``（日付キーのみ ``"date"``）: 値の型。UI が入力部品（カレンダー）を
         出し分けるための宣言。どのキーが日付かは注入（検証層 `DATE_VALUE_KEYS`）が権威。
         ``proven`` / ``provisional``（`ExecutionMode` のみ）: 遅延値の**実証状態**。
