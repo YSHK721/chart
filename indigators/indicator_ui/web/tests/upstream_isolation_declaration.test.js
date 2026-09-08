@@ -30,11 +30,15 @@ const FRONT = join(WEB, 'js', 'adapter', 'front');
 //   実測で使われている timeScale / attachPrimitive / priceScale を加える。
 //   ペイン系（panes / getPane / getHeight / paneIndex）は ISSUE-276 のペイン別凡例と
 //   ペイン並べ替え（2026-08-09）で使い始めた IPaneApi 系。受け手を問わず名前だけで判定する。
+//   座標系 API（coordinateToPrice / coordinateToTime / coordinateToLogical / data）は
+//   ISSUE-430 の是正: ISSUE-368 ピッカー経路検証 6 で「規約であって施行でない」ことが実測され、
+//   隔離単位の外が直呼びしても検出されない穴だった（追加時の違反 0 件は実測済み）。
 const UPSTREAM_API = [
   'addSeries', 'addPane', 'removePane', 'createPriceLine', 'setData', 'applyOptions',
   'removeSeries', 'removePriceLine', 'subscribeCrosshairMove', 'createTextWatermark',
   'timeScale', 'attachPrimitive', 'priceScale',
   'panes', 'getPane', 'getHeight', 'paneIndex',
+  'coordinateToPrice', 'coordinateToTime', 'coordinateToLogical', 'data',
 ];
 
 // 受け手（レシーバ）を見て判定する API。**名前が upstream 以外の標準 API と衝突するもの**だけを

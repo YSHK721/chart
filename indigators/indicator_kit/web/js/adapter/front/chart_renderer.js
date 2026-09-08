@@ -5,7 +5,8 @@
 // ★ lightweight-charts v5.2.0 の JS API 名（addSeries / addPane / removePane / panes /
 //   createPriceLine / setData / applyOptions / removeSeries / removePriceLine /
 //   subscribeCrosshairMove / createTextWatermark / timeScale / attachPrimitive / priceScale /
-//   getPane / getHeight / paneIndex / moveTo）を
+//   getPane / getHeight / paneIndex / moveTo /
+//   coordinateToPrice / coordinateToTime / coordinateToLogical / data）を
 //   呼んでよいのは **宣言された隔離単位** に限る:
 //     (a) ChartRenderer 本体とその内部協働子（series_drawer / candle_feed / scale_controller）
 //     (b) チャート生成の bootstrap（chart_bootstrap）
