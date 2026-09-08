@@ -37,12 +37,44 @@ class TestEpochSecondsOfDatetime:
     def test_naive_is_interpreted_as_utc(self):
         assert epoch_seconds_of_datetime(datetime(2024, 1, 1)) == 1_704_067_200
 
-    def test_sub_second_is_truncated_toward_zero(self):
+    def test_sub_second_floors_to_the_second(self):
         value = datetime(2024, 1, 1, 0, 0, 0, 500_000, tzinfo=timezone.utc)
         assert epoch_seconds_of_datetime(value) == 1_704_067_200
 
     def test_return_type_is_int(self):
         assert isinstance(epoch_seconds_of_datetime(datetime(2024, 1, 1)), int)
+
+
+class TestFloorRoundingMatchesTickRule:
+    """秒未満の丸めは **floor**（tick 列側 timestamp_epoch_seconds と同一規則・ISSUE-408）。
+
+    是正前は `int(timestamp())`＝0 方向切り捨てで、1970 年より前の秒未満値だけが
+    tick 列側（`astype("datetime64[s]")`＝floor）と 1 秒ずれた（実測:
+    1969-12-31T23:59:59.5Z → 本関数 0 / tick 列側 -1）。丸め規則を 2 つ持たない。
+    """
+
+    def test_pre_epoch_sub_second_floors_toward_minus_infinity(self):
+        value = datetime(1969, 12, 31, 23, 59, 59, 500_000, tzinfo=timezone.utc)
+        assert epoch_seconds_of_datetime(value) == -1
+
+    def test_pre_epoch_last_microsecond_floors_to_minus_one(self):
+        value = datetime(1969, 12, 31, 23, 59, 59, 999_999, tzinfo=timezone.utc)
+        assert epoch_seconds_of_datetime(value) == -1
+
+    def test_pre_epoch_exact_second_is_unchanged(self):
+        value = datetime(1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        assert epoch_seconds_of_datetime(value) == -1
+
+    def test_epoch_boundary_is_zero(self):
+        assert epoch_seconds_of_datetime(datetime(1970, 1, 1, tzinfo=timezone.utc)) == 0
+
+    def test_naive_pre_epoch_is_utc_and_floors(self):
+        assert epoch_seconds_of_datetime(datetime(1969, 12, 31, 23, 59, 59, 1)) == -1
+
+    def test_post_epoch_values_are_byte_equal_to_the_old_rule(self):
+        # 1970 年以降は floor == 0 方向切り捨て（既存呼出側は 1 bit も変わらない）。
+        value = datetime(2024, 1, 1, 0, 0, 0, 999_999, tzinfo=timezone.utc)
+        assert epoch_seconds_of_datetime(value) == 1_704_067_200
 
 
 class TestLocalTimezoneIndependence:

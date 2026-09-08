@@ -43,16 +43,30 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
+#: epoch 原点（1970-01-01T00:00:00Z）。換算は timedelta の整数演算で行う（float を経ない）。
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def epoch_seconds_of_datetime(value: datetime) -> int:
-    """datetime → epoch 秒（int・UTC 基準）。
+    """datetime → epoch 秒（int・UTC 基準・秒未満は **floor**）。
 
     事前条件: ``value`` は ``datetime``（aware / naive のいずれでもよい）。
     事後条件: aware は自身の offset で、naive は **UTC** とみなして換算した epoch 秒を
         返す。返り値はプロセスのローカル TZ に依存しない（``time.tzname`` を参照しない）。
+        秒未満は floor（負方向へ丸める）。tick 列側の唯一の変換実体（simulator の
+        timestamp_epoch_seconds＝datetime64[s] への cast）と同じ丸め規則であり、
+        丸め規則を 2 つ持たない（ISSUE-408。是正前は ``int(timestamp())``＝0 方向
+        切り捨てで、1970 年より前の秒未満値だけが tick 列と 1 秒ずれた）。
     例外: なし（型が ``datetime`` でない場合の判定は呼出側の責務）。
+
+    実装注記: ``timedelta`` は日・秒・マイクロ秒を ``0 <= seconds < 86400`` /
+    ``0 <= microseconds < 10**6``（days のみ負になり得る）へ正規化するため、
+    ``days * 86400 + seconds`` がそのまま floor になる。float（``timestamp()``）を
+    経ないので遠未来・遠過去でも表現誤差が入らない。
     """
     aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return int(aware.timestamp())
+    delta = aware - _EPOCH
+    return delta.days * 86_400 + delta.seconds
 
 
 @dataclass(frozen=True)
