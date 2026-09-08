@@ -241,7 +241,7 @@ _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
 # 共有フロント供給パッケージ（market_profile / chart_kernel …）の実体は別ツリー
 # （indigators/<pkg>/web/js）にあり、present は「利用する側」として web/js 配下に実体を指す
 # symlink を持つ。resolve() 後の実パスは供給パッケージの js/ サブツリーへ抜けるため、配信許可根を
-# web/ ∪ 各供給根の multi-root（is_relative_to 境界一致）へ拡張する。許可は js/ サブツリーに
+# 資産サブツリー ∪ 各供給根の multi-root（is_relative_to 境界一致）へ拡張する。許可は js/ サブツリーに
 # 限定＝最小権限（build.mjs/package.json/tests 等は露出しない）。トラバーサルは is_relative_to で封じる。
 #
 # ISSUE-502 C-4 3b: どのパッケージが供給側かは中立核の台帳 common.shared_web_roots が単独で持つ。
@@ -249,6 +249,20 @@ _WEB_ROOT = (_API_ROOT.parent / "web").resolve()
 #   その core だけ 404 になる（2026-09-06 実測）。
 _SHARED_WEB_JS_ROOTS = tuple(
     root.resolve() for root in shared_web_js_roots(_API_ROOT.parents[1])
+)
+
+# ISSUE-473: 自 web/ ルートも全体許可にしない（最小権限）。web/ 直下には tests/・node_modules/・
+#   package.json・ISSUE.md・prototype_* 等の開発用ファイルが同居しており、ルート全体を許可根に
+#   すると HTTP 200 で露出する（実測 2026-09-01: GET /tests/*.test.js が 200）。統合ルータ
+#   （unified_ui/router.py の _ASSET_FILES / _ASSET_SUBTREE_PREFIXES・ISSUE-278 #9）と replay 側
+#   StaticFileServer（資産サブツリーのみ許可）が既に採る許可規則を live core にも適用し、
+#   エントリ（index.html）＋実配信面の資産サブツリーだけを許可する。
+#   data/ を含めるのは index.html の tradeMarkers.load('/data/trade_markers.json') が要求するため
+#   （実配信面の実測）。判定は resolve() 後の実パスで行う＝許可サブツリー経由の ``..`` 逸脱も
+#   同じ is_relative_to 境界一致で封じる。
+_WEB_ASSET_FILES = tuple((_WEB_ROOT / name).resolve() for name in ("index.html",))
+_WEB_ASSET_SUBTREES = tuple(
+    (_WEB_ROOT / name).resolve() for name in ("js", "css", "vendor", "data")
 )
 
 # POST 本文サイズ上限（§7.3・1 MiB）。超過は 413 で拒否する。
@@ -297,22 +311,26 @@ def _nested_error(error_type: str, message: str, generation: int = 0) -> dict[st
 
 
 def _resolve_static(url_path: str) -> Path | None:
-    """URL パスを web/ ルート内の実ファイルへ解決する（パストラバーサル防止）。
+    """URL パスを配信許可面内の実ファイルへ解決する（最小権限＋パストラバーサル防止）。
 
-    ``/`` は index.html へ。正規化後に web/ ルート外を指す場合・存在しない場合は None。
+    ``/`` は index.html へ。正規化後に許可面（エントリ・資産サブツリー・共有供給根）の
+    外を指す場合・存在しない場合は None。
     """
     rel = url_path.lstrip("/")
     if rel == "":
         rel = "index.html"
-    # 正規化（``..`` を解決）した上で web/ ルート内かを厳密判定する。symlink は resolve() で
+    # 正規化（``..`` を解決）した上で許可面内かを厳密判定する。symlink は resolve() で
     #   実体へ解決され、共有フロント供給パッケージ（<pkg>/web/js）へ抜ける場合も multi-root の
     #   is_relative_to 境界一致で許可する（区切り境界単位・CWE-22 封じ）。
+    #   ISSUE-473: 許可面は web/ ルート全体ではなく、エントリ（index.html）＋資産サブツリー
+    #   （js/css/vendor/data）＋共有供給根に限定する（tests/・package.json 等は解決しない）。
     candidate = (_WEB_ROOT / rel).resolve()
     if not (
-        candidate.is_relative_to(_WEB_ROOT)
+        candidate in _WEB_ASSET_FILES
+        or any(candidate.is_relative_to(root) for root in _WEB_ASSET_SUBTREES)
         or any(candidate.is_relative_to(root) for root in _SHARED_WEB_JS_ROOTS)
     ):
-        # 全ルート外（``..`` 等で外へ抜けた）→ 拒否。
+        # 許可面の外（開発用ファイル・``..`` 等で外へ抜けた）→ 拒否。
         return None
     if not candidate.is_file():
         return None
