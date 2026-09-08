@@ -33,7 +33,8 @@ from simulator.usecase.sizing_ports import required_price_series
 # 合成 OHLC（既存 integration テストと同型）。bar2 に spread=200pts を置き、
 # current_open 基準で Ask=open+spread×point がバー open と判別可能になるようにする。
 _ROWS = [
-    # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+    # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の
+    #   `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
     (1704067200, 1.1000, 1.1010, 1.0990, 1.0995, 1.0, 0),
     (1704067260, 1.1000, 1.1010, 1.0985, 1.0990, 1.0, 0),
     (1704067320, 1.0990, 1.1050, 1.0990, 1.1040, 1.0, 200),

@@ -20,7 +20,6 @@ from __future__ import annotations
 import numpy as np
 
 from simulator.domain.bar import Bar
-from simulator.domain.bar_time import epoch_seconds
 from simulator.main import _bar_period
 
 #: 2024-01-01T00:00:00Z。
@@ -33,23 +32,31 @@ def _bar(time):
 
 
 class TestBarPeriodIsIndependentOfTimeRepresentation:
+    # 事後条件は「epoch 秒 **int** の対」（`_bar_period` docstring）。従来は返り値を
+    # epoch_seconds（bar_time の正規化関数）に通してから比較しており、表現
+    # （datetime64 等）が返っても緑になる＝int 事後条件が未固定だった（ISSUE-413-7）。
+    # 返り値そのものを直接比較し、型も Python int として表明する
+    # （``isinstance(np.int64, int)`` は False＝実測）。
+
     def test_numpy_int64_bars_yield_the_epoch_window_of_those_bars(self):
         # Arrange: comma 形式 CSV → pandas が返す実型（numpy.int64）の 3 本。
         bars = [_bar(np.int64(_E + 60 * i)) for i in range(3)]
         # Act
         start, end = _bar_period(bars)
-        # Assert: [first, last+60s) の epoch 秒。1970 年へ落ちない。
-        assert (epoch_seconds(start), epoch_seconds(end)) == (_E, _E + 120 + 60)
+        # Assert: [first, last+60s) の epoch 秒 int の対（直接比較）。1970 年へ落ちない。
+        assert (start, end) == (_E, _E + 120 + 60)
+        assert type(start) is int and type(end) is int
 
     def test_python_int_bars_yield_the_same_window_as_numpy_int64_bars(self):
         # Arrange: 同一時刻を Python int と numpy.int64 で表現した 2 系列。
         py_bars = [_bar(int(_E + 60 * i)) for i in range(3)]
         np_bars = [_bar(np.int64(_E + 60 * i)) for i in range(3)]
-        # Act
-        py_window = tuple(epoch_seconds(v) for v in _bar_period(py_bars))
-        np_window = tuple(epoch_seconds(v) for v in _bar_period(np_bars))
+        # Act（事後条件は epoch 秒 int の対＝返り値を変換せず直接比較する）
+        py_window = _bar_period(py_bars)
+        np_window = _bar_period(np_bars)
         # Assert: 整数の「種類」で窓が変わらない。
         assert py_window == np_window
+        assert all(type(v) is int for v in (*py_window, *np_window))
 
     def test_datetime64_bars_yield_the_same_window_as_epoch_int_bars(self):
         # Arrange: MT5 タブ形式ローダの実型（numpy.datetime64）と epoch int の同一 3 本。
@@ -60,8 +67,9 @@ class TestBarPeriodIsIndependentOfTimeRepresentation:
             _bar(np.datetime64(f"2024-01-01T00:{i:02d}:00")) for i in range(3)
         ]
         int_bars = [_bar(int(_E + 60 * i)) for i in range(3)]
-        # Act
-        dt64_window = tuple(epoch_seconds(v) for v in _bar_period(dt64_bars))
-        int_window = tuple(epoch_seconds(v) for v in _bar_period(int_bars))
+        # Act（事後条件は epoch 秒 int の対＝返り値を変換せず直接比較する）
+        dt64_window = _bar_period(dt64_bars)
+        int_window = _bar_period(int_bars)
         # Assert
         assert dt64_window == int_window == (_E, _E + 120 + 60)
+        assert all(type(v) is int for v in (*dt64_window, *int_window))

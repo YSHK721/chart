@@ -96,7 +96,8 @@ class TestCompositionWeeklyVolBand:
         csv = tmp_path / "synth.csv"
         rows = [
             "time,open,high,low,close,volume,spread",
-            # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
+            # time は UNIX 秒 int（UTC・2024-01-01T00:00:00Z=1704067200）。comma 形式 CSV の
+            #   `time` は epoch 秒が契約であり（Candle 契約 §2.1）、ISO 文字列は `Bar.time` 契約違反になる。
             "1704067200,1.1,1.101,1.099,1.0995,1.0,0",
             "1704067260,1.1,1.101,1.0985,1.099,1.0,0",
             "1704067320,1.099,1.105,1.099,1.104,1.0,0",

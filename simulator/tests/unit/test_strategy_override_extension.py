@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pytest
 
 from simulator.main import build_interactor
 from simulator.usecase.ports import StrategyPort
