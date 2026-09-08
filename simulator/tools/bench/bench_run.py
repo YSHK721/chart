@@ -23,13 +23,16 @@ import statistics
 import tempfile
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 
+# 半開境界の正規化・日列挙は共有の唯一実体を読む（ISSUE-407: 第 3 の複製を持たない）。
+from datawindow.half_open import HalfOpenEpochWindow
+from simulator.adapter.repository._tick_frame import _date_predicate as _utc_day_partitions
 from simulator.tools.bench.synth_ticks import TickGenConfig, generate_ticks
 
 _PAGE_MB = 4096 / 1e6  # resource.getpagesize() on Linux = 4096
@@ -144,13 +147,18 @@ def read_csv_filter(path: Path, lo: pd.Timestamp | None, hi: pd.Timestamp | None
 
 
 def _date_predicate(lo: pd.Timestamp, hi: pd.Timestamp):
-    """Build a hive-partition predicate on (year,month,day) covering [lo,hi)."""
-    # Coarse partition-level predicate, then exact timestamp filter.
-    days = []
-    d = lo.normalize()
-    while d < hi:
-        days.append((d.year, d.month, d.day))
-        d += timedelta(days=1)
+    """Build a hive-partition predicate on (year,month,day) covering [lo,hi).
+
+    ISSUE-407: 日列挙と半開境界の解釈は共有の唯一実体に委譲する（第 3 の手書き
+    複製を持たない）。境界の正規化は datawindow.half_open（naive=UTC・floor）、
+    日列挙は tick 段と同じ _utc_day_partitions。空窓・逆転窓は日ゼロ＝part を
+    1 つも選ばない述語を返す（是正前は空窓で 1 part・逆転窓で None を返して
+    全 part を読んでいた）。
+    """
+    window = HalfOpenEpochWindow.from_datetimes(lo, hi)
+    days = _utc_day_partitions(window.start, window.end)
+    if not days:
+        return ds.field("year").isin([])  # always-false: no fragment survives pruning
     expr = None
     for (y, m, dd) in days:
         cond = (
