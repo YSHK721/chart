@@ -7776,7 +7776,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-395: [不具合] TESTER_SETTINGS 変換層レビューで検出した 5 件（TZ 復元漏れ・終了コード表の 3 重化・成功コードの複製・N-01 理由文の乖離・未実証値を「近似でない」と断定）（2026-08-18・IN_PROGRESS）
 
-- **ステータス**: IN_PROGRESS（是正中。Red 先行で検出テストを追加してから修正する方針で着手）
+- **ステータス**: RESOLVED（2026-09-08 実測確認。5 件すべて後続是正で解消済み: 1=local_timezone_restored 自己完結化、2/3=adapter/exit_codes.py への単一表化（249742b）、4=N-01 理由文を注入集合準拠へ是正＋関係固定検定、5=実証状態を enums 単一宣言化（approximation_reason_for(0)→TBD-08 実測）。関連検定 93 passed・コード変更なし）
 - **重大度**: Medium（いずれも沈黙して誤りを伝える型。既存テストは 1 件も検出していなかった）
 - **事実（すべてレビューの実測。本体側の申告値も独立に再現され一致）**:
   1. **TZ 復元漏れ**: `test_tester_window_equivalence.py` の `restore_tz` は `yield; time.tzset()` のみで、
@@ -8075,7 +8075,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-407: [設計] 半開述語と日列挙の第 3 の複製が bench に残る（2026-08-18・OPEN）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: RESOLVED（2026-09-08。bench の日列挙・半開解釈を datawindow.half_open＋tick 段唯一実体へ委譲し第 3 複製を撤去。Red 実測: 空窓で 1 part・逆転窓で全 part（4/4）を無駄読み→是正後 0。part 発行−使用=0 と日数オーダー 2 点を検定で固定（test_bench_day_predicate 8 passed））
 - **重大度**: Low
 - **事実（実測）**: `/workspaces/app/simulator/tools/bench/bench_run.py:146` に日列挙と半開述語の
   手書き複製がある。`d = lo.normalize()` を使うため境界解釈も第 3 系統になっている
@@ -8084,7 +8084,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-408: [設計] `epoch_seconds_of_datetime` の丸め方向が tick 列と異なる（2026-08-18・OPEN）
 
-- **ステータス**: OPEN（新規起票）
+- **ステータス**: RESOLVED（2026-09-08。丸めを floor へ統一（tick 列と同一規則・timedelta 整数演算で float 表現誤差も除去）。Red 実測: 1969-12-31T23:59:59.5Z がスカラ 0／tick 列 -1 の 1 秒割れ→統一後どちらも -1。1970 以降 byte 等価を検定で固定・datawindow 20 passed）
 - **重大度**: Low（実害は未観測）
 - **事実（実測）**: `datawindow/half_open.py` の `epoch_seconds_of_datetime` は `int(timestamp())`＝
   **0 方向切り捨て**、一方 tick 列側は **floor**。1970 年より前の境界でのみ 1 秒ずれ得る。
@@ -8103,7 +8103,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-410: [設計] epoch 換算規則の写しの残存と機械的検査ゲートの不在（ISSUE-406 レビュー申し送り）（2026-08-18）
 
-- **ステータス**: OPEN（新規起票。ISSUE-406 是正時のコードレビュー 🔵-2・🔵-5・残存リスクの記録）
+- **ステータス**: 一部 RESOLVED（2026-09-08。replay_ui の写し 3 件（causal_candle_repository:63・causal_compute_gateway:146・intrabar_window_repository:102）を唯一実体 tick_parquet.timestamp_epoch_seconds へ統合し、AST ゲート test_epoch_conversion_single_source を新設（ns 前提式ゼロ・cast 所在の限定・注入変異で検出力実証・発行−使用=0 と行数 8→800 の 2 点表明）。replay_ui 503 passed で挙動不変。残: indigators/cvfe/src/lwc_chart.py:308 の ns 前提疑い 1 件のみ（実入力測定未実施・要分離裁定））
 - **重大度**: Low（現時点で数値誤りは未観測。1 件のみ未検証の疑いあり）
 - **事実（レビュー実測 2026-08-18）**:
   1. **現時点で無害な写し 4 件**: `simulator/replay_ui/adapter/intrabar_window_repository.py:102` /
@@ -8300,7 +8300,7 @@ Node のテストは symlink を realpath で辿るため、**この欠落はテ
 
 ## ISSUE-416: [設計] 対象接尾辞 `.ex5` の宣言が 2 箇所に残る（定数と正規表現）（2026-08-19）
 
-- **ステータス**: OPEN（新規起票。Phase 8 裁定 T-6 の申し送り）
+- **ステータス**: RESOLVED（2026-09-08。接尾辞宣言を usecase 層 models.py の SUBJECT_SUFFIX 1 箇所へ移設し、main=再輸出・framework=re.escape 導出化。Red 実測: 字形リテラル 2 サイト→1 サイト。受理/拒否挙動は是正前後で不変（characterization が両時点 Green）。単一宣言を AST ゲートで機械検査（test_subject_suffix_single_source 9 passed））
 - **重大度**: Low（現状の実害なし。字形を変えたとき片方だけが腐る構造）
 - **事実**: 接尾辞の宣言が 2 箇所ある。
   (A) `simulator/main/tester_settings/ea_input_map.py` の `SUBJECT_SUFFIX`（Phase 8 スライス 1 で
