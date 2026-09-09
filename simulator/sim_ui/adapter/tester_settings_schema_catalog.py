@@ -39,6 +39,7 @@ from simulator.usecase.tester_settings.enums import (
     DATES_PRESET_RANGE_KINDS,
     DATES_PRESET_UI_LABELS,
     EXECUTION_DELAY_UI_LABELS,
+    FORWARD_MODE_SPLIT_DENOMINATORS,
     FORWARD_MODE_UI_LABELS,
     OPTIMIZATION_MODE_UI_LABELS,
     PROVEN_EXECUTION_DELAYS,
@@ -133,7 +134,15 @@ _ENUM_OPTION_BUILDERS: "dict[str, Callable[[], list[SchemaOption]]]" = {
         )
         for member in DatesPreset
     ],
-    "ForwardMode": lambda: _int_enum_options(ForwardMode, FORWARD_MODE_UI_LABELS),
+    # ForwardMode は分割比（split_denominator）も併載する（宣言は enums・表示専用）
+    "ForwardMode": lambda: [
+        SchemaOption(
+            token=str(int(member)),
+            label=FORWARD_MODE_UI_LABELS.get(member, member.name),
+            split_denominator=FORWARD_MODE_SPLIT_DENOMINATORS.get(member),
+        )
+        for member in ForwardMode
+    ],
     # 評価軸はドロップダウンの実測スクショ未取得＝ラベル写像なし（メンバ名で出す）
     "OptimizationCriterion": lambda: _int_enum_options(OptimizationCriterion),
 }

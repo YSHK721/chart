@@ -42,8 +42,12 @@ const INDICATOR_KEY = "Indicator";
 /** 期間（規則 E）: プリセット 1 キー ⇄ カスタム 2 キーの排他。 */
 const PRESET_DATE_KEY = "Dates";
 const CUSTOM_DATE_KEYS = ["FromDate", "ToDate"];
+/** フォワード分割（規則 F）: 分割比は schema の `ForwardMode` 選択肢が配る宣言
+ *  （enums `FORWARD_MODE_SPLIT_DENOMINATORS` 由来・表示専用）。 */
+const FORWARD_MODE_KEY = "ForwardMode";
+const FORWARD_DATE_KEY = "ForwardDate";
 /** 空欄なら送らないキー（規則 F: `ForwardMode` がカスタム日付のときだけ要る）。 */
-const BLANK_MEANS_ABSENT = ["ForwardDate"];
+const BLANK_MEANS_ABSENT = [FORWARD_DATE_KEY];
 /** 実行対象の銘柄キー（実行対象データセットの決定に使う・Phase 9 S4）。 */
 const SYMBOL_KEY = "Symbol";
 /** 実行対象データセットとの一致が要求されるキー（写像層 `_require_match` の対象・T-3）。 */
@@ -112,6 +116,35 @@ const TRIGGER_OFF_PROFILE = "off_profile";
 /** キーが属する行の定義を返す（無ければ既定行）。 */
 function rowDefOf(key) {
   return MT5_ROWS.find((r) => r.keys.includes(key)) || DEFAULT_ROW;
+}
+
+/** 1 日のミリ秒数（UTC 日付トークンの日数演算用）。 */
+const DAY_MS = 86400000;
+
+/** `.ini` 日付トークン `YYYY.MM.DD` → UTC ミリ秒（形が崩れていれば null）。 */
+function utcOfDateToken(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
+  const ms = Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** フォワード分割の開始日トークン（表示専用・計算できなければ null）。
+ *
+ *  セマンティクス: フォワード期間＝設定期間の**後ろ** 1/denominator（MT5 公式ヘルプ＋
+ *  保存 ini ファイル名の実測 `.doc/mt5_options/` 2026-09-06 で分母の対応を実証）。
+ *  日単位の丸めは MT5 未実測のため**暫定**: フォワード日数 = floor(期間日数 / 分母)、
+ *  開始日 = To − フォワード日数。実測で確定したらこの 1 箇所だけを直す。
+ *  期間長に依らず固定回数の演算で求める（走査しない・計算量テストで固定）。 */
+export function computeForwardSplitDate(fromToken, toToken, denominator) {
+  const from = utcOfDateToken(fromToken);
+  const to = utcOfDateToken(toToken);
+  if (from === null || to === null || from > to) return null;
+  if (!Number.isInteger(denominator) || denominator < 2) return null;
+  const spanDays = Math.round((to - from) / DAY_MS);
+  const start = new Date(to - Math.floor(spanDays / denominator) * DAY_MS);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${start.getUTCFullYear()}.${pad2(start.getUTCMonth() + 1)}.${pad2(start.getUTCDate())}`;
 }
 
 export function createSimTesterSettingsPanelView({ doc, today } = {}) {
@@ -229,6 +262,11 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     applyActivation();
     // 期間プリセットを選び直したら、解決済み期間の表示を出し直す（期間指定なら触らない）。
     if (key === PRESET_DATE_KEY) applyPresetRangeDisplay();
+    // 期間かフォワード種別が動いたときだけ分割日を引き直す（無関係な欄で発行しない＝
+    // 発行した計算はすべて表示に使う。プリセット表示の書き戻しの**後**に置く）。
+    if (key === FORWARD_MODE_KEY || key === PRESET_DATE_KEY || CUSTOM_DATE_KEYS.includes(key)) {
+      applyForwardSplitDisplay();
+    }
     renderWarnings();
     renderUnsupportedActivation();
     // 銘柄を変えたら外へ通知する（実行対象データセットの決め直しは合成根が担う）。
@@ -375,6 +413,34 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     const range = presetDisplayRange();
     fromNode.value = range ? range.from : "";
     toNode.value = range ? range.to : "";
+  }
+
+  /** 現在の `ForwardMode` 選択肢が宣言する分割比の分母（分割形でなければ null）。
+   *  判定は schema の選択肢宣言（`split_denominator`）だけ——トークン値から推測しない。 */
+  function forwardSplitDenominator() {
+    const token = currentToken(FORWARD_MODE_KEY);
+    const option = (((schema && schema.enum_options) || {})[FORWARD_MODE_KEY] || []).find(
+      (o) => String(o.token) === token,
+    );
+    const denominator = option && option.split_denominator;
+    return typeof denominator === "number" ? denominator : null;
+  }
+
+  /** 分割フォワード（1/2・1/3・1/4）選択時、分割開始日を不活性の ForwardDate ボックスへ
+   *  **表示**する（プリセット期間表示と同形。不活性キーは投入本文に載らない＝規則 F/F-10:
+   *  MT5 も分割選択時 `ForwardDate` を `.ini` に書かない）。期間の入力元は From/To ボックス
+   *  そのもの（プリセットなら解決済み表示・期間指定なら手入力＝供給元を 2 つ作らない）。
+   *  キャンセル・カスタム日付では触らない——手入力と直前表示を消さない。 */
+  function applyForwardSplitDisplay() {
+    if (!schema) return;
+    const node = controls.get(FORWARD_DATE_KEY);
+    if (!node) return;
+    const denominator = forwardSplitDenominator();
+    if (denominator === null) return;
+    const token = computeForwardSplitDate(
+      currentToken(CUSTOM_DATE_KEYS[0]), currentToken(CUSTOM_DATE_KEYS[1]), denominator,
+    );
+    node.value = token === null ? "" : token;
   }
 
   /** キー K の活性宣言が「表示だけ隠す」形か（不活性でも投入本文には載せ続ける）。 */
@@ -542,6 +608,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     applyProfileDefaults();
     applyActivation();
     applyPresetRangeDisplay();
+    applyForwardSplitDisplay();
     renderUnsupported();
     renderUnsupportedActivation();
     renderWarnings();
@@ -665,6 +732,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (!schema) return;
       applyProfileDefaults();
       applyPresetRangeDisplay();   // データ範囲の供給元が変わった＝表示期間も引き直す
+      applyForwardSplitDisplay();  // 表示期間が動いた＝分割日も引き直す
       renderUnsupportedActivation();
       renderWarnings();
     },

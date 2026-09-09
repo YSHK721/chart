@@ -28,17 +28,23 @@ class SchemaOption:
     ``label``: 画面表示名（＝列挙メンバ名）。意味の翻訳はしない（上の「ラベルについて」）。
     ``range_kind``（任意・`Dates` の選択肢のみ）: プリセット選択時に日付ボックスへ表示する
         解決期間の種別（enums `DATES_PRESET_RANGE_KINDS` が唯一の宣言・表示専用）。
+    ``split_denominator``（任意・`ForwardMode` の分割選択肢のみ）: フォワード期間の分割比の
+        分母（enums `FORWARD_MODE_SPLIT_DENOMINATORS` が唯一の宣言・表示専用。分割日は
+        投入本文に載らない＝規則 F/F-10）。
     """
 
     token: str
     label: str
     range_kind: "str | None" = None
+    split_denominator: "int | None" = None
 
     def to_dict(self) -> "dict":
-        """JSON 直列化用のプレーン dict（API 応答が使う）。``range_kind=None`` は載せない。"""
+        """JSON 直列化用のプレーン dict（API 応答が使う）。``None`` の任意面は載せない。"""
         payload = {"token": self.token, "label": self.label}
         if self.range_kind is not None:
             payload["range_kind"] = self.range_kind
+        if self.split_denominator is not None:
+            payload["split_denominator"] = self.split_denominator
         return payload
 
 

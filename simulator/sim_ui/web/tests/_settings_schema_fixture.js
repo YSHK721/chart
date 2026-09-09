@@ -32,7 +32,13 @@ export function settingsSchema() {
         { token: "d0", label: "ALL", range_kind: "entire" },
         { token: "d2", label: "LAST", range_kind: "year_to_date" },
       ],
-      ForwardMode: [{ token: "f0", label: "NONE" }, { token: "f4", label: "CUSTOM" }],
+      // split_denominator は分割フォワード選択時に表示する分割日の分母（実物と同語彙）
+      ForwardMode: [
+        { token: "f0", label: "NONE" },
+        { token: "f2", label: "HALF", split_denominator: 2 },
+        { token: "f3", label: "QUARTER", split_denominator: 4 },
+        { token: "f4", label: "CUSTOM" },
+      ],
       OptimizationCriterion: [{ token: "c0", label: "C0" }],
     },
     scalar_specs: {

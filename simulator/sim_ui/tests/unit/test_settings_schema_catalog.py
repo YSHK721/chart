@@ -34,6 +34,7 @@ from simulator.usecase.tester_settings.enums import (
     DATES_PRESET_RANGE_KINDS,
     DATES_PRESET_UI_LABELS,
     EXECUTION_DELAY_UI_LABELS,
+    FORWARD_MODE_SPLIT_DENOMINATORS,
     FORWARD_MODE_UI_LABELS,
     OPTIMIZATION_MODE_UI_LABELS,
     PROVEN_EXECUTION_DELAYS,
@@ -353,3 +354,17 @@ def test_dates_options_carry_their_display_range_kind(catalog) -> None:
         str(int(m)): DATES_PRESET_RANGE_KINDS[m] for m in DatesPreset
     }
     assert all(o.range_kind for o in options), "range_kind の欠けたプリセットがあります"
+
+
+def test_forward_mode_options_carry_their_split_denominator(catalog) -> None:
+    """`ForwardMode` の分割選択肢が分割比（enums の宣言の写し）を併載すること。
+
+    欠けると分割日の表示が静かに出なくなる（沈黙の縮退）ため、宣言との一致を全メンバで
+    固定する（期待値は宣言から導く＝リテラルなし。非分割の選択肢は None のまま）。
+    """
+    # Arrange / Act
+    options = catalog.enum_options()["ForwardMode"]
+    # Assert
+    assert {o.token: o.split_denominator for o in options} == {
+        str(int(m)): FORWARD_MODE_SPLIT_DENOMINATORS.get(m) for m in ForwardMode
+    }

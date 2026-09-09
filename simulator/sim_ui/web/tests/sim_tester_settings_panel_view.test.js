@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { fakeDoc, findById, flatten } from "./_fakes.js";
 import { runProfile, settingsSchema } from "./_settings_schema_fixture.js";
 import {
+  computeForwardSplitDate,
   createSimTesterSettingsPanelView,
   CUSTOM_RANGE_OPTION,
 } from "../js/adapter/front/sim_tester_settings_panel_view.js";
@@ -492,6 +493,130 @@ test("a disabled date field's calendar button does not open (不活性の欄へ�
   assert.equal(btn.disabled, true, "不活性の ForwardDate のカレンダーボタンが活性です");
   fire(btn, "click");
   assert.equal(byClass(host, "cal-pop").length, 0, "不活性の欄からカレンダーが開いています");
+});
+
+// --- 12. フォワード分割の表示（規則 F/F-10・表示専用）-----------------------------
+// 分割フォワード（1/2 等）選択時、分割開始日を不活性の ForwardDate ボックスへ表示する。
+// 分割比は schema の ForwardMode 選択肢（split_denominator）が配る宣言・期間は From/To
+// ボックスの表示値。MT5 は分割選択時 ForwardDate を `.ini` に書かない（F-10）＝送らない。
+
+/** fixture の分割選択肢（split_denominator を宣言に持つもの）。 */
+const splitOption = (schema) =>
+  schema.enum_options.ForwardMode.find((o) => o.split_denominator !== undefined);
+
+test("computeForwardSplitDate puts the forward period at the tail 1/n of the range", () => {
+  // 丸めの暫定規則: フォワード日数 = floor(期間日数 / 分母)、開始日 = To − フォワード日数
+  assert.equal(computeForwardSplitDate("2025.01.01", "2025.01.11", 2), "2025.01.06");
+  assert.equal(computeForwardSplitDate("2025.01.01", "2025.01.11", 3), "2025.01.08");
+  assert.equal(computeForwardSplitDate("2025.01.01", "2025.01.10", 3), "2025.01.07");
+  // 月跨ぎ・閏年（2024-02 は 29 日）でも日数演算で正しく戻る
+  assert.equal(computeForwardSplitDate("2024.02.01", "2024.03.01", 2), "2024.02.16");
+  // 計算できない入力は null（逆転期間・崩れたトークン・分割でない分母）
+  assert.equal(computeForwardSplitDate("2025.01.11", "2025.01.01", 2), null);
+  assert.equal(computeForwardSplitDate("2025-01-01", "2025.01.11", 2), null);
+  assert.equal(computeForwardSplitDate("2025.01.01", "2025.01.11", 1), null);
+  assert.equal(computeForwardSplitDate("2025.01.01", "2025.01.11", null), null);
+});
+
+test("choosing a split forward mode shows the computed date in the greyed box", () => {
+  const { host, view, schema, profile } = ready();
+  const option = splitOption(schema);
+  const sel = field(host, "ForwardMode");
+  sel.value = option.token;
+  fire(sel);
+  // 期待値は表示中の期間（既定プリセット entire＝profile のデータ範囲）から導く
+  const expected = computeForwardSplitDate(
+    profile.data_first_date, profile.data_last_date, option.split_denominator,
+  );
+  assert.ok(expected, "fixture の期間から分割日が計算できていません（検定が空振り）");
+  assert.equal(field(host, "ForwardDate").value, expected);
+  // 表示は表示だけ——欄は不活性のまま・投入本文には載らない（規則 F/F-10）
+  assert.equal(field(host, "ForwardDate").disabled, true);
+  assert.ok(!("ForwardDate" in view.buildTesterMapping()),
+    "分割選択時の ForwardDate が投入本文に載っています（MT5 の .ini には無いキー）");
+});
+
+test("the split date follows period changes (preset switch and custom range edits)", () => {
+  const { host, schema, profile } = ready();
+  const option = splitOption(schema);
+  const sel = field(host, "ForwardMode");
+  sel.value = option.token;
+  fire(sel);
+  // プリセットを year_to_date へ → 解決期間の付け替えに分割日も追従する
+  const ytd = schema.enum_options.Dates.find((o) => o.range_kind === "year_to_date");
+  const dates = field(host, "Dates");
+  dates.value = ytd.token;
+  fire(dates);
+  const year = profile.data_last_date.split(".")[0];
+  assert.equal(
+    field(host, "ForwardDate").value,
+    computeForwardSplitDate(`${year}.01.01`, profile.data_last_date, option.split_denominator),
+  );
+  // 期間指定（カスタム）で To を書き換え → 手入力にも追従する
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2025.01.01";
+  fire(field(host, "FromDate"), "input");
+  field(host, "ToDate").value = "2025.01.11";
+  fire(field(host, "ToDate"), "input");
+  assert.equal(
+    field(host, "ForwardDate").value,
+    computeForwardSplitDate("2025.01.01", "2025.01.11", option.split_denominator),
+  );
+});
+
+test("a custom forward date is never overwritten by the split display", () => {
+  const { host, view, schema } = ready();
+  // カスタム日付モードへ（活性化条件は schema.activation の宣言から引く）
+  const rule = schema.activation.ForwardDate;
+  const sel = field(host, rule.key);
+  sel.value = rule.tokens[0];
+  fire(sel);
+  field(host, "ForwardDate").value = "2025.02.01";
+  fire(field(host, "ForwardDate"), "input");
+  // 期間を動かしても手入力は消えない（分割形でないときは触らない）
+  chooseCustomRange(host);
+  field(host, "ToDate").value = "2025.03.31";
+  fire(field(host, "ToDate"), "input");
+  assert.equal(field(host, "ForwardDate").value, "2025.02.01");
+  assert.equal(view.buildTesterMapping().ForwardDate, "2025.02.01");
+});
+
+// --- 12c. 計算量テスト（規約: 発行した計算 − 出力に使った計算 = 0）------------------
+// 数えるのは時間ではなく回数。分割日は期間長に依らず固定回数の日付演算で求める
+// （期間を日単位で走査しない）ことと、表示に使わない発行が無いことを Date.UTC の
+// Test Spy で固定する。回数そのものは期待値に焼き込まない（浪費の仕様化を防ぐ）。
+
+test("split-date issuance is independent of the period length (オーダーの表明)", () => {
+  const { host, schema } = ready();
+  const option = splitOption(schema);
+  const sel = field(host, "ForwardMode");
+  sel.value = option.token;
+  fire(sel);
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2025.01.01";
+  fire(field(host, "FromDate"), "input");
+  const origUTC = Date.UTC;
+  let calls = 0;
+  Date.UTC = (...args) => { calls += 1; return origUTC(...args); };
+  try {
+    // 2 点で固定: 期間 10 日と 3000 日超で発行数が同じ（入力を増やしても発行が増えない）
+    const issues = [];
+    for (const to of ["2025.01.11", "2033.04.01"]) {
+      calls = 0;
+      field(host, "ToDate").value = to;
+      fire(field(host, "ToDate"), "input");
+      issues.push(calls);
+    }
+    assert.ok(issues[0] > 0, "分割日の再計算が発行されていません（Spy が空振り）");
+    assert.equal(issues[0], issues[1], "期間長で発行数が変わっています（走査しているはず）");
+    // 分割日に関係ない欄の変更では 1 回も発行しない（作って捨てる計算なし）
+    calls = 0;
+    field(host, "Deposit").value = "20000";
+    fire(field(host, "Deposit"), "input");
+    assert.equal(calls, 0, "期間と無関係の欄で分割日を計算しています（出力に使わない発行）");
+  } finally {
+    Date.UTC = origUTC;
+  }
 });
 
 test("offered candidates survive a real-DOM HTMLCollection (children に .map が無くても動く)", () => {

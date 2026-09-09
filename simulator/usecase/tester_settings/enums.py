@@ -301,6 +301,18 @@ FORWARD_MODE_UI_LABELS: "dict[ForwardMode, str]" = {
     ForwardMode.CUSTOM_DATE: "カスタム",
 }
 
+#: `ForwardMode` の分割比（分母）。フォワード期間＝設定期間の**後ろ** 1/n（MT5 公式ヘルプ
+#: 「フォワード期間は設定期間を選択比で分割した後半部」＋保存 ini ファイル名で n の対応を
+#: 実証・2026-09-06）。**表示専用**——分割選択時 `ForwardDate` は `.ini` に書かれない
+#: （F-10）ため、この比から求めた分割日は投入本文に載せない。日単位の丸め規則は MT5
+#: 未実測（暫定: フォワード日数 = floor(期間日数 / 分母)。VM 実測で確定したら front の
+#: `computeForwardSplitDate` 1 箇所を直す）。
+FORWARD_MODE_SPLIT_DENOMINATORS: "dict[ForwardMode, int]" = {
+    ForwardMode.SPLIT_HALF: 2,
+    ForwardMode.SPLIT_THIRD: 3,
+    ForwardMode.SPLIT_QUARTER: 4,
+}
+
 #: `Model` の表示ラベル（ss20260906204918: 開いたドロップダウンの実測）。
 #: 値との対応: 0/1/2/4 は corpus コメント（every tick / m1 ohlc / open prices /
 #: real ticks）と表示文言の対で確定。3 は残る 1 語「数値計算」＝消去法（TBD-01 のまま）。
