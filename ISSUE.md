@@ -14500,3 +14500,145 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - **必要な実測（VM の MT5・SS 4 枚）**: 期間指定 2026.01.01〜2026.09.05（総日数 248）で
   1/2・1/3・1/4 各選択時の日付ボックスを撮影＋期間変更時に追従更新されるかを 1 枚。
   判定: 1/2=2026.05.05 近傍・1/3=2026.06.14 か 06.15（ここで丸めが確定）・1/4=2026.07.04 近傍。
+
+## ISSUE-506: N-09（`Visual=1` の実行拒否）が bit-exact オラクル自身の設定を拒否している（実測 38/44）
+- **ステータス**: OPEN（裁定待ち・撤回可否）
+- **発見日**: 2026-09-09（テスターセッティング UI の告知「N-09 visual: テスターのリアルタイム描画は移植対象外です」の確認時）
+- **事象**: `Visual=1` は `UnsupportedSettingError`（E-07）で**実行要求時に run を中止**する
+  （`simulator/main/tester_settings/unsupported.py:214-215,348-358`）。一方 corpus 実測では
+  **44 件中 38 件が `Visual=1`**（`Visual=0` は 0 件・残り 6 件は最適化ランで N-02 が別途拒否）。
+  ヘッダコメントの内訳も `Expert Advisor visual test` 25 件＋`Indicator visual test` 13 件＝38 件で一致。
+  すなわち **N-09 は最適化以外の実測 corpus 全件を実行不能にしている**。
+- **決定的な実測**: bit-exact ゴールデンオラクル
+  `simulator/tests/fixtures/mt5/ma_slope_jp225_202501/mt5_report/settings.jpg` の Settings タブで
+  **「visual mode with the display of charts, indicators and trades」のチェックが ON**。
+  同ランの `expected/report.json` を、描画を一切行わない現行エンジンが bit-exact 再現している。
+  → **`Visual` は MT5 側でも結果に入らない端末表示フラグである**ことが、本リポジトリ内の実測で確定している。
+- **同型の既決事項**: N-04（`ExecutionMode` の実行拒否）は 2026-08-17 裁定（ISSUE-387）で
+  「現行エンジンが当該設定の MT5 実走を bit-exact 再現済み ⇒ 拒否は実証済み能力の後退」として撤回済み。
+  N-09 は**同じ論拠が同じ強度で成立**する（むしろオラクル当該ランそのものが `Visual=1`）。
+- **根本原因**: §4.6 の非対象判定が「MT5 UI に存在する項目」を対象に置いており、
+  「**結果に入る設定**」と「**端末の表示フラグ**」を区別する軸を持たない。N-09 はこの軸の欠落の帰結。
+  告知文の言い換えは症状（誤解を招く文言）を消すだけで、実行不能（38/44）は残るため応急処置にあたる。
+- **抜本策（案）**: N-09 を N-04 と同じ扱いで撤回（欠番化）し、`visual` を
+  **保持・往復のみ（結果へ非関与）のパススルー**に格下げする。エンジン挙動は無改変（追加も削除もしない）。
+  `Optimization != DISABLED` との排他（規則 B・E-03）は MT5 側の活性依存として維持。
+- **未検証**: `Visual=1` と `Visual=0` の**同一 EA・同一期間ペア**での MT5 実走差分（corpus に `Visual=0` が
+  0 件のため対の実測が無い）。ただし上記ゴールデンの bit-exact 一致は「`Visual=1` 側が結果に影響しない」
+  ことを直接示している（N-04 撤回時と同じ実証水準）。
+
+## ISSUE-507: 統合 UI でリプレイへ切り替えても売買マーカーが `to` で切られない疑い（因果の破れ・要実 UI 確認）
+- **ステータス**: OPEN（**未検証**・実 UI 確認待ち）
+- **発見日**: 2026-09-09（ビジュアルモード実装検討のためのリプレイ機構調査の副産物）
+- **コード上の事実（実測・静的読み取りのみ）**:
+  1. `unified_ui/web/js/unified_root.js:501-502` が LIVE 初期化時に
+     `boot.tradeMarkers.load('/live/data/trade_markers.json')` を 1 回だけ呼ぶ。実体は
+     `indigators/indicator_ui/web/data/trade_markers.json`（376,333 バイト・存在確認済み）。
+  2. `unified_ui/web/js/` 全体で `tradeMarkers` への参照は上記 2 行のみ＝**モード切替はマーカーに触れない**。
+  3. `TradeMarkersRenderer._render()`（`indigators/indicator_kit/web/js/adapter/front/trade_markers_renderer.js`）
+     の絞り込みは**可視範囲と時間足のみ**で、`untilTime` の参照が無い。
+- **疑い**: LIVE で読み込んだマーカーが REPLAY 切替後もチャートに残り、
+  **リプレイ現在時刻（`to`）より未来の売買が見えている**可能性がある。これは
+  「リプレイの単一時計＝`to`」（ISSUE-129 確定）と因果規律に反する。
+- **なぜ未検証のままにするか**: 表示の有無は可視範囲・時間足の一致・データの時刻域に依存し、
+  静的読み取りだけでは断定できない。実 UI・実 HTTP 経路での確認を経ずに defect と断定しない。
+- **確認手順（実 UI）**: `serve.sh` 起動 → 8000 を開く → LIVE でマーカーが出る時間足に合わせる →
+  REPLAY へ切替 → 再生位置を過去日へ送る → **カーソルより右（未来）にマーカーが残るかを目視＋スクショ**。
+  残れば defect 確定、残らなければ本 ISSUE は CLOSED（理由を記入）。
+- **抜本策の方向（確定時）**: 絞り込みの単一ソースである `_render()` に `to` ゲートを入れる
+  （`untilTime` 未設定＝ライブでは素通し＝現行挙動不変）。モード切替側で消して回る方式は採らない
+  （消し漏れが無音の破れになるため。§12.7 で同型の裁定あり）。
+- **関連**: バックテストのトレースをリプレイへ重ねる構想（ビジュアルモード検討）を実装する場合、
+  この時刻ゲートは**前提条件**になる。
+
+## ISSUE-508: バックテストのデバッグ観察手段（MT5 ビジュアルモード相当）を「実行トレース × リプレイ再生」で実現する
+- **ステータス**: OPEN（着手可否の裁定待ち・段階 1 の y/n 未回答）
+- **起票日**: 2026-09-09
+- **要求の出所**: ISSUE-506 の検討中、N-09 が非対象とする「テスターのリアルタイム描画」について
+  デバッグ用途としての価値が問われ、実装検討の指示が出た。
+- **要求の中身**: 集計統計だけでは「なぜその時点で建てたのか」が追えない。時間軸上で判断の瞬間を
+  文脈ごと見たい・止めて中を見たい・異常に早く気づきたい。
+
+### 実測（静的読み取り・すべて自分で file:line を確認済み）
+1. **エンジンに観測口は無い**。メインループは `simulator/usecase/run_backtest.py:366`
+   `for bar_index, bar in enumerate(bars)`、内側が `:461` `for point in points`。
+   Observer・callback・event・logger は `usecase/` 配下 0 件。外へ出る辺は run 終了時の
+   `BacktestResult` 1 回のみ。
+   ただし DI 口 `:132-141` には `session_calendar=None` / `position_manager=None` / `schedule=None`
+   という「**既定 None ＝既定経路 byte-identical**」の先例が 3 つ確立している。
+   接ぎ木の最安地点は `:466`（`prev_close = bar.close` の直前＝1 バーの全副作用が確定した点）。
+2. **実行中に流す経路は 1 本も無い**。
+   - 子プロセス隔離: `simulator/sim_ui/adapter/subprocess_job_launcher.py:75-85` が
+     `stdout/stderr = subprocess.DEVNULL`。親子の通信路は**ファイルのみ**。
+   - ポーリング応答は 4 キーのみ: `simulator/sim_ui/adapter/job_api_controller.py:112-120`
+     `{job_id, status, failure_reason, terminal}`。進捗・現在時刻・処理済み本数は**無い**。
+   - **ルータが構造的に中継不能**: `unified_ui/router.py:302` `data = resp.read()`（全読み）＋
+     `:319` 自前 `Content-Length` 付与、さらに `:153` `_HOP_BY_HOP` に `transfer-encoding` を含み落とす。
+     SSE も chunked も応答完了まで 1 バイトもブラウザへ出ない。
+   - SSE / WebSocket / chunked はアプリコードに **0 件**。
+   - **§12.7 fail-stop（実行中ジョブの部分結果は非公開）と正面衝突**する
+     （`simulator/sim_ui/usecase/fetch_job_result.py` / `usecase/job_models.py:203-211`）。
+3. **リプレイ側は再生装置として既に完成している**。
+   - 時計の権威は front の `ReplayCursor._bar`、`to = candles[bar].time`
+     （`simulator/replay_ui/web/js/replay.js:174`）。見せる範囲は `:215`
+     `view.setCandles(cursor.candles().slice(0, cursor.bar() + 1))`、指標は `:218` `port.revealTo(t)`。
+     `preRender` は `await` を挟まない同期ブロックで、ローソクと指標が同時に現れる不変条件を作る。
+   - 再生/一時停止・速度 6 段・1 足コマ送り（前後）・日付ジャンプ・足内更新モードは**実装済み**。
+     無いのは任意時刻シーク・逆再生・1.0 倍超。
+   - 未確定足の指標は `INTRABAR_FORMING_IDS`（23 指標）＋足内全価格点の一括先読み計算
+     （`POST /compute mode:'latest_seq'`）で解決済み。
+   - **チャート描画・指標計算の本体はライブと同一実体**（`web/js` 配下の symlink **実測 133 件**＝
+     indicator_kit 105・market_profile 18・chart_kernel 10）。リプレイ固有は「時計の駆動」と
+     「compute body へ `untilTime` を載せる seam」だけ。
+   - 売買マーカー描画 `TradeMarkersRenderer.load(url)` は実在し、ライブでは実使用
+     （`unified_ui/web/js/unified_root.js:501-502`）。リプレイは呼んでいないだけ。
+   - 外部から時刻を進める口は**無い**: `replay.js:642` の公開面は `{enable, disable, destroy}` の 3 つのみで、
+     `drive` / `render` / `loadFromDate` はクロージャに閉じている。
+4. **規模の実測**: golden fixture（1 ヶ月・M1・36,019 バー）で MT5 の `tester.log` は 11,675 行、
+   deals は 2,327 件。事象駆動の記録なら数百 KB に収まる。毎バー記録は M1 全履歴で 4,607,093 件になり不可。
+
+### 却下する案: MT5 同型の「実行中リアルタイム描画」
+ルータ改修（`_proxy` の全読み撤廃）＋新プロトコル導入＋§12.7 裁定の変更が前提になる。
+費用が採用案の数倍で、得られる差分は「完走を待たずに見られる」ことだけ。デバッグ実利は採用案でほぼ得られる。
+加えて描画が実行を律速するため、MT5 でも本番テストでは切る性質の機能である。**推奨しない。**
+
+### 採用案: 実行は完走させ、結果に実行トレースを添え、リプレイのチャートで再生する
+- 実行速度が落ちない（描画が実行を縛らない）。
+- **巻き戻せる・何度でも見返せる**（MT5 のビジュアルモードは基本前進のみ。この点は MT5 より良い）。
+- bit-exact 保証にも §12.7 にも触れない。
+
+### 段階分割（各段階が単独で可逆・単独で価値がある）
+| 段階 | 内容 | 触る範囲 | 通過条件 |
+|---|---|---|---|
+| 1 | エンジンに観測口を追加（`observer=None` 既定の DI・`run_backtest.py:466` で 1 回呼ぶ） | `usecase/` に新 Port ファイル 1 つ＋既存 2 行 | 指紋 A/B/C が 1 bit も動かない・AST 構造ゲート 3 本緑・**計算量テスト新設** |
+| 2 | トレースをジョブ出力へ書く（`report.json` とは別ファイル・完了後に公開） | `run_job.py` ＋新 writer | §12.7 不変・既存 `report.json` バイト不変 |
+| 3 | リプレイへトレースを重ね、`to` で未来を隠す | リプレイ結線＋マーカー時刻ゲート | 実 UI でカーソルより未来のマーカーが出ないことをスクショで確認（**ISSUE-507 が前提**） |
+| 4（任意） | 「このトレードへ飛ぶ」（外部シーク） | `replay.js:642` の公開面に 2 関数 | 再生中の競合が無いこと |
+
+### 計算量テスト（絶対命令・段階 1 の必須要件）
+- `observer=None` のとき**発行 0**（Spy で計測）。
+- observer 有効時、**記録件数 = 事象件数**（発行した記録 − 出力に使った記録 = 0）。
+- **バー数を増やしても発行が増えない**ことを、バー数の異なる 2 点以上で固定する
+  （事象が無ければ増えない＝オーダーの表明）。回数そのものは期待値へ焼き込まない。
+
+### 構造ゲート（段階 1 で違反してはならない・実測済み）
+- `tests/unit/test_run_backtest_responsibility_split.py` が `RunBacktestInteractor` のメソッド集合を
+  8 個に厳密固定 → **新メソッドを足さない**（呼ぶだけにする）。
+- `tests/unit/test_run_backtest_single_engine.py` の `_RunState` フィールドゲート →
+  **`_RunState` に載せない**（載せるなら必ず `state.<名前>` で読む）。
+- 同ファイルの config 直読みゲート → **フック内で `getattr(config, ...)` を書かない**
+  （設定で on/off するなら `usecase/run_features.py` へ足す）。
+- 協働クラスの構築は run につき 1 回（計算量ゲート）→ **observer の構築を `_run` の中でやらない**。
+- Port の定義先は `run_backtest.py` ではなく別ファイル（`usecase/marker_ports.py` の先例に倣う）。
+
+### 本案でも得られないもの（正直な限界）
+**EA が判断に使った内部の派生値**（例: `adapter/strategy/ma_slope.py` の `slope` / `threshold`）は
+`on_new_bar` のローカル変数に閉じており、戻り値は `list[Order]` のみ。観測口を足しても見えない。
+見るには `StrategyPort` の契約変更という**別の裁定**が要る。
+登録済み指標の系列値は `IndicatorPort` から直接引けるため出せる。まず段階 1〜3 を使ってみて、
+指標値だけで足りるかを実地で判断するのが順当。
+
+### 関連
+- ISSUE-506（N-09 撤回。独立だが、実測 `.ini` 38/44 が実行できないままだと観察対象を作りにくい）
+- ISSUE-507（リプレイのマーカー時刻ゲート。段階 3 の前提条件）
+- ISSUE-129（リプレイ単一時計 = `to`）
