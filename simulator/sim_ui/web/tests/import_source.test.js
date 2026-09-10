@@ -64,6 +64,8 @@ const STATUS_CLIENT = "job_status_client.js";
 const RUN_LAYOUT = "sim_run_layout_view.js";
 // ISSUE-421: 結果ビューア URL の単一ソース（純関数・依存 0）。
 const REPORT_VIEW_URL = "report_view_url.js";
+// ISSUE-508 段階 3（§6.6.2）: 実行トレースの指定面（明示 ON ＋期間・DOM だけ）。
+const TRACE_PANEL = "sim_trace_panel_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -83,6 +85,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     SETTINGS_CLIENT, TESTER_PANEL, DATE_PICKER,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
+    TRACE_PANEL,
   ].sort());
 });
 

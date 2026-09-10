@@ -343,8 +343,10 @@ test("the run form splits settings and inputs into two columns (ISSUE-441)", asy
   // Assert: 設定列に Tester Settings、入力列に Inputs・スタート・掲示。
   const settings = findById(doc.body, "simRunFormSettings");
   assert.deepEqual((settings ? settings.children : []).map((c) => c.id), ["simTesterPanel"]);
+  // ISSUE-508 段階 3: 実行トレースの指定面はスタートの直前（この run をどう記録するかは
+  // 押す直前に決める指定である）。
   assert.deepEqual(inputColumnIds(doc.body),
-    ["simEaInputsPanel", "simRunActionPanel", "simRunStatusPanel"]);
+    ["simEaInputsPanel", "simTracePanel", "simRunActionPanel", "simRunStatusPanel"]);
 });
 
 test("a successful submit posts the job id and status on the status surface", async () => {
