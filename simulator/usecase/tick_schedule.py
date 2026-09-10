@@ -20,6 +20,15 @@
     材料（そのバーで実際に成立した価格）が無いためであり、`is_synthetic_bar_point` で
     そのことを示す。記録するかどうか（保有玉が在るか）は呼出側が決める。
 
+ティックの時刻:
+    ティックモデルが供給した時刻を**そのまま**評価点へ載せる（加工しない・判別しない）。
+    合成疑似ティックが運ぶ `bar.time` は欠落ではなく真値であり（実 MT5 の OHLC 疑似
+    ティックは分未満の時刻を持たない）、バー内の順序は `tick_ordinal` が既に表している。
+    「合成なら None」という判別子は、判別材料が無いのに判別を要求する規則であり、値比較
+    （`tick_time != bar.time`）でしか満たせない——バー時刻ちょうどの実ティックが落ちる
+    （原理的に区別できない）ので置かない（設計書 §5.1。性能は撤回の理由にしない）。
+    ティックを 1 本も持たない点（0 件バーの持ち越し点）は `None` のままである。
+
 スケジュールが状態を持つ理由:
     「直近に見たティックの Bid/Ask」はバーをまたいで持ち越す。これはティック列を辿る側の
     状態なので、スケジュール自身が持つのが素直である（呼出側に持たせると、呼出側が
@@ -68,7 +77,7 @@ class TickSchedule(EvaluationSchedulePort):
         """
         saw_tick = False
         for tick_ordinal, tick in enumerate(self._tick_model.ticks_of(bar, prev_close)):
-            price, bid, ask, _tick_time = tick
+            price, bid, ask, tick_time = tick
             saw_tick = True
             self._last_bid, self._last_ask = bid, ask
             if self._pending_lifecycle:
@@ -96,6 +105,8 @@ class TickSchedule(EvaluationSchedulePort):
                 pm_ref_sell=eval_ask,
                 granularity=TICK_GRANULARITY,
                 tick_ordinal=tick_ordinal,
+                # 供給値をそのまま運ぶ（理由は module docstring「ティックの時刻」）。
+                tick_time=tick_time,
             )
         if saw_tick:
             return
