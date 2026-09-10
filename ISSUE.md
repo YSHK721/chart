@@ -14656,3 +14656,75 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - ISSUE-506（N-09 撤回。独立だが、実測 `.ini` 38/44 が実行できないままだと観察対象を作りにくい）
 - ISSUE-507（リプレイのマーカー時刻ゲート。段階 3 の前提条件）
 - ISSUE-129（リプレイ単一時計 = `to`）
+
+## ISSUE-509: `marketdata_window` を伴う run で指標系列と `bar_index` の添字空間が一致しない
+- **ステータス**: OPEN（裁定待ち・欠陥か仕様かが未確定）
+- **起票日**: 2026-09-10
+- **発見の経緯**: ISSUE-508 段階 3（実行トレース永続化）の構造検証中、`indicators.parquet` の
+  鍵を `bar_index` にしてよいかを確かめる過程で判明した。**段階 3 が作る欠陥ではなく、
+  エンジンに既存の性質である。**
+
+### 実測（静的読み取り・file:line 確認済み）
+1. 指標 registry は `data_path` の**全 CSV** から作られる。窓の適用が無い:
+   `simulator/main/ea_bindings/tc24051901.py:27` `df = load_dataframe(ctx.data_path)` →
+   `simulator/main/ea_bindings/sources.py:30` `pd.read_csv(data_path)`。
+2. 一方 `bars` は取得窓で絞られる: `simulator/main/__init__.py:441-468`
+   （`MarketdataCsvOHLCRepository(window=marketdata_window)`）。
+3. 戦略は `bar_index` で**全 CSV 長の系列**を位置参照する:
+   `simulator/adapter/strategy/tc24051901.py:42` `madiff.iloc[bar_index]`。
+4. `marketdata_window` は Settings 経路の `FromDate` / `ToDate` から入る:
+   `simulator/main/tester_settings/window.py:157-162`。
+
+### 何が起きるか
+窓を指定した run では、`bar_index=0` が指す足は「窓の先頭」だが、指標系列の `iloc[0]` は
+「CSV の先頭」である。戦略は**別の足の指標値**を読んでいることになる。例外は出ず、
+数値は出る（したがって状態検証では落ちない）。
+
+### 未確定（裁定が要る）
+- ~~**そもそもこの組合せが実行され得るのか**~~ → **実測で確定（2026-09-10・潜在ではなく実在）**。
+  段階 3 で新設された `simulator/sim_ui/tests/integration/test_run_job_settings.py` の
+  `test_settings経路の窓の申告は実効kwargsから採る` が、`FromDate=2025.01.06` /
+  `ToDate=2025.01.10` で窓を絞った **MA_Slope_EA** の run を実際に完走させている。
+  当該 EA は `simulator/adapter/strategy/ma_slope.py:79-80` で `ema.iloc[bar_index - 1]` を引き、
+  registry は全 CSV 由来（`simulator/main/ea_bindings/ma_slope.py:24`）。
+  **窓を伴う run がこの経路を実際に通る**＝食い違いは実在する。重大度の見直しが要る。
+- 欠陥なら是正は「registry も窓で絞る」か「`bar_index` を CSV 添字に統一する」かの
+  いずれかであり、**指紋 A/B/C に影響し得る**（要慎重裁定）。
+
+### 本 Issue が確定するまでの段階 3 の扱い
+`indicator_trace` は「**エンジンが実際に読んだ値**」（同じ `iloc[bar_index]`）を記録し、
+`trace_meta.json` に `marketdata_window` の有無を残す。窓付き run の指標トレースを
+「正しい対応づけ」として提示しない。設計書 `.doc/RUN_TRACE_BASIC_DESIGN.md` §6.5.2 に記載。
+
+### 関連
+- ISSUE-508（実行トレース。本件の発見元）
+
+## ISSUE-510: `build_interactor` の引数名を手書きで持つ表が 2 つ残っている（反射の単一ソース化の取り残し）
+- **ステータス**: OPEN（裁定待ち・本体は既に導出化済みで、残る 2 つが手書き）
+- **起票日**: 2026-09-10
+- **発見の経緯**: ISSUE-508 段階 3 で `build_interactor` へ `run_tracer` を足す影響範囲を
+  実測したところ、反射で導く経路（`allowed_backtest_keys` 等）とは別に、**手書きの表が 2 つ**
+  厳密等価で固定していることが判明した。
+
+### 実測
+- `simulator/tools/walk_forward_cli.py:39-59` の `_BUILD_INTERACTOR_KEYWORDS`（手書き `frozenset`）。
+  `simulator/tests/unit/test_walk_forward_cli.py:89-93` が
+  `== set(signature(build_interactor).parameters)` で厳密等価を表明する。
+- `simulator/tests/integration/test_ea_bindings_are_declaration_driven.py:328-337, 376` の
+  `_EXPECTED`（引数の**並びまで**固定）と `injected_only`。
+
+### なぜ欠陥か
+`simulator/sim_ui/main/composition_root_jobs.py:203-216` は同じ情報を
+`inspect.signature(build_interactor)` の反射で導いており、その docstring 自身が
+「手書きの表を持つと引数が増えたときに必ず取り残される（本リポジトリで繰り返し起きている
+壊れ方。`walk_forward_cli._BUILD_INTERACTOR_KEYWORDS` が実際にそれで壊れた）」と記録している。
+**その当の表が今も手書きで残っている。**
+
+### 是正案（未着手）
+`_BUILD_INTERACTOR_KEYWORDS` を反射由来へ置換する。ただし CLI が「受け付ける引数」と
+`build_interactor` が「受け取る引数」は概念として同一か（＝CLI 固有の引数が将来入らないか）を
+確認してからにする。テスト側 `_EXPECTED` は「並びの固定」という別の目的を持つため、
+導出化すると目的が消える可能性がある（要判定）。
+
+### 関連
+- ISSUE-508 段階 3（`run_tracer` 追加で両表が赤になるため、当面は追記で対応する）
