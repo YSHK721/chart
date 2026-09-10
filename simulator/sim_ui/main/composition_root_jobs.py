@@ -23,7 +23,7 @@ Phase 1 の `composition_root.build_sim_app`（配信面だけ）を置き換え
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from common import core_web_topology
 from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
@@ -194,11 +194,37 @@ def build_ea_subject_port() -> _EaSubject:
     return _EaSubject()
 
 
+def build_trace_window_check() -> "Callable[[Any, Any], Any]":
+    """トレース期間の妥当性検査（束縛済み・ISSUE-508 段階 3 §6.4）。
+
+    実体は `adapter/trace/trace_window.py` の `TraceWindow.of` ただ 1 つである
+    （epoch_seconds による正規化・半開 `[start, end)`・`start > end` の拒否）。
+    usecase（`simulator/sim_ui/usecase/submit_job.py`）は adapter を import できないため、規則を写す代わりに
+    本 Root が束ねて注入する。判定を受付層へ書き写すと、同じ規則が 2 箇所になる。
+
+    戻り値の契約（消費側 `SubmitJobInteractor._trace_window_check` の宣言と同一）:
+        `(start, end)` を受け、**解釈できない境界対では例外を送出する**。返り値は
+        受付段では使わない——受付が要るのは「その期間が成立するか」だけであり、
+        窓の実体は子プロセスが spec から組み直す（別プロセスへ渡せないため）。
+        本 Root が返すのは `TraceWindow.of` そのものなので、検査規則と組立規則が
+        同一の実体であることが構造から保証される（2 つ目の判定が生まれない）。
+    """
+    from simulator.adapter.trace.trace_window import TraceWindow
+
+    return TraceWindow.of
+
+
 # 子へ素通しする `backtest` meta が注入専用に予約しているキー。JSON から渡させない。
 #   `strategy_decorator` は run_job がサイジング設定から組み立てて注入する（E-2）。
 #   `strategy_override` は run_job が spec.strategy から GenericConditionStrategy を組んで
 #   注入する（Phase 6 F-8）。どちらも StrategyPort 実体であり JSON スカラーでは渡せない。
-_INJECTED_ONLY_KEYS = frozenset({"strategy_decorator", "strategy_override"})
+#   `run_tracer` は run_job が spec.trace から列トレース（`simulator/adapter/trace/columnar_run_trace.py`）を組んで注入する
+#   （ISSUE-508 段階 3・是正 D-2）。`allowed_backtest_keys()` は
+#   `inspect.signature(build_interactor)` の反射であるため、ここへ足さないと JSON から
+#   `backtest.run_tracer` を投入できてしまう——受け取れば必ず実行段で壊れる形である。
+_INJECTED_ONLY_KEYS = frozenset(
+    {"strategy_decorator", "strategy_override", "run_tracer"}
+)
 
 
 def allowed_backtest_keys() -> "frozenset[str]":
@@ -285,4 +311,8 @@ def build_sim_job_app(
         # Phase 8 §18: settings ブロックを持つ投入だけが使う 2 Port。
         settings_validator=build_settings_validation_port(),
         ea_subject=build_ea_subject_port(),
+        # ISSUE-508 段階 3 §6.4: trace ブロックの期間検査。規則の実体は adapter が
+        # 唯一持ち（`TraceWindow.of`）、usecase は adapter を import できないため
+        # **束縛は本 Composition Root が担う**（required_series と同一様式）。
+        trace_window_check=build_trace_window_check(),
     )

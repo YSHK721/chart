@@ -20,6 +20,7 @@ import json
 import re
 import threading
 import uuid
+from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,33 @@ _JOB_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _FILENAME_RE = re.compile(r"\A[A-Za-z0-9_-]+\.[A-Za-z0-9]+\Z")
 
 
+def _spec_of(submission: JobSubmission) -> "dict[str, Any]":
+    """`JobSubmission` → `spec.json` の本体（**機械導出**・RUN_TRACE_BASIC_DESIGN §6.6.1）。
+
+    是正前はここに 4 つの鍵を**手書きで列挙**していた。`JobSubmission` にブロックが増える
+    たびに同じ取り残しが起き（実測: trace が 5 本目で実際に取り残された）、そのとき
+    HTTP は 202 を返し run は成功し、**そのブロックだけが子プロセスへ 1 バイトも届かない**
+    ——ISSUE-291（「サーバ分岐を作っても front が送らなければ無言で死ぬ」）の再発である。
+    1 キー足すだけでは 6 本目で必ず同じことが起きるので、列挙そのものを廃した。
+
+    同型の先例は `run_job.py:246-250` の `frozenset(field.name for field in fields(SymbolSpec))`。
+    結線の機械的強制は
+    `sim_ui/tests/integration/test_job_blocks_are_wired_end_to_end.py` が担う。
+
+    値の写し方: 必須ブロック（既定値を持たないフィールド）はそのまま `dict` へ、任意
+    ブロックは**空なら null**（鍵ごと消さない——保存済み spec の再投入で形が変わる）。
+    """
+    out: "dict[str, Any]" = {}
+    for field in fields(submission):
+        value = getattr(submission, field.name)
+        if field.default is MISSING and field.default_factory is MISSING:
+            # 必須ブロック（backtest）。空でも鍵と形を保つ。
+            out[field.name] = dict(value)
+        else:
+            out[field.name] = dict(value) if value else None
+    return out
+
+
 class FileJobLedger(JobLedgerPort):
     """``data_root`` 配下にジョブ台帳を持つ :class:`JobLedgerPort` 実装。"""
 
@@ -57,18 +85,7 @@ class FileJobLedger(JobLedgerPort):
         job_dir = self._root / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
         (job_dir / _SPEC_FILE).write_text(
-            json.dumps(
-                {"backtest": dict(submission.backtest),
-                 "sizing": dict(submission.sizing) if submission.sizing else None,
-                 # Phase 6 F-8（P6-E1）: 戦略項目ブロック（backtest/sizing の兄弟）。
-                 # 不在時は null（既定 OFF＝子プロセス側の解釈は byte 等価）。
-                 "strategy": dict(submission.strategy) if submission.strategy else None,
-                 # Phase 8 §18（T-4）: Tester Settings ブロック（第 4 ブロック）。
-                 # 不在時は null＝旧 spec と併存し、子プロセスは現行経路を通る。
-                 "settings": dict(submission.settings) if submission.settings else None},
-                ensure_ascii=False,
-                indent=1,
-            ),
+            json.dumps(_spec_of(submission), ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
         job = SimulationJob.received(job_id)

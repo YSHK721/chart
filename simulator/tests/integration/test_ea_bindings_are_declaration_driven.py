@@ -322,7 +322,12 @@ class TestTheStrategyParametersComeFromTheDeclarations:
 
 
 class TestThePublicSignatureIsUntouched:
-    """3: 事実上の HTTP スキーマ（38 引数）が 1 文字も動いていないこと。"""
+    """3: 事実上の HTTP スキーマ（39 引数）が 1 文字も動いていないこと。
+
+    引数の本数は、ISSUE-508 段階 3 で末尾へ `run_tracer` を足した時点で 38 → 39 に
+    なった（設計書 §6.6.3 が指示する仕様変更への追随であり、既存 38 名の**並びは
+    1 文字も動いていない**）。
+    """
 
     #: 是正前の実測（`inspect.signature(build_interactor).parameters` の並び）。
     _EXPECTED = (
@@ -334,6 +339,9 @@ class TestThePublicSignatureIsUntouched:
         "tick_store_root", "tick_start", "tick_end", "weekly_forecast", "weekly_p_tp",
         "weekly_capital", "weekly_f_risk", "adx_min", "adx_period", "marketdata_window",
         "strategy_decorator", "strategy_override", "position_manager",
+        # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3・是正 F-6）で末尾へ追加。
+        #   仕様変更への追随であり、既存 38 名の並びは 1 文字も動いていない。
+        "run_tracer",
     )
     #: 既定値を持たない引数＝反射側の「必須キー」集合（是正前の実測）。
     _EXPECTED_REQUIRED = frozenset(_EXPECTED[:18])
@@ -373,7 +381,7 @@ class TestThePublicSignatureIsUntouched:
 
         module_name, function_name = derive.split(":")
         function = getattr(importlib.import_module(module_name), function_name)
-        injected_only = {"strategy_decorator", "strategy_override"}
+        injected_only = {"strategy_decorator", "strategy_override", "run_tracer"}
         expected = (
             set(self._EXPECTED)
             if function_name == "allowed_backtest_keys"

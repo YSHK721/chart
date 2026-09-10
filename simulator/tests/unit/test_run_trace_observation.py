@@ -42,6 +42,7 @@ import numpy as np
 import pytest
 
 from simulator.domain.bar import Bar
+from simulator.domain.exceptions import ConfigError
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.evaluation_point import NOT_A_TICK
 from simulator.usecase.models import AccountSpec, SymbolSpec
@@ -67,7 +68,7 @@ _POINT_SIZE = 0.00001
 class _RecordingTracer(RunTracePort):
     """観測口の Spy（記録先）。
 
-    段階 3 の `TraceWindow` はまだ無いので、「どこを残すか」は本 Spy が表現する
+    段階 3 の TraceWindow（`simulator/adapter/trace/trace_window.py`） はまだ無いので、「どこを残すか」は本 Spy が表現する
     （段階 1 の時点では窓を Spy 側で表現してよい）。
 
     評価点の同一性は `(bar_index, tick_ordinal)` で表す。`id(point)` は点が解放された
@@ -85,10 +86,14 @@ class _RecordingTracer(RunTracePort):
         self.rows: "list[tuple]" = []
         #: 観測時点の口座 equity（値洗い済みか＝呼出位置の表明に使う）。
         self.equity_at_observe: "list[float]" = []
-        #: 観測時点の保有玉数（`open_count` 列の供給元）。
+        #: 観測時点の保有玉数（open_count 列の供給元）。
         self.open_counts: "list[int]" = []
+        #: 観測時点の保有量（買い/売り別。`open_volume_*` 列の供給元）。
+        self.open_volumes: "list[tuple]" = []
         #: 観測時点の halt 状態（`halted` 列の供給元）。
         self.halted_flags: "list[bool]" = []
+        #: 渡された口座オブジェクトの同一性（写しを渡す実装を赤にするため・§7.2 条件 9）。
+        self.account_ids: "list[int]" = []
 
     def observe(self, point, account, open_trades, halted):
         self.calls += 1
@@ -97,7 +102,14 @@ class _RecordingTracer(RunTracePort):
         self.rows.append((point.bar_index, point.tick_ordinal))
         self.equity_at_observe.append(account.equity)
         self.open_counts.append(len(open_trades))
+        self.open_volumes.append(
+            (
+                sum(t.position.volume for t in open_trades if t.position.side == "buy"),
+                sum(t.position.volume for t in open_trades if t.position.side == "sell"),
+            )
+        )
         self.halted_flags.append(bool(halted))
+        self.account_ids.append(id(account))
 
 
 class _CountingSchedule:
@@ -261,10 +273,26 @@ def _fixture_halting():
     return {"strategy": _BuyOnce(), "request": _halting_request()}
 
 
+def _fixture_many_ticks_per_bar():
+    """1 バー複数ティック（段階 3 §7.2 通過条件 8）。
+
+    全 fixture が `points_per_bar=1`・`tick_ordinals ⊂ {0, -1}` のままだと、
+    `points.parquet` の主キー `(bar_index, tick_ordinal)` の一意性が `bar_index` だけで
+    成立してしまい、`tick_ordinal` を取り落とす実装が素通りする。材料は同ファイル内の
+    `_NTicksPerBar`（段階 2 の計算量検定が既に使っている）。
+    """
+    return {
+        "strategy": _orders_strategy(),
+        "bar_count": 8,
+        "tick_model": _NTicksPerBar(4),
+    }
+
+
 _FIXTURES = [
     ("plain", _fixture_plain),
     ("empty_tick_bars", _fixture_with_empty_tick_bars),
     ("halting", _fixture_halting),
+    ("many_ticks_per_bar", _fixture_many_ticks_per_bar),
 ]
 
 
@@ -542,6 +570,106 @@ def _tick_points(tick_model, bar, *, pending_lifecycle=False):
     return list(schedule.points(0, bar, prev_close=1.0))
 
 
+class TestTheArgumentsAreBoundOnBothSides(object):
+    """段階 3 §7.2 通過条件 6・7・9 の穴を塞ぐ追加表明。
+
+    既存の表明は「1 件以上あること」（`any(...)`）で測っていたため、次の変異が
+    緑のまま通っていた（設計書 §7.2 の現状欄・実測）:
+
+        条件 6: `halted` を**常に True** で渡す（`any(halted_flags)` は緑のまま）。
+        条件 7: open_count に `+1` バイアスを入れる（`any(n>0)` は緑のまま）。
+        条件 9: `account` の**写し**を渡す（equity 系列の一致だけでは区別できない）。
+    """
+
+    def test_a_run_that_never_halts_reports_false_at_every_point(self):
+        """条件 6 の片側: 「常に True」を赤にする。"""
+        # Arrange / Act
+        _result, tracer, _schedule = _run(**_fixture_plain())
+
+        # Assert
+        assert set(tracer.halted_flags) == {False}, tracer.halted_flags
+        # 正の対照: 観測 0 件なら上は恒真になる。
+        assert tracer.halted_flags, "観測が 0 件（検定が何も測っていない）"
+
+    def test_a_halting_run_reports_both_sides(self):
+        """条件 6 のもう片側: 「常に False」を赤にする。"""
+        # Arrange / Act
+        _result, tracer, _schedule = _run(**_fixture_halting())
+
+        # Assert
+        assert set(tracer.halted_flags) == {False, True}, tracer.halted_flags
+
+    def test_the_open_count_equals_the_volume_carried_by_the_same_list(self):
+        """条件 7: 存在検査ではなく**値**で縛る。
+
+        本 fixture の発注はすべて 1.0 lot・同方向なので、件数と量の総和は常に一致する。
+        `+1` バイアスも、件数を定数で返す実装も赤になる。
+        """
+        # Arrange / Act: 同方向の成行を 3 本積む（反対売買は reverse 決済になり
+        #   保有数が常に 1 のままで、定数を返す実装と区別できない）。
+        _result, tracer, _schedule = _run(
+            strategy=_OrdersPerBar(
+                {0: [_market("buy")], 2: [_market("buy")], 4: [_market("buy")]}
+            ),
+            bar_count=8,
+        )
+
+        # Assert
+        for n, (buy, sell) in zip(tracer.open_counts, tracer.open_volumes):
+            assert buy + sell == pytest.approx(n * 1.0), (n, buy, sell)
+        # 正の対照: 保有数が動かない run では上は恒真になる。
+        assert len(set(tracer.open_counts)) > 1, tracer.open_counts
+
+    def test_the_account_handed_over_is_the_same_object_every_time(self):
+        """条件 9: 「写しでないこと」を主張する検定が写しを実際に検出すること。
+
+        既存の `test_the_account_handed_over_is_the_live_account_of_the_run` は
+        equity 系列との一致だけを見ており、**各点で口座を写して渡す実装**を検出できない
+        （写しでも当該点の equity は一致する）。検定名の主張と検出範囲を一致させるため、
+        同一性そのものを測る表明をここへ足す。
+        """
+        # Arrange / Act
+        _result, tracer, schedule = _run(**_fixture_plain())
+
+        # Assert: 全観測が run の同一の口座実体を受け取っている。
+        assert len(set(tracer.account_ids)) == 1, len(set(tracer.account_ids))
+        # 正の対照: 観測が 1 件以下なら上は恒真になる。
+        assert len(tracer.account_ids) > 1, tracer.account_ids
+        assert len(tracer.account_ids) == len(schedule.produced)
+
+
+class TestTheFixturesCoverIntrabarOrdinals:
+    """§7.2 通過条件 8 の正の対照（`tick_ordinal > 0` の点が実在すること）。"""
+
+    def test_the_many_ticks_fixture_produces_more_than_one_point_per_bar(self):
+        # Arrange / Act
+        _result, tracer, _schedule = _run(**_fixture_many_ticks_per_bar())
+
+        # Assert
+        ordinals = {ordinal for _bar, ordinal in tracer.rows}
+        assert {0, 1, 2, 3} <= ordinals, ordinals
+        # 同一バーに複数点が在る（主キーが bar_index だけでは一意にならない形）。
+        from collections import Counter
+
+        per_bar = Counter(bar for bar, _o in tracer.rows)
+        assert max(per_bar.values()) >= 4, per_bar
+
+    def test_the_other_fixtures_alone_would_not_exercise_the_ordinal(self):
+        """正の対照の対: 旧 fixture 群だけでは序数が {0, -1} に留まること。
+
+        これが無いと、新 fixture を外しても上の検定が消えるだけで、
+        「序数を取り落とす実装が素通りする」状態へ静かに戻る。
+        """
+        # Arrange / Act
+        seen = set()
+        for _name, fixture in _FIXTURES[:3]:
+            _result, tracer, _schedule = _run(**fixture())
+            seen |= {ordinal for _bar, ordinal in tracer.rows}
+
+        # Assert
+        assert seen <= {0, NOT_A_TICK}, seen
+
+
 class TestTheEvaluationPointCarriesTheRealTickTime:
     """実ティック経路の点が、そのティック固有の実時刻を運ぶこと。"""
 
@@ -691,3 +819,56 @@ class TestTheTickScheduleIssuesOnePointPerTick:
 
         # Assert
         assert len({p.tick_time for p in points}) == 12
+
+
+# ---- §7.0: 観測の例外はエンジンが握らない（工程 5 レビュー 🟡-A） ----
+
+class _RaisingTracer(RunTracePort):
+    """観測で契約違反の例外を送出する具象（§7.0 の「呼出側の契約違反」を模す）。
+
+    実装の義務は「**運用上の失敗**で送出しないこと」であり、受理集合外の時刻など
+    呼出側の契約違反は送出してよい／すべきである（設計書 §7.0 の射程限定）。
+    エンジンが握ると、時刻の壊れたトレースが静かに出る。
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def observe(self, point, account, open_trades, halted):
+        self.calls += 1
+        raise ConfigError(
+            "観測が受理できない時刻表現を受け取った（検定用の契約違反）",
+            context={"bar_index": point.bar_index},
+        )
+
+
+class TestTheEngineDoesNotSwallowAnObservationFailure:
+    """エンジンが `observe` の例外を握らないこと（§7.0 の裁定）。
+
+    宣言だけでは、呼出点を `try` / `except Exception: pass` で包む変異が緑のまま通る
+    （実測: trace 関連・段階 1/2 の 209 件で緑）。握れば「記録が欠けても誰も気づけない」
+    ——設計書が却下した案そのものになる。構造ではなく**振る舞い**で固定する。
+    """
+
+    def test_the_exception_reaches_the_caller(self):
+        # Arrange
+        tracer = _RaisingTracer()
+
+        # Act / Assert: run の呼出側まで伝播する。
+        with pytest.raises(ConfigError):
+            _run(tracer=tracer, **_fixture_plain())
+
+        # 正の対照: 観測が 1 度も起きていなければ、この表明は何も測っていない。
+        assert tracer.calls > 0, "観測が発行されていない（検定が空振り）"
+
+    def test_a_healthy_tracer_still_completes_the_run(self):
+        """対の正の対照: 例外を出さない具象なら run は完走する。
+
+        これが無いと「そもそも常に落ちる構成」でも上の表明が緑になる。
+        """
+        # Arrange / Act
+        result, tracer, schedule = _run(**_fixture_plain())
+
+        # Assert
+        assert result is not None
+        assert tracer.calls == len(schedule.produced) > 0

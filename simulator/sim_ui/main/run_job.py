@@ -60,6 +60,10 @@ _FAILURE_FILE = "failure.json"
 # 理由がどこにも残らない（stderr は起動器が DEVNULL に固定している
 # ＝`adapter/subprocess_job_launcher.py:75-76`）。
 _REPORT_PAYLOAD_ERROR_FILE = "report_payload_error.json"
+# 実行トレース（ISSUE-508 段階 3・§6.5.3）の書出し失敗の置き場。**`failure.json` とは
+# 別にする**: run 自体は成功しており、同じファイルへ書くと「失敗した run」と区別できなくなる。
+# 終了コードも変えない（観測の失敗で成功した計算を捨てない・`report.json` と同じ扱い）。
+_TRACE_ERROR_FILE = "trace_error.json"
 
 
 def _write_note(job_dir: Path, filename: str, payload: "dict[str, str]") -> None:
@@ -81,6 +85,76 @@ def _record_failure(job_dir: Path, reason: str) -> None:
 def _record_report_payload_error(job_dir: Path, message: str) -> None:
     """表示用ペイロードの書出し失敗を job-dir へ残す（run の成否は変えない）。"""
     _write_note(job_dir, _REPORT_PAYLOAD_ERROR_FILE, {"message": message})
+
+
+def _record_trace_error(job_dir: Path, message: str) -> None:
+    """実行トレースの書出し失敗を job-dir へ残す（run の成否は変えない・§6.5.3）。"""
+    _write_note(job_dir, _TRACE_ERROR_FILE, {"message": message})
+
+
+def _build_run_tracer(spec: "dict[str, Any]") -> Any:
+    """spec.trace から実行トレースの観測口を組む（ISSUE-508 段階 3・E-2 の `run_tracer`）。
+
+    Group（`simulator.adapter.trace`）へは**この関数の中でだけ**依存する（是正 D-5）。
+    module 直下 import に足すと、トレース OFF の全ジョブが parquet 実装を読み込み、
+    「OFF の経路が実装の import に巻き込まれないようにする」既存の隔離（:108-109）が
+    黙って壊れる。sizing / strategy / position_manager と同一の様式である。
+
+    窓の解釈（epoch 正規化・半開・`start > end` の拒否）は `TraceWindow` が唯一持つ。
+    ここで既定値を置かない——窓を取り落とした run が黙って全期間を記録する形にしない。
+    """
+    from simulator.adapter.trace.columnar_run_trace import ColumnarRunTrace
+    from simulator.adapter.trace.trace_window import TraceWindow
+
+    block = spec.get("trace") or {}
+    return ColumnarRunTrace(TraceWindow.of(block.get("start"), block.get("end")))
+
+
+def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> None:
+    """実行トレースを job-dir へ書く。**run の成否は変えない**（§6.5.3）。
+
+    呼出点は `main()` のただ 1 箇所である（現行経路と settings 経路で書き写さない）。
+
+    ``run_kwargs``: **その run が実際に `build_interactor` へ渡した引数**（§6.5.2.1）。
+      `spec["backtest"]` ではない——`marketdata_window` の供給元は経路で異なるからである:
+
+        現行経路（settings 不在）: `backtest` ブロック。
+        settings 経路          : `.ini` の `FromDate`/`ToDate` →
+                                 `simulator/main/tester_settings/window.py` の窓境界解決 →
+                                 写像層が `marketdata_window` を導く（実測: 窓ありで
+                                 `(2025-01-06, 2025-01-11)`・同じ run の `backtest`
+                                 ブロックは `None`）。
+
+      `spec["backtest"]` を無条件に読むと、**`.ini` で期間を絞った run ほど食い違いが
+      大きいのに、まさにその run が「窓なし・比較可能」と偽って申告する**。§6.5.2 が
+      段階 3 に課した義務は「隠さないこと」ただ 1 つであり、その不履行になる。
+      同じファイルの `_write_report_payload` が settings 経路で `run_kwargs` を渡して
+      いるのと同一の形にそろえる（表示用の足も同じ理由で `backtest` から取り直さない）。
+
+    指標 registry は `build_ea_indicators(**run_kwargs)` から組んで **Callable で注入**する
+    （是正 D-4・先例 `_supply_contacts`）——interactor._indicators への到達は
+    ISSUE-395/398・ISSUE-405 で 2 度是正済みのカプセル化破りと同型であり、
+    エンジン（`simulator/usecase/run_backtest.py`）へプロパティを新設する案は責務分割ゲート
+    （`test_run_backtest_responsibility_split.py:275-284` のメソッド集合 8 固定）が赤にする。
+    """
+    from simulator.main import build_ea_indicators
+    from simulator.sim_ui.adapter import trace_writer
+
+    backtest = run_kwargs or {}
+    try:
+        trace_writer.write(
+            job_dir,
+            tracer,
+            # `job_dir.name` は台帳の採番規則そのものである。writer に読み直させると
+            #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
+            job_id=job_dir.name,
+            indicators_supply=lambda: build_ea_indicators(**backtest),
+            marketdata_window=backtest.get("marketdata_window"),
+        )
+    except Exception as exc:  # 観測の失敗で成功した計算を捨てない
+        message = f"実行トレースの書出しに失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _record_trace_error(job_dir, message)
 
 
 class _VolumeConstraints:
@@ -329,7 +403,7 @@ def _write_report_payload(job_dir: Path, result: Any, *, load_run_inputs, contac
 
 def _run_with_settings(
     job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]"
-) -> int:
+) -> "tuple[int, dict[str, Any] | None]":
     """Tester Settings 経路（Phase 8 §18.3「実行」）。
 
     `.ini` の生トークン → `TesterSettings` → `EffectiveSettings` → `run_settings_job`（T-1）。
@@ -338,6 +412,12 @@ def _run_with_settings(
     終了コードの翻訳は `exit_codes.exit_code_for`（唯一の宣言場所）で行い、**文言は
     `failure.json` に残す**。翻訳を実行 facade の中で行うと理由が終了コードへ潰れ、
     運用者には「なぜ落ちたか」が届かない（起動器は stderr を捨てる）。
+
+    戻り値が `(終了コード, 実効 kwargs)` である理由（ISSUE-508 §6.5.2.1）: 本経路の
+    `marketdata_window` は `.ini` の `FromDate`/`ToDate` 由来であり、`spec["backtest"]`
+    には**現れない**。トレースの窓の申告をその run の事実に合わせるには、ここで組んだ
+    実効 kwargs を書出し点へ渡すしかない（`main()` で組み直すと写像が 2 箇所になる）。
+    実行に失敗した run では `None`（そのとき書出しも行われない）。
     """
     from simulator.domain.exceptions import BacktestError
     from simulator.framework.tester_settings import tester_settings_from_mapping
@@ -356,7 +436,7 @@ def _run_with_settings(
         message = f"Tester Settings の解釈に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR
+        return _EXIT_SPEC_ERROR, None
 
     try:
         exit_code, result, _metadata = run_settings_job(
@@ -366,13 +446,14 @@ def _run_with_settings(
         message = f"Tester Settings からの実行に失敗しました: {error}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return exit_code_for(error)
+        return exit_code_for(error), None
     except Exception as exc:  # 内部例外を呼出側へ生で漏らさない
         message = f"バックテストの実行に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR
+        return _EXIT_SPEC_ERROR, None
 
+    run_kwargs: "dict[str, Any] | None" = None
     if exit_code == 0 and result is not None:
         # 表示用の足は **settings 経路で実際に使われた投入引数**から取り直す。`backtest`
         # ブロックから取り直すと、`.ini` の期間窓が効いていない全期間の足が「今の結果の足」
@@ -383,7 +464,7 @@ def _run_with_settings(
             load_run_inputs=lambda _backtest: _load_run_inputs(run_kwargs),
             contacts_supply=lambda bars, _backtest: _supply_contacts(bars, run_kwargs),
         )
-    return exit_code
+    return exit_code, run_kwargs
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -449,30 +530,61 @@ def main(argv: "list[str] | None" = None) -> int:
         if pm is not None:
             extensions["position_manager"] = pm
 
+    # 実行トレース（ISSUE-508 段階 3・§6.6）: trace present かつ enabled のときだけ
+    # 観測口を組んで渡す。不在/OFF は渡さない（引数の不在で既存挙動 byte 等価）。
+    # 窓の指定が不正なら **run を始めない**——「窓を間違えたのに 0 行で成功する run」を
+    # 作らないため、実行前の仕様エラーとして落とす（§7）。
+    tracer: Any = None
+    if (spec.get("trace") or {}).get("enabled", False):
+        try:
+            tracer = _build_run_tracer(spec)
+        except Exception as exc:
+            message = f"実行トレースの構築に失敗しました: {exc}"
+            print(message, file=sys.stderr)
+            _record_failure(job_dir, message)
+            return _EXIT_SPEC_ERROR
+        extensions["run_tracer"] = tracer
+
     # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
     # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への
     # 引数も出力段も変えていない＝旧 spec の `stats.json` は byte 等価
     # （`tests/integration/test_run_job_settings.py` の直接実行との突合で固定）。
+    #
+    # **どちらの分岐も戻り値で受ける**（早期 return しない）。トレースの書出し点を
+    # 分岐ごとに写すと、`_write_report_payload` が 2 箇所から呼ばれている形が増える
+    # ——片方だけ改訂される複製を新しく作らない（§6.5.1）。
     if spec.get("settings"):
-        return _run_with_settings(job_dir, spec, extensions)
+        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions)
+    else:
+        meta.update(extensions)
+        # 現行経路が `build_interactor` へ渡す引数は `meta` そのものである
+        #   （`run_backtest(output_dir=..., **meta)`）。窓の申告はここから採る（§6.5.2.1）。
+        run_kwargs = meta
+        try:
+            exit_code, _result = run_backtest(output_dir=job_dir, **meta)
+        except Exception as exc:  # 内部例外を呼び出し側へ生で漏らさない
+            message = f"バックテストの実行に失敗しました: {exc}"
+            print(message, file=sys.stderr)
+            _record_failure(job_dir, message)
+            return _EXIT_SPEC_ERROR
 
-    meta.update(extensions)
-    try:
-        exit_code, _result = run_backtest(output_dir=job_dir, **meta)
-    except Exception as exc:  # 内部例外を呼び出し側へ生で漏らさない
-        message = f"バックテストの実行に失敗しました: {exc}"
-        print(message, file=sys.stderr)
-        _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR
+        # 表示用ペイロード（report.json）は**成功 run のときだけ**書く。失敗 run の結果を
+        # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
+        if exit_code == 0 and _result is not None:
+            _write_report_payload(
+                job_dir, _result,
+                load_run_inputs=_load_run_inputs,
+                contacts_supply=_supply_contacts,
+            )
 
-    # 表示用ペイロード（report.json）は**成功 run のときだけ**書く。失敗 run の結果を
-    # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
-    if exit_code == 0 and _result is not None:
-        _write_report_payload(
-            job_dir, _result,
-            load_run_inputs=_load_run_inputs,
-            contacts_supply=_supply_contacts,
-        )
+    # 実行トレースの書出し（**唯一の呼出点**）。§12.7 不変: run 完了後に書き出す
+    # （実行中の部分結果を出さない）。成功 run のときだけ書く——失敗 run の途中経過を
+    # 成果物として出すと、壊れた run の記録が「その run の事実」に見える。
+    # 渡すのは spec ではなく**その run が実際に使った引数**である（§6.5.2.1）。
+    #   `spec["backtest"]` を読むと、`.ini` で期間を絞った settings run が
+    #   「窓なし・比較可能」と偽って申告する（窓を絞った run ほど食い違いが大きい）。
+    if tracer is not None and exit_code == 0:
+        _write_trace(job_dir, tracer, run_kwargs)
     return exit_code
 
 

@@ -243,3 +243,87 @@ def test_SL不在のfail_stop理由が実プロセス経由で台帳へ届く(tm
     assert view.status == JobStatus.FAILED.value, f"無音で終わっている: {view.status}"
     assert view.failure_reason, "失敗理由が空"
     assert "SL" in view.failure_reason, f"理由に SL の旨が無い: {view.failure_reason!r}"
+
+
+# ---- 受付検査（trace の期間）が実 Composition Root から届いていること（ISSUE-508 §6.4）----
+
+#: `required_backtest_keys()` を満たす最小の実行仕様（値は本検定では使わない）。
+_TRACE_PROBE_BACKTEST = {
+    "data_path": "/nonexistent/probe.csv", "symbol": "EURUSD", "period": "M1",
+    "ea_name": "TC24051901", "initial_deposit": 100_000.0, "contract_size": 1.0,
+    "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01, "stops_level": 0,
+    "digits": 5, "point_size": 0.0001, "leverage": 100.0, "ma_period": 2,
+    "ma_method": "sma", "lot_size": 1.0, "stop_loss_points": 100,
+    "take_profit_points": 200,
+}
+_TRACE_PROBE_EPOCH = 1_704_067_200
+
+
+def _submit_through_the_real_root(app, monkeypatch, trace: dict):
+    """実 Composition Root の受付面へ本文を通す（子プロセスの起動だけ止める）。
+
+    `app.launcher` は投入 Interactor が保持している**同じ実体**なので、
+    その起動メソッドを差し替えれば起動だけが止まり、受付検証・台帳・状態遷移は
+    すべて実物のまま通る（フェイクの合成根を組み直すと、まさに検査したい
+    「本番の結線」が検査対象から外れる）。
+    """
+    monkeypatch.setattr(app.launcher, "launch", lambda job_id: None)
+    body = {"backtest": dict(_TRACE_PROBE_BACKTEST), "trace": trace}
+    return app.controller.submit(json.dumps(body).encode("utf-8"))
+
+
+def test_実合成根から実行トレースの期間検査が届いている(tmp_path: Path, monkeypatch) -> None:
+    """`trace_window_check` の注入が本番の合成根で結線されていること。
+
+    なぜ必要か（実測した壊れ方）: `simulator/sim_ui/main/composition_root_jobs.py` と
+    `simulator/sim_ui/framework/serve_sim_jobs.py` のどちらか一方で注入を `None` にしても
+    **sim_ui の全検定が緑のまま**だった。結線が切れると受付段（`simulator/sim_ui/
+    usecase/submit_job.py`）は trace ON の
+    投入を**すべて拒否**し、機能が完全に死ぬ。§6.6.1 の結線ゲートは body / ledger /
+    spec の 3 ホップだけを見ており、この注入ホップを見ていない。
+
+    **受理側と拒否側を必ず対にする**: 拒否側だけを測ると「何を投入しても 400」を
+    返す構成（＝結線が切れた状態）が緑のまま通る。受理側が正の対照である。
+    """
+    # Arrange
+    app = build_sim_job_app(repo_root=tmp_path, web_dir=tmp_path / "web",
+                            data_root=tmp_path / "jobs")
+
+    # Act: 正しい窓の trace ON 投入。
+    accepted = _submit_through_the_real_root(
+        app, monkeypatch,
+        {"enabled": True, "start": _TRACE_PROBE_EPOCH, "end": _TRACE_PROBE_EPOCH + 3600},
+    )
+
+    # Assert: 受理される（結線が切れていればここが 400 になる）。
+    assert accepted.status == 202, accepted.payload
+    # 台帳に trace ブロックが届いている（受理が形だけでないことの実証）。
+    spec = json.loads(
+        (app.ledger.job_dir(accepted.payload["job_id"]) / "spec.json").read_text("utf-8")
+    )
+    assert spec["trace"] == {
+        "enabled": True, "start": _TRACE_PROBE_EPOCH, "end": _TRACE_PROBE_EPOCH + 3600
+    }
+
+
+def test_実合成根が逆転した記録期間を期間の誤りとして拒む(tmp_path: Path, monkeypatch) -> None:
+    """拒否側。**理由まで縛る**ことで「結線が切れて全部拒否」と区別する。
+
+    結線が切れた構成も 400 を返すため、状態コードだけでは両者を判別できない。
+    文言が「期間を解釈できない」ことを述べていれば、検査が実際に走った証拠になる。
+    """
+    # Arrange
+    app = build_sim_job_app(repo_root=tmp_path, web_dir=tmp_path / "web",
+                            data_root=tmp_path / "jobs")
+
+    # Act: 開始が終了より後。
+    refused = _submit_through_the_real_root(
+        app, monkeypatch,
+        {"enabled": True, "start": _TRACE_PROBE_EPOCH + 3600, "end": _TRACE_PROBE_EPOCH},
+    )
+
+    # Assert
+    assert refused.status == 400
+    message = refused.payload["error"]
+    assert "trace の記録期間を解釈できません" in message, message
+    assert "結線されていません" not in message, message

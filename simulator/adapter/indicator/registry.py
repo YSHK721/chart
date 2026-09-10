@@ -16,19 +16,35 @@ from typing import Any
 import pandas as pd
 
 from simulator.domain.exceptions import IndicatorBufferError, IndicatorNaNError
+from simulator.usecase.indicator_catalog_ports import IndicatorSeriesNamesPort
 from simulator.usecase.ports import IndicatorPort
 
 
-class PandasIndicatorRegistry(IndicatorPort):
-    """名前→pandas.Series の事前計算系列を保持する IndicatorPort 実装。"""
+class PandasIndicatorRegistry(IndicatorPort, IndicatorSeriesNamesPort):
+    """名前→pandas.Series の事前計算系列を保持する IndicatorPort 実装。
+
+    `IndicatorSeriesNamesPort`（RUN_TRACE_BASIC_DESIGN §6.3）も実装する: 「登録系列を
+    列挙できる」は実行に必要な契約ではないため別 Port だが、供給の実体は同じである。
+    """
 
     def __init__(self, series: dict[str, pd.Series]) -> None:
         self._series = dict(series)
 
+    def names(self) -> "tuple[str, ...]":
+        """登録系列名を**登録順**で返す（`IndicatorSeriesNamesPort`）。
+
+        `sorted` にしない: トレースの列順は registry の宣言順であり、名前の綴りが
+        列の位置を決めるのではない。``dict`` は挿入順を保つ（言語仕様）ので、
+        構築時に渡された順がそのまま出る。
+        """
+        return tuple(self._series)
+
     def get(self, name: str) -> Any:
         if name not in self._series:
             raise IndicatorBufferError(
-                "未登録の指標参照", context={"name": name, "available": list(self._series)}
+                # 一覧を作る規則は `names()` ただ 1 つ（設計書 実測 9 の是正）。
+                # ここで `list(self._series)` と書き直すと同じ規則の 2 つ目の実装になる。
+                "未登録の指標参照", context={"name": name, "available": list(self.names())}
             )
         series = self._series[name]
         self._raise_if_invalid_nan(name, series)

@@ -56,6 +56,9 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     # Phase 7（依頼者承認済み）で追加された建玉変更（トレーリング/部分決済）の適用器の
     # 差し込み口。同じく探索対象スカラーではないが、実シグネチャ一致規約に従い列挙する。
     "position_manager",
+    # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3）で追加された実行トレースの
+    # 観測口の差し込み口。同じく探索対象スカラーではないが、実シグネチャ一致規約に従う。
+    "run_tracer",
 })
 
 

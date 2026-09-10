@@ -279,3 +279,129 @@ def test_Model3はデータ非供給で完走し建玉0になる(tmp_path: Path)
 
     assert stats["initial_deposit"] == INERT_DEPOSIT
     assert stats["initial_deposit"] != _backtest()["initial_deposit"]
+
+
+# ---- 実行トレース（ISSUE-508 段階 3・§6.5.1）: settings 経路でも書き出されること ----
+
+def test_settings経路でも実行トレースが書き出される(tmp_path: Path) -> None:
+    """trace ON の settings run が成果物 3 本を残すこと。
+
+    なぜここに置くか: 構造の固定（書出し点が 1 箇所・settings 分岐がそこを飛び越えない）は
+    `test_run_job_trace.py` が構文木で行うが、**`run_settings_job(extensions=...)` が
+    `run_tracer` を Composition Root（`simulator/main/__init__.py`）まで運ぶか**は
+    写像層を経由するため構文木からは
+    分からない。実際に走らせて成果物で測る。本ファイルの autouse fixture（JP225 実体の
+    差し替え）が要るので、fixture を写さずに済む本ファイルへ置く。
+
+    これが無いと「現行経路だけトレースが出て settings 経路では無言で出ない」状態のまま
+    緑になる（ISSUE-291 と同型の無言の欠落）。
+    """
+    # Arrange
+    import pandas as pd
+
+    from simulator.sim_ui.adapter import trace_writer
+
+    job_dir = tmp_path / "settings_trace"
+    job_dir.mkdir()
+    (job_dir / "spec.json").write_text(
+        json.dumps(
+            {
+                "backtest": _backtest(), "sizing": None, "strategy": None,
+                "settings": {"tester": _tester(), "inputs": []},
+                "trace": {"enabled": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # Act
+    code = run_job.main(["--job-dir", str(job_dir)])
+
+    # Assert: run が成功し、書出しの失敗記録が残っていない。
+    assert code == 0, _reason(job_dir)
+    assert not (job_dir / run_job._TRACE_ERROR_FILE).exists()
+    for name in (
+        trace_writer.POINTS_FILENAME,
+        trace_writer.INDICATORS_FILENAME,
+        trace_writer.META_FILENAME,
+    ):
+        assert (job_dir / name).is_file(), name
+
+    points = pd.read_parquet(job_dir / trace_writer.POINTS_FILENAME)
+    meta = json.loads(
+        (job_dir / trace_writer.META_FILENAME).read_text(encoding="utf-8")
+    )
+    assert meta["rows"]["points"] == len(points)
+    assert meta["job_id"] == job_dir.name
+    # 正の対照: 0 行なら「書けた」以外の何も測れていない。
+    assert len(points) > 0, "settings 経路の trace_points.parquet が 0 行"
+
+
+def _trace_job(tmp_path: Path, name: str, *, tester: dict) -> Path:
+    """trace ON の settings ジョブを組む（`_job` は trace ブロックを持たないため別に組む）。"""
+    job_dir = tmp_path / name
+    job_dir.mkdir()
+    (job_dir / "spec.json").write_text(
+        json.dumps(
+            {
+                "backtest": _backtest(), "sizing": None, "strategy": None,
+                "settings": {"tester": tester, "inputs": []},
+                "trace": {"enabled": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return job_dir
+
+
+def _trace_meta(job_dir: Path) -> dict:
+    from simulator.sim_ui.adapter import trace_writer
+
+    return json.loads(
+        (job_dir / trace_writer.META_FILENAME).read_text(encoding="utf-8")
+    )
+
+
+def test_settings経路の窓の申告は実効kwargsから採る(tmp_path: Path) -> None:
+    """§6.5.2.1: `.ini` で期間を絞った run は `marketdata_window: true` と申告する。
+
+    是正前は `spec["backtest"]` を無条件に読んでいた。窓の供給元は経路で異なり
+    （現行経路＝`backtest` ブロック／settings 経路＝`.ini` の `FromDate`/`ToDate` →
+    `simulator/main/tester_settings/window.py` の窓境界解決 →
+    `simulator/main/tester_settings/kwargs_mapper.py` の名前一致導出）、front が送る 11 キーに
+    `marketdata_window` は含まれない。したがって**窓を絞った settings run ほど
+    食い違いが大きいのに、まさにその run が「比較可能」と名乗っていた**。
+
+    §6.5.2 が段階 3 に課した義務は「隠さないこと」ただ 1 つであり、その仕組みが
+    settings 経路で機能していなければ義務の不履行である（ISSUE-509 は「範囲外・
+    ただし隠すな」と裁定されている）。
+
+    **両側で縛る**: 窓ありは true、窓なしは false。片側だけだと「settings 経路なら
+    常に true」と書く実装が通り、申告が実際の窓を追わなくなる。
+    """
+    # Arrange: `Dates` を外し custom range にする（規則 E・既存検定と同じ形）。
+    from simulator.tests.unit.tester_settings_synthetic import OMIT
+
+    windowed = _trace_job(
+        tmp_path, "trace_window",
+        tester=_tester(Dates=OMIT, FromDate="2025.01.06", ToDate="2025.01.10"),
+    )
+    whole = _trace_job(tmp_path, "trace_whole", tester=_tester())
+
+    # Act
+    assert run_job.main(["--job-dir", str(windowed)]) == 0, _reason(windowed)
+    assert run_job.main(["--job-dir", str(whole)]) == 0, _reason(whole)
+
+    # Assert: 窓を絞った run は「窓あり＝指標の bar_index と突き合わせられない」と申告する。
+    assert _trace_meta(windowed)["marketdata_window"] is True
+    assert _trace_meta(windowed)["indicator_bar_index_is_comparable"] is False
+    # もう片側: 窓を絞っていない run は従来どおり「窓なし」と申告する。
+    assert _trace_meta(whole)["marketdata_window"] is False
+    assert _trace_meta(whole)["indicator_bar_index_is_comparable"] is True
+    # 正の対照: どちらの run も実際に記録している（0 行なら申告だけ見て中身が無い）。
+    assert _trace_meta(windowed)["rows"]["points"] > 0
+    assert _trace_meta(whole)["rows"]["points"] > 0
+    # 正の対照: 窓が実際に効いている（記録量が違う）。同じなら「窓あり」の申告が空証明。
+    assert _trace_meta(windowed)["rows"]["points"] < _trace_meta(whole)["rows"]["points"]

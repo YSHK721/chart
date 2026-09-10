@@ -66,6 +66,10 @@ class JobApiController:
             # Phase 8 §18（T-4）: Tester Settings ブロック（第 4 ブロック）。不在は None
             # ＝旧 spec と併存し、現行経路は byte 等価のまま。
             settings=body.get("settings"),
+            # ISSUE-508 段階 3（§6.6）: 実行トレースのブロック（第 5 ブロック）。不在は
+            # None＝旧 spec と併存し、現行経路は byte 等価のまま。境界は epoch 秒の整数
+            # であり、ここでは**翻訳しない**（受付検証は usecase が担う）。
+            trace=body.get("trace"),
         )
         try:
             view = self._submit.execute(submission)

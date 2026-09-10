@@ -100,6 +100,7 @@ class SimJobApp(SimApp):
         required_backtest_keys: Any,
         settings_validator: Any = None,
         ea_subject: Any = None,
+        trace_window_check: Any = None,
     ) -> None:
         super().__init__(web_dir=web_dir, shared_js_root=shared_js_root)
         self.ledger = ledger
@@ -119,6 +120,9 @@ class SimJobApp(SimApp):
                 # 既定 None は「settings 経路を結線しない構成」（既存の呼出はそのまま動く）。
                 settings_validator=settings_validator,
                 ea_subject=ea_subject,
+                # ISSUE-508 段階 3 §6.4: trace ブロック（第 5 ブロック）の期間検査。
+                # 既定 None は「トレース経路を結線しない構成」（既存の呼出はそのまま動く）。
+                trace_window_check=trace_window_check,
             ),
             query=query,
             cancel=CancelJobInteractor(ledger=ledger, launcher=launcher),
