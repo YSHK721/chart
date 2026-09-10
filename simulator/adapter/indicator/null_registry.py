@@ -23,11 +23,20 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.exceptions import IndicatorBufferError
+from simulator.usecase.indicator_catalog_ports import IndicatorSeriesNamesPort
 from simulator.usecase.ports import IndicatorPort
 
 
-class NullIndicatorRegistry(IndicatorPort):
+class NullIndicatorRegistry(IndicatorPort, IndicatorSeriesNamesPort):
     """指標系列を 1 本も持たない registry（LSP: 空の `PandasIndicatorRegistry` と同挙動）。"""
+
+    def names(self) -> "tuple[str, ...]":
+        """空タプル（`IndicatorSeriesNamesPort`）。
+
+        ``None`` を返さない——「系列を 1 本も持たない」と「列挙できない」を値で
+        区別できなくなる（後者は §7 で明示エラーと定めた別の事象である）。
+        """
+        return ()
 
     def get(self, name: str) -> Any:
         """常に `IndicatorBufferError`（未登録参照）。
@@ -37,7 +46,8 @@ class NullIndicatorRegistry(IndicatorPort):
         沈黙させない——値が無いことを値で表すと、参照側が「0 の系列」と誤解する。
         """
         raise IndicatorBufferError(
-            "未登録の指標参照", context={"name": name, "available": []}
+            # 一覧を作る規則は `names()` ただ 1 つ（設計書 実測 9 の是正）。
+            "未登録の指標参照", context={"name": name, "available": list(self.names())}
         )
 
     def update(self, bar_index: int) -> None:

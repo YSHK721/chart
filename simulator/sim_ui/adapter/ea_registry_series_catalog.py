@@ -15,21 +15,24 @@ simulator/main/ea_bindings（EA ごとの宣言モジュールを登録した宣
 探索用データセットの用意は :class:`EaBuildProbe`（同 adapter）が持つ。SL 設定カタログと
 同じ段であり、ここに書くと 2 箇所に写る。
 
-系列名の取り出しは `IndicatorPort` の**公開されたエラー契約**を使う。未登録名を `get` すると
-`IndicatorBufferError` が ``context={"name": ..., "available": [...]}`` を伴って送出される。
-私有属性（``_series``）を覗かずに済む。
+系列名の取り出しは `names()`（宣言は `simulator/usecase/indicator_catalog_ports.py`・
+RUN_TRACE_BASIC_DESIGN §6.3）へ委譲する。是正前は未登録名を get して
+IndicatorBufferError（`simulator/domain/exceptions.py`）を組み立て、その ``context["available"]`` を読んで例外を
+捨てていた——**名前を列挙するために例外を 1 つ作って捨てる**形であり、同じ一覧を作る規則の
+第 2 実装でもあった（設計書 実測 9）。出力（系列名の集合）は正しいままなので状態検証では
+原理的に落ちない種類の無駄である（`simulator/tests/unit/test_indicator_series_names.py`
+の計算量検定が発行 0 を機械的に固定する）。
+
+既存 `IndicatorSeriesCatalogPort`（`series_for(ea_name)`）は残す: ea_name → registry という
+**別の問い**であり、`names()` はその registry に対する問いだからである。
 
 fail-safe: 探索に失敗したら空集合を返す（＝sizing 不可として受付時に拒否される）。
 黙って通して誤った発注量で走らせるより、拒否して気付かせる。
 """
 from __future__ import annotations
 
-from typing import Any
-
 from simulator.sim_ui.adapter.ea_build_probe import EaBuildProbe
 from simulator.sim_ui.usecase.job_ports import IndicatorSeriesCatalogPort
-
-_PROBE_NAME = "__sim_ui_probe_missing_series__"
 
 
 class EaRegistrySeriesCatalog(IndicatorSeriesCatalogPort):
@@ -49,19 +52,8 @@ class EaRegistrySeriesCatalog(IndicatorSeriesCatalogPort):
         if ea_name in self._cache:
             return self._cache[ea_name]
         try:
-            series = _series_names(self._probe.for_ea(ea_name))
+            series = frozenset(self._probe.for_ea(ea_name).names())
         except Exception:
             series = frozenset()
         self._cache[ea_name] = series
         return series
-
-
-def _series_names(registry: Any) -> "frozenset[str]":
-    """registry の登録系列名を公開エラー契約（`available`）から取り出す。"""
-    from simulator.domain.exceptions import IndicatorBufferError
-
-    try:
-        registry.get(_PROBE_NAME)
-    except IndicatorBufferError as exc:
-        return frozenset(exc.context.get("available", ()))
-    raise RuntimeError("未登録系列の参照が IndicatorBufferError にならなかった")

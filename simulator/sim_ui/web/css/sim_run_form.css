@@ -66,6 +66,7 @@
 #simTesterPanel,
 #simEaInputsPanel,
 #simSchemaFallbackPanel,
+#simTracePanel,
 #simRunActionPanel {
   flex: 0 0 auto;
   min-height: 0;
@@ -231,7 +232,8 @@
  * ダーク地で視認性を直せない（実測）。自前カレンダー（sim_date_picker_view.js）を
  * 参照デザインに合わせて描く。色は :root 変数だけ（参照画像の青い選択色は本アプリの
  * 強調色 --accent へ写像する。ここに hex を書くと配色が 2 箇所になる）。 */
-#simTesterPanel .tester-date-wrap {
+#simTesterPanel .tester-date-wrap,
+#simTracePanel .trace-date-wrap {
   position: relative;    /* カレンダーの absolute フォールバックの座標基準 */
   display: flex;
   align-items: center;
@@ -252,7 +254,8 @@
   border: 0;
   background: transparent;
 }
-#simTesterPanel .tester-cal-btn {
+#simTesterPanel .tester-cal-btn,
+#simTracePanel .trace-cal-btn {
   flex: 0 0 auto;
   padding: 0 6px;
   height: 100%;
@@ -262,8 +265,10 @@
   cursor: pointer;
   font: inherit;
 }
-#simTesterPanel .tester-cal-btn:hover { color: var(--fg); }
-#simTesterPanel .cal-pop {
+#simTesterPanel .tester-cal-btn:hover,
+#simTracePanel .trace-cal-btn:hover { color: var(--fg); }
+#simTesterPanel .cal-pop,
+#simTracePanel .cal-pop {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;                           /* 座標基準は日付箱（実ブラウザでは fixed 実測配置） */
@@ -276,18 +281,21 @@
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, .55);   /* 影は移植元 style.css:167 と同形 */
 }
-#simTesterPanel .cal-head {
+#simTesterPanel .cal-head,
+#simTracePanel .cal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
 }
-#simTesterPanel .cal-title {
+#simTesterPanel .cal-title,
+#simTracePanel .cal-title {
   color: var(--fg);
   font-size: 13px;
   font-weight: 600;
 }
-#simTesterPanel .cal-nav {
+#simTesterPanel .cal-nav,
+#simTracePanel .cal-nav {
   width: 24px;
   height: 24px;
   padding: 0;
@@ -300,18 +308,22 @@
 }
 #simTesterPanel .cal-nav:hover { color: var(--fg); }
 #simTesterPanel .cal-week,
-#simTesterPanel .cal-grid {
+#simTracePanel .cal-week,
+#simTesterPanel .cal-grid,
+#simTracePanel .cal-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 3px;
 }
-#simTesterPanel .cal-weekday {
+#simTesterPanel .cal-weekday,
+#simTracePanel .cal-weekday {
   text-align: center;
   color: var(--muted);
   font-size: 11px;
   padding: 2px 0 4px;
 }
-#simTesterPanel .cal-day {
+#simTesterPanel .cal-day,
+#simTracePanel .cal-day {
   height: 26px;
   padding: 0;
   border: 1px solid transparent;
@@ -323,11 +335,13 @@
   font-size: 12px;
 }
 #simTesterPanel .cal-day:hover { border-color: var(--accent); }
-#simTesterPanel .cal-day.cal-out {
+#simTesterPanel .cal-day.cal-out,
+#simTracePanel .cal-day.cal-out {
   background: transparent;
   color: var(--muted);
 }
-#simTesterPanel .cal-day.cal-sel {
+#simTesterPanel .cal-day.cal-sel,
+#simTracePanel .cal-day.cal-sel {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
@@ -397,6 +411,46 @@
 #simTesterPanel .tester-unsupported-line[data-active="1"] {
   border-left: 2px solid var(--accent);
   color: var(--fg);
+}
+
+/* --- 実行トレースの指定面（ISSUE-508 段階 3・スタートの直前）----------------------- */
+/* 明示 ON のチェックと期間 2 欄を 1 行に並べる。日付箱とカレンダーの整形は上の日付欄の
+   宣言ブロックを**共有**している（選択子に面を足しただけで、宣言は複製していない）。 */
+#simTracePanel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+#simTracePanel .trace-flag-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+#simTracePanel .trace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#simTracePanel .trace-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* 枠は日付箱（.trace-date-wrap）が持つので、中の欄は素通し。 */
+#simTracePanel .trace-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
 }
 
 /* --- 実行指示面（最下部・右寄せ）--------------------------------------------------- */

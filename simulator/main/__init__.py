@@ -354,6 +354,7 @@ def build_interactor(
     strategy_decorator: "Callable[[Any], Any] | None" = None,
     strategy_override: "Any | None" = None,
     position_manager: "Any | None" = None,
+    run_tracer: "Any | None" = None,
 ) -> tuple[BacktestController, RunBacktestRequest]:
     """各 Port 実装を選択・DI して controller と request を構築する（CLI から分離）。
 
@@ -499,6 +500,11 @@ def build_interactor(
         # 素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。sim モードは run_job が spec 由来の
         # PositionManager を構築してここへ注入する（strategy_override と同型の拡張点）。
         position_manager=position_manager,
+        # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3）: 実行トレースの観測口。
+        #   既定 None は素通り＝既存挙動と byte 等価（観測は実行に必要な境界ではない）。
+        #   JSON スカラーでは表現できない実体なので、`position_manager` と同じく
+        #   **実体で**渡す拡張点にする（投入 JSON からは渡させない＝注入専用キー集合（`simulator/sim_ui/main/composition_root_jobs.py`））。
+        run_tracer=run_tracer,
     )
     controller = BacktestController(market_data=market_data, interactor=interactor)
 

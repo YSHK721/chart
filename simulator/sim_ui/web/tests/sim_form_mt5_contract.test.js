@@ -42,6 +42,9 @@ const PREFIXES = ["tester", "inputs", "action", "ui"];
  *  次スライスで 4 面 id の単一ソース化を行う（現状は本検定と CSS ゲートが各自で列挙する）。 */
 const PANEL_IDS = [
   "simTesterPanel", "simEaInputsPanel", "simRunActionPanel", "simSchemaFallbackPanel",
+  // ISSUE-508 段階 3（§6.6.2）: 実行トレースの指定面。MT5 に対応物を持たない表示制御
+  // （`ui:` 接頭辞）だけを置く面であり、本文のキー名にはならない（下の規則 5 が固定する）。
+  "simTracePanel",
 ];
 
 const CONTROL_TAGS = ["INPUT", "SELECT", "BUTTON"];

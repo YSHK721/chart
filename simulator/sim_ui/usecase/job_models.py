@@ -52,12 +52,20 @@ class JobSubmission:
       （型付き DTO へ写すと検証の第 2 実装ができ、往復（NFR-02）が壊れる）。``None``
       なら **OFF**（既定・settings 不在で既存挙動 byte 等価）。規則 B〜Q の検証は
       `SettingsValidationPort` が framework の単一ソースへ委譲する。
+    ``trace``: 実行トレース（ISSUE-508 段階 3・RUN_TRACE_BASIC_DESIGN §6.6）。形は
+      ``{"enabled": bool, "start": epoch 秒, "end": epoch 秒}``。``None`` または
+      ``enabled`` が偽なら **OFF**（既定・記録は明示 ON ＋期間指定が依頼者裁定）。
+      境界は **epoch 秒の整数**で受ける（§6.4 是正 F-1/F-2）——整数なので受付段で
+      検査でき、「投入は通ったが実行だけ落ちる」を作らない。人が日付で入力する変換は
+      front の責務であり、受付側で `strptime` / `fromisoformat` を新しく書かない
+      （同じ文字列が経路で違う時刻に化ける。ISSUE-401 で 32,400 秒差を実測済み）。
     """
 
     backtest: Mapping[str, Any]
     sizing: "Mapping[str, Any] | None" = None
     strategy: "Mapping[str, Any] | None" = None
     settings: "Mapping[str, Any] | None" = None
+    trace: "Mapping[str, Any] | None" = None
 
     @property
     def ea_name(self) -> str:
@@ -160,6 +168,21 @@ class JobSubmission:
     @property
     def sizing_enabled(self) -> bool:
         return bool(self.sizing) and bool(self.sizing.get("enabled", False))
+
+    @property
+    def trace_enabled(self) -> bool:
+        """実行トレースを記録するか（`sizing_enabled` と同じ形＝OFF の判定を 1 つに保つ）。"""
+        return bool(self.trace) and bool(self.trace.get("enabled", False))
+
+    def trace_window_bounds(self) -> "tuple[Any, Any]":
+        """`trace` の (start, end) 生値。未指定はどちらも ``None``（全区間）。
+
+        値の**解釈**（epoch 正規化・半開・`start > end` の妥当性）はここでは行わない
+        ——規則の実体は `adapter/trace/trace_window.py` が唯一持つ。ここが持つのは
+        「どのキーに入っているか」だけである。
+        """
+        block = self.trace or {}
+        return block.get("start"), block.get("end")
 
 
 @dataclass(frozen=True)

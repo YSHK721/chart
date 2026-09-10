@@ -32,7 +32,7 @@ DIP: Port（台帳・起動器・系列カタログ）と、必要系列を決�
 """
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 from simulator.sim_ui.domain.simulation_job import JobStatus
 from simulator.sim_ui.usecase.job_models import (
@@ -66,6 +66,7 @@ class SubmitJobInteractor:
         required_backtest_keys: "Callable[[], frozenset[str]]",
         settings_validator: "SettingsValidationPort | None" = None,
         ea_subject: "EaSubjectPort | None" = None,
+        trace_window_check: "Callable[[Any, Any], Any] | None" = None,
     ) -> None:
         self._ledger = ledger
         self._launcher = launcher
@@ -79,6 +80,13 @@ class SubmitJobInteractor:
         # 触れないため、既存の結線（Phase 1〜7）は 1 行も変えずに動く（OCP）。
         self._settings_validator = settings_validator
         self._ea_subject = ea_subject
+        # ISSUE-508 段階 3（§6.4）: トレース期間の妥当性検査。**規則そのものは持たない**
+        #   ——実体は `adapter/trace/trace_window.py` の `TraceWindow.of` であり、usecase は
+        #   adapter を import できない（層ゲート）。よって合成根が束ねて注入する
+        #   （`allowed_backtest_keys` / `required_series` / `settings_validator` と同一様式）。
+        #   既定 ``None`` は「トレース経路を結線していない構成」を表し、trace 不在の投入は
+        #   1 度も触れない（既存の結線は 1 行も変えずに動く・OCP）。
+        self._trace_window_check = trace_window_check
 
     def execute(self, submission: JobSubmission) -> JobView:
         """投入して現在状態を返す。E-3 違反は :class:`SizingUnsupportedError`。"""
@@ -111,6 +119,10 @@ class SubmitJobInteractor:
             # そもそもサイジングの対象外なので、より根本的な理由を先に返す。
             self._reject_if_price_series_missing(submission)
             self._reject_if_stop_loss_not_guaranteed(submission)
+        # 実行トレース（ISSUE-508 段階 3・§6.4）: ON のときだけ期間を検査する。
+        #   OFF の投入では窓を 1 度も組まない（組んで捨てる形を作らない）。
+        if submission.trace_enabled:
+            self._reject_invalid_trace_window(submission)
 
         job = self._ledger.create(submission)
         try:
@@ -280,6 +292,32 @@ class SubmitJobInteractor:
                 f"bar 実行（合成 tick_model）は granularity='bar'、real_ticks 実行は"
                 f" granularity='tick' を指定してください（無音の不作動を防ぐため受付で拒否）"
             )
+
+    def _reject_invalid_trace_window(self, submission: JobSubmission) -> None:
+        """§6.4: トレース期間を**受付時に**検査する。
+
+        なぜ受付段か: 境界は epoch 秒の整数なので、framework loader を通さずにここで
+        判定できる。実行段まで通すと「投入は通ったが実行だけ落ちる」遅い失敗になる
+        （`submit_job.py` の既存規律）。黙って空窓へ倒す案は採らない——「窓を間違えたのに
+        0 行で成功する run」ができ、後から気づく手段が無くなる。
+
+        判定規則そのものはここに書かない。注入された検査（実体は `TraceWindow.of`）へ
+        委ね、その例外を受付の語彙へ翻訳するだけである（規則を写せば第 2 実装になる）。
+        """
+        if self._trace_window_check is None:
+            raise JobSubmissionInvalidError(
+                "この構成は実行トレースを受け付けません"
+                "（trace ブロックの期間検査が結線されていません）"
+            )
+        start, end = submission.trace_window_bounds()
+        try:
+            self._trace_window_check(start, end)
+        except Exception as exc:
+            raise JobSubmissionInvalidError(
+                f"trace の記録期間を解釈できません: {exc}"
+                "（start / end は epoch 秒の整数で、start <= end である必要があります。"
+                "日付からの変換は投入側の責務です）"
+            ) from exc
 
     def _reject_invalid_backtest_keys(self, submission: JobSubmission) -> None:
         """`backtest` のキーを検証する（未知キー＝🔴-5b／必須欠落＝🟡-A）。

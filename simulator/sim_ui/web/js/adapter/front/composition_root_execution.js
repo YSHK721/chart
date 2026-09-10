@@ -15,6 +15,7 @@ import { createSimRunLayoutView } from "./sim_run_layout_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
 import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
+import { createSimTracePanelView } from "./sim_trace_panel_view.js";
 import { reportViewUrl } from "./report_view_url.js";
 
 /**
@@ -62,6 +63,7 @@ export async function mountSimExecutionPanel({
   let testerView = null;
   let fallbackView = null;
   let eaInputsView = null;
+  let traceView = null;
   let view = null;
   let subjectSource = null;
   // 実行条件（データセット profile＋ea_name 一覧）。結線段でも使うため try の外に置く。
@@ -85,8 +87,8 @@ export async function mountSimExecutionPanel({
    *  出口ごとに object リテラルを書くと、片方にだけ面を足したときに「構成によって
    *  返る形が違う」状態が黙って生まれる（呼出側は分岐を知らないまま undefined を掴む）。 */
   const panelRefs = () => ({
-    view, client, testerView, eaInputsView, fallbackView, subjectSource, schemaClient, statusView,
-    dispose,
+    view, client, testerView, eaInputsView, traceView, fallbackView, subjectSource, schemaClient,
+    statusView, dispose,
   });
 
   // 組み立て（mount 段）**と結線段**の全体を包む（§19.6 B4・🔴-1）。呼出側
@@ -149,6 +151,11 @@ export async function mountSimExecutionPanel({
     // EA パラメータ面（M2）。実行仕様の EA 側パラメータはこの面だけが所有する。
     eaInputsView = createSimEaInputsPanelView({ doc });
     eaInputsView.mount(inputsHost);
+    // 実行トレースの指定面（ISSUE-508 段階 3 §6.6.2）。記録の既定は「明示 ON ＋期間指定」
+    // であり、明示 ON を人が表現できなければ機能は存在しない。スタートの**直前**に置く
+    // ——「この run をどう記録するか」は押す直前に決める指定だからである。
+    traceView = createSimTracePanelView({ doc });
+    traceView.mount(inputsHost);
     // 実行指示面（M3）。責務はスタートと結果導線だけ（本文も HTTP も知らない）。
     view = createSimRunActionView({ doc });
     view.mount(inputsHost);
@@ -230,6 +237,8 @@ export async function mountSimExecutionPanel({
             settings: subjectSource.buildSettings(),
           },
           inputs: eaInputsView.values(),
+          // 実行トレースの指定（面は打たれた値を報告するだけ・解釈は M5 が唯一持つ）。
+          trace: traceView.traceSpec(),
         });
         const result = await client.submit(body);
         // 画面へ触れるのは現在の run だけ（遅れて届いた古い応答は掲示も導線も動かさない）。

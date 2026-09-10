@@ -48,11 +48,16 @@ export function createJobSubmitClient({ fetch: fetchFn } = {}) {
      * strategy と同型に「空なら載せない」ため、Tester パネルを結線していない構成の本文は
      * 従来と byte 等価であり、旧フォーム投入がそのまま併存する。
      */
-    async submit({ backtest, strategy, sizing, settings } = {}) {
+    async submit({ backtest, strategy, sizing, settings, trace } = {}) {
       const body = { backtest: backtest || {} };
       if (nonEmptyObject(strategy)) body.strategy = strategy;
       if (sizing != null) body.sizing = sizing;
       if (nonEmptyObject(settings)) body.settings = settings;
+      // 実行トレース（ISSUE-508 段階 3 §6.6）: strategy / settings と同型に
+      // 「空なら載せない」。キー不在は OFF（None）と等価であり、トレースを点けない
+      // 投入の本文は従来と byte 等価のままである。境界は既に epoch 秒の整数であり、
+      // ここでは**変換しない**（変換の実体は sim_submission_builder が唯一持つ）。
+      if (nonEmptyObject(trace)) body.trace = trace;
 
       const res = await doFetch(JOBS_URL, {
         method: "POST",
