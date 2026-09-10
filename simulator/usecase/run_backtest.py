@@ -91,6 +91,9 @@ class _RunState:
     margin_guard: MarginGuard
     directives: PositionDirectiveApplier
     close_trade: Any
+    # 観測口（実行トレース・DI・既定 None＝観測なし）。協働クラスと同じく **run につき
+    #   1 度だけ**束ねる（`_run` の中で組まない）。読み手は必ず `state.tracer` である。
+    tracer: Any
     trades: list
     deals: list
     balance_curve: list
@@ -138,6 +141,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         session_calendar: Any = None,
         position_manager: Any = None,
         schedule: Any = None,
+        run_tracer: Any = None,
     ) -> None:
         self._strategy = strategy
         self._indicators = indicators
@@ -154,6 +158,11 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         #   同じ Interactor で複数 run を回す呼出側が 1 つのスケジュールを注入すると、
         #   run をまたいで状態が漏れる。既定（None）はその心配が無い——run ごとに組むため。
         self._schedule = schedule
+        # 実行トレースの観測口（RunTracePort・DI・既定 None＝観測なし＝既定経路
+        #   byte-identical）。None のときは呼出点を素通りする（`if state.tracer is not
+        #   None` ゲート）。Null Object を採らない理由: 既定経路に 1 回の no-op 呼出も
+        #   足さない（周囲の先例 `self._position_manager is not None` と同型）。
+        self._run_tracer = run_tracer
 
     def _session_gate(self, bars: list) -> SessionGate:
         """closed_bars セッション判定を集約した SessionGate を構築する（ISSUE-094）。
@@ -264,6 +273,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 ledger=ledger,
             ),
             close_trade=ledger.close,
+            # 観測口は注入されたものをそのまま持つ（run につき 1 度だけ束ねる）。
+            tracer=self._run_tracer,
             trades=trades,
             deals=deals,
             balance_curve=balance_curve,
@@ -462,6 +473,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 open_trades, halted = self._evaluate_point(
                     state, point, open_trades, halted
                 )
+                # 実行トレースの観測（唯一の呼出点）。ここである理由: 「その評価点の
+                #   全副作用が確定した直後」であり、`account` が当該点のクォートで
+                #   値洗いされた後の唯一の瞬間である。`_evaluate_point` の内側へ入れると
+                #   早期 return 3 経路ぶんの写しが必要になる（複製）。
+                if state.tracer is not None:
+                    state.tracer.observe(point, state.account, open_trades, halted)
 
             prev_close = bar.close
 
