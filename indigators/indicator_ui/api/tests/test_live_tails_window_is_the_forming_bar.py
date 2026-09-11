@@ -578,7 +578,7 @@ def _run(monkeypatch, *, labels, ticks, specs=_SPEC, tickless=(),
         rec.inject_outs.append(out)
         return out
 
-    def _reader(start, end):
+    def _reader(start, end, **kw):
         rec.synth_starts.append(int(start))
         return _synthetic_closed(int(start), tickless)
 
@@ -821,7 +821,7 @@ def _synthesis_issued_per_tick(labels, ticks) -> int:
 
     starts: "list[int]" = []
 
-    def _reader(start, end):  # noqa: ANN001, ARG001
+    def _reader(start, end, **kw):  # noqa: ANN001, ARG001
         starts.append(int(start))
         return _synthetic_closed(int(start), ())
 

@@ -83,8 +83,8 @@ def test_changed_tick_source_is_rebuilt(monkeypatch, bar) -> None:
     """素材（tick parquet）が変わったら組み立て直す。"""
     counter = _Counter(monkeypatch, bar=bar)
     token = {"v": 0}
-    monkeypatch.setattr(forming_bar_mod, "_tick_source_token",
-                        lambda start, end: (token["v"],))
+    monkeypatch.setattr(forming_bar_mod, "_tick_source_fingerprint",
+                        lambda start, end, ref: (token["v"],))
 
     forming_bar_mod.forming_bar(_REF, _TF, _NOW)
     forming_bar_mod.forming_bar(_REF, _TF, _NOW)
@@ -97,7 +97,8 @@ def test_changed_tick_source_is_rebuilt(monkeypatch, bar) -> None:
 def test_unknown_source_state_is_not_cached(monkeypatch, bar) -> None:
     """素材の状態を確かめられないときは記憶しない（古い断面を配る危険を作らない）。"""
     counter = _Counter(monkeypatch, bar=bar)
-    monkeypatch.setattr(forming_bar_mod, "_tick_source_token", lambda start, end: None)
+    monkeypatch.setattr(forming_bar_mod, "_tick_source_fingerprint",
+                        lambda start, end, ref: None)
 
     forming_bar_mod.forming_bar(_REF, _TF, _NOW)
     forming_bar_mod.forming_bar(_REF, _TF, _NOW)

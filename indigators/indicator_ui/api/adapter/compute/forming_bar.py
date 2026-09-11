@@ -50,6 +50,9 @@ from marketdata.tf_meta import (  # noqa: E402
     is_tick_ref,
     period_start_unix,
     resolve_now_unix,
+    # ISSUE-512 段階 1: ref → ティック木の枝名。既定引数（tick_tree._DEFAULT_SYMBOL）に
+    #   頼らず、読むたびに **どの木か** を名指しする。
+    tick_tree_token,
 )
 
 # ロールアップ方式 forming が対応する全 tf（1m＋上位足 5m..1M）。ロールアップの現周期 partial バー
@@ -79,16 +82,25 @@ def clear_forming_cache() -> None:
     _FORMING_CACHE.clear()
 
 
-def _tick_source_token(start_unix: int, end_unix: int) -> "tuple | None":
-    """``[start, end)`` を覆う tick parquet の状態（パス・mtime・サイズ）を返す。
+def _tick_source_fingerprint(
+    start_unix: int, end_unix: int, tree: "str | None"
+) -> "tuple | None":
+    """``tree`` の枝の ``[start, end)`` を覆う tick parquet の状態（パス・mtime・サイズ）を返す。
 
     記憶を使ってよいかを O(1) 相当（stat 数回）で確かめるための指紋。取得できないときは
     ``None`` を返し、呼び出し側は**記憶を使わない**（古い断面を配る危険を作らない）。
+
+    ISSUE-512 段階 1: 旧名は ``_tick_source_token`` だったが、本モジュール内で「token」が
+    *指紋* と *木の枝名* の 2 義になるため指紋側を改名した。受け取るのが ref ではなく
+    **解決済みの枝名**（第 3 引数）なのは、指紋が見る木と実データを読む木が同一であることを
+    呼び出し元の 1 回の解決で保証するためである。ref から 2 度引く形だと、両者が同じ木を
+    指すことが偶然に委ねられ、食い違っても値は正しいまま毎回読み直す（ISSUE-450 と同型）。
+    本関数は ref の語彙も台帳も知らない（stat するだけ）。
     """
     try:
         s = pd.Timestamp(int(start_unix), unit="s")
         e = pd.Timestamp(int(end_unix), unit="s")
-        files = day_parquet_files(s.normalize(), e.normalize())
+        files = day_parquet_files(s.normalize(), e.normalize(), symbol=tree)
         return tuple(
             (str(p), os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in files
         )
@@ -111,13 +123,17 @@ def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     if not is_tick_ref(ref) or not is_supported_timeframe(tf):
         return None
     start = period_start_unix(now_unix, tf)
-    token = _tick_source_token(start, int(now_unix))
+    # どの木を読むかは 1 呼び出しにつき **1 回** 解決し、同じ答えを指紋と実データ読取の
+    #   両方へ渡す（2 度引くと、両者が同じ木を見ることが偶然に委ねられる）。台帳の記入漏れは
+    #   ここで止まる（Fail-Stop を握り潰さない）。
+    tree = tick_tree_token(ref)
+    token = _tick_source_fingerprint(start, int(now_unix), tree)
     cache_key = (str(ref), str(tf))
     if token is not None:
         cached = _FORMING_CACHE.get(cache_key)
         if cached is not None and cached[0] == token and cached[1] == int(now_unix):
             return None if cached[2] is None else dict(cached[2])
-    bar = forming_bar_from_ticks(start, int(now_unix))
+    bar = forming_bar_from_ticks(start, int(now_unix), symbol=tree)
     # ISSUE-078: 1D の time はセッション日ラベルの UTC 深夜へ再ラベル（rollup 1D バーと同一規約・
     #   チャート日付軸整合）。データ窓（start..now）はセッション始端基準のまま。
     if bar is not None and tf == "1D":
@@ -321,15 +337,29 @@ def closed_gap_bars(
           - tick の無い周期（週末等）→ その周期を飛ばす（実データの無いバーを捏造しない）
           - 素材読込の失敗 → その周期だけ飛ばして WARNING（橋渡しの失敗で本計算を落とさない）
           - 欠落が上限を超える → **直近** :data:`_MAX_GAP_FILL_PERIODS` 本だけ充填（暴走防御）
+
+    Raises:
+        ValueError: 台帳にティック木の枝名が記入されていない ref のとき（Fail-Stop・
+            ISSUE-512 段階 1）。これは素材の欠落ではなく台帳の記入漏れなので、下の
+            周期単位 skip では握らない（握ると記入漏れが WARNING と歯抜けへ化ける）。
     """
     period = closed_gap_period_seconds(ref, tf)
     if period is None:
         return []
+    # 上限で切り詰めた後の穴だけを見る（``range`` のまま＝実体化しない）。
+    window = _gap_starts(int(last_unix), int(forming_start), period)[-_MAX_GAP_FILL_PERIODS:]
+    if not window:
+        return []                                    # 埋める穴が無い＝木も解決しない。
+    # 木の解決は **try の外・ループの外**。下の except は「素材読込の失敗をその周期だけ飛ばす」
+    #   ための境界であり、台帳の記入漏れ（Fail-Stop）はその境界の責務ではない。穴の本数に
+    #   依らず 1 回だけ解決し、全周期が同じ木を読む。
+    tree = tick_tree_token(ref)
     out: "list[dict]" = []
-    starts = _gap_starts(int(last_unix), int(forming_start), period)
-    for gs in starts[-_MAX_GAP_FILL_PERIODS:]:
+    for gs in window:
         try:
-            closed = forming_bar_from_ticks(gs, gs + period)  # 完結窓 [gs, gs+period)
+            closed = forming_bar_from_ticks(          # 完結窓 [gs, gs+period)
+                gs, gs + period, symbol=tree
+            )
         except Exception as exc:  # noqa: BLE001 — 橋渡しは表示補完・失敗しても本計算を落とさない
             logger.warning("欠落閉周期の合成に失敗（skip）: %s/%s t=%s (%s)", ref, tf, gs, exc)
             continue

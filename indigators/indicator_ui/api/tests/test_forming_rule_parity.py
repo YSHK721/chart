@@ -586,7 +586,7 @@ def test_synthesized_closed_gap_injection_is_bit_identical(monkeypatch) -> None:
     monkeypatch.setattr(fb, "forming_bar", lambda *a, **k: forming)
     monkeypatch.setattr(
         fb, "forming_bar_from_ticks",
-        lambda s, e: closed if s == closed["time"] else None,
+        lambda s, e, **kw: closed if s == closed["time"] else None,
     )
 
     # Act
@@ -769,7 +769,7 @@ class _SynthesisSpy:
     def __init__(self, monkeypatch, *, result=None) -> None:
         self.windows: "list[tuple[int, int]]" = []
 
-        def counting(start, end):
+        def counting(start, end, **kw):
             self.windows.append((int(start), int(end)))
             return None if result is None else result(int(start), int(end))
 
