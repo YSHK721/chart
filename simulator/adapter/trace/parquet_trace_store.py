@@ -25,7 +25,7 @@ DataFrame 化する。`adapter/trace/__init__.py` が再輸出しないのはこ
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -56,3 +56,146 @@ def write_columns(path: Any, columns: Mapping[str, list]) -> int:
     frame = pd.DataFrame(columns)
     frame.to_parquet(path, index=False, compression=COMPRESSION)
     return len(frame)
+
+
+def read_columns(
+    path: Any,
+    *,
+    columns: "Sequence[str]",
+    start: "int | None" = None,
+    end: "int | None" = None,
+    time_column: str = "time",
+) -> "dict[str, list]":
+    """窓 `[start, end)`（epoch **ミリ秒**）の**指定列だけ**を素の `list` で返す（§9.2）。
+
+    事前条件:
+        ``columns`` は成果物に実在する列名。``start`` / ``end`` は epoch ミリ秒
+        （time 列と同じ単位・§9.0）か、両方または片方が ``None``（その側は無制限）。
+    事後条件:
+        「列名 → 素の `list`」を返す。並びは ``columns`` の宣言順であり、行の並びは
+        成果物の並び（記録順）のままである。pandas / pyarrow の型は外へ出さない
+        （D-5 の隔離。usecase は素の列を受ける）。
+    例外:
+        実在しない列名・``start > end`` は `ValueError`（黙って落とさない・§7）。
+
+    **窓と列は IO 段の pushdown で効かせる**（絶対命令・§9.6）。全列・全行を読んでから
+    事後スライスする形は「作ってから捨てる」であり、実測 1,036,394 行 × 18 列の成果物
+    に対しては画面が描く数千点のために全量を materialise することになる。先例は
+    `adapter/repository/tick_parquet.py`（「全列読み→事後スライスは IO を浪費する」）。
+
+    測り方（`simulator/tests/integration/test_parquet_trace_store_read.py`）:
+        IO 段（`pd.read_parquet`）へ Test Spy を張り、**materialise した行数 − 返した
+        行数 = 0**・**読んだ列 − 返した列 = 0** を表明する。件数そのものは期待値へ
+        焼き込まない（焼き込むと浪費が仕様へ昇格する）。
+
+    残る粒度（実測に基づく限界・隠さない）:
+        述語 pushdown が物理 IO を削る粒度は **row group** である。行の materialise は
+        窓ぶんちょうどになるが、当該 row group の復号は起きる。既定の row group は
+        1,048,576 行であり、実測の 1 run（1,036,394 行）は 1 group に収まる＝現状は
+        物理 IO の枝刈りが働かない。writer 側の row group 設定は本タスクの範囲外
+        （読み口の加法）なので変更していない。
+    """
+    requested = list(columns)
+    if start is not None and end is not None and start > end:
+        raise ValueError(
+            f"トレースの読み出し窓の開始が終了より後です: start={start} end={end}"
+        )
+    available = _column_names(path)
+    unknown = [name for name in requested if name not in available]
+    if unknown:
+        raise ValueError(
+            f"成果物に存在しない列を要求しました: {unknown}（実在={sorted(available)}）"
+        )
+
+    # 窓を判定するのに time 列そのものは要らない（述語は IO 段が評価する）。
+    # したがって呼出側が time を要求しなければ読まない＝余分な列を作らない。
+    filters = _window_filters(time_column, start, end)
+    frame = pd.read_parquet(path, columns=requested, filters=filters)
+    # `to_list()` は numpy スカラーを素の int / float / bool へ戻す（D-5 の隔離）。
+    return {name: frame[name].to_list() for name in requested}
+
+
+def time_bounds(
+    path: Any, *, time_column: str = "time"
+) -> "tuple[Any, Any, int]":
+    """`(最小時刻, 最大時刻, 行数)` を **footer の統計だけ**から返す（行を 1 つも読まない）。
+
+    front が窓を選ぶには「この run はどこからどこまで・何行あるか」が要る。それを得る
+    ために全行を読むのは「作ってから捨てる」形そのものである（絶対命令）。parquet は
+    row group ごとの min / max と総行数を footer に持つので、そこから答える。
+
+    事後条件: 行 0 件の成果物は ``(None, None, 0)`` を返す——「その期間に評価点が
+        無かった」を値で読めるようにする（書出し失敗と区別できる状態を保つ・§6.5）。
+    """
+    # 遅延 import: 書出しだけを使う既存経路へ pyarrow の追加 import を持ち込まない。
+    import pyarrow.parquet as pq
+
+    metadata = pq.ParquetFile(path).metadata
+    if metadata.num_rows == 0:
+        return None, None, 0
+    index = metadata.schema.names.index(time_column)
+    lows: list = []
+    highs: list = []
+    for group in range(metadata.num_row_groups):
+        statistics = metadata.row_group(group).column(index).statistics
+        if statistics is None:  # 統計を持たない成果物は答えを発明しない。
+            raise ValueError(
+                f"{time_column} 列の統計が成果物に無く、範囲を答えられません: {path}"
+            )
+        lows.append(statistics.min)
+        highs.append(statistics.max)
+    return min(lows), max(highs), metadata.num_rows
+
+
+def _column_names(path: Any) -> "frozenset[str]":
+    """成果物が持つ列名（footer のスキーマだけを読む）。"""
+    import pyarrow.parquet as pq
+
+    return frozenset(pq.ParquetFile(path).schema_arrow.names)
+
+
+def _window_filters(
+    time_column: str, start: "int | None", end: "int | None"
+) -> "list | None":
+    """半開 `[start, end)` を IO 段の述語へ翻訳する。両端 `None` は述語なし。
+
+    半開の向き（開始は含み終端は含まない）は本プロジェクトの窓規則
+    （datawindow.half_open）と同一である。ここで向きを変えると、記録側の窓
+    （`simulator/adapter/trace/trace_window.py`）と読み側の窓が食い違う。
+    """
+    predicates = []
+    if start is not None:
+        predicates.append((time_column, ">=", start))
+    if end is not None:
+        predicates.append((time_column, "<", end))
+    return predicates or None
+
+
+def count_rows_in_window(
+    path: Any,
+    *,
+    start: "int | None" = None,
+    end: "int | None" = None,
+    time_column: str = "time",
+) -> int:
+    """窓 `[start, end)` に入る行数を返す（**行を 1 つも materialise しない**）。
+
+    なぜ `read_columns` の結果を数えないか（絶対命令・§9.6）:
+        呼出側（`simulator/sim_ui/usecase/query_trace.py`）はこの数を「窓が広すぎるか」
+        の判定に使う。読んでから数えると、断るために実測 1,036,394 行を materialise
+        することになる＝「作ってから捨てる」形そのものである。parquet の述語評価は
+        行を組み立てずに数を答えられるので、そちらへ問う。
+
+    窓の規則（半開の向き）は `_window_filters` ただ 1 つが持つ。ここで書き直すと、
+    「数えた窓」と「読んだ窓」が食い違い、上限を通ったのに読むと超える run ができる。
+    """
+    # 遅延 import: 書出しだけを使う既存経路へ pyarrow の追加 import を持ち込まない。
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    dataset = ds.dataset(Path(path), format="parquet")
+    filters = _window_filters(time_column, start, end)
+    if filters is None:
+        return dataset.count_rows()
+    # tuple 形式の述語（`read_columns` と**同じもの**）を式へ翻訳する。
+    return dataset.count_rows(filter=pq.filters_to_expression(filters))

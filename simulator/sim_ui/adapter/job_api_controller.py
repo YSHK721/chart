@@ -46,6 +46,19 @@ class JobApiController:
         self._cancel = cancel
         self._fetch_result = fetch_result
 
+    @property
+    def fetch_result(self):
+        """公開可否の関門（FetchJobResultInteractor）を読める面。
+
+        加法（§9.3 の分析面が借りるため）。**規則を写させないための公開**である——
+        「完了したジョブに限り結果を公開する」の実体はこの 1 つだけであり、
+        `/data/{job_id}/{filename}` の配信口も分析 API
+        （`simulator/sim_ui/adapter/trace_query_source.py`）も同じものを通す。合成根が
+        自前で第 2 の関門を組めば、同じ問いに 2 つの答えができて片方だけ緩む。
+        読み取り専用であり、既存の応答は 1 バイトも変わらない。
+        """
+        return self._fetch_result
+
     # --- POST /jobs ------------------------------------------------------
 
     def submit(self, raw_body: bytes) -> ApiResponse:

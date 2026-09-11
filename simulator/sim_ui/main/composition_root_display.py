@@ -37,6 +37,11 @@ from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
 from simulator.sim_ui.framework.serve_sim_ea_series import SimEaSeriesApp
 from simulator.sim_ui.framework.serve_sim_run_options import SimRunOptionsApp
 from simulator.sim_ui.framework.serve_sim_settings_schema import SimSettingsSchemaApp
+from simulator.sim_ui.adapter.trace_api_controller import TraceApiController
+from simulator.sim_ui.adapter.trace_query_source import TraceQuerySource
+from simulator.sim_ui.framework.serve_sim_trace import SimTraceApp
+from simulator.sim_ui.usecase.derive_trace_events import DeriveTraceEventsInteractor
+from simulator.sim_ui.usecase.query_trace import QueryTraceInteractor
 # エンジン公開アクセサへの束縛は `composition_root_jobs` が単一ソースとして持つ
 # （同じ結線を 2 つの root に書き写さない・ISSUE-405）。
 from simulator.sim_ui.main.composition_root_jobs import (
@@ -106,6 +111,25 @@ def build_sim_display_app(
         inner=inner,
         controller=SettingsSchemaApiController(
             schema=ListSettingsSchemaInteractor(port=build_settings_schema_port())
+        ),
+    )
+    # 段階 4（分析面・§9.2/§9.3）: 実行トレースの分析 API `GET /trace/...` を委譲でもう
+    # 1 本足す。既存の配信面・API 面は素通し（OCP・byte 不変）。
+    #
+    # **公開可否の関門は内側の実体をそのまま借りる**（§9.4「借りるもの」）: 「完了した
+    # ジョブに限り結果を公開する」の実体は FetchJobResultInteractor ただ 1 つであり、
+    # `/data/{job_id}/{filename}` の配信口も同じものを通っている。ここで別の関門を
+    # 組むと同じ問いに 2 つの答えができ、片方だけ緩む形で必ず食い違う。内側のジョブ
+    # controller が持っている実体（`fetch_result`）へ束縛する。
+    inner = SimTraceApp(
+        inner=inner,
+        controller=TraceApiController(
+            trace=QueryTraceInteractor(
+                source=TraceQuerySource(
+                    result_gate=inner.controller.fetch_result
+                ),
+                events=DeriveTraceEventsInteractor(),
+            )
         ),
     )
     report_web = root / "simulator" / "report_ui" / "web"
