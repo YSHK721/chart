@@ -71,7 +71,7 @@ DIP 適用点: `IncrementalTickSource`（http/fake/spy の 3 実装）と `Clock
 
 ### mt5_tick_feed（C・VM 単体配布）
 - API 許可集合（AST 施行）: initialize/shutdown/last_error/version/terminal_info/symbol_select/symbol_info/symbol_info_tick/account_info/copy_ticks_range/copy_ticks_from/COPY_TICKS_INFO。`order_*` 参照 0。トップレベル `import MetaTrader5` 0。
-- エンドポイントは `/ticks` と `/health` の 2 本のみ。stdlib `http.server` 単一スレッド。特定 IF bind（既定 `172.16.162.129:8771`・`0.0.0.0` 禁止）。秘密は環境変数のみ。ファイル配信機構を使わない。
+- エンドポイントは `/ticks` と `/health` の 2 本のみ。stdlib `http.server` 単一スレッド。特定 IF bind（既定 `172.16.162.50:8771`・`0.0.0.0` 禁止。VM 側は静的 IP・ISSUE-513）。秘密は環境変数のみ。ファイル配信機構を使わない。
 - epoch(server label int)→MT5 が要求する datetime への変換は `read_tick_window` 1 関数のみが知る（12h ずれ罠の閉じ込め・V-1 で確定）。
   ※当初案の関数名 `read_ticks` は market_profile 既存宣言との全域名衝突で C1 を誘発したため改名（2026-09-01 実測）。
 - 持たないもの（機械検査）: `"ticks"`/`YYYY/MM/DD`/`_ticks.parquet`/`bidPrice`/`askPrice`/`timestamp` 列名/DST・UTC 変換/配信ディレクトリ。
@@ -86,7 +86,7 @@ DIP 適用点: `IncrementalTickSource`（http/fake/spy の 3 実装）と `Clock
 - SymbolToken: `token_for(symbol, server)` = `marketdata.path_tokens.sanitize_path_component` を **import**（ミラー実装禁止）。例 `JP225@OANDA-Japan-MT5-Live`。VM 側はトークンを作らない。規則が `PathTokenError` で落ちたら `Mt5SupplyError` へ翻訳する（`port.py` の Fail-Stop 契約に載せ、`mt5_tick_watch` の捕捉集合をすり抜けさせない）。ISSUE-479 F-1 以前は実体が `tools` 側にあり、本パッケージが `tools` を import する層の逆流だった。
 
 ### mt5_tick_watch（F・Composition Root）
-- 引数: `--symbol`(JP225)/`--endpoint`(http://172.16.162.129:8771)/`--key-id`/`--interval`(既定 5.0・下限 2.0)/`--data-dir`/`--ref`(既定 jp225_mt5)/`--from`(コールドスタート必須)/`--once`/`--no-publish`/`--quiet`。秘密は `MT5_BRIDGE_SECRET` 環境変数のみ。
+- 引数: `--symbol`(JP225)/`--endpoint`(http://172.16.162.50:8771)/`--key-id`/`--interval`(既定 5.0・下限 2.0)/`--data-dir`/`--ref`(既定 jp225_mt5)/`--from`(コールドスタート必須)/`--once`/`--no-publish`/`--quiet`。秘密は `MT5_BRIDGE_SECRET` 環境変数のみ。
 - 1 周期 = fetch 1 回 → absorb → journal 追記 →（分が閉じたら）M1/rollup →（日が変わったら）finalize。失敗は指数バックオフ（→×2・上限 60s・連続 8 回で 600s ブレーカ）。
 
 ## 5. 記憶域の増分構造

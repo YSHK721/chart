@@ -119,7 +119,7 @@ def test_the_defaults_are_the_designed_ones():
     """既定値は設計 §4 の値そのもの（黙って別の相手・別の周期を向かない）。"""
     args = watch.build_parser().parse_args([])
     assert (args.symbol, args.endpoint, args.interval, args.ref) == (
-        "JP225", "http://172.16.162.129:8771", 5.0, "jp225_mt5"
+        "JP225", "http://172.16.162.50:8771", 5.0, "jp225_mt5"
     )
 
 

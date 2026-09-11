@@ -56,7 +56,10 @@ Row = Tuple[int, float, float]
 SECRET_ENV = "MT5_BRIDGE_SECRET"
 #: 運用既定（設計 §4）。
 DEFAULT_SYMBOL = "JP225"
-DEFAULT_ENDPOINT = "http://172.16.162.129:8771"
+#: VM の IP は DHCP で起動ごとに変わっていた（.129 → .131 → .133）。VM 側 feed は特定 IF へ
+#: bind する（全 IF は禁止）ため、アドレスが変わると待ち受けを開けず、変動がそのまま供給断に
+#: なる（実測 2026-09-04〜09-11 の 7 日停止・ISSUE-513）。VM 側へ静的 IP を設定して恒久化した。
+DEFAULT_ENDPOINT = "http://172.16.162.50:8771"
 DEFAULT_KEY_ID = "mt5-bridge"
 DEFAULT_INTERVAL_SECONDS = 5.0
 #: これより短い周期で端末を叩かない（V-5 の実測で確かめる下限）。

@@ -57,7 +57,7 @@ SECRET_ENV = "MT5_BRIDGE_SECRET"
 MIN_SECRET_LENGTH = 16
 
 #: 既定の待ち受け（ISSUE-446 実測のコンテナ→VM 経路）。全 IF への bind は禁止する。
-DEFAULT_BIND = "172.16.162.129"
+DEFAULT_BIND = "172.16.162.50"
 DEFAULT_PORT = 8771
 
 #: 1 応答の上限。際限のない要求で端末を詰まらせない。

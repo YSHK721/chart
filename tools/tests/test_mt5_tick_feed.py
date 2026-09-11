@@ -1090,7 +1090,7 @@ def test_a_short_secret_is_refused(monkeypatch):
 
 
 def test_the_default_bind_is_the_specific_interface():
-    assert feed.DEFAULT_BIND == "172.16.162.129"
+    assert feed.DEFAULT_BIND == "172.16.162.50"
     assert feed.DEFAULT_PORT == 8771
 
 
