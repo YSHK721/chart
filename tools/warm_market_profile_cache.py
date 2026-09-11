@@ -37,9 +37,12 @@ def main(argv: "list[str] | None" = None) -> None:
     parser.add_argument("--end", default=None, help="期間終了（例 2024-12-31・既定 当日）")
     args = parser.parse_args(argv)
 
+    from marketdata import tf_meta as _tf_meta
     from market_profile_api.compute import market_profile_dwell as mpd
 
-    sym = mpd.resolve_symbol(args.warm) or args.warm  # ref なら symbol へ解決、それ以外は symbol とみなす。
+    # ISSUE-512 段階 1: ref → ティック木の枝名は窓口（marketdata/tf_meta.py）から直接引く。
+    #   解決できない入力（台帳に無い・非ティック ref）は、従来どおり枝名そのものとみなす。
+    sym = _tf_meta.tick_tree_token(args.warm) or args.warm
 
     if args.src == "zp":
         from market_profile_api.compute.market_profile_zp import _STORE as _ZP_STORE

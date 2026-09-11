@@ -151,7 +151,6 @@ def tfp_env(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)  # ディスク無効（テスト隔離）。
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     yield
     ctl._reset_tf_period_cache()
 
@@ -352,7 +351,6 @@ def test_zp_columns_receive_the_resolved_va(monkeypatch):
         return 1.0, []
 
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     monkeypatch.setattr(tfc, "day_columns_zp_compute", spy_day)
     ctl._reset_tf_period_cache()
     st, _ = ctl.handle_tf_period_profile(

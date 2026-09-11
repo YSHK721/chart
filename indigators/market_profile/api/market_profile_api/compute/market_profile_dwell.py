@@ -94,9 +94,6 @@ def day_parquet_files(lo_day: int, hi_day: int, *, symbol: str) -> "list[_Path]"
     """
     return _tick_reader().day_files(lo_day, hi_day, symbol=symbol)
 
-# datasetRef → 実ティック symbol 解決（forming_bar.TICK_REFS と整合。'jp225_tick'→'JP225'）。
-TICK_REF_SYMBOLS: dict[str, str] = {"jp225_tick": "JP225"}
-
 # セッション認識 dwell のパラメータ（試作と一致）。規則は session_activity が唯一の規則源。
 _ACTIVE_FRAC = _session_activity.ACTIVE_FRAC   # (曜日×時) のティック数が ピーク×この割合 未満なら「休場」。
 # GRID_W（固定価格グリッド幅 pt）は market_profile_dwell_kernel から再エクスポート済み（ISSUE-133 SRP）。
@@ -149,9 +146,12 @@ _EMPTY_SECS = np.array([], dtype=np.int64)
 _EMPTY_MIDS = np.array([], dtype=np.float64)
 
 
-def resolve_symbol(ref: Any) -> "str | None":
-    """datasetRef を実ティック symbol へ解決する（非 tick ref は None）。"""
-    return TICK_REF_SYMBOLS.get(ref)
+# ISSUE-512 段階 1（SRP）: ref をティック木の枝名へ解決する写像と関数は、かつて本モジュールが
+#   1 要素の手書き表として持っていた。本モジュールが担うのは滞在秒の集計とキャッシュ協調であり、
+#   **その解決を自分では一度も使わない**（使うのは controller 3 本と warmer CLI）。写像の台帳は
+#   marketdata/dataset_registry.py、読取側の窓口は marketdata/tf_meta.py であり、利用者は窓口を
+#   直接呼ぶ。ここに薄い再公開を残すと、compute が「窓口の再公開者」を兼ね、利用者が compute 越しに
+#   台帳を引く経路が固定される。
 
 
 def get_active_table(symbol: str, now: float | None = None) -> list[list[int]]:

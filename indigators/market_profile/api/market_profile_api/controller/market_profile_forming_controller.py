@@ -23,6 +23,10 @@ import math
 from typing import Any
 
 from marketdata import tf_meta as _forming_bar  # ISSUE-087 🔴-1: 裸 adapter 依存を排し単一情報源を参照
+# ISSUE-512 段階 1: 同じ単一情報源を **ティック木の枝名の窓口** としても引く。別名を分けるのは、
+#   上の別名が「形成中バーの規則源」という役割で付いており、台帳照会をその役割名で呼ぶと
+#   読み手に別モジュールと誤読されるため（tf_period_profile_controller.py:22-23 と同じ様式）。
+from marketdata import tf_meta as _tf_meta
 from market_profile_api.compute import market_profile_dwell as _mpd
 from market_profile_api.compute import market_profile_forming as _mpf
 from market_profile_api.controller import market_profile_controller as _mpc
@@ -207,7 +211,7 @@ def handle_market_profile_forming(
             f"market_profile_forming 非対応の timeframe です: {timeframe!r}（1W/1M は非対応）",
         )
 
-    symbol = _mpd.resolve_symbol(ref)
+    symbol = _tf_meta.tick_tree_token(ref)
     now_i = _forming_bar.resolve_now_unix(now)
     forming_start = _forming_bar.period_start_unix(now_i, timeframe)
     since_i = _parse_since(since)

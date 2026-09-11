@@ -29,6 +29,10 @@ from typing import Any
 
 from api_shared.http_contract import nested_error  # §6.3.4 単一定義（ISSUE-094 🔵-11: 中立共有パッケージへ移設）
 from marketdata import dataset  # dataset 実体は marketdata へ移設済み（最下層 peer 依存）
+# ISSUE-512 段階 1: tick ref に関する読取側の窓口（.doc/LAYERING_CONVENTIONS.md §4）。ref →
+#   ティック木の枝名の写像は台帳（marketdata/dataset_registry.py）が唯一源であり、利用者は
+#   窓口を直接呼ぶ（compute 越しに引かない）。
+from marketdata import tf_meta as _tf_meta
 from market_profile_api.compute import market_profile_dwell
 from market_profile_api.compute import market_profile_zp
 from market_profile_api.compute.market_profile import (
@@ -401,7 +405,7 @@ def _handle_dwell(
     :func:`market_profile_dwell.compute_dwell_profile` を呼ぶ。barw>0 は price レンジ確定後に n_bins を上書き
     する。応答スキーマは candle 版と同一。src/atom/bar_width をトップレベルのメタ情報として付加する。
     """
-    symbol = market_profile_dwell.resolve_symbol(ref)
+    symbol = _tf_meta.tick_tree_token(ref)
     if symbol is None:
         return _error_body(
             "validation",
@@ -456,7 +460,7 @@ def _handle_zp(
     クランプ）で [セッション始端, to] の部分 z になり、1D でも日内推移が成長する。None は実時計
     （ライブ＝全期間・現行挙動）。旧 asof パラメータは廃止（now の二重化を排除）。
     """
-    symbol = market_profile_dwell.resolve_symbol(ref)
+    symbol = _tf_meta.tick_tree_token(ref)
     if symbol is None:
         return _error_body(
             "validation",

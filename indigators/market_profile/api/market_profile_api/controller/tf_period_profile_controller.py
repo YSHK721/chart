@@ -500,7 +500,7 @@ def handle_tf_period_profile(
     if from_i is None or to_i is None or from_i >= to_i:
         return _error_body("validation", f"不正なローリング窓です [from,to)=({frm!r},{to!r})")
 
-    symbol = _mpd.resolve_symbol(ref)
+    symbol = _tf_meta.tick_tree_token(ref)   # ISSUE-512 段階 1: 台帳照会は窓口から直接引く。
     now_val = _time.time() if now is None else float(now)
     va_pct = resolve_va_pct(va)  # ISSUE-260: 解決規則は単一情報源（参照実装と同一）。
 

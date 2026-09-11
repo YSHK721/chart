@@ -42,7 +42,6 @@ def test_happy_path_returns_columns(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)  # ディスク無効（テスト隔離）。
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st == 200 and body["ok"] is True
     assert body["tf"] == "1m" and body["from"] == 0 and body["to"] == 120
@@ -61,7 +60,6 @@ def test_non_1m_tf_keeps_grid_w_unit(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile("jp225_tick", "15m", 0, 900, now=1e12)
     assert st == 200 and body["ok"] is True
     assert body["unit"] == 10.0
@@ -80,7 +78,6 @@ def test_completed_day_is_cached(monkeypatch):
         return _fake_ticks(symbol, start, end)
 
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", counting_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st1, b1 = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     st2, b2 = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st1 == 200 and st2 == 200
@@ -99,7 +96,6 @@ def test_incomplete_day_not_cached(monkeypatch):
         return _fake_ticks(symbol, start, end)
 
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", counting_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     # now=100 → 日 [0,86400) は未完了（86400>100）。
     ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=100)
     ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=100)
@@ -110,7 +106,6 @@ def test_completed_day_persists_to_disk(monkeypatch, tmp_path):
     """完了日はディスク JSON へ永続し、メモリ消去後（＝再起動相当）でも tick 再読込なしで復元する（ISSUE-055 B per-day）。"""
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", str(tmp_path))  # ディスクを tmp に隔離。
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
     st1, b1 = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)  # 計算＋ディスク保存。
     assert st1 == 200
@@ -134,7 +129,6 @@ def test_disk_generation_follows_tfp_cache_version(monkeypatch, tmp_path):
     """
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", str(tmp_path))
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
     st, _ = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st == 200
@@ -184,7 +178,6 @@ def test_session_walker_includes_sunday_evening_in_monday_session(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile(
         "jp225_tick", "1m", _MON_START, _MON_START + 7200, now=1e12)
     assert st == 200
@@ -197,7 +190,6 @@ def test_4h_straddling_period_assigned_once(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile(
         "jp225_tick", "4h", _MON_START - 86400, _MON_START + 2 * 86400, now=1e12)
     assert st == 200
@@ -212,7 +204,6 @@ def test_1d_column_is_one_per_session_keyed_by_session_start(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _sunday_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile(
         "jp225_tick", "1D", _MON_START, _MON_START + 86400, now=1e12)
     assert st == 200
@@ -228,7 +219,6 @@ def test_live_ticks_augment_incomplete_day(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     live = [
         (70_000, 11.0),    # parquet 末尾（70s）と同秒 → dedup（追加しない・parquet 優先）
         (80_000, 12.0),    # 末尾より後 → 追加
@@ -251,7 +241,6 @@ def test_live_ticks_ignored_for_completed_day(monkeypatch):
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     st, body = ctl.handle_tf_period_profile(
         "jp225_tick", "1m", 0, 120, now=1e12, live_ticks=[(80_000, 12.0)])
     assert st == 200
@@ -267,7 +256,6 @@ def test_week_bucket_merges_session_days(monkeypatch):
 
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     d_mon = session_label_to_start("2026-07-13")  # 月曜セッション
     d_tue = session_label_to_start("2026-07-14")  # 火曜セッション
 
@@ -300,7 +288,6 @@ def test_month_bucket_and_validation(monkeypatch):
 
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_ROOT", False)
-    monkeypatch.setattr(ctl._mpd, "resolve_symbol", lambda ref: "JP225")
     d1 = session_label_to_start("2026-07-13")
 
     def fake_ticks(_symbol, start, end):
