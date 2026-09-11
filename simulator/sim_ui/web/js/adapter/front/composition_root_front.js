@@ -46,6 +46,9 @@ import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
 import { createSimContactsToggleView } from "./sim_contacts_toggle_view.js";
 import { createSimFilterPillView } from "./sim_filter_pill_view.js";
+// 段階 4（§9.1/§9.2）: 分析タブの結線は別合成根が持つ（node で測れる場所へ置く・
+//   `composition_root_execution.js` と同じ理由）。ここは呼ぶだけである。
+import { mountTraceAnalysis } from "./composition_root_analysis.js";
 
 /** 移植元 chart.js が所有する表示規則。v5 アダプタへはこの束を注入する。 */
 const CHART_LOGIC = {
@@ -246,6 +249,12 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
 
     // 比較・判定は区間非依存（init で 1 回）。segKeys>=2 は buildCompare、単一は判定バナーのみ。
     compareView.render({ host: view.elements.paneCompare, segKeys, payload });
+    // 分析タブ（段階 4・§9.1）は区間非依存（init で 1 回）。**await しない**——分析 API の
+    //   往復で既存タブの初期表示が待たされる理由が無く、失敗しても掲示に留まる
+    //   （`mountTraceAnalysis` は throw しない）。
+    void mountTraceAnalysis({
+      doc, pane: view.elements.paneAnalysis, jobId: targetJobId, fetch: fetchFn,
+    });
     // 用語集＋hover tip（init で 1 回・多重 #tip 禁止）。
     buildGlossary(view.elements.glossHost);
     wireTips();

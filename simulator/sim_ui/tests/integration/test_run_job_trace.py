@@ -181,7 +181,11 @@ class TestATracedRunProducesReadableArtefacts:
         # Assert
         full_points = pd.read_parquet(full / trace_writer.POINTS_FILENAME)
         win_points = pd.read_parquet(windowed / trace_writer.POINTS_FILENAME)
-        assert all(start <= t < end for t in win_points["time"])
+        # 窓は epoch **秒**（§6.4 の JSON 契約）・time 列は epoch **ミリ秒**（§9.0）
+        # なので秒位で比べる。単位を揃えずに比べると窓が効いていても赤になる。
+        assert all(start <= t // 1000 < end for t in win_points["time"])
+        # 単位が実際にミリ秒であること（秒へ戻す退行を赤にする）。
+        assert win_points["time"].min() >= start * 1000
         assert 0 < len(win_points) < len(full_points), (len(win_points), len(full_points))
         # 窓は meta にも残る。
         meta = json.loads((windowed / trace_writer.META_FILENAME).read_text("utf-8"))
