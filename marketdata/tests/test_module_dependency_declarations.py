@@ -45,6 +45,11 @@ _ALLOWED: "dict[str, set[str]]" = {
     # Bar 段（UTC 解釈）と食い違う（実測 32400 秒差）。**この 1 エントリを消すと複製が復活する**
     # ため、依存として明示し検定で固定する。
     "csv_source.py": {"pandas", "datawindow.half_open", "marketdata.port"},
+    # datasetRef 記述子レジストリ（唯一源）。物理基点（paths）**のみ**に依存する最下層 peer。
+    # docstring は当初からこう宣言していたが、機械的に強制されていなかった（ISSUE-512 段階 1 で
+    # 実測・TBD-5 承認）。ここへ 1 つでも import を足すと tf_meta↔dataset の相互依存や
+    # 「台帳が読取側を知る」逆流が入り込む。宣言を検定へ昇格させる。
+    "dataset_registry.py": {"marketdata.paths"},
     # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
     # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
     "tick_tree.py": {"pandas", "marketdata.paths"},

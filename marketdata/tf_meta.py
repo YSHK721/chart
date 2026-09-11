@@ -64,6 +64,18 @@ def is_tick_ref(ref: Any) -> bool:
     return ref in TICK_REFS
 
 
+def tick_tree_token(ref: Any) -> "str | None":
+    """``ref`` のティック木の枝名を返す（非ティック ref・台帳外は ``None``）。
+
+    tick ref に関する読取側の窓口は本モジュール 1 箇所という慣行（レイヤ規約の文書が
+    「tf メタ（秒長・floor 可否・tick ref）は本ファイルに 1 箇所」と定める）に従い、実体を
+    持つ台帳（marketdata/dataset_registry.py の同名関数）へ委譲する（第 2 実装を作らない）。
+    ``tick`` が True でトークン未記入の記述子に対しては、委譲先の ``ValueError`` をそのまま
+    通す（Fail-Stop をここで握り潰さない）。
+    """
+    return dataset_registry.tick_tree_token(ref)
+
+
 def floor_freq(tf: Any) -> Optional[str]:
     """tf の pandas floor freq を TIMEFRAME_RULES から導出する（1W/1M・未知は None）。"""
     if tf in NON_FLOORABLE_TF or tf not in TIMEFRAME_RULES:

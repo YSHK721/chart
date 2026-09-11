@@ -44,6 +44,15 @@ class DatasetDescriptor:
             この値は ``tools/build_tick_rollup`` が全期間起点として持っていたが、「その
             データセットの素材がいつから在るか」は台帳の属性であり、パイプライン側の設定では
             ない。持たない ref は None（全期間起点の概念が無い＝日足同梱データ等）。
+        tick_token: この ref のティックがどの木の枝に在るか（ISSUE-512 段階 1）。木の形
+            ``<DATA_DIR>/ticks/YYYY/MM/DD/<token>_ticks.parquet`` の権威は
+            :mod:`marketdata.tick_tree` が持ち、**どの枝を読むか** を本欄が持つ。``symbol``
+            とは別物である: symbol は「その価格がどの銘柄のものか」（呼び値・表示桁の引き当て
+            キー）、tick_token は「保存木のディレクトリ/ファイル名の語彙」であり、同じ銘柄を
+            別供給元から取れば枝は分かれる（段階 3 の jp225_mt5）。``tick`` が False の ref は
+            None（ティック木を持たない）。``tick`` が True で本欄が None なら Fail-Stop
+            （:func:`tick_tree_token` が ``ValueError`` を送出する。既定値へ落とすと新しい
+            ティック ref が無言で他銘柄の木を読み、出力は形式上正しいため検出できない）。
     """
 
     path: Path
@@ -52,6 +61,7 @@ class DatasetDescriptor:
     rollup: bool = False
     tick: bool = False
     data_start: "dt.date | None" = None
+    tick_token: "str | None" = None
 
 
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
@@ -93,6 +103,10 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # 既存 tick tree の最古日（実測 2012-06-14）。build_tick_rollup の全期間起点は本値の
         # 導出であり、CLI 既定・help 文言とも従来と 1 バイトも変わらない（ISSUE-479 M-4 段階 A）。
         data_start=dt.date(2012, 6, 14),
+        # ティック木の枝名（ISSUE-512 段階 1）。既存事実の明文化であり、ディスク上の木は
+        # 1 バイトも変わらない。従来この値は木のレイアウト権威（marketdata/tick_tree.py:30）が
+        # 持つ既定引数と、読取側の手書き写像に散っていた（台帳に写像が無かった）。
+        tick_token="JP225",
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /
@@ -130,6 +144,38 @@ def tick_refs() -> "frozenset[str]":
     return frozenset(ref for ref, d in REGISTRY.items() if d.tick)
 
 
+def tick_tree_token(ref: "str | None") -> "str | None":
+    """``ref`` のティックがどの木の枝に在るかを台帳から引く（ISSUE-512 段階 1）。
+
+    木の形の権威は marketdata/tick_tree.py、**どの枝か** の権威は本台帳である。読取側は
+    marketdata/tf_meta.py の同名の窓口を経由して本関数の答えを受け取り、木の側が持つ
+    既定引数には依存しない。
+
+    Args:
+        ref: datasetRef。台帳に無い ref も受ける（照会であって検証ではない）。
+
+    Returns:
+        ティック木の枝名。ティック木を持たない ref（``tick`` が False）と台帳に無い ref は
+        ``None``。
+
+    Raises:
+        ValueError: ``tick`` が True なのに ``tick_token`` が未記入のとき（Fail-Stop）。
+            **既定値へフォールバックしない**。落とさずに既定の枝名を返すと、新しい
+            ティック ref が無言で Dukascopy の木を読む。読めてしまうぶん出力は形式上正しく、
+            状態検証（値の正しさ）では原理的に検出できない。記入漏れはここで止める。
+    """
+    d = REGISTRY.get(ref)
+    if d is None or not d.tick:
+        return None
+    if d.tick_token is None:
+        raise ValueError(
+            f"datasetRef {ref!r} は tick=True ですが tick_token が未記入です。"
+            " marketdata.dataset_registry.REGISTRY の当該記述子へ、読むべきティック木の枝名"
+            "（<DATA_DIR>/ticks/YYYY/MM/DD/<token>_ticks.parquet の <token>）を記入してください。"
+        )
+    return d.tick_token
+
+
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
@@ -137,4 +183,5 @@ __all__ = [
     "clamp_refs",
     "rollup_refs",
     "tick_refs",
+    "tick_tree_token",
 ]
