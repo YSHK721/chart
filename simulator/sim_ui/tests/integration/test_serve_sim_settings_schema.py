@@ -8,9 +8,14 @@
     4. wrapper を足す前の面には `/settings-schema` が**無い**（この 1 本だけが増分である）。
     5. 接頭辞を共有する別パス（/settings-schema-extra）は既存の静的面へ落ちる（prefix 境界）。
 
-「足す前」は合成根を書き写して組み直すのではなく、**同一の object graph の内側**
-（`app.inner.inner`）をそのまま配信する。組み直すと合成根の複製になり、比較対象が
-「本物の内側」であることを保証できない。
+「足す前」は合成根を書き写して組み直すのではなく、**同一の object graph の内側**を
+そのまま配信する。組み直すと合成根の複製になり、比較対象が「本物の内側」であることを
+保証できない。
+
+内側の指し方は `inside(app, SimSettingsSchemaApp)`（`tests/app_chain.py`）であって
+`app.inner.inner` の**ホップ数の手書きではない**。ホップ数は連鎖の長さという別の事実に
+依存しており、層を 1 本挟むと同じ式が別の層を指す（実測: 段階 4 で trace 層を挟んだ
+とき、この検定が 200 != 200 で落ちた＝比べていたのが別の面だった）。
 """
 from __future__ import annotations
 
@@ -23,6 +28,8 @@ from pathlib import Path
 import pytest
 
 from simulator.sim_ui.framework.serve_sim_display import make_server
+from simulator.sim_ui.framework.serve_sim_settings_schema import SimSettingsSchemaApp
+from simulator.sim_ui.tests.app_chain import inside
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 from simulator.usecase.tester_settings.enums import TIMEFRAME_INI_LABELS, TickModel
 
@@ -53,8 +60,7 @@ def apps(tmp_path: Path):
     after = build_sim_display_app(
         repo_root=_ROOT, web_dir=_SIM_WEB, data_root=tmp_path / "data"
     )
-    # SimDisplayApp → SimSettingsSchemaApp → （wrapper を足す前の面）
-    before = after.inner.inner
+    before = inside(after, SimSettingsSchemaApp)
     srv_a, thread_a, base_a = _serve(after)
     srv_b, thread_b, base_b = _serve(before)
     try:

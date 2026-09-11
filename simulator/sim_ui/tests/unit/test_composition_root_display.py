@@ -22,6 +22,7 @@ from simulator.main import known_ea_names
 from simulator.main.tester_settings.ea_input_map import SUBJECT_SUFFIX
 from simulator.main.tester_settings.unsupported import RULES
 from simulator.sim_ui.framework.serve_sim_run_options import SimRunOptionsApp
+from simulator.sim_ui.tests.app_chain import wrapper_of
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 from simulator.usecase.tester_settings.enums import TIMEFRAME_INI_LABELS
 
@@ -57,6 +58,9 @@ def test_the_injected_outside_facts_match_their_sources(schema) -> None:
 
 def test_the_wrapper_wraps_and_does_not_replace_the_existing_face(schema) -> None:
     app, _result = schema
-    assert isinstance(app.inner.inner, SimRunOptionsApp)
+    # 層をクラスで指す（`app.inner.inner` のホップ数の手書きは、層を 1 本挟むと
+    # 別の層を指す。実測: 段階 4 の trace 層で実際にずれた）。
+    run_options = wrapper_of(app, SimRunOptionsApp)
+    assert isinstance(run_options, SimRunOptionsApp)
     # 既存の選択肢 controller は内側にそのまま残る（置き換えていない）。
-    assert app.run_options_controller is app.inner.inner.run_options_controller
+    assert app.run_options_controller is run_options.run_options_controller

@@ -35,9 +35,23 @@ simulator.domain.bar_time`` 後に ``numpy`` が ``sys.modules`` へ載らない
          `marketdata` は `simulator` を import できない（依存方向）ため、共有点は両
          パッケージの外側へ置く。
 
-拡張点（OCP）: 時刻表現の追加は ``EPOCH_CONVERTERS`` への 1 エントリ追加で済む。
-判定関数（`Callable[[Any], bool]`）と変換関数（`Callable[[Any], int]`）の対を並べた
-表であり、既存エントリ・利用側（`epoch_seconds` / `is_supported_time`）は改変しない。
+拡張点（OCP）: 時刻表現の追加は **2 つの表へ 1 エントリずつ**である——受理集合と秒変換を
+持つ ``EPOCH_CONVERTERS`` と、同じ判定関数を鍵にミリ秒変換を持つ ``_MILLIS_CONVERTERS``
+（`epoch_millis` は出力単位だけが違う。§9.0）。既存エントリ・利用側（`epoch_seconds` /
+`is_supported_time` / `epoch_millis`）は改変しない。
+
+    **なぜ 1 表に畳まないか**: ``EPOCH_CONVERTERS`` の 3 要素という形を
+    `is_supported_time` / `epoch_seconds` / `epoch_millis` と**検定 4 ファイル**が
+    展開している（実測 2026-09-11: 参照は検定 6 ファイル、うち 3 要素で展開するのは
+    test_bar_time_epoch / test_bar_time_millis / test_window_boundary_single_source /
+    test_tick_window_single_source の 4 本）。4 要素へ変えると `epoch_seconds` 側の
+    実装に手が入る——§9.0 の要求は「`epoch_seconds` の挙動を変えずに出力単位を増やす」
+    ことである。「どの表現を受けるか」は上表ただ 1 つが持ち、下表が持つのは「どの単位で
+    出すか」だけなので、受理集合が 2 か所になることはない。
+
+    **なぜ既定で秒×1000 に倒さないか**: 秒未満を持つ表現を足してミリ秒側を忘れたとき、
+    既定があると §9.0 が是正した欠陥（秒への潰れ）が**黙って**再発する。取り落ちは
+    値で埋めず、下の `_verify_the_two_tables_cover_the_same_set` が読込時に落とす。
 """
 from __future__ import annotations
 
@@ -89,6 +103,48 @@ def _from_numpy_datetime64(value: Any) -> int:
     return int(value.astype("datetime64[s]").astype("int64"))
 
 
+#: 1 秒あたりのミリ秒。**この関係の所有者は本モジュールただ 1 つ**である。
+#:
+#: 公開するのは、ミリ秒と秒を往復する利用側が外側に実在するためである——
+#: `simulator/adapter/trace/columnar_run_trace.py` は `epoch_millis` で得た値を
+#: 窓判定（epoch 秒を受ける・§6.4 の JSON 契約）へ落とす。そこで `1000` を書き直すと
+#: 「秒とミリ秒の関係」が 2 か所の所有者を持つ（複製は必ず取り残しを生む）。
+MILLIS_PER_SECOND = 1000
+
+
+def _millis_from_integer(value: Any) -> int:
+    """epoch **秒**の整数を epoch ミリ秒へ。
+
+    整数エントリの契約は「値は epoch 秒」である（`_from_integer` がそのまま返している
+    ことがその宣言）。したがって単位換算は掛け算であり、秒未満は元から存在しない。
+    """
+    return int(value) * MILLIS_PER_SECOND
+
+
+def _millis_from_numpy_datetime64(value: Any) -> int:
+    """``numpy.datetime64`` を epoch ミリ秒へ（秒未満をミリ秒まで保存する）。
+
+    実ティックの tick_time はこの表現で届く（`adapter/execution/tick_model.py`
+    _to_domain_time が `pandas.Timestamp.to_datetime64()` を返す）。store の実 dtype は
+    ``datetime64[ms]`` / ``datetime64[us]`` の双方が実在するため、単位は明示して
+    ``datetime64[ms]`` へ揃える（ミリ秒より細かい成分は切り捨てる＝丸めない）。
+    """
+    return int(value.astype("datetime64[ms]").astype("int64"))
+
+
+def _millis_from_datetime(value: Any) -> int:
+    """``datetime`` を epoch ミリ秒へ（naive は UTC・B-3 と同じ規則）。
+
+    秒の部分は共有実体 `epoch_seconds_of_datetime` から採り、ここでは**秒未満だけ**を
+    足す。秒の解釈規則（naive=UTC・オフセットの扱い）を書き直すと、同じ datetime が
+    単位ごとに違う時刻へ化ける（ISSUE-401 で 32,400 秒差を実測済みの同型）。
+    """
+    return (
+        epoch_seconds_of_datetime(value) * MILLIS_PER_SECOND
+        + value.microsecond // 1000
+    )
+
+
 #: 契約タグ: `Bar.time` の受理集合に属するエントリ。
 BAR = "BAR"
 #: 契約タグ: 窓境界の受理集合に属するエントリ（`Bar.time` ではない）。
@@ -115,6 +171,63 @@ EPOCH_CONVERTERS: (
     # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
     (_is_datetime, epoch_seconds_of_datetime, WINDOW),
 )
+
+
+#: 時刻表現 → epoch **ミリ秒**の変換器（RUN_TRACE_BASIC_DESIGN §9.0）。
+#:
+#: **鍵は `EPOCH_CONVERTERS` の判定関数オブジェクトそのもの**である。判定（＝受理集合
+#: ＝「どの表現を受けるか」）は上表が唯一持ち、本表が持つのは「どの単位で出すか」だけ
+#: である。両者は別の関心であり、判定を書き写すと受理集合が 2 箇所で食い違う
+#: （`is_epoch_integer` の docstring が実測で示している失敗と同型）。
+#:
+#: なぜ `EPOCH_CONVERTERS` の各エントリへ 4 つ目の要素を足さないか: 同表を 3 要素で
+#: 展開しているのは `is_supported_time` / `epoch_seconds` / `epoch_millis` と検定 4
+#: ファイルであり（数え直しは上の module docstring「なぜ 1 表に畳まないか」）、形を
+#: 変えると `epoch_seconds` 側の実装に手が入る。§9.0 の要求は「`epoch_seconds` の
+#: 挙動を変えず出力単位を増やす」ことなので、既存表には触れない。
+#:
+#: 取り落とし（表現を足してこちらを忘れる）は下の読込時ゲートと
+#: `simulator/tests/unit/test_bar_time_millis.py` の網羅ゲートが機械的に赤にする。
+_MILLIS_CONVERTERS: "dict[Callable[[Any], bool], Callable[[Any], int]]" = {
+    is_epoch_integer: _millis_from_integer,
+    _is_numpy_datetime64: _millis_from_numpy_datetime64,
+    _is_datetime: _millis_from_datetime,
+}
+
+
+def _verify_the_two_tables_cover_the_same_set() -> None:
+    """2 表の取り落としを**読込時**に落とす（起動時 fail-stop）。
+
+    なぜ読込時か（実測・2026-09-11）: ゲートが無いと、``EPOCH_CONVERTERS`` だけへ
+    表現を足した状態で `epoch_seconds` は通り、`epoch_millis` は `_MILLIS_CONVERTERS`
+    の添字で **`KeyError`** になる。それは「未対応の時刻表現」（`epoch_millis` が宣言する
+    `ConfigError`）ではなく**宣言の食い違い**であり、しかも新しい表現が初めて現れた
+    run の途中で落ちる。宣言の不整合は起動時に落とすのが本プロジェクトの規律である
+    （先例: `simulator/sim_ui/framework/serve_sim_indicators.py` の
+    verify_delegated_surface — 宣言した面が内側に無ければ構築時に落とす）。
+
+    `assert` にしないのは、`-O` で消えて宣言の食い違いが素通りするためである。
+
+    事後条件: 2 表の鍵集合が一致していれば何もしない（現状はこれ。よって
+        既存の全入力に対する挙動は 1 bit も変わらない）。
+    例外: 片側に無い表現があれば `ConfigError`（不足している判定関数を名指す）。
+    """
+    missing = [
+        matches.__name__
+        for matches, _convert, _tag in EPOCH_CONVERTERS
+        if matches not in _MILLIS_CONVERTERS
+    ]
+    if missing:
+        raise ConfigError(
+            "受理する時刻表現にミリ秒変換がありません: "
+            f"{missing}。EPOCH_CONVERTERS へ表現を足したら、同じ判定関数を鍵として "
+            "_MILLIS_CONVERTERS へも 1 エントリ足してください"
+            "（既定で秒×1000 に倒すと秒への潰れが黙って再発する・§9.0）",
+            context={"missing_millis_converters": missing},
+        )
+
+
+_verify_the_two_tables_cover_the_same_set()
 
 
 def is_supported_time(value: Any) -> bool:
@@ -144,5 +257,35 @@ def epoch_seconds(value: Any) -> int:
             return convert(value)
     raise ConfigError(
         f"epoch 秒へ正規化できない時刻表現です: {type(value).__name__}",
+        context={"value_type": type(value).__name__, "value": str(value)},
+    )
+
+
+def epoch_millis(value: Any) -> int:
+    """`bar.time` / ティック時刻を epoch **ミリ秒**（int）へ正規化する（§9.0）。
+
+    `epoch_seconds` との関係は**単位だけ**である。受理する時刻表現は同じ
+    （``EPOCH_CONVERTERS`` の受理集合を唯一の定義として読む）で、判定の順序も同じ。
+    したがって `epoch_millis(v) // 1000 == epoch_seconds(v)` が全受理表現で成り立ち、
+    「窓が通した点の time 列が窓の外」（§6.5.0 が禁じる食い違い）が起こらない。
+
+    なぜ秒ではなく本関数が要るか（実測・2026-09-10）:
+        実ティック 1 ヶ月 run（JP225 2026-01）の評価点 1,036,394 行のうち
+        **407,745 行（39.3%）** が秒精度では他の行と同じ時刻になり、1 つの秒を
+        最大 14 行が共有していた。時間軸としての推移が読めない。
+
+    事前条件: ``value`` は ``EPOCH_CONVERTERS`` が扱える時刻表現。
+    事後条件: UTC 基準の epoch ミリ秒を返す。ミリ秒より細かい成分は切り捨てる。
+    例外: 未対応の表現は ``ConfigError``（`epoch_seconds` と同じ契約・推測で解釈しない）。
+        下の添字が `KeyError` になる状態（2 表の食い違い）は
+        `_verify_the_two_tables_cover_the_same_set` が読込時に排除しているため、
+        本関数から出る例外は ``ConfigError`` だけである。
+    """
+    # 受理集合と判定順は `EPOCH_CONVERTERS` が唯一持つ（ここで列挙し直さない）。
+    for matches, _convert, _tag in EPOCH_CONVERTERS:
+        if matches(value):
+            return _MILLIS_CONVERTERS[matches](value)
+    raise ConfigError(
+        f"epoch ミリ秒へ正規化できない時刻表現です: {type(value).__name__}",
         context={"value_type": type(value).__name__, "value": str(value)},
     )

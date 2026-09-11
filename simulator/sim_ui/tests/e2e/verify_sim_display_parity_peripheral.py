@@ -11,7 +11,12 @@ fixture は移植元 `report_ui/tests/e2e/verify_parity.py` の 2 区間 payload
 verify_parity.py 自体は 1 文字も変えない（別テストが自分用に payload を augment する）。
 
 採用点（一致率 100% の分母・基本設計書 §13 パリティ点）:
-    P1  共通 4 タブのみ（sim は detail/heat/compare/glossary・graph/report は流用しない）
+    P1  タブ帯が宣言（`SIM_TAB_NAMES`）と過不足なく一致し、移植元から流用すべきタブを
+        取り落としていない（graph/report は流用しない）。**期待値は宣言と移植元の実タブ
+        から導出する**——リテラルの集合は書かない（工程 5 レビュー 🔴-1）
+    P19 分析タブの面が実際に生えている（合成根が `mountTraceAnalysis` を呼んでいる）。
+        ISSUE-291 型「受け口はあるのに呼ばれない」を捕らえる唯一の検査（静的検査では
+        到達可能性を証明できない・工程 5 実測）
     P2  ヒートマップ 5 ビュー全セル（2 区間なので IS/OOS 損益差ビューも出る）
     P3  セルクリック → 抽出連動（activeFilter・#tradeTable dim・#chartBadge）
     P4  contactsToMarkers 戻り値突合（両画面で同一実体を import して呼ぶ）
@@ -115,6 +120,43 @@ def _build_sim_web_root(tmp_path: Path) -> Path:
 
 _TABS = """() => [...document.querySelectorAll('.mv-tab')].map((t) => t.dataset.tab)"""
 
+#: タブ帯の**宣言そのもの**（`SIM_TAB_NAMES`）を配信中の実モジュールから読む。
+#:
+#: 期待値をテストへ書き写さない（工程 5 レビュー 🔴-1）。段階 4 以前は
+#: 共通タブ名の集合リテラルを手書きしており、タブを 1 枚足したとき
+#: 「実装は正しいのに検定が赤」になった——しかも本ファイルは `verify_*.py` 命名で
+#: **既定の pytest 収集に載らない**（ISSUE-378 #2）ため、その赤は自動では見えなかった。
+#: ソーステキストの解析でもなく、**実際に配信されている ES モジュールの export** を読む。
+_SIM_TAB_DECLARATION = """async () => {
+  const m = await import('/sim/js/adapter/front/sim_tabs_view.js');
+  return [...m.SIM_TAB_NAMES];
+}"""
+
+#: 分析タブの名前の宣言（`sim_trace_view.js` が所有）。ここでも綴りを書き写さない。
+_ANALYSIS_TAB_NAME = """async () => {
+  const m = await import('/sim/js/adapter/front/sim_trace_view.js');
+  return m.SIM_TRACE_TAB_NAME;
+}"""
+
+#: 分析ペインに面が**実際に生えているか**（合成根が mount を呼んだかの観測）。
+#:
+#: 静的検査では到達可能性を証明できない（`if (false)` で囲む変異が全ゲートを通ることを
+#: 工程 5 が実測した）。実ブラウザなら識別できる——`mountTraceAnalysis` は await の前に
+#: 同期で器を挿すため、分析 API が 404（本 e2e の配信面は静的のみ）でも面は生える。
+#: したがってこの観測は**呼ばれたか**だけを見ており、API の到達性には依存しない。
+_ANALYSIS_PANE = """(name) => {
+  const pane = document.querySelector('.mv-pane[data-pane="' + name + '"]');
+  if (!pane) return { pane: false, children: 0, hasRoot: false };
+  return {
+    pane: true,
+    children: pane.children.length,
+    hasRoot: !!pane.querySelector('.trace-analysis'),
+  };
+}"""
+
+#: 移植元から**流用しない**タブ（YAGNI・doc §流用）。宣言はこの 1 箇所だけが持つ。
+_NOT_PORTED = {"graph", "report"}
+
 _HEAT_VIEWS = """() => ({
   views: document.querySelectorAll('#heatHost .heatBlock').length,
   cells: document.querySelectorAll('#heatHost td.cell').length,
@@ -215,14 +257,55 @@ def test_sim_display_parity_peripheral(tmp_path: Path) -> None:
     try:
         sim, sim_httpd, sim_errors = _sim_page(browser, tmp_path)
 
-        # P1: 共通 4 タブ。sim は 4 つちょうど・reference はその上位集合（graph/report を持つ）。
+        # P1: タブ帯が**宣言と過不足なく一致**し、移植元から流用すべきタブを取り落として
+        #     いないこと。期待値は宣言（`SIM_TAB_NAMES`）と移植元の実タブから**導出**する
+        #     ——リテラルの集合を書かない（工程 5 レビュー 🔴-1 の根本是正）。
         ref_tabs = ref.evaluate(_TABS)
         sim_tabs = sim.evaluate(_TABS)
-        common = {"detail", "heat", "compare", "glossary"}
-        assert set(sim_tabs) == common, f"P1 sim タブ: {sim_tabs}"
-        assert common.issubset(set(ref_tabs)), f"P1 reference タブ: {ref_tabs}"
-        assert {"graph", "report"} & set(sim_tabs) == set(), f"P1 sim に graph/report: {sim_tabs}"
+        declared = set(sim.evaluate(_SIM_TAB_DECLARATION))
+        assert declared, "SIM_TAB_NAMES を読めていない（宣言が空なら以下が恒真になる）"
+        # 宣言 ⇔ 生成物（過不足なし）。
+        assert set(sim_tabs) == declared, f"P1 sim タブ: {sim_tabs} vs 宣言 {declared}"
+        # 移植元から流用すべきタブ（流用しない 2 つを除いた全部）を落としていない。
+        inherited = set(ref_tabs) - _NOT_PORTED
+        assert inherited, f"P1 reference タブ: {ref_tabs}"
+        assert inherited <= set(sim_tabs), f"P1 流用漏れ: {inherited - set(sim_tabs)}"
+        # 流用しない 2 つは出さない（P1 の元の意図）。
+        assert _NOT_PORTED & set(sim_tabs) == set(), f"P1 sim に graph/report: {sim_tabs}"
         passed.append("P1")
+
+        # P19: 分析タブの面が**実際に生えている**（合成根が mountTraceAnalysis を呼んで
+        #      いる）。ISSUE-291 型（受け口はあるのに呼ばれない）を捕らえる唯一の検査で
+        #      ある——静的検査では到達可能性を証明できない（工程 5 が `if (false)` で囲む
+        #      変異が全ゲートを通ることを実測）。
+        analysis_tab = sim.evaluate(_ANALYSIS_TAB_NAME)
+        assert analysis_tab, "SIM_TRACE_TAB_NAME を読めていない"
+        assert analysis_tab in declared, f"P19 宣言に {analysis_tab} が無い: {declared}"
+        analysis = sim.evaluate(_ANALYSIS_PANE, analysis_tab)
+        assert analysis["pane"] is True, f"P19 分析ペインが無い: {analysis}"
+        assert analysis["hasRoot"] is True, (
+            f"P19 分析ペインに面が生えていない＝合成根が mountTraceAnalysis を"
+            f"呼んでいない（口はあるが呼ばれない・ISSUE-291 型）: {analysis}"
+        )
+        assert analysis["children"] >= 1, f"P19 分析ペインが空: {analysis}"
+        # **陰性対照**（工程 5 再レビュー 🟡-A）: 面が生えているのは分析ペインだけである。
+        #   これが無いと、観測式を定数へ書き換えるだけで production が壊れていても緑になる
+        #   （実測: `hasRoot` と children を両方定数化すると `if (false)` でも 2 passed）。
+        #   children は識別力が薄い（全ペインが 1 以上）ため、実質の観測は `hasRoot` 1 本で
+        #   あり、その 1 本が定数化されていないことを対照で固定する。
+        #   実測: analysis のみ True、detail / heat / compare / glossary はすべて False。
+        others = declared - {analysis_tab}
+        assert others, f"P19 陰性対照の対象が無い: {declared}"
+        for other in sorted(others):
+            probe = sim.evaluate(_ANALYSIS_PANE, other)
+            assert probe["pane"] is True, f"P19 ペインが無い: {other} {probe}"
+            assert probe["hasRoot"] is False, (
+                f"P19 陰性対照が破れた——{other} にも面が生えている。観測式が定数化された"
+                f"か、面が誤ったペインへ挿されている: {probe}"
+            )
+        # 移植元にはこのタブが無い（sim 固有の増分であることの対照）。
+        assert analysis_tab not in set(ref_tabs), f"P19 reference に {analysis_tab}"
+        passed.append("P19")
 
         # 17: サマリーカード（report タブ・#summaryCard）は sim に無い。
         assert sim.query_selector('[data-tab="report"]') is None, "17 sim に report タブ"

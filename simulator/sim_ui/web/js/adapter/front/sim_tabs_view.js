@@ -15,14 +15,28 @@
 //
 // lwc・report.json・CSS には触らない（DOM だけを知る・裁定 B）。
 
-/** 共通 4 タブ（この順で帯へ並ぶ・移植元の並びから graph/report を除いたもの）。 */
-export const SIM_TAB_NAMES = Object.freeze(["detail", "heat", "compare", "glossary"]);
+/** タブ名（この順で帯へ並ぶ）。移植元の並びから graph/report を除き、分析タブを 1 枚足す。
+ *
+ * `analysis` は段階 4（RUN_TRACE_BASIC_DESIGN §9.1）で加えた。中身は
+ * `sim_trace_view.js` が持ち、名前の一致は `sim_trace_view.test.js` が固定する
+ * （宣言が 2 つに割れて「タブは在るが誰も挿さない」形を作らない）。
+ *
+ * ここを増やしたときに何が自動で追随するか: タブ帯・ペイン・全単射の検定は本宣言から
+ * 導出される（`sim_tabs_view.test.js`）。**追随しないのは下の `TAB_LABELS` だけ**であり、
+ * その取り落としは同検定の「ラベルが空でない」表明が赤にする。
+ */
+export const SIM_TAB_NAMES = Object.freeze([
+  "detail", "heat", "compare", "analysis", "glossary",
+]);
 
-/** タブ帯のラベル（移植元 index.html:47-52 の文言）。 */
+/** タブ帯のラベル（移植元 index.html:47-52 の文言＋段階 4 の 1 枚）。 */
 const TAB_LABELS = Object.freeze({
   detail: "取引明細 (Trade Detail)",
   heat: "ヒートマップ (Heatmap)",
   compare: "⚖ 比較・判定 (IS vs OOS)",
+  // 既存の Balance / Drawdown 窓は**残高ベース**であり、こちらは equity（含み損益込み）・
+  // 証拠金・維持率・保有玉数という別の量である（§9.1）。名前でその違いが読めるようにする。
+  analysis: "口座推移・事象 (Equity / Margin / Events)",
   glossary: "用語説明 (Glossary)",
 });
 

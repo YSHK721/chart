@@ -69,6 +69,8 @@ from simulator.usecase.tick_schedule import TickSchedule
 
 _POINT_SIZE = 0.00001
 _EPOCH = 1_704_067_200  # 2024-01-01T00:00:00Z
+#: `time` 列の単位（epoch ミリ秒・§9.0）と窓の単位（epoch 秒・§6.4）の換算。
+_MILLIS_PER_SECOND = 1000
 
 
 # ---- 手組みの入力（列の意味を値で縛る） ----
@@ -266,7 +268,9 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
         trace.observe(_point(bar=bar, tick_time=tick_time), _Account(), [], False)
 
         # Assert: バー時刻ではなくティック時刻（37 秒ぶん進んでいる）。
-        assert trace.columns["time"] == [_EPOCH + 37]
+        # 単位は epoch **ミリ秒**（§9.0 の是正）。秒未満の保存そのものは
+        # `test_columnar_run_trace_millis.py` が測る。
+        assert trace.columns["time"] == [(_EPOCH + 37) * _MILLIS_PER_SECOND]
 
     @pytest.mark.parametrize(
         "granularity,tick_ordinal,synthetic",
@@ -281,7 +285,7 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
     ):
         """契約上宣言された不在（ティックを持たない点）への充当であること。
 
-        `epoch_seconds(None)` は `ConfigError` になるため、充当が無ければ
+        `epoch_millis(None)` は `ConfigError` になるため、充当が無ければ
         「ティックを持たない点が 1 つでもある run」は記録できない。
         """
         # Arrange
@@ -295,11 +299,15 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
             _Account(), [], False,
         )
 
-        # Assert
-        assert trace.columns["time"] == [_EPOCH + 300]
+        # Assert（§9.0: `bar.time` 由来の点は ×1000）
+        assert trace.columns["time"] == [(_EPOCH + 300) * _MILLIS_PER_SECOND]
 
-    def test_the_time_column_is_an_epoch_second_integer(self):
-        """§7.2 通過条件 5: 型を検定で固定する（`datetime64` を素で載せない）。"""
+    def test_the_time_column_is_an_epoch_millisecond_integer(self):
+        """§7.2 通過条件 5: 型を検定で固定する（`datetime64` を素で載せない）。
+
+        §9.0 の是正で単位が epoch 秒 → epoch **ミリ秒**になった。int であることは
+        単位に依らず要求される（parquet の int64 列・JSON 整数）ので、両方を固定する。
+        """
         # Arrange
         trace = ColumnarRunTrace(_unbounded())
         bar = _bar(0)
@@ -309,12 +317,14 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
         trace.observe(_point(bar=bar, tick_time=None), _Account(), [], False)
         trace.observe(_point(bar=bar, tick_time=_EPOCH + 12), _Account(), [], False)
 
-        # Assert: どちらの表現からも epoch 秒の int になる。
-        assert trace.columns["time"] == [_EPOCH, _EPOCH + 12]
+        # Assert: どちらの表現からも epoch ミリ秒の int になる。
+        assert trace.columns["time"] == [
+            _EPOCH * _MILLIS_PER_SECOND, (_EPOCH + 12) * _MILLIS_PER_SECOND
+        ]
         assert all(type(v) is int for v in trace.columns["time"]), trace.columns["time"]
 
     def test_an_unsupported_time_representation_fails_loudly(self):
-        """推測で解釈しない（`epoch_seconds` の契約をそのまま負う）。"""
+        """推測で解釈しない（epoch_millis の契約をそのまま負う）。"""
         # Arrange
         trace = ColumnarRunTrace(_unbounded())
 
@@ -323,13 +333,27 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
             trace.observe(_point(tick_time="2024-01-01"), _Account(), [], False)
 
     def test_the_module_derives_the_epoch_in_exactly_one_place(self):
-        """構文木で `epoch_seconds` の呼出が 1 箇所であることを固定する。
+        """構文木で時刻正規化の呼出が 1 箇所であることを固定する。
 
         2 箇所で導出すると、窓判定側と列出力側で別の値になりうる（例外を出さずに
         「窓が通した点の `time` 列が窓の外」が起きる）。
+
+        見る名前は単一ソースの**公開面**（`simulator/domain/bar_time.py` の
+        `epoch_seconds` / epoch_millis）である。§9.0 で出力単位が 2 つになったため、
+        `epoch_seconds` だけを数える形では「両方を呼ぶ」実装が素通りする——
+        単位を増やした結果として導出が 2 回になる形こそ、この検定が禁じたいものである。
         """
         # Arrange
         import simulator.adapter.trace.columnar_run_trace as mod
+        from simulator.domain import bar_time
+
+        # 名前の一覧を手書きしない: 単一ソースが公開する正規化関数を導出する。
+        normalisers = {
+            name
+            for name in dir(bar_time)
+            if name.startswith("epoch_") and callable(getattr(bar_time, name))
+        }
+        assert {"epoch_seconds", "epoch_millis"} <= normalisers, normalisers
 
         # Act
         tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
@@ -338,7 +362,7 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "epoch_seconds"
+            and node.func.id in normalisers
         ]
 
         # Assert
@@ -347,10 +371,14 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
     def test_the_window_is_asked_about_exactly_the_value_that_lands_in_the_time_column(
         self,
     ):
-        """窓判定と列出力が**同じ値**を使うこと（導出が 2 箇所に無いことの実測）。
+        """窓判定と列出力が**同じ導出値**を使うこと（導出が 2 箇所に無いことの実測）。
 
         `tick_time != bar.time` の点だけで構成した入力で測る。片方が `bar.time` を、
         もう片方が `tick_time` を使う実装なら、問われた値と記録された値がずれる。
+
+        §9.0 以降、問われるのは epoch **秒**（窓の JSON 契約）・記録されるのは epoch
+        **ミリ秒**である。両者は同一の導出値の単位換算なので、`time // 1000` が
+        問われた値と厳密に一致しなければならない（ここが緩むと食い違いが通る）。
         """
         # Arrange
         bar = _bar(0)
@@ -375,9 +403,15 @@ class TestTheTimeColumnComesFromTheSingleDerivation:
                 _Account(), [], False,
             )
 
-        # Assert: 問われた値の並びは全点ぶん、記録された値はその部分列（同じ値）。
+        # Assert: 問われた値の並びは全点ぶん、記録された値はその部分列（同じ導出値）。
         assert asked == [_EPOCH + o for o in offsets]
-        assert trace.columns["time"] == [e for e in asked if e < _EPOCH + 30]
+        assert trace.columns["time"] == [
+            e * _MILLIS_PER_SECOND for e in asked if e < _EPOCH + 30
+        ]
+        # 単位換算だけであること（2 度目の導出なら一致しない）。
+        assert [t // _MILLIS_PER_SECOND for t in trace.columns["time"]] == [
+            e for e in asked if e < _EPOCH + 30
+        ]
         # 正の対照: 全通し・全弾きなら「同じ値」の表明が痩せる。
         assert 0 < len(trace.columns["time"]) < len(asked), (trace.columns["time"], asked)
 
@@ -555,7 +589,11 @@ class TestTheRecordedRowsAreExactlyTheEvaluationPointsInsideTheWindow:
         # 正の対照: 窓内が空なら上のすべてが恒真になる。
         assert schedule.in_window, "窓内の評価点が 0 件（検定が何も測っていない）"
         # 記録された `time` はすべて窓の中にある（列と窓判定の一致）。
-        assert all(_EPOCH + 120 <= t < _EPOCH + 300 for t in trace.columns["time"])
+        # 窓は epoch 秒・`time` 列は epoch ミリ秒（§9.0）なので秒位で比べる。
+        assert all(
+            _EPOCH + 120 <= t // _MILLIS_PER_SECOND < _EPOCH + 300
+            for t in trace.columns["time"]
+        )
 
     def test_the_recorded_rows_do_not_grow_with_the_number_of_bars(self):
         """オーダー: 記録量は窓が決め、run 長が決めない。"""

@@ -1,7 +1,11 @@
-"""sim core を包む 5 本の**委譲面の宣言**を固定する（ISSUE-502 段階 5B・中 14/15）。
+"""sim core を包む 6 本の**委譲面の宣言**を固定する（ISSUE-502 段階 5B・中 14/15）。
+
+段階 4（ISSUE-508・§9.2）で trace 層が 6 本目として加わった。本モジュールの `_WRAPPERS` /
+`_SURFACE_CHAIN` は「層を足したらここへ 1 行足す」拡張点であり、足し忘れは
+規則 5（面は単調に増える）と規則 4（宣言と実体の一致）が赤にする。
 
 是正前の形と、それが害である理由:
-    5 本（indicators / ea-series / run-options / settings-schema / display）は
+    各層（indicators / ea-series / run-options / settings-schema / trace / display）は
     __getattr__ で「自分が持たない属性はすべて内側へ」渡していた。転送する面が
     どこにも宣言されていないため、**内側が面を失っても包み手は無言で組み上がり**、
     そのルートへ最初のリクエストが来たときに初めて ``AttributeError`` になる
@@ -10,10 +14,10 @@
     同型の欠陥は ``sim_ui/adapter/causal_compute_ports.py`` が対照実験つきで既に
     裁定している（実測 2026-09-03: 動的フォールバックがあると period_start の
     明示委譲を落としても **99 を返して成功**し、面の委譲を確かめる既存検定も緑のまま
-    通った）。本モジュールは同じ規律を 5 本へ適用したことを機械的に固定する。
+    通った）。本モジュールは同じ規律を全層へ適用したことを機械的に固定する。
 
 固定する規則:
-    1. 5 本のどれも __getattr__ を持たない（透過委譲の再出現を Red にする）。
+    1. どの層も __getattr__ を持たない（透過委譲の再出現を Red にする）。
     2. 宣言に無い名は解決しない（内側が持っていても素通ししない）。
     3. 宣言した名が内側に無ければ **構築時に** 落ちる（起動時 fail-stop）。
     4. 本番の合成根で組んだ App から、宣言した全名が実際に引ける（宣言と実体の一致）。
@@ -43,6 +47,7 @@ from simulator.sim_ui.framework import (
     serve_sim_indicators,
     serve_sim_run_options,
     serve_sim_settings_schema,
+    serve_sim_trace,
 )
 from simulator.sim_ui.framework.serve_sim_display import (
     SIM_DISPLAY_SURFACE,
@@ -65,6 +70,7 @@ from simulator.sim_ui.framework.serve_sim_settings_schema import (
     SIM_SETTINGS_SCHEMA_SURFACE,
     SimSettingsSchemaApp,
 )
+from simulator.sim_ui.framework.serve_sim_trace import SIM_TRACE_SURFACE, SimTraceApp
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 
 #: 包み手 5 本（モジュール, クラス, 内側へ要求する宣言面）。層を足したらここへ 1 行足す。
@@ -73,7 +79,9 @@ _WRAPPERS = (
     (serve_sim_ea_series, SimEaSeriesApp, SIM_INDICATOR_SURFACE),
     (serve_sim_run_options, SimRunOptionsApp, SIM_EA_SERIES_SURFACE),
     (serve_sim_settings_schema, SimSettingsSchemaApp, SIM_RUN_OPTIONS_SURFACE),
-    (serve_sim_display, SimDisplayApp, SIM_SETTINGS_SCHEMA_SURFACE),
+    # ISSUE-508 段階 4（§9.2）: 実行トレース分析 API の層。
+    (serve_sim_trace, SimTraceApp, SIM_SETTINGS_SCHEMA_SURFACE),
+    (serve_sim_display, SimDisplayApp, SIM_TRACE_SURFACE),
 )
 
 #: 外側ほど面が広くなる順（規則 5 の突き合わせ対象）。
@@ -83,6 +91,7 @@ _SURFACE_CHAIN = (
     ("SIM_EA_SERIES_SURFACE", SIM_EA_SERIES_SURFACE),
     ("SIM_RUN_OPTIONS_SURFACE", SIM_RUN_OPTIONS_SURFACE),
     ("SIM_SETTINGS_SCHEMA_SURFACE", SIM_SETTINGS_SCHEMA_SURFACE),
+    ("SIM_TRACE_SURFACE", SIM_TRACE_SURFACE),
     ("SIM_DISPLAY_SURFACE", SIM_DISPLAY_SURFACE),
 )
 

@@ -66,6 +66,10 @@ const RUN_LAYOUT = "sim_run_layout_view.js";
 const REPORT_VIEW_URL = "report_view_url.js";
 // ISSUE-508 段階 3（§6.6.2）: 実行トレースの指定面（明示 ON ＋期間・DOM だけ）。
 const TRACE_PANEL = "sim_trace_panel_view.js";
+// ISSUE-508 段階 4（§9.1/§9.2）: 分析タブの面（DOM だけ）と分析 API の取得（HTTP だけ）。
+const TRACE_VIEW = "sim_trace_view.js";
+const TRACE_CLIENT = "trace_analysis_client.js";
+const ANALYSIS_ROOT = "composition_root_analysis.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -85,8 +89,54 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     SETTINGS_CLIENT, TESTER_PANEL, DATE_PICKER,
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
-    TRACE_PANEL,
+    TRACE_PANEL, TRACE_VIEW, TRACE_CLIENT, ANALYSIS_ROOT,
   ].sort());
+});
+
+// --- 1g. 分析タブは面と通信を分ける（ISSUE-508 段階 4・§9.3）-------------------------
+// 「見せ方」と「どう取るか」は別の理由で変わる。混ぜると、描画を確かめるのに通信の
+// ダブルが要る（逆も同じ）。M6/M7 と同じ分け方で保つ。
+
+test("the trace analysis view imports nothing (面は依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(TRACE_VIEW)), []);
+});
+
+test("the trace analysis client imports nothing (通信面は依存 0)", () => {
+  assert.deepEqual(importSpecifiers(read(TRACE_CLIENT)), []);
+});
+
+test("the trace analysis client touches no DOM (描画は面の責務)", () => {
+  const src = read(TRACE_CLIENT);
+  for (const forbidden of [/\bdocument\b/, /createElement/, /appendChild/, /textContent/]) {
+    assert.ok(!forbidden.test(src),
+      `${TRACE_CLIENT} が ${forbidden} に触れています（HTTP だけの面で保つこと）`);
+  }
+});
+
+test("the display root actually calls the analysis root (ISSUE-291 の再発防止)", () => {
+  // `composition_root_front.js` は `/sim/report-js/*` を絶対 URL で import するため node
+  // から読み込めない。したがって「呼んでいること」はソーステキストで固定する。呼び出しが
+  // 消えると分析タブは開くが中身が永遠に空になる（受け口はあるのに結線が死ぬ形）。
+  const src = read(ROOT);
+  assert.ok(importSpecifiers(src).includes(`./${ANALYSIS_ROOT}`),
+    `${ROOT} が ${ANALYSIS_ROOT} を import していない`);
+  assert.match(src, /mountTraceAnalysis\(\s*\{/,
+    `${ROOT} が mountTraceAnalysis を呼んでいない`);
+  assert.match(src, /pane:\s*view\.elements\.paneAnalysis/,
+    `${ROOT} が分析ペインを渡していない（別の場所へ挿している）`);
+});
+
+test("the analysis root only depends on the analysis pair (結線だけを持つ)", () => {
+  assert.deepEqual(importSpecifiers(read(ANALYSIS_ROOT)).sort(),
+    [`./${TRACE_CLIENT}`, `./${TRACE_VIEW}`].sort());
+});
+
+test("the trace analysis view issues no request (取得は通信面の責務)", () => {
+  const src = read(TRACE_VIEW);
+  for (const forbidden of [/\bfetch\b/, /XMLHttpRequest/]) {
+    assert.ok(!forbidden.test(src),
+      `${TRACE_VIEW} が ${forbidden} に触れています（DOM だけの面で保つこと）`);
+  }
 });
 
 // --- 1f. 版面は面の実装を知らない（ISSUE-441）------------------------------------------

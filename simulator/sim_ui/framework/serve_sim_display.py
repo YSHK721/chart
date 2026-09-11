@@ -34,23 +34,24 @@ from simulator.sim_ui.framework.serve_sim_jobs import (  # noqa: F401
     make_server,
     serve,
 )
-from simulator.sim_ui.framework.serve_sim_settings_schema import (
-    SIM_SETTINGS_SCHEMA_SURFACE,
-)
+from simulator.sim_ui.framework.serve_sim_trace import SIM_TRACE_SURFACE
 from simulator.sim_ui.framework.static_prefix_routes import StaticPrefixRoutes
 
 #: `SimDisplayApp` が差し出す面。本層は API を 1 本も足さないので、内側の面と同一である。
-SIM_DISPLAY_SURFACE: "tuple[str, ...]" = SIM_SETTINGS_SCHEMA_SURFACE
+#: 内側の面が増えたら**ここが追随する**のがこの層の OCP 拡張点である（宣言を 1 つ差し替える
+#: だけで、転送の機構も応答 byte も変わらない。先例: ea-series → run-options →
+#: settings-schema → trace の 4 本とも同じ差し替えで足りている）。
+SIM_DISPLAY_SURFACE: "tuple[str, ...]" = SIM_TRACE_SURFACE
 
 
-@delegates_to_inner(*SIM_SETTINGS_SCHEMA_SURFACE)
+@delegates_to_inner(*SIM_TRACE_SURFACE)
 class SimDisplayApp:
     """`SimIndicatorApp` を包み、静的配信の根を prefix で足したアプリケーション面。
 
     ``inner``: `SimIndicatorApp`（配信面 ＋ ジョブ実行系 ＋ 指標一覧）。
     ``static_routes``: ``{prefix: serve(handler, path) を持つ配信器}``。
 
-    内側へ転送する面は `SIM_SETTINGS_SCHEMA_SURFACE`（宣言）。宣言に無い名は解決しない。
+    内側へ転送する面は `SIM_TRACE_SURFACE`（宣言）。宣言に無い名は解決しない。
     """
 
     def __init__(self, *, inner: Any, static_routes: "Mapping[str, Any]") -> None:

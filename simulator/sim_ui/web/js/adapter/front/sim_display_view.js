@@ -33,6 +33,7 @@ export const SIM_DISPLAY_IDS = Object.freeze({
   toggleContacts: "toggleContacts", // 接点マーカー表示トグル（chartWrap 内・badge の後）
   heatHost: "heatHost",       // ヒートマップの描画先（buildHeatmap の host）
   paneCompare: "pane-compare", // 比較・判定ペイン（sim_compare_view が中身を挿す）
+  paneAnalysis: "pane-analysis", // 分析ペイン（composition_root_analysis が中身を挿す・§9.1）
   paneGlossary: "pane-glossary", // 用語ペイン
   glossHost: "glossHost",     // 用語集の描画先（buildGlossary の host）
   clearFilter: "clearFilter", // 抽出フィルタ解除ピル（点18）
@@ -133,7 +134,7 @@ export function createSimDisplayView({ doc } = {}) {
     container.appendChild(buildChartWrap());
 
     // 下部タブ帯とペイン器は sim_tabs_view に委譲する（#bottom を写さない）。生成された
-    //   4 ペイン（detail/heat/compare/glossary）へ各受け皿を挿す。.mv-body（position:relative）
+    //   各ペイン（宣言 `SIM_TAB_NAMES`）へ受け皿を挿す。.mv-body（position:relative）
     //   があるので .mv-pane の absolute は器の中に収まる（Phase 4 事故の回帰の壁）。
     tabs = createSimTabsView({ doc });
     const bottom = tabs.mount(container);
@@ -147,6 +148,11 @@ export function createSimDisplayView({ doc } = {}) {
     // 比較ペインは sim_compare_view が中身を挿す（受け皿として id を与える）。
     panes.compare.id = SIM_DISPLAY_IDS.paneCompare;
 
+    // 分析ペイン（段階 4・§9.1）は `composition_root_analysis` が中身を挿す。ここが
+    // 中身を組まないのは、通信を伴う結線が表示器の責務ではないからである（既存の
+    // 比較ペインと同じ受け皿方式）。
+    panes.analysis.id = SIM_DISPLAY_IDS.paneAnalysis;
+
     panes.glossary.id = SIM_DISPLAY_IDS.paneGlossary;
     panes.glossary.appendChild(el("div", {
       className: "hint", textContent: "各レポート項目・グラフの役割と見方の説明。",
@@ -155,7 +161,8 @@ export function createSimDisplayView({ doc } = {}) {
     panes.glossary.appendChild(glossHost);
 
     Object.assign(elements, {
-      heatHost, paneCompare: panes.compare, paneGlossary: panes.glossary, glossHost,
+      heatHost, paneCompare: panes.compare, paneAnalysis: panes.analysis,
+      paneGlossary: panes.glossary, glossHost,
     });
 
     // 描画できないときの掲示（部分描画しない・fail-stop の表示面）。
