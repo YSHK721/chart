@@ -34,7 +34,9 @@ from pathlib import Path as _Path
 # ISSUE-087 🟡-3: repo 根/MP api の解決は venv の .pth（tools/install_dev_paths.py）が担う（実行時 sys.path 改変を撤去）。
 from common.forming_window import forming_patch  # noqa: E402  (差し替え規則の唯一の述語・F-9)
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
-from marketdata.tick_m1 import day_parquet_files, forming_bar_from_ticks  # noqa: E402
+# ISSUE-512 段階 2: 読み元（確定 parquet か受信ジャーナル）を解決する窓口から読む。指紋と実データが
+#   同じ窓口を通るので、ジャーナルへの追記は指紋にも実データにも同時に現れる。
+from marketdata.tick_day_source import day_tick_files, forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
 from marketdata.dataset_registry import TickTokenMissing  # noqa: E402  (台帳の記入漏れ専用型)
 from marketdata.session_day import session_bar_time, session_day_start  # noqa: E402
@@ -101,7 +103,7 @@ def _tick_source_fingerprint(
     try:
         s = pd.Timestamp(int(start_unix), unit="s")
         e = pd.Timestamp(int(end_unix), unit="s")
-        files = day_parquet_files(s.normalize(), e.normalize(), symbol=tree)
+        files = day_tick_files(s.normalize(), e.normalize(), symbol=tree)
         return tuple(
             (str(p), os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in files
         )

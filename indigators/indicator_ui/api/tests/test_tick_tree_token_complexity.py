@@ -85,7 +85,7 @@ class _TokenLedger:
             return {**_BAR, "time": int(start_unix)}
 
         monkeypatch.setattr(forming_bar_mod, "tick_tree_token", issuing)
-        monkeypatch.setattr(forming_bar_mod, "day_parquet_files", files)
+        monkeypatch.setattr(forming_bar_mod, "day_tick_files", files)
         monkeypatch.setattr(forming_bar_mod, "forming_bar_from_ticks", bars)
 
     @property
@@ -172,7 +172,7 @@ def test_every_resolved_token_reaches_the_tick_read(monkeypatch):
 def test_the_fingerprint_and_the_data_read_the_same_tree(monkeypatch):
     """指紋と実データ読取は **同一の** 枝を見る（読取側に 2 種類の枝が現れない）。
 
-    :func:`forming_bar` は指紋（``day_parquet_files``）と実データ（``forming_bar_from_ticks``）
+    :func:`forming_bar` は指紋（``forming_bar_mod.day_tick_files``）と実データ（``forming_bar_from_ticks``）
     の 2 点でティックへ触る。両者が別の木を指しても OHLCV は揃うため出力は正しいままで、
     記憶は毎回外れる（ISSUE-450 と同型）。読取が受け取った枝名が 1 種類であることで固定する。
     """
@@ -307,7 +307,7 @@ def test_the_invariant_catches_a_fingerprint_that_reads_another_tree(monkeypatch
     def _fingerprint_of_another_tree(start_unix, end_unix, tree):  # noqa: ANN001, ARG001
         s = pd.Timestamp(int(start_unix), unit="s")
         e = pd.Timestamp(int(end_unix), unit="s")
-        forming_bar_mod.day_parquet_files(s.normalize(), e.normalize(), symbol=other)
+        forming_bar_mod.day_tick_files(s.normalize(), e.normalize(), symbol=other)
         return None
 
     monkeypatch.setattr(

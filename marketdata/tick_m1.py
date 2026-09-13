@@ -661,7 +661,22 @@ def forming_bar_from_ticks(
     if not files:
         return None
     frames = [pd.read_parquet(p, columns=_TICK_COLUMNS) for p in files]
-    ticks = pd.concat(frames, ignore_index=True)
+    return forming_bar_from_frame(pd.concat(frames, ignore_index=True), start_unix, end_unix)
+
+
+def forming_bar_from_frame(ticks: pd.DataFrame, start_unix: int, end_unix: int) -> "dict | None":
+    """生ティック frame の ``[start_unix, end_unix)`` から形成中バー（mid OHLCV・1 本）を組む。
+
+    **集計規則の唯一の実体**（:func:`forming_bar_from_ticks` と
+    :func:`marketdata.tick_day_source.forming_bar_from_ticks` が共有する）。どこから読んだ
+    ティックか（確定 parquet か受信ジャーナルか）を知らない純粋集計であり、読み元の違いで
+    規則が 2 つに割れないよう読取から切り離してある（ISSUE-512 段階 2）。
+    窓内にティックが無ければ ``None``。
+    """
+    s = pd.Timestamp(start_unix, unit="s")
+    e = pd.Timestamp(end_unix, unit="s")
+    if e <= s:
+        return None
     ts, mid = _ts_and_mid(ticks)
     work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
     work = work[(work["ts"] >= s) & (work["ts"] < e)].sort_values("ts", kind="stable")

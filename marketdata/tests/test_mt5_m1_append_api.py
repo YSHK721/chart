@@ -194,10 +194,13 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
     # ISSUE-479 M-2: tick 木の権威 5 名は marketdata.tick_tree へ、CLI の main は
     # marketdata.tools.tick_m1_cli へ移した（tick_m1 は同一オブジェクトを再輸出する）。
     # 許容集合から 6 名が抜ける＝**縮小**であり、検定は緩まず強まる。
+    # ISSUE-512 段階 2（承認 2026-09-13）: 形成中バーの集計規則を読取から切り出した純関数
+    # ``tick_m1.forming_bar_from_frame`` を 1 名だけ足す。受信ジャーナルから読む側
+    # （marketdata.tick_day_source）と規則を共有し、規則が 2 つに割れないようにするため。
     assert public == {
         "ts_and_mid", "ticks_to_m1", "m1_csv_path",
         "build_m1_from_ticks", "last_m1_date", "append_m1_from_ticks",
-        "forming_bar_from_ticks", "append_m1_rows",
+        "forming_bar_from_ticks", "forming_bar_from_frame", "append_m1_rows",
     }
 
 

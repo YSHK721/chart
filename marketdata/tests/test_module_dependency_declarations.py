@@ -71,6 +71,16 @@ _ALLOWED: "dict[str, set[str]]" = {
         # 組む式が本モジュールへ復活し、レイアウト権威が 2 箇所になる。
         "marketdata.tick_tree",
     },
+    # 日別ティックの読み元の解決と読取（ISSUE-512 段階 2）。確定 parquet（tick_tree のレイアウト・
+    # tick_m1 の列と集計規則）と受信ジャーナル（mt5_ticks の形式とサーバ時刻 → UTC 変換）の
+    # **上位** に置く。mt5_ticks は tick_m1 を import するため、tick_m1 側へ置くと循環になる。
+    "tick_day_source.py": {
+        "pandas",
+        "marketdata.paths",
+        "marketdata.tick_tree",
+        "marketdata.tick_m1",
+        "marketdata.mt5_ticks",
+    },
 }
 
 _STDLIB_PREFIXES = {

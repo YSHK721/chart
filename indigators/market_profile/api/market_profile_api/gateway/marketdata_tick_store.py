@@ -12,7 +12,10 @@ import numpy as np
 import pandas as pd
 
 from marketdata import paths as _paths
-from marketdata.tick_m1 import day_parquet_files, ts_and_mid
+from marketdata.tick_m1 import ts_and_mid
+# ISSUE-512 段階 2: 日別ティックファイル＝確定 parquet か（無ければ）受信ジャーナル。列挙・読取・
+#   キャッシュ署名（day_files 由来）が同じ読み元を見る。
+from marketdata.tick_day_source import day_tick_files, read_day_ticks
 
 # ISSUE-178: 層間 DTO（不変）。gateway→compute を跨ぐ窓ティックは frozen dataclass で返す。
 from market_profile_api.compute.rollup_dto import TickWindow
@@ -32,7 +35,7 @@ class MarketdataTickStore:
         ISSUE-183: ``pd.Timestamp`` 化は本 gateway の内側に閉じる（compute 所有のポート契約から
         pandas 型を除去する）。``pd.Timestamp(int)`` は **ナノ秒**解釈のため ``unit="s"`` を必須とする。
         """
-        return day_parquet_files(
+        return day_tick_files(
             pd.Timestamp(int(lo_day), unit="s"),
             pd.Timestamp(int(hi_day), unit="s"),
             symbol=symbol,
@@ -45,7 +48,7 @@ class MarketdataTickStore:
         :meth:`load_window_ticks` の自己呼出）のため Port から降格した。テストが day parquet I/O を
         差し替える場合は本クラスを継承して本メソッドを override する。
         """
-        return pd.read_parquet(path, columns=list(columns))
+        return read_day_ticks(path, columns)
 
     def load_window_ticks(
         self,

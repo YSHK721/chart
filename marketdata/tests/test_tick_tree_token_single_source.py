@@ -36,7 +36,9 @@ _FORMING_BAR = (
 )
 
 #: ティック木を実際に読む関数。呼ぶなら **どの木か** を必ず名指しする。
-_TICK_READERS = frozenset({"day_parquet_files", "forming_bar_from_ticks"})
+#: ISSUE-512 段階 2: 読み元の列挙（`marketdata/tick_day_source.py` の day_tick_files）も
+#: 木を名指しする読取である。
+_TICK_READERS = frozenset({"day_parquet_files", "day_tick_files", "forming_bar_from_ticks"})
 
 
 def test_the_dwell_reader_does_not_name_any_dataset_ref():

@@ -208,3 +208,61 @@ def test_a_day_without_ticks_gets_an_empty_marker_and_no_parquet(store):
 def test_an_empty_day_is_not_listed_as_a_parquet_day(store):
     journal.finalize(_DAY, **store)
     assert tick_m1.day_parquet_files(_DAY, _DAY, **store) == []
+
+
+# =====================================================================
+# 途中から読む（ISSUE-512 段階 2: 読み手が O(新着) で追従するための読み口）
+# =====================================================================
+
+def test_reading_from_zero_returns_every_committed_row_and_the_end_offset(store):
+    """位置 0 から読むと全行と、次に読むべき位置（＝ファイル末尾）を返す。"""
+    rows = _rows((_ms(12), 1.0, 2.0), (_ms(12, 0, 1), 1.1, 2.1))
+    journal.append(_DAY, rows, **store)
+    path = journal.journal_path(_DAY, **store)
+
+    got, offset = journal.read_committed_from(path, 0)
+
+    assert got == rows
+    assert offset == path.stat().st_size
+
+
+def test_reading_from_an_offset_returns_only_the_rows_after_it(store):
+    """前回の位置から読むと、その後に追記された行だけを返す（既存分を読み直さない）。"""
+    first = _rows((_ms(12), 1.0, 2.0))
+    later = _rows((_ms(12, 0, 1), 1.1, 2.1), (_ms(12, 0, 2), 1.2, 2.2))
+    journal.append(_DAY, first, **store)
+    path = journal.journal_path(_DAY, **store)
+    _, offset = journal.read_committed_from(path, 0)
+    journal.append(_DAY, later, **store)
+
+    got, _ = journal.read_committed_from(path, offset)
+
+    assert got == later
+
+
+def test_a_torn_tail_is_left_for_the_next_read(store):
+    """書き掛けの末尾行は返さず、位置もその手前に留める（完結後の読取で拾える）。"""
+    journal.append(_DAY, _rows((_ms(12), 1.0, 2.0)), **store)
+    path = journal.journal_path(_DAY, **store)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("[1,2.0")
+    got, offset = journal.read_committed_from(path, 0)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(",3.0]\n")
+
+    rest, _ = journal.read_committed_from(path, offset)
+
+    assert len(got) == 1
+    assert rest == [(1, 2.0, 3.0)]
+
+
+def test_read_rows_and_reading_from_zero_both_drop_the_torn_tail(store):
+    """全行読み（``journal.read_rows``）も位置 0 からの読みも、書き掛けの末尾だけを落とす。"""
+    rows = _rows((_ms(12), 1.0, 2.0), (_ms(12, 0, 1), 1.1, 2.1))
+    journal.append(_DAY, rows, **store)
+    path = journal.journal_path(_DAY, **store)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("[9,9.0")
+
+    assert journal.read_rows(_DAY, **store) == rows
+    assert journal.read_committed_from(path, 0)[0] == rows

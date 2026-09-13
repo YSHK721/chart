@@ -96,14 +96,35 @@ def read_rows(day: Any, *, symbol: str, data_dir: Any) -> "List[Row]":
     path = journal_path(day, symbol=symbol, data_dir=data_dir)
     if not path.is_file():
         return []
-    text = path.read_text(encoding="utf-8")
-    lines = text.split("\n")
-    committed = lines[:-1]  # 末尾要素は最後の改行の後ろ＝空文字か torn 行。
-    return [
-        _parse_line(line, path=path, number=i)
+    return read_committed_from(path, 0)[0]
+
+
+def read_committed_from(path: Any, offset: int) -> "Tuple[List[Row], int]":
+    """``path`` のバイト位置 ``offset`` 以降のコミット済み行と、次に読むべき位置を返す。
+
+    **コミット判定（改行で終わった行だけが commit 済み・E-9）の唯一の実体**。全行読み
+    （:func:`read_rows`）は位置 0 からの本関数である。読み手が前回の位置を覚えていれば、
+    追記された分だけを ``O(新着)`` で読める（ISSUE-512 段階 2・
+    :mod:`marketdata.tick_day_source`）。書き掛けの末尾行は返さず、位置もその手前に留める
+    （完結した後の読取で拾える）。
+
+    ``offset`` は前回の戻り値（行の先頭）でなければならない。破損行の報告にある行番号は
+    ``offset`` から数えた番号である。
+    """
+    p = Path(path)
+    with open(p, "rb") as fh:
+        fh.seek(int(offset))
+        data = fh.read()
+    end = data.rfind(b"\n")
+    if end < 0:
+        return [], int(offset)                 # コミット済みの新しい行が無い
+    committed = data[: end + 1].decode("utf-8").split("\n")[:-1]
+    rows = [
+        _parse_line(line, path=p, number=i)
         for i, line in enumerate(committed, 1)
         if line
     ]
+    return rows, int(offset) + end + 1
 
 
 def tail_rows(day: Any, *, symbol: str, data_dir: Any) -> "List[Row]":
