@@ -15097,3 +15097,34 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 ### 関連
 - ISSUE-447（MT5 を第 2 の供給元として追加・V-1〜V-7 実測）
 - ISSUE-512（表示系の MT5 結線）
+
+## ISSUE-514: 宣言整合性検定 C1 が別名 import した記号を「到達不能」と誤判定する
+
+- **ステータス**: OPEN（承認待ち・検定ツールの修正はスコープ外のため y/n）
+- **起票日**: 2026-09-13
+- **発見の経緯**: Stop フック（`.claude/scripts/run_quality_gate.py`）が新規違反 1 件を報告。
+  `C1 simulator/sim_ui/usecase/query_trace.py:59 derive_trace_events.REQUIRED_COLUMNS
+  — 実在するが、このモジュールから到達不能（未 import）`。
+
+### 実測（2026-09-13）
+- 当該モジュールは `from simulator.sim_ui.usecase.derive_trace_events import REQUIRED_COLUMNS
+  as _EVENT_COLUMNS` で**実際に import している**。コメントは正しい。
+- C1 の定義（`declaration_integrity.py:8-9`）は「到達可能（import 済み or ローカル定義）」。
+  よって本件は定義に照らして**検定の誤判定**である。
+- 原因箇所: `declaration_integrity.py:147-151` の `bound_names` は `from M import X as Y` で
+  別名 `Y` だけを束縛名へ入れ、`M.X` を到達可能として記録しない。
+- 新規扱いになった理由: baseline の最終凍結は 2026-09-07（167eb9b5）、当該ファイルの追加は
+  2026-09-11（a8b3bb60・ISSUE-508 段階 4-B）。ISSUE-512 の変更とは無関係。
+- 修正案の実測（scratch で `bound_names` に `f"{module}.{name}"` を足して全体走査）:
+  C1 違反 1,786 → 1,748。消えた 38 件は**全件**が同一ファイル内の別名 from-import に
+  裏付けられる（機械照合 38/0）。新たに生じた違反 0 件。うち 37 件は baseline に凍結済み
+  （誤判定を凍結していた）。
+
+### 対策（根本・未実施）
+1. `bound_names` の ImportFrom で、別名があるとき `f"{node.module}.{a.name}"` を modules へ追加。
+2. `test_declaration_integrity.py` に別名 import の検定を追加（到達可能・検出力の陽性対照）。
+3. `run_quality_gate.py --prune-baseline` で解消 37 件を baseline から除去（削除専用）。
+- 通過条件: 全体走査で新規違反 0・追加違反 0・`test_static_quality.py` 緑。
+
+### 関連
+- ISSUE-508 段階 4-B（当該ファイルの追加）
