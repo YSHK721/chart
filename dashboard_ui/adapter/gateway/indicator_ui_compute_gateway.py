@@ -28,6 +28,7 @@ import json
 import time
 from typing import Any, Callable, Mapping
 
+from marketdata.dataset_registry import TickTokenMissing
 from marketdata.tf_meta import period_start_unix
 
 from dashboard_ui.adapter.gateway.material_store import MaterialStore
@@ -231,6 +232,14 @@ class IndicatorUiComputeGateway:
         cutoff = int(self._clock()) - DISPLAY_DELAY_SECONDS
         try:
             forming = mod.forming_bar(ref, tf, cutoff)
+        except TickTokenMissing:
+            # 台帳の記入漏れは素材の失敗ではなく設定の誤りなので、下の網で握らず通す
+            #   （ISSUE-512 段階 1）。ここは 2 つあるティック読取点の**先**であり、握ると
+            #   直後の early return で下の apply_forming_bar へ到達しない＝下だけ直しても
+            #   /dashboard 経路では効果が 0 になる（実測済み）。
+            #   `except ValueError: raise` にしてはならない: 注入バーの time 欄が非数値の
+            #   ときも ValueError であり、1 つの素材破損でシート全体が落ちる。
+            raise
         except Exception:  # noqa: BLE001 — 巻き戻し失敗でシート全体を落とさない（素通し）。
             return frame
         times = frame.index.values.astype("datetime64[s]").astype("int64")
@@ -257,6 +266,8 @@ class IndicatorUiComputeGateway:
             return mod.apply_forming_bar(
                 kept, ref, tf, cutoff, synthesize_closed_gaps=False
             )
+        except TickTokenMissing:
+            raise  # 同上（記入漏れは素材の失敗ではない）。上の読取点と同じ理由・同じ型で分ける。
         except Exception:  # noqa: BLE001 — 同上（形成中バーの注入失敗は確定分だけで続行）。
             return kept if len(kept) else frame
 

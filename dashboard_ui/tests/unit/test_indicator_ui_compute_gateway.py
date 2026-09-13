@@ -20,6 +20,7 @@ from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
     IndicatorUiComputeGateway,
 )
 from dashboard_ui.usecase.sheet_ports import SeriesSupplyUnavailable
+from marketdata.dataset_registry import TickTokenMissing
 
 REF = "jp225_tick"
 #: 2026-08-28 20:10:00 UTC。1m 足 4 本ぶんの素材。
@@ -569,3 +570,135 @@ def test_intraday_rows_newer_than_the_cutoff_are_dropped_as_before() -> None:
 
     assert len(bars) == 4
     assert bars[-1].time == START + 3 * 60
+
+
+# ------------------------------------ 台帳の記入漏れ（Fail-Stop）の境界（ISSUE-512 段階 1）
+# 用語（初出定義）:
+#   TickTokenMissing（marketdata/dataset_registry.py）
+#       ＝ datasetRef が tick=True なのに tick_token（読むべきティック木の枝名）が
+#         未記入のときに台帳が送出する専用例外。ValueError の派生。
+#   _as_of_display（dashboard_ui/adapter/gateway/indicator_ui_compute_gateway.py:216）
+#       ＝ 素材を表示時点へ巻き戻すメソッド。ティックへ触る呼び出しを 2 つ持つ:
+#         mod.forming_bar（:233）と mod.apply_forming_bar（:257）。いずれも包括的な
+#         except Exception で包まれており、前者は失敗時に早期 return する（:235）。
+class LedgerOmissionSpy(RewindSpy):
+    """`forming_bar_module` の指定した窓口だけが台帳の記入漏れで止まる bridge。
+
+    `failing` に "forming_bar" / "apply_forming_bar" のどちらかを渡す。素材の失敗と
+    区別するため、`error` に送出する例外を渡せる（既定は TickTokenMissing）。
+    """
+
+    def __init__(self, frames, *, failing, error=None, forming=None) -> None:
+        super().__init__(frames, forming=forming)
+        self._failing = failing
+        self._error = error or TickTokenMissing("datasetRef 'zz' は tick_token が未記入です")
+
+    def namespace(self) -> SimpleNamespace:
+        ns = super().namespace()
+        inner, failing, error = ns.forming_bar_module, self._failing, self._error
+
+        class FailingFormingModule:
+            @staticmethod
+            def forming_bar(ref, tf, cutoff):
+                if failing == "forming_bar":
+                    raise error
+                return inner.forming_bar(ref, tf, cutoff)
+
+            @staticmethod
+            def apply_forming_bar(df, ref, tf, cutoff, *, synthesize_closed_gaps):
+                if failing == "apply_forming_bar":
+                    raise error
+                return inner.apply_forming_bar(
+                    df, ref, tf, cutoff, synthesize_closed_gaps=synthesize_closed_gaps
+                )
+
+        ns.forming_bar_module = FailingFormingModule()
+        return ns
+
+
+#: `apply_forming_bar` まで到達させるための形成中バー（`forming_bar` が None だと :253 で返る）。
+_FORMING_AT_START = {"time": START + 3 * 60, "open": 1.0, "high": 2.0,
+                     "low": 0.5, "close": 1.5, "volume": 10.0}
+
+
+def _gateway(spy) -> IndicatorUiComputeGateway:
+    return IndicatorUiComputeGateway(
+        bridge=spy.namespace(), now=lambda: START + 3 * 60 + 12,
+    )
+
+
+def test_the_dashboard_entry_does_not_swallow_the_omission_at_the_fold() -> None:
+    """`mod.forming_bar`（:233）由来の記入漏れが `/dashboard` の入口で外へ出る。
+
+    この呼び出しは 2 つのうち **先に** 走り、失敗すると :235 で早期 return する。ここが
+    握ると、後段の `mod.apply_forming_bar`（:257）を直しても記入漏れはそこへ到達しない。
+    """
+    # Arrange
+    spy = LedgerOmissionSpy({"1m": frame(6)}, failing="forming_bar")
+
+    # Act / Assert
+    with pytest.raises(TickTokenMissing):
+        _gateway(spy).bars(dataset_ref=REF, timeframe="1m")
+
+
+def test_the_dashboard_entry_does_not_swallow_the_omission_at_the_injection() -> None:
+    """`mod.apply_forming_bar`（:257）由来の記入漏れが `/dashboard` の入口で外へ出る。"""
+    # Arrange
+    spy = LedgerOmissionSpy(
+        {"1m": frame(6)}, failing="apply_forming_bar", forming=_FORMING_AT_START,
+    )
+
+    # Act / Assert
+    with pytest.raises(TickTokenMissing):
+        _gateway(spy).bars(dataset_ref=REF, timeframe="1m")
+
+
+def test_the_dashboard_entry_still_passes_through_a_material_failure_at_the_fold() -> None:
+    """素材読込の失敗（torn-read / IO）は従来どおり素通し（シート全体を落とさない）。"""
+    # Arrange
+    spy = LedgerOmissionSpy(
+        {"1m": frame(6)}, failing="forming_bar", error=OSError("parquet torn read"),
+    )
+
+    # Act
+    bars = _gateway(spy).bars(dataset_ref=REF, timeframe="1m")
+
+    # Assert — 巻き戻さずに素材を素通し＝全 6 本がそのまま出る。
+    assert len(bars) == 6
+
+
+def test_the_dashboard_entry_still_passes_through_a_material_failure_at_the_injection() -> None:
+    """注入側の素材失敗も従来どおり素通し（確定分だけで続行）。"""
+    # Arrange
+    spy = LedgerOmissionSpy(
+        {"1m": frame(6)}, failing="apply_forming_bar",
+        error=OSError("parquet torn read"), forming=_FORMING_AT_START,
+    )
+
+    # Act
+    bars = _gateway(spy).bars(dataset_ref=REF, timeframe="1m")
+
+    # Assert — 形成中バーの時刻より古い確定分だけが残る。
+    assert len(bars) == 3
+
+
+@pytest.mark.parametrize("failing", ["forming_bar", "apply_forming_bar"])
+def test_the_dashboard_entry_still_swallows_a_plain_value_error(failing) -> None:
+    """素の ValueError は従来どおり握る（`except ValueError: raise` を落とすための境界）。
+
+    TickTokenMissing は ValueError の派生なので、境界を `except ValueError: raise` と
+    書けば 2 件の Red は通る。だが注入バーの破損（time 欄が非数値）も ValueError であり、
+    そちらまで貫通すると 1 つの素材破損でシート全体が落ちる。区別は型でしか付かない。
+    """
+    # Arrange
+    spy = LedgerOmissionSpy(
+        {"1m": frame(6)}, failing=failing,
+        error=ValueError("素材が壊れている（台帳の記入漏れではない）"),
+        forming=_FORMING_AT_START,
+    )
+
+    # Act
+    bars = _gateway(spy).bars(dataset_ref=REF, timeframe="1m")
+
+    # Assert — 握られて素通し（本数は経路で違うが、いずれも例外は出ない）。
+    assert len(bars) in (3, 6)

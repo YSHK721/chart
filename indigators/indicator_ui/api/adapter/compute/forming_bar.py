@@ -36,6 +36,7 @@ from common.forming_window import forming_patch  # noqa: E402  (差し替え規�
 from marketdata.resample import TIMEFRAME_RULES  # noqa: E402  (規則源・floor freq を導出)
 from marketdata.tick_m1 import day_parquet_files, forming_bar_from_ticks  # noqa: E402
 # セッション日境界（ISSUE-078）: 1D の期間始端と 1D バー time 規約（ラベル深夜）の唯一の規則源。
+from marketdata.dataset_registry import TickTokenMissing  # noqa: E402  (台帳の記入漏れ専用型)
 from marketdata.session_day import session_bar_time, session_day_start  # noqa: E402
 
 # ISSUE-087 🔴-1/🔴-2: tick ref・floor 規則・期間始端は marketdata.tf_meta（単一情報源）へ移設。
@@ -339,9 +340,10 @@ def closed_gap_bars(
           - 欠落が上限を超える → **直近** :data:`_MAX_GAP_FILL_PERIODS` 本だけ充填（暴走防御）
 
     Raises:
-        ValueError: 台帳にティック木の枝名が記入されていない ref のとき（Fail-Stop・
+        TickTokenMissing: 台帳にティック木の枝名が記入されていない ref のとき（Fail-Stop・
             ISSUE-512 段階 1）。これは素材の欠落ではなく台帳の記入漏れなので、下の
             周期単位 skip では握らない（握ると記入漏れが WARNING と歯抜けへ化ける）。
+            呼び出し側の境界も、包括的な握りより先にこの型を通す責務を負う。
     """
     period = closed_gap_period_seconds(ref, tf)
     if period is None:
@@ -445,9 +447,22 @@ def apply_forming_bar(df: "pd.DataFrame", ref: str, tf: str, now_unix: int, *,
 
     ライブ経路の堅牢化: 形成中バー算出（ticks parquet 読込）が torn-read / IO 失敗しても
     **指標計算を落とさず** ``df`` を素通しする（CSV 側 dataset の torn-read フォールバックと整合）。
+
+    Raises:
+        TickTokenMissing: 台帳にティック木の枝名が記入されていない ref のとき。上の堅牢化は
+            **素材の失敗に対するもの** であり、設定の誤りには適用しない。ここが握ると
+            ``/compute`` は記入漏れを WARNING 1 行で素通しし、しかも早期 return のため
+            :func:`closed_gap_bars` の Fail-Stop にも到達しない（ISSUE-512 段階 1 レビュー実測）。
     """
     try:
         bar = forming_bar(ref, tf, now_unix)
+    except TickTokenMissing:
+        # 台帳の記入漏れは **素材の失敗ではない**。下の網で握ると Fail-Stop が WARNING と
+        #   素通しへ化け、しかも早期 return で closed_gap_bars（下の合成）へ到達すらしない
+        #   ＝主経路での Fail-Stop の効果が 0 になる。型で分けて先に通す（ISSUE-512 段階 1）。
+        #   素の ValueError では分けられない: 注入バーの破損も ValueError であり、そこまで
+        #   貫通すると 1 つの素材破損で /compute 全体が落ちる。
+        raise
     except Exception as exc:  # noqa: BLE001 — parquet torn-read/IO 失敗は注入せず df 素通し（live 経路堅牢化）
         logger.warning("形成中バー算出に失敗（注入せず継続）: %s/%s (%s)", ref, tf, exc)
         return df

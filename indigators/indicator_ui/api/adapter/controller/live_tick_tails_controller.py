@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from adapter.compute import forming_bar as forming_bar_mod
+from marketdata.dataset_registry import TickTokenMissing
 from marketdata.resample import is_known_timeframe
 from marketdata.tf_meta import bar_time_unix, period_start_unix
 from adapter.compute.indicator_compute_adapter import IndicatorComputeAdapter
@@ -238,6 +239,13 @@ def handle_live_tick_tails(
                 inject=inject_forming_bars,
             )
             batches.append(tails_for_ticks(states, group_specs, tail_at, wanted=wanted))
+        except TickTokenMissing:
+            # 台帳の記入漏れは「その計算足の材料が無い」ではなく **設定の誤り** であり、落として
+            #   歯抜けにすると全 ref・全 tf で同じ穴が開いたまま出力は形式上正しく見える。
+            #   素の ValueError で分けてはならない: 上の _require_forming_time（注入バーの
+            #   time が非数値）も ValueError で、そちらまで貫通すると 1 つの材料破損で
+            #   /live_ticks の応答全体が落ちる（この except が避けている事態そのもの）。
+            raise
         except Exception:  # noqa: BLE001 — 記録したうえで当該計算足だけ落とす（無言にしない）。
             logger.exception(
                 "live_ticks: 末尾値の窓供給または計算に失敗（計算足=%s・指標=%s）"

@@ -51,8 +51,10 @@ class DatasetDescriptor:
             キー）、tick_token は「保存木のディレクトリ/ファイル名の語彙」であり、同じ銘柄を
             別供給元から取れば枝は分かれる（段階 3 の jp225_mt5）。``tick`` が False の ref は
             None（ティック木を持たない）。``tick`` が True で本欄が None なら Fail-Stop
-            （:func:`tick_tree_token` が ``ValueError`` を送出する。既定値へ落とすと新しい
-            ティック ref が無言で他銘柄の木を読み、出力は形式上正しいため検出できない）。
+            （:func:`tick_tree_token` が :class:`TickTokenMissing` を送出する。既定値へ落とすと
+            新しいティック ref が無言で他銘柄の木を読み、出力は形式上正しいため検出できない）。
+            握る側が ``except ValueError`` と書くとこの Fail-Stop は網に掛かる。読取側の境界は
+            :class:`TickTokenMissing` を名指しして先に通すこと（型名の詳細は同クラスの説明）。
     """
 
     path: Path
@@ -144,6 +146,22 @@ def tick_refs() -> "frozenset[str]":
     return frozenset(ref for ref, d in REGISTRY.items() if d.tick)
 
 
+class TickTokenMissing(ValueError):
+    """台帳の記入漏れ（``tick`` が True なのに ``tick_token`` が未記入）専用の例外。
+
+    素材（tick parquet）の torn-read / IO 失敗を握って継続する境界が本番経路に複数在り、
+    いずれも包括的な ``except Exception`` である。記入漏れを素の ``ValueError`` で送ると
+    その網に掛かり、WARNING と歯抜けへ化ける（落ちないぶん出力は形式上正しく、状態検証では
+    原理的に検出できない）。**型を分ける**ことで、境界は「素材の失敗は握る／台帳の記入漏れは
+    通す」を区別できる。
+
+    ``ValueError`` の派生にしてあるのは、記入漏れを ``ValueError`` として捕捉している既存の
+    呼び出し側の契約を変えないためである。逆に境界側で ``except ValueError: raise`` と
+    書いてはならない。注入バーの破損（time 欄が非数値）も ``ValueError`` であり、そこまで
+    貫通すると 1 つの素材破損で応答全体が落ちる。
+    """
+
+
 def tick_tree_token(ref: "str | None") -> "str | None":
     """``ref`` のティックがどの木の枝に在るかを台帳から引く（ISSUE-512 段階 1）。
 
@@ -159,16 +177,17 @@ def tick_tree_token(ref: "str | None") -> "str | None":
         ``None``。
 
     Raises:
-        ValueError: ``tick`` が True なのに ``tick_token`` が未記入のとき（Fail-Stop）。
+        TickTokenMissing: ``tick`` が True なのに ``tick_token`` が未記入のとき（Fail-Stop）。
             **既定値へフォールバックしない**。落とさずに既定の枝名を返すと、新しい
             ティック ref が無言で Dukascopy の木を読む。読めてしまうぶん出力は形式上正しく、
             状態検証（値の正しさ）では原理的に検出できない。記入漏れはここで止める。
+            ``ValueError`` の派生なので、既存の捕捉側の契約は変わらない。
     """
     d = REGISTRY.get(ref)
     if d is None or not d.tick:
         return None
     if d.tick_token is None:
-        raise ValueError(
+        raise TickTokenMissing(
             f"datasetRef {ref!r} は tick=True ですが tick_token が未記入です。"
             " marketdata.dataset_registry.REGISTRY の当該記述子へ、読むべきティック木の枝名"
             "（<DATA_DIR>/ticks/YYYY/MM/DD/<token>_ticks.parquet の <token>）を記入してください。"
@@ -179,6 +198,7 @@ def tick_tree_token(ref: "str | None") -> "str | None":
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
+    "TickTokenMissing",
     "whitelist",
     "clamp_refs",
     "rollup_refs",
