@@ -15128,3 +15128,35 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ### 関連
 - ISSUE-508 段階 4-B（当該ファイルの追加）
+
+## ISSUE-515: ISSUE-512 段階 3（jp225_mt5 の tick=True 化）の前提欠落 2 件（価格基準・ライブバッファのベンダ固定）
+
+- **ステータス**: OPEN（承認待ち・設計判断）
+- **起票日**: 2026-09-13
+- **発見の経緯**: ISSUE-512 段階 3 の着手前確認。台帳 1 行（tick=True）で `TICK_REFS` 経由の
+  全ティック経路が MT5 ref で起動するため、その経路の前提を実測した。
+
+### 実測（2026-09-13）
+**欠落 1: 形成中バーと MP が mid 固定（確定足は bid）**
+- `jp225_mt5` の確定 M1 は bid（`marketdata/mt5_ticks/ingest.py:58` `PRICE_BASIS = PRICE_BASIS_BID`）。
+- 形成中バーは `tick_m1.forming_bar_from_frame` が `_ts_and_mid`（mid 固定）。MP は
+  `market_profile_api/gateway/marketdata_tick_store.py` の `ts_and_mid`（mid 固定）。
+- 実データ 2026-09-11 01:00–07:00 UTC の 360 分で、形成中バー（mid）− 確定足（bid）の close は
+  **中央値 +7.5 / p5 5.0 / p95 10.0 / 一致率 0**。tick=True のままでは**確定のたびに約 7.5 跳ねる**。
+
+**欠落 2: ライブ tick バッファがプロセスに 1 つ・Dukascopy 固定**
+- `indigators/indicator_ui/api/framework/server.py:740` が引数なしの `LiveTickBuffer()` を 1 つ作り、
+  `live_tick_buffer.py:76` が `marketdata.fetch_ticks_since`（Dukascopy）を mid で保持する。
+- ref を見ずに使う経路: `server.py:671`（/live_ticks）・`usecase/serve_candles.py:137`・
+  `adapter/compute/forming_bar.py:278`・`live_tick_tails_controller.py:84`・MP 形成中 payload（`server.py:412`）。
+- tick=True にすると **MT5 のチャートへ Dukascopy のティックが混ざる**（ISSUE-508「ベンダを素材の属性として明示」に反する）。
+
+### 対策（根本・未実施）
+1. 価格基準を**台帳の属性**にする（ref ごと。`jp225_mt5`=bid・`jp225_tick`=mid＝現状値）。形成中バー・MP・
+   ライブバッファがこれを引く（ISSUE-511 で `jp225_tick` を bid 化するときも台帳 1 箇所で追随）。
+2. ライブバッファを**ティック木（ベンダ）ごと**にする。MT5 は受信ジャーナルの増分読取
+   （ISSUE-512 段階 2 の `marketdata/tick_day_source.py`）から供給し、`/live_ticks` 等は ref のバッファを引く。
+- 通過条件: 形成中バー − 確定足の close 差 = 0（実データ・MT5）／MT5 ref の全ライブ経路が Dukascopy を読まないことの検定。
+
+### 関連
+- ISSUE-512 段階 3（本件が前提）／ISSUE-511（価格基準の統一）／ISSUE-508（ベンダ明示）
