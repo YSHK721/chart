@@ -121,7 +121,20 @@ def ts_and_price(
     return _ts_and_price(ticks, price_basis=price_basis)
 
 
-def _validate_price_basis(price_basis: str) -> str:
+def quote_price(bid: float, ask: float, *, price_basis: str) -> float:
+    """気配 1 つ（``bid``, ``ask``）から価格を得る（単一ティック版・ISSUE-515 対策 2）。
+
+    ライブ tick バッファのようにティックを 1 つずつ受ける読み手のための口である。規則は
+    :func:`_price_series`（frame 版）と同じで、両者が同じ答えを返すことを
+    ``marketdata/tests/test_quote_price.py`` が固定する（読み手ごとに規則を手書きさせない）。
+    bid 基準では ask を使わない。
+    """
+    if validate_price_basis(price_basis) == PRICE_BASIS_BID:
+        return float(bid)
+    return (float(bid) + float(ask)) / 2.0
+
+
+def validate_price_basis(price_basis: str) -> str:
     """価格基準を既知の値に限定して返す（fail-fast・黙って既定へ落ちない）。
 
     未知の綴りを既定（mid）へ縮退させると、bid のつもりで mid の系列を作り続けても誰も
@@ -142,7 +155,7 @@ def _price_series(ticks: pd.DataFrame, price_basis: str) -> pd.Series:
     出力は正しいままなので状態検証では原理的に落ちない（絶対命令 2026-08-28・ISSUE-450 と同型）。
     その不在は ``marketdata/tests/test_tick_m1_price_basis.py`` の列アクセス Spy が固定する。
     """
-    if _validate_price_basis(price_basis) == PRICE_BASIS_BID:
+    if validate_price_basis(price_basis) == PRICE_BASIS_BID:
         return ticks["bidPrice"].astype("float64")
     return (ticks["bidPrice"].astype("float64") + ticks["askPrice"].astype("float64")) / 2.0
 
@@ -195,7 +208,7 @@ def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> p
         raise ValueError(
             f"tick frame に必須列がありません: {missing}（必須 {_TICK_COLUMNS}）。"
         )
-    _validate_price_basis(price_basis)  # 空入力でも未知の基準は通さない（fail-fast）。
+    validate_price_basis(price_basis)  # 空入力でも未知の基準は通さない（fail-fast）。
     if ticks.empty:
         empty_idx = pd.DatetimeIndex([], name="date")
         return pd.DataFrame(

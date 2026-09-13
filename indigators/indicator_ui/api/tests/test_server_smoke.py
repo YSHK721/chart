@@ -196,7 +196,7 @@ def test_get_forming_bar_falls_back_to_live_buffer_when_parquet_window_empty(ser
         def ticks_since(self, ms):
             return [[start * 1000 + 1000, 100.0], [start * 1000 + 2000, 105.0]]
 
-    server_mod.set_live_tick_buffer(_FakeBuffer())
+    server_mod.set_live_tick_buffers({"jp225_tick": _FakeBuffer()})
     try:
         status, _ctype, raw = _get(server, f"/forming_bar?datasetRef=jp225_tick&timeframe=5m&now={now}")
         assert status == 200
@@ -206,7 +206,7 @@ def test_get_forming_bar_falls_back_to_live_buffer_when_parquet_window_empty(ser
         assert payload["bar"]["time"] == start
         assert payload["bar"]["open"] == 100.0 and payload["bar"]["close"] == 105.0
     finally:
-        server_mod.set_live_tick_buffer(None)
+        server_mod.set_live_tick_buffers(None)
 
 
 def test_get_forming_bar_uses_rollup_path_first(server, monkeypatch):
@@ -245,13 +245,13 @@ def test_get_forming_bar_fallback_unsupported_tf_ignores_live_buffer(server, mon
         def ticks_since(self, ms):
             raise AssertionError("非対応 tf のフォールバックでは buffer を参照してはいけない")
 
-    server_mod.set_live_tick_buffer(_FakeBuffer())
+    server_mod.set_live_tick_buffers({"jp225_tick": _FakeBuffer()})
     try:
         status, _ctype, raw = _get(server, "/forming_bar?datasetRef=jp225_tick&timeframe=1W&now=1782505000")
         assert status == 200
         assert json.loads(raw.decode("utf-8"))["bar"] is None
     finally:
-        server_mod.set_live_tick_buffer(None)
+        server_mod.set_live_tick_buffers(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +263,7 @@ def test_get_live_ticks_returns_empty_when_no_buffer_injected(server):
     # 既定（buffer 未注入）は ok・空 ticks・serverNowMs を返す（fetch を起動しない）。
     from framework import server as server_mod
 
-    server_mod.set_live_tick_buffer(None)
+    server_mod.set_live_tick_buffers(None)
     status, ctype, raw = _get(server, "/live_ticks?since=0")
     assert status == 200
     assert "application/json" in ctype
@@ -286,16 +286,17 @@ def test_get_live_ticks_serves_injected_buffer_since_cursor(server):
             return [[1000, 39005.0], [1500, 39007.0]]
 
     fake = _FakeBuffer()
-    server_mod.set_live_tick_buffer(fake)
+    server_mod.set_live_tick_buffers({"jp225_tick": fake})
     try:
-        status, _ctype, raw = _get(server, "/live_ticks?since=999")
+        # ISSUE-515: バッファは ref ごと。どの ref のティックかを名乗らない要求はベンダを決められない。
+        status, _ctype, raw = _get(server, "/live_ticks?since=999&datasetRef=jp225_tick")
         assert status == 200
         payload = json.loads(raw.decode("utf-8"))
         assert payload["ok"] is True
         assert payload["ticks"] == [[1000, 39005.0], [1500, 39007.0]]
         assert fake.seen[-1] == 999
     finally:
-        server_mod.set_live_tick_buffer(None)
+        server_mod.set_live_tick_buffers(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -379,14 +380,14 @@ def test_get_tf_period_profile_passes_live_buffer_ticks(server, monkeypatch):
         def ticks_since(self, ms):
             return [[1783382401000, 100.0], [1783382402000, 105.0]]
 
-    server_mod.set_live_tick_buffer(_FakeBuffer())
+    server_mod.set_live_tick_buffers({"jp225_tick": _FakeBuffer()})
     try:
         status, _ctype, _raw = _get(
             server, "/tf_period_profile?datasetRef=jp225_tick&timeframe=5m&from=1000&to=2000")
         assert status == 200
         assert captured["live_ticks"] == [[1783382401000, 100.0], [1783382402000, 105.0]]
     finally:
-        server_mod.set_live_tick_buffer(None)
+        server_mod.set_live_tick_buffers(None)
 
 
 def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monkeypatch):
@@ -406,7 +407,7 @@ def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monk
         def ticks_since(self, ms):
             return [[(fs + 5) * 1000, 100.0], [(fs + 30) * 1000, 103.0], [(fs + 40) * 1000, 104.0]]
 
-    server_mod.set_live_tick_buffer(_FakeBuffer())
+    server_mod.set_live_tick_buffers({"jp225_tick": _FakeBuffer()})
     try:
         status, _ctype, raw = _get(
             server, f"/market_profile_forming?datasetRef=jp225_tick&timeframe=1m&base=1&now={now}")
@@ -415,7 +416,7 @@ def test_get_market_profile_forming_augments_ticks_with_live_buffer(server, monk
         # parquet 分（fs+5, fs+10）＋ buffer の parquet 末尾より後（fs+30, fs+40）。fs+5 の重複は載せない。
         assert payload["ticks"] == [[fs + 5, 100.0], [fs + 10, 101.0], [fs + 30, 103.0], [fs + 40, 104.0]]
     finally:
-        server_mod.set_live_tick_buffer(None)
+        server_mod.set_live_tick_buffers(None)
 
 
 # --------------------------------------------------------------------------- #

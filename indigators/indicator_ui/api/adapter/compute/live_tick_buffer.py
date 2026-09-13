@@ -28,6 +28,9 @@ import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
+# ISSUE-515 対策 2: 価格の規則（mid / bid）の唯一源。バッファ側で (bid+ask)/2 を手書きしない。
+from marketdata import tick_m1
+
 
 class LiveTickBuffer:
     """5 秒周期の増分カーソルポーリングで直近 30 分の tick を保持する配信バッファ。"""
@@ -46,9 +49,13 @@ class LiveTickBuffer:
         fetch_fn: Optional[Callable[[int], List[Tuple[int, float, float]]]] = None,
         interval: float = POLL_INTERVAL,
         time_fn: Callable[[], float] = time.time,
+        price_basis: str = tick_m1.PRICE_BASIS_MID,
     ) -> None:
         # fetch_fn(cursor_ms) -> list[(ms, bid, ask)]。None は marketdata.fetch_ticks_since を遅延解決。
         self._fetch_fn = fetch_fn
+        # ISSUE-515 対策 2: ref の価格基準（台帳）で畳む。既定 mid＝従来値（Dukascopy の既存表示は不変）。
+        #   未知の基準は構築時に止める（ポーリングの失敗としてバックオフへ化けさせない）。
+        self._price_basis = tick_m1.validate_price_basis(price_basis)
         self._interval = interval
         self._time = time_fn
 
@@ -107,9 +114,9 @@ class LiveTickBuffer:
             self._backoff = min(self._backoff * 2, self.MAX_BACKOFF)
             return self._backoff
 
-        # cursor より厳密に後の行のみ mid へ畳む（境界重複を排する）。
+        # cursor より厳密に後の行のみ、ref の価格基準で畳む（境界重複を排する）。
         new = [
-            (int(r[0]), (float(r[1]) + float(r[2])) / 2.0)
+            (int(r[0]), tick_m1.quote_price(r[1], r[2], price_basis=self._price_basis))
             for r in rows
             if int(r[0]) > cursor
         ]

@@ -205,6 +205,8 @@ except ImportError:  # フォールバック（未登録環境の自己完結起
         sys.path.insert(0, str(_REPO_ROOT))
 
 from marketdata import dataset  # noqa: E402
+# ISSUE-515 対策 2: ライブ tick バッファを台帳（ベンダ・木・価格基準）から ref ごとに作る窓口。
+from marketdata import tf_meta  # noqa: E402
 from api_shared import http_contract as _contract  # noqa: E402  (nested_error 単一定義・ISSUE-094 🔵-11)
 from common.shared_web_roots import shared_web_js_roots  # noqa: E402  (共有フロント供給根の唯一源・ISSUE-502 C-4 3b)
 from adapter.compute import forming_bar as forming_bar_mod  # noqa: E402
@@ -269,15 +271,69 @@ _WEB_ASSET_SUBTREES = tuple(
 _MAX_BODY_BYTES = 1 * 1024 * 1024
 
 # ライブ tick バッファ（ISSUE-049・配信系）。served（B方式）起動時に serve() が生成・start() する。
-# テストは set_live_tick_buffer でフェイクを注入する／None のままなら /live_ticks は空を返す
+# テストは set_live_tick_buffers でフェイクを注入する／空のままなら /live_ticks は空を返す
 # （自動起動なし＝ネットワーク非依存）。記録系（parquet/M1/rollups）へは一切干渉しない（メモリのみ）。
-_live_tick_buffer: Optional[Any] = None
+#
+# ISSUE-515 対策 2: バッファは **ref ごと**（ref → バッファ）。以前はプロセスに 1 つだけで、
+#   Dukascopy から取った値を ref を問わず 5 経路へ配っていた（MT5 の ref を tick にすると
+#   MT5 のチャートへ Dukascopy のティックが混ざる）。バッファを持たない ref は None であり、
+#   他の ref のバッファへ落とさない。
+_live_tick_buffers: "dict[str, Any]" = {}
 
 
-def set_live_tick_buffer(buffer: Optional[Any]) -> None:
-    """/live_ticks が配信する LiveTickBuffer を差し替える（注入点・テストで fake/None を渡す）。"""
-    global _live_tick_buffer
-    _live_tick_buffer = buffer
+def set_live_tick_buffers(buffers: "Optional[dict[str, Any]]") -> None:
+    """ref → LiveTickBuffer の対応を差し替える（注入点・テストで fake/None を渡す）。"""
+    global _live_tick_buffers
+    _live_tick_buffers = dict(buffers or {})
+
+
+def live_tick_buffer_for(ref: Any) -> Optional[Any]:
+    """``ref`` のライブ tick バッファ（無ければ ``None``。他の ref のバッファへは落とさない）。"""
+    return _live_tick_buffers.get(ref)
+
+
+def build_live_tick_buffers(
+    feeds: "dict[str, Callable[[str, str], Any]]", *, refs: Any = None
+) -> "dict[str, Any]":
+    """台帳からライブ tick バッファを ref ごとに作る（ISSUE-515 対策 2）。
+
+    ref ごとに、台帳のベンダ（``tick_vendor``）の供給口 ``feeds[vendor]`` を、その ref の木
+    （``tick_tree_token``）と価格基準（``tick_price_basis``）で呼ぶ。同じベンダ・同じ木を読む ref は
+    1 つのバッファを共有する（同じ受信を 2 度しない）。
+
+    Raises:
+        ValueError: 供給口の無いベンダの ref があるとき（黙って他のベンダのバッファを当てない）。
+    """
+    wanted = tf_meta.TICK_REFS if refs is None else refs
+    shared: "dict[tuple, Any]" = {}
+    out: "dict[str, Any]" = {}
+    for ref in sorted(wanted):
+        vendor = tf_meta.tick_vendor(ref)
+        if vendor not in feeds:
+            raise ValueError(
+                f"datasetRef {ref!r} のベンダ {vendor!r} にライブ供給口がありません"
+                f"（供給口: {sorted(feeds)}）。"
+            )
+        token = tf_meta.tick_tree_token(ref)
+        key = (vendor, token)
+        if key not in shared:
+            shared[key] = feeds[vendor](token, tf_meta.tick_price_basis(ref))
+        out[ref] = shared[key]
+    return out
+
+
+def _default_live_tick_feeds() -> "dict[str, Callable[[str, str], Any]]":
+    """ベンダ → バッファ工場（本番の結線点）。Dukascopy は既存の配信、MT5 は受信ジャーナルから受ける。"""
+    from adapter.compute.live_tick_buffer import LiveTickBuffer
+    from marketdata import tick_day_source
+
+    return {
+        # 既存の供給（marketdata.fetch_ticks_since・参照実装 prototype_260707-01）のまま。
+        "dukascopy": lambda token, basis: LiveTickBuffer(price_basis=basis),
+        "mt5": lambda token, basis: LiveTickBuffer(
+            fetch_fn=partial(tick_day_source.ticks_since, symbol=token), price_basis=basis,
+        ),
+    }
 
 
 
@@ -409,7 +465,7 @@ def _compute_market_profile_forming(query: dict[str, list[str]]) -> tuple[int, d
     #   （parquet フロンティア遅延で欠ける現在分の末尾 tick を埋める）。ok 応答のみ・非破壊。
     if status == 200 and isinstance(payload, dict) and payload.get("ok"):
         # 殻はバッファを渡すだけ。対応判定・合成は MP 側 controller が担う（ISSUE-094 🟡-8）。
-        augment_forming_payload(payload, ref, timeframe, since, buffer=_live_tick_buffer)
+        augment_forming_payload(payload, ref, timeframe, since, buffer=live_tick_buffer_for(ref))
     return status, payload
 
 
@@ -430,7 +486,7 @@ def _compute_tf_period_profile(query: dict[str, list[str]]) -> tuple[int, dict[s
     # ISSUE-083 追補: in-memory LiveTickBuffer の末尾を controller へ渡し、当日（未完了セッション）
     #   列を parquet フロンティア遅延（~1分）を待たず最新ティックまで育てる（完了日は controller が
     #   無視＝キャッシュ規約不変）。buffer 未注入・非 tick ref は None＝従来経路（byte 不変）。
-    buf = _live_tick_buffer
+    buf = live_tick_buffer_for(ref)
     live = (buf.ticks_since(0)
             if (buf is not None and forming_bar_mod.is_tick_ref(ref)) else None)
     try:
@@ -621,7 +677,7 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         ref = (query.get("datasetRef") or [None])[0]
         timeframe = (query.get("timeframe") or [None])[0]
         now_raw = (query.get("now") or [None])[0]
-        status, payload = handle_forming_bar(ref, timeframe, now_raw, buffer=_live_tick_buffer)
+        status, payload = handle_forming_bar(ref, timeframe, now_raw, buffer=live_tick_buffer_for(ref))
         self._send_json(status, payload)
 
     def _respond_mp_via_worker(self, compute, query: dict[str, list[str]]) -> None:
@@ -667,7 +723,8 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         """
         since_raw = (query.get("since") or ["0"])[0]
         since = int(since_raw) if since_raw.lstrip("-").isdigit() else 0
-        buffer = _live_tick_buffer
+        # ISSUE-515: どの ref のティックかは要求が名乗る（名乗らない要求はベンダを決められない＝空）。
+        buffer = live_tick_buffer_for((query.get("datasetRef") or [None])[0])
         ticks = buffer.ticks_since(since) if buffer is not None else []
         now_ms = int(time.time() * 1000)
         payload = {"ok": True, "ticks": ticks, "serverNowMs": now_ms}
@@ -734,12 +791,12 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     #   background thread で回し、/live_ticks へ直近 30 分の tick を供給する。記録系
     #   （parquet/M1/rollups）とは完全分離（メモリのみ・ファイル書込なし）。起動失敗しても
     #   本体配信は継続する（ライブ再生が無効になるだけ・既存 endpoint は不変）。
+    #   ISSUE-515 対策 2: バッファは台帳から ref ごと（ベンダ・木ごとに共有）に作る。
     try:
-        from adapter.compute.live_tick_buffer import LiveTickBuffer
-
-        buffer = LiveTickBuffer()
-        set_live_tick_buffer(buffer)
-        buffer.start()
+        buffers = build_live_tick_buffers(_default_live_tick_feeds())
+        set_live_tick_buffers(buffers)
+        for buffer in {id(b): b for b in buffers.values()}.values():
+            buffer.start()
     except Exception as exc:  # noqa: BLE001（配信の付加機能・本体起動を妨げない）
         sys.stderr.write(f"  WARN: live tick buffer を起動できませんでした: {exc}\n")
         sys.stderr.flush()

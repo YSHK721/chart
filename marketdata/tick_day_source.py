@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -107,6 +108,77 @@ def forming_bar_from_ticks(
     )
 
 
+def ticks_since(
+    cursor_ms: int, *, symbol: str, now_ms: "int | None" = None, data_dir: Any = DATA_DIR
+) -> "List[Tuple[int, float, float]]":
+    """``cursor_ms`` より厳密に後のティックを ``(UTC ms, bid, ask)`` の昇順で返す（ライブ供給口）。
+
+    ライブ tick バッファ（indicator_ui の LiveTickBuffer）の供給口（引数 fetch_fn）として使う（ISSUE-515
+    対策 2）。形は Dukascopy の供給口（:func:`marketdata.dukascopy_source.fetch_ticks_since`）と同じ。
+    読むのはカーソルの日から ``now_ms`` の日までの日別ティックファイルだけで、各ファイルでは
+    カーソルの位置を二分探索で求め、**後ろだけ** を組にする（毎回 1 日ぶんを組にして捨てない）。
+    受信ジャーナルは追記分だけを変換する（:func:`read_day_ticks` と同じ記憶を使う）。読み終えた
+    確定日（parquet）は、端を覚えてカーソルがそこに達していれば読み直さない（週末に 5 秒ごと
+    前日を読み直さない）。
+    """
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    lo = pd.Timestamp(int(cursor_ms), unit="ms").normalize()
+    hi = pd.Timestamp(now, unit="ms").normalize()
+    cut = pd.Timestamp(int(cursor_ms), unit="ms", tz="UTC")
+    out: "List[Tuple[int, float, float]]" = []
+    for path in day_tick_files(lo, hi, symbol=symbol, data_dir=data_dir):
+        if path.suffix == journal.JOURNAL_SUFFIX:
+            frame = _JOURNALS.read(path)
+        else:
+            if _FINALIZED_ENDS.reached(path, int(cursor_ms)):
+                continue
+            frame = pd.read_parquet(path, columns=list(tick_m1.TICK_COLUMNS))
+            _FINALIZED_ENDS.remember(path, frame)
+        tail = frame.iloc[int(frame["timestamp"].searchsorted(cut, side="right")):]
+        if tail.empty:
+            continue
+        ms = tail["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None).to_numpy("datetime64[ms]")
+        out.extend(zip(
+            ms.astype("int64").tolist(),
+            tail["bidPrice"].astype("float64").tolist(),
+            tail["askPrice"].astype("float64").tolist(),
+        ))
+    return out
+
+
+class _FinalizedEnds:
+    """確定 parquet ごとの「最後のティックの UTC ms」（ファイルの同一性つき・プロセス内）。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._ends: "Dict[Path, Tuple[Tuple[int, int], int]]" = {}
+
+    @staticmethod
+    def _identity(path: Path) -> "Tuple[int, int]":
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+
+    def reached(self, path: Path, cursor_ms: int) -> bool:
+        """カーソルがこのファイルの最後のティックに達しているか（ファイルが変わっていれば False）。"""
+        with self._lock:
+            entry = self._ends.get(path)
+        return entry is not None and entry[0] == self._identity(path) and cursor_ms >= entry[1]
+
+    def remember(self, path: Path, frame: pd.DataFrame) -> None:
+        if frame.empty:
+            return
+        last = frame["timestamp"].iloc[-1]
+        with self._lock:
+            self._ends[path] = (self._identity(path), int(last.value // 1_000_000))
+
+    def clear(self) -> None:
+        with self._lock:
+            self._ends.clear()
+
+
+_FINALIZED_ENDS = _FinalizedEnds()
+
+
 class _JournalMemory:
     """受信ジャーナルごとの「読んだバイト位置」と変換済み frame（プロセス内・スレッド安全）。"""
 
@@ -148,8 +220,9 @@ _JOURNALS = _JournalMemory()
 
 
 def clear_journal_cache() -> None:
-    """覚えているジャーナルを全部手放す（テスト・診断用）。"""
+    """覚えているジャーナルと確定日の端を全部手放す（テスト・診断用）。"""
     _JOURNALS.clear()
+    _FINALIZED_ENDS.clear()
 
 
 def remembered_journals() -> int:
@@ -161,6 +234,7 @@ __all__ = [
     "day_tick_files",
     "read_day_ticks",
     "forming_bar_from_ticks",
+    "ticks_since",
     "clear_journal_cache",
     "remembered_journals",
 ]

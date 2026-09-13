@@ -47,7 +47,7 @@ def journal_backed(monkeypatch, tmp_path):
         REGISTRY, _REF,
         DatasetDescriptor(
             path=tmp_path / "x.csv", symbol="JP225", tick=True, tick_token=_TOKEN,
-            price_basis="bid",
+            price_basis="bid", vendor="mt5",
         ),
     )
     monkeypatch.setattr(tf_meta, "TICK_REFS", frozenset(set(tf_meta.TICK_REFS) | {_REF}))

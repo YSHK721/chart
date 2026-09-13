@@ -204,6 +204,9 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         # ISSUE-515 対策 1（承認 2026-09-13）: 価格基準つきの公開面 ``tick_m1.ts_and_price``。
         # 市場プロファイルが ref ごとの基準（台帳）で畳むため（mid 固定の ts_and_mid の隣）。
         "ts_and_price",
+        # ISSUE-515 対策 2（承認 2026-09-13）: 単一ティック版の価格規則 ``tick_m1.quote_price`` と、
+        # 基準の検証 ``tick_m1.validate_price_basis``。ライブ tick バッファが規則を手書きしないため。
+        "quote_price", "validate_price_basis",
     }
 
 

@@ -85,6 +85,15 @@ def tick_price_basis(ref: Any) -> "str | None":
     return dataset_registry.tick_price_basis(ref)
 
 
+def tick_vendor(ref: Any) -> "str | None":
+    """``ref`` のティックをライブで受けるベンダを返す（非ティック ref・台帳外は ``None``・ISSUE-515）。
+
+    :func:`tick_tree_token` と同じく、実体を持つ台帳（marketdata/dataset_registry.py の同名関数）へ
+    委譲する窓口である（第 2 実装を作らない）。
+    """
+    return dataset_registry.tick_vendor(ref)
+
+
 def floor_freq(tf: Any) -> Optional[str]:
     """tf の pandas floor freq を TIMEFRAME_RULES から導出する（1W/1M・未知は None）。"""
     if tf in NON_FLOORABLE_TF or tf not in TIMEFRAME_RULES:

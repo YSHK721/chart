@@ -61,6 +61,10 @@ class DatasetDescriptor:
             ため文字列で持ち、値の妥当性は
             ``marketdata/tests/test_tick_price_basis_ledger.py`` が tick_m1 の語彙と突き合わせる）。
             確定足の書き手と同じ基準でなければならない。``tick`` が True なら必須（構築時に拒否）。
+        vendor: ティックをどこから受けているか（ISSUE-515 対策 2）。``"dukascopy"``（Dukascopy の配信）／
+            ``"mt5"``（OANDA MT5 端末の受信ジャーナル）。ライブ tick バッファは ref ごとに、この
+            ベンダの供給口から作る（ISSUE-508 の裁定「ベンダを素材の属性として明示」）。``tick`` が
+            True なら必須（構築時に拒否）。
     """
 
     path: Path
@@ -71,6 +75,7 @@ class DatasetDescriptor:
     data_start: "dt.date | None" = None
     tick_token: "str | None" = None
     price_basis: "str | None" = None
+    vendor: "str | None" = None
 
     def __post_init__(self) -> None:
         # ISSUE-515 対策 1: ティック ref は価格基準を必ず名乗る。**構築時に**拒否する理由は、
@@ -81,6 +86,13 @@ class DatasetDescriptor:
                 "tick=True の記述子は price_basis（'mid' / 'bid'）を名乗ってください。"
                 " 形成中バー・市場プロファイル・ライブバッファがこの基準で価格を畳みます"
                 "（確定足の書き手と同じ基準でなければ、確定のたびに表示が跳ねる）。"
+            )
+        # ISSUE-515 対策 2: ティック ref はベンダ（ライブで受ける供給口）を必ず名乗る。無いと
+        #   ライブ tick バッファを作れない。黙って他のベンダのバッファを当てると表示が混ざる。
+        if self.tick and self.vendor is None:
+            raise ValueError(
+                "tick=True の記述子は vendor（'dukascopy' / 'mt5'）を名乗ってください。"
+                " ライブ tick バッファは ref ごとに、このベンダの供給口から作ります。"
             )
 
 
@@ -131,6 +143,9 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # tools/build_tick_rollup.py）は price_basis を渡さず既定 mid で畳んでいる（ISSUE-511 実測）。
         # bid へ揃えるときは ISSUE-511 段階 1 の再生成と同時に本行を変える。
         price_basis="mid",
+        # ベンダ（ISSUE-515 対策 2）。既存事実の明文化: ライブ tick バッファはこれまで
+        # Dukascopy の配信（marketdata.fetch_ticks_since）だけから作られていた。
+        vendor="dukascopy",
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /
@@ -147,6 +162,7 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # （両者の一致は marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
+        vendor="mt5",
     ),
 }
 
@@ -236,6 +252,18 @@ def tick_price_basis(ref: "str | None") -> "str | None":
     return d.price_basis
 
 
+def tick_vendor(ref: "str | None") -> "str | None":
+    """``ref`` のティックをライブで受けるベンダを台帳から引く（ISSUE-515 対策 2）。
+
+    ティック木を持たない ref（``tick`` が False）と台帳に無い ref は ``None``。``tick`` が True の
+    記述子は構築時にベンダを必ず持つ（:class:`DatasetDescriptor` が拒否する）。
+    """
+    d = REGISTRY.get(ref)
+    if d is None or not d.tick:
+        return None
+    return d.vendor
+
+
 def price_basis_of_tick_token(token: str) -> str:
     """ティック木の枝名 ``token`` を畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
 
@@ -268,4 +296,5 @@ __all__ = [
     "tick_tree_token",
     "tick_price_basis",
     "price_basis_of_tick_token",
+    "tick_vendor",
 ]

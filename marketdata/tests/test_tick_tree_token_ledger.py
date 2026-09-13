@@ -92,7 +92,9 @@ def test_a_tick_ref_without_a_token_fails_stop(monkeypatch, tmp_path):
     monkeypatch.setitem(
         REGISTRY,
         "tmp_tick_ref",
-        DatasetDescriptor(path=tmp_path / "tmp.csv", symbol="XXX", tick=True, price_basis="mid"),
+        DatasetDescriptor(
+            path=tmp_path / "tmp.csv", symbol="XXX", tick=True, price_basis="mid", vendor="dukascopy"
+        ),
     )
 
     # Act / Assert
@@ -106,7 +108,9 @@ def test_fail_stop_message_names_the_ref(monkeypatch, tmp_path):
     monkeypatch.setitem(
         REGISTRY,
         "tmp_tick_ref",
-        DatasetDescriptor(path=tmp_path / "tmp.csv", symbol="XXX", tick=True, price_basis="mid"),
+        DatasetDescriptor(
+            path=tmp_path / "tmp.csv", symbol="XXX", tick=True, price_basis="mid", vendor="dukascopy"
+        ),
     )
 
     # Act

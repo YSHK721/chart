@@ -352,3 +352,89 @@ def test_the_forming_bar_reads_only_the_days_it_uses(monkeypatch, store, days):
     assert len(read) - len(used) == 0 and set(read) == used, (
         f"使う {len(used)} 日に対し {len(read)} 日を読んだ: {read}"
     )
+
+
+# =====================================================================
+# 5. ライブ供給（カーソルより後のティック・ISSUE-515 対策 2）
+# =====================================================================
+def _utc_ms_of(store, day, index: int) -> int:
+    """``day`` のジャーナルの ``index`` 行目の UTC ms（サーバ時刻 → UTC は ingest が権威）。"""
+    frame = ingest.rows_to_frame(journal.read_rows(day, **store))
+    return int(frame["timestamp"].iloc[index].value // 1_000_000)
+
+
+def test_ticks_after_the_cursor_come_back_as_utc_quotes(store):
+    """カーソルより厳密に後のティックを ``(UTC ms, bid, ask)`` の昇順で返す（Dukascopy 供給口と同じ形）。"""
+    # Arrange
+    journal.append(_DAY, _rows(_DAY, 5), **store)
+    cursor = _utc_ms_of(store, _DAY, 2)
+    now_ms = _utc_ms_of(store, _DAY, 4) + 1000
+
+    # Act
+    got = tds.ticks_since(cursor, now_ms=now_ms, **store)
+
+    # Assert
+    assert [ms for ms, _, _ in got] == [_utc_ms_of(store, _DAY, 3), _utc_ms_of(store, _DAY, 4)]
+    assert got[0][1:] == (103.0, 104.0)
+
+
+def test_ticks_since_spans_from_the_cursor_day_to_today(store):
+    """カーソルが前日（確定済み）にあれば、前日の残りと当日のジャーナルを続けて返す。"""
+    # Arrange
+    journal.append(_DAY, _rows(_DAY, 3), **store)
+    journal.finalize(_DAY, **store)
+    journal.append(_NEXT, _rows(_NEXT, 2), **store)
+    cursor = _utc_ms_of(store, _DAY, 0)
+    now_ms = _utc_ms_of(store, _NEXT, 1) + 1000
+
+    # Act
+    got = tds.ticks_since(cursor, now_ms=now_ms, **store)
+
+    # Assert
+    assert len(got) == 2 + 2
+
+
+@pytest.mark.parametrize("already", [10, 1_000])
+def test_a_poll_converts_only_the_rows_appended_since(monkeypatch, store, already):
+    """計算量: 2 回目の供給で変換する行 − 新着行 = 0（当日累積 ``already`` を 2 点に変えても成り立つ）。"""
+    # Arrange
+    spy = _ConvertSpy(monkeypatch)
+    journal.append(_DAY, _rows(_DAY, already), **store)
+    last = _utc_ms_of(store, _DAY, already - 1)
+    tds.ticks_since(last - 1, now_ms=last + 1000, **store)
+    new = _rows(_DAY, 7, start_min=40)
+    journal.append(_DAY, new, **store)
+    spy.converted = 0
+
+    # Act
+    got = tds.ticks_since(last, now_ms=last + 3_600_000, **store)
+
+    # Assert
+    assert len(got) == len(new), "検定が空振りしている（新着が返っていない）"
+    assert spy.converted - len(new) == 0, f"新着 {len(new)} 行に対し {spy.converted} 行を変換した"
+
+
+@pytest.mark.parametrize("polls", [1, 3])
+def test_a_consumed_finalized_day_is_not_reread_on_idle_polls(monkeypatch, store, polls):
+    """計算量: 読み終えた確定日（前日）は、新着の無い供給のたびに読み直さない（週末に 5 秒ごと読まない）。
+
+    カーソルが前日の最後のティックに止まったまま（当日にティックが無い）で ``polls`` 回供給しても、
+    前日 parquet の全行読みは 1 回だけ（回数を 1/3 回の 2 点に変えても増えない）。
+    """
+    # Arrange
+    journal.append(_DAY, _rows(_DAY, 3), **store)
+    journal.finalize(_DAY, **store)
+    cursor = _utc_ms_of(store, _DAY, 2)
+    now_ms = cursor + 2 * 86_400_000
+    reads = []
+    real = tds.pd.read_parquet
+    monkeypatch.setattr(tds.pd, "read_parquet", lambda *a, **k: (reads.append(a[0]), real(*a, **k))[1])
+    tds.ticks_since(cursor, now_ms=now_ms, **store)            # 1 回目で端を知る
+    reads.clear()
+
+    # Act
+    for _ in range(polls):
+        tds.ticks_since(cursor, now_ms=now_ms, **store)
+
+    # Assert
+    assert reads == [], f"読み終えた確定日を {len(reads)} 回読み直した（新着 0 のまま捨てている）"
