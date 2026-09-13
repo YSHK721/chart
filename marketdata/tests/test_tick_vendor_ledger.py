@@ -27,9 +27,9 @@ def test_jp225_tick_is_fed_by_dukascopy():
 
 
 def test_jp225_mt5_is_fed_by_mt5():
-    """``jp225_mt5`` のベンダは MT5（tick=False の間は窓口が None を返すため記述子で見る）。"""
+    """``jp225_mt5`` のベンダは MT5（ライブ tick バッファは MT5 自身の受信から作る）。"""
     # Arrange / Act / Assert
-    assert REGISTRY["jp225_mt5"].vendor == "mt5"
+    assert tf_meta.tick_vendor("jp225_mt5") == "mt5"
 
 
 def test_a_tick_descriptor_without_a_vendor_cannot_be_built(tmp_path):

@@ -3,9 +3,9 @@
 性格: 特性化検定（characterization test）。新しい振る舞いではなく、ISSUE-512 の配管工事
 （ref→ティック木トークンの台帳化）が既存の受理境界を動かさないことの壁である。
 
-とくに ``jp225_mt5`` は段階 3 まで **400 のまま** でなければならない。トークン解決を
-既定値へフォールバックさせる実装にすると、``jp225_mt5`` が黙って Dukascopy の木を読み始め、
-出力は形式上正しいため状態検証では検出できない。
+``jp225_mt5`` は段階 3（承認 2026-09-13）でティック ref になったため、本表から外した
+（段階 3 までは 400 のまま、を本検定が固定していた）。MT5 自身の木を読むことは
+marketdata/tests/test_tick_tree_token_ledger.py が固定する。
 
 構造: Arrange-Act-Assert（AAA）。
 """
@@ -18,8 +18,8 @@ from market_profile_api.controller.market_profile_forming_controller import (
     handle_market_profile_forming,
 )
 
-#: ティック木を持たない台帳 ref（``jp225_mt5`` は段階 3 まで非 tick）。
-_NON_TICK_REFS = ["sample", "jp225", "jp225_m1", "jp225_mt5"]
+#: ティック木を持たない台帳 ref。
+_NON_TICK_REFS = ["sample", "jp225", "jp225_m1"]
 
 
 @pytest.mark.parametrize("ref", _NON_TICK_REFS)

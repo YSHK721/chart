@@ -34,7 +34,8 @@ def test_rollup_refs_unchanged():
 
 
 def test_tick_refs_unchanged():
-    assert tf_meta.TICK_REFS == frozenset({"jp225_tick"})
+    # ISSUE-512 段階 3（承認 2026-09-13）で jp225_mt5 が加わった。
+    assert tf_meta.TICK_REFS == frozenset({"jp225_tick", "jp225_mt5"})
 
 
 # --- 型・可変性（利用側 monkeypatch・membership が無変更で動く） ---------- #

@@ -11,12 +11,11 @@
     `rollups/jp225_mt5/…`（＝ロールアップ経路 ref）。
   §7 H8: `/candles?datasetRef=jp225_mt5` が 200 を返す（A-1 承認後）。
 
-なぜ「tick=False」を**負の表明**として固定するか:
-  `tick=True` は `tf_meta.TICK_REFS` へ入り、形成中バー（足内更新）/tf-period 供給経路が
-  この ref に対して起動する。MT5 経路の足内更新は §9 A-6 で「未裁定（別段階）」であり、
-  本段階の承認条件そのものが「その経路に触れないこと」である。よって
-  「TICK_REFS に jp225_mt5 が**入っていない**」を機械的に固定する。承認条件を満たさなく
-  なった瞬間（誰かが tick=True にした瞬間）に赤にするのが本検定の役目である。
+tick フラグの経緯:
+  A-1（2026-09-01）では「tick=False で足内更新経路に触れない」を負の表明として固定していた。
+  足内更新の MT5 対応（§9 A-6）は ISSUE-512 段階 3（承認 2026-09-13）で裁定され、tick=True へ
+  変わった。前提（当日ジャーナルの読取・確定足と同じ bid・MT5 自身のライブ受信）は
+  ISSUE-512 段階 2 と ISSUE-515 で揃えてある。以後は「TICK_REFS に**入っている**」を固定する。
 """
 
 from __future__ import annotations
@@ -47,15 +46,12 @@ def test_jp225_mt5はロールアップ経路である():
     assert _MT5_REF in dataset_registry.rollup_refs()
 
 
-def test_jp225_mt5は足内更新経路に触れない():
-    """A-1 承認条件の本体（`tick=False`）。`TICK_REFS` に入らないことを**負で**固定する。
-
-    A-6（足内更新の MT5 対応）は未裁定＝別段階。ここが True に変わると、承認されていない
-    経路（forming_bar / tf-period 供給）が無言で起動する。
-    """
-    assert dataset_registry.REGISTRY[_MT5_REF].tick is False
-    assert _MT5_REF not in dataset_registry.tick_refs()
-    assert _MT5_REF not in tf_meta.TICK_REFS
+def test_jp225_mt5は足内更新経路に入る():
+    """ISSUE-512 段階 3（承認 2026-09-13）: `tick=True`。`TICK_REFS` に入り、MT5 自身の木を読む。"""
+    assert dataset_registry.REGISTRY[_MT5_REF].tick is True
+    assert _MT5_REF in dataset_registry.tick_refs()
+    assert _MT5_REF in tf_meta.TICK_REFS
+    assert tf_meta.tick_tree_token(_MT5_REF) == "JP225@OANDA-Japan-MT5-Live"
 
 
 def test_jp225_mt5は実市場refゆえクランプ対象である():
@@ -94,8 +90,8 @@ def test_既存refの記述子は1バイトも動いていない():
     assert r["jp225_tick"].path == DATA_DIR / "jp225_tick_m1.csv"
     assert (r["jp225_tick"].rollup, r["jp225_tick"].tick) == (True, True)
     assert r["sample"].path.name == "ohlcv.csv"
-    # ティック由来は依然 jp225_tick ただ 1 つ（MT5 追加で増えていない）。
-    assert dataset_registry.tick_refs() == frozenset({"jp225_tick"})
+    # ティック由来は jp225_tick と jp225_mt5 の 2 つ（ISSUE-512 段階 3 で MT5 が加わった）。
+    assert dataset_registry.tick_refs() == frozenset({"jp225_tick", "jp225_mt5"})
 
 
 # --- 計算量（Test Spy・発行−使用=0）: 台帳登録は I/O を 1 件も発行しない ----- #

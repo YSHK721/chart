@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from marketdata import dataset_registry, path_tokens, tf_meta
+from marketdata.mt5_ticks import ingest
 from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
 
 
@@ -53,14 +54,21 @@ def test_the_window_delegates_to_the_ledger(monkeypatch):
     assert tf_meta.tick_tree_token("no_such_ref") == "SENTINEL-B"
 
 
-@pytest.mark.parametrize("ref", ["sample", "jp225", "jp225_m1", "jp225_mt5", "no_such_ref"])
+@pytest.mark.parametrize("ref", ["sample", "jp225", "jp225_m1", "no_such_ref"])
 def test_refs_without_a_tick_tree_have_no_token(ref):
-    """ティック木を持たない ref（台帳外を含む）はトークンを持たない＝``None``。
-
-    ``jp225_mt5`` が ``None`` であることは段階 1 の境界そのもの（tick フラグは段階 3）。
-    """
+    """ティック木を持たない ref（台帳外を含む）はトークンを持たない＝``None``。"""
     # Arrange / Act / Assert
     assert tf_meta.tick_tree_token(ref) is None
+
+
+def test_jp225_mt5_reads_its_own_tree():
+    """ISSUE-512 段階 3: ``jp225_mt5`` は MT5 自身の木を読む（Dukascopy の木と別の枝）。"""
+    # Arrange / Act
+    got = tf_meta.tick_tree_token("jp225_mt5")
+
+    # Assert
+    assert got == "JP225@OANDA-Japan-MT5-Live"
+    assert got != tf_meta.tick_tree_token("jp225_tick")
 
 
 # --------------------------------------------------------------------------- #
@@ -125,9 +133,13 @@ def test_fail_stop_message_names_the_ref(monkeypatch, tmp_path):
 # 4. トークン規則（パス成分としてそのまま使える）
 # --------------------------------------------------------------------------- #
 def test_every_token_is_already_a_safe_path_component():
-    """台帳の全トークンは ``sanitize_path_component`` の不動点＝木の枝名に変換不要で載る。
+    """台帳の全トークンは、区切りで分けた各部分が ``sanitize_path_component`` の不動点である。
 
     変換が要るトークンを台帳へ書くと、書いた名前と実際のディレクトリ名が食い違う。
+    MT5 のトークンは所有者（``ingest.token_for``）の規則で「銘柄 + 区切り + サーバ名」と組まれ、
+    区切り（``ingest.TOKEN_SEPARATOR``）は意図して安全文字の外にある（Dukascopy の木と衝突させない
+    ため）。よってトークン全体ではなく、所有者が sanitize する単位＝各部分で不動点を見る
+    （ISSUE-512 段階 3 で MT5 のトークンが窓口に現れて判明）。
     """
     # Arrange
     tokens = {
@@ -139,6 +151,7 @@ def test_every_token_is_already_a_safe_path_component():
     # Act / Assert
     assert tokens, "トークンを持つ ref が 1 つも無い（台帳が空＝検定が空回りしている）"
     for ref, token in tokens.items():
-        assert path_tokens.sanitize_path_component(token) == token, (
+        parts = token.split(ingest.TOKEN_SEPARATOR)
+        assert [path_tokens.sanitize_path_component(p) for p in parts] == parts, (
             f"{ref} のトークン {token!r} はパス成分としてそのまま使えない"
         )

@@ -148,18 +148,20 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         vendor="dukascopy",
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
-    # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /
-    # tf-period 供給）の MT5 対応は A-6＝未裁定の別段階であり、本段階はその経路に触れない。
-    # 実体は設計 §5: <DATA_DIR>/jp225_mt5_m1.csv と rollups/jp225_mt5/。本行 1 つの削除で可逆。
+    # 実体は設計 §5: <DATA_DIR>/jp225_mt5_m1.csv と rollups/jp225_mt5/。
+    # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）では tick=False（足内更新の MT5 対応＝A-6 は
+    # 別段階）だった。ISSUE-512 段階 3（承認 2026-09-13）で **tick=True**。前提は揃っている:
+    # 当日の受信ジャーナルまで読む（段階 2）・確定足と同じ bid で畳む・ライブ tick バッファは
+    # MT5 自身の受信から作る（ISSUE-515）。本行の tick を False へ戻せば元の状態へ可逆。
     "jp225_mt5": DatasetDescriptor(
         path=DATA_DIR / "jp225_mt5_m1.csv",
         symbol="JP225",
         clamp_outliers=True,
         rollup=True,
-        # ISSUE-512 段階 3 の準備（ISSUE-515 対策 1）。tick が False の間は tick_tree_token が
-        # None を返すため読取経路は起動しない。木の枝名は marketdata.mt5_ticks.ingest.token_for
-        # （JP225 + '@' + サーバ名）の値、基準は同 ingest.PRICE_BASIS（bid）と一致させる
-        # （両者の一致は marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
+        tick=True,
+        # 木の枝名は marketdata.mt5_ticks.ingest.token_for（JP225 + '@' + サーバ名）の値、基準は
+        # 同 ingest.PRICE_BASIS（bid）と一致させる（両者の一致は
+        # marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
         vendor="mt5",
