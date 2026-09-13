@@ -57,6 +57,11 @@ SYMBOL_SPEC_OUT = (ROOT / "indigators" / "indicator_ui" / "web" / "js" / "domain
 #: ダッシュボード表示時間足の JS 生成物（並びの唯一源は dashboard_ui.domain.horizon・ISSUE-502 D-9）。
 DASHBOARD_TF_OUT = (ROOT / "dashboard_ui" / "web" / "js" / "domain"
                     / "dashboard_timeframes_generated.js")
+#: 既定 ref の JS 生成物（Python の台帳 DEFAULT_DATASET_REF が唯一源・ISSUE-512 段階 0）。
+#: 消費者は live・replay・dashboard（相対 symlink）と統合ページ（live の公開面経由）なので、
+#: 実体は中立核 chart_kernel に置く（tf_ledger_generated.js と同じ置き場・所有者を直接名指す）。
+DATASET_DEFAULT_OUT = (ROOT / "indigators" / "chart_kernel" / "web" / "js" / "domain"
+                       / "dataset_default_generated.js")
 
 
 def _utc(y, m, d, hh=0, mm=0, ss=0):
@@ -301,6 +306,27 @@ def render_dashboard_timeframes_js(order: "tuple[str, ...]") -> str:
     )
 
 
+def render_dataset_default_js(ref: str) -> str:
+    """既定 ref の JS モジュール（データのみ・自動生成）を組み立てる（ISSUE-512 段階 0）。
+
+    既定 ref は 6 ファイル 7 箇所に手書きされていた。1 箇所でも取り残すと、台帳を切り替えても
+    その画面だけ旧ベンダを表示し続ける（どの系列を見ているか分からない）。定義は Python の
+    台帳ただ 1 つとし、JS は生成された値を読むだけにする。
+    """
+    return (
+        "// dataset_default_generated.js — 既定 ref（**自動生成・手で編集しない**）。\n"
+        "//\n"
+        "// 生成元: marketdata/dataset_registry.py の DEFAULT_DATASET_REF（ベンダ切替はこの 1 行）。\n"
+        "// 生成器: tools/gen_js_parity_golden.py（台帳の既定を変えたら再実行する）。\n"
+        "//\n"
+        "// URL に ?dataset= が無いとき各画面が表示する datasetRef。live・replay・dashboard は\n"
+        "//   本ファイルを相対 symlink で、統合ページは live の公開面（js/public/live_public_api.js）\n"
+        "//   で読む。陳腐化と手書きの残存は\n"
+        "//   marketdata/tests/test_default_dataset_ref_single_source.py が落とす。\n"
+        f"export const DEFAULT_DATASET_REF = '{ref}';\n"
+    )
+
+
 def main() -> None:
     sessions = [
         {
@@ -350,6 +376,10 @@ def main() -> None:
         render_dashboard_timeframes_js(TIMEFRAME_ORDER), encoding="utf-8"
     )
     print(f"wrote {DASHBOARD_TF_OUT}")
+    DATASET_DEFAULT_OUT.write_text(
+        render_dataset_default_js(dataset_registry.DEFAULT_DATASET_REF), encoding="utf-8"
+    )
+    print(f"wrote {DATASET_DEFAULT_OUT}")
 
 
 if __name__ == "__main__":

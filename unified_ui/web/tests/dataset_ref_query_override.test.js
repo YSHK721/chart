@@ -50,9 +50,10 @@ const MT5_REF = 'jp225_mt5';
 
 describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）', () => {
   // --- 既定挙動不変（承認条件そのもの） ---
-  test('default_ref_constant_is_unchanged', () => {
-    // Assert: 既定表示は従来どおり jp225_tick（クエリ無しで 1 ピクセルも変わらない）。
-    expect(ROOT_JS).toMatch(/const DATASET_REF = 'jp225_tick';/);
+  test('default_ref_is_not_hand_written_in_the_root', () => {
+    // Assert（ISSUE-512 段階 0）: 既定は台帳 1 箇所（Python → 生成物）にあり、統合層は値を持たない。
+    //   手書きが残ると、台帳 1 行の切替から統合ページだけが取り残される。
+    expect(ROOT_JS).not.toMatch(/['"]jp225_(tick|mt5)['"]/);
   });
 
   test('no_query_resolves_to_the_unchanged_default', () => {
@@ -73,7 +74,7 @@ describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）
   test('root_passes_resolved_ref_into_bootstrap', () => {
     // Assert: bootstrap へ渡す datasetRef が解決関数の戻り値である（定数直渡しではない）。
     expect(ROOT_JS).toMatch(
-      /datasetRef:\s*resolveDatasetRef\(\s*location\.search\s*,\s*DATASET_REF\s*\)/,
+      /datasetRef:\s*resolveDatasetRef\(\s*location\.search\s*,\s*DEFAULT_DATASET_REF\s*\)/,
     );
   });
 
@@ -92,7 +93,7 @@ describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）
     //   経路は定数名ではなく**結線**から辿る。resolveDatasetRef を取り出している import の
     //   引数（識別子）を読み、その識別子の値を URL とする（定数名が変わっても効き続ける）。
     const wiring = ROOT_JS.match(
-      /\{\s*resolveDatasetRef\s*\}\s*=\s*await import\(\s*(\w+)\s*\)/,
+      /\{\s*resolveDatasetRef\s*,\s*DEFAULT_DATASET_REF\s*\}\s*=\s*await import\(\s*(\w+)\s*\)/,
     );
     expect(wiring, 'resolveDatasetRef を動的 import から取り出していない').not.toBeNull();
     const declared = ROOT_JS.match(new RegExp(`const\\s+${wiring[1]}\\s*=\\s*'([^']+)';`));
@@ -109,6 +110,8 @@ describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）
     );
     expect(facade.resolveDatasetRef).toBe(resolveDatasetRef);
     expect(facade.DATASET_REF_QUERY_PARAM).toBe(DATASET_REF_QUERY_PARAM);
+    // 既定も同じ公開面から受け取る（値は台帳の写し。既定表示は変わらない）。
+    expect(facade.DEFAULT_DATASET_REF).toBe(DEFAULT_REF);
   });
 
   // --- 単一ソース厳守（手書き複製の禁止） ---

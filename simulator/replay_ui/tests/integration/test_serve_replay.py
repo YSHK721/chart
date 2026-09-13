@@ -58,6 +58,8 @@ def server_ctx():
         compute_port=compute_port,
         window_port=_FakeWindowPort(),
         is_known_ref=lambda r: r in ("jp225_m1", "known"),
+        # ティック ref は既知判定を免除する（proto の規則）。判定は本番では台帳が注入する。
+        is_tick_ref=lambda r: r == "jp225_tick",
     )
     server = make_server(app, "127.0.0.1", None)
     port = server.server_address[1]

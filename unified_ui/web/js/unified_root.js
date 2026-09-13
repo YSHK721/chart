@@ -44,7 +44,6 @@ import {
   wireModeSwitchButtons,
 } from './mode_ui_view.js';
 
-const DATASET_REF = 'jp225_tick';
 
 // 中身の高さへ足す余白（ISSUE-442 / ISSUE-443）。小数の高さがそのまま切り上がってスクロール
 //   バーが出るのを避けるためだけの最小値にする。14px にしていたときは中身の下に目に見える
@@ -367,9 +366,11 @@ async function main() {
   let ReplayMarketProfileActor;
   let installReplayBar;
   let resolveDatasetRef;
+  let DEFAULT_DATASET_REF;
   try {
     ({ bootstrap } = await import(LIVE_ROOT));
-    ({ resolveDatasetRef } = await import(LIVE_PUBLIC_API));
+    // ISSUE-512 段階 0: 既定 ref も同じ公開面から受け取る（台帳 → 生成物の写し・統合層は値を持たない）。
+    ({ resolveDatasetRef, DEFAULT_DATASET_REF } = await import(LIVE_PUBLIC_API));
     ({ ReplayIndicatorController, setupReplay, ReplayMarketProfileActor, installReplayBar } =
       await import(REPLAY_PUBLIC_API));
   } catch (err) {
@@ -401,8 +402,8 @@ async function main() {
       //   ここで prefix 付与を担保するので、ルーティングが SW の可用性に依存しない。
       fetch: routedFetch,
       // `?dataset=<ref>` を付けたときだけ上書きする（ISSUE-447 A-3 案 U1・承認済み）。
-      //   クエリ無し＝従来どおり DATASET_REF（既定表示は不変）。解決は起動時のこの 1 回だけ。
-      datasetRef: resolveDatasetRef(location.search, DATASET_REF),
+      //   クエリ無し＝台帳の既定 DEFAULT_DATASET_REF。解決は起動時のこの 1 回だけ。
+      datasetRef: resolveDatasetRef(location.search, DEFAULT_DATASET_REF),
       setInterval: registry.setInterval,
       clearInterval: registry.clearInterval,
       // ツールバー構成の注入（§11.1 裁定 3 = L-1）。モードの集合を知っているのは統合層だけなので、

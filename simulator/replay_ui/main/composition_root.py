@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from common import core_web_topology
+# ISSUE-512 段階 0: /intraday の既知判定を免除するティック ref は台帳が決める（手書きの ref 名を持たない）。
+from marketdata.tf_meta import is_tick_ref
 from indigators.indicator_ui import api_loader
 from simulator.replay_ui.adapter.dataset_ports import RefValidationPort
 from simulator.replay_ui.adapter.causal_candle_repository import CausalCandleRepository
@@ -95,6 +97,7 @@ def build_replay_app(
         compute_port=compute_port,
         window_port=window_port,
         is_known_ref=ref_validation.is_known,
+        is_tick_ref=is_tick_ref,
         web_dir=web_dir,
         shared_js_root=shared_js,
         forming_port=forming_port,

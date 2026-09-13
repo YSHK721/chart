@@ -51,8 +51,11 @@ import { createSheetPresenter } from '../../usecase/sheet_presenter.js';
 import { createTailSpecLedger, tailInstanceIdOf } from '../../usecase/tail_specs.js';
 import { mpNormAt } from '../../domain/mp_bin.js';
 
-/** 素材（arch-spec T-10: live と同一データセット固定）。 */
-const DATASET_REF = 'jp225_tick';
+/**
+ * 素材（arch-spec T-10: live と同一データセット）。ISSUE-512 段階 0: 値は台帳 1 箇所
+ * （marketdata/dataset_registry.py の DEFAULT_DATASET_REF → 生成物）から読み、ここには書かない。
+ */
+import { DEFAULT_DATASET_REF } from '../../domain/dataset_default_generated.js';
 
 /** 表示時間足の基準（第 1 表の chart 追従水準の軸）。列は 8 本すべて出る。 */
 const CHART_TIMEFRAME = DASHBOARD_TIMEFRAMES[0];
@@ -157,7 +160,7 @@ export async function setupDashboardDisplay({
       return null;
     }
     const hit = presetsFor({
-      datasetRef: DATASET_REF, timeframe: String(timeframe),
+      datasetRef: DEFAULT_DATASET_REF, timeframe: String(timeframe),
       maxBars: Number.MAX_SAFE_INTEGER,
     }).find((preset) => preset.bars === bars);
     return hit ? hit.label : null;
@@ -273,7 +276,7 @@ export async function setupDashboardDisplay({
   const mpBorrow = createMpBorrow({
     transport,
     apiPrefix: candlesApiPrefix,
-    datasetRef: DATASET_REF,
+    datasetRef: DEFAULT_DATASET_REF,
     timeframe: CHART_TIMEFRAME,
     barMs: TIMEFRAME_REFRESH_MS[CHART_TIMEFRAME],
     now: clock,
@@ -296,7 +299,7 @@ export async function setupDashboardDisplay({
   const tickPlayers = createLiveTickPlayers({
     transport,
     apiPrefix: candlesApiPrefix,
-    datasetRef: DATASET_REF,
+    datasetRef: DEFAULT_DATASET_REF,
     timeframes: DASHBOARD_TIMEFRAMES,
     chartTimeframe: CHART_TIMEFRAME,
     tailsLimit: OSC_TAILS_LIMIT,
@@ -346,7 +349,7 @@ export async function setupDashboardDisplay({
   /** ローソク 1 時間足ぶんの取得と供給（発行するかは candle_poller が決める）。 */
   async function issueCandles(timeframe) {
     const result = await candlesClient.fetchCandles({
-      datasetRef: DATASET_REF, timeframe, limit: CANDLE_LIMIT,
+      datasetRef: DEFAULT_DATASET_REF, timeframe, limit: CANDLE_LIMIT,
     });
     if (!enabled) {
       return result;   // モードを出た後の遅延着弾は捨てる（present と同じ 1 箇所ガード）。
@@ -375,7 +378,7 @@ export async function setupDashboardDisplay({
     mpBorrow.tick(bundle);
     return poller.tick({
       body: {
-        dataset_ref: DATASET_REF,
+        dataset_ref: DEFAULT_DATASET_REF,
         chart_timeframe: CHART_TIMEFRAME,
         instances: bundle.instances,
         // 省リソース段階 2: 既知トークン。素材が不変ならサーバは unchanged を返す。

@@ -187,6 +187,16 @@ def rollup_refs() -> "tuple[str, ...]":
     return tuple(ref for ref, d in REGISTRY.items() if d.rollup)
 
 
+#: 既定 ref（URL に ``?dataset=`` が無いとき各画面が表示する datasetRef・ISSUE-512 段階 0）。
+#:
+#: **ベンダの切替はこの 1 行**である（依頼者要件 2026-09-11: MT5 の取得に問題が出たら 1 行で
+#: Dukascopy へ切り戻す）。ライブ・リプレイ・ダッシュボード・統合ページはすべてここから読む
+#: （Python は直接、JS は生成物 dataset_default_generated.js 経由・tools/gen_js_parity_golden.py）。
+#: 変えたら生成器を再実行する（marketdata/tests/test_default_dataset_ref_single_source.py が
+#: 再生成漏れと手書きの残存を落とす）。値は台帳にあるティック ref でなければならない。
+DEFAULT_DATASET_REF = "jp225_tick"
+
+
 def tick_refs() -> "frozenset[str]":
     """ティック由来 ref の frozenset を導出する（tf_meta.TICK_REFS の源）。"""
     return frozenset(ref for ref, d in REGISTRY.items() if d.tick)
@@ -299,4 +309,5 @@ __all__ = [
     "tick_price_basis",
     "price_basis_of_tick_token",
     "tick_vendor",
+    "DEFAULT_DATASET_REF",
 ]

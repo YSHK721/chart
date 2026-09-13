@@ -161,15 +161,21 @@ test('入口は resolveDatasetRef を経由して datasetRef を決める', () =
   assert.match(INDEX_HTML, /datasetRef:\s*resolveDatasetRef\(/);
 });
 
-test('入口が渡す既定 ref は jp225_tick のままである（既定表示が動かない）', () => {
-  // Arrange: 入口が resolveDatasetRef へ渡している第 2 引数（既定）を実ファイルから読む。
-  const m = INDEX_HTML.match(/datasetRef:\s*resolveDatasetRef\(\s*[^,]+,\s*'([^']+)'\s*\)/);
+test('入口は台帳の既定（生成物の DEFAULT_DATASET_REF）を渡す（ISSUE-512 段階 0）', async () => {
+  // Arrange: 入口が既定として渡す名前と、その名前を import している生成物を実ファイルから読む。
+  //   既定の値を入口に手書きすると、台帳 1 行の切替からこの画面だけ取り残される。
+  const passed = INDEX_HTML.match(/datasetRef:\s*resolveDatasetRef\(\s*[^,]+,\s*(\w+)\s*\)/);
+  const imported = INDEX_HTML.match(
+    /import \{\s*DEFAULT_DATASET_REF\s*\} from '(\.\/js\/domain\/dataset_default_generated\.js)'/,
+  );
+  const generated = await import(new URL(`../${imported?.[1]}`, import.meta.url));
 
   // Assert
-  assert.ok(m, 'index.html が resolveDatasetRef(search, 既定) の形で呼んでいない');
-  assert.equal(m[1], DEFAULT_REF);
-  // 既定（クエリ無し）で解決した結果が従来のハードコード値と一致する。
-  assert.equal(resolveDatasetRef('', m[1]), 'jp225_tick');
+  assert.ok(passed, 'index.html が resolveDatasetRef(search, 既定) の形で呼んでいない');
+  assert.equal(passed[1], 'DEFAULT_DATASET_REF');
+  assert.ok(imported, 'index.html が生成物から DEFAULT_DATASET_REF を import していない');
+  // 既定表示は動かない（値の権威は Python 台帳・生成物はその写し）。
+  assert.equal(generated.DEFAULT_DATASET_REF, DEFAULT_REF);
 });
 
 // ---------------------------------------------------------------------------

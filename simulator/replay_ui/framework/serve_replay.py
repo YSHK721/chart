@@ -236,6 +236,8 @@ class ReplayApp:
     """UC 結線を保持し、HTTP ハンドラから呼ばれるアプリケーション面（framework 層）。
 
     ``is_known_ref``: /intraday の事前 ref 検証（proto do_GET /intraday 忠実）。None のとき検証省略。
+    ``is_tick_ref``: 同検証を免除するティック ref の判定（proto: 検証するのは非 tick の ref だけ）。
+    ISSUE-512 段階 0 で、手書きの特定 ref 名から台帳のティック判定の注入へ置き換えた。None は免除なし。
     ``heavy_lock``: 重い処理の直列化ロック（R 非安全＋OOM 回避）。既定は新規 Lock。
     """
 
@@ -246,6 +248,7 @@ class ReplayApp:
         compute_port: Any,
         window_port: Any,
         is_known_ref: "Optional[Callable[[str], bool]]" = None,
+        is_tick_ref: "Optional[Callable[[str], bool]]" = None,
         web_dir: Any = None,
         shared_js_root: Any = None,
         heavy_lock: "Optional[threading.Lock]" = None,
@@ -263,6 +266,7 @@ class ReplayApp:
         self._compute_port = compute_port
         self._window_port = window_port
         self._is_known_ref = is_known_ref
+        self._is_tick_ref = is_tick_ref
         self.web_dir = Path(web_dir).resolve() if web_dir else None
         # 単一ソース共有: replay web_dir で miss したファイルを解決するフォールバック根
         #   （既定 <repo>/indigators/indicator_ui/web/js）。None のときフォールバック無効＝従来挙動。
@@ -413,7 +417,10 @@ class ReplayApp:
 
     def intraday(self, ref: str, start: int, end: int, mode: str, want_secs: bool = False) -> dict:
         # proto do_GET /intraday: 非 tick の未知 ref は事前に validation 拒否する。
-        if self._is_known_ref is not None and ref != "jp225_tick" and not self._is_known_ref(ref):
+        #   ISSUE-512 段階 0: ティック ref の免除は、以前は特定 ref 名の手書きだった。台帳の
+        #   ティック判定（注入）へ置き換え、ティック ref が増えても（jp225_mt5）同じ規則に従う。
+        is_tick = self._is_tick_ref is not None and self._is_tick_ref(ref)
+        if self._is_known_ref is not None and not is_tick and not self._is_known_ref(ref):
             raise ValueError(f"unknown {ref}")
         req = IntrabarWindowRequest(ref=ref, start=start, end=end, mode=mode, want_secs=want_secs)
         def _run():

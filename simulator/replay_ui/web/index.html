@@ -43,6 +43,8 @@
     //   untilTime をフレーム駆動し controller.recomputeAllApplied で「その時点」を因果計算する。
     import { bootstrap, RECENT_BARS } from './js/adapter/front/composition_root_front.js';
     import { setupReplay } from './js/replay.js';
+    // 既定 ref（ISSUE-512 段階 0）。台帳 1 箇所（Python → 生成物）から読み、入口は値を持たない。
+    import { DEFAULT_DATASET_REF } from './js/domain/dataset_default_generated.js';
     // ISSUE-166 の vendor 読込ガード（cache-bust 再試行）は共有モジュール（ライブ実体を
     //   symlink 参照）が所有する。ISSUE-278 #11: inline の手書き複製をやめる。
     import { ensureLightweightCharts } from './js/adapter/front/vendor_loader.js';
@@ -54,7 +56,7 @@
       lwc: window.LightweightCharts,
       container: document.getElementById('chart'),
       doc: document,
-      datasetRef: 'jp225_tick',
+      datasetRef: DEFAULT_DATASET_REF,
     }).then(({ chart, mainSeries, controller, renderer, ready, marketProfile, tickvolBands }) => {
       controller.bind();
       window.__rpTickvolBands = tickvolBands; // E2E フック（__rpChart と同規約・描画には不使用）
@@ -63,7 +65,7 @@
         // ライブ更新の代わりに再生ドライバを起動（untilTime をフレーム駆動＝ライブ同一計算）。
         //   marketProfile（slim actor・composition root が controller と同一実体を注入）を渡し、
         //   indicator メニュー（market_profile）で有効化された actor の足内 tick 逐次成長を駆動する。
-        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: 'jp225_tick', recentBars: RECENT_BARS, document, marketProfile });
+        setupReplay({ chart, mainSeries, controller, renderer, datasetRef: DEFAULT_DATASET_REF, recentBars: RECENT_BARS, document, marketProfile });
       });
     });
   </script>

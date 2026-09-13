@@ -77,8 +77,9 @@ BAR_LIMITS: "Mapping[str, int]" = {
     "4h": 2000, "1D": 2000, "1W": 1500, "1M": 800,
 }
 
-#: 表示に使うデータセット（T-10: ライブと同一の `jp225_tick` 固定）。参照は要求が運ぶ。
-DATASET_REF = "jp225_tick"
+# 表示に使うデータセット（T-10: ライブと同一）は要求が運ぶ。ISSUE-512 段階 0: 以前ここにあった
+# ref の手書き定数は本番の参照者 0 件だった（実測 2026-09-13）。既定は front が台帳の生成物
+# （dataset_default_generated.js）から読むため、main 層（素材を import できない・R3）には置かない。
 
 def build_dashboard_app(
     *,

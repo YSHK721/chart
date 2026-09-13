@@ -30,6 +30,8 @@
 export * from '../usecase/period_presets.js';
 export * from '../adapter/front/live_tick_player.js';
 export { DATASET_REF_QUERY_PARAM, resolveDatasetRef } from '../adapter/front/dataset_ref_query.js';
+// 既定 ref（ISSUE-512 段階 0）。統合ページは自分の web_root 外を配信できないため、ここから受け取る。
+export { DEFAULT_DATASET_REF } from '../domain/dataset_default_generated.js';
 
 // Market Profile の借用面（依頼者承認 2026-09-06「MP 列＝ライブ MP の借用」・第 1 段階）。
 //   dashboard の価格ラダーの MP 列は、live core の `/market_profile` を**ライブチャートと同一の
