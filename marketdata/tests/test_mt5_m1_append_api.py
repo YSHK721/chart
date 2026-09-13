@@ -201,6 +201,9 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         "ts_and_mid", "ticks_to_m1", "m1_csv_path",
         "build_m1_from_ticks", "last_m1_date", "append_m1_from_ticks",
         "forming_bar_from_ticks", "forming_bar_from_frame", "append_m1_rows",
+        # ISSUE-515 対策 1（承認 2026-09-13）: 価格基準つきの公開面 ``tick_m1.ts_and_price``。
+        # 市場プロファイルが ref ごとの基準（台帳）で畳むため（mid 固定の ts_and_mid の隣）。
+        "ts_and_price",
     }
 
 

@@ -109,6 +109,18 @@ def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
     return _ts_and_mid(ticks)
 
 
+def ts_and_price(
+    ticks: pd.DataFrame, *, price_basis: str
+) -> "tuple[pd.Series, pd.Series]":
+    """生ティック frame から ``(timestamp(naive UTC), price)`` を返す **価格基準つきの公開面**。
+
+    実体は :func:`_ts_and_price`（:func:`ticks_to_m1` と同じ規則）。外部（市場プロファイルの
+    gateway）が ref ごとの基準（台帳の ``price_basis``）で畳むための口である（ISSUE-515）。
+    ``price_basis`` は必須（既定値に委ねると、確定足と違う基準で描いても誰も気付かない）。
+    """
+    return _ts_and_price(ticks, price_basis=price_basis)
+
+
 def _validate_price_basis(price_basis: str) -> str:
     """価格基準を既知の値に限定して返す（fail-fast・黙って既定へ落ちない）。
 
@@ -664,20 +676,23 @@ def forming_bar_from_ticks(
     return forming_bar_from_frame(pd.concat(frames, ignore_index=True), start_unix, end_unix)
 
 
-def forming_bar_from_frame(ticks: pd.DataFrame, start_unix: int, end_unix: int) -> "dict | None":
-    """生ティック frame の ``[start_unix, end_unix)`` から形成中バー（mid OHLCV・1 本）を組む。
+def forming_bar_from_frame(
+    ticks: pd.DataFrame, start_unix: int, end_unix: int, *, price_basis: str = PRICE_BASIS_MID
+) -> "dict | None":
+    """生ティック frame の ``[start_unix, end_unix)`` から形成中バー（OHLCV・1 本）を組む。
 
     **集計規則の唯一の実体**（:func:`forming_bar_from_ticks` と
     :func:`marketdata.tick_day_source.forming_bar_from_ticks` が共有する）。どこから読んだ
     ティックか（確定 parquet か受信ジャーナルか）を知らない純粋集計であり、読み元の違いで
     規則が 2 つに割れないよう読取から切り離してある（ISSUE-512 段階 2）。
+    価格は ``price_basis`` で畳む（既定 mid＝従来値。確定足と同じ基準を渡すこと・ISSUE-515）。
     窓内にティックが無ければ ``None``。
     """
     s = pd.Timestamp(start_unix, unit="s")
     e = pd.Timestamp(end_unix, unit="s")
     if e <= s:
         return None
-    ts, mid = _ts_and_mid(ticks)
+    ts, mid = _ts_and_price(ticks, price_basis=price_basis)
     work = pd.DataFrame({"ts": ts.to_numpy(), "mid": mid.to_numpy()})
     work = work[(work["ts"] >= s) & (work["ts"] < e)].sort_values("ts", kind="stable")
     if work.empty:

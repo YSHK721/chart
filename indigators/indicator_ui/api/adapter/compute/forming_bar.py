@@ -56,6 +56,8 @@ from marketdata.tf_meta import (  # noqa: E402
     # ISSUE-512 段階 1: ref → ティック木の枝名。既定引数（tick_tree._DEFAULT_SYMBOL）に
     #   頼らず、読むたびに **どの木か** を名指しする。
     tick_tree_token,
+    # ISSUE-515 対策 1: ref → 価格基準。確定足の書き手と同じ基準で畳む（既定 mid に頼らない）。
+    tick_price_basis,
 )
 
 # ロールアップ方式 forming が対応する全 tf（1m＋上位足 5m..1M）。ロールアップの現周期 partial バー
@@ -130,13 +132,14 @@ def forming_bar(ref: str, tf: str, now_unix: int) -> Optional[dict]:
     #   両方へ渡す（2 度引くと、両者が同じ木を見ることが偶然に委ねられる）。台帳の記入漏れは
     #   ここで止まる（Fail-Stop を握り潰さない）。
     tree = tick_tree_token(ref)
+    basis = tick_price_basis(ref)
     token = _tick_source_fingerprint(start, int(now_unix), tree)
     cache_key = (str(ref), str(tf))
     if token is not None:
         cached = _FORMING_CACHE.get(cache_key)
         if cached is not None and cached[0] == token and cached[1] == int(now_unix):
             return None if cached[2] is None else dict(cached[2])
-    bar = forming_bar_from_ticks(start, int(now_unix), symbol=tree)
+    bar = forming_bar_from_ticks(start, int(now_unix), symbol=tree, price_basis=basis)
     # ISSUE-078: 1D の time はセッション日ラベルの UTC 深夜へ再ラベル（rollup 1D バーと同一規約・
     #   チャート日付軸整合）。データ窓（start..now）はセッション始端基準のまま。
     if bar is not None and tf == "1D":
@@ -358,11 +361,12 @@ def closed_gap_bars(
     #   ための境界であり、台帳の記入漏れ（Fail-Stop）はその境界の責務ではない。穴の本数に
     #   依らず 1 回だけ解決し、全周期が同じ木を読む。
     tree = tick_tree_token(ref)
+    basis = tick_price_basis(ref)                    # 木と同じく穴の本数に依らず 1 回（ISSUE-515）
     out: "list[dict]" = []
     for gs in window:
         try:
             closed = forming_bar_from_ticks(          # 完結窓 [gs, gs+period)
-                gs, gs + period, symbol=tree
+                gs, gs + period, symbol=tree, price_basis=basis
             )
         except Exception as exc:  # noqa: BLE001 — 橋渡しは表示補完・失敗しても本計算を落とさない
             logger.warning("欠落閉周期の合成に失敗（skip）: %s/%s t=%s (%s)", ref, tf, gs, exc)

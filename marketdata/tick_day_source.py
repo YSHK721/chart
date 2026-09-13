@@ -83,12 +83,13 @@ def read_day_ticks(path: Any, columns: "Sequence[str]") -> pd.DataFrame:
 
 
 def forming_bar_from_ticks(
-    start_unix: int, end_unix: int, *, symbol: str, data_dir: Any = DATA_DIR
+    start_unix: int, end_unix: int, *, symbol: str, price_basis: str, data_dir: Any = DATA_DIR
 ) -> "dict | None":
     """``[start_unix, end_unix)`` の実ティックから形成中バーを返す（読み元はジャーナルも含む）。
 
-    契約（引数・戻り値）は :func:`marketdata.tick_m1.forming_bar_from_ticks` と同じで、違いは
-    読み元だけである。集計規則は :func:`marketdata.tick_m1.forming_bar_from_frame` の 1 箇所に
+    契約は :func:`marketdata.tick_m1.forming_bar_from_ticks` と同じで、違いは読み元と、価格基準を
+    **必須**で受けること（ISSUE-515: 既定 mid に委ねると、確定足が bid の ref で確定のたびに
+    表示が跳ねる）。集計規則は :func:`marketdata.tick_m1.forming_bar_from_frame` の 1 箇所に
     委ねる（規則を 2 つに割らない）。読むのは窓と重なる日だけである。
     """
     s = pd.Timestamp(start_unix, unit="s")
@@ -102,7 +103,7 @@ def forming_bar_from_ticks(
         return None
     frames = [read_day_ticks(p, tick_m1.TICK_COLUMNS) for p in files]
     return tick_m1.forming_bar_from_frame(
-        pd.concat(frames, ignore_index=True), start_unix, end_unix
+        pd.concat(frames, ignore_index=True), start_unix, end_unix, price_basis=price_basis
     )
 
 

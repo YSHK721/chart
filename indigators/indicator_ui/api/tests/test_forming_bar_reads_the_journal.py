@@ -45,7 +45,10 @@ def journal_backed(monkeypatch, tmp_path):
     """tick=True・tick_token=MT5 の ref を台帳へ一時的に載せ、読取を tmp_path の木へ向ける。"""
     monkeypatch.setitem(
         REGISTRY, _REF,
-        DatasetDescriptor(path=tmp_path / "x.csv", symbol="JP225", tick=True, tick_token=_TOKEN),
+        DatasetDescriptor(
+            path=tmp_path / "x.csv", symbol="JP225", tick=True, tick_token=_TOKEN,
+            price_basis="bid",
+        ),
     )
     monkeypatch.setattr(tf_meta, "TICK_REFS", frozenset(set(tf_meta.TICK_REFS) | {_REF}))
     monkeypatch.setattr(fb, "day_tick_files", functools.partial(tds.day_tick_files, data_dir=tmp_path))
@@ -77,9 +80,9 @@ def test_a_journal_only_day_yields_a_forming_bar(journal_backed):
     # Act
     bar = fb.forming_bar(_REF, "1m", now)
 
-    # Assert
+    # Assert — 台帳の基準（bid）で畳む。mid（100.5）なら確定足（bid）と食い違う（ISSUE-515）。
     assert bar is not None
-    assert bar["close"] == pytest.approx(100.5)
+    assert bar["close"] == pytest.approx(100.0)
 
 
 def test_an_append_invalidates_the_remembered_forming_bar(journal_backed):
@@ -98,6 +101,38 @@ def test_an_append_invalidates_the_remembered_forming_bar(journal_backed):
     after = fb.forming_bar(_REF, "1m", now)
 
     # Assert
-    assert before["close"] == pytest.approx(100.5)
-    assert after["close"] == pytest.approx(200.5)
+    assert before["close"] == pytest.approx(100.0)
+    assert after["close"] == pytest.approx(200.0)
     assert after["volume"] == 2.0
+
+
+def test_the_price_basis_is_resolved_once_regardless_of_the_holes(monkeypatch, journal_backed):
+    """計算量: 基準の解決回数は、埋める穴の本数（1 本 / 4 本の 2 点）に比例しない。
+
+    解決を穴のループの中へ置くと、出力は同じまま穴の本数ぶん台帳を引き直す。
+    """
+    # Arrange
+    for m in range(6):
+        journal.append(_DAY, [(_label_ms(12, m, 5), 100.0 + m, 101.0 + m)], **journal_backed)
+    first = ingest.rows_to_frame(journal.read_rows(_DAY, **journal_backed))["timestamp"].iloc[0]
+    base = int(first.timestamp()) - 5
+    calls = []
+    real = fb.tick_price_basis
+    monkeypatch.setattr(fb, "tick_price_basis", lambda ref: (calls.append(ref), real(ref))[1])
+
+    def resolved(holes: int) -> "tuple[int, int]":
+        calls.clear()
+        fb.clear_forming_cache()
+        bars = fb.closed_gap_bars(_REF, "1m", base, base + (holes + 1) * 60)
+        return len(calls), len(bars)
+
+    # Act
+    few_calls, few_bars = resolved(1)
+    many_calls, many_bars = resolved(4)
+
+    # Assert
+    assert many_bars > few_bars, "2 点の仕事量が同じ（オーダーを測れていない）"
+    assert few_calls > 0, "基準を一度も解決していない（既定値に頼っている）"
+    assert many_calls == few_calls, (
+        f"穴 {few_bars}→{many_bars} 本で基準の解決が {few_calls}→{many_calls} 回に増えた"
+    )

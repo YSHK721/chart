@@ -55,6 +55,12 @@ class DatasetDescriptor:
             新しいティック ref が無言で他銘柄の木を読み、出力は形式上正しいため検出できない）。
             握る側が ``except ValueError`` と書くとこの Fail-Stop は網に掛かる。読取側の境界は
             :class:`TickTokenMissing` を名指しして先に通すこと（型名の詳細は同クラスの説明）。
+        price_basis: ティックのどの気配を「価格」とするか（ISSUE-515 対策 1）。語彙と規則の唯一源は
+            :mod:`marketdata.tick_m1`（``marketdata.tick_m1.PRICE_BASIS_MID`` = ``"mid"`` /
+            ``marketdata.tick_m1.PRICE_BASIS_BID`` = ``"bid"``。本モジュールは paths 以外に依存しない
+            ため文字列で持ち、値の妥当性は
+            ``marketdata/tests/test_tick_price_basis_ledger.py`` が tick_m1 の語彙と突き合わせる）。
+            確定足の書き手と同じ基準でなければならない。``tick`` が True なら必須（構築時に拒否）。
     """
 
     path: Path
@@ -64,6 +70,18 @@ class DatasetDescriptor:
     tick: bool = False
     data_start: "dt.date | None" = None
     tick_token: "str | None" = None
+    price_basis: "str | None" = None
+
+    def __post_init__(self) -> None:
+        # ISSUE-515 対策 1: ティック ref は価格基準を必ず名乗る。**構築時に**拒否する理由は、
+        #   読取時の Fail-Stop にすると形成中バーの読取を包む「素材の失敗を握る」包括的 except の
+        #   内側で投げることになり、WARNING と素通しへ化けるからである（構築時には網が無い）。
+        if self.tick and self.price_basis is None:
+            raise ValueError(
+                "tick=True の記述子は price_basis（'mid' / 'bid'）を名乗ってください。"
+                " 形成中バー・市場プロファイル・ライブバッファがこの基準で価格を畳みます"
+                "（確定足の書き手と同じ基準でなければ、確定のたびに表示が跳ねる）。"
+            )
 
 
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
@@ -109,6 +127,10 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # 1 バイトも変わらない。従来この値は木のレイアウト権威（marketdata/tick_tree.py:30）が
         # 持つ既定引数と、読取側の手書き写像に散っていた（台帳に写像が無かった）。
         tick_token="JP225",
+        # 価格基準（ISSUE-515 対策 1）。既存事実の明文化: 確定足の書き手（tools/live_tick_watch.py・
+        # tools/build_tick_rollup.py）は price_basis を渡さず既定 mid で畳んでいる（ISSUE-511 実測）。
+        # bid へ揃えるときは ISSUE-511 段階 1 の再生成と同時に本行を変える。
+        price_basis="mid",
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）: **tick=False**。足内更新（forming_bar /
@@ -119,6 +141,12 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         symbol="JP225",
         clamp_outliers=True,
         rollup=True,
+        # ISSUE-512 段階 3 の準備（ISSUE-515 対策 1）。tick が False の間は tick_tree_token が
+        # None を返すため読取経路は起動しない。木の枝名は marketdata.mt5_ticks.ingest.token_for
+        # （JP225 + '@' + サーバ名）の値、基準は同 ingest.PRICE_BASIS（bid）と一致させる
+        # （両者の一致は marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
+        tick_token="JP225@OANDA-Japan-MT5-Live",
+        price_basis="bid",
     ),
 }
 
@@ -195,6 +223,40 @@ def tick_tree_token(ref: "str | None") -> "str | None":
     return d.tick_token
 
 
+def tick_price_basis(ref: "str | None") -> "str | None":
+    """``ref`` のティックを畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
+
+    ティック木を持たない ref（``tick`` が False）と台帳に無い ref は ``None``。``tick`` が True の
+    記述子は構築時に基準を必ず持つ（:class:`DatasetDescriptor` が拒否する）ため、ここで既定値へ
+    落とす分岐は無い。
+    """
+    d = REGISTRY.get(ref)
+    if d is None or not d.tick:
+        return None
+    return d.price_basis
+
+
+def price_basis_of_tick_token(token: str) -> str:
+    """ティック木の枝名 ``token`` を畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
+
+    市場プロファイルは ref ではなく木の枝名でティックを読むため、木から基準を引く口が要る。
+    同じ木を読む ref は同じ基準であることを ``marketdata/tests/test_tick_price_basis_ledger.py``
+    が固定する（木から一意に決まる）。
+
+    Raises:
+        ValueError: 台帳に無い木（既定の mid へ落とさない。落とすと未登録の木が無言で mid に
+            なり、確定足と半スプレッドずれても出力は形式上正しい）。
+    """
+    bases = {d.price_basis for d in REGISTRY.values() if d.tick_token == token}
+    bases.discard(None)
+    if len(bases) != 1:
+        raise ValueError(
+            f"ティック木 {token!r} の価格基準を台帳から一意に引けません（候補 {sorted(bases)}）。"
+            " marketdata.dataset_registry.REGISTRY の記述子へ tick_token と price_basis を記入してください。"
+        )
+    return bases.pop()
+
+
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
@@ -204,4 +266,6 @@ __all__ = [
     "rollup_refs",
     "tick_refs",
     "tick_tree_token",
+    "tick_price_basis",
+    "price_basis_of_tick_token",
 ]

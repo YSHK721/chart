@@ -236,7 +236,8 @@ def test_the_forming_bar_from_a_journal_matches_the_one_from_its_parquet(store):
     frame = ingest.rows_to_frame(journal.read_rows(_DAY, **store))
     first = int(frame["timestamp"].iloc[0].timestamp())
     window = (first, first + 60)
-    from_journal = tds.forming_bar_from_ticks(*window, **store)
+    # 比較相手（tick_m1 の parquet 版）は mid 固定なので同じ基準で比べる。
+    from_journal = tds.forming_bar_from_ticks(*window, price_basis=tick_m1.PRICE_BASIS_MID, **store)
     journal.finalize(_DAY, **store)
 
     # Act
@@ -254,7 +255,9 @@ def test_a_window_without_ticks_has_no_forming_bar(store):
     noon = int(dt.datetime(2026, 8, 25, 23, tzinfo=dt.timezone.utc).timestamp())
 
     # Act / Assert
-    assert tds.forming_bar_from_ticks(noon, noon + 60, **store) is None
+    assert tds.forming_bar_from_ticks(
+        noon, noon + 60, price_basis=tick_m1.PRICE_BASIS_BID, **store
+    ) is None
 
 
 # =====================================================================
@@ -335,7 +338,7 @@ def test_the_forming_bar_reads_only_the_days_it_uses(monkeypatch, store, days):
     monkeypatch.setattr(tds, "read_day_ticks", lambda p, c: (read.append(p), real(p, c))[1])
 
     # Act
-    tds.forming_bar_from_ticks(start, end, **store)
+    tds.forming_bar_from_ticks(start, end, price_basis=tick_m1.PRICE_BASIS_BID, **store)
 
     # Assert
     used = {

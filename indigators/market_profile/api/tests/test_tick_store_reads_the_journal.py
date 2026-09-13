@@ -57,6 +57,6 @@ def test_the_store_reads_a_journal_only_day(monkeypatch, tmp_path):
         _TOKEN, start, start + 60, columns=_COLUMNS, outlier_frac=0.30
     )
 
-    # Assert
+    # Assert — MT5 の木は台帳の基準（bid）で読む。mid なら確定足と半スプレッドずれる（ISSUE-515）。
     assert list(win.secs) == [start, start + 1, start + 2]
-    np.testing.assert_allclose(win.mids, [100.5, 101.5, 102.5])
+    np.testing.assert_allclose(win.mids, [100.0, 101.0, 102.0])

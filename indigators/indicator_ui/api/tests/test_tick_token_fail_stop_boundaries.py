@@ -55,7 +55,10 @@ def _ledger_omission(monkeypatch, tmp_path):
     """
     monkeypatch.setitem(
         REGISTRY, _OMITTED,
-        DatasetDescriptor(path=tmp_path / "omitted.csv", symbol="XXX", tick=True),
+        # 記入漏れの対象は tick_token だけ。価格基準は構築時に必須（ISSUE-515）なので記入しておく。
+        DatasetDescriptor(
+            path=tmp_path / "omitted.csv", symbol="XXX", tick=True, price_basis="mid"
+        ),
     )
     monkeypatch.setattr(tf_meta, "TICK_REFS", frozenset(set(tf_meta.TICK_REFS) | {_OMITTED}))
     return _OMITTED

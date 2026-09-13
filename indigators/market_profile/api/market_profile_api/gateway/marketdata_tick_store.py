@@ -12,7 +12,9 @@ import numpy as np
 import pandas as pd
 
 from marketdata import paths as _paths
-from marketdata.tick_m1 import ts_and_mid
+from marketdata.tick_m1 import ts_and_price
+# ISSUE-515 対策 1: MP は ref でなく木の枝名で読むため、基準は木から台帳で引く（mid 固定をやめる）。
+from marketdata.dataset_registry import price_basis_of_tick_token
 # ISSUE-512 段階 2: 日別ティックファイル＝確定 parquet か（無ければ）受信ジャーナル。列挙・読取・
 #   キャッシュ署名（day_files 由来）が同じ読み元を見る。
 from marketdata.tick_day_source import day_tick_files, read_day_ticks
@@ -78,7 +80,9 @@ class MarketdataTickStore:
         #   「同一規則を外部（tools・market_profile gateway）が再実装していたため公開名を与えた」と
         #   記録している）。ここに写しを置くと、mid の定義や tz 規約を変えたとき M1/ロールアップ側
         #   だけが変わり、同一画面に重ねて描く MP の dwell/zp が旧規則のまま残って価格軸が静かにずれる。
-        ts, mid = ts_and_mid(tdf)
+        #   ISSUE-515: 価格は木の基準（台帳）で畳む。確定足が bid の木を mid で描くと、同じ画面の
+        #   ローソクと MP の水準が半スプレッドずれる。解決は窓 1 回につき 1 回（日数に依らない）。
+        ts, mid = ts_and_price(tdf, price_basis=price_basis_of_tick_token(symbol))
         secs = ts.to_numpy().astype("datetime64[s]").astype("int64")
         win = (secs >= s) & (secs < e)
         secs = secs[win]
