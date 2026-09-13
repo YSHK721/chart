@@ -15100,7 +15100,7 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ## ISSUE-514: 宣言整合性検定 C1 が別名 import した記号を「到達不能」と誤判定する
 
-- **ステータス**: OPEN（承認待ち・検定ツールの修正はスコープ外のため y/n）
+- **ステータス**: RESOLVED（2026-09-13 承認・実施。C1 別名 import 検定 4 件追加・baseline prune 41 件（本件 37＋既存の解消済み 4）・quality 検定 15 passed・gate 新規違反 0）
 - **起票日**: 2026-09-13
 - **発見の経緯**: Stop フック（`.claude/scripts/run_quality_gate.py`）が新規違反 1 件を報告。
   `C1 simulator/sim_ui/usecase/query_trace.py:59 derive_trace_events.REQUIRED_COLUMNS

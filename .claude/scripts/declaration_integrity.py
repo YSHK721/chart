@@ -149,6 +149,10 @@ def bound_names(tree: ast.AST) -> tuple[set[str], set[str]]:
                 modules.add(node.module)
             for a in node.names:
                 names.add(a.asname or a.name)
+                # 別名 import（from M import X as Y）でも X は import 済み＝到達可能（C1 の
+                # 定義）。束縛名は Y だけなので、`M.X` を経路として残す（ISSUE-514）。
+                if a.asname and node.module:
+                    modules.add(f"{node.module}.{a.name}")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
