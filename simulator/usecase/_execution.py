@@ -8,10 +8,13 @@ usecase 層は domain のみ依存可。
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from simulator.domain.order import Order
 from simulator.domain.position import Position
+
+LOGGER = logging.getLogger("simulator.usecase._execution")
 
 
 def mt5_bid_ask(base: float, *, spread: float, point: float) -> "tuple[float, float]":
@@ -49,7 +52,18 @@ def admit_orders(orders, spec) -> "list[Order]":
     """
     admitted = list(orders)
     for order in admitted:
-        order.validate(spec)
+        try:
+            order.validate(spec)
+        except Exception as exc:  # pragma: no cover - branch covered by InvalidPriceError tests
+            LOGGER.warning(
+                "Order rejected before execution: side=%s kind=%s volume=%s reason=%s context=%s",
+                order.side,
+                order.kind,
+                order.volume,
+                type(exc).__name__,
+                getattr(exc, "context", {}),
+            )
+            raise
     return admitted
 
 

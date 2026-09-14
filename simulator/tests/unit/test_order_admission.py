@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,9 +75,12 @@ class TestAdmitOrdersLetsValidOrdersThrough:
 class TestAdmitOrdersRejectsSpecViolations:
     """不変条件の 4 分類それぞれで棄却されること（落ちない門は無価値）。"""
 
-    def test_volume_below_the_minimum_is_rejected(self):
-        with pytest.raises(InvalidPriceError):
-            admit_orders([_order(volume=0.001)], _Spec())
+    def test_volume_below_the_minimum_is_rejected(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="simulator.usecase._execution"):
+            with pytest.raises(InvalidPriceError):
+                admit_orders([_order(volume=0.001)], _Spec())
+        assert "Order rejected before execution" in caplog.text
+        assert "volume" in caplog.text
 
     def test_volume_above_the_maximum_is_rejected(self):
         with pytest.raises(InvalidPriceError):
