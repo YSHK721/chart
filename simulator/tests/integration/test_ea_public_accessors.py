@@ -86,10 +86,14 @@ def test_the_strategy_accessor_returns_a_strategy_port(csv_path: Path) -> None:
 def test_the_strategy_accessor_follows_the_registry(csv_path: Path) -> None:
     """登録 EA ごとに、その EA の戦略実体が返る（表を写さずに到達できる）。"""
     from simulator.adapter.strategy.pro_fit_band import ProFitBand
+    from simulator.adapter.strategy.sma_touch_long import SmaTouchLong
     from simulator.adapter.strategy.tc24051901 import TC24051901
     from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand
 
     assert isinstance(build_ea_strategy(**_spec(csv_path, "PRO_fit_Band_EA")), ProFitBand)
+    assert isinstance(
+        build_ea_strategy(**_spec(csv_path, "SmaTouchLong_EA")), SmaTouchLong
+    )
     assert isinstance(
         build_ea_strategy(**_spec(csv_path, "WeeklyVolBand_EA")), WeeklyVolBand
     )
@@ -168,6 +172,7 @@ def test_known_ea_names_is_deterministic() -> None:
     names = known_ea_names()
     assert isinstance(names, tuple)
     assert names != ()
+    assert "SmaTouchLong_EA" in names
     assert list(names) == sorted(set(names))
     assert known_ea_names() == names
 
