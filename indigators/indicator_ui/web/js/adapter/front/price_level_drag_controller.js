@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/price_level_drag_controller.js

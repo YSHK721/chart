@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/position_sizing_dialog.js

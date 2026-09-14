@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/pane_legend_view.js

@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/scroll_to_latest_button.js

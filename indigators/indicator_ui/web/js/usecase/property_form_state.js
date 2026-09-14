@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/usecase/property_form_state.js

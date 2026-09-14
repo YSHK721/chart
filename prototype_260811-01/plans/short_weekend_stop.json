@@ -1,0 +1,7 @@
+{
+  "direction": "short",
+  "balance": 172000,
+  "entries": [ {"units": 15, "price": null} ],
+  "stop_price": 66800,
+  "tp_price": null
+}

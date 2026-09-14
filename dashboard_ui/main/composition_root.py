@@ -1,0 +1,229 @@
+"""Composition Root（唯一の束縛点・CLEAN_ARCH §8）。
+
+具象を組み立ててよいのはここだけである。usecase / domain は Protocol 越しにしか外を
+知らず、adapter は自分で相手を選ばない。
+
+素材の鮮度と計算量の両立:
+    要求ごとに口（gateway）を組み直す。gateway は自分の生存期間だけ計算を畳む（同一キーの
+    full 系列は 1 回・足は 1 回）ので、**1 枚のシートを作る間の畳み込み**（T-1）は保たれ、
+    次の要求では新しい足が読まれる。
+
+    要求をまたいで持ち越すのはプロセス寿命の 3 つだけである（どれも「足の鮮度と無関係な
+    量」＝epoch の中で不変な量である点で同型）:
+      - `SheetState`     … 当てはめの epoch・GPD の当てはめ結果・帯外イベント履歴。
+      - `MaterialStore`  … **確定足ぶんの full 系列**（ISSUE-457）と、確定素材に対して
+                           epoch の中で不変な派生量（§5.3.3 の比較集合・役割判定の中央値
+                           ＝ISSUE-464）。形成中足の 1 点は gateway が毎要求作って継ぐので、
+                           現在値・走行 H/L は古くならない。
+      - `ParamScopes`    … variant ごとの受理 param 集合（ISSUE-466）。指標記述子から導かれる
+                           定数であり、epoch にも要求にも依らない。
+    これが §7 の 2 段（段 1＝バー確定で作り直す／段 2＝ティックでは末尾だけ動かす）を
+    そのまま構造にしたものである。共有しないと epoch 不変のティックでも同じ確定系列を
+    毎秒作り直す（§9-4 実測: 要求の 78%）。
+
+読む本数の上限:
+    参照実装 tools/measure/issue449/probe_inverse.py:41-42 の本数表をそのまま使う。
+    上限は「症状の回避」ではなく素材の量の宣言であり、ライブのチャートが読む本数と同じ
+    考え方（足ごとに必要な履歴長が違う）である。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+from common import core_web_topology
+
+from dashboard_ui.adapter.breakpoints import BreakpointRegistry
+from dashboard_ui.adapter.controller.demand_ledger import (
+    DemandRecordingController,
+    start_warmup_thread,
+)
+from dashboard_ui.adapter.controller.reach_sheet_controller import (
+    ReachSheetController,
+    SheetState,
+)
+from dashboard_ui.adapter.gateway.elapsed_comparison_gateway import (
+    ElapsedComparisonGateway,
+)
+from dashboard_ui.adapter.gateway.forward_evaluation_gateway import (
+    ForwardEvaluationGateway,
+)
+from dashboard_ui.adapter.gateway.indicator_ui_compute_gateway import (
+    IndicatorUiComputeGateway,
+)
+from dashboard_ui.adapter.gateway.intrabar_capability_gateway import (
+    IntrabarCapabilityGateway,
+)
+from dashboard_ui.adapter.gateway.material_store import MaterialStore
+from dashboard_ui.adapter.gateway.param_scopes import ParamScopes
+from dashboard_ui.adapter.gateway.persistent_material_store import (
+    PersistentMaterialStore,
+    default_spill_dir,
+)
+from dashboard_ui.adapter.series_role_table import SeriesRoleTable
+from dashboard_ui.framework.serve_dashboard import DashboardApp
+from dashboard_ui.usecase.sheet_models import SheetInstance
+
+# repo 根 = dashboard_ui/main/composition_root.py の parents[2]。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: 配信トポロジ台帳（common/core_web_topology.json）における自分の行。配信根と共有根の
+#: 実体はそこが単独で持つ——ここへ書き写すと同じ事実の所有者が 5 人目になる（ISSUE-504 (ii)）。
+CORE_NAME = "dashboard"
+
+#: 足ごとに読む本数（参照実装 probe_inverse.py:41-42 の本数表と同値）。
+BAR_LIMITS: "Mapping[str, int]" = {
+    "1m": 3000, "5m": 3000, "15m": 3000, "1h": 2000,
+    "4h": 2000, "1D": 2000, "1W": 1500, "1M": 800,
+}
+
+# 表示に使うデータセット（T-10: ライブと同一）は要求が運ぶ。ISSUE-512 段階 0: 以前ここにあった
+# ref の手書き定数は本番の参照者 0 件だった（実測 2026-09-13）。既定は front が台帳の生成物
+# （dataset_default_generated.js）から読むため、main 層（素材を import できない・R3）には置かない。
+
+def build_dashboard_app(
+    *,
+    repo_root: Any = None,
+    web_dir: Any = None,
+    shared_js_root: Any = None,
+    bar_limits: "Mapping[str, int] | None" = None,
+    persist: bool = False,
+    persist_dir: Any = None,
+    warmup: bool = False,
+    bridge: Any = None,
+    now: Any = None,
+) -> DashboardApp:
+    """dashboard core のアプリケーションを組み立てる。
+
+    Args:
+        repo_root: リポジトリ根（既定は本ファイルから解決）。
+        web_dir: フロントの配信根（既定は配信トポロジ台帳の自分の行。無ければ静的配信無効）。
+        shared_js_root: 単一ソース共有の根（既定は同台帳のフォールバック根）。
+        bar_limits: 足ごとに読む本数（既定は :data:`BAR_LIMITS`）。
+        persist: True なら確定素材と需要台帳をディスクへ持ち越す（置き場は adapter の
+            :func:`default_spill_dir`＝DATA_DIR 配下・ISSUE-501 段階 2・依頼者承認
+            2026-09-06）。本番の起動口 `dashboard_ui.main.serve` だけが True を渡す
+            （テスト・in-process 計測は既定 OFF＝隔離）。
+        persist_dir: 置き場の明示指定（検定用。指定時は `persist` に依らず持ち越す）。
+        warmup: True なら起動時に需要台帳の束を別スレッドで 1 回再演して温める
+            （待受け開始はブロックしない）。持ち越しなしでは温める材料が無いので無効。
+        bridge: dataset ＋ 計算面の namespace（既定 None＝各 gateway が従来どおり
+            ライブ core の単一ソースを**自分で遅延解決**する）。本 Root は bridge を
+            **作らない**——技術（指標計算 Facade・素材）を知ってよいのは adapter だけで
+            あり、main がそれを import すると層の規則 R3 が落ちる
+            （dashboard_ui/tests/unit/test_dashboard_import_direction.py の
+            test_only_the_adapter_layer_knows_pandas_and_the_compute_bridge）。
+            ここが持つのは「別の相手を運べる」ことだけである（store と同じ規律）。
+        now: 時刻の供給（引数なしで UNIX 秒を返す呼び出し可能。既定 None＝壁時計）。
+            素材の表示時点への巻き戻しがこれを読む。検定が素材と時刻の両方を支配できないと、
+            観測の途中で足が確定して素材の版が進み、計算量の表明が**目的と無関係な理由で**
+            赤くなる（ISSUE-503 事象 B）。
+    """
+    root = Path(repo_root).resolve() if repo_root is not None else _REPO_ROOT
+    limits = dict(BAR_LIMITS if bar_limits is None else bar_limits)
+    web = (
+        Path(web_dir).resolve() if web_dir is not None
+        else core_web_topology.web_root(CORE_NAME, root)
+    )
+    shared = (
+        Path(shared_js_root).resolve()
+        if shared_js_root is not None
+        else core_web_topology.primary_fallback_root(CORE_NAME, root)
+    )
+    registry = BreakpointRegistry()
+    capability = IntrabarCapabilityGateway(bridge=bridge)
+    state = SheetState()
+    if persist_dir is not None:
+        spill = Path(persist_dir).resolve()
+    elif persist:
+        spill = default_spill_dir()
+    else:
+        spill = None
+    materials = (
+        MaterialStore() if spill is None
+        else PersistentMaterialStore(MaterialStore(), spill_dir=spill)
+    )
+    # 受理集合の取得元も注入された bridge にする（既定 None＝従来どおり adapter が
+    #   ライブ core の単一ソースを自分で解決する）。ここで差し替えないと、素材だけ
+    #   固定しても param の絞り込みだけがライブ core を触りに行く。
+    #   **取得手順そのものは型の側が持つ**——ここへ書き写すと同じ 1 行の
+    #   3 枚目の所有者になる（是正レビュー Y-1）。
+    scopes = ParamScopes(bridge=bridge)
+    roles = SeriesRoleTable(store=materials)
+
+    def controller_factory():
+        series_gateway = IndicatorUiComputeGateway(
+            bar_limits=limits, store=materials, param_scopes=scopes,
+            bridge=bridge, now=now,
+        )
+        controller = _build_controller(series_gateway)
+        if spill is None:
+            return controller
+        # 需要台帳（束の記録）: 次回起動の warmup が「どの束を温めるか」を知るための記録。
+        #   記録するのは束の定義だけ・同じ束は再記録しない（demand_ledger の規約）。
+        return DemandRecordingController(
+            controller, ledger_path=spill / "demand.json"
+        )
+
+    def _build_controller(series_gateway) -> ReachSheetController:
+        return ReachSheetController(
+            series_port=series_gateway,
+            bar_port=series_gateway,
+            roles=roles,
+            registry=registry,
+            forward_port=ForwardEvaluationGateway(
+                value_series_of=_value_series_of(roles), bar_limits=limits,
+                param_scopes=scopes, bridge=bridge,
+            ),
+            # 比較集合の口は P-1 を持たない: 最小単位（1m）の系列も controller が
+            #   `usecase/sheet_supply.py` から**値として**配る（ISSUE-502 F-1 と同じ形）。
+            #   口を持たせると同じキーが供給面とこの口の両方から発行され、具象 gateway の
+            #   memo だけが浪費を消す形になる（上位の計算量が具象の実装詳細に依存する）。
+            elapsed_gateway=ElapsedComparisonGateway(store=materials),
+            is_intrabar_capable=capability,
+            state=state,
+            # MP 列は P-MP を**結線しない**（段階 2a・依頼者 y 2026-09-06・ISSUE-500）。
+            #   第 1 段階でフロントはライブ core の `/market_profile` を借りるようになり、
+            #   `/reach_sheet` の MP 欄は 1 バイトも読まれない。読まれない量を毎 epoch
+            #   作るのは絶対命令 §4.1 が禁じる「作ってから捨てる」計算であり、応答は
+            #   正しいままなので状態検証では原理的に落ちない（ISSUE-450 と同型）。
+            #   ここは**最小可逆段階**である: 注入を外して計算を止めるだけで、応答の MP 欄
+            #   （controller の既定に落ち、usecase 側
+            #   `dashboard_ui/usecase/build_reach_sheet.py` が全行 None を返す）・
+            #   P-MP の宣言（`dashboard_ui/usecase/sheet_ports.py`）・その実装
+            #   （`dashboard_ui/adapter/gateway/market_profile_gateway.py`）・既存検定は
+            #   そのまま残す（撤去は不可逆なので別ターンの y/n＝ISSUE-500 第 2 段階 2b）。
+            #   結線解除と発行 0 は
+            #   `dashboard_ui/tests/e2e/test_market_profile_unwired.py` が固定する。
+        )
+
+    if warmup and spill is not None:
+        # 起動時の温め（ISSUE-501 段階 2）: 直近の実要求の束を別スレッドで 1 回だけ再演し、
+        #   ディスクに無い量（増分ビルダ・当てはめ・比較集合）まで初回要求の前に組み上げる。
+        #   待受け開始（GET / の 200）はブロックしない。
+        start_warmup_thread(controller_factory, spill / "demand.json")
+
+    return DashboardApp(
+        controller_factory=controller_factory,
+        web_dir=web if web.is_dir() else None,
+        shared_js_root=shared if shared.is_dir() else None,
+    )
+
+
+def _value_series_of(roles: SeriesRoleTable):
+    """指標 → 「到達する量」の系列名（宣言の唯一源は第 2 表のセル宣言）。"""
+
+    def resolve(indicator_id: str, variant: str, params: "Mapping[str, object]") -> str:
+        spec = roles.oscillator_spec(
+            instance=SheetInstance.of(
+                indicator_id, variant, dict(params), chart_timeframe="1m"
+            ),
+            series_names=frozenset(),
+        )
+        if spec is None:
+            raise ValueError(
+                f"到達する量が宣言されていません: indicatorId={indicator_id!r}"
+            )
+        return spec.value_series
+
+    return resolve

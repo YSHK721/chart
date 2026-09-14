@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_kit/web/js/usecase/color_diagnostics.js

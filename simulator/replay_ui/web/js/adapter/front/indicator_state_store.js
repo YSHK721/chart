@@ -1,0 +1,1 @@
+../../../../../../indigators/indicator_kit/web/js/adapter/front/indicator_state_store.js

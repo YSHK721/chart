@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/usecase/form_model.js

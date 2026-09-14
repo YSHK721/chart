@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>水準到達シート</title>
+<!--
+  dashboard core を単体で開いたときの版面（統合ページからは使われない——統合ページは
+  自分の下部ペインを host として `setupDashboardDisplay` を呼ぶ・unified_root.js:392-396）。
+
+  このページが持つのは**アンカー 1 要素だけ**である。表・見出し・セルは View が生成し所有する
+  （overlay_host.js:1-22 の規約）。ここへ表を直書きすると、統合ページ側と 2 枚を同期する義務が
+  生まれ、取り残しが無症状の欠落として現れる（ISSUE-221 / ISSUE-276 の実測）。
+  index_html_contract.test.js がこの禁止を機械的に強制している。
+
+  CSS も View（sheet_host）が持ち込んで片付ける。ここでは link しない。
+-->
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font-family: system-ui, sans-serif; }
+  #dashboard-anchor { height: 100%; }
+</style>
+</head>
+<body>
+<div id="dashboard-anchor"></div>
+<script type="module">
+  import { setupDashboardDisplay } from './js/adapter/front/composition_root_front.js';
+
+  const anchor = document.getElementById('dashboard-anchor');
+  // 単体起動では live スコープの接頭辞を自分で付ける（統合ページでは合成根が
+  //   scopedStorage(localStorage, MODE.LIVE) を読み取り専用にして渡す・arch-spec T-2）。
+  const templates = {
+    getItem: (key) => window.localStorage.getItem(`live:${key}`),
+    key: (index) => window.localStorage.key(index),
+    get length() { return window.localStorage.length; },
+    setItem: () => { throw new TypeError('readOnly: setItem は許可されていない'); },
+    removeItem: () => { throw new TypeError('readOnly: removeItem は許可されていない'); },
+    clear: () => { throw new TypeError('readOnly: clear は許可されていない'); },
+  };
+
+  const handle = await setupDashboardDisplay({ doc: document, host: anchor, templates });
+  await handle.enable();
+</script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+../../../../../../indigators/indicator_kit/web/js/adapter/front/copy_bar_info_item.js

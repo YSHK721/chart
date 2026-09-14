@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/market_profile_params.js

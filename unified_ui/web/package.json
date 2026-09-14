@@ -1,0 +1,13 @@
+{
+  "name": "unified-ui-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified UI (live/replay router) front pure-logic layer. Self-contained vitest harness; existing indicator_ui/replay_ui configs untouched.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.0"
+  }
+}

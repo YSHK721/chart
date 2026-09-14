@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/dialog_drag_controller.js

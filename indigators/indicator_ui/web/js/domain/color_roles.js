@@ -1,0 +1,1 @@
+../../../../chart_kernel/web/js/domain/color_roles.js

@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/usecase/catalog.js

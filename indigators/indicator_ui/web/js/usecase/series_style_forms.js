@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/usecase/series_style_forms.js

@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/property_control_builders.js

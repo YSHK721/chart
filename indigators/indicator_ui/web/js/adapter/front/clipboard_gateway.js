@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/clipboard_gateway.js

@@ -1,0 +1,4 @@
+# 生成物・検証成果物（prep_data.py / verify.py で再生成可能）
+data.json
+shots/
+.DS_Store

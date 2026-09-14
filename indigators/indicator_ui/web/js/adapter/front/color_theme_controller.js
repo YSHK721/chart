@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/color_theme_controller.js

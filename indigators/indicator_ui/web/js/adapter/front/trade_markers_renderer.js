@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/trade_markers_renderer.js

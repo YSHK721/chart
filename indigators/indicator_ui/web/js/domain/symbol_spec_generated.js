@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/domain/symbol_spec_generated.js

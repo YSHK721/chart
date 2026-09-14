@@ -1,0 +1,1 @@
+../../../../indicator_kit/web/js/usecase/tickvol_bands_catalog_entry.js

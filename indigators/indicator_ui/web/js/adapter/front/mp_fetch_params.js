@@ -1,0 +1,1 @@
+../../../../../market_profile/web/js/adapter/front/mp_fetch_params.js

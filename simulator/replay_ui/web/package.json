@@ -1,0 +1,10 @@
+{
+  "name": "replay-ui-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Replay UI front layer (composition root / actors / replay pure logic). Pure-logic tests run on node:test (node v24).",
+  "scripts": {
+    "test": "node --test 'tests/**/*.test.js'"
+  }
+}

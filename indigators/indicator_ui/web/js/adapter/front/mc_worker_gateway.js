@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/mc_worker_gateway.js

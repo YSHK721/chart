@@ -1,0 +1,14 @@
+# 生成物（描画デモ出力）
+*.png
+*.html
+
+# 生成物の出力ディレクトリ
+out/
+analysis/out/
+
+# Python キャッシュ
+__pycache__/
+.pytest_cache/
+
+# OS
+.DS_Store

@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/chrome_theme_applier.js

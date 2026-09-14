@@ -1,0 +1,538 @@
+// replay_indicator_controller.js — reveal（因果リビール）対応の IndicatorController 派生。
+//
+// 設計入力: frontend_unification_design.md「indicator_controller (B) 双方向差分」段階移行 item5。
+//   共有 present IndicatorController（../front/indicator_controller.js＝symlink 単一ソース）を extends し、
+//   replay 固有の reveal 差だけを override/追加する（fork＝全文複製は禁止）。共有ベースは reveal 用の
+//   inert seam（_extraComputeFields / forceTail / _untilTime gate 付き enterBar-union / onLiveTick typeof gate）
+//   を持ち、present では byte 挙動不変（present テストで固定）。本 subclass はその seam を実装で埋める。
+//
+// reveal 差（present との違い）:
+//   - untilTime（そのフレームの時点 T）: setUntilTime で設定し compute へ素通し（_extraComputeFields）。
+//   - forming（足内更新の形成中バー）: recomputeFormingLatest が INTRABAR_FORMING_IDS の末尾点のみ
+//     forceTail 差分再計算し compute へ素通しする。
+//   - MP（Market Profile）: ReplayMarketProfileActor（共有 MarketProfileActor の subclass）駆動。/compute を
+//     持たないため recomputeInstance は _recomputeMarketProfile へ委譲し、mode-aware で ticklive→enterBar /
+//     normal・sessions・replay→refresh(as-of-T) に振り分ける。ticklive の成長自体は setupReplay
+//     （render→enterBar / animateForming→feedTick）が actor を直接駆動する。_mpParams は基底の rich 実装
+//     （mode/resmode/range/src/bins/va 全 param）を再利用し、全 4 モードを機能させる。
+
+import { IndicatorController } from './indicator_controller.js';
+import { CAUSAL_REVEAL_IDS } from '../../usecase/causal_reveal_ids.js';
+import { INTRABAR_FORMING_IDS } from '../../usecase/intrabar_forming_ids.js';
+import { CausalSeriesLedger } from '../../replay/causal_series_ledger.js';
+import { FullWindowSeriesStore } from '../../replay/full_window_series_store.js';
+
+// [reveal 一括] ソート済み time 配列で t 以下の点数を返す（二分探索・revealTo のスライス位置）。
+function upperBound(ts, t) {
+  let lo = 0;
+  let hi = Array.isArray(ts) ? ts.length : 0;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ts[mid] <= t) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// [reveal] 足内追従の対象指標リストは共有モジュール（usecase/intrabar_forming_ids.js・symlink 経由
+//   ＝ライブと同一実体）へ移管した（2026-07-22 統一設計・リスト内容は不変）。末尾差分の実体も
+//   基底 IndicatorController.recomputeFormingTails（forceTail 差分）に単一化し、本 subclass は
+//   forming seam（形成中バーの素通し）だけを担う。
+
+export class ReplayIndicatorController extends IndicatorController {
+  constructor(opts) {
+    super(opts);
+    // [reveal] untilTime（再生のその時点・UNIX秒）。undefined=ライブ（present）。setUntilTime で設定し
+    //   compute へ素通しする（_extraComputeFields）。present は本フィールドを持たないため seam は inert。
+    this._untilTime = undefined;
+    // [reveal] forming（足内更新中の形成中バー暫定 OHLC）。undefined=確定足のまま計算。
+    this._forming = undefined;
+    this._winStart = undefined;   // [ISSUE-238] 足内窓（形成中バーの実 tick 数算出用）
+    this._winEnd = undefined;
+    // [reveal 一括・ISSUE-158 ②] 事前一括計算の基底キャッシュ。instanceId →
+    //   { def, params, series（F3 検証済み全レンジ payload）, times（系列名→ソート済 time 配列）}。
+    //   対象は CAUSAL_REVEAL_IDS（実測で per-step と乖離 0 を確認済みの因果指標）のみ。
+    this._revealCache = new Map();
+    // 無効化世代（clearRevealCache/invalidate 後に届いた遅延応答を破棄する）。
+    this._revealEpoch = 0;
+    // [ISSUE-293] 確定済みの点を固定する台帳（過去のラインを最新値で塗り替えない）。
+    this._ledger = new CausalSeriesLedger();
+    // [ISSUE-296] 全長系列の単一保管庫。ライブの全長計算が成立するたびに記録し、モード切替は
+    //   ここから同期描画するだけにする（同じ入力・同じ窓の再計算を発行しない）。
+    this._fullSeries = new FullWindowSeriesStore();
+  }
+
+  // ================= [全長系列の単一保管庫・ISSUE-296] =================
+  //   モード切替（ライブ⇄リプレイ）は入力（チャート足・計算足・variant・params・窓）を 1 つも
+  //   変えない。よってライブが既に算出した全長系列は、リプレイの present（窓の末尾＝ライブ現在）
+  //   でもそのまま正しい（実測: 23 指標・全点比較で差異 0／MTF 4 本も一致）。ここではその系列を
+  //   記録し、切替では計算せず描き直すだけにする。窓が動いていた場合はキーが一致せず取り出せない
+  //   ＝従来どおり計算する（fail-closed）。
+
+  // 窓の同一性トークン（チャート足｜本数｜末尾足時刻）。書き手・読み手が同じ形で作る唯一源。
+  windowTokenOf(timeframe, candles) {
+    if (!Array.isArray(candles) || candles.length === 0) {
+      return null;
+    }
+    return `${timeframe}|${candles.length}|${candles[candles.length - 1].time}`;
+  }
+
+  // ライブ側（描画中のローソク）から見た窓トークン。リプレイ中はメイン系列がリビールで
+  //   切り詰められているため、読み手は cursor が持つ全長ローソクから作ったトークンを渡すこと。
+  _liveWindowToken() {
+    const candles = this._renderer && typeof this._renderer.getCandles === 'function'
+      ? this._renderer.getCandles() : null;
+    return this.windowTokenOf(this._timeframe, candles);
+  }
+
+  // 系列を決める入力すべてを 1 本のキーへ畳む（1 つでも違えば別物＝取り出せない）。
+  //   params はキー順に並べてから畳む（オブジェクトの列挙順の違いでキーが揺れないようにする）。
+  _fullSeriesKey(inst, params, windowToken) {
+    const sorted = Object.keys(params ?? {}).sort().map((k) => [k, params[k]]);
+    return JSON.stringify([
+      this._timeframe,
+      this._calcTimeframeOf(params) ?? null,
+      inst.variant ?? null,
+      sorted,
+      windowToken,
+    ]);
+  }
+
+  // 当該窓の全長系列を保管庫が持っている instanceId の集合（MP は保管庫の対象外）。
+  //   呼び出し側はこれを per-step 計算の skip 述語に使う。
+  storedInstanceIds(windowToken) {
+    const ids = new Set();
+    if (!windowToken) {
+      return ids;
+    }
+    for (const inst of this._state.applied) {
+      const meta = this._meta.get(inst.instanceId);
+      if (!meta || this._isMarketProfile(meta.def)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      if (this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken))) {
+        ids.add(inst.instanceId);
+      }
+    }
+    return ids;
+  }
+
+  // 保管庫の全長系列を同期描画する（計算を発行しない）。描けた instanceId の集合を返す。
+  //   await を挟まないため、ローソク差替えと同一同期ブロック（preRender 内）から呼べる。
+  renderStored(windowToken) {
+    const drawn = new Set();
+    if (!windowToken) {
+      return drawn;
+    }
+    for (const inst of this._state.applied) {
+      const meta = this._meta.get(inst.instanceId);
+      // 一括リビール基底を持つ指標は revealTo が同じフレームで描く（二重描画しない）。
+      if (!meta || this._isMarketProfile(meta.def) || this._revealCache.has(inst.instanceId)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      const hit = this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken));
+      if (!hit) {
+        continue;
+      }
+      this._renderInstance({
+        instanceId: inst.instanceId,
+        accepted: true,
+        def: hit.def,
+        params: hit.params,
+        wantLatest: false,
+        series: hit.series,
+        hidden: !inst.visible,
+      });
+      drawn.add(inst.instanceId);
+    }
+    return drawn;
+  }
+
+  // 一括リビール基底を保管庫から埋める（HTTP を発行しない）。埋まらなかったものは
+  //   revealNeedsBuild() が true のまま＝buildRevealBase が従来どおり計算する。
+  seedRevealFromStore(windowToken) {
+    if (!windowToken) {
+      return;
+    }
+    for (const inst of this._revealTargets()) {
+      if (this._revealCache.has(inst.instanceId)) {
+        continue;
+      }
+      const meta = this._meta.get(inst.instanceId);
+      const params = this._paramsObject(inst.params);
+      const hit = this._fullSeries.get(inst.instanceId, this._fullSeriesKey(inst, params, windowToken));
+      if (!hit) {
+        continue;
+      }
+      // buildRevealBase と同じ形（F3 通過済み系列＋系列名→time 配列）でキャッシュへ入れる。
+      const series = this._validateSeriesNames(hit.series, meta.def, params);
+      const times = new Map();
+      for (const p of series) {
+        if (Array.isArray(p.data)) {
+          times.set(p.name, p.data.map((pt) => pt.time));
+        }
+      }
+      this._revealCache.set(inst.instanceId, { def: meta.def, params, series, times });
+    }
+  }
+
+  // 保管庫への記録（書き手 2 経路の共通実体）。ライブ（untilTime 未設定）以外は記録しない。
+  _recordFullSeries(instanceId, def, params, series, windowToken) {
+    if (!windowToken || !Array.isArray(series)) {
+      return;
+    }
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    if (!inst) {
+      return;
+    }
+    const flat = this._paramsObject(params);
+    this._fullSeries.put(instanceId, {
+      key: this._fullSeriesKey(inst, flat, windowToken), def, params, series,
+    });
+  }
+
+  // 書き手その 2: 復元（restore）・指標追加（applyIndicator）の描画入口。これらは
+  //   `_computeInstance` を通らず gateway を直に叩くため、ここで拾わないと**初回のモード切替だけ**
+  //   保管庫が空になる（＝再計算が走る）。窓トークンは描画時点で採る（起動時の復元は poller 停止中
+  //   ＝窓が動かない。指標追加中に足が確定した場合は次のバー確定の全再計算が正しい値で上書きする）。
+  _draw(instanceId, def, series, params = null) {
+    if (this._untilTime === undefined) {
+      this._recordFullSeries(instanceId, def, params, series, this._liveWindowToken());
+    }
+    return super._draw(instanceId, def, series, params);
+  }
+
+  // 書き手その 1: **ライブ（untilTime 未設定）の全長計算が成立したとき**。窓トークンは
+  //   計算の発行時点で採る（応答待ちの間に足が確定しても、古い窓の結果を新しい窓の物として
+  //   記録しない）。リプレイの per-step 計算（untilTime 設定・窓 limit=bar+1）と足内の末尾差分
+  //   （mode='latest'）は記録しない＝全長系列ではないため。
+  async _computeInstance(instanceId, newVariant, newParams, opts = {}) {
+    const isFullLive = this._untilTime === undefined && opts.mode !== 'latest';
+    const windowToken = isFullLive ? this._liveWindowToken() : null;
+    const job = await super._computeInstance(instanceId, newVariant, newParams, opts);
+    if (windowToken && job && job.accepted && !job.wantLatest && Array.isArray(job.series)) {
+      this._recordFullSeries(instanceId, job.def, job.params, job.series, windowToken);
+    }
+    return job;
+  }
+
+  // [ISSUE-293] 描画の記録性: リビール時点 T より前のバーは、最初に描いた値のまま固定する。
+  //   上位足計算の指標は進行中期間の値が動くため、毎フレームの全点再計算をそのまま描くと
+  //   過去のバーまで最新値へ塗り替わり、「その時点で何が見えていたか」を画面で検証できない。
+  //   足内更新（_drawLatest＝現在のバーの末尾差分）は対象外＝現在のバーは動いてよい。
+  _renderInstance(job) {
+    if (!job || this._untilTime == null || !Array.isArray(job.series)) {
+      return super._renderInstance(job);
+    }
+    const series = this._ledger.apply(job.instanceId, job.series, this._untilTime);
+    return super._renderInstance(series === job.series ? job : { ...job, series });
+  }
+
+  // ================= [reveal 一括・ISSUE-158 ②] =================
+  //   再生開始時に全レンジを 1 回計算し（buildRevealBase）、以降のバー送りは revealTo(t) の
+  //   同期スライス描画のみ（バーごとの HTTP を発行しない）。値の同一性は登録リストの実測
+  //   ゲートで担保（causal_reveal_ids.js 参照）。未登録指標・MP は従来経路のまま。
+
+  // リビール対象（適用済み ∩ 登録リスト ∩ 非 MP）。
+  _revealTargets() {
+    return [...this._state.applied].filter((inst) => {
+      if (!CAUSAL_REVEAL_IDS.has(inst.indicatorId)) return false;
+      // ISSUE-292 → 294: 上位足計算も基底キャッシュの対象に戻した。基底の前提は「各バーの値が
+      //   リビール時刻に依存しない」こと。ISSUE-292 時点の投影はこの前提を破っていた（進行中
+      //   期間の点に、その期間終了後の確定値が焼き込まれた）ため対象外にしていたが、ISSUE-294 で
+      //   サーバの返す系列を「各バー τ の点＝τ 時点で計算できた値」（時刻不変）へ変えたため、
+      //   前提が回復した。実測: T を 22:20→02:00 へ進めても重なり 1238 点すべて不変。
+      const meta = this._meta.get(inst.instanceId);
+      return !!meta && !this._isMarketProfile(meta.def);
+    });
+  }
+
+  // 当該インスタンスの基底キャッシュ有無（replay.js が per-step 計算のスキップ判定に使う）。
+  hasRevealFor(instanceId) {
+    return this._revealCache.has(instanceId);
+  }
+
+  // 基底の構築が必要か（時間足切替・指標追加・params 変更後の初回フレームで true）。
+  revealNeedsBuild() {
+    return this._revealTargets().some((inst) => !this._revealCache.has(inst.instanceId));
+  }
+
+  // 基底キャッシュ全破棄（時間足切替時に replay.js が呼ぶ）。
+  clearRevealCache() {
+    this._revealCache.clear();
+    this._revealEpoch += 1;
+    this._ledger.clear();   // [ISSUE-293] 時間足切替＝全系列が別物（確定の記録も捨てる）
+  }
+
+  // 当該インスタンスの基底を破棄（params/variant 変更で陳腐化したとき）。
+  _invalidateReveal(instanceId) {
+    this._ledger.forget(instanceId);   // [ISSUE-293] params/variant 変更＝別の系列
+    this._fullSeries.forget(instanceId);   // [ISSUE-296] 保管庫も同時に手放す（残しても鍵が合わない）
+    if (this._revealCache.delete(instanceId)) {
+      this._revealEpoch += 1;
+    }
+  }
+
+  // 基底構築: 対象の未キャッシュ指標を全レンジ（untilTime=tEnd・limit=totalBars＝candles 全本数）で
+  //   1 回計算してキャッシュする。per-step（limit=bar+1）と同じ左端 candles[0] 起点の窓＝各バー値が
+  //   完全一致（実測ゲート）。失敗した指標はキャッシュされず per-step へフォールバック（次フレーム再試行）。
+  async buildRevealBase(tEnd, totalBars) {
+    const epoch = this._revealEpoch;
+    const targets = this._revealTargets().filter((inst) => !this._revealCache.has(inst.instanceId));
+    await Promise.all(targets.map(async (inst) => {
+      const meta = this._meta.get(inst.instanceId);
+      const params = this._paramsObject(inst.params);
+      const variant = inst.variant ?? this._defaultVariant(meta.def);
+      try {
+        // ISSUE-288: 本経路も他の送信経路と同一の規約に従う。以前はここだけが
+        //   `computeTimeframe`（計算.時間足）を載せず、variant スコープも掛けずに送っていた。
+        //   その結果、上位足計算の指標がチャート足で計算され、確定時に描いた投影済みの階段を
+        //   上書きして「上位足指標が消える」ように見えた（実 UI 実測）。
+        const result = await this._compute.compute({
+          indicatorId: inst.indicatorId,
+          variant,
+          params: this._scopedParams(inst.indicatorId, variant, params),
+          computeTimeframe: this._calcTimeframeOf(params),
+          datasetRef: this._datasetRef,
+          generation: 0,
+          timeframe: this._timeframe,
+          limit: totalBars,
+          mode: 'full',
+          untilTime: tEnd,
+        });
+        if (epoch !== this._revealEpoch) {
+          return;   // 構築中に無効化された（時間足切替等）＝遅延応答を破棄
+        }
+        const series = this._validateSeriesNames(result.series ?? [], meta.def, params);
+        const times = new Map();
+        for (const p of series) {
+          if (Array.isArray(p.data)) {
+            times.set(p.name, p.data.map((pt) => pt.time));
+          }
+        }
+        this._revealCache.set(inst.instanceId, { def: meta.def, params, series, times });
+      } catch (err) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('reveal 基底計算失敗（per-step へフォールバック）:', inst.indicatorId, err && err.message);
+        }
+      }
+    }));
+  }
+
+  // 同期リビール描画: キャッシュ系列を t 以下へスライスし、既存の描画経路（_renderInstance＝
+  //   remove(keepPane)+redraw）で反映する。await を挟まない＝足リビールと同一同期ブロックで呼べる
+  //   （完成足チラ見せ防止の不変条件を保つ）。horizontal_line はスライス対象外（t 不変を実測済み）。
+  revealTo(t) {
+    for (const [instanceId, cache] of this._revealCache) {
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      if (!inst) {
+        continue;   // 削除済みインスタンス（描画しない・掃除は removeInstance が担う）
+      }
+      const series = cache.series.map((p) => {
+        const ts = cache.times.get(p.name);
+        if (!Array.isArray(p.data) || !ts) {
+          return p;
+        }
+        return { ...p, data: p.data.slice(0, upperBound(ts, t)) };
+      });
+      this._renderInstance({
+        instanceId,
+        accepted: true,
+        def: cache.def,
+        params: cache.params,
+        wantLatest: false,
+        series,
+        hidden: !inst.visible,
+      });
+    }
+  }
+
+  // ================= [足内一括計算・ISSUE-232] =================
+  //   再生中の足内更新は、従来は 1 ティックごとに /compute を往復していた（実測 ~100ms 遅延＋
+  //   throttle＝ローソクだけ先に動いて指標が遅れて追いつく）。本経路は「そのバーの足内推移の
+  //   各時点」をバー開始前に一括計算しておき、描画時は計算済み値を同期反映するだけにする
+  //   （＝ローソクと同一同期ブロック＝遅延ゼロ）。計算は replay.js が先読みで発行する。
+
+  // 足内追従の対象（適用済み ∩ 共有 INTRABAR_FORMING_IDS）。一括計算の要求単位でもある。
+  //   MP は /compute を持たないため対象外（_isMarketProfile で除外）。
+  //   **上位足計算（計算.時間足）も対象に含める**（ISSUE-290）。サーバはライブ（ISSUE-274 D-4）と
+  //   同一設計で、計算足ごとに「H の確定足＋リビール T までの C 足と足内スナップショットから
+  //   作り直した H 形成足」で latest 計算する。以前は投影経路しか無く、チャート足の値で
+  //   投影済みの階段を上書きしていたため一時的に除外していた（ISSUE-288）。
+  formingSeqTargets() {
+    return [...this._state.applied].filter((inst) => {
+      if (!INTRABAR_FORMING_IDS.has(inst.indicatorId)) return false;
+      const meta = this._meta.get(inst.instanceId);
+      return !!meta && !this._isMarketProfile(meta.def);
+    }).map((inst) => {
+      const variant = inst.variant ?? this._defaultVariant(this._meta.get(inst.instanceId).def);
+      const params = this._paramsObject(inst.params);
+      return {
+        instanceId: inst.instanceId,
+        indicatorId: inst.indicatorId,
+        variant,
+        // variant スコープ（ISSUE-278 #8）: 本経路も /compute の呼出規約で計算されるため、
+        //   その variant の add_* が受理しない param を載せない（載せると validation エラー）。
+        //   実 UI で検出: profit_hlband variant=overlay の draw_levels を積んで 500 になっていた。
+        params: this._scopedParams(inst.indicatorId, variant, params),
+        // ISSUE-291: 計算.時間足を載せる。本経路だけが `computeTimeframe` を送っておらず、
+        //   サーバは（ISSUE-290 の H 形成足経路を持ちながら）チャート足で計算していた。
+        //   実測: 5m×1D EMA5 の足内値がリビール値と別物（実 UI 末尾点 64970.3855＝5m の値）。
+        computeTimeframe: this._calcTimeframeOf(params),
+      };
+    });
+  }
+
+  // 上位足計算（計算.時間足）を使うインスタンスか。'chart'・未指定・チャート足と同値は false。
+  //   判定はサーバへ送る値（params.timeframe）と同じものを見る＝送信と足内対象が食い違わない。
+  _usesHigherTimeframe(inst) {
+    const tf = this._paramsObject(inst.params).timeframe;
+    return !!tf && tf !== 'chart' && tf !== this._timeframe;
+  }
+
+  // 一括計算済みの 1 ステップを同期描画する。step は { instanceId: series } の写像。
+  //   描画実体は末尾差分（_drawLatest＝従来の足内更新と同一経路）。await を挟まないため
+  //   呼び出し側はローソク更新と同一同期ブロックで呼べる（＝同時に動く）。
+  //   削除済みインスタンス・未知系列は無視する（描画しない）。
+  applyFormingStep(step) {
+    if (!step) {
+      return;
+    }
+    for (const [instanceId, series] of Object.entries(step)) {
+      const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+      const meta = this._meta.get(instanceId);
+      if (!inst || !meta || !Array.isArray(series)) {
+        continue;
+      }
+      const params = this._paramsObject(inst.params);
+      this._drawLatest(instanceId, meta.def, this._validateSeriesNames(series, meta.def, params), params);
+    }
+  }
+
+  // [reveal] untilTime を設定（以降の再計算がこの時点で計算される＝ライブ同一・df[:t+1]）。
+  setUntilTime(t) {
+    this._untilTime = t;
+    // [ISSUE-293] 巻き戻し（t が後退）したら、その先の確定記録を捨てる（再生し直せば
+    //   もう一度その時点の値で確定される）。前進では走査しない。
+    this._ledger.setTime(t);
+  }
+
+  // [reveal] 形成中バー（暫定 OHLC）を設定。undefined で解除（確定足計算へ戻す）。
+  setForming(forming) {
+    this._forming = forming;
+  }
+
+  // [ISSUE-238] 足内窓（winStart/winEnd）を設定。サーバは形成中バーの `to` とこの窓から
+  //   「その時点までに到来した実 tick 数」を数えて volume にする。undefined で解除。
+  setFormingWindow(win) {
+    this._winStart = win ? win.winStart : undefined;
+    this._winEnd = win ? win.winEnd : undefined;
+  }
+
+  // 共有ベースの compute リクエスト seam を実装: untilTime/forming/足内窓を素通しする。
+  //   undefined は compute_http_client の `!== undefined` gate で不送信＝ライブ扱い（後方互換）。
+  _extraComputeFields() {
+    return {
+      untilTime: this._untilTime, forming: this._forming,
+      winStart: this._winStart, winEnd: this._winEnd,
+    };
+  }
+
+  // [reveal] 足内更新: 形成中バーを差し込み、登録指標（共有 INTRABAR_FORMING_IDS）の末尾点のみ
+  //   latest 差分再計算する。実体は基底 recomputeFormingTails（forceTail 差分＝ライブと同一機構・
+  //   2026-07-22 統一設計）へ委譲し、本メソッドは forming seam（素通し・解除）だけを担う。
+  //   forming 解除は finally で必ず行い、後続の確定足計算に forming を残さない。
+  async recomputeFormingLatest(forming, win = null) {
+    this.setForming(forming);
+    this.setFormingWindow(win);
+    try {
+      await this.recomputeFormingTails();
+    } finally {
+      this.setForming(undefined);                          // 確定計算へ forming を残さない
+      this.setFormingWindow(null);                         // 窓も残さない（確定計算はライブ扱い）
+    }
+  }
+
+  // MP アクターへ渡す取得 params。全モード機能化により全 param（mode/resmode/range/src/bins/va）を
+  //   基底 _mpParams（present の rich 実装）で組み立てる。基底は _paramsObject 済みの平坦 params を受けるため、
+  //   subclass の _paramsObject（配列/オブジェクト両受理）で正規化してから委譲する（mode-aware 駆動が有効化）。
+  _mpParams(params) {
+    return super._mpParams(this._paramsObject(params));
+  }
+
+  // MP 設定変更: /compute へ流さず setParams + 現在バー T（_untilTime）で再 enterBar（gear onApply 経路）。
+  //   present は recomputeInstance で MP 分岐を持たない（present は _onGearMarketProfile 経路）ため、
+  //   本 subclass で MP を enterBar 経路へ委譲し MP が /compute へ流出しないようにする。
+  async recomputeInstance(instanceId, newVariant, newParams, opts = {}) {
+    const meta = this._meta.get(instanceId);
+    if (meta && this._isMarketProfile(meta.def)) {
+      return this._recomputeMarketProfile(instanceId, newParams);
+    }
+    // [reveal 一括・ISSUE-158 ②] params/variant 変更（gear 等）は基底を陳腐化させる→破棄
+    //   （次フレームの revealNeedsBuild が再構築）。足内更新の latest 差分は基底に影響しない
+    //   （末尾点のみ・確定系列は不変）ため破棄しない。
+    if (opts.mode !== 'latest') {
+      this._invalidateReveal(instanceId);
+    }
+    return super.recomputeInstance(instanceId, newVariant, newParams, opts);
+  }
+
+  // MP 設定変更（gear onApply）: /compute を呼ばず state.params を更新し、actor へ setParams +
+  //   mode-aware で再駆動する。setParams が _applyMode で排他モードを遷移させた後、ticklive は push
+  //   （enterBar で base 取り直し・現在バー T=_untilTime）、normal/sessions/replay は as-of refresh
+  //   （getContext().to=T で as-seen-at-t 再取得）へ振り分ける。未注入時は state 更新のみ。
+  async _recomputeMarketProfile(instanceId, newParams) {
+    const meta = this._meta.get(instanceId);
+    const params = newParams ?? this._defaultParams(meta.def);
+    this._state = this._withParams(this._state, instanceId, params);
+    if (this._marketProfile) {
+      if (typeof this._marketProfile.setParams === 'function') {
+        this._marketProfile.setParams(this._mpParams(params));
+      }
+      // Phase5（統一成長）: reveal は常に成長状態（growing=true）。setParams（mode 遷移で growing リセット）の
+      //   後に growing を再適用し、mode を維持したまま成長軸を確定する。
+      //   ISSUE-479 Wave2b J-1 OCP-5 S3: 呼び先は登録済みのアクターコントローラそのもの
+      //   （base の委譲メソッド _applyMpGrowth は撤去した＝host に MP 固有の面を残さない）。
+      //   成長解決役（合成根が ()=>true を渡す）が無ければ協働子側で no-op（byte 不変）。
+      this._actorControllerFor(meta.def).applyMpGrowth();
+      // 成長軸ゲート（isGrowingPush＝normal/replay+growing）で push 系（enterBar）へ、sessions/非成長は
+      //   refresh へ振り分ける（Phase5: 旧 isTicklive() 表示モードゲートから成長軸へ移行）。
+      const push = typeof this._marketProfile.isGrowingPush === 'function'
+        && this._marketProfile.isGrowingPush();
+      if (push && this._untilTime != null
+          && typeof this._marketProfile.enterBar === 'function') {
+        await this._marketProfile.enterBar(this._untilTime); // push 成長: base 取り直し（現在バー T）。
+      } else if (typeof this._marketProfile.refresh === 'function') {
+        await this._marketProfile.refresh(); // sessions/非成長: as-of-T 再取得（因果）。
+      }
+    }
+    this._persistAll();
+    this._renderLegend();
+    return true;
+  }
+
+  // UC-04 表示/非表示。MP は renderer を持たず actor.setEnabled(visible) へ委譲する（present の MP 専用
+  //   ハンドラ _toggleMarketProfileVisible を再利用）。非 MP は共有ベースへ委譲する。
+  toggleVisible(instanceId) {
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    const def = inst ? this._catalog.get(inst.indicatorId) : null;
+    if (inst && this._isMarketProfile(def)) {
+      return this._toggleMarketProfileVisible(inst);
+    }
+    return super.toggleVisible(instanceId);
+  }
+
+  // UC-05 削除。MP は renderer.remove を持たず actor.setEnabled(false)+detach（あれば）へ委譲する
+  //   （present の MP 専用ハンドラ _removeMarketProfile を再利用）。非 MP は共有ベースへ委譲する。
+  removeInstance(instanceId) {
+    // [reveal 一括・ISSUE-158 ②] 基底キャッシュも掃除（MP は元々エントリ無し＝no-op）。
+    this._invalidateReveal(instanceId);
+    const inst = this._state.applied.find((i) => i.instanceId === instanceId);
+    const def = inst ? this._catalog.get(inst.indicatorId) : null;
+    if (inst && this._isMarketProfile(def)) {
+      return this._removeMarketProfile(inst);
+    }
+    return super.removeInstance(instanceId);
+  }
+}

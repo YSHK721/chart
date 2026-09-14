@@ -1,0 +1,1 @@
+../../../../../indigators/indicator_kit/web/js/domain/color_value.js

@@ -1,0 +1,10 @@
+{
+  "name": "chart-kernel-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chart kernel front module bodies shared by indicator_ui and market_profile (color roles / chrome tokens / series primitive lifecycle / forming fold). Pure-logic tests run on node:test (node v24).",
+  "scripts": {
+    "test": "node --test 'tests/**/*.test.js'"
+  }
+}

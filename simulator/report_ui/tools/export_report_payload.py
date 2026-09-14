@@ -1,0 +1,216 @@
+"""report.json 生成 CLI / Composition Root（詳細設計 §3.5・§7）。
+
+committed IF（build_interactor → controller._interactor.execute）で IS/OOS を実 run し、
+BuildReportPayload UC → ReportUiPresenter を結線して report.json を書き出す。
+main は無改変。pandas / 時刻変換（_unix）は本 tools 層に閉じ、UC へは int 時刻のみ渡す。
+
+EA param・config_overrides は reconcile_is.py / reconcile.py の所与パラメータと完全一致
+（伝播漏れ防止・R-5 対策）。EA param（SL/TP）は本 CLI が唯一の真実源として derive へ
+同一値を注入する。
+
+**銘柄仕様（stops_level/point_size/digits を含む 8 項目）は例外**（ISSUE-445・2026-08-26）:
+権威は供給元スナップショット（`marketdata/symbol_specs/…/JP225.json`）であり、reconcile
+スクリプト側のリテラルとは一致しない（あちらは未是正＝ISSUE-445 の申し送り）。一致させる
+相手を「人が書いた別のリテラル」にすると RC-1（人が値を書ける構造）が再生する。
+実測（2026-08-26）: 是正後も本 CLI の IS/OOS オラクル（5224/+11370/21370・2438/-4020/5980）は
+不変で、report.json の差は `segments.*.trades[].volume` が 0.1 → 1.0 になる 1 点のみ。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+# ISSUE-091 #3: 主スライスの公開 API のみ参照する（private 名 _ema_series の越境 import を解消）。
+# ISSUE-479 Wave2 S-2: EMA は計算なので所有者（指標 adapter）から直接借りる。
+#   Composition Root へ借りに行くと、1 本の関数のために EA レジストリも Interactor 構築も
+#   引き連れることになる。main から借りてよいのは組み立て・実行・設定変換だけ。
+from simulator.adapter.indicator.madiff import ema_series
+from simulator.main import build_interactor
+from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
+from simulator.report_ui.tools.contacts_export import compute_segment_contacts
+# int 時刻ビューは単一ソース（H-D1）。as 束縛で以降の参照名は変えない
+#   （同じ実装を 2 か所に持つと片方だけ腐る。codescan clone 第 1 位だった）。
+from simulator.report_ui.tools.int_time_views import (
+    IntTimeBar as _IntTimeBar,
+    IntTimeTrade as _IntTimeTrade,
+    ResultView as _ResultView,
+    unix_seconds as _unix,
+)
+from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
+from simulator.report_ui.usecase.report_meta import ReportMeta
+
+ROOT = Path("/workspaces/app")
+CONF = ROOT / "simulator/tests/confirmation/2026-04_stop-probe_oos"
+OUT = ROOT / "simulator/report_ui/web/data/report.json"
+
+# EA param（derive_sl_tp / excursion へ注入する唯一の真実源・§7）。
+EA_PARAMS = {"sl_points": 200, "tp_points": 500}
+
+# 銘柄仕様の供給元（ISSUE-445 段階 2 と同じ唯一の権威）。銘柄名・サーバ名は**同一性**の指定で
+# あって仕様の値ではない。以前ここには ``contract_size`` の 10.0（MT5 レポートに一度も現れない
+# 逆算値・真値 1.0）を含む 8 項目のリテラルがあった＝人が値を書ける構造（RC-1）。
+_SYMBOL = "JP225"
+#: contract_size / volume_min / volume_max / volume_step / stops_level / digits /
+#: point_size / leverage の 8 項目。数値はここに 1 つも書かない。
+_SPEC = load_spec_fields(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
+
+# build_interactor 共通引数（reconcile_is.py / reconcile.py の所与と完全一致・§7）。
+# ``lot_size`` は EA 入力（原典 ``2026-04_stop-probe/ea.mq5`` の所与）であり銘柄仕様ではない。
+# 移植済みの ``NormalizeLot``（ISSUE-445 段階 3-B）が実行時に ``volume_min`` へ持ち上げるため
+# ここは原典どおり 0.1 のままにする（実測: 実走の約定 volume は 1.0 になる）。
+COMMON = dict(
+    symbol=_SYMBOL, period="M1", ea_name="StopEntryProbe_EA",
+    initial_deposit=10000.0, **_SPEC,
+    ma_period=60, ma_method="ema", lot_size=0.1, stop_loss_points=200,
+    take_profit_points=500, entry_offset_points=100.0, entry_type="stop",
+    config_overrides={
+        "tick_model": "ohlc_expand",
+        "entry_price_basis": "current_open",
+        "floating_pnl_basis": "bid_ask",
+        "stop_out_action": "close_and_halt",
+        "session_calendar": "jp225",
+        "profit_round_digits": 0,
+        "stop_out_at_open": True,
+        "pending_lifecycle": True,
+        "pending_oco": True,
+        "pending_persistent": True,
+        "hedged_margin": True,
+    },
+    stop_out_level=100.0,
+)
+
+# (key, label, bars_csv, trading_start, bars_start_filter[YYYY-MM-DD or None])
+SEGMENTS = [
+    ("is", "IS（学習 04.01-14）", CONF / "bars_m1_is.csv", "2026-04-01", None),
+    ("oos", "OOS（検証 04.15-23）", CONF / "bars_m1.csv", "2026-04-15", "2026-04-14"),
+]
+
+
+def _filter_bars(bars: Any, bars_start: "str | None") -> list:
+    """bars_start（YYYY-MM-DD）以降の int 時刻バーへ絞る（OOS の表示範囲制限・§4.6）。"""
+    int_bars = [_IntTimeBar(b) for b in bars]
+    if bars_start is None:
+        return int_bars
+    start_ts = int(pd.Timestamp(bars_start, tz="UTC").timestamp())
+    return [b for b in int_bars if b.time >= start_ts]
+
+
+def _run_segment(bars_csv: Path, trading_start: str) -> "tuple[Any, Any]":
+    """committed IF で 1 区間を実 run し (BacktestResult, request.bars) を返す。"""
+    controller, request = build_interactor(
+        data_path=str(bars_csv),
+        trading_start=pd.Timestamp(trading_start),
+        **COMMON,
+    )
+    result = controller.execute(request)
+    return result, request.bars
+
+
+def _segment_contacts(bars: "list") -> "list[dict]":
+    """1 セグメントの表示足範囲で接点（agg.contacts）を算出する（scan_contacts usecase 経由）。
+
+    ma_values は EA と同じ EMA(ma_period, close)（ema_series）を当該セグメント足へ適用して構築する
+    （bar_index→EMA 値）。既定は該当セグメント足範囲のみ（性能考慮・詳細設計 A）。
+
+    注意（表示専用オーバレイ）: EMA は**表示トリム後のセグメント足で再シード**する。OOS のように
+    bars_start でトリムした窓では先頭 ~ma_period 本は EMA warmup 中で EA の EMA と厳密一致しない
+    （表示域先頭のみ）。取引開始（trading_start）までに period≪バー数で収束するため取引域では
+    実質一致する。本接点は分析用の表示オーバレイであり、EA のシグナル判定そのものではない。
+
+    モード方針: 本レポートは config_overrides["tick_model"]="ohlc_expand"（合成ティック・実ティック
+    非使用）で生成されるため、実ティック源を持たない。よって preview（full_scan=False・確定足 close
+    クロスのみ・tick 非読込）へ安全フォールバックする。実ティック源が供給できる将来経路では
+    ticks_fn を注入し full_scan=True へ切り替える。
+    """
+    if not bars:
+        return []
+    closes = pd.Series([float(b.close) for b in bars])
+    ema = ema_series(closes, COMMON["ma_period"])
+    ma_values = {i: float(v) for i, v in enumerate(ema.to_numpy())}
+    return compute_segment_contacts(
+        bars=bars,
+        ma_values=ma_values,
+        ref=COMMON["symbol"],
+        timeframe=COMMON["period"],
+        indicator="ema",
+        variant="",
+        params={"period": COMMON["ma_period"], "method": COMMON["ma_method"]},
+        full_scan=False,
+    )
+
+
+def build_payload() -> Any:
+    """IS/OOS を実 run し ReportPayloadModel を構築する（report.json は書かない）。"""
+    runs = {}
+    for key, label, bars_csv, trading_start, bars_start in SEGMENTS:
+        result, bars = _run_segment(bars_csv, trading_start)
+        seg_bars = _filter_bars(bars, bars_start)
+        runs[key] = {
+            "result": _ResultView(result),
+            "bars": seg_bars,
+            "label": label,
+            "contacts": _segment_contacts(seg_bars),
+        }
+
+    meta_is = _meta("is", runs["is"]["label"])
+    meta_oos = _meta("oos", runs["oos"]["label"])
+
+    return BuildReportPayload().execute(
+        result_is=runs["is"]["result"],
+        result_oos=runs["oos"]["result"],
+        bars_is=runs["is"]["bars"],
+        bars_oos=runs["oos"]["bars"],
+        spec=_Spec(),
+        ea_params=EA_PARAMS,
+        meta_is=meta_is,
+        meta_oos=meta_oos,
+        contacts_is=runs["is"]["contacts"],
+        contacts_oos=runs["oos"]["contacts"],
+        # 特定実験の所与（EA 名・試験条件・分割日/ノート・銘柄/時間足の既定）を
+        # Composition Root から明示注入する（ISSUE-094 🟡-5・現行 StopEntryProbe 値）。
+        report_meta=ReportMeta(),
+    )
+
+
+class _Spec:
+    """UC へ渡す SymbolSpec 相当（point_size/digits/stops_level・§7 と一致）。
+
+    値は ``COMMON`` と同じ供給元スナップショットから取る（同一ファイル内に第 2 の台帳を作らない）。
+    """
+    point_size = _SPEC["point_size"]
+    digits = _SPEC["digits"]
+    stops_level = _SPEC["stops_level"]
+
+
+def _meta(seg: str, label: str) -> dict:
+    return {
+        "symbol": "JP225",
+        "timeframe": "M1",
+        "strategy": "StopEntryProbe_EA",
+        "period": "2026.04.01-04.14" if seg == "is" else "2026.04.15-04.23",
+        "label": label,
+    }
+
+
+def write_report(payload: Any, out: Path = OUT) -> None:
+    """ReportPayloadModel を report.json へ書き出す（Presenter 経由）。"""
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ReportUiPresenter().present_report_payload(payload, out)
+
+
+def main() -> None:
+    payload = build_payload()
+    write_report(payload, OUT)
+    for key in ("is", "oos"):
+        s = payload.summary[key]
+        print(f"{key}: trades={s.trades} net={s.net} final_balance={s.final_balance}")
+    size_mb = OUT.stat().st_size / 1e6
+    print(f"WROTE {OUT} ({size_mb:.1f} MB) verdict={payload.verdict.result}")
+
+
+if __name__ == "__main__":
+    main()

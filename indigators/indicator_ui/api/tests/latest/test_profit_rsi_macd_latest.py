@@ -1,0 +1,118 @@
+"""Stage B 検証: profit_rsi_macd の Latest 増分計算フレームワーク一致検証。
+
+対象: compute_id="profit_rsi_macd"（catalog def＋call_binding _TABLE にバインディング有）。
+  variant=default : histogram(rsimacd_hist) ＋ line 2 本(RSIMACD/Signal)
+                    ＋ σ 水準線 7 本（horizontal_line 群: ±1/2/3σ ＋ 中央線 50）。
+
+archetype 判定（core.py 接地）:
+  compute_rsimacd は price=Typical → iRSI(compute_rsi) → fast/slow EMA
+  (exponential_ma_on_buffer) → macd=fast-slow → signal=EMA(macd)
+  → histogram=2.618*(macd-signal) の「他系列合成（MACD 型コンポジション）」であり、
+  σ7水準は histogram *全系列* の avg±σ（母σ÷N）という全系列リダクション＋
+  価格軸水準（horizontal_line）である。単一の窓スライドでも単純漸化でもなく、
+  複数系列を合成する composition。
+  latest_meta は本指標を未登録（安全既定）として扱い LatestMeta("recurrence", None, 1)
+  ＝min_window=None（full df）/ trailing_k=1 を返すため、latest は full と同一 df で
+  計算され、内部の EMA 漸化（先頭シード依存）込みで float 完全一致する。
+
+frontend routing: catalog def.series の kind は {histogram, line, horizontal_line}。
+  horizontal_line を含むため "full"（末尾K切りせず全件返す経路）。
+
+不変条件:
+  - line/histogram 系列: latest の data[-K:] == full の data[-K:]（float 完全一致, K=trailing_k=1）。
+  - horizontal_line 系列: latest でも full と同一に全件（σ7水準すべて）返ること。
+  - latest 経路がエラーなく走ること。
+
+import 規約: conftest.py が api/ を sys.path へ追加済み。既存 src は read-only・改変禁止。
+本ファイルのみ新規作成（他指標・共有ファイルは触らない）。
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from adapter.compute import IndicatorComputeAdapter
+from adapter.compute.latest_meta import latest_meta
+from adapter.compute.latest_dispatch import full_compute, latest_compute
+import _contract  # noqa: E402  (latest/ 直下・pytest が本 dir を sys.path へ載せる)
+
+_COMPUTE_ID = "profit_rsi_macd"
+_VARIANTS = ("default",)
+# catalog 既定 params（PF_INT rsi_period=13/fast=4/slow=8/signal=4）。
+_PARAMS = {"rsi_period": 13, "fast": 4, "slow": 8, "signal": 4}
+
+# 末尾K切り対象（時系列 data を持つ系列）。
+_TRIMMABLE_KINDS = ("line", "histogram")
+
+
+def _ohlcv(n: int = 100) -> pd.DataFrame:
+    """最小妥当な昇順 OHLCV（date/open/high/low/close/volume・十分な本数）。
+
+    rsi_period=13 ＋ EMA(4/8/4) を満たすよう n=100（warm-up を十分上回る）。
+    RSIMACD は Typical 起点（volume 不要）だが OHLCV 契約に従い volume も持たせ、
+    時刻解決のため date 列を持たせる。high>low を保証する。
+    """
+    base = 10.0 + np.sin(np.linspace(0.0, 6.0 * np.pi, n)) * 3.0
+    sign = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    open_ = base
+    close = base + sign * 0.5
+    high = np.maximum(open_, close) + 1.0
+    low = np.minimum(open_, close) - 1.0
+    volume = 1000.0 + (np.arange(n) % 7) * 100.0
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n, freq="h"),
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def adapter():
+    return IndicatorComputeAdapter()
+
+
+@pytest.fixture(scope="module")
+def df():
+    return _ohlcv(100)
+
+
+def test_binding_and_meta_defaults():
+    """バインディング確認＋安全既定 meta（recurrence/full/K=1）の確認。"""
+    _contract.assert_safe_default_meta(_COMPUTE_ID, ("default",), lambda: dict(_PARAMS))
+
+
+@pytest.mark.parametrize("variant", _VARIANTS)
+def test_latest_runs_without_error(adapter, df, variant):
+    """latest 経路がエラーなく走り、非空 payload を返す。"""
+    _contract.assert_latest_non_empty(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+
+
+def test_series_kinds_present(adapter, df):
+    """histogram 1・line 2・horizontal_line 1 を出すこと（catalog def.series と整合）。"""
+    _contract.assert_series_kind_counts(
+        adapter, _COMPUTE_ID, "default", df, _PARAMS,
+        {"histogram": 1, "line": 2, "horizontal_line": 1},
+    )
+
+
+@pytest.mark.parametrize("variant", _VARIANTS)
+def test_latest_matches_full_trimmable(adapter, df, variant):
+    """line/histogram 各系列で latest の data[-K:] == full の data[-K:]（float 完全一致）。"""
+    _contract.assert_trimmable_tail_matches(adapter, _COMPUTE_ID, variant, df, _PARAMS)
+
+
+@pytest.mark.parametrize("variant", _VARIANTS)
+def test_horizontal_line_returned_in_full(adapter, df, variant):
+    """horizontal_line（σ7水準）は latest でも full と同一に全件返る（末尾切りされない）。"""
+    _contract.assert_horizontal_line_levels_match(
+        adapter, _COMPUTE_ID, variant, df, _PARAMS, level_count=7
+    )
+
+

@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/position_sizing_mc_worker.js

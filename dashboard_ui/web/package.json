@@ -1,0 +1,10 @@
+{
+  "name": "dashboard-ui-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dashboard UI front layer (price ladder / oscillator sheet / heat scale / poller). Pure-logic tests run on node:test (node v24); DOM is a test double (no jsdom dependency).",
+  "scripts": {
+    "test": "node --test 'tests/**/*.test.js'"
+  }
+}

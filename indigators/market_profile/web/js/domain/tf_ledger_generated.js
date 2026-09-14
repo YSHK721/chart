@@ -1,0 +1,1 @@
+../../../../chart_kernel/web/js/domain/tf_ledger_generated.js

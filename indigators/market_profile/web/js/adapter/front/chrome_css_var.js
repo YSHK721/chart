@@ -1,0 +1,1 @@
+../../../../../chart_kernel/web/js/adapter/front/chrome_css_var.js

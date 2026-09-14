@@ -1,0 +1,1 @@
+../../../../market_profile/web/js/domain/mp_param_defaults_generated.js

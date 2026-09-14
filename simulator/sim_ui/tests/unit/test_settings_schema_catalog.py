@@ -1,0 +1,370 @@
+"""TesterSettingsSchemaCatalog の単体検定（Phase 8 スライス 1）.
+
+固定する不変条件（基本設計 §18.3「選択肢は enums からの反復導出のみ」）:
+    1. `Period` の選択肢は `TIMEFRAME_INI_LABELS` と**集合として一致**する。
+    2. `Model` のトークンは `TickModel` の生値表記と一致する。
+    3. `Expert` の候補は「注入された EA 名 ＋ 注入された対象接尾辞」である。
+    4. `ExecutionMode` の仕様は `PROVEN_EXECUTION_DELAYS` を写す（実証状態の宣言は enums 1 箇所）。
+    5. 非対象の告知は**注入された宣言表**（`unsupported.RULES`）を過不足なく写す。
+    6. キー順・必須キー・Expert 専用の別は**注入された外側事実**をそのまま写す。
+
+期待値をこの検定に**リテラルで書かない**のが要点である。リテラルで書けば、それは
+「単一ソースの複製」であり、enums を変えたときにこの検定だけが古いまま緑になる。
+
+注入値について: ``subject_suffix`` には実体（`.ex5`）と**異なる**値を渡す。カタログが
+注入値を使わず自前のリテラルを持っていた場合、この検定が落ちる（複製の検出）。
+"""
+from __future__ import annotations
+
+import pytest
+
+from simulator.adapter.tester_settings.ini_codec import STANDARD_KEY_ORDER
+from simulator.framework.tester_settings.validation import (
+    DATE_VALUE_KEYS,
+    EXPERT_ONLY_KEYS,
+    FLAG_VALUE_KEYS,
+)
+from simulator.main.tester_settings.unsupported import RULES
+# 別名で受けるのは pytest の収集規則（`Test*` 接頭辞）を避けるため。既存
+# `test_tester_settings_validation.py:68`（`TesterSettings as SettingsDto`）と同じ流儀。
+from simulator.sim_ui.adapter.tester_settings_schema_catalog import (
+    TesterSettingsSchemaCatalog as SchemaCatalog,
+)
+from simulator.usecase.tester_settings.enums import (
+    DATES_PRESET_RANGE_KINDS,
+    DATES_PRESET_UI_LABELS,
+    EXECUTION_DELAY_UI_LABELS,
+    FORWARD_MODE_SPLIT_DENOMINATORS,
+    FORWARD_MODE_UI_LABELS,
+    OPTIMIZATION_MODE_UI_LABELS,
+    PROVEN_EXECUTION_DELAYS,
+    PROVISIONAL_EXECUTION_DELAYS,
+    TICK_MODEL_UI_LABELS,
+    TIMEFRAME_INI_LABELS,
+    DatesPreset,
+    ForwardMode,
+    OptimizationCriterion,
+    OptimizationMode,
+    TickModel,
+)
+
+#: 注入する EA 名（権威は `simulator.main.known_ea_names`・ここでは注入の素通しだけ見る）。
+_EA_NAMES = ("Alpha_EA", "Beta_EA")
+#: 実体（`.ex5`）と異なる接尾辞。カタログ内リテラルの混入を検出するための注入値。
+_SUFFIX = ".probe-suffix"
+#: 注入する必須キー（権威は検証層のモデル・ここでは素通しだけ見る）。
+_REQUIRED = ("Symbol",)
+
+
+@pytest.fixture
+def catalog() -> SchemaCatalog:
+    return SchemaCatalog(
+        key_order=STANDARD_KEY_ORDER,
+        required_keys=_REQUIRED,
+        expert_only_keys=EXPERT_ONLY_KEYS,
+        date_keys=DATE_VALUE_KEYS,
+        flag_keys=FLAG_VALUE_KEYS,
+        known_ea_names=lambda: _EA_NAMES,
+        subject_suffix=_SUFFIX,
+        unsupported_rules=RULES,
+    )
+
+
+def test_period_options_are_derived_from_the_timeframe_label_map(catalog) -> None:
+    # Arrange / Act
+    options = catalog.enum_options()["Period"]
+    # Assert
+    assert {o.token for o in options} == set(TIMEFRAME_INI_LABELS.values())
+    assert len(options) == len(TIMEFRAME_INI_LABELS)  # 取りこぼし・重複なし
+    assert {o.label for o in options} == {tf.name for tf in TIMEFRAME_INI_LABELS}
+
+
+def test_model_options_are_derived_from_the_tick_model_enum(catalog) -> None:
+    # Arrange / Act
+    options = catalog.enum_options()["Model"]
+    # Assert（ラベルは MT5 実測写像・無ければメンバ名。期待値は写像から導く＝リテラルなし）
+    assert {o.token for o in options} == {str(int(m)) for m in TickModel}
+    assert {o.label for o in options} == {
+        TICK_MODEL_UI_LABELS.get(m, m.name) for m in TickModel
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "members", "ui_labels"),
+    [
+        ("Dates", DatesPreset, DATES_PRESET_UI_LABELS),
+        ("ForwardMode", ForwardMode, FORWARD_MODE_UI_LABELS),
+        ("Optimization", OptimizationMode, OPTIMIZATION_MODE_UI_LABELS),
+        ("OptimizationCriterion", OptimizationCriterion, {}),
+    ],
+)
+def test_int_enum_options_are_derived_from_their_enum(catalog, key, members, ui_labels) -> None:
+    # Arrange / Act
+    options = catalog.enum_options()[key]
+    # Assert（ラベルは MT5 実測写像・無ければメンバ名。期待値は写像から導く＝リテラルなし）
+    assert {o.token for o in options} == {str(int(m)) for m in members}
+    assert {o.label for o in options} == {ui_labels.get(m, m.name) for m in members}
+
+
+def test_every_enum_key_is_a_key_of_the_injected_key_order(catalog) -> None:
+    """列挙キーが `.ini` の標準キー順から外れていないこと（語彙の食い違い検出）。
+
+    空の写像でも部分集合条件は成立するため、**非空**を併せて固定する（空振り防止）。
+    """
+    keys = set(catalog.enum_options())
+    assert keys  # 空の写像で条件が空振りしない
+    assert keys <= set(STANDARD_KEY_ORDER)
+
+
+def test_expert_options_are_known_ea_names_with_the_injected_suffix(catalog) -> None:
+    # Arrange / Act
+    options = catalog.expert_options()
+    # Assert
+    assert all(o.token.endswith(_SUFFIX) for o in options)
+    assert {o.token.removesuffix(_SUFFIX) for o in options} == set(_EA_NAMES)
+    assert {o.label for o in options} == set(_EA_NAMES)
+
+
+def test_execution_mode_spec_carries_the_proven_delays(catalog) -> None:
+    # Arrange / Act
+    spec = catalog.scalar_specs()["ExecutionMode"]
+    # Assert
+    assert spec["proven"] == sorted(PROVEN_EXECUTION_DELAYS)
+    assert spec["provisional"] == {
+        str(delay): tbd for delay, tbd in sorted(PROVISIONAL_EXECUTION_DELAYS.items())
+    }
+
+
+def test_scalar_specs_mark_expert_only_keys_from_the_injection(catalog) -> None:
+    # Arrange / Act
+    specs = catalog.scalar_specs()
+    # Assert
+    assert {key for key, spec in specs.items() if spec["expert_only"]} == (
+        set(EXPERT_ONLY_KEYS) - set(catalog.enum_options())
+    )
+    assert set(specs) == set(STANDARD_KEY_ORDER) - set(catalog.enum_options())
+
+
+def test_unsupported_notices_cover_every_injected_rule(catalog) -> None:
+    # Arrange / Act
+    notices = catalog.unsupported()
+    # Assert
+    assert {n.unsupported_id for n in notices} == set(RULES)
+    by_id = {n.unsupported_id: n for n in notices}
+    assert all(by_id[rid].reason == rule.reason for rid, rule in RULES.items())
+    assert all(by_id[rid].field == rule.field for rid, rule in RULES.items())
+    assert all(by_id[rid].tbd == rule.tbd for rid, rule in RULES.items())
+
+
+# --- 非対象の UI 束縛（R-9・宣言駆動）------------------------------------------
+# front は「どの選択が非対象に当たるか」をキー名の正規表現や既定値スナップショットから
+# **推測してはならない**（推測は宣言と食い違っても静かに 0 件になる）。束縛は宣言側
+# （`UnsupportedRule.ui`）が所有し、カタログはそれを解決して配るだけである。
+
+
+def test_every_notice_binds_to_a_non_empty_subset_of_the_key_order(catalog) -> None:
+    """空紐付け（どのキーにも当たらない告知）を禁じる。
+
+    空を許すと「宣言はあるのに UI では絶対に出ない」告知が生まれ、沈黙で保証境界の
+    外へ出られる。全件が **非空** かつ **キー順の部分集合** であることを固定する。
+    """
+    # Arrange / Act
+    notices = catalog.unsupported()
+    # Assert
+    assert notices, "告知が 0 件（宣言表の注入が届いていない）"
+    for notice in notices:
+        assert notice.keys, f"{notice.unsupported_id} がどの `.ini` キーにも紐づいていません"
+        unknown = set(notice.keys) - set(STANDARD_KEY_ORDER)
+        assert not unknown, f"{notice.unsupported_id} が未知のキーへ紐づいています: {sorted(unknown)}"
+
+
+def test_every_notice_declares_a_trigger_the_ui_can_evaluate(catalog) -> None:
+    """発火条件が宣言されており、トークン列挙型なら token が空でないこと。"""
+    # Arrange
+    from simulator.main.tester_settings.unsupported import UI_TRIGGER_MODES, UI_TRIGGERS_WITH_TOKENS
+
+    # Act
+    notices = catalog.unsupported()
+    # Assert
+    for notice in notices:
+        assert notice.trigger in UI_TRIGGER_MODES, (
+            f"{notice.unsupported_id} の発火条件が未知です: {notice.trigger!r}"
+        )
+        if notice.trigger in UI_TRIGGERS_WITH_TOKENS:
+            assert notice.tokens, f"{notice.unsupported_id} のトークン集合が空です"
+
+
+def test_notice_binding_is_the_rule_declaration_verbatim(catalog) -> None:
+    """カタログは宣言を**写すだけ**（キー・条件・トークンを自前で導出しない）。"""
+    # Arrange / Act
+    by_id = {n.unsupported_id: n for n in catalog.unsupported()}
+    # Assert
+    for rule_id, rule in RULES.items():
+        assert by_id[rule_id].keys == tuple(rule.ui.keys)
+        assert by_id[rule_id].trigger == rule.ui.mode
+        assert by_id[rule_id].tokens == tuple(rule.ui.tokens)
+
+
+def test_a_rule_without_a_ui_binding_is_rejected_at_construction() -> None:
+    """宣言を欠いた rule を黙って配らない（沈黙の縮退を作らない・構築時 Fail-Stop）。"""
+    # Arrange: `ui` を持たない宣言（将来 rule を足したときの取り違えの再現）
+    from dataclasses import replace
+
+    broken = dict(RULES)
+    victim = next(iter(broken))
+    broken[victim] = replace(broken[victim], ui=None)
+    # Act / Assert
+    with pytest.raises(ValueError, match=victim):
+        SchemaCatalog(
+            key_order=STANDARD_KEY_ORDER,
+            required_keys=_REQUIRED,
+            expert_only_keys=EXPERT_ONLY_KEYS,
+            date_keys=DATE_VALUE_KEYS,
+            flag_keys=FLAG_VALUE_KEYS,
+            known_ea_names=lambda: _EA_NAMES,
+            subject_suffix=_SUFFIX,
+            unsupported_rules=broken,
+        ).unsupported()
+
+
+# --- 日付キーの value_type（カレンダー入力の出し分け宣言）------------------------
+
+
+def test_scalar_specs_mark_date_keys_from_the_injection(catalog) -> None:
+    """`value_type == "date"` の集合が**注入された日付キー**とちょうど一致すること。
+
+    UI はこの宣言だけでカレンダー入力を出し分ける（キー名から推測しない）。集合の
+    非空も併せて固定する（空なら「どのキーもカレンダーにならない」縮退が素通りする）。
+    """
+    # Arrange / Act
+    specs = catalog.scalar_specs()
+    marked = {key for key, spec in specs.items() if spec.get("value_type") == "date"}
+    # Assert
+    assert marked, "日付キーが 1 つも宣言されていません（注入が届いていない）"
+    assert marked == set(DATE_VALUE_KEYS)
+
+
+@pytest.mark.parametrize(
+    "date_keys",
+    [
+        pytest.param(("NoSuchKey",), id="標準キー順に無いキー"),
+        pytest.param(("Dates",), id="列挙キーとの衝突（Dates はプリセットの列挙で日付値ではない）"),
+    ],
+)
+def test_a_date_key_outside_the_scalar_keys_is_rejected_at_construction(date_keys) -> None:
+    """日付キーの注入が食い違ったら構築時に Fail-Stop する（沈黙の text 縮退を作らない）。"""
+    # Arrange / Act / Assert
+    with pytest.raises(ValueError):
+        SchemaCatalog(
+            key_order=STANDARD_KEY_ORDER,
+            required_keys=_REQUIRED,
+            expert_only_keys=EXPERT_ONLY_KEYS,
+            date_keys=date_keys,
+            flag_keys=FLAG_VALUE_KEYS,
+            known_ea_names=lambda: _EA_NAMES,
+            subject_suffix=_SUFFIX,
+            unsupported_rules=RULES,
+        )
+
+
+def test_key_order_and_required_keys_pass_the_injection_through(catalog) -> None:
+    # Arrange / Act / Assert
+    assert catalog.key_order() == tuple(STANDARD_KEY_ORDER)
+    assert catalog.required_keys() == _REQUIRED
+
+
+# --- 旗キーの value_type と活性宣言（MT5 設定タブ同期・2026-09-06）------------------
+
+
+def test_scalar_specs_mark_flag_keys_from_the_injection(catalog) -> None:
+    """`value_type == "flag"` の集合が**注入された旗キー**とちょうど一致すること。"""
+    # Arrange / Act
+    specs = catalog.scalar_specs()
+    marked = {key for key, spec in specs.items() if spec.get("value_type") == "flag"}
+    # Assert
+    assert marked, "旗キーが 1 つも宣言されていません（注入が届いていない）"
+    assert marked == set(FLAG_VALUE_KEYS)
+
+
+def test_activation_rules_bind_existing_keys_with_trigger_vocabulary(catalog) -> None:
+    """活性宣言が実在キーへ束縛され、発火語彙が非対象告知と同じ集合に属すること。"""
+    # Arrange
+    from simulator.main.tester_settings.unsupported import UI_TRIGGER_MODES
+
+    # Act
+    activation = catalog.activation()
+    # Assert
+    assert activation, "活性宣言が空です（欄の有効/無効を出し分けられない）"
+    for target, rule in activation.items():
+        assert target in catalog.key_order(), f"{target} が標準キー順にありません"
+        assert rule["key"] in catalog.key_order(), f"{rule['key']} が標準キー順にありません"
+        assert rule["mode"] in UI_TRIGGER_MODES, f"{target} の発火語彙が未知です: {rule['mode']}"
+        assert rule["tokens"], f"{target} のトークン集合が空です"
+
+
+def test_rule_b_exclusion_is_declared_for_visual(catalog) -> None:
+    """規則 B（Optimization != 0 のとき Visual を送らない）の宣言が schema に載ること。
+
+    ISSUE-419 の抜本解: front は規則 B を実装せず、この宣言を評価するだけで守る。
+    宣言が消えると front は Visual を常に送り、最適化を選んだ投入が規則 B の 400 に
+    戻る——のに既存の総称検定は緑のままだった（変異実測 2026-09-08: `Visual` 行を
+    消して 623 passed）。期待値は enums から導く（数値リテラルを書かない）。
+    """
+    # Arrange
+    from simulator.main.tester_settings.unsupported import (
+        UI_TRIGGER_EXCEPT_TOKENS,
+        UI_TRIGGER_ON_TOKENS,
+    )
+
+    disabled = str(int(OptimizationMode.DISABLED))
+    # Act
+    activation = catalog.activation()
+    # Assert: Visual は「最適化が無効のときだけ活性＝それ以外は本文から外す」
+    assert activation["Visual"] == {
+        "key": "Optimization", "mode": UI_TRIGGER_ON_TOKENS,
+        "tokens": [disabled], "effect": "omit",
+    }
+    # 対で成る規則 H 側: 評価軸は表示だけ隠し、本文には載せ続ける（omit だと E-08 で必ず失敗）
+    assert activation["OptimizationCriterion"] == {
+        "key": "Optimization", "mode": UI_TRIGGER_EXCEPT_TOKENS,
+        "tokens": [disabled], "effect": "display",
+    }
+
+
+def test_execution_mode_spec_carries_the_ui_labels(catalog) -> None:
+    """延滞のラベルは enums の実測写像の写しであること（発明しない）。"""
+    # Arrange / Act
+    spec = catalog.scalar_specs()["ExecutionMode"]
+    # Assert
+    assert spec["labels"] == {
+        str(delay): label for delay, label in EXECUTION_DELAY_UI_LABELS.items()
+    }
+
+
+def test_dates_options_carry_their_display_range_kind(catalog) -> None:
+    """`Dates` の全選択肢が表示期間の種別（enums の宣言の写し）を併載すること。
+
+    欠けたプリセットは日付ボックスの表示が静かに空になる（沈黙の縮退）ため、全メンバの
+    網羅を固定する（期待値は宣言から導く＝リテラルなし）。
+    """
+    # Arrange / Act
+    options = catalog.enum_options()["Dates"]
+    # Assert
+    assert {o.token: o.range_kind for o in options} == {
+        str(int(m)): DATES_PRESET_RANGE_KINDS[m] for m in DatesPreset
+    }
+    assert all(o.range_kind for o in options), "range_kind の欠けたプリセットがあります"
+
+
+def test_forward_mode_options_carry_their_split_denominator(catalog) -> None:
+    """`ForwardMode` の分割選択肢が分割比（enums の宣言の写し）を併載すること。
+
+    欠けると分割日の表示が静かに出なくなる（沈黙の縮退）ため、宣言との一致を全メンバで
+    固定する（期待値は宣言から導く＝リテラルなし。非分割の選択肢は None のまま）。
+    """
+    # Arrange / Act
+    options = catalog.enum_options()["ForwardMode"]
+    # Assert
+    assert {o.token: o.split_denominator for o in options} == {
+        str(int(m)): FORWARD_MODE_SPLIT_DENOMINATORS.get(m) for m in ForwardMode
+    }

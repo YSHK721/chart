@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/local_storage_theme_gateway.js

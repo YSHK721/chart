@@ -113,7 +113,7 @@ T1+T2 はプロジェクト規約 B.6 由来、T3 はプロジェクト規約 B.
 | 主張の出所種別が複数ある | system-design / spec-driven-development / skill-designer |
 | 「（推奨／仮説）」マーキングが本文に頻出する | clean-architecture / coding 系 |
 
-不適用例：機械的処理中心スキル（mcp-serena-tools / update-config 等）への適用は形骸化リスクのため避ける。
+不適用例：機械的処理中心スキル（update-config 等）への適用は形骸化リスクのため避ける。
 
 ## §0 の機能
 

@@ -1,0 +1,1 @@
+../../../../../chart_kernel/web/js/adapter/front/series_primitive_lifecycle.js

@@ -1,0 +1,22 @@
+# backtest エンジン 実行時依存（BACKTEST_DESIGN §4.1 / BACKTEST_CLEAN_ARCH §7 準拠）
+#
+# 注記: リポジトリ直下の requirements.txt は別ツール（preflop range getter）用のため、
+#       backtest の技術スタックは本ファイルで管理する（既存ファイルを非破壊で分離）。
+# インストール: python -m pip install -r backtest/requirements.txt
+
+# 数値・データ（domain は numpy のみ依存。pandas は adapter/usecase の計算補助に限定）
+numpy>=1.26
+pandas>=2.0
+
+# 設定モデル検証（framework/config_loader 境界でのみ使用・CLEAN_ARCH §7）
+pydantic>=2,<3
+
+# 設定ファイル読込（config.yaml → BacktestConfig・framework 層内のみ）
+pyyaml>=6
+
+# 永続化ドライバ（Repository 内のみ・parquet 入出力）
+pyarrow>=15
+
+# チャート/テンプレート（HtmlPresenter / MarkdownPresenter 内のみ）
+jinja2>=3.1
+# lightweight-charts-python（HtmlPresenter 内のみ・リポジトリ同梱 lightweight-charts-python-main を利用）

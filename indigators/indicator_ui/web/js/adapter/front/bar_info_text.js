@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/bar_info_text.js

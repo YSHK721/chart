@@ -1,0 +1,209 @@
+"""アーキ回帰: 旧 HTTP 契約パス ``marketdata.api_contract`` の参照ゼロと不在（ISSUE-479 F-8）。
+
+HTTP 契約（error.type → HTTP ステータスの表と nested エラーの整形関数）の所有者は配信殻であり、
+marketdata のどのアクターでもない（ISSUE-094 🔵-11）。実体は中立共有パッケージ api_shared の
+http_contract モジュールが唯一持つ。旧 marketdata/api_contract.py は後方互換の再エクスポート
+シムであったが、参照ゼロ化（段階 1）ののち **ISSUE-479 F-8 段階 2 で削除済み**である。
+互換シムを残したまま参照が生き続けると、契約の入口が 2 つある状態（単一ソースの偽装）が
+固定化するため、参照と実体の双方を絶っている。
+
+本テストは 2 つを主張する。(1) 旧パスを import する本番・テストコードがリポジトリに 1 件も無い。
+(2) 旧パスのファイル自体が存在しない（復活させると Red になる）。
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: 旧パスの所在（ISSUE-479 F-8 段階 2 で削除済み。**不在**を Red 判定の基準にする）。
+_LEGACY_MODULE = _REPO_ROOT / "marketdata" / "api_contract.py"
+
+#: 所有者（実体）モジュール。付替え先はここ。
+_OWNER_MODULE = _REPO_ROOT / "api_shared" / "http_contract.py"
+
+#: 走査から外すディレクトリ名／トップレベル（仮想環境・キャッシュ・第三者コード・試作・データ）。
+_SKIP_DIR_NAMES = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
+_SKIP_TOP_LEVEL = {"lightweight-charts-python-main", "data", "sample", "node_modules", "scratchpad"}
+
+#: 旧パスの import 形態。**行頭（インデント可）が import 文であること**を要求するので、
+#: docstring・コメント中に旧パス名が現れても誤検出しない（api_contract.py 自身の docstring 等）。
+_LEGACY_DOTTED = re.compile(r"^\s*(?:from|import)\s+(?:marketdata\.|\.)api_contract\b")
+_LEGACY_FROM_PACKAGE = re.compile(r"^\s*from\s+(?:marketdata|\.)\s+import\s+(?P<names>[^#\n]+)")
+_LEGACY_NAME = re.compile(r"\bapi_contract\b")
+
+
+def _imports_legacy_api_contract(source: str) -> bool:
+    """ソース文字列が ``marketdata.api_contract`` を import しているか。"""
+    for line in source.splitlines():
+        if _LEGACY_DOTTED.match(line):
+            return True
+        m = _LEGACY_FROM_PACKAGE.match(line)
+        if m and _LEGACY_NAME.search(m.group("names")):
+            return True
+    return False
+
+
+def _repo_sources() -> "list[Path]":
+    """リポジトリの Python ソース（本番・テストの両方。仮想環境・試作・第三者コードは除く）。"""
+    out: "list[Path]" = []
+    for top in sorted(_REPO_ROOT.iterdir()):
+        if not top.is_dir():
+            continue
+        if top.name in _SKIP_TOP_LEVEL or top.name in _SKIP_DIR_NAMES:
+            continue
+        if top.name.startswith("prototype_"):
+            continue
+        for p in top.rglob("*.py"):
+            if _SKIP_DIR_NAMES & set(p.parts):
+                continue
+            out.append(p)
+    out += sorted(_REPO_ROOT.glob("*.py"))
+    return out
+
+
+def test_scan_reaches_the_owner_module_and_this_test() -> None:
+    """走査が所有者・本テスト自身へ届いている（空走査で恒真式に退化しない）。
+
+    旧パスのファイルは段階 2 で削除済みなので、到達点は所有者側で確かめる。
+    """
+    sources = set(_repo_sources())
+    assert _OWNER_MODULE in sources, "走査が api_shared/http_contract.py に届いていません"
+    assert Path(__file__).resolve() in sources, "走査が本テスト自身に届いていません"
+
+
+def test_the_legacy_module_no_longer_exists() -> None:
+    """段階 2（承認済み）: 参照ゼロ化のあと、旧パスのファイル自体を削除した。
+
+    参照ゼロと削除は別事象である。段階 1 の時点で参照は 0 件になっており、本テストが
+    緑である限り「契約の入口が 2 つある状態」は復活していない。復活させると Red になる。
+    """
+    assert not _LEGACY_MODULE.exists(), (
+        "旧 HTTP 契約パス marketdata/api_contract.py が復活しています。"
+        " 契約の所有者は api_shared.http_contract の 1 箇所だけです。"
+    )
+
+
+def _legacy_import_offenders_over(files, read=None) -> "list[str]":
+    """``files`` のうち旧パスを import しているものの一覧（走査本体・分岐はここに閉じる）。
+
+    ``read`` はソース取得のシーム（既定は実ファイル読み）。計算量検定が **走査本体そのもの**を
+    測れるように分けてある（テスト側で走査を書き直すと恒真式になる）。
+    """
+    read = read or (lambda p: p.read_text(encoding="utf-8"))
+    out: "list[str]" = []
+    for path in files:
+        if _imports_legacy_api_contract(read(path)):
+            out.append(str(path.relative_to(_REPO_ROOT)))
+    return out
+
+
+def _legacy_import_offenders() -> "list[str]":
+    """旧パスを import しているソースのリポジトリ相対パス一覧（リポジトリ全体）。"""
+    return _legacy_import_offenders_over(_repo_sources())
+
+
+def test_no_code_imports_the_legacy_api_contract_path() -> None:
+    """旧パス（marketdata の api_contract）を import する本番・テストコードが 1 件も無い。
+
+    識別力: どこかで ``from marketdata.api_contract import ERROR_STATUS`` を復活させると Red になる。
+    落ちた場合の直し方は ``from api_shared.http_contract import ...`` への付替え。
+    """
+    offenders = _legacy_import_offenders()
+    assert not offenders, (
+        "旧 HTTP 契約パス marketdata.api_contract を import している箇所が残っています:\n"
+        + "\n".join(offenders)
+        + "\napi_shared.http_contract への直参照へ付替えてください。"
+    )
+
+
+def test_legacy_import_detection_has_power() -> None:
+    """検出力: 旧パスの import 形態を検出し、紛らわしい非違反を誤検出しない。
+
+    合成ソース文字列で与える（実ファイルは生成しない。かつ本テスト自身が走査の offender に
+    ならないよう、リテラルは連結して組み立てる）。
+    """
+    name = "api_contract"
+
+    for offender in (
+        "from marketdata." + name + " import ERROR_STATUS\n",
+        "import marketdata." + name + "\n",
+        "from marketdata import " + name + "\n",
+        "from ." + name + " import nested_error\n",
+        "from . import " + name + "\n",
+        "    from marketdata." + name + " import ERROR_STATUS\n",   # 関数内 import も参照は参照。
+    ):
+        assert _imports_legacy_api_contract(offender), f"検出できていません: {offender!r}"
+
+    for clean in (
+        "from api_shared.http_contract import ERROR_STATUS\n",
+        "# 旧 import ``from marketdata." + name + " import ...`` は撤去済み\n",
+        '"""（既存 import ``from marketdata.' + name + ' import ...`` を壊さない）"""\n',
+        "from marketdata import tf_meta\n",
+        "_LEGACY = 'marketdata." + name + "'\n",
+    ):
+        assert not _imports_legacy_api_contract(clean), f"誤検出しています: {clean!r}"
+
+
+def _reads_issued_by(files, scan=None) -> "list[Path]":
+    """``scan``（既定は走査本体）を read シームの下で走らせ、発行された読込を返す。"""
+    reads: "list[Path]" = []
+
+    def _spy(path: Path) -> str:
+        reads.append(path)
+        return path.read_text(encoding="utf-8")
+
+    (scan or _legacy_import_offenders_over)(files, read=_spy)
+    return reads
+
+
+def test_scan_reads_each_source_exactly_once() -> None:
+    """計算量テスト: 走査本体が 1 ファイル 1 読込（発行 − 判定に使ったソース数 = 0）。
+
+    測るのは **SUT（``_legacy_import_offenders_over``）が発行した読込**である。テスト側で走査を
+    書き直して数えると、SUT の読込回数を一切見ない恒真式になり、走査本体に二度読みが入っても
+    緑のまま通る（ISSUE-450 と同型の「作ってから捨てる」を保護する形）。
+    """
+    # Arrange
+    sources = _repo_sources()
+
+    # Act
+    reads = _reads_issued_by(sources)
+
+    # Assert
+    assert len(reads) - len(sources) == 0, "走査の読込発行が判定使用数と一致しません"
+    assert set(reads) == set(sources), "読み捨て／読み漏らしがあります"
+    assert len(set(reads)) - len(reads) == 0, "同じファイルを二度読んでいます"
+
+
+def test_the_read_count_is_determined_by_the_target_count_alone() -> None:
+    """オーダーの表明: 対象 1 件 / 2 件の 2 点で「読込数 == 対象数」。
+
+    ファイルの長さ・行数では増えない（回数リテラルは焼き込まず対象数から導く）。
+    """
+    # Arrange
+    sources = _repo_sources()
+
+    # Act / Assert
+    for count in (1, 2):
+        subset = sources[:count]
+        assert len(_reads_issued_by(subset)) == len(subset)
+
+
+def test_the_read_measurement_detects_a_wasteful_scan() -> None:
+    """検出力: 同じファイルを二度読む走査は、この測り方で必ず落ちる（恒真式ではない）。"""
+    # Arrange — 判定に 1 回しか使わないのに 2 回読む「浪費する走査」。
+    def _wasteful(files, read=None):
+        for path in files:
+            read(path)
+            _imports_legacy_api_contract(read(path))
+        return []
+
+    sources = _repo_sources()[:2]
+
+    # Act
+    reads = _reads_issued_by(sources, scan=_wasteful)
+
+    # Assert
+    assert len(reads) - len(sources) != 0

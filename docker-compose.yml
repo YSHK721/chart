@@ -8,37 +8,18 @@ services:
     env_file:
       - .env
     volumes:
-      - .:/workspaces/app
+      # ソースを named volume に置き、bind mount 境界を無くす（反映遅延の根治）
+      - chart-src-01:/workspaces/app
       # GitHub CLI 認証状態を named volume に永続化する
-      # 目的: コンテナ Rebuild 後も `gh auth login` を再実行不要にする
-      # 保存内容: ~/.config/gh/hosts.yml (OAuth トークン)
       - gh-config:/root/.config/gh
     command: sleep infinity
-
-  # Serena MCP サーバー（ホスト環境非依存）
-  serena:
-    image: ghcr.io/oraios/serena:latest
-    ports:
-      # MCP: サーバは --port ${SERENA_MCP_PORT} で待受。ホスト側も同変数に統一し
-      #      「.env が単一の正」を維持する（接続先 = SERENA_MCP_PORT）。
-      - "${SERENA_MCP_PORT}:${SERENA_MCP_PORT}"          # MCP HTTP エンドポイント
-      # ダッシュボード: serena 内部は既定 24282 を待受（command で変更していない）。
-      #      コンテナ側は実待受の 24282 固定、ホスト公開のみ ${SERENA_DASHBOARD_PORT}。
-      - "${SERENA_DASHBOARD_PORT}:24282"                 # Serena ダッシュボード
-    volumes:
-      - .:/workspaces/app
-    command: [
-      "serena", "start-mcp-server",
-      "--transport", "streamable-http",
-      "--port", "${SERENA_MCP_PORT}",
-      "--host", "0.0.0.0",   # コンテナ外からの接続を許可
-      "--project", "/workspaces/app"
-    ]
 
 # ---------------------------------------------------------------------
 # Named Volumes
 # ---------------------------------------------------------------------
 volumes:
+  # 手順2で手動作成し、ローカルの現物をコピー済みの volume を再利用する
+  chart-src-01:
+    external: true
   # GitHub CLI 認証状態の永続化先
-  # 削除する場合: `docker volume rm <project>_gh-config`
   gh-config:

@@ -1,0 +1,37 @@
+/* sim 表示層の器の寸法（統合ページへ入れる唯一の sim 所有 CSS・裁定 C）。
+ *
+ * ここが持つのは **寸法だけ**である。色・字面・レイアウトの中身は子文書
+ * （report_view.html）の中の移植元 style.css が持つ（見た目を写さない・§11.4）。
+ *
+ * 置き場所の前提（実測 2026-08-11・indicator_ui/web/css/app.css:15,82）:
+ *   `#app { display:flex; flex-direction:column; height:100vh }`
+ *   `.chart-wrap { flex:1 1 auto; min-height:0 }`
+ * 統合ページは chart API を持たないモード（sim）で**下部ペイン**（#um-bottom-pane・縦 flex）を
+ * 開き、器はその flex 子として領域を受け取る（裁定 2026-08-21・参照実装 MT5＝チャートは上に
+ * 残したままストラテジーテスターを下部ドックペインに出す）。旧構成の承認 H-C（`.chart-wrap` を
+ * `display:none` にして版面を丸ごと渡す＝排他）は本裁定で置き換わった。
+ * 画素値（ツールバー高さ等）を書かないのは、既存 UI の寸法を sim 側へ写さないため
+ * （写すと片方だけ腐る）。
+ */
+/* 器は**どちらの文書でも縦 flex の伸びる子**である。
+ *   統合ページ: `#um-bottom-pane`（縦 flex の下部ペイン）の子。ペインの高さを受け取る。
+ *   子文書:     `body`（style.css:16-26 の縦 flex）の子。ヘッダ / 3 窓 / 明細を縦に並べる。
+ * 同じ宣言で両方が成立するので、規則は 1 つだけ持つ（文書ごとに書き分けない）。
+ * これが無いと器の高さが内容依存になり、`#chartWrap { flex: 0 0 52% }` が 0 を基準に
+ * 解決されて **3 窓が 2px に潰れる**（実測 2026-08-12・グリフを hover できない状態になる）。
+ */
+#sim-display {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 子文書は器いっぱいに広げる。枠線は子文書側の見た目に干渉しないよう持たせない。 */
+#sim-display > iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  display: block;
+}

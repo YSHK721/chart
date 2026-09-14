@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<!-- prototype_260626-01: 因果リビール再生＋実3インジ（tgp_btlm/profit_band/price_range_power）。
+     各フレームをサーバが**その場で**計算（ライブ同一）。lwc風の凡例（目玉トグルで表示/非表示）。 -->
+<html lang="ja"><head><meta charset="utf-8"><title>prototype_260626-01 因果リビール再生（実3インジ）</title>
+<script src="./vendor/lightweight-charts.js"></script>
+<style>
+  :root{--bg:#0c0d0f;--hover:#3c434c;--active:rgba(0,122,255,0.7);--border:#3C434C;--col:#d8d9db;--acol:#ececed}
+  html,body{height:100%}
+  body{margin:0;background:#0e1117;color:#c9d1d9;font:13px system-ui;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  #bar,#settings{flex:none;display:flex;gap:8px;align-items:center;padding:6px 12px;background:#131722;border-bottom:1px solid #2a2e39;flex-wrap:wrap}
+  #settings{background:#10141d}
+  #bar button,#bar select,#settings select,#settings input{background:#1b2230;color:#c9d1d9;border:1px solid #2a2e39;border-radius:4px;padding:4px 9px;cursor:pointer}
+  #slider{flex:1;min-width:180px}
+  #wrap{flex:1 1 auto;min-height:0;position:relative}
+  #chart{position:absolute;inset:0}
+  #readout{flex:none;padding:8px 12px;background:#0b0e14;border-top:1px solid #2a2e39;white-space:pre;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5}
+  .badge{padding:2px 8px;border-radius:4px;background:#7b68ee33;color:#b9aaff}
+  .on{outline:2px solid #7b68ee}
+  #status{color:#8b95a5;margin-left:auto}
+  label{display:flex;align-items:center;gap:4px}
+  /* lwc風 legend */
+  #legend{position:absolute;top:8px;left:8px;z-index:30;background:rgba(12,13,15,0.82);border:1px solid var(--border);border-radius:6px;
+    padding:6px 8px;max-height:72%;overflow:auto;font-size:12px;min-width:190px}
+  #legend .grp{margin-top:4px}
+  #legend .ghead{display:flex;align-items:center;gap:6px;font-weight:600;color:var(--acol);padding:2px 0;border-bottom:1px solid #2a2e39}
+  #legend .row{display:flex;align-items:center;gap:6px;padding:1px 0 1px 10px;color:var(--col)}
+  #legend .sw{width:14px;height:3px;border-radius:2px;flex:none}
+  #legend .eye{cursor:pointer;width:18px;text-align:center;user-select:none}
+  #legend .off{opacity:0.35}
+  #legend .rm{cursor:pointer;color:#8b95a5;margin-left:auto;padding:0 2px 0 6px}
+  #legend .rm:hover{color:#ef5350}
+  /* [インジケータ]ボタン（lwc topbar 風）＋ モーダル選択ボックス */
+  .tb-btn{background:var(--active);color:var(--acol);border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;font-weight:600}
+  .tb-btn:hover{filter:brightness(1.15)}
+  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center}
+  .modal-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;width:380px;max-height:72vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,0.5)}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid var(--border);color:var(--acol);font-weight:600}
+  .modal-x{cursor:pointer;color:#8b95a5;font-size:15px}
+  .modal-x:hover{color:#ef5350}
+  .modal-search{margin:10px 14px 6px;padding:7px 9px;background:#1b2230;color:var(--col);border:1px solid var(--border);border-radius:5px}
+  .modal-list{overflow:auto;padding:4px 8px 12px}
+  .modal-item{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;border-radius:6px;cursor:pointer;color:var(--col)}
+  .modal-item:hover{background:var(--active);color:var(--acol)}
+  .modal-item.added{opacity:0.45;cursor:default}
+  .modal-item .act{color:#8b95a5;font-size:12px}
+</style></head><body>
+<div id="bar">
+  <span class="badge">LIVE計算</span>
+  <label>時間足<select id="tf"></select></label>
+  <button id="indicator-open-btn" class="tb-indicator-btn" type="button" title="インジケーター"><span class="ic">∿</span><span class="lbl">インジケーター</span></button>
+  <button id="first">⏮</button><button id="prev">◀ 1足</button>
+  <button id="play">▶ 再生</button><button id="next">1足 ▶</button>
+  <label>速度<select id="speed"><option>1</option><option selected>2</option><option>5</option></select>fps上限</label>
+  <button id="follow" class="on">再生追従</button>
+  <input type="range" id="slider" min="0" max="0" value="0">
+  <span id="status">loading…</span>
+</div>
+<div id="wrap"><div id="chart"></div><div id="legend"></div></div>
+<!-- 本番 indicator_ui のインジ選択ダイアログを 1:1 同期（DOM/CSS/挙動） -->
+<div id="indicator-dialog" class="dialog-backdrop">
+  <div class="dialog" role="dialog" aria-label="インジケーター">
+    <div class="dialog-head">
+      <span class="dialog-title">インジケーター、メトリクス、ストラテジー</span>
+      <button id="indicator-dialog-close" class="dialog-close" type="button" aria-label="閉じる">×</button>
+    </div>
+    <div class="dialog-tabs">
+      <button class="dialog-tab is-active" data-tab="indicator" type="button">インジケーター</button>
+      <button class="dialog-tab" data-tab="strategy" type="button">ストラテジー</button>
+      <button class="dialog-tab" data-tab="profile" type="button">プロファイル</button>
+      <button class="dialog-tab" data-tab="pattern" type="button">パターン</button>
+    </div>
+    <div class="dialog-body">
+      <div class="dialog-side">
+        <button class="side-item is-active" data-category="" type="button">すべて</button>
+        <button class="side-item" data-category="__favorites__" type="button">★ お気に入り</button>
+        <button class="side-item" data-category="cat.technical" type="button">テクニカル</button>
+        <button class="side-item" data-category="cat.statistics" type="button">統計</button>
+        <button class="side-item" data-category="cat.volume" type="button">出来高</button>
+      </div>
+      <div class="dialog-main">
+        <div class="search-wrap">
+          <input id="indicator-search" type="text" placeholder="検索" autocomplete="off" />
+        </div>
+        <div id="indicator-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="readout">—</div>
+<script>
+const LWC=window.LightweightCharts, $=id=>document.getElementById(id);
+const RIGHT_OFFSET=6, MAXBARS=100;
+const TFS=["1m","5m","15m","30m","1h","4h","1D","1W","1M"];
+// 適用インジ（実計算）。パラメータは既定値。
+const TGP={fitter:'tgp',maxbars:100,q_low:0.05,q_high:0.95,mcmc_samples:'standard'};
+const PRP_INTERVAL=50;
+function paramsFor(id){ return id==='tgp_btlm'?()=>({...TGP}) : id==='price_range_power'?()=>({interval:PRP_INTERVAL,top_n:3}) : ()=>({}); }
+// [インジケータ]ボタン→モーダルで選択できる利用可能インジ一覧
+const AVAIL=[
+  {id:'tgp_btlm',variant:'default',label:'tgp_btlm（回帰チャネル）'},
+  {id:'profit_band',variant:'robust',label:'profit_band（robust・因果窓）'},
+  {id:'profit_band',variant:'global',label:'profit_band（global・全長）'},
+  {id:'price_range_power',variant:'default',label:'price_range_power（価格帯）'},
+];
+const mk=a=>({id:a.id,variant:a.variant,label:a.label,params:paramsFor(a.id)});
+const inst=a=>a.id+'/'+a.variant;
+let APPLIED=[mk(AVAIL[0]),mk(AVAIL[1]),mk(AVAIL[3])];   // 既定: tgp / profit_band(robust) / price_range_power
+const chart=LWC.createChart($('chart'),{layout:{background:{color:'#0e1117'},textColor:'#c9d1d9'},
+  grid:{vertLines:{color:'#1b2230'},horzLines:{color:'#1b2230'}},
+  timeScale:{timeVisible:true,secondsVisible:false,borderColor:'#272d38',rightOffset:RIGHT_OFFSET},
+  rightPriceScale:{borderColor:'#272d38'},autoSize:true});
+const candleSeries=chart.addSeries(LWC.CandlestickSeries,{upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
+
+const lineMap={};          // key -> {series, color, indId, name}
+const priceLines={};       // indId -> [priceLine,...]
+const hidden=new Set();    // 非表示キー
+let CANDLES=[], TF="1D", bar=0, playing=false, followOn=true, gen=0;
+const fmt=t=>new Date(t*1000).toISOString().slice(0,10);
+const dash=s=>s==='dotted'?1:s==='dashed'?2:0;
+function lkey(id,name){return id+'::'+name;}
+function ensureLine(key,color,style,width){ if(!lineMap[key]){ lineMap[key]={series:chart.addSeries(LWC.LineSeries,{color,lineWidth:width||1,lineStyle:dash(style),priceLineVisible:false,lastValueVisible:false}),color}; } return lineMap[key]; }
+function clearPriceLines(id){ (priceLines[id]||[]).forEach(pl=>{try{candleSeries.removePriceLine(pl);}catch(e){}}); priceLines[id]=[]; }
+
+async function apiCandles(tf){ return (await (await fetch('./candles?tf='+tf)).json()).candles||[]; }
+async function apiCompute(body){ return (await (await fetch('./compute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json()); }
+
+async function render(b){
+  const g=++gen;
+  bar=Math.max(MAXBARS-1,Math.min(CANDLES.length-1,b)); $('slider').value=bar;
+  candleSeries.setData(CANDLES.map((c,i)=> i<=bar ? c : {time:c.time}));   // 足リビール（系列長一定）
+  const c=CANDLES[bar], t=c.time;
+  $('status').textContent=`${TF} bar ${bar} ${fmt(t)} 計算中…`;
+  const t0=performance.now();
+  const active=new Set(); const legendGroups=[]; let tgpVals={};
+  for(const ind of APPLIED){                                  // 各インジを**その場で**計算
+    let resp; try{ resp=await apiCompute({tf:TF,untilTime:t,indicator:ind.id,variant:ind.variant,params:ind.params()}); }catch(e){ resp={series:[]}; }
+    if(g!==gen) return;
+    const ik=inst(ind); const rows=[]; clearPriceLines(ik);
+    for(const s of (resp.series||[])){
+      if(s.kind==='horizontal_line'){
+        const lines=s.lines||[];
+        rows.push({name:s.name,color:(lines[0]||{}).color||'#888',key:lkey(ik,s.name),hl:true});
+        if(!hidden.has(lkey(ik,s.name))) for(const ln of lines)
+          priceLines[ik].push(candleSeries.createPriceLine({price:ln.price,color:ln.color,lineWidth:ln.width||1,lineStyle:dash(ln.style),title:ln.text||''}));
+      }else{
+        const key=lkey(ik,s.name); active.add(key);
+        const L=ensureLine(key,s.color||'#7b68ee',s.style,s.width);
+        L.series.setData(hidden.has(key)?[]:(s.data||[]));
+        L.series.applyOptions({visible:!hidden.has(key)});
+        rows.push({name:s.name,color:s.color||'#7b68ee',key,hl:false});
+        const last=(s.data||[]).slice(-1)[0]; if(ind.id==='tgp_btlm'&&last) tgpVals[s.name]=last.value;
+      }
+    }
+    legendGroups.push({label:ind.label,id:ind.id,variant:ind.variant,rows});
+  }
+  for(const key in lineMap) if(!active.has(key)) lineMap[key].series.setData([]);  // 当該フレームに無い線は空に
+  buildLegend(legendGroups);
+  const specLine=`現在のチャート: JP225 / ${TF} / ${CANDLES.length}本 / tgp[fitter=${TGP.fitter} maxbars=${TGP.maxbars} q=${TGP.q_low}/${TGP.q_high} mcmc=${TGP.mcmc_samples}] / prp interval=${PRP_INTERVAL}`;
+  requestAnimationFrame(()=>{ try{ if(followOn) chart.timeScale().setVisibleLogicalRange({from:Math.max(0,bar-150),to:bar+RIGHT_OFFSET}); else chart.timeScale().fitContent(); }catch(e){} });
+  const ms=Math.round(performance.now()-t0);
+  $('status').textContent=`${TF} bar ${bar}/${CANDLES.length-1} ${fmt(t)}  計算 ${ms}ms（実3インジ・その場計算）`;
+  $('readout').textContent=
+    `時間足=${TF}  時刻 t=${fmt(t)} (bar #${bar}/${CANDLES.length-1})  表示=${followOn?'再生追従':'全体'}  ※各フレームをサーバがその場で計算\n`+
+    `OHLC O=${c.open.toFixed(1)} H=${c.high.toFixed(1)} L=${c.low.toFixed(1)} C=${c.close.toFixed(1)}\n`+
+    `tgp_btlm as-seen-at-t  `+Object.entries(tgpVals).map(([k,v])=>`${k}=${v.toFixed(1)}`).join('  ')+`\n`+
+    `エントリー判定例: close ${c.close.toFixed(1)} vs mean ${(tgpVals['btlm_mean']||0).toFixed(1)} → `+(c.close>(tgpVals['btlm_mean']||0)?'mean上抜け（buy候補）':'mean下（売り/見送り）')+`\n`+specLine;
+  window.__bar=bar;
+}
+function buildLegend(groups){
+  const el=$('legend'); el.innerHTML='';
+  for(const grp of groups){
+    const wrap=document.createElement('div'); wrap.className='grp';
+    const allKeys=grp.rows.map(r=>r.key), grpHidden=allKeys.every(k=>hidden.has(k));
+    const head=document.createElement('div'); head.className='ghead';
+    head.innerHTML=`<span class="eye">${grpHidden?'🙈':'👁'}</span><span>${grp.label}</span><span style="color:#8b95a5">(${grp.rows.length})</span><span class="rm" title="削除">✕</span>`;
+    head.querySelector('.eye').onclick=()=>{ const hide=!grpHidden; allKeys.forEach(k=>hide?hidden.add(k):hidden.delete(k)); render(bar); };
+    head.querySelector('.rm').onclick=()=>removeIndicator(grp.id,grp.variant);
+    wrap.appendChild(head);
+    for(const r of grp.rows){
+      const off=hidden.has(r.key);
+      const row=document.createElement('div'); row.className='row'+(off?' off':'');
+      row.innerHTML=`<span class="eye">${off?'🙈':'👁'}</span><span class="sw" style="background:${r.color}"></span><span>${r.name}</span>`;
+      row.querySelector('.eye').onclick=()=>{ off?hidden.delete(r.key):hidden.add(r.key); render(bar); };
+      wrap.appendChild(row);
+    }
+    el.appendChild(wrap);
+  }
+}
+async function playLoop(){ const ms=()=>1000/+$('speed').value;
+  while(playing && bar<CANDLES.length-1){ await render(bar+1); await new Promise(r=>setTimeout(r,ms())); }
+  playing=false; $('play').textContent='▶ 再生'; }
+async function switchTf(tf){ TF=tf; CANDLES=await apiCandles(tf); $('slider').min=MAXBARS-1; $('slider').max=CANDLES.length-1; await render(Math.floor(CANDLES.length*0.6)); }
+$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ 停止':'▶ 再生';if(playing)playLoop();};
+$('next').onclick=()=>render(bar+1); $('prev').onclick=()=>render(bar-1); $('first').onclick=()=>render(MAXBARS-1);
+$('slider').oninput=e=>render(+e.target.value);
+$('tf').onchange=e=>switchTf(e.target.value);
+$('follow').onclick=()=>{followOn=!followOn;$('follow').classList.toggle('on',followOn);render(bar);};
+// [インジケータ] モーダル選択ボックス（本番＝ドロップダウンでなく別ウィンドウ）
+function renderIndList(q){ const el=$('indList'); el.innerHTML=''; const qq=(q||'').toLowerCase();
+  for(const a of AVAIL){ if(qq && !a.label.toLowerCase().includes(qq) && !a.id.includes(qq)) continue;
+    const added=APPLIED.some(x=>x.id===a.id&&x.variant===a.variant);
+    const it=document.createElement('div'); it.className='modal-item'+(added?' added':'');
+    it.innerHTML=`<span>${a.label}</span><span class="act">${added?'追加済':'＋ 追加'}</span>`;
+    if(!added) it.onclick=()=>{ APPLIED.push(mk(a)); closeModal(); render(bar); };
+    el.appendChild(it);
+  }
+}
+function openModal(){ renderIndList(''); $('indSearch').value=''; $('indModal').style.display='flex'; $('indSearch').focus(); }
+function closeModal(){ $('indModal').style.display='none'; }
+function removeIndicator(id,variant){ const k=id+'/'+variant;
+  APPLIED=APPLIED.filter(x=>!(x.id===id&&x.variant===variant));
+  for(const key in lineMap) if(key.startsWith(k+'::')){ try{chart.removeSeries(lineMap[key].series);}catch(e){} delete lineMap[key]; }
+  clearPriceLines(k); render(bar);
+}
+$('indBtn').onclick=openModal; $('indClose').onclick=closeModal;
+$('indModal').onclick=e=>{ if(e.target.id==='indModal') closeModal(); };
+$('indSearch').oninput=e=>renderIndList(e.target.value);
+window.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
+(async function(){ $('tf').innerHTML=TFS.map(t=>`<option${t==='1D'?' selected':''}>${t}</option>`).join('');
+  await switchTf('1D'); window.__ready=true; })();
+</script></body></html>

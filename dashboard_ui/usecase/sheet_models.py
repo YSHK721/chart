@@ -1,0 +1,270 @@
+"""水準到達シートの Input / Output Model。
+
+畳み込みキー `(indicator_id, variant, params_key, timeframe)`（§7・T-1）:
+    同一キーの full 系列は **1 回しか発行してはならない**。表は既存の計算結果を**読むだけ**で
+    あり、新規の計算を発行しない（§8 OCP）。段 1 の実測では、ラダーの 71 本が全指標 105 本の
+    部分集合であるのに別々に計算すると 2,316ms が丸ごと無駄になる（ISSUE-450 と同型）。
+    キーが不安定（辞書順・hash 乱数化に依存）だと、同じ計算を 2 回発行しても検査が通る。
+    そのため `params_key` は `json.dumps(..., sort_keys=True)` で決定的に作る。
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Callable, Mapping
+
+from dashboard_ui.domain.elapsed_fraction_pool import ElapsedFractionPool
+from dashboard_ui.domain.horizon import Horizon
+from dashboard_ui.domain.reach import ReachState
+
+#: 畳み込みキー。
+InstanceKey = "tuple[str, str, str, str]"
+
+
+class SeriesRole(Enum):
+    """系列の役割（§3.1: 除外は名前ではなく**実値の桁**で判定する。判定表は adapter が持つ）。"""
+
+    PRICE_LEVEL = "price_level"
+    NOT_LEVEL = "not_level"
+
+
+class UpdateGranularity(Enum):
+    """更新粒度（§7）。差を隠して「リアルタイム」と称さない。"""
+
+    TICK = "tick"
+    BAR_CLOSE = "bar_close"
+    #: 更新されない（その instance の価格投影が出せない＝背景が塗られない）。
+    #: バー確定でも回復しないので `BAR_CLOSE` とは別物である（レビュー 🟡-2）。
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class SheetInstance:
+    """指標インスタンス 1 本（`timeframe` は**解決済みの軸**）。"""
+
+    indicator_id: str
+    variant: str
+    params: Mapping[str, object]
+    timeframe: str
+    intrabar_capable: bool = False
+
+    @classmethod
+    def of(
+        cls,
+        indicator_id: str,
+        variant: str,
+        params: Mapping[str, object],
+        *,
+        chart_timeframe: str,
+        intrabar_capable: bool = False,
+    ) -> "SheetInstance":
+        """params の `timeframe` から軸を解決する（§2 chart 追従水準 / MTF 固定水準）。
+
+        `"chart"`（未指定含む）は表示時間足に従い、明示された足は表示足に依らず同一値。
+        軸を解決してからキーを作るので、同じ MTF 水準が表示足ごとに重複発行されない。
+        """
+        rest = {k: v for k, v in params.items() if k != "timeframe"}
+        own = params.get("timeframe") or "chart"
+        axis = chart_timeframe if own == "chart" else str(own)
+        return cls(indicator_id, variant, rest, axis, intrabar_capable)
+
+    @property
+    def params_key(self) -> str:
+        return json.dumps(dict(self.params), sort_keys=True, ensure_ascii=False,
+                          default=str)
+
+    @property
+    def key(self) -> "tuple[str, str, str, str]":
+        return (self.indicator_id, self.variant, self.params_key, self.timeframe)
+
+
+@dataclass(frozen=True)
+class OscillatorSpec:
+    """第 2 表のセルで `p` を出すために必要な宣言（adapter が指標設定から作る）。
+
+    `excess` は超過分の定義（RSI は `(v-u)/(100-u)`・`levels.py` ③）。usecase / domain が
+    指標名で分岐しないための注入点である（§8 OCP）。
+    """
+
+    value_series: str
+    band_high_series: str
+    q_high: float
+    window_n: int
+    k_events: int
+    #: 下帯（q_low）の系列名と分位。設定にもカタログにも q_low が無い指標では None
+    #: （発明しない・依頼者承認 2026-08-30: 分位水準到達価格の上下 2 値表示）。
+    band_low_series: "str | None" = None
+    q_low: "float | None" = None
+    #: 極端分位（evq_ext）の系列名（依頼者指示 2026-09-05「極端分位も追加しろ」）。
+    #: 指標が当該系列を供給しているときだけ宣言する（供給が無い側は None＝発明しない）。
+    ext_high_series: "str | None" = None
+    ext_low_series: "str | None" = None
+    cumulative: bool = False
+    excess: Callable[[float, float], float] = field(
+        default=lambda value, band_high: value - band_high
+    )
+
+
+@dataclass(frozen=True)
+class ReachSheetRequest:
+    """段 1 の入力（束＝instances は Input Model の一部としてサーバへ送られる・T-2）。"""
+
+    dataset_ref: str
+    instances: "tuple[SheetInstance, ...]"
+    chart_timeframe: str = "1m"
+
+    def unique_instances(self) -> "tuple[SheetInstance, ...]":
+        """重複キーを 1 本へ畳む（初出の順序を保つ）。"""
+        seen: "set[tuple[str, str, str, str]]" = set()
+        folded: "list[SheetInstance]" = []
+        for instance in self.instances:
+            if instance.key in seen:
+                continue
+            seen.add(instance.key)
+            folded.append(instance)
+        return tuple(folded)
+
+
+@dataclass(frozen=True)
+class LadderRow:
+    """第 1 表の 1 行（§4.7 の版面＋§5.5.5 の地平別背景）。"""
+
+    price: float
+    timeframe: str
+    label: str
+    distance: float
+    gap_to_previous: "float | None"
+    horizon_marks: "frozenset[Horizon]"
+    reach: ReachState
+    horizon_p: "Mapping[Horizon, float | None]" = field(default_factory=dict)
+    #: この行を出した instance の畳み込みキー（`Degradation.instance_key` と同じ形）。
+    #: §7 の「足内更新を持たない指標の行には更新粒度がバー確定であることを表示する」を
+    #: 行単位で解けるようにするための紐付けであり、行と縮退の告知を同じキーで突き合わせる。
+    instance_key: "tuple[str, str, str, str] | None" = None
+    #: 表示 3 分割 {name, period, source, extra}（依頼者指示 2026-08-30）。識別は従来どおり
+    #: `label` が担い、こちらは版面の読みやすさのためだけに使う。
+    naming: "Mapping[str, object] | None" = None
+    #: この行の水準を出した**系列の名前**（instance の中の 1 本）。フロントのなめらか再生
+    #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこの行の
+    #: 価格へ流すか」を選ぶための宣言。表示専用（None＝流さない）。
+    series: "str | None" = None
+    #: この行の水準価格における TPO 密度 norm（0..1・依頼者承認 2026-09-06「MP 列」）。
+    #: 素材はシート共通の 1 本（1m 確定足・直近 2000 本を幅 5pt のビンで畳んだもの）。
+    #: プロファイルの価格域の外・素材なしは None（0.0 で埋めない＝「密度が最小」と読ませない）。
+    mp: "float | None" = None
+
+
+@dataclass(frozen=True)
+class ProjectedLevel:
+    """オシレータの**分位水準に達する価格**を第 1 表の行として載せる宣言
+    （依頼者指示 2026-08-31「ma_marod, btlm_trail_marod, profit_rsi の分位水準の価格を
+    価格ラダーに反映せよ」。機構は指標名に依存しない——投影できる全オシレータに効く）。
+
+    価格の算出（§5.5 の閉形式逆写像＋往復検証）は adapter（controller）が持ち主で、
+    ここは「その価格を行としてどう並べるか」だけを受け取る。到達時刻は持たない
+    （行の reach は水準系列との突合で導くが、射影行には系列が無い＝発明しない）。
+    """
+
+    instance_key: "tuple[str, str, str, str]"
+    indicator_id: str
+    timeframe: str
+    price: float
+    #: 分位の名前（例 'q95'・第 1 表の水準列と同じ語彙）。
+    level: str
+    #: 定義分位（水準セルのヒート・§5.5.6 と同じ目盛り）。None＝塗らない。
+    level_p: "float | None" = None
+    #: 表示 3 分割（LadderRow.naming と同じ形）。
+    naming: "Mapping[str, object] | None" = None
+
+
+@dataclass(frozen=True)
+class ElapsedComparison:
+    """§5.3.3 の比較集合（形成中の積み上がる量を同経過の過去へ当てるための材料）。
+
+    `pool` は**確定した過去の足だけ**を保持していること（因果境界）。`completed_units` は
+    形成中の足で完了したサブ単位数（tf >= 5m なら完了した 1m 本数＝T-8 の k）。
+    """
+
+    pool: ElapsedFractionPool
+    completed_units: int
+    forming_sum: float
+
+
+@dataclass(frozen=True)
+class TrailingReading:
+    """第 2 表セル背景の 1 区間（依頼者指示 2026-09-04・同日明確化）。
+
+    背景は 2 層である: 下層＝指標そのもののミニ描画（`value`・指標ペインと同じ読み）、
+    上層＝ヒートストリップ（`p` / `tail_unscaled`・§5.3 の連続量）。どちらもサーバ計算で、
+    フロントは数値を再計算しない（arch-spec §9）。
+    """
+
+    #: その区間の指標値（確定バーの値。非有限は None＝描かない）。
+    value: "float | None"
+    #: §5.3 の連続量（定義できない区間は None＝色を置かない）。
+    p: "float | None"
+    #: §5.3.2 の「目盛りが無い」帯外区間。
+    tail_unscaled: bool = False
+
+
+@dataclass(frozen=True)
+class OscCell:
+    """第 2 表の 1 セル（§5.2: 色から絶対量は読めないため現在値の数字を必ず併記する）。"""
+
+    indicator_id: str
+    timeframe: str
+    value: "float | None"
+    p: "float | None"
+    tail_unscaled: bool
+    #: 閾値＝到達判定（§6.1）が現在バーで使っている帯上端（OscillatorSpec.band_high_series の
+    #: 末尾値）。色と到達時刻の根拠になる数なので、現在値と同様に必ず併記できる形で持つ
+    #: （依頼者指示 2026-09-05）。帯が供給されていない時刻は None（発明しない）。
+    band_high: "float | None" = None
+    #: 帯下端（OscillatorSpec.band_low_series の当該時刻値・依頼者承認 2026-09-05 の一本化）。
+    #: 宣言が無い指標・供給が無い時刻は None（発明しない）。表示の使い分け（価格射影が
+    #: 成立するセルは価格 2 値のみ・不能なセルは指数の閾値）はフロントが level_prices で判定する。
+    band_low: "float | None" = None
+    #: 極端分位（evq_ext_hi / evq_ext_lo）の当該時刻値（依頼者指示 2026-09-05）。
+    #: 表示の使い分けは band_high / band_low と同一（価格射影が成立するセルは価格・
+    #: 不能なセルは指数）。供給が無い側は None（発明しない）。
+    ext_high: "float | None" = None
+    ext_low: "float | None" = None
+    reach: "ReachState | None" = None
+    unavailable_reason: "str | None" = None
+    #: この セルを出した instance の畳み込みキー（LadderRow.instance_key と同じ形）。
+    #: §5.5 の価格射影（分位水準に達する価格・依頼者指示 2026-08-30）をセルへ紐付けるための
+    #: 識別子。(indicator_id, timeframe) はキーにならない（§5.1: ma_marod は 1D に 2 本）。
+    instance_key: "tuple[str, str, str, str] | None" = None
+    #: 現在値が読んでいる系列の名前（OscillatorSpec.value_series）。フロントのなめらか再生
+    #: （/live_ticks の tails・依頼者指示 2026-08-31）が「どの系列の末尾値をこのセルへ
+    #: 流すか」を選ぶための宣言。表示専用で、無くても版面は成立する（None＝流さない）。
+    value_series: "str | None" = None
+    #: 直近の**確定**区間の読み（古い順・依頼者指示 2026-09-04「各パネルの背景に直近の
+    #: 指標 10 区間分」）。現在区間は `p` / `tail_unscaled` / `value` が持ち主で、ここへは
+    #: 含めない（同じ量を 2 か所へ持たない）。フロントは history + 現在で 10 区間ぶんの
+    #: 「指標ミニ描画（下層）＋ヒートストリップ（上層）」を塗る（同日明確化）。
+    history: "tuple[TrailingReading, ...]" = ()
+    #: §5.3.3 の積み上がる量か（OscillatorSpec.cumulative の事実の申告）。フロントは
+    #: 指標ペインと同じ読みでミニ描画の形を選ぶ（積み上がる量＝棒・それ以外＝ライン）。
+    cumulative: bool = False
+
+
+@dataclass(frozen=True)
+class Degradation:
+    """更新粒度の縮退（§7）。無言で落とさず、表へ明示する。"""
+
+    instance_key: "tuple[str, str, str, str]"
+    granularity: UpdateGranularity
+    reason: str
+
+
+@dataclass(frozen=True)
+class ReachSheetResponse:
+    """段 1 の出力。"""
+
+    current_price: float
+    rows: "tuple[LadderRow, ...]"
+    current_index: int
+    cells: "tuple[OscCell, ...]"
+    degradations: "tuple[Degradation, ...]"

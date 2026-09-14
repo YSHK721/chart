@@ -1,0 +1,202 @@
+"""usecase 層のプレーン DTO（CLEAN_ARCH §9 / 依頼仕様）。
+
+すべて素の ``@dataclass``（pydantic 非依存）。検証は adapter 境界（framework の
+pydantic）に閉じ、本層はデータ保持のみを責務とする。BacktestResult は to_html /
+to_markdown / compare 等の変換責務を持たない（CLEAN_ARCH §8 依存方向違反②・③の解消）。
+
+usecase 層は domain のみ依存可（adapter/framework/main を import しない）。
+時刻は domain と同じく ``numpy.datetime64 | int``（pd.Timestamp を前提にしない）。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class BacktestConfig:
+    """PROCESS §7 決定論性チェックリスト 9 項目を保持する設定 DTO。
+
+    #1 tick_model / #2 spread_model / #3 sltp_tie(=SL 優先) / #4 fill_delay(=次tick) /
+    #5 ohlc_order / #6 session_calendar / #7 digits / #8 legacy_quirks / #9 return_basis。
+    """
+
+    tick_model: str
+    spread_model: str
+    sltp_tie: str
+    fill_delay: str
+    ohlc_order: str
+    session_calendar: str
+    digits: int
+    legacy_quirks: bool
+    return_basis: str
+    # 約定価格基準（実 MT5 突合・後方互換）。既定 "close"＝従来挙動（close 約定・spread 無視）。
+    # "current_open"＝原典 .mq5（新規バーで現値約定）に整合: bid=現バー open、
+    # 買い=open+spread×point（実 fixture 初回 buy 39412=open39402+100×0.1）・売り=open。
+    # default 付きのため既存 9 引数構築（config_loader/既存テスト）と完全後方互換。
+    entry_price_basis: str = "close"
+    # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来挙動
+    # （margin_level < stop_out で MarginCallError を送出し部分結果を破棄）。
+    # "close_and_halt"＝全保有玉を強制決済（exit_reason="stop_out"）し、以降の新規発注を
+    # 抑止して最終統計まで完走する。default 付きのため既存構築と完全後方互換。
+    stop_out_action: str = "fail_stop"
+    # 取引開始境界の最初の 1 バーを「アタッチ/プライム」として扱うか（層1・config-gated）。
+    # 既定 False＝trading_start 境界バーも取引対象（従来不変）。True かつ trading_start 指定時、
+    # bar.time >= trading_start となる最初のバーを warmup 同様「指標 update のみ・発注/equity
+    # 除外」とし、初回約定を次足へ落とす（実 MT5 のテスト開始バー=アタッチ挙動に整合）。
+    prime_first_trading_bar: bool = False
+    # 含み損益の評価基準（層2・config-gated）。既定 "close"＝従来どおり bar.close 固定評価。
+    # "bid_ask"＝決済価格基準（買い保有=Bid=close / 売り保有=Ask=close+spread×point_size）。
+    # default 付きのため既存構築と完全後方互換。
+    floating_pnl_basis: str = "close"
+    # 約定損益の口座通貨丸め桁（ISSUE-020）。既定 None＝丸めず素値（byte-identical）。
+    # 0 で JPY 整数丸め（実 MT5 は約定損益を口座通貨精度へ丸めて balance 反映）。
+    profit_round_digits: "int | None" = None
+    # stop-out をバー open でも先行評価するか（ISSUE-022）。既定 False＝従来 close 基準のみ。
+    # True で実 MT5 OHLC の open pseudo-tick 評価に整合（週末ギャップで open 約定）。
+    stop_out_at_open: bool = False
+    # 指値/逆指値ペンディング注文のライフサイクルを有効化するか（2603-01）。既定 False＝
+    # 従来経路（成行のみ・byte-identical）。True で execute() を every-tick 経路へ振り向ける。
+    pending_lifecycle: bool = False
+    # 同時設置した複数ペンディングの OCO（One-Cancels-the-Other）を有効化するか（2604-02）。
+    # 既定 False＝従来挙動（兄弟ペンディングは各々独立に約定し得る・単一ペンディングEAでは無影響）。
+    # True で 1 本が約定した時点で残る兄弟ペンディングを全取消（StopEntryProbe の両建て用）。
+    pending_oco: bool = False
+    # ペンディング持続＋足途中ティック再アームを有効化するか（2604-02・ISSUE-024）。既定 False＝
+    # 従来挙動（resting は毎バー on_new_bar で置換）。True で resting をバー境界でリセットせず約定まで
+    # 保持し、フラット＆未装填のティックで strategy.on_tick を呼び当該ティッククォートで即再装填する。
+    pending_persistent: bool = False
+    # hedging 口座の両建て証拠金相殺（2604-02・ISSUE-024）。既定 False＝全保有の required_margin を
+    # 単純加算（従来）。True で stop-out 判定の証拠金を「買い計・売り計の大きい側」（反対玉は相殺）
+    # とする＝実 MT5 hedging のヘッジ証拠金に整合（同量両建ては実質ノーマージンで stop-out しない）。
+    hedged_margin: bool = False
+
+
+@dataclass
+class SymbolSpec:
+    """シンボル仕様。domain.order.Order.validate が duck typing で要求する属性
+    （volume_min/volume_max/volume_step/stops_level/point_size）を満たす。
+
+    **銘柄の契約だけを持つ**（ISSUE-445 段階 3-D2・設計書
+    `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §3.4）。7 フィールドはいずれも
+    供給元 `mt5.symbol_info()` から引ける（対応表は
+    `marketdata/symbol_spec_snapshot.py:SYMBOL_FIELD_SOURCES` が単一ソース）。
+    口座属性（`leverage` 等）はここに置かない——変更起点が違う契約を同居させると
+    SRP 違反になり、人が書いた値が銘柄仕様の権威のように振る舞う隙間ができる。
+    `leverage` の置き場は `usecase/run_backtest.py:RunBacktestRequest`
+    （`initial_deposit` / `stop_out_level` と同じ口座属性の面）である。
+    この不変条件は `simulator/tests/unit/test_symbol_spec_fields_are_symbol_sourced.py`
+    が機械的に施行する。
+    """
+
+    contract_size: float
+    volume_min: float
+    volume_max: float
+    volume_step: float
+    stops_level: int
+    digits: int
+    point_size: float
+
+
+@dataclass(frozen=True)
+class AccountSpec:
+    """口座仕様。1 run のあいだ変わらない**口座の契約**を 1 つの型に束ねる。
+
+    ISSUE-445 段階 3-D3（案 D・設計書 `.doc/SYMBOL_SPEC_SUPPLY_BASIC_DESIGN.md` §3.4）。
+    段階 3-D2 で `SymbolSpec` から外した口座属性は `RunBacktestRequest` に 3 つフラットに
+    置かれていた。`SymbolSpec`＝銘柄の契約 / `AccountSpec`＝口座の契約 の 2 軸を型で明示し、
+    口座属性が増えるたびに `RunBacktestRequest` を改変する形（OCP 違反）を閉じる。
+    供給元スナップショットの `account` セクションは既に `company` / `currency` /
+    `leverage` / `server` / `trade_mode` を持ち、実口座からは `margin_mode` /
+    `margin_so_call` / `margin_so_so` も実測記録されている（`ISSUE.md` ISSUE-445）。
+    それらの行き先は本型であって `RunBacktestRequest` ではない。
+
+    **既定値をどのフィールドにも置かない**（機械的に施行するのは
+    `simulator/tests/unit/test_account_spec_holds_only_account_attributes.py`）:
+    既定値は「人が書いた値が権威になる」形（ISSUE-445 RC-1）と同型であり、初期証拠金・
+    必要証拠金の除数・ストップアウト水準を誰も指定しないまま run が通る経路を作る。
+    `stop_out_level` の既定 0.0 も同じ理由で撤去した——供給元は当該キーを供給しておらず
+    （`ACCOUNT_FIELD_SOURCES` は `leverage` のみ）、実口座の値は `margin_so_so=100.0`
+    （ISSUE-445 実測）である。0.0 は「未設定の代用」として置かれた値でありながら
+    `margin_level() < 0.0` は equity が負に落ちれば成立する**生きた閾値**であり、
+    誰も書いていない値が黙って停止条件になっていた。
+
+    **frozen である理由**: 本型は run の途中で変化しない「契約」である。可変な口座
+    **状態**（balance / margin / floating_pnl）は `simulator/domain/account.py:Account`
+    が担い、当該 docstring は「run 全体で状態遷移する集約であり、値オブジェクト方針の
+    例外として可変」と明記している。契約と状態が両方とも可変だと、run の途中で契約側を
+    書き換える経路が型の上で開く。frozen はその経路を閉じる。
+
+    銘柄の契約（`contract_size` / `volume_min` 等）はここに置かない。混入は上記ゲートが
+    供給元の対応表から機械的に検出する（フィールド名をテスト側に書かない）。
+    """
+
+    initial_deposit: float
+    leverage: float
+    stop_out_level: float
+
+
+@dataclass
+class BacktestStats:
+    """METRICS の STAT_* と 1:1 のフィールド + 計算値（§1〜§4）。"""
+
+    # §1 損益サマリー
+    initial_deposit: float
+    profit: float
+    gross_profit: float
+    gross_loss: float
+    profit_factor: float
+    recovery_factor: float
+    expected_payoff: float
+    sharpe_ratio: float
+    # §3 件数・分布
+    trades: int
+    profit_trades: int
+    loss_trades: int
+    long_trades: int
+    short_trades: int
+    profit_long_trades: int
+    profit_short_trades: int
+    # §2 ドローダウン（Balance 系）
+    balance_min: float
+    balance_dd: float
+    balance_dd_percent: float
+    balance_dd_relative: float
+    balance_ddrel_percent: float
+    # §4 個別トレード統計
+    max_profit_trade: float
+    max_loss_trade: float
+    max_con_wins: int
+    max_con_profit_trades: float
+    max_con_losses: int
+    max_con_loss_trades: float
+    con_profit_max: float
+    con_profit_max_trades: int
+    con_loss_max: float
+    con_loss_max_trades: int
+    profit_trades_avg_con: float
+    loss_trades_avg_con: float
+    # 実 MT5 golden 突合で追加（report_900005560.json への校正）。
+    # 既存コンストラクタ互換のため末尾に default 付きで配置する。
+    average_profit_trade: float = 0.0  # gross_profit / profit_trades(>=0)
+    average_loss_trade: float = 0.0    # gross_loss / loss_trades(<0)
+    z_score: float = 0.0               # Wald-Wolfowitz（MT5 実装式）
+    ahpr: float = 0.0                  # mean(1 + profit_i / balance_before_i)
+    balance_dd_abs: float = 0.0        # initial_deposit - min(balance)
+    # 実 MT5 校正済の equity 系 DD（第2サイクルで compute_stats() 本体へ結線）。
+    # equity_curve（含み損込みバー別 equity）由来。equity_curve 未供給時は 0（後方互換）。
+    equity_dd_abs: float = 0.0          # initial_deposit - min(equity)
+    equity_dd_max: float = 0.0          # equity peak-to-trough の最大金額 DD
+    equity_dd_max_percent: float = 0.0  # 金額 DD 最大点での % DD
+
+
+@dataclass
+class BacktestResult:
+    """1 run の結果データ。保持のみ（変換責務なし・CLEAN_ARCH §8 違反②解消）。"""
+
+    trades: Any
+    deals: Any
+    equity_curve: Any
+    balance_curve: Any
+    stats: BacktestStats
+    indicator_values: dict[str, Any] = field(default_factory=dict)

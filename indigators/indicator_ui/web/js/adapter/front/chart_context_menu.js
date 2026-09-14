@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/chart_context_menu.js

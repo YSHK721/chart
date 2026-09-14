@@ -1,0 +1,1 @@
+../../../../../market_profile/web/js/adapter/front/tf_period_profile_client.js

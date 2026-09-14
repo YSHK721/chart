@@ -1,0 +1,1 @@
+../../../../../indicator_kit/web/js/adapter/front/app_chrome_view.js
