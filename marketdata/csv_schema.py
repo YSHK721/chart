@@ -7,7 +7,9 @@
 スキーマ所有者の二重定義）。本モジュールがその唯一の規則源であり、両者は import 共有する。
 
 依存方向: 本モジュールは **依存ゼロ**（純粋な定数）。:mod:`marketdata.tick_m1` /
-:mod:`marketdata.rollup` が本モジュールを参照する（逆は無い・循環禁止）。
+:mod:`marketdata.rollup` が本モジュールを参照する（逆は無い・循環禁止）。読み手の
+simulator.adapter.repository.ohlc_marketdata_csv も spread の列名を本モジュールから引く
+（ISSUE-511 段階 2）。
 """
 
 from __future__ import annotations
@@ -30,6 +32,15 @@ DATE_FMT = "%Y-%m-%d %H:%M:%S"
 #   契約なので、無い CSV は従来どおり動く（列が増えても既存の列順・書式は 1 バイトも変わらない）。
 UPDOWN_COLUMNS = ["up", "dn"]
 
+# 気配幅（ISSUE-511 段階 2・整数 points）の **任意** 列名。値の規則の唯一源は
+#   marketdata.quote_spread（本モジュールは列名と列順だけを持つ）。
+#   point を注入した M1 だけが持つ（持たない CSV は従来と 1 バイトも変わらない）。
+#   期間内の件数ではないので SUM_COLUMNS には入れない。
+SPREAD_COLUMN = "spread"
+
+# 既知値列の順序の唯一源（OHLCV → up/dn → spread）。
+VALUE_COLUMNS = [*OHLCV_COLUMNS, *UPDOWN_COLUMNS, SPREAD_COLUMN]
+
 # 合算集約する列（上位足へ resample するとき "last" でなく "sum" を使うもの）。
 #   volume と同じ性質（期間内の件数）を持つ列をここで宣言する（規則の二重定義を避ける）。
 SUM_COLUMNS = ["volume", "vol", *UPDOWN_COLUMNS]
@@ -38,16 +49,17 @@ SUM_COLUMNS = ["volume", "vol", *UPDOWN_COLUMNS]
 def header_for(columns) -> list[str]:
     """値列の集合から CSV ヘッダ（date + 既知列の順）を返す。
 
-    既知列（OHLCV → up/dn）の順序を固定し、未知列は末尾へ出現順で置く。up/dn を持たない
-    データでは :data:`HEADER` と完全一致する（既存 CSV の書式不変）。
+    既知列（:data:`VALUE_COLUMNS`＝OHLCV → up/dn → spread）の順序を固定し、未知列は末尾へ
+    出現順で置く。up/dn・spread を持たないデータでは :data:`HEADER` と完全一致する
+    （既存 CSV の書式不変）。
     """
     have = {str(c).lower() for c in columns}
-    ordered = [c for c in (*OHLCV_COLUMNS, *UPDOWN_COLUMNS) if c in have]
+    ordered = [c for c in VALUE_COLUMNS if c in have]
     rest = [str(c) for c in columns if str(c).lower() not in set(ordered)]
     return [HEADER[0], *ordered, *rest]
 
 
 __all__ = [
     "HEADER", "OHLCV_COLUMNS", "DATE_FMT",
-    "UPDOWN_COLUMNS", "SUM_COLUMNS", "header_for",
+    "UPDOWN_COLUMNS", "SPREAD_COLUMN", "VALUE_COLUMNS", "SUM_COLUMNS", "header_for",
 ]

@@ -2,8 +2,8 @@
 """marketdata.tick_m1 — 生ティック parquet → M1 原子 OHLC CSV（上位足ロールアップの素材）。
 
 Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC で 1 分足へ集計し、
-``<ref>_m1.csv``（``date,open,high,low,close,volume`` 形式・:mod:`marketdata.rollup` 互換）を
-出力する。以降の上位足（5m/1h/1D …）は :mod:`marketdata.rollup`（:mod:`marketdata.resample`
+``<ref>_m1.csv``（``date,open,high,low,close,volume,up,dn`` 形式・point 注入時は末尾に spread・
+:mod:`marketdata.rollup` 互換）を出力する。以降の上位足（5m/1h/1D …）は :mod:`marketdata.rollup`（:mod:`marketdata.resample`
 の規則）が本 M1 を素材に生成する。これによりチャートの足も足内更新も「同じティック
 （mid・UTC）」由来となり、書き変わりなく整合する。
 
@@ -31,7 +31,8 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 依存方向: 本モジュールは pandas と marketdata 内の下位部品
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
 :mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree` /
-:mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d）にのみ
+:mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d） /
+:mod:`marketdata.quote_spread`（分内の気配幅＝spread 列の規則の唯一源・ISSUE-511 段階 2）にのみ
 依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
 :mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
 する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
@@ -53,6 +54,8 @@ import pandas as pd
 from marketdata import dataset_registry as _dataset_registry
 from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
+# spread 列の規則の唯一源（ISSUE-511 段階 2）。モジュール属性経由で呼ぶ（計算量 Spy の継ぎ目）。
+from marketdata import quote_spread as _quote_spread
 from marketdata import tick_tree as _tick_tree
 from marketdata.paths import DATA_DIR
 
@@ -187,7 +190,12 @@ def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
     return _ts_and_price(ticks)
 
 
-def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> pd.DataFrame:
+def ticks_to_m1(
+    ticks: pd.DataFrame,
+    *,
+    price_basis: str = PRICE_BASIS_MID,
+    point: "float | None" = None,
+) -> pd.DataFrame:
     """生ティック DataFrame を M1 OHLC（``price_basis`` 基準・UTC 分床）へ集計する純粋関数。
 
     ``price_basis``（既定 :data:`PRICE_BASIS_MID`）が価格の定義を選ぶ**唯一の拡張点**である。
@@ -204,27 +212,97 @@ def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> p
     入力が空なら空（列のみ）を返す。必須列を欠く場合は :class:`ValueError`（fail-fast）。
     本関数は**純粋な集計のみ**を担う（外れ分バーの除去は :func:`_clean_m1_day` ＝ CSV 素材化
     経路の責務・本関数は行除去しない）。
+
+    ``point``（既定 ``None``）を注入したときだけ、末尾に気配幅の列（列名の唯一源は
+    :data:`marketdata.csv_schema.SPREAD_COLUMN`・分内最小の気配幅・int64 points・規則は
+    :mod:`marketdata.quote_spread`）を足す（ISSUE-511 段階 2）。``None`` なら出力は従来と
+    1 バイトも変わらず、bid 基準では ask 列を読まない。
+
+    契約（計算量・R-1）: 本関数は**出力する全分に** spread を付ける。集計した行を後で捨てる
+    呼出側（外れ分除去・``until``・既存最終分での絞り込み）は ``point`` を渡さないこと
+    （捨てる分の気配幅を計算することになる）。build / append は :func:`_materialize_m1_day`
+    で行を選んだ後に気配幅を計算する。
     """
+    m1, work = _fold_ticks(ticks, price_basis=price_basis, point=point)
+    if work is None or point is None:
+        return m1
+    return _with_spread(m1, work, point)  # 全分を出力するので作業表の全行が対象。
+
+
+def _fold_ticks(
+    ticks: pd.DataFrame, *, price_basis: str, point: "float | None"
+) -> "tuple[pd.DataFrame, pd.DataFrame | None]":
+    """検証 → 時刻順の作業表 → 分へ畳む（:func:`ticks_to_m1` と :func:`_materialize_m1_day` の共通前段）。
+
+    戻り値は ``(気配幅をまだ付けていない M1, 作業表)``。空入力は ``(_empty_m1(point), None)``。
+    気配幅を付けないのは、どの分に付けるかが行を選んだ後でしか決まらないため（R-1）。
+    """
+    _validate_tick_frame(ticks, price_basis, point)
+    if ticks.empty:
+        return _empty_m1(point), None
+    work = _minute_ticks(ticks, price_basis=price_basis, with_quotes=point is not None)
+    return _fold_minutes(work), work
+
+
+def _with_spread(m1: pd.DataFrame, minute_ticks: pd.DataFrame, point: float) -> pd.DataFrame:
+    """``m1`` の末尾に気配幅の列（分内最小・int64 points・規則は quote_spread が唯一源）を足す。
+
+    ``minute_ticks`` は ``m1`` に残った分のティックだけ（作業表の部分集合）を渡すこと。
+    渡した行の分の数だけ気配幅を計算するので、余計な行を渡すと捨てる分を計算する（R-1）。
+    """
+    return m1.assign(
+        **{
+            _csv_schema.SPREAD_COLUMN: _quote_spread.minute_spread_points(
+                minute_ticks["bid"], minute_ticks["ask"], minute_ticks["date"], point=point
+            )
+        }
+    )
+
+
+def _validate_tick_frame(
+    ticks: pd.DataFrame, price_basis: str, point: "float | None" = None
+) -> None:
+    """必須列・価格基準・point を検証する（空入力でも不正は通さない・fail-fast）。"""
     missing = [c for c in _TICK_COLUMNS if c not in ticks.columns]
     if missing:
         raise ValueError(
             f"tick frame に必須列がありません: {missing}（必須 {_TICK_COLUMNS}）。"
         )
     validate_price_basis(price_basis)  # 空入力でも未知の基準は通さない（fail-fast）。
-    if ticks.empty:
-        empty_idx = pd.DatetimeIndex([], name="date")
-        return pd.DataFrame(
-            {c: pd.Series(dtype="float64")
-             for c in ("open", "high", "low", "close", "volume", "up", "dn")},
-            index=empty_idx,
-        )
+    if point is not None:
+        _quote_spread.validate_point(point)  # 空入力でも不正な point は通さない（fail-fast）。
 
+
+def _empty_m1(point: "float | None") -> pd.DataFrame:
+    """空入力の M1（列のみ・point 有りなら末尾に int64 の spread 列）。"""
+    empty_idx = pd.DatetimeIndex([], name="date")
+    # 列名・列順の唯一源は csv_schema（OHLCV → up/dn → spread）。ここで手書きしない。
+    empty = {c: pd.Series(dtype="float64")
+             for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)}
+    if point is not None:
+        empty[_csv_schema.SPREAD_COLUMN] = pd.Series(dtype="int64")
+    return pd.DataFrame(empty, index=empty_idx)
+
+
+def _minute_ticks(
+    ticks: pd.DataFrame, *, price_basis: str, with_quotes: bool
+) -> pd.DataFrame:
+    """ティックを時刻順に並べ、分床の date 列を付けた作業表（``with_quotes`` のときだけ bid/ask 列）。"""
     ts, price = _ts_and_price(ticks, price_basis=price_basis)
 
     # 時刻順を保証してから分床で groupby（open=最初/close=最終を時刻基準で確定）。
     work = pd.DataFrame({"ts": ts.to_numpy(), "price": price.to_numpy()})
+    if with_quotes:
+        # 気配幅は point 注入時だけ要る（無ければ ask を読まない＝bid 基準の不変条件を保つ）。
+        work["bid"] = ticks["bidPrice"].astype("float64").to_numpy()
+        work["ask"] = ticks["askPrice"].astype("float64").to_numpy()
     work = work.sort_values("ts", kind="stable", ignore_index=True)
     work["date"] = work["ts"].dt.floor("min")
+    return work
+
+
+def _fold_minutes(work: pd.DataFrame) -> pd.DataFrame:
+    """作業表を分ごとの OHLCV・up/dn へ畳む（date index 昇順）。"""
     # 方向内訳（up/dn）: 直前ティックとの価格差の符号を **その分バーの中で** 取る。
     #   価格は ``price_basis`` が選んだ系列そのものである（表示される足が bid なのに方向内訳
     #   だけ mid 由来、という食い違いを作らない）。
@@ -270,7 +348,7 @@ def _clean_m1_day(m1_day: pd.DataFrame) -> pd.DataFrame:
 def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
     """同一分（date index の重複）を keep-last で 1 行へ畳む（ISSUE-167・冪等・純粋）。
 
-    ``ticks_to_m1`` は 1 つの日 parquet を分 groupby するため単一 parquet 内は一意だが、
+    日ごとの素材化（:func:`_materialize_m1_day`）は 1 つの日 parquet を分 groupby するため単一 parquet 内は一意だが、
     build/append は日別結果を ``pd.concat`` するため、境界分のティックが複数 parquet に分散
     （日 partition 跨ぎ・再取得の重畳等）していると同一分バーが二重に混じる。この重複が
     素材 CSV → /candles(1m 原子) → フロント series へ伝播すると lightweight-charts が
@@ -312,9 +390,9 @@ def _format_m1_for_csv(m1: pd.DataFrame) -> pd.DataFrame:
     全構築（:func:`_write_m1_csv`）と増分追記（:func:`_append_m1_csv`）の双方がこれを呼び、列射影・
     date 書式・昇順を一致させる（書式の二重定義による drift を防ぐ）。
     """
-    # 方向内訳（up/dn）は tick 由来データだけが持つ任意列。持つときだけ末尾へ足す
-    #   （持たない CSV は従来と 1 バイトも変わらない・列順の規則源は csv_schema.header_for）。
-    cols = [c for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS) if c in m1.columns]
+    # 任意列（方向内訳 up/dn・気配幅 spread）は持つときだけ足す（持たない CSV は従来と
+    #   1 バイトも変わらない・既知値列の順序の唯一源は csv_schema.VALUE_COLUMNS）。
+    cols = [c for c in _csv_schema.VALUE_COLUMNS if c in m1.columns]
     out = m1[cols].sort_index().copy()
     out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
     out.index.name = _HEADER[0]
@@ -380,11 +458,40 @@ def _drop_forming_bars(m1: pd.DataFrame, until: Any) -> pd.DataFrame:
 
     ``until=None`` は素通し（従来出力を byte 不変に保つ）。用途は「形成中の分バー
     （``floor(now, "min")`` 以降）を確定値として書き込まない」こと。:func:`build_m1_from_ticks`
-    と :func:`append_m1_from_ticks` の双方が共有し、除外規則の二重定義を避ける。
+    と :func:`append_m1_from_ticks` の双方が :func:`_materialize_m1_day` 経由で共有し、除外規則の
+    二重定義を避ける。
     """
     if until is None:
         return m1
     return m1[m1.index < pd.Timestamp(until)]
+
+
+def _materialize_m1_day(
+    ticks: pd.DataFrame,
+    *,
+    price_basis: str,
+    point: "float | None",
+    after: Any = None,
+    until: Any = None,
+) -> pd.DataFrame:
+    """1 日分のティックを CSV に書く M1 行へ素材化する（素材化の順序の唯一源・R-1）。
+
+    順序: 分へ畳む → 外れ分除去（:func:`_clean_m1_day`）→ ``index > after``（追記の既存最終分）
+    → :func:`_drop_forming_bars` → 残った分のティックだけで気配幅（``point`` 有り時）。
+    行の選択はすべて index だけの条件なので、気配幅を選択の後で計算しても値は変わらず、
+    捨てる分の気配幅は 1 つも計算しない。
+    """
+    m1_day, work = _fold_ticks(ticks, price_basis=price_basis, point=point)
+    if work is None:
+        return m1_day
+    m1_day = _clean_m1_day(m1_day)
+    if after is not None:
+        m1_day = m1_day[m1_day.index > after]
+    m1_day = _drop_forming_bars(m1_day, until)
+    if point is None or m1_day.empty:
+        return m1_day
+    # 分キーの照合だけで残った分のティックを選ぶ（ask − bid は選んだ行でだけ計算する）。
+    return _with_spread(m1_day, work[work["date"].isin(m1_day.index)], point)
 
 
 def build_m1_from_ticks(
@@ -397,6 +504,7 @@ def build_m1_from_ticks(
     until: Any = None,
     price_basis: str = PRICE_BASIS_MID,
     writer: "M1Writer | None" = None,
+    point: "float | None" = None,
 ) -> Path:
     """``[start, end]`` の日別ティック parquet を読み、M1 CSV を生成して出力パスを返す。
 
@@ -404,7 +512,7 @@ def build_m1_from_ticks(
     暗黙の空出力を作らない）。出力は ``<data_dir>/<ref>_m1.csv``。
 
     メモリ有界（marketdata の中核不変条件・rollup と同方針）: 全ティックを一括ロードせず
-    **日別 parquet を 1 ファイルずつ** :func:`ticks_to_m1` で M1（数十〜数百倍に縮約）へ集約し、
+    **日別 parquet を 1 ファイルずつ** :func:`_materialize_m1_day` で M1（数十〜数百倍に縮約）へ集約し、
     小さな日別 M1 のみを連結する。ティック parquet は UTC 日で partition されるため分バーが
     ファイルを跨がず、結果は全件一括集計と**数値同一**（RSS は 1 日分ティックに有界化）。
 
@@ -412,11 +520,13 @@ def build_m1_from_ticks(
     ``index >= until`` の行を除外する（用途: 形成中の分バー＝``floor(now, "min")`` 以降を確定値
     として書き込まない）。``until=None``（既定）は従来出力と完全一致（byte 不変）。
 
-    ``price_basis``（既定 :data:`PRICE_BASIS_MID`）は :func:`ticks_to_m1` へそのまま渡す。
+    ``price_basis``（既定 :data:`PRICE_BASIS_MID`）は :func:`_materialize_m1_day` へそのまま渡す。
     権威（全量）経路も増分経路と同じ基準で回せるようにするためである（片方だけが mid のまま
     だと、日次再構築が表示中の系列を静かに mid へ戻す）。
     """
     _validate_ref(ref)
+    if point is not None:
+        _quote_spread.validate_point(point)
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
     if not files:
         raise FileNotFoundError(
@@ -425,8 +535,10 @@ def build_m1_from_ticks(
         )
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(
-            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        # 外れ分除去・形成中分（>= until）の除外は日ごとに済ませ、残った分だけ気配幅を計算する。
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(p, columns=_TICK_COLUMNS),
+            price_basis=price_basis, point=point, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
@@ -435,9 +547,8 @@ def build_m1_from_ticks(
     else:
         # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
         m1 = ticks_to_m1(
-            pd.DataFrame({c: [] for c in _TICK_COLUMNS}), price_basis=price_basis
+            pd.DataFrame({c: [] for c in _TICK_COLUMNS}), price_basis=price_basis, point=point
         )
-    m1 = _drop_forming_bars(m1, until)  # 形成中分バー（>= until）を確定値として書かない。
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     (writer or CsvM1Writer()).write_whole(m1, out_path)
     return out_path
@@ -596,6 +707,7 @@ def append_m1_from_ticks(
     until: Any = None,
     price_basis: str = PRICE_BASIS_MID,
     writer: "M1Writer | None" = None,
+    point: "float | None" = None,
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
@@ -614,6 +726,8 @@ def append_m1_from_ticks(
     欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
     """
     _validate_ref(ref)
+    if point is not None:
+        _quote_spread.validate_point(point)
     writer = writer or CsvM1Writer()
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
     try:
@@ -627,7 +741,7 @@ def append_m1_from_ticks(
         # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
         return build_m1_from_ticks(
             start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer,
+            price_basis=price_basis, writer=writer, point=point,
         )
 
     last_date = pd.Timestamp(tail.index[-1])
@@ -641,18 +755,18 @@ def append_m1_from_ticks(
 
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(
-            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        # 厳密に既存最終 date より後（重複防止）かつ形成中分（>= until）を除いた分だけを
+        # 日ごとに選び、その分だけ気配幅を計算する。
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(p, columns=_TICK_COLUMNS),
+            price_basis=price_basis, point=point, after=last_date, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if not daily_m1:
         return out_path
+    # daily_m1 は非空の日だけ → 連結は 1 行以上・keep-last は各分を 1 行残す＝m1_new は非空。
     m1_new = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
-    m1_new = m1_new[m1_new.index > last_date]  # 厳密に既存最終 date より後のみ追記（重複防止）。
-    m1_new = _drop_forming_bars(m1_new, until)  # 形成中分バー（>= until）を確定値として書かない。
-    if m1_new.empty:
-        return out_path
     try:
         writer.append(m1_new, out_path)
     except ValueError:
@@ -660,7 +774,7 @@ def append_m1_from_ticks(
         # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
         return build_m1_from_ticks(
             start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer,
+            price_basis=price_basis, writer=writer, point=point,
         )
     return out_path
 

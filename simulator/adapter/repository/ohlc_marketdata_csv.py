@@ -1,13 +1,14 @@
 """MarketdataCsvOHLCRepository: marketdata 形式 CSV から domain.Bar 列を読み込む。
 
-marketdata 系列（`data/marketdata/*.csv`・ヘッダ `date,open,high,low,close,volume[,up,dn]`・
+marketdata 系列（`data/marketdata/*.csv`・ヘッダ `date,open,high,low,close,volume[,up,dn][,spread]`・
 日付 ISO `2012-06-14 10:35:00`・時刻系は UTC＝裁定 2026-08-18）を list[domain.Bar] へ変換する
 MarketDataPort 実装。2012 年からの全期間 JP225 実データを sim の実行データセットにするための
 リーダ（依頼者承認 2026-09-06。従来はどのリーダも本形式を読めず、全 12 組合せの実測で
 「fixture×MT5 ローダ EA」しか動かなかった）。
 
-spread 列は**存在しない**ため spread=0 固定である。spread 依存 EA（MA_Slope 系）へ供給しては
-ならない（H-4 裁定・MARKETDATA_TIMESERIES_BOUNDARY_DESIGN §10.2）。その遮断は非対象宣言
+spread 列（ISSUE-511 段階 2・整数 points）が在ればその値を Bar.spread へ写し、列が無いときは
+spread=0 である。spread 列の無い系列を spread 依存 EA（MA_Slope 系）へ供給してはならない
+（H-4 裁定・MARKETDATA_TIMESERIES_BOUNDARY_DESIGN §10.2）。その遮断は非対象宣言
 N-17（`main/tester_settings/unsupported.py`）が実行前に Fail-Stop で担う。
 
 **窓はフレーム段で先に適用する**（構築時パラメータ ``window``・ISSUE-135 と同じ隔離）。
@@ -21,6 +22,7 @@ from typing import Any
 
 import pandas as pd
 
+from marketdata.csv_schema import SPREAD_COLUMN
 from simulator.adapter.repository._ohlc_frame import (
     ColumnSpec,
     frame_to_bars,
@@ -29,15 +31,16 @@ from simulator.adapter.repository._ohlc_frame import (
 from simulator.domain.bar import Bar
 from simulator.usecase.ports import MarketDataPort
 
-#: marketdata 形式の必須列。任意列（up・dn）は読み飛ばす（Bar に写さない）。
+#: marketdata 形式の必須列。任意列 up・dn は読み飛ばす（Bar に写さない）。任意列 spread は
+#: 在るときだけ Bar.spread へ写す（_SPEC_WITH_SPREAD・列が無ければ spread=0）。
 _REQUIRED = ("date", "open", "high", "low", "close", "volume")
 
 #: 正規化済み時刻列（読み込み後に 1 回だけベクトル計算で付ける内部列）。
 _TIME_COLUMN = "_marketdata_time"
 
 
-def _extract(df: pd.DataFrame, i: int) -> "dict[str, Any]":
-    """marketdata 形式 1 行を domain.Bar 引数へマッピングする。
+def _ohlcv(df: pd.DataFrame, i: int) -> "dict[str, Any]":
+    """marketdata 形式 1 行の time..volume を domain.Bar 引数へマッピングする。
 
     時刻は前計算済みの ``_TIME_COLUMN``（datetime64・UTC naive＝MT5 リーダと同じ表現）を
     使う（行ごとの文字列パースをしない）。
@@ -49,11 +52,28 @@ def _extract(df: pd.DataFrame, i: int) -> "dict[str, Any]":
         "low": float(df["low"].iat[i]),
         "close": float(df["close"].iat[i]),
         "volume": float(df["volume"].iat[i]),
-        "spread": 0,
     }
 
 
+def _extract(df: pd.DataFrame, i: int) -> "dict[str, Any]":
+    """spread 列の無い marketdata 形式 1 行（spread=0）。"""
+    return {**_ohlcv(df, i), "spread": 0}
+
+
+def _spread_of(df: pd.DataFrame, i: int) -> int:
+    """位置 ``i`` の spread（整数 points）。"""
+    return int(df[SPREAD_COLUMN].iat[i])
+
+
+def _extract_with_spread(df: pd.DataFrame, i: int) -> "dict[str, Any]":
+    """spread 列を持つ marketdata 形式 1 行（spread は列の値）。"""
+    return {**_ohlcv(df, i), "spread": _spread_of(df, i)}
+
+
 _SPEC = ColumnSpec(required=_REQUIRED, extract=_extract)
+_SPEC_WITH_SPREAD = ColumnSpec(
+    required=(*_REQUIRED, SPREAD_COLUMN), extract=_extract_with_spread
+)
 
 
 def detect_ohlc_form(source_ref: Any) -> str:
@@ -98,4 +118,5 @@ class MarketdataCsvOHLCRepository(MarketDataPort):
                 df = df.loc[(times >= start) & (times < end)]
                 times = times.loc[df.index]
             df = df.assign(**{_TIME_COLUMN: times.dt.tz_localize(None)}).reset_index(drop=True)
-        return frame_to_bars(df, _SPEC)
+        spec = _SPEC_WITH_SPREAD if SPREAD_COLUMN in df.columns else _SPEC
+        return frame_to_bars(df, spec)
