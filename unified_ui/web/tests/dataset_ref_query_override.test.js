@@ -110,8 +110,8 @@ describe('unified_root — datasetRef の URL クエリ上書き（A-3 案 U1）
     );
     expect(facade.resolveDatasetRef).toBe(resolveDatasetRef);
     expect(facade.DATASET_REF_QUERY_PARAM).toBe(DATASET_REF_QUERY_PARAM);
-    // 既定も同じ公開面から受け取る（値は台帳の写し。既定表示は変わらない）。
-    expect(facade.DEFAULT_DATASET_REF).toBe(DEFAULT_REF);
+    // 既定も同じ公開面から受け取る（値は台帳の写し。ISSUE-512 段階 4 で MT5）。
+    expect(facade.DEFAULT_DATASET_REF).toBe(MT5_REF);
   });
 
   // --- 単一ソース厳守（手書き複製の禁止） ---

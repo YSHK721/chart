@@ -442,7 +442,7 @@ describe('composition_root_front — setupDashboardDisplay の受け取り側契
     // tails の申告を持つのは主（チャート足）だけ（同じ末尾値を 8 回計算させない）。
     assert.ok(FakePlayer.all.slice(1).every((pl) => pl.opts.getComputeSpecs === undefined));
     const player = FakePlayer.all[0];
-    assert.equal(player.opts.datasetRef, 'jp225_tick');
+    assert.equal(player.opts.datasetRef, 'jp225_mt5');   // 台帳の既定（ISSUE-512 段階 4）
     assert.equal(typeof player.opts.fetchLiveTicks, 'function');
     assert.equal(typeof player.opts.loadFormingBar, 'function');
     // タイル駆動: 5m の player の形成中バーが 5m タイルの series.update へ流れる。

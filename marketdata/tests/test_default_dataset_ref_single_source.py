@@ -71,10 +71,10 @@ READS_THE_DEFAULT = (
 # --------------------------------------------------------------------------- #
 # 1. 値ピン
 # --------------------------------------------------------------------------- #
-def test_the_default_is_unchanged():
-    """既定は ``jp225_tick`` のまま（段階 0 は置き場所の変更であり、表示は変えない）。"""
+def test_the_default_is_mt5():
+    """既定は ``jp225_mt5``（ISSUE-512 段階 4・2026-09-14）。切り戻しは台帳の 1 行を jp225_tick へ。"""
     # Arrange / Act / Assert
-    assert dataset_registry.DEFAULT_DATASET_REF == "jp225_tick"
+    assert dataset_registry.DEFAULT_DATASET_REF == "jp225_mt5"
 
 
 def test_the_default_is_a_registered_tick_ref():

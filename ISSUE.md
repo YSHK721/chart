@@ -14923,7 +14923,7 @@ spread 水準そのものはベンダで異なる（Dukascopy 71.1 points vs OAN
 
 ## ISSUE-512: 表示系（チャート・指標・MP）がティック供給元を Dukascopy に決め打ちしており MT5 へ寄せられない
 
-- **ステータス**: IN_PROGRESS（段階 1 完了 b27146cb/046cdb97/2ee8e92a/ab21dc36・段階 2 完了 2026-09-13＝`marketdata/tick_day_source.py`（読み元解決＋ジャーナル増分読取）・実データ 9/11 で 30 窓不一致 0・再読 0.28ms（全日 0.544s）。段階 3 完了 2026-09-14＝`jp225_mt5` tick=True（前提 ISSUE-515 RESOLVED）。実 UI 実測（serve.sh 再起動 10:19 UTC 後・:8000 `?dataset=jp225_mt5`・ヘッドレス Chrome）: ページの `/candles`・`/live_ticks`・`/forming_bar` はすべて `datasetRef=jp225_mt5`・描画中の終値 63,120 に対し MT5 の 4h 形成中 63,124.7／Dukascopy 63,148（MT5 に追随）・実 HTTP で形成中 1m 終値 63064.7＝MT5 ジャーナル最新 bid 63064.7・MP forming/dwell/zp とも 200（dwell 初回 7.7 秒）。`/live_ticks` が同一 since で 2 回ずつ記録されるのは jp225_tick の既定ページでも同じ（本件の変更由来ではない・原因は未確認）。段階 0 完了 2026-09-13＝既定 ref を台帳 `DEFAULT_DATASET_REF` 1 行へ（JS は生成物 `dataset_default_generated.js`・相対 symlink 3 本・統合は live 公開面経由）。手書き 7 箇所の不在を走査検定で固定。値は jp225_tick のまま）
+- **ステータス**: IN_PROGRESS（**段階 4 完了 2026-09-14＝既定 ref を jp225_mt5 へ**（依頼者から判断を委任）。前提として replay の足内ティックを ref の木・基準で読むよう是正（da8b9dce）。実 UI 実測: 既定 URL（クエリ無し）で 9 時間足すべて描画終値が MT5 側・ページのローソク要求は jp225_mt5 のみ（切替前は 9 本すべて Dukascopy）。残: ISSUE-511 の 1d（Dukascopy の bid 化＝切り戻し時の水準差 約 3.6 の解消）。段階 1 完了 b27146cb/046cdb97/2ee8e92a/ab21dc36・段階 2 完了 2026-09-13＝`marketdata/tick_day_source.py`（読み元解決＋ジャーナル増分読取）・実データ 9/11 で 30 窓不一致 0・再読 0.28ms（全日 0.544s）。段階 3 完了 2026-09-14＝`jp225_mt5` tick=True（前提 ISSUE-515 RESOLVED）。実 UI 実測（serve.sh 再起動 10:19 UTC 後・:8000 `?dataset=jp225_mt5`・ヘッドレス Chrome）: ページの `/candles`・`/live_ticks`・`/forming_bar` はすべて `datasetRef=jp225_mt5`・描画中の終値 63,120 に対し MT5 の 4h 形成中 63,124.7／Dukascopy 63,148（MT5 に追随）・実 HTTP で形成中 1m 終値 63064.7＝MT5 ジャーナル最新 bid 63064.7・MP forming/dwell/zp とも 200（dwell 初回 7.7 秒）。`/live_ticks` が同一 since で 2 回ずつ記録されるのは jp225_tick の既定ページでも同じ（本件の変更由来ではない・原因は未確認）。段階 0 完了 2026-09-13＝既定 ref を台帳 `DEFAULT_DATASET_REF` 1 行へ（JS は生成物 `dataset_default_generated.js`・相対 symlink 3 本・統合は live 公開面経由）。手書き 7 箇所の不在を走査検定で固定。値は jp225_tick のまま）
 - **起票日**: 2026-09-11
 - **発見の経緯**: 依頼者指摘「取引で使用しているのは OANDA である。取引が OANDA である以上、
   表示も MT5 へ寄せろ」。現状の供給元を実測したところ、表示系は ref を選べるように見えて
@@ -15187,3 +15187,24 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ### 関連
 - ISSUE-511 段階 1c（発見の契機）／ISSUE-512 段階 3
+
+## ISSUE-517: 実データ回帰検定が日付の経過で落ちる（tickvol 帯のピンが「末尾 45 日」の窓に依存）
+
+- **ステータス**: OPEN（未着手・原因は特定済み）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-512 段階 4 の全体検定で `marketdata/tests/test_tickvol_profile.py::
+  test_regression_pins_the_measured_bands_on_real_jp225_tick_data` が `assert 19 == 20` で失敗。
+
+### 実測（2026-09-14）
+- 検定は `jp225_tick_m1.csv` の **末尾 60×24×45 行** を読み、`until=2026-08-01` 固定で日数と帯を
+  ピンしている。CSV はライブの書き手が毎分追記するため、末尾 45 日の窓は日々前へずれ、
+  `until` より前に残る日数が減る（20 → 19）。
+- 本件の変更（段階 4 ほか）は `marketdata/tickvol_profile.py` も当該 CSV も触れていない
+  （既定 ref を読まず、ファイルを直接読む検定）。日付の経過だけで落ちる既存の欠陥。
+
+### 対策（案・未実施）
+- 窓を「末尾 N 行」ではなく **固定の日付区間**（until と対の始端）で切る。検定の意図
+  （until 固定なら CSV が伸びても値は変わらない）がそのまま成り立つ。
+
+### 関連
+- ISSUE-512 段階 4（発見の契機）

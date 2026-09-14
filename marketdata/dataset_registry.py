@@ -194,7 +194,12 @@ def rollup_refs() -> "tuple[str, ...]":
 #: （Python は直接、JS は生成物 dataset_default_generated.js 経由・tools/gen_js_parity_golden.py）。
 #: 変えたら生成器を再実行する（marketdata/tests/test_default_dataset_ref_single_source.py が
 #: 再生成漏れと手書きの残存を落とす）。値は台帳にあるティック ref でなければならない。
-DEFAULT_DATASET_REF = "jp225_tick"
+#:
+#: ISSUE-512 段階 4（2026-09-14・依頼者から判断を委任）: MT5（OANDA＝実際に取引している口座）へ。
+#: 前提は揃えてある: 当日ジャーナルの読取（段階 2）・確定足と同じ bid・MT5 自身のライブ受信
+#: （ISSUE-515）・リプレイの足内ティックも ref の木と基準で読む。Dukascopy へ切り戻すときは
+#: ``"jp225_tick"`` へ戻す（表示水準は ISSUE-511 の 1d が済むまで約 3.6 ずれる）。
+DEFAULT_DATASET_REF = "jp225_mt5"
 
 
 def tick_refs() -> "frozenset[str]":

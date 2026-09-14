@@ -230,7 +230,7 @@ describe('MP 借用 — 合成根の結線', () => {
     await h.flush();
 
     const url = h.mpUrls[0];
-    assert.match(url, /datasetRef=jp225_tick/);
+    assert.match(url, /datasetRef=jp225_mt5/);   // 台帳の既定（ISSUE-512 段階 4）
     assert.match(url, /timeframe=1m/);
     assert.match(url, /src=zp/);
     assert.match(url, /va=0\.62/);

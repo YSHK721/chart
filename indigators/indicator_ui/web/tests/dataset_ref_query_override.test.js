@@ -174,8 +174,8 @@ test('入口は台帳の既定（生成物の DEFAULT_DATASET_REF）を渡す（
   assert.ok(passed, 'index.html が resolveDatasetRef(search, 既定) の形で呼んでいない');
   assert.equal(passed[1], 'DEFAULT_DATASET_REF');
   assert.ok(imported, 'index.html が生成物から DEFAULT_DATASET_REF を import していない');
-  // 既定表示は動かない（値の権威は Python 台帳・生成物はその写し）。
-  assert.equal(generated.DEFAULT_DATASET_REF, DEFAULT_REF);
+  // 既定は MT5（ISSUE-512 段階 4・値の権威は Python 台帳・生成物はその写し）。
+  assert.equal(generated.DEFAULT_DATASET_REF, MT5_REF);
 });
 
 // ---------------------------------------------------------------------------

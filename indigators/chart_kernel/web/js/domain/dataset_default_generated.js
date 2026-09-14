@@ -7,4 +7,4 @@
 //   本ファイルを相対 symlink で、統合ページは live の公開面（js/public/live_public_api.js）
 //   で読む。陳腐化と手書きの残存は
 //   marketdata/tests/test_default_dataset_ref_single_source.py が落とす。
-export const DEFAULT_DATASET_REF = 'jp225_tick';
+export const DEFAULT_DATASET_REF = 'jp225_mt5';
