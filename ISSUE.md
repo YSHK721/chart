@@ -14730,7 +14730,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - ISSUE-508 段階 3（`run_tracer` 追加で両表が赤になるため、当面は追記で対応する）
 
 ## ISSUE-511: M1 素材化がティックの二面性（bid/ask）を畳んで捨てている（spread 列の不在・価格基準の不統一）
-- **ステータス**: IN_PROGRESS（段階 1 を 1a〜1d に分割して承認 2026-09-14。1a 完了＝書き手 2 本が台帳の `price_basis` を引く・出力不変。1b 完了 2026-09-14＝`data/marketdata/jp225_tick_bid_m1.csv`（94.7 秒）と `rollups/jp225_tick_bid/`（42.5 秒）を新規生成・旧ファイルは書き手のライブ追記以外不変。実測: bid−旧 mid の close 中央値 −3.558（半スプレッド 3.557 と一致）／MT5 との差の中央値 +3.075→−0.481／Dukascopy 自身の bid M1（jp225_m1）と 2018 年以降は完全一致・2012–2017 は差 ≤0.001／旧ファイルにだけある 153 本はすべて 2025-08-26（ISSUE-107 の不良ラン日）。1c コード完了 2026-09-14＝MP キャッシュ 4 系統（dwell / zp mgrid・znull / tf-period）の鍵へ `price-<basis>` を木の枝名の直上に追加・既存キャッシュの引き継ぎは `tools/migrate_mp_cache_price_basis.py`（名前変更のみ・可逆・dry-run 7 件）を **serve.sh 再起動と同時に** 実行する（依頼者裁定）。1d＝台帳の切替は未着手）
+- **ステータス**: IN_PROGRESS（段階 1 を 1a〜1d に分割して承認 2026-09-14。1a 完了＝書き手 2 本が台帳の `price_basis` を引く・出力不変。1b 完了 2026-09-14＝`data/marketdata/jp225_tick_bid_m1.csv`（94.7 秒）と `rollups/jp225_tick_bid/`（42.5 秒）を新規生成・旧ファイルは書き手のライブ追記以外不変。実測: bid−旧 mid の close 中央値 −3.558（半スプレッド 3.557 と一致）／MT5 との差の中央値 +3.075→−0.481／Dukascopy 自身の bid M1（jp225_m1）と 2018 年以降は完全一致・2012–2017 は差 ≤0.001／旧ファイルにだけある 153 本はすべて 2025-08-26（ISSUE-107 の不良ラン日）。1c コード完了 2026-09-14＝MP キャッシュ 4 系統（dwell / zp mgrid・znull / tf-period）の鍵へ `price-<basis>` を木の枝名の直上に追加・既存キャッシュの引き継ぎは `tools/migrate_mp_cache_price_basis.py`。当初の名前変更は実キャッシュで `EXDEV: Invalid cross-device link`（同一デバイス 64・overlayfs）で失敗し 1 件も動かなかったため、**複写**（旧配置は触らない・移し先がある木は飛ばす）へ是正（2026-09-14）。serve.sh 再起動（10:19 UTC・新コード稼働）後に適用済み: 7 件すべてファイル数・総バイトが旧配置と一致（例 dwell JP225 7,461 件 / 11,994,472 B）・旧配置と NOSYM は不変。1d＝台帳の切替は未着手）
 - **起票日**: 2026-09-11
 - **発見の経緯**: Tester Settings から `MA_Slope_EA` を実行して
   `N-17 (subject_path='MA_Slope_EA')` で Fail-Stop（exit 2）した事象の原因調査。
@@ -15160,3 +15160,30 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ### 関連
 - ISSUE-512 段階 3（本件が前提）／ISSUE-511（価格基準の統一）／ISSUE-508（ベンダ明示）
+
+## ISSUE-516: MP の検定が本番のキャッシュ置き場へ書き込んでいる（検定の隔離漏れ）
+
+- **ステータス**: OPEN（未着手・原因箇所の特定済み／是正は承認待ち）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-511 段階 1c の移行前確認で、本番のキャッシュ置き場
+  `data/marketdata/cache/market_profile_zp/mgrid/` に台帳に無い木 `NOSYM` の dir を発見した。
+
+### 実測（2026-09-14）
+- 1c（キャッシュ鍵へ価格基準）以前は `mgrid/NOSYM`、1c のコミット後に MP の検定を流したあとは
+  `mgrid/price-mid/NOSYM` が **新たに** できていた＝検定の実行が本番の置き場へ書いた証拠。
+- `NOSYM` を使う検定は `indigators/market_profile/api/tests/test_market_profile_zp.py` の
+  `test_compute_zp_profile_empty_candles_range_does_not_crash`（木 `NOSYM`）で、zp の Store の
+  既定の置き場（`<DATA_DIR>/cache/market_profile_zp`）のまま動いている。
+- ISSUE-512 段階 3 の MP 検定（実データの MT5 を計算した 3 件）も、同じく本番の置き場へ
+  MT5 のキャッシュを書いていた（`JP225@OANDA-Japan-MT5-Live` の dir が本番に在った）。
+
+### 影響
+- 検定が本番のキャッシュを作る・上書きしうる。合成データで作ったキャッシュが本番の木と同じ
+  名前なら、本番の表示へ混ざる（今回は `NOSYM` と実データ由来のため混入は未確認）。
+
+### 対策（案・未実施）
+- MP の検定の既定を「キャッシュ置き場は tmp」にする（conftest で `ZP_CACHE_ROOT` /
+  `DWELL_CACHE_ROOT` / `_TFP_CACHE_ROOT` を tmp へ向ける）。本番の置き場へ書いたら落ちる検定を添える。
+
+### 関連
+- ISSUE-511 段階 1c（発見の契機）／ISSUE-512 段階 3
