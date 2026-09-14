@@ -66,6 +66,16 @@ class _SpyDisk:
         self.saves.append((symbol, disk_tf, disk_key, unit, columns))
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_tree_in_ledger(monkeypatch, tmp_path):
+    """合成の木 S を台帳に載せる（ISSUE-511 段階 1c: キャッシュ鍵の価格基準は台帳から引く）。"""
+    from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+
+    monkeypatch.setitem(REGISTRY, "zz_synthetic_tree", DatasetDescriptor(
+        path=tmp_path / "synthetic.csv", symbol="S", tick_token="S", price_basis="mid",
+    ))
+
+
 def _counter(value):
     calls = []
 

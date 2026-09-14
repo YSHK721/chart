@@ -41,6 +41,7 @@ def default_zp_store() -> Any:
     """
     from market_profile_api.gateway.zp_store import ZpStore
     from market_profile_api.gateway import cache_settings as _cfg
+    from marketdata.dataset_registry import price_basis_of_tick_token as _price_basis_of_tick_token
     from market_profile_api.compute import market_profile_zp as _zp
     from market_profile_api.compute.tick_store_port import data_root as _data_root
 
@@ -53,6 +54,8 @@ def default_zp_store() -> Any:
         m_reps=_zp.M_REPS_DAY,
         cache_version_provider=lambda: _cfg.ZP_CACHE_VERSION,
         day_parquet_files=lambda *a, **k: _zp.day_parquet_files(*a, **k),
+        # ISSUE-511 段階 1c: キャッシュ鍵の価格基準は台帳から引く（木の枝名 → 基準）。
+        price_basis_of=_price_basis_of_tick_token,
     )
 
 
@@ -66,6 +69,7 @@ def default_dwell_store() -> Any:
     """
     from market_profile_api.gateway.dwell_rollup_store import DwellRollupStore
     from market_profile_api.gateway import cache_settings as _cfg
+    from marketdata.dataset_registry import price_basis_of_tick_token as _price_basis_of_tick_token
     from market_profile_api.compute import market_profile_dwell as _mpd
     from market_profile_api.compute.tick_store_port import data_root as _data_root
 
@@ -76,6 +80,7 @@ def default_dwell_store() -> Any:
         grid_w=_mpd.GRID_W,  # 内部格子（本質パラメータ＝compute 所有）。
         cache_version_provider=lambda: _cfg.DWELL_CACHE_VERSION,
         day_parquet_files=lambda *a, **k: _mpd.day_parquet_files(*a, **k),
+        price_basis_of=_price_basis_of_tick_token,   # ISSUE-511 段階 1c（同上）。
     )
 
 

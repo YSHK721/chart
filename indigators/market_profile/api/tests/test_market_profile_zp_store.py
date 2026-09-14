@@ -59,6 +59,16 @@ def zp_env(monkeypatch, tmp_path):
     zp._reset_caches()
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_tree_in_ledger(monkeypatch, tmp_path):
+    """合成の木 SYN を台帳に載せる（ISSUE-511 段階 1c: キャッシュ鍵の価格基準は台帳から引く）。"""
+    from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+
+    monkeypatch.setitem(REGISTRY, "zz_synthetic_tree", DatasetDescriptor(
+        path=tmp_path / "synthetic.csv", symbol="SYN", tick_token="SYN", price_basis="mid",
+    ))
+
+
 def _day(n: int) -> int:
     return _DAY0 + n * 86400
 
@@ -204,6 +214,7 @@ def test_day_source_signature_covers_two_utc_days(tmp_path):
         m_reps=2000,
         cache_version_provider=lambda: 1,
         day_parquet_files=dpf,
+        price_basis_of=lambda tree: "mid",   # ISSUE-511 段階 1c: 鍵の価格基準（本検定の対象外）。
     )
     store.day_source_signature("JP225", 1783890000)  # 2026-07-12 21:00 UTC（夏セッション始端）。
     # ISSUE-183: 列挙契約は UNIX 秒 int（旧 pd.Timestamp 契約と同値の日始端）。

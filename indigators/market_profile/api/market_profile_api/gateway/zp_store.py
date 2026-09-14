@@ -19,6 +19,9 @@ znull のパスに帰無パラメータ（履歴日数 L・反復数 M）を含�
 
 from __future__ import annotations
 
+# ISSUE-511 段階 1c: キャッシュ鍵の価格基準 segment の唯一の定義。
+from market_profile_api.cache_layout_descriptor import price_basis_segment
+
 import os as _os
 import tempfile as _tempfile
 from pathlib import Path as _Path
@@ -43,7 +46,7 @@ class ZpStore:
 
     #: :meth:`_znull_relative_parts` のうち世代 dir に当たる位置（0 起点）。GC の掃除単位＝格子 dir。
     #: ISSUE-172: 記述子（:meth:`layout`）はこの位置から導出し、書込パスと同一式を共有する。
-    ZNULL_GEN_PART_INDEX = 1
+    ZNULL_GEN_PART_INDEX = 2  # (price-<basis>, <sym>, <gen>, ...) の <gen>（ISSUE-511 段階 1c で 1→2）
 
     def __init__(
         self,
@@ -55,7 +58,10 @@ class ZpStore:
         m_reps: int,
         cache_version_provider: Callable[[], int],
         day_parquet_files: Callable[..., Any],
+        price_basis_of: Callable[[str], str],
     ) -> None:
+        # ISSUE-511 段階 1c: 木の枝名 → 価格基準（既定は台帳の price_basis_of_tick_token・必須）。
+        self._price_basis_of = price_basis_of
         self._root_provider = root_provider
         self._default_root_provider = default_root_provider
         self._grid_w = float(grid_w)
@@ -73,22 +79,36 @@ class ZpStore:
             return _Path(override)
         return self._default_root_provider()
 
+    def mgrid_root(self) -> _Path:
+        """mgrid 系統の基点 ``<root>/mgrid``（:meth:`mgrid_path` と移行ツールの共通起点）。"""
+        return self.cache_root() / "mgrid"
+
     def mgrid_path(self, symbol: str, day_start: int) -> _Path:
-        return self.cache_root() / "mgrid" / str(symbol) / f"{int(day_start)}.npz"
+        """``<root>/mgrid/price-<basis>/<symbol>/<day>.npz``（ISSUE-511 段階 1c: 基準が違えば別の置き場）。"""
+        return (
+            self.mgrid_root() / price_basis_segment(self._price_basis_of(str(symbol)))
+            / str(symbol) / f"{int(day_start)}.npz"
+        )
 
     def znull_root(self) -> _Path:
         """znull 系統の走査基点 ``<root>/znull``（GC 記述子と :meth:`null_path` の共通起点）。"""
         return self.cache_root() / "znull"
 
+    def _znull_generation_segment(self) -> str:
+        """znull の世代 segment（``b<bp>``）。:meth:`_znull_relative_parts` と :meth:`layout` の共通の出所。"""
+        return f"b{self._grid_w:g}"  # ISSUE-079: bp タグ（旧 g10 と不混在）。
+
     def _znull_relative_parts(self, symbol: str, day_start: int) -> "tuple[str, ...]":
-        """:meth:`znull_root` からの相対 segment 列 ``(<symbol>, b<bp>, L<hist>-M<reps>, <day>.npz)``。
+        """:meth:`znull_root` からの相対 segment 列 ``(price-<basis>, <symbol>, b<bp>, L<hist>-M<reps>, <day>.npz)``。
 
         ISSUE-172: znull 配置の**唯一の定義**。:meth:`null_path` と :meth:`layout` の双方が
-        本メソッドから導出され、二重定義によるドリフトを構造的に排除する。
+        本メソッド（世代は :meth:`_znull_generation_segment`）から導出される。
+        ISSUE-511 段階 1c: 木の枝名の直上に価格基準を置く（基準が違えば別の置き場）。
         """
         return (
+            price_basis_segment(self._price_basis_of(str(symbol))),
             str(symbol),
-            f"b{self._grid_w:g}",  # ISSUE-079: bp タグ（旧 g10 と不混在）。
+            self._znull_generation_segment(),
             f"L{self._hist_days}-M{self._m_reps}",
             f"{int(day_start)}.npz",
         )
@@ -103,11 +123,11 @@ class ZpStore:
         :attr:`ZNULL_GEN_PART_INDEX` が指す格子 segment（``b<bp>``）で、:meth:`_znull_relative_parts`
         から導出するため格子定数 bump に自動追随する。
         """
-        gen = self._znull_relative_parts("", 0)[self.ZNULL_GEN_PART_INDEX]
+        gen = self._znull_generation_segment()   # 基準を引かない（木を名指さずに世代名だけを出す）。
         return CacheLayout(
             name="zp-znull",
             root=self.znull_root(),
-            gen_depth=self.ZNULL_GEN_PART_INDEX + 1,  # <sym>/<gen>
+            gen_depth=self.ZNULL_GEN_PART_INDEX + 1,  # price-<basis>/<sym>/<gen>
             current=frozenset({gen}),
             reason=f"zp znull 旧格子世代（現行 {gen}）",
         )

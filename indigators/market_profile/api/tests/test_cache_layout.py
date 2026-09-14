@@ -92,5 +92,5 @@ def test_tf_period_layout_matches_every_real_write_path(monkeypatch, tmp_path):
     assert len(variants) == 3
     for disk_tf in variants:
         _assert_generation_segment_is_current(
-            lay, tf_disk.day_disk_path(Path(lay["root"]), "JP225", disk_tf, _DAY)
+            lay, tf_disk.day_disk_path(Path(lay["root"]), "JP225", disk_tf, _DAY, price_basis="mid")
         )

@@ -17,26 +17,39 @@ import os
 from pathlib import Path
 from typing import Any
 
-
-def day_disk_path(root: Path, symbol: Any, tf: Any, day_start: int) -> Path:
-    """完了日 JSON の保存パス ``<root>/<symbol>/<tf>/<day_start>.json``。"""
-    return root / str(symbol) / str(tf) / f"{int(day_start)}.json"
+# ISSUE-511 段階 1c: キャッシュ鍵の価格基準 segment の唯一の定義。
+from market_profile_api.cache_layout_descriptor import price_basis_segment
 
 
-def load_day_disk(root: Path, symbol: Any, tf: Any, day_start: int) -> "tuple[float, list] | None":
+def day_disk_path(root: Path, symbol: Any, tf: Any, day_start: int, *, price_basis: str) -> Path:
+    """完了日 JSON の保存パス ``<root>/price-<basis>/<symbol>/<tf>/<day_start>.json``。
+
+    ISSUE-511 段階 1c: 木の枝名の直上に価格基準を置く（基準が違えば別の置き場）。基準は呼び出し側
+    （controller）が台帳から解決して渡す（本モジュールは純 I/O のまま・台帳を知らない）。
+    """
+    return (
+        root / price_basis_segment(price_basis) / str(symbol) / str(tf) / f"{int(day_start)}.json"
+    )
+
+
+def load_day_disk(
+    root: Path, symbol: Any, tf: Any, day_start: int, *, price_basis: str
+) -> "tuple[float, list] | None":
     """完了日の (unit, columns) をディスクから読む。未ヒット/破損は None（＝再計算へ・fail-safe）。"""
     try:
-        with open(day_disk_path(root, symbol, tf, day_start)) as f:
+        with open(day_disk_path(root, symbol, tf, day_start, price_basis=price_basis)) as f:
             d = json.load(f)
         return float(d["unit"]), d["columns"]
     except Exception:
         return None
 
 
-def save_day_disk(root: Path, symbol: Any, tf: Any, day_start: int, unit: float, columns: list) -> None:
+def save_day_disk(
+    root: Path, symbol: Any, tf: Any, day_start: int, unit: float, columns: list, *, price_basis: str
+) -> None:
     """完了日の (unit, columns) を JSON へ原子的に保存する（失敗は握りつぶす＝次回再計算）。"""
     try:
-        path = day_disk_path(root, symbol, tf, day_start)
+        path = day_disk_path(root, symbol, tf, day_start, price_basis=price_basis)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:

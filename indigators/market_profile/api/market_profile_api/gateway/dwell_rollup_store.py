@@ -24,6 +24,9 @@ tempfile→os.replace の原子的確定・fail-safe（破損/不整合は CACHE
 
 from __future__ import annotations
 
+# ISSUE-511 段階 1c: キャッシュ鍵の価格基準 segment の唯一の定義。
+from market_profile_api.cache_layout_descriptor import price_basis_segment
+
 import os as _os
 import tempfile as _tempfile
 from pathlib import Path as _Path
@@ -62,7 +65,7 @@ class DwellRollupStore:
 
     #: :meth:`_relative_parts` のうち世代 dir に当たる位置（0 起点）。GC の掃除単位＝版数 dir。
     #: ISSUE-172: 記述子（:meth:`layout`）はこの位置から導出し、書込パスと同一式を共有する。
-    GEN_PART_INDEX = 1
+    GEN_PART_INDEX = 2  # (price-<basis>, <sym>, <gen>, ...) の <gen>（ISSUE-511 段階 1c で 1→2）
 
     def __init__(
         self,
@@ -72,7 +75,11 @@ class DwellRollupStore:
         grid_w: float,
         cache_version_provider: Callable[[], int],
         day_parquet_files: Callable[..., Any],
+        price_basis_of: Callable[[str], str],
     ) -> None:
+        # ISSUE-511 段階 1c: 木の枝名 → 価格基準（既定は台帳の price_basis_of_tick_token）。必須であり
+        #   既定値を持たない（未登録の木を黙って mid の置き場へ書かない）。
+        self._price_basis_of = price_basis_of
         self._root_provider = root_provider
         self._default_root_provider = default_root_provider
         self._grid_w = float(grid_w)
@@ -89,15 +96,21 @@ class DwellRollupStore:
             return _Path(override)
         return self._default_root_provider()
 
+    def _generation_segment(self) -> str:
+        """世代 segment（``v<version>``）。:meth:`_relative_parts` と :meth:`layout` の共通の出所。"""
+        return f"v{self._cache_version_provider()}"
+
     def _relative_parts(self, symbol: str, day_start: int) -> "tuple[str, ...]":
-        """cache root からの相対パス segment 列 ``(<symbol>, v<version>, g<grid_w>, <day>.npz)``。
+        """cache root からの相対 segment 列 ``(price-<basis>, <symbol>, v<version>, g<grid_w>, <day>.npz)``。
 
         ISSUE-172: 配置の**唯一の定義**。:meth:`cache_path`（書込・読込）と :meth:`layout`
-        （GC 記述子）の双方が本メソッドから導出され、二重定義によるドリフトを構造的に排除する。
+        （GC 記述子）の双方が本メソッド（世代は :meth:`_generation_segment`）から導出される。
+        ISSUE-511 段階 1c: 木の枝名の直上に価格基準を置く（基準が違えば別の置き場）。
         """
         return (
+            price_basis_segment(self._price_basis_of(str(symbol))),
             str(symbol),
-            f"v{self._cache_version_provider()}",
+            self._generation_segment(),
             f"g{self._grid_w:g}",
             f"{int(day_start)}.npz",
         )
@@ -120,11 +133,11 @@ class DwellRollupStore:
         （``<sym>/g<grid_w>/`` 直下）も同階層に現れるため、同一の走査で孤児として列挙される。
         ``current`` は :meth:`_relative_parts` から導出するため、版数 bump に自動追随する。
         """
-        gen = self._relative_parts("", 0)[self.GEN_PART_INDEX]
+        gen = self._generation_segment()     # 基準を引かない（木を名指さずに世代名だけを出す）。
         return CacheLayout(
             name="dwell",
             root=self.cache_root(),
-            gen_depth=self.GEN_PART_INDEX + 1,  # <sym>/<gen>
+            gen_depth=self.GEN_PART_INDEX + 1,  # price-<basis>/<sym>/<gen>
             current=frozenset({gen}),
             reason=f"dwell 旧世代（現行 {gen}）",
         )

@@ -21,6 +21,16 @@ import pytest
 from market_profile_api.compute import market_profile_zp as zp
 
 _SYMBOL = "TEST_SYMBOL"
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_tree_in_ledger(monkeypatch, tmp_path):
+    """合成の木 TEST_SYMBOL を台帳に載せる（ISSUE-511 段階 1c: キャッシュ鍵の価格基準は台帳から引く）。"""
+    from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+
+    monkeypatch.setitem(REGISTRY, "zz_synthetic_tree", DatasetDescriptor(
+        path=tmp_path / "synthetic.csv", symbol=_SYMBOL, tick_token=_SYMBOL, price_basis="mid",
+    ))
 _DAY = 1_700_000_000 - (1_700_000_000 % 86400)   # 適当な完了日の始端
 _NOW = _DAY + 10 * 86400                          # 十分あとの時刻＝completed
 

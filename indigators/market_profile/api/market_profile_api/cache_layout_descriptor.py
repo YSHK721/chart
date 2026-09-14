@@ -47,3 +47,14 @@ class CacheLayoutSource(Protocol):
     def layout(self) -> CacheLayout:
         """自身の書込パス構成から導いた現行世代記述子を返す。"""
         ...
+
+
+def price_basis_segment(basis: str) -> str:
+    """キャッシュ鍵の価格基準 segment（``price-<basis>``）の **唯一の定義**（ISSUE-511 段階 1c）。
+
+    MP の 4 系統（dwell / zp の mgrid・znull / tf-period）は、木の枝名の直上にこの segment を置く
+    （``<root>/price-<basis>/<tree>/...``）。価格基準が違えば別の置き場になり、mid で計算した
+    キャッシュを bid の系列として配らない。書込側と移行ツール（tools/migrate_mp_cache_price_basis.py）
+    がこの 1 関数から名前を得る（綴りを書き写さない）。
+    """
+    return f"price-{basis}"

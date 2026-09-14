@@ -32,6 +32,7 @@ def _store(tmp_path, *, root=None, grid_w=10.0, version=2, dpf=None):
         grid_w=grid_w,
         cache_version_provider=lambda: version,
         day_parquet_files=dpf if dpf is not None else (lambda lo, hi, symbol=None: []),
+        price_basis_of=lambda tree: "mid",   # ISSUE-511 段階 1c: 鍵の価格基準（本検定の対象外）。
     )
 
 
@@ -52,7 +53,8 @@ class TestCacheRootAndPath:
         s = _store(tmp_path, root="c", grid_w=10.0)
         p = s.cache_path("JP225", _DAY0)
         ver = s._cache_version_provider()
-        assert p == tmp_path / "c" / "JP225" / f"v{ver}" / "g10" / f"{_DAY0}.npz"
+        # ISSUE-511 段階 1c: 木の枝名の直上に価格基準（_store の台帳は mid）。
+        assert p == tmp_path / "c" / "price-mid" / "JP225" / f"v{ver}" / "g10" / f"{_DAY0}.npz"
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +119,7 @@ class TestLoadFailSafe:
             grid_w=10.0,
             cache_version_provider=lambda: version_holder["v"],
             day_parquet_files=lambda lo, hi, symbol=None: [],
+            price_basis_of=lambda tree: "mid",
         )
         path = s.cache_path("JP225", _DAY0)
         s.save_day_rollup(path, DayRollup(kmin=5, dwell=np.array([1.0]), cnt=np.array([1.0])))

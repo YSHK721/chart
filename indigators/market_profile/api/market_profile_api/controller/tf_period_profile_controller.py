@@ -107,6 +107,9 @@ _DAY_MEM_ENTRY_MAX = 1024  # ISSUE-088 🔵-4: 1M バケット（当月~22日次
 #   Path/str=差替（テストは tmp を注入）。完了日のみ JSON 保存し、当日（未確定）は保存しない。
 _TFP_CACHE_ROOT: "Any" = None
 
+# ISSUE-511 段階 1c: 完了日キャッシュの鍵に含める価格基準（木の枝名 → 基準）の唯一源は台帳。
+from marketdata.dataset_registry import price_basis_of_tick_token as _price_basis_of_tick_token  # noqa: E402
+
 
 class _DayDiskCache:
     """:class:`TfPeriodDayCache` へ渡すディスク層（``DayCacheDiskPort`` 実装）。
@@ -140,7 +143,8 @@ def _reset_tf_period_cache() -> None:
 # 書込経路は count 日次 / count バケット / zp の 3 系統ある。GC 記述子（:func:`layout`）は
 # **この 3 ビルダの出力そのもの**から現行世代名を導出する（世代タグの二重定義を排除する）。
 _DISK_TF_GEN_INDEX = 1  # disk_tf("<tf>/<gen>/<sub>") 内の世代 segment 位置（0 起点）。
-_TFP_GEN_DEPTH = 1 + _DISK_TF_GEN_INDEX + 1  # root からの階層数（<sym> の 1 段 ＋ disk_tf 内位置）。
+# root からの階層数（price-<basis> と <sym> の 2 段 ＋ disk_tf 内位置・ISSUE-511 段階 1c で 1 段増）。
+_TFP_GEN_DEPTH = 2 + _DISK_TF_GEN_INDEX + 1
 _TFP_BUCKET_GEN = "s1"  # ISSUE-086: 1W/1M バケット count 列の世代（日次 count 世代とは独立に据置）。
 _TFP_ZP_GEN = "s3"  # ISSUE-085: VA 修正世代（zp 列・count 世代とは独立）。
 
@@ -235,7 +239,10 @@ def _load_day_disk(symbol: Any, tf: Any, day_start: int) -> "tuple[float, list] 
     root = _tfp_disk_root()
     if root is None:
         return None
-    return _tf_disk_cache.load_day_disk(root, symbol, tf, day_start)
+    # ISSUE-511 段階 1c: 鍵の価格基準は台帳から 1 回だけ解決して渡す（基準が違えば別の置き場）。
+    return _tf_disk_cache.load_day_disk(
+        root, symbol, tf, day_start, price_basis=_price_basis_of_tick_token(symbol)
+    )
 
 
 def _save_day_disk(symbol: Any, tf: Any, day_start: int, unit: float, columns: list) -> None:
@@ -247,7 +254,10 @@ def _save_day_disk(symbol: Any, tf: Any, day_start: int, unit: float, columns: l
     root = _tfp_disk_root()
     if root is None:
         return
-    _tf_disk_cache.save_day_disk(root, symbol, tf, day_start, unit, columns)
+    _tf_disk_cache.save_day_disk(
+        root, symbol, tf, day_start, unit, columns,
+        price_basis=_price_basis_of_tick_token(symbol),
+    )
 
 
 def _merge_live_tail(

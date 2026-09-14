@@ -17,6 +17,16 @@ from market_profile_api.gateway import cache_settings as _mp_cache_settings
 _DAY = 1704067200  # 2024-01-01 00:00 UTC
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_tree_in_ledger(monkeypatch, tmp_path):
+    """合成の木 NOSYM を台帳に載せる（ISSUE-511 段階 1c: キャッシュ鍵の価格基準は台帳から引く）。"""
+    from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+
+    monkeypatch.setitem(REGISTRY, "zz_synthetic_tree", DatasetDescriptor(
+        path=tmp_path / "synthetic.csv", symbol="NOSYM", tick_token="NOSYM", price_basis="mid",
+    ))
+
+
 def _tick(mod: int, sec_in_min: int = 0):
     return _DAY + mod * 60 + sec_in_min
 
