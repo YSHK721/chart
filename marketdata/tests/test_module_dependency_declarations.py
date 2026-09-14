@@ -74,7 +74,16 @@ _ALLOWED: "dict[str, set[str]]" = {
         # tick 木レイアウトの唯一権威（ISSUE-479 M-2）。この 1 エントリを消すと、木の形を
         # 組む式が本モジュールへ復活し、レイアウト権威が 2 箇所になる。
         "marketdata.tick_tree",
+        # spread 列の規則の唯一源（ISSUE-511 段階 2）。pandas のみに依存する下位部品ゆえ循環しない。
+        # この 1 エントリを消すと、気配幅の丸め規則が本モジュールへ手書きで復活する。
+        "marketdata.quote_spread",
     },
+    # 分内の気配幅（spread）規則の唯一源（ISSUE-511 段階 2）。pandas のみ。point は呼出側が
+    # 注入する（銘柄仕様 symbol_spec_snapshot を import すると規則が供給元に縛られる）。
+    "quote_spread.py": {"pandas"},
+    # loader 互換 CSV スキーマの唯一源。**依存ゼロ**の定数モジュール（tick_m1 / rollup /
+    # resample が参照する側。ここへ import を足すと循環の入口になる）。
+    "csv_schema.py": set(),
     # 日別ティックの読み元の解決と読取（ISSUE-512 段階 2）。確定 parquet（tick_tree のレイアウト・
     # tick_m1 の列と集計規則）と受信ジャーナル（mt5_ticks の形式とサーバ時刻 → UTC 変換）の
     # **上位** に置く。mt5_ticks は tick_m1 を import するため、tick_m1 側へ置くと循環になる。
