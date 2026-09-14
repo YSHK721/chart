@@ -482,9 +482,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             prev_close = bar.close
 
-        # ★ペンディング経路: テスト期間終了時に残る建玉を最終足の close クォートで清算する
-        #   （清算価格の規則は `OrderExecutor` が持つ）。既定経路は不変。
-        if pending_mode and open_trades and bars:
+        # テスト期間終了時に残る建玉を最終足の close クォートで清算する。
+        # 既定経路でも open_trades が残るときは end_of_test で確定し、
+        # その後の BacktestResult.trades に反映される（pending_lifecycle 依存の不具合を防ぐ）。
+        if open_trades and bars:
             open_trades = executor.close_all_at_final_bar(open_trades, bars[-1])
 
         # OnDeinit 集計

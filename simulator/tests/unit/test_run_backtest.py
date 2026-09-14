@@ -218,12 +218,36 @@ class TestStatsComputedFromTrades:
         assert isinstance(result, BacktestResult)
         assert result.stats.trades == 1
         assert result.stats.loss_trades == 1
+
+
+class TestFinalBarClosesOpenPosition:
+    def test_open_position_is_closed_as_end_of_test_when_run_ends(self):
+        # Arrange: 1 本だけ成行買いを入れ、以後の評価で決済条件が一切起きない。
+        order = Order(side="buy", kind="market", volume=1.0, price=None, sl=None, tp=None)
+        bars = [
+            _bar(np.datetime64("2024-01-01T00:00"), 100.0, 101.0, 99.0, 100.0),
+            _bar(np.datetime64("2024-01-01T00:01"), 101.0, 102.0, 100.0, 101.0),
+        ]
+        strategy = SpyStrategyPort([], orders_by_bar={0: [order]})
+        interactor = RunBacktestInteractor(
+            strategy=strategy,
+            indicators=SpyIndicatorPort([]),
+            tick_model=StubTickModelPort(),
+        )
+
+        # Act
+        result = interactor.execute(_request(bars))
+
+        # Assert: 実行期間終了時に保有玉が end_of_test で清算される。
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "end_of_test"
+        assert result.trades[0].exit_time == bars[-1].time
         assert result.stats.profit == pytest.approx(result.trades[0].pnl())
-        assert result.stats.profit == pytest.approx(-0.005)
+        assert result.stats.profit == pytest.approx(1.0)
         # 決済 deal が deals 列に記録される（決済明細の追跡可能性）
         assert len(result.deals) == 1
         assert result.deals[0].direction == "out"
-        assert result.deals[0].profit == pytest.approx(-0.005)
+        assert result.deals[0].profit == pytest.approx(1.0)
 
 
 # ---- B9: 同足 SL/TP 両ヒットで SL 優先（Interactor 結線レベル・PROCESS §5 決定論 #3） ----
