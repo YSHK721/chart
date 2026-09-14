@@ -14730,7 +14730,7 @@ trades_sha256  d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53
 - ISSUE-508 段階 3（`run_tracer` 追加で両表が赤になるため、当面は追記で対応する）
 
 ## ISSUE-511: M1 素材化がティックの二面性（bid/ask）を畳んで捨てている（spread 列の不在・価格基準の不統一）
-- **ステータス**: IN_PROGRESS（段階 1 を 1a〜1d に分割して承認 2026-09-14。1a 完了＝書き手 2 本が台帳の `price_basis` を引く・出力不変。1b 完了 2026-09-14＝`data/marketdata/jp225_tick_bid_m1.csv`（94.7 秒）と `rollups/jp225_tick_bid/`（42.5 秒）を新規生成・旧ファイルは書き手のライブ追記以外不変。実測: bid−旧 mid の close 中央値 −3.558（半スプレッド 3.557 と一致）／MT5 との差の中央値 +3.075→−0.481／Dukascopy 自身の bid M1（jp225_m1）と 2018 年以降は完全一致・2012–2017 は差 ≤0.001／旧ファイルにだけある 153 本はすべて 2025-08-26（ISSUE-107 の不良ラン日）。1c コード完了 2026-09-14＝MP キャッシュ 4 系統（dwell / zp mgrid・znull / tf-period）の鍵へ `price-<basis>` を木の枝名の直上に追加・既存キャッシュの引き継ぎは `tools/migrate_mp_cache_price_basis.py`。当初の名前変更は実キャッシュで `EXDEV: Invalid cross-device link`（同一デバイス 64・overlayfs）で失敗し 1 件も動かなかったため、**複写**（旧配置は触らない・移し先がある木は飛ばす）へ是正（2026-09-14）。serve.sh 再起動（10:19 UTC・新コード稼働）後に適用済み: 7 件すべてファイル数・総バイトが旧配置と一致（例 dwell JP225 7,461 件 / 11,994,472 B）・旧配置と NOSYM は不変。1d コード完了 2026-09-14＝台帳に `series`（保存物の名前）を追加し jp225_tick を `series="jp225_tick_bid"`・`price_basis="bid"` へ。M1 とロールアップの置き場は `series_of` で解決・書き手 4 箇所は series を接頭辞に渡す・旧 mid ファイルは不変。実測（serve.sh 再起動 13:34:43 UTC 後）: bid M1 は毎分追記を再開・bid ロールアップの state は 13:35:00 まで追い付き・旧 mid の M1 とロールアップは再起動以降の書き込みなし（最終 13:34:16）。実 HTTP で 9 時間足すべての最新終値が 63102.417＝bid ロールアップと一致（旧 mid は 63155.0 で停止）。形成中 1M の始値 65820.417＝bid 1M と一致（mid なら 65822.97）。実 UI（:8000 `?dataset=jp225_tick`）のローソク・形成中・ティック要求はすべて datasetRef=jp225_tick、コンソールのエラーは 0。MP（tf_period 1h）は 200・新しい鍵 `cache/*/price-bid/JP225` へ書き込み）
+- **ステータス**: IN_PROGRESS（**段階 2 コード完了 2026-09-14**（feature/issue-511-stage2-spread）＝`marketdata/quote_spread.py` 新設。spread＝分内 min(ask−bid)/point を最近接 round・.5 ちょうどは偶数（真値基準）（依頼者裁定 2026-09-14。OANDA 2025-01 ティック vs MT5 エクスポート M1 28,094 本で `<SPREAD>` 一致 0.9907＝round/floor/ceil 同率・OANDA の気配幅は常に point の整数倍）。`ticks_to_m1`／`build_m1_from_ticks`／`append_m1_from_ticks` に `point`（既定 None＝opt-in。None の出力は実データ 5 日×2 系列×mid/bid×build/append の 8 通りで旧実装と byte 一致＝既存データ不変）。spread は行選択（clean → after/until）の後に残った分だけ計算（`_materialize_m1_day`・丸めは `quote_spread._width_to_points` のみ）で、Test Spy の「発行 − 使用 = 0」を append 60/600 分・build 形成中 2/50 分・1 分 12/120 本の 2 点ずつで固定。列名の唯一源は `csv_schema.SPREAD_COLUMN`・`VALUE_COLUMNS`。読み側 `MarketdataCsvOHLCRepository` は列があれば `Bar.spread` へ、無ければ 0（現契約）。N-17 は不変（段階 3）。**書き手へ結線する前の前提条件**: (a) point を呼出ごとの引数でなく系列ごとの台帳属性にする（食い違うと `append_m1_from_ticks` のヘッダ不一致フォールバックが既存 CSV を全書換＝レビュー R-2/Y-2 実測）、(b) rollup／resample の spread 集約規則を MT5 上位足エクスポートで実測し csv_schema に宣言（現状は rollup が列を落とし resample は "last" で畳む＝R-5/Y-4）、(c) `mt5_ticks/rebuild.py:75-77` の素材化の手書き複製を公開の素材化関数へ置き換える（Y-3）。既知の残浪費は tick 木の日境界重複 3 分（ISSUE-521）で、`test_no_spread_is_computed_for_the_duplicated_day_boundary_minute` を `xfail(strict=True)` で固定（ISSUE-521 を直すと XPASS で落ちる＝解除を強制）。行選択の順序（clean → after/until）は「append の全文 == 一括 build の全文」の状態テストで固定（行選択を clean の前へ移す変異で落ちることを実証）。同時起票: ISSUE-519（b0d13156 以降の既存失敗 31 件）・ISSUE-520（読み側の spread 異常値の例外翻訳）。段階 1 を 1a〜1d に分割して承認 2026-09-14。1a 完了＝書き手 2 本が台帳の `price_basis` を引く・出力不変。1b 完了 2026-09-14＝`data/marketdata/jp225_tick_bid_m1.csv`（94.7 秒）と `rollups/jp225_tick_bid/`（42.5 秒）を新規生成・旧ファイルは書き手のライブ追記以外不変。実測: bid−旧 mid の close 中央値 −3.558（半スプレッド 3.557 と一致）／MT5 との差の中央値 +3.075→−0.481／Dukascopy 自身の bid M1（jp225_m1）と 2018 年以降は完全一致・2012–2017 は差 ≤0.001／旧ファイルにだけある 153 本はすべて 2025-08-26（ISSUE-107 の不良ラン日）。1c コード完了 2026-09-14＝MP キャッシュ 4 系統（dwell / zp mgrid・znull / tf-period）の鍵へ `price-<basis>` を木の枝名の直上に追加・既存キャッシュの引き継ぎは `tools/migrate_mp_cache_price_basis.py`。当初の名前変更は実キャッシュで `EXDEV: Invalid cross-device link`（同一デバイス 64・overlayfs）で失敗し 1 件も動かなかったため、**複写**（旧配置は触らない・移し先がある木は飛ばす）へ是正（2026-09-14）。serve.sh 再起動（10:19 UTC・新コード稼働）後に適用済み: 7 件すべてファイル数・総バイトが旧配置と一致（例 dwell JP225 7,461 件 / 11,994,472 B）・旧配置と NOSYM は不変。1d コード完了 2026-09-14＝台帳に `series`（保存物の名前）を追加し jp225_tick を `series="jp225_tick_bid"`・`price_basis="bid"` へ。M1 とロールアップの置き場は `series_of` で解決・書き手 4 箇所は series を接頭辞に渡す・旧 mid ファイルは不変。実測（serve.sh 再起動 13:34:43 UTC 後）: bid M1 は毎分追記を再開・bid ロールアップの state は 13:35:00 まで追い付き・旧 mid の M1 とロールアップは再起動以降の書き込みなし（最終 13:34:16）。実 HTTP で 9 時間足すべての最新終値が 63102.417＝bid ロールアップと一致（旧 mid は 63155.0 で停止）。形成中 1M の始値 65820.417＝bid 1M と一致（mid なら 65822.97）。実 UI（:8000 `?dataset=jp225_tick`）のローソク・形成中・ティック要求はすべて datasetRef=jp225_tick、コンソールのエラーは 0。MP（tf_period 1h）は 200・新しい鍵 `cache/*/price-bid/JP225` へ書き込み）
 - **起票日**: 2026-09-11
 - **発見の経緯**: Tester Settings から `MA_Slope_EA` を実行して
   `N-17 (subject_path='MA_Slope_EA')` で Fail-Stop（exit 2）した事象の原因調査。
@@ -15208,3 +15208,71 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ### 関連
 - ISSUE-512 段階 4（発見の契機）
+
+## ISSUE-519: b0d13156（残存建玉の最終足清算）以降、simulator の検定 31 件が「約定 1 件多い」で失敗している
+
+- **ステータス**: OPEN（未着手・原因コミットは実測で特定済み）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-511 段階 2 の基準取り（develop 無変更）で、marketdata/tests + simulator/tests/unit が
+  23 failed、simulator/tests/integration が 9 failed。うち 1 件（tickvol）は ISSUE-517 で既知。残る 31 件は未起票。
+
+### 実測（2026-09-14）
+- 31 件（`test_run_backtest_every_tick.py`・`test_run_backtest_single_engine.py`・`test_session_calendar.py`・
+  `test_run_backtest.py`・integration の `test_position_manager_engine.py`・`test_run_backtest_fingerprint.py::TestRealTicksFingerprint`・
+  `test_run_trace_port_conformance.py`・`test_composition_real_ticks.py`・`test_end_to_end_run.py` ほか）を
+  `git archive` の複製で実行: **b0d13156^（97b175f2）で 31 passed／b0d13156 で 31 failed**。
+  b0d13156..develop の後続 6 コミットは docs・tools のみ。
+- 症状は一様に取引件数が 1 多い（例 `2 == 1`、`5 == 4`）。b0d13156 の題目「テスト期間終了時に残存建玉を常に最終足で清算」と整合
+  （清算による決済 1 件が追加されたと推論・未検証）。
+- MT5 突合の `TestRealTicksFingerprint` も失敗しており、清算の追加が参照実装（MT5 レポート）と一致するかは未確認。
+
+### 対策（案・未実施）
+- 参照実装（MT5 ストラテジーテスターの期間終了時の挙動）を先に確認し、b0d13156 の清算が MT5 と一致するなら
+  検定側の期待値を MT5 実測で更新、一致しないなら清算の条件を MT5 に合わせる。どちらかは参照実装で決まる。
+
+### 関連
+- b0d13156／ISSUE-517（同時に見つかった実データ検定の失敗）／ISSUE-511 段階 2（発見の契機）
+
+## ISSUE-520: marketdata/MT5 形式の読み側が spread 欄の異常値を DataError に翻訳しない
+
+- **ステータス**: OPEN（未着手）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-511 段階 2 のコードレビュー（指摘 R-4）。
+
+### 実測（2026-09-14・レビューの実験）
+- `simulator/adapter/repository/ohlc_marketdata_csv.py` の `_spread_of`（`int(df[SPREAD_COLUMN].iat[i])`）は、
+  spread 欄が空だと組み込みの `ValueError` をそのまま送出する（DataError へ翻訳されない＝CLEAN_ARCH §6 の例外翻訳に反する）。
+  `71.6` は黙って 71 に切り捨てる。
+- 同じ書き方が既存の `ohlc_mt5_csv.py:62`（`int(df["<SPREAD>"].iat[i])`）にもある（段階 2 以前からの既存欠陥）。
+- 書き手（`marketdata.quote_spread`）は int64 しか書かないため、段階 2 の生成物では発生しない。
+
+### 対策（案・未実施）
+- `_ohlc_frame.frame_to_bars` で `spec.extract` の例外を DataError へ翻訳し、spread の整数性を検証する
+  （1 箇所で両形式が直る）。
+
+### 関連
+- ISSUE-511 段階 2（発見の契機）
+
+## ISSUE-521: tick 木の日境界（00:00:00 UTC）の分が隣接する 2 つの日ファイルに重複して入っている
+
+- **ステータス**: OPEN（未着手・依頼者裁定 2026-09-14「別 Issue で根本治療」）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-511 段階 2 の設計検討（TBD-1）。M1 素材化は日ファイルごとに畳んでから
+  `_dedupe_minutes`（keep-last・ISSUE-167）で重複分を捨てるため、捨てる行の OHLC と spread も計算している。
+
+### 実測（2026-09-14）
+- `data/marketdata/ticks/*/*/*/JP225_ticks.parquet` 全 4,213 ファイル・4,066,436 分を走査（timestamp 列のみ・分床）:
+  2 ファイル以上に現れる分は **3 分**。すべて 00:00:00 UTC
+  （2020-05-29 / 2025-10-01 / 2026-07-30）。
+- 00:00:00 ちょうどのティックが前日と当日の両方の日ファイルに入っている、と推論（どちらのファイルのどの行かは未確認）。
+
+### 影響
+- 日境界の重複分について、捨てる側の M1（OHLC・up/dn・spread）を計算してから捨てている（全履歴で 3 分）。
+- どちらの行を残すかは concat 後の `sort_index`（安定ソートか未確認）と keep-last に依存し、決定性が未確認。
+
+### 対策（案・未実施）
+- 日ファイルへの分割（取得・保存の段）を半開区間 `[00:00, 翌 00:00)` に揃え、重複を素材の段で生じさせない。
+  既存 3 ファイルの扱い（再取得か除去か）は既存データ改変に当たるため別途裁定。
+
+### 関連
+- ISSUE-511 段階 2（発見の契機・TBD-1）／ISSUE-167（dedupe の導入）
