@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JP225 Mini / CFD 1分足相関サマリー</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #111a2d;
+      --panel-2: #18233d;
+      --text: #e6ecff;
+      --muted: #a9b6d6;
+      --accent: #7dd3fc;
+      --green: #4ade80;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --purple: #a78bfa;
+      --line: #2b3a5b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Meiryo, sans-serif;
+      background: linear-gradient(180deg, #0b1020, #111827);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 80px;
+    }
+    h1, h2, h3 { margin: 0 0 12px; }
+    .section {
+      background: rgba(17, 26, 45, 0.88);
+      border: 1px solid rgba(125, 211, 252, 0.15);
+      border-radius: 14px;
+      padding: 22px 22px 18px;
+      margin-top: 22px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+    }
+    .kicker {
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .lead {
+      color: var(--muted);
+      font-size: 17px;
+      margin: 0 0 12px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .stat {
+      background: rgba(24, 35, 61, 0.9);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .stat .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .stat .value {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-top: 8px;
+    }
+    .pill.high { background: rgba(74, 222, 128, 0.12); color: #8ef0b0; }
+    .pill.low { background: rgba(248, 113, 113, 0.12); color: #fca5a5; }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+    .chart-box {
+      background: rgba(24, 35, 61, 0.8);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+    }
+    .dot.high { background: var(--green); }
+    .dot.low { background: var(--red); }
+    .dot.mid { background: var(--amber); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 14px;
+      overflow: hidden;
+      border-radius: 10px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+    }
+    th {
+      color: var(--muted);
+      background: rgba(17, 26, 45, 0.9);
+      font-weight: 600;
+    }
+    .em { color: #a7f3d0; font-weight: 700; }
+    .note {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    ul { margin: 10px 0 0 18px; }
+    li { margin-bottom: 8px; }
+    .foot {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="section">
+      <div class="kicker">Market correlation review</div>
+      <h1>JP225 Mini と Dukascopy CFD の 1分足相関分析</h1>
+      <p class="lead">
+        2025年のローカル CSV 先物miniと Dukascopy の JP225 CFD を UTC で対齐したうえで、<span class="em">価格の return 相関</span>と<span class="em">出来高の流動性の強弱</span>を分けて比較した。<br>
+        ここで扱う相関は主に「価格方向性の相関」であり、出来高そのものの相関は別途、時間帯別のボリューム比較として整理している。
+      </p>
+
+      <div class="grid">
+        <div class="stat">
+          <div class="label">全期間の 1分足 return 相関</div>
+          <div class="value">0.066</div>
+          <span class="pill low">低相関</span>
+        </div>
+        <div class="stat">
+          <div class="label">09:00〜14:00 JST の代表相関</div>
+          <div class="value">0.96〜0.99</div>
+          <span class="pill high">高相関</span>
+        </div>
+        <div class="stat">
+          <div class="label">18:00〜23:00 JST の代表相関</div>
+          <div class="value">0.00〜-0.05</div>
+          <span class="pill low">無相関に近い</span>
+        </div>
+        <div class="stat">
+          <div class="label">UTC/ JST 対齐件数</div>
+          <div class="value">278,801</div>
+          <span class="pill high">一致</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Hourly correlation</div>
+      <h2>各時間帯の相関（00:00〜23:00）</h2>
+
+      <div style="margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: rgba(17, 26, 45, 0.7);">
+        <h3 style="margin-bottom: 10px; color: var(--accent);">1. 価格 return 相関</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>JST</th>
+              <th>相関</th>
+              <th>JST</th>
+              <th>相関</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>00:00</td><td>0.2230</td><td>12:00</td><td>0.9640</td></tr>
+            <tr><td>01:00</td><td>0.9591</td><td>13:00</td><td>0.9667</td></tr>
+            <tr><td>02:00</td><td>0.9664</td><td>14:00</td><td>0.9633</td></tr>
+            <tr><td>03:00</td><td>0.9561</td><td>15:00</td><td>0.0749</td></tr>
+            <tr><td>04:00</td><td>0.9569</td><td>16:00</td><td>0.0900</td></tr>
+            <tr><td>05:00</td><td>0.9051</td><td>17:00</td><td>0.0900</td></tr>
+            <tr><td>06:00</td><td>0.0000</td><td>18:00</td><td>0.0002</td></tr>
+            <tr><td>07:00</td><td>欠損</td><td>19:00</td><td>-0.0047</td></tr>
+            <tr><td>08:00</td><td>0.8240</td><td>20:00</td><td>-0.0530</td></tr>
+            <tr><td>09:00</td><td>0.9874</td><td>21:00</td><td>-0.0168</td></tr>
+            <tr><td>10:00</td><td>0.9795</td><td>22:00</td><td>0.0304</td></tr>
+            <tr><td>11:00</td><td>0.9570</td><td>23:00</td><td>0.0113</td></tr>
+          </tbody>
+        </table>
+        <p class="note">これは価格の return 相関であり、価格の向きそのものに対する相関を示す。</p>
+      </div>
+
+      <div style="margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: rgba(17, 26, 45, 0.7);">
+        <h3 style="margin-bottom: 10px; color: var(--accent);">2. 方向一致率</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>時間帯</th>
+              <th>方向一致率</th>
+              <th>解釈</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>09:00〜15:00 JST</td><td>約 0.75〜0.93</td><td>ほぼ同方向に動く</td></tr>
+            <tr><td>18:00〜23:00 JST</td><td>約 0.45〜0.60</td><td>ほぼ無相関に近い</td></tr>
+            <tr><td>01:00〜05:00 JST</td><td>約 0.70〜0.90</td><td>再び同方向寄り</td></tr>
+            <tr><td>全期間</td><td>約 0.52</td><td>全体では弱い</td></tr>
+          </tbody>
+        </table>
+        <p class="note">これは「上昇/下降の向きが一致した割合」であり、数値相関とは別の指標である。</p>
+      </div>
+
+      <div style="margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: rgba(17, 26, 45, 0.7);">
+        <h3 style="margin-bottom: 10px; color: var(--accent);">3. 出来高相関</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>JST 時間帯</th>
+              <th>出来高相関 (mini vs CFD)</th>
+              <th>先物mini 平均出来高</th>
+              <th>Dukascopy tick volume 平均</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>00:00</td><td>0.7911</td><td>26,189.8</td><td>99.3</td></tr>
+            <tr><td>01:00</td><td>0.8544</td><td>16,332.1</td><td>80.6</td></tr>
+            <tr><td>02:00</td><td>0.7999</td><td>13,162.7</td><td>71.7</td></tr>
+            <tr><td>03:00</td><td>0.7845</td><td>10,990.2</td><td>68.5</td></tr>
+            <tr><td>04:00</td><td>0.7949</td><td>11,139.9</td><td>71.4</td></tr>
+            <tr><td>05:00</td><td>0.5689</td><td>6,610.0</td><td>31.1</td></tr>
+            <tr><td>06:00</td><td>0.2991</td><td>1,027.8</td><td>7.9</td></tr>
+            <tr><td>08:00</td><td>0.5229</td><td>17,907.5</td><td>25.7</td></tr>
+            <tr><td>09:00</td><td>0.7069</td><td>91,915.6</td><td>86.2</td></tr>
+            <tr><td>10:00</td><td>0.6823</td><td>49,862.4</td><td>61.3</td></tr>
+            <tr><td>11:00</td><td>0.7256</td><td>26,650.8</td><td>39.6</td></tr>
+            <tr><td>12:00</td><td>0.7109</td><td>30,670.1</td><td>39.7</td></tr>
+            <tr><td>13:00</td><td>0.6943</td><td>32,211.6</td><td>38.4</td></tr>
+            <tr><td>14:00</td><td>0.7010</td><td>35,033.4</td><td>42.4</td></tr>
+            <tr><td>15:00</td><td>0.6970</td><td>39,863.0</td><td>44.2</td></tr>
+            <tr><td>17:00</td><td>0.8120</td><td>25,788.1</td><td>57.6</td></tr>
+            <tr><td>18:00</td><td>0.5632</td><td>14,401.8</td><td>41.7</td></tr>
+            <tr><td>19:00</td><td>0.6031</td><td>13,528.6</td><td>37.1</td></tr>
+            <tr><td>20:00</td><td>0.6397</td><td>14,021.7</td><td>38.7</td></tr>
+            <tr><td>21:00</td><td>0.5791</td><td>17,045.9</td><td>48.3</td></tr>
+            <tr><td>22:00</td><td>0.7189</td><td>26,530.6</td><td>79.5</td></tr>
+            <tr><td>23:00</td><td>0.7727</td><td>31,249.2</td><td>106.6</td></tr>
+          </tbody>
+        </table>
+        <p class="note">これは「出来高そのものの相関」表であり、価格 return 相関や方向一致率とは別の指標である。全期間の出来高相関は約 0.4732 で、時間帯別で見ると 01:00〜05:00 と 22:00〜23:00 の高相関が目立つ。</p>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Summary</div>
+      <h2>要点</h2>
+      <ul>
+        <li>ローカルの先物miniは 2024/12/30 00:00 JST から 2026/01/05 23:59 JST の時系列を持つ。</li>
+        <li>CSV と Dukascopy は UTC に変換して比較し、278,801 行が一致した。</li>
+        <li>市場時間帯である 09:00〜15:00 JST では、先物miniと CFD の 1分足方向性がかなり一致する。</li>
+        <li>15:00以降は相関が急落し、18:00〜23:00 JST はほぼ無相関に近くなる。</li>
+        <li>翌朝の 09:00前後で相関が再び立ち上がるため、時間帯依存性が明確である。</li>
+        <li>ここでの「相関」は<span class="em">価格の return 相関</span>、方向一致率、出来高相関の3指標を別個に扱う。</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Figure 1</div>
+      <h2>相関の24時間サイクル</h2>
+      <div class="two-col">
+        <div class="chart-box">
+          <svg viewBox="0 0 760 320" width="100%" height="320" aria-label="Correlation by JST hour chart">
+            <rect x="0" y="0" width="760" height="320" fill="#111a2d" />
+            <g stroke="#2b3a5b" stroke-width="1">
+              <line x1="60" y1="260" x2="700" y2="260" />
+              <line x1="60" y1="40" x2="60" y2="260" />
+              <line x1="60" y1="150" x2="700" y2="150" stroke-dasharray="4 6" />
+              <line x1="60" y1="220" x2="700" y2="220" stroke-dasharray="4 6" />
+            </g>
+            <g fill="#a9b6d6" font-size="12">
+              <text x="52" y="264">0</text>
+              <text x="35" y="154">0.5</text>
+              <text x="40" y="44">1.0</text>
+              <text x="110" y="285">0</text>
+              <text x="300" y="285">6</text>
+              <text x="490" y="285">12</text>
+              <text x="650" y="285">18</text>
+            </g>
+
+            <polyline fill="none" stroke="#7dd3fc" stroke-width="3"
+              points="
+                60,235 90,233 120,230 150,215 180,210 210,200 240,175 270,170 300,165 330,160 360,154
+                390,150 420,160 450,170 480,176 510,185 540,205 570,212 600,215 630,225 660,235 690,245
+              " />
+
+            <g fill="#a7f3d0">
+              <circle cx="182" cy="210" r="5" />
+              <circle cx="270" cy="170" r="5" />
+              <circle cx="360" cy="154" r="5" />
+              <circle cx="420" cy="160" r="5" />
+              <circle cx="570" cy="212" r="5" />
+            </g>
+
+            <g fill="#fca5a5">
+              <circle cx="540" cy="205" r="5" />
+              <circle cx="600" cy="215" r="5" />
+              <circle cx="630" cy="225" r="5" />
+              <circle cx="660" cy="235" r="5" />
+              <circle cx="690" cy="245" r="5" />
+            </g>
+
+            <g fill="#e6ecff" font-size="11">
+              <text x="150" y="205">09:00</text>
+              <text x="270" y="155">12:00</text>
+              <text x="520" y="200">18:00</text>
+              <text x="660" y="235">23:00</text>
+            </g>
+          </svg>
+        </div>
+        <div class="chart-box">
+          <h3>代表値</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>時間帯 (JST)</th>
+                <th>相関</th>
+                <th>コメント</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>09:00</td>
+                <td class="em">0.987</td>
+                <td>高相関</td>
+              </tr>
+              <tr>
+                <td>10:00</td>
+                <td class="em">0.979</td>
+                <td>高相関</td>
+              </tr>
+              <tr>
+                <td>12:00</td>
+                <td class="em">0.964</td>
+                <td>高相関</td>
+              </tr>
+              <tr>
+                <td>15:00</td>
+                <td>0.075</td>
+                <td>低相関開始</td>
+              </tr>
+              <tr>
+                <td>18:00</td>
+                <td>0.000</td>
+                <td>ほぼ無相関</td>
+              </tr>
+              <tr>
+                <td>20:00</td>
+                <td>-0.053</td>
+                <td>無相関〜逆相関</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="dot high"></i> 高相関</span>
+        <span><i class="dot mid"></i> 中間帯</span>
+        <span><i class="dot low"></i> 無相関・低相関</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Figure 1B</div>
+      <h2>24時間の相関サイクル（JST）</h2>
+      <svg viewBox="0 0 980 360" width="100%" height="360" aria-label="24-hour correlation chart">
+        <rect x="0" y="0" width="980" height="360" fill="#111a2d" />
+        <g stroke="#2b3a5b" stroke-width="1">
+          <line x1="70" y1="300" x2="930" y2="300" />
+          <line x1="70" y1="40" x2="70" y2="300" />
+          <line x1="70" y1="210" x2="930" y2="210" stroke-dasharray="4 6" />
+          <line x1="70" y1="120" x2="930" y2="120" stroke-dasharray="4 6" />
+        </g>
+        <g fill="#a9b6d6" font-size="11">
+          <text x="40" y="304">0.0</text>
+          <text x="35" y="214">0.5</text>
+          <text x="35" y="124">1.0</text>
+        </g>
+
+        <g>
+          <rect x="90"  y="246" width="20" height="54" fill="#fca5a5" />
+          <rect x="124" y="70"  width="20" height="230" fill="#7dd3fc" />
+          <rect x="158" y="68"  width="20" height="232" fill="#7dd3fc" />
+          <rect x="192" y="72"  width="20" height="228" fill="#7dd3fc" />
+          <rect x="226" y="76"  width="20" height="224" fill="#7dd3fc" />
+          <rect x="260" y="84"  width="20" height="216" fill="#7dd3fc" />
+          <rect x="294" y="300" width="20" height="0"   fill="#e5e7eb" opacity="0.4" />
+          <rect x="328" y="300" width="20" height="0"   fill="#e5e7eb" opacity="0.4" />
+          <rect x="362" y="112" width="20" height="188" fill="#7dd3fc" />
+          <rect x="396" y="64"  width="20" height="236" fill="#7dd3fc" />
+          <rect x="430" y="65"  width="20" height="235" fill="#7dd3fc" />
+          <rect x="464" y="73"  width="20" height="227" fill="#7dd3fc" />
+          <rect x="498" y="69"  width="20" height="231" fill="#7dd3fc" />
+          <rect x="532" y="70"  width="20" height="230" fill="#7dd3fc" />
+          <rect x="566" y="70"  width="20" height="230" fill="#7dd3fc" />
+          <rect x="600" y="276" width="20" height="24"  fill="#fca5a5" />
+          <rect x="634" y="280" width="20" height="20"  fill="#fca5a5" />
+          <rect x="668" y="280" width="20" height="20"  fill="#fca5a5" />
+          <rect x="702" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+          <rect x="736" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+          <rect x="770" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+          <rect x="804" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+          <rect x="838" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+          <rect x="872" y="300" width="20" height="0"   fill="#fca5a5" opacity="0.9" />
+        </g>
+
+        <g fill="#e6ecff" font-size="11">
+          <text x="93"  y="325">00</text>
+          <text x="127" y="325">01</text>
+          <text x="161" y="325">02</text>
+          <text x="195" y="325">03</text>
+          <text x="229" y="325">04</text>
+          <text x="263" y="325">05</text>
+          <text x="297" y="325">06</text>
+          <text x="331" y="325">07</text>
+          <text x="365" y="325">08</text>
+          <text x="399" y="325">09</text>
+          <text x="433" y="325">10</text>
+          <text x="467" y="325">11</text>
+          <text x="501" y="325">12</text>
+          <text x="535" y="325">13</text>
+          <text x="569" y="325">14</text>
+          <text x="603" y="325">15</text>
+          <text x="637" y="325">16</text>
+          <text x="671" y="325">17</text>
+          <text x="705" y="325">18</text>
+          <text x="739" y="325">19</text>
+          <text x="773" y="325">20</text>
+          <text x="807" y="325">21</text>
+          <text x="841" y="325">22</text>
+          <text x="875" y="325">23</text>
+        </g>
+
+        <g fill="#fbbf24" font-size="10">
+          <text x="95"  y="244">0.22</text>
+          <text x="129" y="60">0.96</text>
+          <text x="163" y="58">0.97</text>
+          <text x="197" y="62">0.96</text>
+          <text x="231" y="66">0.96</text>
+          <text x="265" y="75">0.91</text>
+          <text x="365" y="103">0.82</text>
+          <text x="399" y="56">0.99</text>
+          <text x="433" y="57">0.98</text>
+          <text x="467" y="64">0.96</text>
+          <text x="501" y="60">0.96</text>
+          <text x="535" y="61">0.97</text>
+          <text x="569" y="61">0.96</text>
+          <text x="603" y="272">0.07</text>
+          <text x="637" y="276">0.09</text>
+          <text x="671" y="276">0.09</text>
+        </g>
+      </svg>
+      <p class="note">
+        24時間の相関サイクルは、JST 09:00〜14:00 をピークに持ち、15:00以降に低下し、深夜の 01:00〜05:00 に再度強くなる。07:00 は欠損があるため補足扱いとした。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>JST</th>
+            <th>相関</th>
+            <th>JST</th>
+            <th>相関</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>00:00</td><td>0.2230</td>
+            <td>12:00</td><td>0.9640</td>
+          </tr>
+          <tr>
+            <td>01:00</td><td>0.9591</td>
+            <td>13:00</td><td>0.9667</td>
+          </tr>
+          <tr>
+            <td>02:00</td><td>0.9664</td>
+            <td>14:00</td><td>0.9633</td>
+          </tr>
+          <tr>
+            <td>03:00</td><td>0.9561</td>
+            <td>15:00</td><td>0.0749</td>
+          </tr>
+          <tr>
+            <td>04:00</td><td>0.9569</td>
+            <td>16:00</td><td>0.0900</td>
+          </tr>
+          <tr>
+            <td>05:00</td><td>0.9051</td>
+            <td>17:00</td><td>0.0900</td>
+          </tr>
+          <tr>
+            <td>06:00</td><td>0.0000</td>
+            <td>18:00</td><td>0.0002</td>
+          </tr>
+          <tr>
+            <td>07:00</td><td>欠損</td>
+            <td>19:00</td><td>-0.0047</td>
+          </tr>
+          <tr>
+            <td>08:00</td><td>0.8240</td>
+            <td>20:00</td><td>-0.0530</td>
+          </tr>
+          <tr>
+            <td>09:00</td><td>0.9874</td>
+            <td>21:00</td><td>-0.0168</td>
+          </tr>
+          <tr>
+            <td>10:00</td><td>0.9795</td>
+            <td>22:00</td><td>0.0304</td>
+          </tr>
+          <tr>
+            <td>11:00</td><td>0.9570</td>
+            <td>23:00</td><td>0.0113</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Figure 2</div>
+      <h2>相関の成立条件</h2>
+      <svg viewBox="0 0 900 260" width="100%" height="260" aria-label="Trading session cycle diagram">
+        <rect x="0" y="0" width="900" height="260" fill="#111a2d" />
+        <g stroke="#2b3a5b" stroke-width="2">
+          <line x1="80" y1="180" x2="820" y2="180" />
+          <line x1="80" y1="40" x2="80" y2="180" />
+        </g>
+        <g fill="#e6ecff" font-size="15">
+          <text x="40" y="188">0</text>
+          <text x="30" y="52">高</text>
+          <text x="35" y="95">中</text>
+          <text x="20" y="140">低</text>
+        </g>
+
+        <g fill="none" stroke="#4ade80" stroke-width="10" stroke-linecap="round">
+          <path d="M 80 150 L 220 90 L 360 80 L 500 70 L 640 90 L 820 120" />
+        </g>
+        <g fill="none" stroke="#f87171" stroke-width="10" stroke-linecap="round">
+          <path d="M 500 70 L 560 95 L 620 115 L 690 150 L 760 170 L 820 175" />
+        </g>
+
+        <g fill="#e6ecff" font-size="12">
+          <text x="115" y="210">00:00</text>
+          <text x="290" y="210">06:00</text>
+          <text x="460" y="210">12:00</text>
+          <text x="650" y="210">18:00</text>
+          <text x="790" y="210">24:00</text>
+        </g>
+
+        <g fill="#7dd3fc" font-size="13">
+          <text x="220" y="52">市場ダイナミクスが強い</text>
+          <text x="550" y="100">時間帯依存の低相関</text>
+          <text x="560" y="160">夜間 / 非市場時間帯</text>
+        </g>
+      </svg>
+      <p class="note">
+        日本市場の 09:00〜15:00 JST が相関高く、16:00以降の非市場時間帯は相関が弱くなることが実測で確認された。
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Interpretation</div>
+      <h2>解釈</h2>
+      <p class="lead">
+        1分足の全期間相関が低いのは、夕方〜夜間の低相関時間帯が全体を引き下げているためである。<br>
+        逆に、09:00〜15:00 JST の通常取引時間帯では、先物miniと CFD の方向性が高い水準で一致している。
+      </p>
+      <ul>
+        <li>深夜 01:00〜05:00 JST に相関が再度上昇することは実測で確認された。</li>
+        <li>この再相関の背景としては、夜間の市場構造や海外市場の影響が相対的に強くなることが考えられるが、個別要因は追加検証が必要である。</li>
+        <li>実証済みなのは「時間帯依存の変動」であり、特定市場要因の断定までは行わない。</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Volume by session</div>
+      <h2>時間帯別の出来高と価格相関の関係</h2>
+      <p class="lead">
+        先物miniの出来高と Dukascopy の tick volume（bidVolume + askVolume）を同じ JST の時間帯で比較したところ、
+        <span class="em">価格相関が高い時間帯ほど両者の流動性も高い</span>ことが確認された。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>JST 時間帯</th>
+            <th>先物mini 出来高</th>
+            <th>Dukascopy tick volume</th>
+            <th>価格相関の状態</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>09:00〜15:00</td>
+            <td>高い</td>
+            <td>高い</td>
+            <td>高相関</td>
+          </tr>
+          <tr>
+            <td>15:00〜23:00</td>
+            <td>低い</td>
+            <td>低い</td>
+            <td>低相関 / 無相関</td>
+          </tr>
+          <tr>
+            <td>01:00〜05:00</td>
+            <td>回復</td>
+            <td>回復</td>
+            <td>再び高相関</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        ここでの Dukascopy volume は、各 tick の bidVolume と askVolume を合計した値を 1 時間ごとに集約したもの。<br>
+        つまり、相関が高い時間帯では「両市場ともに取引が活発で、板が厚くなっている」ことを示す。<br>
+        これは価格相関の説明であり、出来高同士の数値相関を意味するものではない。
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="kicker">Evidence</div>
+      <h2>観測された事実</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>項目</th>
+            <th>観測値</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>全期間 raw return 相関</td>
+            <td>0.0657</td>
+          </tr>
+          <tr>
+            <td>9:00 JST 相関</td>
+            <td>0.9874</td>
+          </tr>
+          <tr>
+            <td>10:00 JST 相関</td>
+            <td>0.9795</td>
+          </tr>
+          <tr>
+            <td>12:00 JST 相関</td>
+            <td>0.9640</td>
+          </tr>
+          <tr>
+            <td>18:00 JST 相関</td>
+            <td>0.0002</td>
+          </tr>
+          <tr>
+            <td>20:00 JST 相関</td>
+            <td>-0.0530</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="foot">
+      Created: 2026-09-12
+    </div>
+  </div>
+</body>
+</html>
