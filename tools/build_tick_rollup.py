@@ -115,11 +115,17 @@ def _build_tick_m1(
     """M1 を生成する。既定は増分追記（新しい日だけ集計）、``full_rebuild`` で全再構築。
 
     増分は初回（M1 不在）に自動で全構築へフォールバックする（append_m1_from_ticks 内）。
+    価格基準は台帳から引く（ISSUE-511 段階 1a・全量と増分で同じ基準＝日次再構築が表示中の系列を
+    別の基準へ書き戻さない）。
     """
+    from marketdata.tf_meta import tick_price_basis
     from marketdata.tick_m1 import append_m1_from_ticks, build_m1_from_ticks
 
     fn = build_m1_from_ticks if full_rebuild else append_m1_from_ticks
-    return fn(start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir)
+    return fn(
+        start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir,
+        price_basis=tick_price_basis(ref),
+    )
 
 
 def _rollup_build(

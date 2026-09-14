@@ -208,10 +208,18 @@ def _latest_tick_day(ticks_root: Path) -> Optional[dt.date]:
 
 
 def _append_m1(start: str, end: str, until: pd.Timestamp, *, data_dir: Path) -> Path:
-    """tick 由来 M1 を増分追記する（形成中分バーは until で除外・ref=jp225_tick）。"""
+    """tick 由来 M1 を増分追記する（形成中分バーは until で除外・ref=jp225_tick）。
+
+    価格基準は台帳（marketdata/dataset_registry.py の ``price_basis``）から引く（ISSUE-511
+    段階 1a）。読み手（形成中バー・MP・ライブバッファ）も同じ台帳を引くため、台帳を切り替えれば
+    確定足と形成中が同じ基準のまま動く。既定値（mid）に頼ると書き手だけが取り残される。
+    """
+    from marketdata.tf_meta import tick_price_basis
     from marketdata.tick_m1 import append_m1_from_ticks
 
-    return append_m1_from_ticks(start, end, until=until, ref=REF, data_dir=data_dir)
+    return append_m1_from_ticks(
+        start, end, until=until, ref=REF, data_dir=data_dir, price_basis=tick_price_basis(REF),
+    )
 
 
 #: 末尾整合の自己修復（ISSUE-488）の実行周期（秒）。検査は M1 末尾 probe（固定行数）に有界
