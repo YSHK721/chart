@@ -40,7 +40,7 @@ class _NoopWindowPort:
     def load_m1_rows(self, ref, start, end):
         return []
 
-    def load_raw_ticks(self, start, end):   # ISSUE-031: 生ティック (sec, bid, ask)
+    def load_tick_prices(self, ref, start, end):   # (sec, ref の価格基準で畳んだ価格)
         return []
 
 

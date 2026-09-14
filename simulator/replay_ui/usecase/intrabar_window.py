@@ -2,10 +2,9 @@
 
 m1 は常に取得する（失敗は m1_error へ翻訳し計算全体は落とさない）。ticks は
 mode=='real_ticks' のときのみ取得（他モードは tick 読込スキップ＝軽量維持）。
-ISSUE-031: **domain E-4（mid 算出・窓フィルタ・外れ値除去）は本 usecase が適用する**。
-以前は adapter の ``load_ticks`` が済ませて返していたが、それでは tick 源を差し替えるたびに
-各 adapter が ``mid_series`` を再結線する必要があり、結線漏れが静かに「外れ値除去なしの mid 列」を
-生む。Port は素の観測値 ``(sec, bid, ask)`` を運ぶだけにし、本質ルールの適用点を 1 か所に固定した。
+ISSUE-031: **domain E-4（窓フィルタ・外れ値除去）は本 usecase が適用する**（適用点を 1 か所に固定）。
+ISSUE-512 段階 4 の前提: Port は ref のティック木を ref の価格基準で畳んだ ``(sec, price)`` を運ぶ
+（木と基準はどちらも台帳が出所）。以前は ref を渡さず、どの ref でも Dukascopy の木を mid で読んでいた。
 ``mode=='real_ticks'`` のときだけ tick を読む軽量性は従来どおり（ゲートは本 usecase に既存）。
 """
 from __future__ import annotations
@@ -13,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
+from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, price_series
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import IntrabarWindowPort
@@ -64,10 +63,10 @@ def intrabar_window(
     if request.mode != "real_ticks":
         return result  # 他モードは m1 のみで足りる＝tick 読込スキップ（軽量維持）
     try:
-        raw = window_port.load_raw_ticks(request.start, request.end)
-        # domain E-4: mid 算出＋窓フィルタ＋外れ値除去（適用点はここ 1 か所・ISSUE-031）。
-        rows = mid_series(raw, request.start, request.end,
-                          threshold=request.outlier_threshold)
+        prices = window_port.load_tick_prices(request.ref, request.start, request.end)
+        # domain E-4: 窓フィルタ＋外れ値除去（適用点はここ 1 か所・ISSUE-031）。
+        rows = price_series(prices, request.start, request.end,
+                            threshold=request.outlier_threshold)
         result.ticks = [mid for _sec, mid in rows]  # 既存契約不変（mid のみ）
         # MP tick-live 用: want_secs のときだけ sec 並行配列を追加（ticks と同順・同長）。
         if request.want_secs:

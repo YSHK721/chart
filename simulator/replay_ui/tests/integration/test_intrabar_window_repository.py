@@ -8,7 +8,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
+from marketdata import tf_meta, tick_day_source, tick_tree
 from simulator.replay_ui.adapter.intrabar_window_repository import (
     IntrabarWindowRepository,
     _cap_m1_rows,
@@ -78,23 +80,74 @@ def test_load_m1_rows_delegates_to_dataset_atom_window(tmp_path):
     assert rows == [[100.0, 105.0, 99.0, 101.0], [101.0, 106.0, 100.0, 102.0]]
 
 
-def test_load_raw_ticks_returns_unfiltered_bid_ask(tmp_path):
-    """ISSUE-031: Port は**素の観測値**を運ぶ（mid 算出・窓・外れ値除去はしない）。
+def test_a_mid_ref_gets_unfiltered_midpoints(tmp_path):
+    """jp225_tick（台帳の基準は mid）は ``(sec, mid)`` を窓・外れ値除去なしで受け取る。
 
-    以前の ``load_ticks`` は domain E-4 を適用済みの ``(sec, mid)`` を返していた。本 adapter の
-    責務は保管形式（parquet の日別レイアウト）→ 素の観測値の変換に閉じ、本質ルールの適用は
-    usecase（:func:`~usecase.intrabar_window.intrabar_window`）が 1 か所で行う。
+    窓フィルタと外れ値除去は usecase の責務（ISSUE-031）であり、adapter は落とさない。
+    価格の畳み方（mid）は台帳と marketdata/tick_m1.py の 1 箇所が決める（ISSUE-512 段階 4 の前提）。
     """
     root = tmp_path / "ticks"
     _write_parquet(root)
     repo = IntrabarWindowRepository(tick_root=root)
 
-    out = repo.load_raw_ticks(_D1_00_00, _D1_00_00 + 60)
+    out = repo.load_tick_prices("jp225_tick", _D1_00_00, _D1_00_00 + 60)
 
-    # 外れ値（30 秒の 200）も窓外（1:40）も**落とさない**＝整形しない契約。
-    assert all(len(t) == 3 for t in out), "(sec, bid, ask) の 3 要素で返す"
-    secs = [t[0] for t in out]
-    assert _D1_00_00 + 30 in secs, "外れ値も adapter は落とさない（除去は usecase の責務）"
+    assert out == [
+        (_D1_00_00 + 10, 100.0), (_D1_00_00 + 20, 102.0),
+        (_D1_00_00 + 30, 200.0), (_D1_00_00 + 100, 101.0),
+    ], "外れ値も窓外も adapter は落とさない（除去は usecase の責務）"
+
+
+def test_an_mt5_ref_reads_its_own_tree_at_bid(tmp_path):
+    """jp225_mt5 は MT5 自身の木を bid で読む（Dukascopy の木を読まない・mid にしない）。
+
+    以前は ref を受け取らず、どの ref でも Dukascopy の木を読んでいた（ISSUE-512 段階 4 の前提）。
+    """
+    root = tmp_path / "ticks"
+    _write_parquet(root)                                     # Dukascopy の木（JP225）
+    token = tf_meta.tick_tree_token("jp225_mt5")
+    path = tick_tree.day_parquet_path("2020-01-01", symbol=token, data_dir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "timestamp": pd.to_datetime(["2020-01-01 00:00:15"], utc=True),
+        "bidPrice": [500.0], "askPrice": [510.0],
+    }).to_parquet(path, index=False)
+    repo = IntrabarWindowRepository(tick_root=root)
+
+    out = repo.load_tick_prices("jp225_mt5", _D1_00_00, _D1_00_00 + 60)
+
+    assert out == [(_D1_00_00 + 15, 500.0)]
+
+
+def test_a_ref_without_a_tick_tree_has_no_ticks(tmp_path):
+    """ティック木を持たない ref は足内ティックを持たない（他の ref の木を読まない）。"""
+    root = tmp_path / "ticks"
+    _write_parquet(root)
+    repo = IntrabarWindowRepository(tick_root=root)
+
+    assert repo.load_tick_prices("jp225_m1", _D1_00_00, _D1_00_00 + 60) == []
+
+
+@pytest.mark.parametrize("days", [1, 2])
+def test_only_the_days_in_the_window_are_read(monkeypatch, tmp_path, days):
+    """計算量: 読んだ日数 − 窓と重なる日数 = 0（窓の日数 1/2 の 2 点で固定）。"""
+    root = tmp_path / "ticks"
+    for d in ("2019-12-31", "2020-01-01", "2020-01-02", "2020-01-03"):
+        p = tick_tree.day_parquet_path(d, symbol="JP225", data_dir=tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({
+            "timestamp": pd.to_datetime([f"{d} 12:00:00"], utc=True),
+            "bidPrice": [1.0], "askPrice": [1.0],
+        }).to_parquet(p, index=False)
+    read = []
+    real = tick_day_source.read_day_ticks
+    monkeypatch.setattr(tick_day_source, "read_day_ticks",
+                        lambda p, c: (read.append(p), real(p, c))[1])
+    repo = IntrabarWindowRepository(tick_root=root)
+
+    repo.load_tick_prices("jp225_tick", _D1_00_00, _D1_00_00 + days * 86400)
+
+    assert len(read) - days == 0, f"{days} 日の窓で {len(read)} 日を読んだ"
 
 
 def test_cap_m1_rows_keeps_extremes_and_bounds():

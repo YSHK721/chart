@@ -24,9 +24,9 @@ class _FakeWindowPort:
     def load_m1_rows(self, ref, start, end):
         return [[1.0, 2.0, 0.5, 1.5]]
 
-    def load_raw_ticks(self, start, end):
-        # ISSUE-031: Port は生ティック (sec, bid, ask) を運ぶ。mid=(bid+ask)/2 は usecase が計算する。
-        return [(10, 99.5, 100.5), (20, 100.5, 101.5)]
+    def load_tick_prices(self, ref, start, end):
+        # Port は ref の価格基準で畳んだ価格 (sec, price) を運ぶ（窓・外れ値除去は usecase）。
+        return [(10, 100.0), (20, 101.0)]
 
 
 @pytest.fixture

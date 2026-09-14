@@ -15,8 +15,8 @@
     本 usecase は **``[win_start, to]`` の実 tick 数** を返す（``to`` 時点で到来済みの tick）。
 
 ③tick 集合の同一性（実測 2026-08-01）:
-    数える対象は ``/intraday`` が返すのと同じ mid 列（domain E-4 ``mid_series``＝窓フィルタ・
-    mid 算出・中央値外れ値除去）である。実測で窓 [1785528000,1785528300) の mid 列は 770 件、
+    数える対象は ``/intraday`` が返すのと同じ価格列（domain E-4 ``price_series``＝窓フィルタ・
+    中央値外れ値除去。価格は ref の価格基準で畳んだ値）である。実測で窓 [1785528000,1785528300) の列は 770 件、
     同区間の確定足 tickvol も 770 で **完全一致** する（同 [1785528300,1785528600) は 297 で一致）。
     よって足終端で形成中の値は確定値へ厳密に収束する（段差が出ない）。
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from typing import TYPE_CHECKING
 
-from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, mid_series
+from simulator.replay_ui.domain.tick_mid_series import OUTLIER_THRESHOLD, price_series
 
 if TYPE_CHECKING:
     from simulator.replay_ui.usecase.replay_ports import IntrabarWindowPort
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 def forming_tick_counts(
     *,
+    ref: str,
     window_port: "IntrabarWindowPort",
     win_start: "int | None",
     win_end: "int | None",
@@ -65,14 +66,15 @@ def forming_tick_counts(
     if not (end > start):
         return [None] * n
     try:
-        raw = window_port.load_raw_ticks(start, end)
-        rows = mid_series(raw, start, end, threshold=threshold)
+        # ref のティック（木と価格基準は台帳が出所・ISSUE-512 段階 4 の前提）。
+        rows = price_series(window_port.load_tick_prices(ref, start, end), start, end,
+                            threshold=threshold)
     except Exception:  # noqa: BLE001 — ティック取得失敗は「不明」へ縮退（計算全体を落とさない）
         return [None] * n
     if not rows:
         return [None] * n
 
-    secs = [sec for sec, _mid in rows]   # mid_series は時系列順（昇順）を保つ
+    secs = [sec for sec, _price in rows]   # price_series は時系列順（昇順）を保つ
     out: "list[int | None]" = []
     for to in tos:
         if to is None:

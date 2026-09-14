@@ -35,5 +35,5 @@ class FakeWindowPort:
     def load_m1_rows(self, ref: Any, start: Any, end: Any) -> list:
         return []
 
-    def load_raw_ticks(self, start: Any, end: Any) -> list:
+    def load_tick_prices(self, ref: Any, start: Any, end: Any) -> list:
         return []

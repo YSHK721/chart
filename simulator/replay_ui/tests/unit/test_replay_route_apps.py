@@ -70,7 +70,7 @@ class _Port:
     def load_m1_rows(self, *a, **k):
         return []
 
-    def load_raw_ticks(self, *a, **k):
+    def load_tick_prices(self, *a, **k):
         return []
 
     def forming(self, *a, **k):

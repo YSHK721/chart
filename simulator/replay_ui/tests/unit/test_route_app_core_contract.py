@@ -64,7 +64,7 @@ class _Port:
     def compute(self, *a, **k): return []
     def compute_latest_seq(self, *a, **k): return []
     def load_m1_rows(self, *a, **k): return []
-    def load_raw_ticks(self, *a, **k): return []
+    def load_tick_prices(self, *a, **k): return []
     def forming(self, *a, **k): return PortResult.success({"ok": True})
     def profile(self, *a, **k): return PortResult.success({"ok": True})
     def catalog(self): return PortResult.success({"ok": True})

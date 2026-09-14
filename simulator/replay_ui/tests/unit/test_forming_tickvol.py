@@ -20,10 +20,11 @@ from simulator.replay_ui.usecase.forming_tickvol import (
 )
 
 _START, _END = 1000, 1100
+_REF = "jp225_tick"
 
 
 class _FakePort:
-    """``load_raw_ticks`` のみを持つ IntrabarWindowPort スタブ。"""
+    """``load_tick_prices`` のみを持つ IntrabarWindowPort スタブ。"""
 
     def __init__(self, rows=None, raises=False):
         self._rows = rows if rows is not None else []
@@ -33,22 +34,22 @@ class _FakePort:
     def load_m1_rows(self, ref, start, end):  # pragma: no cover — 本 usecase は使わない
         raise AssertionError("load_m1_rows は呼ばれない")
 
-    def load_raw_ticks(self, start, end):
-        self.calls.append((start, end))
+    def load_tick_prices(self, ref, start, end):
+        self.calls.append((ref, start, end))
         if self._raises:
             raise RuntimeError("tick 取得失敗")
         return list(self._rows)
 
 
 def _ticks(secs, price=100.0):
-    """``(sec, bid, ask)`` 列（mid=price 一定＝外れ値除去に掛からない）。"""
-    return [(s, price - 0.5, price + 0.5) for s in secs]
+    """``(sec, price)`` 列（価格一定＝外れ値除去に掛からない）。"""
+    return [(s, price) for s in secs]
 
 
 def test_counts_are_cumulative_and_converge_to_the_window_total():
     port = _FakePort(_ticks([1000, 1010, 1020, 1050, 1099]))
     got = forming_tick_counts(
-        window_port=port, win_start=_START, win_end=_END,
+        ref=_REF, window_port=port, win_start=_START, win_end=_END,
         tos=[1000, 1010, 1049, 1050, 1099],
     )
     assert got == [1, 2, 3, 4, 5]
@@ -59,7 +60,7 @@ def test_counts_are_cumulative_and_converge_to_the_window_total():
 def test_counts_are_monotone_non_decreasing():
     port = _FakePort(_ticks(range(1000, 1100, 3)))
     got = forming_tick_counts(
-        window_port=port, win_start=_START, win_end=_END,
+        ref=_REF, window_port=port, win_start=_START, win_end=_END,
         tos=list(range(1000, 1100, 7)),
     )
     assert all(b >= a for a, b in zip(got, got[1:]))
@@ -68,21 +69,21 @@ def test_counts_are_monotone_non_decreasing():
 def test_ticks_are_loaded_once_for_the_whole_window():
     # 時点ごとに読み直さない（足内の各時点で IO を繰り返さないための構造）。
     port = _FakePort(_ticks([1000, 1010, 1020]))
-    forming_tick_counts(window_port=port, win_start=_START, win_end=_END,
+    forming_tick_counts(ref=_REF, window_port=port, win_start=_START, win_end=_END,
                         tos=[1000, 1005, 1010, 1020])
-    assert port.calls == [(_START, _END)]
+    assert port.calls == [(_REF, _START, _END)]   # 要求の ref のティックを読む
 
 
 def test_ticks_outside_the_window_are_not_counted():
     port = _FakePort(_ticks([990, 999, 1000, 1099, 1100, 1200]))
-    got = forming_tick_counts(window_port=port, win_start=_START, win_end=_END, tos=[1099])
+    got = forming_tick_counts(ref=_REF, window_port=port, win_start=_START, win_end=_END, tos=[1099])
     assert got == [2]          # 1000 と 1099 のみ（窓は [1000,1100)）
 
 
 def test_outlier_ticks_are_excluded_like_intraday():
     # domain E-4 の中央値外れ値除去（|mid/m - 1| > 閾値）を通した集合を数える。
-    rows = _ticks([1000, 1010, 1020, 1030]) + [(1040, 9000.0, 9000.0)]
-    got = forming_tick_counts(window_port=_FakePort(rows), win_start=_START, win_end=_END,
+    rows = _ticks([1000, 1010, 1020, 1030]) + [(1040, 9000.0)]
+    got = forming_tick_counts(ref=_REF, window_port=_FakePort(rows), win_start=_START, win_end=_END,
                               tos=[1099])
     assert got == [4]          # 外れ値 1 件は数えない
 
@@ -94,31 +95,31 @@ def test_outlier_ticks_are_excluded_like_intraday():
     {"win_start": "x", "win_end": _END},         # 非数
 ])
 def test_invalid_window_yields_unknown(kwargs):
-    got = forming_tick_counts(window_port=_FakePort(_ticks([1000])), tos=[1000, 1050], **kwargs)
+    got = forming_tick_counts(ref=_REF, window_port=_FakePort(_ticks([1000])), tos=[1000, 1050], **kwargs)
     assert got == [None, None]
 
 
 def test_tick_load_failure_yields_unknown():
-    got = forming_tick_counts(window_port=_FakePort(raises=True), win_start=_START,
+    got = forming_tick_counts(ref=_REF, window_port=_FakePort(raises=True), win_start=_START,
                               win_end=_END, tos=[1000])
     assert got == [None]
 
 
 def test_empty_tick_window_yields_unknown():
-    got = forming_tick_counts(window_port=_FakePort([]), win_start=_START, win_end=_END,
+    got = forming_tick_counts(ref=_REF, window_port=_FakePort([]), win_start=_START, win_end=_END,
                               tos=[1000])
     assert got == [None]
 
 
 def test_missing_to_yields_unknown_for_that_point_only():
     port = _FakePort(_ticks([1000, 1010]))
-    got = forming_tick_counts(window_port=port, win_start=_START, win_end=_END,
+    got = forming_tick_counts(ref=_REF, window_port=port, win_start=_START, win_end=_END,
                               tos=[1000, None, 1010])
     assert got == [1, None, 2]
 
 
 def test_empty_tos_returns_empty():
-    assert forming_tick_counts(window_port=_FakePort(), win_start=_START, win_end=_END,
+    assert forming_tick_counts(ref=_REF, window_port=_FakePort(), win_start=_START, win_end=_END,
                                tos=[]) == []
 
 

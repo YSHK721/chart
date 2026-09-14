@@ -147,17 +147,19 @@ def test_空窓は空を返す():
 # ISSUE-238: 形成中バーへ実 tick 数（volume）を載せる
 # --------------------------------------------------------------------------- #
 class _FakeWindowPort:
-    """``load_raw_ticks`` のみを持つ IntrabarWindowPort スタブ（秒だけ意味を持つ）。"""
+    """``load_tick_prices`` のみを持つ IntrabarWindowPort スタブ（秒だけ意味を持つ）。"""
 
     def __init__(self, secs):
-        self._rows = [(s, 100.0, 101.0) for s in secs]
+        self._rows = [(s, 100.5) for s in secs]
         self.calls = 0
+        self.refs = []
 
     def load_m1_rows(self, ref, start, end):  # pragma: no cover — 本経路は使わない
         raise AssertionError("load_m1_rows は呼ばれない")
 
-    def load_raw_ticks(self, start, end):
+    def load_tick_prices(self, ref, start, end):
         self.calls += 1
+        self.refs.append(ref)
         return list(self._rows)
 
 
@@ -211,6 +213,7 @@ def test_単発latestにも実tick数が載る():
     )
     causal_compute(request=req, compute_port=port, window_port=win)
     assert port.compute_calls[-1]["bars"][-1]["volume"] == 2.0
+    assert win.refs == ["jp225_tick"]          # 要求の ref のティックを数える
 
 
 def test_確定足のvolumeは形成中バーの値で置換される():

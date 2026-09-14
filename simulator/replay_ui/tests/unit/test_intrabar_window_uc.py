@@ -18,14 +18,16 @@ class _FakeWindowPort:
         self._m1_exc = m1_exc
         self._ticks_exc = ticks_exc
         self.tick_called = False
+        self.refs = []
 
     def load_m1_rows(self, ref, start, end):
         if self._m1_exc:
             raise self._m1_exc
         return self._m1
 
-    def load_raw_ticks(self, start, end):   # ISSUE-031: 生ティック (sec, bid, ask)
+    def load_tick_prices(self, ref, start, end):   # (sec, ref の価格基準で畳んだ価格)
         self.tick_called = True
+        self.refs.append(ref)
         if self._ticks_exc:
             raise self._ticks_exc
         return self._ticks
@@ -37,7 +39,7 @@ def _req(mode="real_ticks"):
 
 def test_real_ticks_returns_m1_and_tick_mids():
     port = _FakeWindowPort(
-        m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 99.5, 100.5), (20, 100.5, 101.5)]
+        m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 100.0), (20, 101.0)]
     )
     res = intrabar_window(request=_req("real_ticks"), window_port=port)
     assert res.ok is True
@@ -47,7 +49,7 @@ def test_real_ticks_returns_m1_and_tick_mids():
 
 
 def test_non_real_ticks_skips_tick_loading():
-    port = _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 99.5, 100.5)])
+    port = _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 100.0)])
     res = intrabar_window(request=_req("ohlc_1min"), window_port=port)
     assert res.m1 == [[1.0, 2.0, 0.5, 1.5]]
     assert res.ticks == []
@@ -55,7 +57,7 @@ def test_non_real_ticks_skips_tick_loading():
 
 
 def test_m1_error_translated_and_does_not_block():
-    port = _FakeWindowPort(m1_exc=RuntimeError("boom-m1"), ticks=[(10, 99.5, 100.5)])
+    port = _FakeWindowPort(m1_exc=RuntimeError("boom-m1"), ticks=[(10, 100.0)])
     res = intrabar_window(request=_req("real_ticks"), window_port=port)
     assert res.m1 == []
     assert res.m1_error is not None and "boom-m1" in res.m1_error
@@ -75,3 +77,10 @@ def test_error_message_truncated_to_120_chars():
     port = _FakeWindowPort(m1_exc=RuntimeError("x" * 500))
     res = intrabar_window(request=_req("real_ticks"), window_port=port)
     assert len(res.m1_error) == 120
+
+
+def test_the_request_ref_reaches_the_tick_port():
+    """足内ティックは要求の ref のものを読む（ref を渡さないと、どの ref でも同じ木を読む）。"""
+    port = _FakeWindowPort(m1=[[1.0, 1.0, 1.0, 1.0]], ticks=[(10, 100.0)])
+    intrabar_window(request=_req("real_ticks"), window_port=port)
+    assert port.refs == ["jp225_tick"]

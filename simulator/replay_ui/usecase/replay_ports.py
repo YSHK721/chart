@@ -190,14 +190,14 @@ class IntrabarWindowPort(Protocol):
         """区間 ``[start,end)`` の m1 OHLC 行（``[o,h,l,c]``・上位足は cap 済）を返す。"""
         ...
 
-    def load_raw_ticks(self, start: int, end: int) -> "list[tuple[int, float, float]]":
-        """区間を跨ぐ**生ティック** ``[(sec, bid, ask), ...]`` を返す（cap 無し・整形しない）。
+    def load_tick_prices(self, ref: str, start: int, end: int) -> "list[tuple[int, float]]":
+        """``ref`` の区間を跨ぐ実ティックを ``[(sec, price), ...]`` で返す（cap 無し・窓も外れ値も落とさない）。
 
-        ISSUE-031: 以前は ``load_ticks`` が mid 算出・窓フィルタ・外れ値除去（domain E-4）まで
-        済ませた ``(sec, mid)`` を返していた。これは**本質ルールの適用を各 adapter に委ねる**契約で、
-        tick 源を差し替えるたびに `mid_series` を再結線する必要があり、結線漏れが静かに
-        「外れ値除去なしの mid 列」を生む。契約を「素の観測値を運ぶ」ことに限定し、
-        本質ルールの適用は usecase（:func:`~usecase.intrabar_window.intrabar_window`）へ寄せる。
+        価格は ref の価格基準（台帳 marketdata/dataset_registry.py の価格基準）で畳んだ値である。
+        読むのは ref のティック木（同じ台帳の木の枝名）で、木を持たない ref は空。
+        ISSUE-512 段階 4 の前提: 以前の口は ref を受け取らず、どの ref でも Dukascopy の木を mid で
+        読んでいた（MT5 の ref でも足内ティックだけ Dukascopy・mid になる）。
+        ISSUE-031: 窓フィルタと外れ値除去（domain E-4 の窓内価格列）は usecase が 1 か所で適用する。
         """
         ...
 

@@ -99,7 +99,7 @@ def causal_compute(
         return []
     if request.mode == "latest":
         forming = _with_tick_volume_one(
-            request.forming, window_port, request.win_start, request.win_end
+            request.forming, window_port, request.win_start, request.win_end, ref=request.ref
         )
         bars = apply_forming(bars, forming)
         return compute_port.compute(
@@ -317,7 +317,7 @@ def causal_compute_seq(
     #   （同値性は tests/unit/test_causal_compute_seq.py と forming_bar のテストで固定）。
     # ISSUE-238: 各時点の実 tick 数を 1 回のティック読込でまとめて数え、volume として載せる。
     #   時点ごとに読み直さない（窓は共通）。不明なら None＝従来どおり載せない。
-    counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end)
+    counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end, ref=request.ref)
     # ISSUE-250 Phase 1: prefix/tails 分割は中立共有核 common.forming_window の唯一の定義。
     prefix, tails = split_prefix_tails(
         bars, [with_tick_volume(f, c) for f, c in zip(seq, counts)]
@@ -388,7 +388,7 @@ def causal_compute_seq_multi(
     if not seq or not specs:
         return {}
     # 実 tick 数は窓が共通＝1 回だけ数える（指標ごとに読み直さない）。
-    counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end)
+    counts = _tick_counts_for(seq, window_port, request.win_start, request.win_end, ref=request.ref)
     seq_with_volume = [with_tick_volume(f, c) for f, c in zip(seq, counts)]
 
     chart_bars: "list[dict] | None" = None
@@ -434,15 +434,17 @@ def _tick_counts_for(
     window_port: "IntrabarWindowPort | None",
     win_start: "int | None",
     win_end: "int | None",
+    *,
+    ref: str,
 ) -> "list[int | None]":
-    """各 forming 状態の ``to`` に対する実 tick 数（不明は None）。"""
+    """各 forming 状態の ``to`` に対する実 tick 数（不明は None）。数えるのは ``ref`` のティック。"""
     if window_port is None:
         return [None] * len(seq)
     tos = [(f or {}).get("to") for f in seq]
     if all(t is None for t in tos):
         return [None] * len(seq)
     return forming_tick_counts(
-        window_port=window_port, win_start=win_start, win_end=win_end, tos=tos
+        ref=ref, window_port=window_port, win_start=win_start, win_end=win_end, tos=tos
     )
 
 
@@ -451,7 +453,9 @@ def _with_tick_volume_one(
     window_port: "IntrabarWindowPort | None",
     win_start: "int | None",
     win_end: "int | None",
+    *,
+    ref: str,
 ) -> "dict | None":
     """単発 forming（mode='latest'）へ実 tick 数を載せる。"""
-    counts = _tick_counts_for([forming or {}], window_port, win_start, win_end)
+    counts = _tick_counts_for([forming or {}], window_port, win_start, win_end, ref=ref)
     return with_tick_volume(forming, counts[0])

@@ -52,7 +52,7 @@ class Compute:
     def compute_latest_seq(self, ind, var, prefix, tails, params): return [[{"name": ind}] for _ in tails]
 class Window:
     def load_m1_rows(self, ref, start, end): return [[1.0, 2.0, 0.5, 1.5]]
-    def load_raw_ticks(self, start, end): return [(60, 1.0, 1.1)]
+    def load_tick_prices(self, ref, start, end): return [(60, 1.05)]
 class Days:
     def load_days(self, ref, tf): return ["2026-01-01"]
 # ISSUE-502 段階 5B: 4 つの Port は HTTP ステータスを返さない（PortResult＝成否の分類 ＋ ボディ）。

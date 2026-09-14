@@ -23,12 +23,12 @@ class _FakeWindowPort:
     def load_m1_rows(self, ref, start, end):
         return self._m1
 
-    def load_raw_ticks(self, start, end):   # ISSUE-031: 生ティック (sec, bid, ask)
+    def load_tick_prices(self, ref, start, end):   # (sec, ref の価格基準で畳んだ価格)
         return self._ticks
 
 
 def _port():
-    return _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 99.5, 100.5), (20, 100.5, 101.5)])
+    return _FakeWindowPort(m1=[[1.0, 2.0, 0.5, 1.5]], ticks=[(10, 100.0), (20, 101.0)])
 
 
 def test_want_secs_default_false_keeps_ticks_unchanged_and_no_tick_secs():
