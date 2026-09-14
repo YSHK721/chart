@@ -92,7 +92,8 @@ def test_ticks_to_m1_missing_column_raises() -> None:
 
 def test_path_helpers_respect_injected_data_dir(tmp_path: Path) -> None:
     assert tick_m1.tick_root(tmp_path) == tmp_path / "ticks"
-    assert tick_m1.m1_csv_path(ref="jp225_tick", data_dir=tmp_path) == tmp_path / "jp225_tick_m1.csv"
+    # 置き場の名前は台帳の series（ISSUE-511 段階 1d）。
+    assert tick_m1.m1_csv_path(ref="jp225_tick", data_dir=tmp_path) == tmp_path / "jp225_tick_bid_m1.csv"
 
 
 def test_day_parquet_files_lists_only_existing_days(tmp_path: Path) -> None:
@@ -117,7 +118,7 @@ def test_build_m1_from_ticks_writes_loader_compatible_csv(tmp_path: Path) -> Non
     ).to_parquet(day / "JP225_ticks.parquet")
 
     out = tick_m1.build_m1_from_ticks("2025-01-02", "2025-01-02", ref="jp225_tick", data_dir=tmp_path)
-    assert out == tmp_path / "jp225_tick_m1.csv"
+    assert out == tmp_path / "jp225_tick_bid_m1.csv"   # series（ISSUE-511 段階 1d）。
 
     # rollup loader 互換: 既存列順は不変で、tick 由来の方向内訳 up/dn を末尾へ足す。
     #   date は "%Y-%m-%d %H:%M:%S"。

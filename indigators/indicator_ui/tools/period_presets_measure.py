@@ -37,16 +37,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from marketdata import rollup_paths
+from marketdata import rollup_paths, tick_m1
 from marketdata.session_day import session_date_label, session_day_starts
-
-REPO = Path(__file__).resolve().parents[3]
 
 # ロールアップ配置の唯一権威（marketdata.rollup_paths）へ委譲する（ISSUE-502 D-16）。
 # 既定の DATA_DIR は ``<repo>/data/marketdata`` であり、従来の直書きと同一パスを指す。
 REF = "jp225_tick"
 ROLL = rollup_paths.ref_dir(REF)
-M1 = REPO / "data" / "marketdata" / "jp225_tick_m1.csv"
+# M1 の置き場も台帳の series から組む（ISSUE-511 段階 1d・ロールアップと同じファイル群を読む）。
+M1 = tick_m1.m1_csv_path(ref=REF)
 
 TFS = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"]
 TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,

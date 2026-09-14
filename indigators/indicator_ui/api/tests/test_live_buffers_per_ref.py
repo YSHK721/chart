@@ -75,7 +75,8 @@ def test_each_ref_gets_a_buffer_from_its_own_vendor(two_vendors):
     buffers = server_mod.build_live_tick_buffers(feeds, refs=two_vendors)
 
     # Assert
-    assert buffers["jp225_tick"] == {"vendor": "dukascopy", "token": "JP225", "basis": "mid"}
+    # jp225_tick の基準は台帳で bid（ISSUE-511 段階 1d）。
+    assert buffers["jp225_tick"] == {"vendor": "dukascopy", "token": "JP225", "basis": "bid"}
     assert buffers["zz_mt5_a"] == {"vendor": "mt5", "token": _MT5_TOKEN, "basis": "bid"}
 
 

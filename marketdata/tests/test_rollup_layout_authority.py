@@ -37,7 +37,9 @@ def test_rollups_root_is_data_dir_rollups() -> None:
 
 
 def test_ref_dir_is_rollups_slash_ref() -> None:
-    assert str(rollup_paths.ref_dir("jp225_tick")) == f"{DATA_DIR}/rollups/jp225_tick"
+    # 置き場の名前は台帳の series（ISSUE-511 段階 1d・jp225_tick → jp225_tick_bid）。
+    assert str(rollup_paths.ref_dir("jp225_tick")) == f"{DATA_DIR}/rollups/jp225_tick_bid"
+    assert str(rollup_paths.ref_dir("jp225_mt5")) == f"{DATA_DIR}/rollups/jp225_mt5"
 
 
 def test_csv_name_is_ref_prefix_underscore_tf() -> None:
@@ -56,11 +58,13 @@ def test_rollup_store_path_falls_back_to_flat_layout(tmp_path) -> None:
 
 def test_rollup_store_path_prefers_existing_ref_subdir_csv(tmp_path) -> None:
     """(1) 当該 tf の CSV が ref 専用 dir に実在すればそちらを返す（空 dir では切り替えない）。"""
-    (tmp_path / "jp225_tick").mkdir()
-    assert rollup_paths.resolve_csv("jp225_tick", "5m", root=tmp_path) == tmp_path / "jp225_tick_5m.csv"
-    (tmp_path / "jp225_tick" / "jp225_tick_5m.csv").write_text("date\n", encoding="utf-8")
+    # jp225_tick の保存物の名前は series の jp225_tick_bid（ISSUE-511 段階 1d）。
+    (tmp_path / "jp225_tick_bid").mkdir()
     assert (rollup_paths.resolve_csv("jp225_tick", "5m", root=tmp_path)
-            == tmp_path / "jp225_tick" / "jp225_tick_5m.csv")
+            == tmp_path / "jp225_tick_bid_5m.csv")
+    (tmp_path / "jp225_tick_bid" / "jp225_tick_bid_5m.csv").write_text("date\n", encoding="utf-8")
+    assert (rollup_paths.resolve_csv("jp225_tick", "5m", root=tmp_path)
+            == tmp_path / "jp225_tick_bid" / "jp225_tick_bid_5m.csv")
 
 
 def test_rollup_module_path_keeps_ref_prefix_contract(tmp_path) -> None:
@@ -83,7 +87,7 @@ def test_build_tick_rollup_context_rollups_dir(tmp_path) -> None:
     from tools import build_tick_rollup as btr
 
     ctx = btr.PipelineContext(data_dir=tmp_path)
-    assert ctx.rollups_dir == tmp_path / "rollups" / "jp225_tick"
+    assert ctx.rollups_dir == tmp_path / "rollups" / "jp225_tick_bid"   # series（ISSUE-511 1d）。
 
 
 def test_live_tick_watch_writes_into_the_ref_subdir(tmp_path, monkeypatch) -> None:
@@ -92,18 +96,22 @@ def test_live_tick_watch_writes_into_the_ref_subdir(tmp_path, monkeypatch) -> No
     from marketdata import tick_m1
     from tools import live_tick_watch as ltw
 
-    seen: "dict[str, Path]" = {}
+    seen: "dict[str, object]" = {}
     monkeypatch.setattr(md_rollup, "heal_tail_gaps",
-                        lambda m1, tfs, out_dir, ref_prefix: seen.__setitem__("heal", out_dir) or [])
+                        lambda m1, tfs, out_dir, ref_prefix:
+                        seen.update(heal=out_dir, heal_prefix=ref_prefix) or [])
     monkeypatch.setattr(md_rollup.RollupState, "load", staticmethod(lambda out_dir: None))
     monkeypatch.setattr(md_rollup, "incremental_update",
-                        lambda m1, st, tfs, out_dir, ref_prefix: seen.__setitem__("update", out_dir))
-    monkeypatch.setattr(tick_m1, "m1_csv_path", lambda **kw: tmp_path / "jp225_tick_m1.csv")
+                        lambda m1, st, tfs, out_dir, ref_prefix:
+                        seen.update(update=out_dir, update_prefix=ref_prefix))
+    monkeypatch.setattr(tick_m1, "m1_csv_path", lambda **kw: tmp_path / "jp225_tick_bid_m1.csv")
     monkeypatch.setattr(ltw, "_heal_next_monotonic", 0.0, raising=False)
 
     ltw._rollup_update(tmp_path)
-    assert seen["heal"] == tmp_path / "rollups" / "jp225_tick"
-    assert seen["update"] == tmp_path / "rollups" / "jp225_tick"
+    # dir も CSV の接頭辞も series（ISSUE-511 段階 1d）。片方だけ ref 名だと別ファイルを書く。
+    assert seen["heal"] == tmp_path / "rollups" / "jp225_tick_bid"
+    assert seen["update"] == tmp_path / "rollups" / "jp225_tick_bid"
+    assert seen["heal_prefix"] == seen["update_prefix"] == "jp225_tick_bid"
 
 
 def _load_module_by_path(name: str, rel: str):
@@ -134,7 +142,7 @@ def test_forming_bar_reads_state_from_the_ref_subdir(monkeypatch) -> None:
     monkeypatch.setattr(md_rollup.RollupState, "load",
                         staticmethod(lambda out_dir: seen.__setitem__("state", Path(out_dir))))
     assert forming_bar._default_confirmed_end("jp225_tick") is None
-    assert seen["state"] == Path(f"{DATA_DIR}/rollups/jp225_tick")
+    assert seen["state"] == Path(f"{DATA_DIR}/rollups/jp225_tick_bid")   # series（ISSUE-511 1d）。
 
 
 def test_export_jp225_m1_default_rollup_dir_is_flat() -> None:
@@ -148,7 +156,9 @@ def test_period_presets_measure_reads_the_ref_subdir() -> None:
     """(8) indigators period_presets_measure.py — jp225_tick の ref 専用配置。"""
     from indigators.indicator_ui.tools import period_presets_measure
 
-    assert period_presets_measure.ROLL == Path(f"{DATA_DIR}/rollups/jp225_tick")
+    # ロールアップと M1 は同じ series の保存物（ISSUE-511 段階 1d）。
+    assert period_presets_measure.ROLL == Path(f"{DATA_DIR}/rollups/jp225_tick_bid")
+    assert period_presets_measure.M1 == Path(f"{DATA_DIR}/jp225_tick_bid_m1.csv")
 
 
 # =====================================================================

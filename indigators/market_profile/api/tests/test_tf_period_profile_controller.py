@@ -132,13 +132,13 @@ def test_disk_generation_follows_tfp_cache_version(monkeypatch, tmp_path):
     monkeypatch.setattr(ctl._mpd, "_load_window_ticks", _fake_ticks)
     st, _ = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st == 200
-    assert list((tmp_path / "price-mid" / "JP225").glob("1m/s1/*")), "v1 は従来 's1' と同一パスへ保存する"
+    assert list((tmp_path / "price-bid" / "JP225").glob("1m/s1/*")), "v1 は従来 's1' と同一パスへ保存する"
 
     ctl._reset_tf_period_cache()
     monkeypatch.setattr(ctl, "_TFP_CACHE_VERSION", 2)  # bump をシミュレート。
     st2, _ = ctl.handle_tf_period_profile("jp225_tick", "1m", 0, 120, now=1e12)
     assert st2 == 200
-    assert list((tmp_path / "price-mid" / "JP225").glob("1m/s2/*")), "bump 後は s2 subdir へ書く（旧世代と不混在）"
+    assert list((tmp_path / "price-bid" / "JP225").glob("1m/s2/*")), "bump 後は s2 subdir へ書く（旧世代と不混在）"
 
 
 def test_default_disk_root_resolves_via_tick_store_port(monkeypatch, tmp_path):

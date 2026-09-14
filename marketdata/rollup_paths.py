@@ -23,7 +23,11 @@
 配置リテラル（``"rollups"`` / ``f"..._{tf}.csv"``）を組んでいたら落ちる。
 :mod:`marketdata.tick_tree`（tick 木レイアウトの権威）と同じ様式である。
 
-依存方向（厳守）: 標準ライブラリと :mod:`marketdata.paths`（物理基点の唯一源）のみに依存する。
+置き場の名前は ref 名ではなく **series**（台帳 :func:`marketdata.dataset_registry.series_of`・
+ISSUE-511 段階 1d）。ref 名を変えずに保存物だけを新しいファイルへ向けるため。
+
+依存方向（厳守）: 標準ライブラリと :mod:`marketdata.paths`（物理基点の唯一源）と
+:mod:`marketdata.dataset_registry`（series の唯一源・paths のみに依存する最下層）のみに依存する。
 ロールアップの生成・読取（:mod:`marketdata.rollup` / :mod:`marketdata.rollup_store`）へは依存
 しない＝権威が利用者へ逆流しない。この宣言は
 ``marketdata/tests/test_module_dependency_declarations.py`` が AST 走査で強制する。
@@ -34,6 +38,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from marketdata import dataset_registry
 from marketdata.paths import DATA_DIR
 
 #: ロールアップ格納ディレクトリ名（配置の語彙。この綴りを持ってよいのは本モジュールだけ）。
@@ -46,12 +51,12 @@ def rollups_root(data_dir: Any = DATA_DIR) -> Path:
 
 
 def ref_dir(ref: str, *, data_dir: Any = DATA_DIR) -> Path:
-    """``ref`` 専用のロールアップ出力ディレクトリ（``<data_dir>/rollups/<ref>``）。
+    """``ref`` 専用のロールアップ出力ディレクトリ（``<data_dir>/rollups/<series>``）。
 
     進捗 state のファイル名は ref 非依存の固定名であるため、ref ごとに dir を切って state まで
     物理分離する（同一 dir へ書くと既存 ref の state を上書き破壊する）。
     """
-    return rollups_root(data_dir) / ref
+    return rollups_root(data_dir) / dataset_registry.series_of(ref)
 
 
 def csv_name(ref_prefix: str, tf: str) -> str:
@@ -67,18 +72,19 @@ def csv_path(out_dir: Any, ref_prefix: str, tf: str) -> Path:
 def resolve_csv(ref: str, tf: str, *, root: Any = None, data_dir: Any = DATA_DIR) -> Path:
     """読み手向けの解決（**当該 CSV の実在**で 2 レイアウトを選ぶ）。
 
-    ref 専用配置 ``<root>/<ref>/<ref>_<tf>.csv`` に当該 tf の CSV が実在すればそれを返し、
-    無ければフラット配置 ``<root>/<ref>_<tf>.csv`` を返す。両配置に無ければフラットパスを
-    返す（不在の扱いは呼び出し側 1 箇所に閉じる）。
+    ref 専用配置 ``<root>/<series>/<series>_<tf>.csv`` に当該 tf の CSV が実在すればそれを返し、
+    無ければフラット配置 ``<root>/<series>_<tf>.csv`` を返す。両配置に無ければフラットパスを
+    返す（不在の扱いは呼び出し側 1 箇所に閉じる）。series は ref の保存物の名前（台帳）。
 
     ``root`` は基点を明示注入したいとき（テストの差し替え等）に使う。既定は
     :func:`rollups_root` ``(data_dir)``。
     """
     root_path = rollups_root(data_dir) if root is None else Path(root)
-    subdir_csv = root_path / ref / csv_name(ref, tf)
+    series = dataset_registry.series_of(ref)
+    subdir_csv = root_path / series / csv_name(series, tf)
     if subdir_csv.is_file():
         return subdir_csv
-    return root_path / csv_name(ref, tf)
+    return root_path / csv_name(series, tf)
 
 
 __all__ = [

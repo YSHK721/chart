@@ -45,6 +45,8 @@ _ALLOWED: "dict[str, set[str]]" = {
     "m1_chain.py": {
         "pandas", "marketdata.tick_m1", "marketdata.rollup",
         "marketdata.rollup_paths", _SELF,
+        # 保存物の名前（series）の唯一源（ISSUE-511 段階 1d）。rollup の ref_prefix に渡す。
+        "marketdata.dataset_registry",
     },
     # 日次確定後の再構築。日次クリーニングの唯一の実装（outlier_policy）を権威と共有する。
     "rebuild.py": {

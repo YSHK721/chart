@@ -32,10 +32,10 @@ from marketdata.mt5_ticks import ingest
 # --------------------------------------------------------------------------- #
 # 1. 値ピン
 # --------------------------------------------------------------------------- #
-def test_jp225_tick_stays_mid():
-    """``jp225_tick`` の基準は従来値（mid）のまま。変わると既存チャートの水準が動く。"""
+def test_jp225_tick_is_bid():
+    """``jp225_tick`` の基準は bid（ISSUE-511 段階 1d・MT5 と同じ基準＝切り戻しで水準が跳ねない）。"""
     # Arrange / Act / Assert
-    assert tf_meta.tick_price_basis("jp225_tick") == tick_m1.PRICE_BASIS_MID
+    assert tf_meta.tick_price_basis("jp225_tick") == tick_m1.PRICE_BASIS_BID
 
 
 def test_jp225_mt5_is_read_with_the_basis_it_is_written_with():
@@ -106,10 +106,10 @@ def test_the_window_delegates_to_the_ledger(monkeypatch):
 # --------------------------------------------------------------------------- #
 # 4. 木 → 基準
 # --------------------------------------------------------------------------- #
-def test_the_dukascopy_tree_is_read_as_mid():
-    """Dukascopy の木（枝名 JP225）の基準は mid（MP の既存出力が変わらない壁）。"""
+def test_the_dukascopy_tree_is_read_as_bid():
+    """Dukascopy の木（枝名 JP225）の基準は bid（ISSUE-511 段階 1d）。"""
     # Arrange / Act / Assert
-    assert dataset_registry.price_basis_of_tick_token("JP225") == tick_m1.PRICE_BASIS_MID
+    assert dataset_registry.price_basis_of_tick_token("JP225") == tick_m1.PRICE_BASIS_BID
 
 
 def test_the_mt5_tree_is_read_as_bid():

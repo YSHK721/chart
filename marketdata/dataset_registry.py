@@ -65,6 +65,12 @@ class DatasetDescriptor:
             ``"mt5"``（OANDA MT5 端末の受信ジャーナル）。ライブ tick バッファは ref ごとに、この
             ベンダの供給口から作る（ISSUE-508 の裁定「ベンダを素材の属性として明示」）。``tick`` が
             True なら必須（構築時に拒否）。
+        series: この ref の保存物（1 分足 ``<series>_m1.csv`` とロールアップ
+            ``rollups/<series>/<series>_<tf>.csv``）の名前（ISSUE-511 段階 1d）。None なら ref 名そのもの
+            （従来の置き場）。ref 名を変えずに読み書きの先だけを新しいファイルへ向けるために ref と
+            分けて持つ（旧ファイルを上書きしない＝本欄を戻せば元の置き場へ可逆）。名前の解決は
+            :func:`series_of` の 1 箇所で、置き場の組み立て（``marketdata.tick_m1.m1_csv_path`` と
+            :mod:`marketdata.rollup_paths`）はそこから名前を受け取る。
     """
 
     path: Path
@@ -76,6 +82,7 @@ class DatasetDescriptor:
     tick_token: "str | None" = None
     price_basis: "str | None" = None
     vendor: "str | None" = None
+    series: "str | None" = None
 
     def __post_init__(self) -> None:
         # ISSUE-515 対策 1: ティック ref は価格基準を必ず名乗る。**構築時に**拒否する理由は、
@@ -127,7 +134,11 @@ REGISTRY: dict[str, DatasetDescriptor] = {
     # JP225 1分足（ティック由来・原子）。実市場・ロールアップ経路・ティック由来供給。
     # symbol は既存事実の明文化（``tick_m1._DEFAULT_SYMBOL="JP225"`` / ``_DEFAULT_REF="jp225_tick"``）。
     "jp225_tick": DatasetDescriptor(
-        path=DATA_DIR / "jp225_tick_m1.csv",
+        # ISSUE-511 段階 1d: bid で作り直した保存物（段階 1b で新規生成）を読み書きする。旧 mid の
+        # jp225_tick_m1.csv と rollups/jp225_tick/ は 1 バイトも触らない。切り戻しは本行・series・
+        # price_basis の 3 行を戻す。
+        path=DATA_DIR / "jp225_tick_bid_m1.csv",
+        series="jp225_tick_bid",
         symbol="JP225",
         clamp_outliers=True,
         rollup=True,
@@ -139,10 +150,9 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # 1 バイトも変わらない。従来この値は木のレイアウト権威（marketdata/tick_tree.py:30）が
         # 持つ既定引数と、読取側の手書き写像に散っていた（台帳に写像が無かった）。
         tick_token="JP225",
-        # 価格基準（ISSUE-515 対策 1）。既存事実の明文化: 確定足の書き手（tools/live_tick_watch.py・
-        # tools/build_tick_rollup.py）は price_basis を渡さず既定 mid で畳んでいる（ISSUE-511 実測）。
-        # bid へ揃えるときは ISSUE-511 段階 1 の再生成と同時に本行を変える。
-        price_basis="mid",
+        # 価格基準（ISSUE-515 対策 1）。ISSUE-511 段階 1d で bid（MT5 と同じ基準）。確定足の書き手
+        # （tools/live_tick_watch.py・tools/build_tick_rollup.py）も形成中バー・MP も本値で畳む。
+        price_basis="bid",
         # ベンダ（ISSUE-515 対策 2）。既存事実の明文化: ライブ tick バッファはこれまで
         # Dukascopy の配信（marketdata.fetch_ticks_since）だけから作られていた。
         vendor="dukascopy",
@@ -198,7 +208,7 @@ def rollup_refs() -> "tuple[str, ...]":
 #: ISSUE-512 段階 4（2026-09-14・依頼者から判断を委任）: MT5（OANDA＝実際に取引している口座）へ。
 #: 前提は揃えてある: 当日ジャーナルの読取（段階 2）・確定足と同じ bid・MT5 自身のライブ受信
 #: （ISSUE-515）・リプレイの足内ティックも ref の木と基準で読む。Dukascopy へ切り戻すときは
-#: ``"jp225_tick"`` へ戻す（表示水準は ISSUE-511 の 1d が済むまで約 3.6 ずれる）。
+#: ``"jp225_tick"`` へ戻す（ISSUE-511 段階 1d で jp225_tick も bid＝同じ基準で並ぶ）。
 DEFAULT_DATASET_REF = "jp225_mt5"
 
 
@@ -281,6 +291,17 @@ def tick_vendor(ref: "str | None") -> "str | None":
     return d.vendor
 
 
+def series_of(ref: str) -> str:
+    """``ref`` の保存物の名前を台帳から引く（ISSUE-511 段階 1d）。
+
+    台帳に無い ref（テストの合成 ref 等）と ``series`` を持たない ref は ref 名そのもの。
+    """
+    d = REGISTRY.get(ref)
+    if d is None or d.series is None:
+        return ref
+    return d.series
+
+
 def price_basis_of_tick_token(token: str) -> str:
     """ティック木の枝名 ``token`` を畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
 
@@ -314,5 +335,6 @@ __all__ = [
     "tick_price_basis",
     "price_basis_of_tick_token",
     "tick_vendor",
+    "series_of",
     "DEFAULT_DATASET_REF",
 ]

@@ -241,6 +241,7 @@ def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
     if not force and now < _heal_next_monotonic:
         return []
     _heal_next_monotonic = now + _HEAL_EVERY_SECONDS
+    from marketdata.dataset_registry import series_of
     from marketdata.rollup import heal_tail_gaps
     from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
@@ -249,7 +250,7 @@ def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
     out_dir.mkdir(parents=True, exist_ok=True)
     healed = heal_tail_gaps(
         m1_csv_path(ref=REF, data_dir=data_dir), _rollup_timeframes(), out_dir,
-        ref_prefix=REF,
+        ref_prefix=series_of(REF),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
     )
     if healed:
         LOG.warning("rollup 自己修復を実施: %s", ", ".join(healed))
@@ -263,6 +264,7 @@ def _rollup_update(data_dir: Path):
     増分（速い経路）が「既存末尾は正しい」前提で末尾 1 行しか触らないため（壊れた土台の上に
     差分を積まない）。
     """
+    from marketdata.dataset_registry import series_of
     from marketdata.rollup import RollupState, incremental_update
     from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
@@ -272,7 +274,10 @@ def _rollup_update(data_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     m1_path = m1_csv_path(ref=REF, data_dir=data_dir)
     state = RollupState.load(out_dir)
-    return incremental_update(m1_path, state, _rollup_timeframes(), out_dir, ref_prefix=REF)
+    return incremental_update(
+        m1_path, state, _rollup_timeframes(), out_dir,
+        ref_prefix=series_of(REF),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
+    )
 
 
 # --------------------------------------------------------------------------- #

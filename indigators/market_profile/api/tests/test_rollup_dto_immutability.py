@@ -98,7 +98,8 @@ def test_gateway_load_window_ticks_returns_frozen_tick_window():
     )
     assert isinstance(win, TickWindow)
     assert win.secs.dtype == np.int64 and win.mids.dtype == np.float64
-    assert np.array_equal(win.mids, np.array([20000.0, 20010.0, 20020.0]))
+    # 木 JP225 の基準は台帳で bid（ISSUE-511 段階 1d）＝ bidPrice（mid − 0.5）。
+    assert np.array_equal(win.mids, np.array([19999.5, 20009.5, 20019.5]))
     assert not win.secs.flags.writeable and not win.mids.flags.writeable
 
 

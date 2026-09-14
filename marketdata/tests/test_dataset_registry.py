@@ -19,7 +19,8 @@ def test_whitelist_values_unchanged():
     assert set(wl) == {"sample", "jp225", "jp225_m1", "jp225_tick", "jp225_mt5"}
     assert wl["jp225"] == DATA_DIR / "jp225_daily.csv"
     assert wl["jp225_m1"] == DATA_DIR / "jp225_m1.csv"
-    assert wl["jp225_tick"] == DATA_DIR / "jp225_tick_m1.csv"
+    # ISSUE-511 段階 1d: bid で作り直した保存物（旧 mid の jp225_tick_m1.csv は残置）。
+    assert wl["jp225_tick"] == DATA_DIR / "jp225_tick_bid_m1.csv"
     assert wl["sample"].name == "ohlcv.csv"
 
 

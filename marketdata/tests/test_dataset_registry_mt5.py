@@ -87,7 +87,8 @@ def test_既存refの記述子は1バイトも動いていない():
     assert (r["jp225"].rollup, r["jp225"].tick) == (False, False)
     assert r["jp225_m1"].path == DATA_DIR / "jp225_m1.csv"
     assert (r["jp225_m1"].rollup, r["jp225_m1"].tick) == (True, False)
-    assert r["jp225_tick"].path == DATA_DIR / "jp225_tick_m1.csv"
+    # ISSUE-511 段階 1d で bid の保存物へ（旧 mid の jp225_tick_m1.csv は残置）。
+    assert r["jp225_tick"].path == DATA_DIR / "jp225_tick_bid_m1.csv"
     assert (r["jp225_tick"].rollup, r["jp225_tick"].tick) == (True, True)
     assert r["sample"].path.name == "ohlcv.csv"
     # ティック由来は jp225_tick と jp225_mt5 の 2 つ（ISSUE-512 段階 3 で MT5 が加わった）。

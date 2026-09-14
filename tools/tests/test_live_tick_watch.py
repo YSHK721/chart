@@ -131,12 +131,12 @@ def test_update_once_end_to_end_excludes_forming_and_writes_tick_ref(monkeypatch
     now = dt.datetime(2026, 7, 6, 12, 0, 30)
     ltw.update_once(now, tmp_path, interval=60)
 
-    m1 = pd.read_csv(tmp_path / "jp225_tick_m1.csv")
+    m1 = pd.read_csv(tmp_path / "jp225_tick_bid_m1.csv")
     dates = set(m1["date"])
     assert "2026-07-06 09:00:00" in dates
     assert "2026-07-06 12:00:00" not in dates  # until=12:00 で形成中を除外。
     # rollup は ref_prefix=jp225_tick の専用サブ dir へ。
-    assert (tmp_path / "rollups" / "jp225_tick" / "jp225_tick_5m.csv").is_file()
+    assert (tmp_path / "rollups" / "jp225_tick_bid" / "jp225_tick_bid_5m.csv").is_file()
 
 
 def test_update_once_backfills_gap_days_from_caught_up_parquet(monkeypatch, tmp_path) -> None:
@@ -158,7 +158,7 @@ def test_update_once_backfills_gap_days_from_caught_up_parquet(monkeypatch, tmp_
     build_m1_from_ticks("2026-07-02", "2026-07-02", ref="jp225_tick", data_dir=tmp_path)
     _put_day(dt.date(2026, 7, 3), [("2026-07-03 09:00:10", 200.0, 202.0)])
     assert "2026-07-03 09:00:00" not in set(
-        pd.read_csv(tmp_path / "jp225_tick_m1.csv")["date"]
+        pd.read_csv(tmp_path / "jp225_tick_bid_m1.csv")["date"]
     )  # 前提の実証: この時点で 7/3 は M1 未収載（テスト自体の識別力を固定）。
 
     def _fake_fetch_day(day, nxt):
@@ -169,7 +169,7 @@ def test_update_once_backfills_gap_days_from_caught_up_parquet(monkeypatch, tmp_
     monkeypatch.setattr(ltw, "_fetch_day", _fake_fetch_day)
     ltw.update_once(dt.datetime(2026, 7, 6, 12, 0, 30), tmp_path, interval=60)
 
-    dates = set(pd.read_csv(tmp_path / "jp225_tick_m1.csv")["date"])
+    dates = set(pd.read_csv(tmp_path / "jp225_tick_bid_m1.csv")["date"])
     assert "2026-07-03 09:00:00" in dates  # 欠損日（7/3）が自己修復される。
     assert "2026-07-06 09:00:00" in dates  # 当日も追記される。
 

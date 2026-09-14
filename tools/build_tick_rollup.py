@@ -257,6 +257,7 @@ def stage_m1(ctx: PipelineContext) -> int:
 
 def stage_rollup(ctx: PipelineContext) -> int:
     """tick 由来 M1 を上位足へロールアップする（ref_prefix=jp225_tick）。"""
+    from marketdata.dataset_registry import series_of
     from marketdata.tick_m1 import m1_csv_path
 
     m1_path = m1_csv_path(ref=ctx.ref, data_dir=ctx.data_dir)
@@ -266,10 +267,11 @@ def stage_rollup(ctx: PipelineContext) -> int:
         )
     ctx.rollups_dir.mkdir(parents=True, exist_ok=True)
     tfs = _rollup_timeframes()
-    _rollup_build(m1_path, tfs, ctx.rollups_dir, ctx.ref, full_rebuild=ctx.full_rebuild)
+    series = series_of(ctx.ref)   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
+    _rollup_build(m1_path, tfs, ctx.rollups_dir, series, full_rebuild=ctx.full_rebuild)
     LOG.info(
         "rollup: %s -> %s/%s_<tf>.csv (%s・%s)",
-        m1_path, ctx.rollups_dir, ctx.ref, ",".join(tfs),
+        m1_path, ctx.rollups_dir, series, ",".join(tfs),
         "全再構築" if ctx.full_rebuild else "差分更新",
     )
     return 0

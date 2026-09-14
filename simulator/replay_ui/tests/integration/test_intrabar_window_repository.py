@@ -80,11 +80,11 @@ def test_load_m1_rows_delegates_to_dataset_atom_window(tmp_path):
     assert rows == [[100.0, 105.0, 99.0, 101.0], [101.0, 106.0, 100.0, 102.0]]
 
 
-def test_a_mid_ref_gets_unfiltered_midpoints(tmp_path):
-    """jp225_tick（台帳の基準は mid）は ``(sec, mid)`` を窓・外れ値除去なしで受け取る。
+def test_jp225_tick_gets_unfiltered_prices_at_its_ledger_basis(tmp_path):
+    """jp225_tick（台帳の基準は bid・ISSUE-511 段階 1d）は ``(sec, bid)`` を窓・外れ値除去なしで受け取る。
 
     窓フィルタと外れ値除去は usecase の責務（ISSUE-031）であり、adapter は落とさない。
-    価格の畳み方（mid）は台帳と marketdata/tick_m1.py の 1 箇所が決める（ISSUE-512 段階 4 の前提）。
+    価格の畳み方は台帳と marketdata/tick_m1.py の 1 箇所が決める（ISSUE-512 段階 4 の前提）。
     """
     root = tmp_path / "ticks"
     _write_parquet(root)
@@ -93,8 +93,8 @@ def test_a_mid_ref_gets_unfiltered_midpoints(tmp_path):
     out = repo.load_tick_prices("jp225_tick", _D1_00_00, _D1_00_00 + 60)
 
     assert out == [
-        (_D1_00_00 + 10, 100.0), (_D1_00_00 + 20, 102.0),
-        (_D1_00_00 + 30, 200.0), (_D1_00_00 + 100, 101.0),
+        (_D1_00_00 + 10, 99.0), (_D1_00_00 + 20, 101.0),
+        (_D1_00_00 + 30, 200.0), (_D1_00_00 + 100, 100.0),
     ], "外れ値も窓外も adapter は落とさない（除去は usecase の責務）"
 
 

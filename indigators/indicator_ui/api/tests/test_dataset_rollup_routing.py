@@ -132,7 +132,8 @@ def test_jp225_tick_is_registered_and_routes_like_jp225_m1(monkeypatch):
     from marketdata.paths import DATA_DIR
 
     assert dataset.is_known("jp225_tick")
-    assert dataset.DATASET_WHITELIST["jp225_tick"] == DATA_DIR / "jp225_tick_m1.csv"
+    # ISSUE-511 段階 1d: bid で作り直した保存物（旧 mid の jp225_tick_m1.csv は残置）。
+    assert dataset.DATASET_WHITELIST["jp225_tick"] == DATA_DIR / "jp225_tick_bid_m1.csv"
     assert "jp225_tick" in dataset._ROLLUP_REFS
 
     seen = {"tail_path": None, "rollup": None}
@@ -146,7 +147,7 @@ def test_jp225_tick_is_registered_and_routes_like_jp225_m1(monkeypatch):
     )
     # 1m 原子 → ティック由来 whitelist CSV を tail_reader で読む。
     dataset.load_dataframe("jp225_tick", "1m")
-    assert seen["tail_path"] == DATA_DIR / "jp225_tick_m1.csv"
+    assert seen["tail_path"] == DATA_DIR / "jp225_tick_bid_m1.csv"   # series（ISSUE-511 1d）。
     # 上位足 → rollup_store.read(ref='jp225_tick', tf) へ委譲。
     dataset.load_dataframe("jp225_tick", "1h")
     assert seen["rollup"] == ("jp225_tick", "1h")

@@ -103,8 +103,8 @@ def test_zp_disk_cache_subdir(tfp_env, tmp_path):
     now = _day(40)
     tfp.handle_tf_period_profile("jp225_tick", "1h", _day(29), _day(30), now=now, src="zp")
     from market_profile_api.compute import market_profile_zp as _zpm
-    # ISSUE-511 段階 1c: 木の枝名の直上に価格基準（jp225_tick は台帳で mid）。
-    disk = (tmp_path / "tfp" / "price-mid" / "JP225" / "1h" / "s3"
+    # ISSUE-511 段階 1c: 木の枝名の直上に価格基準（jp225_tick は台帳で bid・段階 1d）。
+    disk = (tmp_path / "tfp" / "price-bid" / "JP225" / "1h" / "s3"
             / f"zp-v{_mp_cache_settings.ZP_CACHE_VERSION}"
             / f"{_day(29)}.json")  # ISSUE-085: s3 世代 + ISSUE-088 🔵-3: zp 内部世代連動。
     assert disk.is_file()

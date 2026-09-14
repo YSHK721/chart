@@ -26,6 +26,7 @@
 
 依存宣言: pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.rollup` /
 :mod:`marketdata.rollup_paths`（ロールアップ配置の唯一権威・ISSUE-502 D-16）/
+:mod:`marketdata.dataset_registry`（保存物の名前＝series・ISSUE-511 段階 1d）/
 :mod:`marketdata.mt5_ticks` 下位。
 """
 from __future__ import annotations
@@ -35,7 +36,7 @@ from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from marketdata import rollup_paths, tick_m1
+from marketdata import dataset_registry, rollup_paths, tick_m1
 from marketdata.mt5_ticks import ingest, server_clock
 
 Row = Tuple[int, float, float]
@@ -148,7 +149,8 @@ def update_rollups(*, ref: str, data_dir: Any, timeframes: "Optional[Sequence[st
     out_dir = rollup_dir(ref=ref, data_dir=data_dir)
     state = rollup.RollupState.load(out_dir)
     new_state = rollup.incremental_update(
-        m1_path, state, rollup.rollup_timeframes(), out_dir, ref_prefix=ref
+        m1_path, state, rollup.rollup_timeframes(), out_dir,
+        ref_prefix=dataset_registry.series_of(ref),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
     )
     new_state.save(out_dir)
     return new_state

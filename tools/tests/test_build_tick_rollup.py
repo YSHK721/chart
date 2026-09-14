@@ -144,7 +144,7 @@ def test_m1_and_rollup_stages_generate_tick_ref_outputs(tmp_path) -> None:
     )
 
     assert btr.stage_m1(ctx) == 0
-    m1 = tmp_path / "jp225_tick_m1.csv"
+    m1 = tmp_path / "jp225_tick_bid_m1.csv"
     assert m1.is_file()
     # 期待ヘッダは csv_schema から導出する（列名を写さない）。tick 由来 M1 は方向内訳 up/dn を
     #   持つ（ISSUE-242）。かつてここは 6 列を直書きしており、up/dn 追加後もこのテストが
@@ -156,12 +156,13 @@ def test_m1_and_rollup_stages_generate_tick_ref_outputs(tmp_path) -> None:
     assert m1.read_text(encoding="utf-8").splitlines()[0] == expected
 
     assert btr.stage_rollup(ctx) == 0
-    rollup_5m = tmp_path / "rollups" / "jp225_tick" / "jp225_tick_5m.csv"  # ref 専用サブ dir。
+    rollup_5m = tmp_path / "rollups" / "jp225_tick_bid" / "jp225_tick_bid_5m.csv"  # ref 専用サブ dir。
     assert rollup_5m.is_file()
     up = pd.read_csv(rollup_5m, parse_dates=["date"]).set_index("date")
-    # 09:00 台 5m バー: open=最初 tick mid(101)・volume=その窓のティック数(2)。
+    # 09:00 台 5m バー: open=最初 tick の bid(100)・volume=その窓のティック数(2)。
+    #   jp225_tick は台帳の基準 bid で畳む（ISSUE-511 段階 1d。mid なら 101）。
     bar0 = up.loc[pd.Timestamp("2025-01-02 09:00:00")]
-    assert bar0["open"] == 101.0
+    assert bar0["open"] == 100.0
     assert bar0["volume"] == 2.0
 
 
@@ -190,8 +191,8 @@ def test_stage_rollup_does_not_touch_existing_jp225m1_rollups(tmp_path) -> None:
     assert (shared / "rollup_state.json").read_text(encoding="utf-8") == state_before
     assert (shared / "jp225_m1_5m.csv").read_text(encoding="utf-8") == csv_before
     # tick 由来の CSV/state は専用サブ dir 内に隔離される。
-    assert (shared / "jp225_tick" / "jp225_tick_5m.csv").is_file()
-    assert (shared / "jp225_tick" / "rollup_state.json").is_file()
+    assert (shared / "jp225_tick_bid" / "jp225_tick_bid_5m.csv").is_file()
+    assert (shared / "jp225_tick_bid" / "rollup_state.json").is_file()
 
 
 def test_incremental_m1_and_rollup_equal_full_rebuild(tmp_path) -> None:
@@ -218,10 +219,10 @@ def test_incremental_m1_and_rollup_equal_full_rebuild(tmp_path) -> None:
     def _read(p):
         return pd.read_csv(p, parse_dates=["date"]).set_index("date")
 
-    pd.testing.assert_frame_equal(_read(inc / "jp225_tick_m1.csv"), _read(full / "jp225_tick_m1.csv"))
+    pd.testing.assert_frame_equal(_read(inc / "jp225_tick_bid_m1.csv"), _read(full / "jp225_tick_bid_m1.csv"))
     for tf in btr._rollup_timeframes():  # 全 8 TF（1W/1M の形成中バー増分マージ含む）。
-        inc_csv = inc / "rollups" / "jp225_tick" / f"jp225_tick_{tf}.csv"
-        full_csv = full / "rollups" / "jp225_tick" / f"jp225_tick_{tf}.csv"
+        inc_csv = inc / "rollups" / "jp225_tick_bid" / f"jp225_tick_bid_{tf}.csv"
+        full_csv = full / "rollups" / "jp225_tick_bid" / f"jp225_tick_bid_{tf}.csv"
         pd.testing.assert_frame_equal(_read(inc_csv), _read(full_csv), check_like=True)
 
 

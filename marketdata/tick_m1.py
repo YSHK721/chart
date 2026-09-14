@@ -30,7 +30,8 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 
 依存方向: 本モジュールは pandas と marketdata 内の下位部品
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
-:mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree`）にのみ
+:mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree` /
+:mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d）にのみ
 依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
 :mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
 する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
@@ -49,6 +50,7 @@ from typing import Any, List, Protocol, runtime_checkable
 
 import pandas as pd
 
+from marketdata import dataset_registry as _dataset_registry
 from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
 from marketdata import tick_tree as _tick_tree
@@ -284,8 +286,12 @@ def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
 
 
 def m1_csv_path(ref: str = _DEFAULT_REF, data_dir: Any = DATA_DIR) -> Path:
-    """M1 出力 CSV の解決パス（``<DATA_DIR>/<ref>_m1.csv``・rollup の ref_prefix と整合）。"""
-    return Path(data_dir) / f"{ref}_m1.csv"
+    """M1 出力 CSV の解決パス（``<DATA_DIR>/<series>_m1.csv``・rollup の ref_prefix と整合）。
+
+    series は ref の保存物の名前（台帳 :func:`marketdata.dataset_registry.series_of`・ISSUE-511
+    段階 1d）。台帳に series の無い ref は ref 名そのもの（従来の置き場）。
+    """
+    return Path(data_dir) / f"{_dataset_registry.series_of(ref)}_m1.csv"
 
 
 # tick 木レイアウトの権威（tick_root / day_parquet_path / day_empty_marker_path /

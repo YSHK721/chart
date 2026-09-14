@@ -65,11 +65,12 @@ def test_path_resolves_under_marketdata_rollups_with_ref_tf_filename():
 def test_path_prefers_ref_subdir_when_csv_file_present(tmp_path, monkeypatch):
     # ref 専用サブdir配置の CSV が**実在**すればそこへ解決する。
     monkeypatch.setattr(rollup_store, "_ROLLUPS_DIR", tmp_path)
-    sub = tmp_path / "jp225_tick"
+    # 置き場の名前は台帳の series（ISSUE-511 段階 1d・jp225_tick → jp225_tick_bid）。
+    sub = tmp_path / "jp225_tick_bid"
     sub.mkdir()
-    _write_csv(sub / "jp225_tick_5m.csv", [_point(1, 11.0)])
+    _write_csv(sub / "jp225_tick_bid_5m.csv", [_point(1, 11.0)])
     p = rollup_store.path("jp225_tick", "5m")
-    assert p == sub / "jp225_tick_5m.csv"
+    assert p == sub / "jp225_tick_bid_5m.csv"
 
 
 def test_path_falls_back_to_flat_when_no_ref_subdir(tmp_path, monkeypatch):
