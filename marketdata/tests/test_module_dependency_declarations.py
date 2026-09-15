@@ -77,7 +77,16 @@ _ALLOWED: "dict[str, set[str]]" = {
         # spread 列の規則の唯一源（ISSUE-511 段階 2）。pandas のみに依存する下位部品ゆえ循環しない。
         # この 1 エントリを消すと、気配幅の丸め規則が本モジュールへ手書きで復活する。
         "marketdata.quote_spread",
+        # spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。台帳と銘柄仕様スナップショットにのみ
+        # 依存する下位部品ゆえ循環しない。この 1 エントリを消すと、point が呼出ごとの引数へ戻る。
+        "marketdata.spread_point",
     },
+    # spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。台帳（どのスナップショットか）と
+    # スナップショット（point の値）の 2 つだけ。pandas も tick_m1 も知らない。
+    "spread_point.py": {"marketdata.dataset_registry", "marketdata.symbol_spec_snapshot"},
+    # MT5 端末スナップショットの読み口。docstring は依存ゼロを宣言していたが検定表に行が無かった
+    # （ISSUE-511 段階 3 前提 (a) で昇格）。
+    "symbol_spec_snapshot.py": set(),
     # 分内の気配幅（spread）規則の唯一源（ISSUE-511 段階 2）。pandas のみ。point は呼出側が
     # 注入する（銘柄仕様 symbol_spec_snapshot を import すると規則が供給元に縛られる）。
     "quote_spread.py": {"pandas"},
@@ -100,7 +109,7 @@ _STDLIB_PREFIXES = {
     "__future__", "typing", "pathlib", "datetime", "os", "sys", "re", "json", "csv",
     "time", "math", "logging", "tempfile", "collections", "dataclasses", "functools",
     "itertools", "hashlib", "zlib", "queue", "threading", "urllib", "shutil", "glob",
-    "zoneinfo",
+    "zoneinfo", "types",
 }
 
 

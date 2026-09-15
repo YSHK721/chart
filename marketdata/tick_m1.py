@@ -2,7 +2,7 @@
 """marketdata.tick_m1 — 生ティック parquet → M1 原子 OHLC CSV（上位足ロールアップの素材）。
 
 Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC で 1 分足へ集計し、
-``<ref>_m1.csv``（``date,open,high,low,close,volume,up,dn`` 形式・point 注入時は末尾に spread・
+``<ref>_m1.csv``（``date,open,high,low,close,volume,up,dn`` 形式・spread 列を持つ系列は末尾に spread・
 :mod:`marketdata.rollup` 互換）を出力する。以降の上位足（5m/1h/1D …）は :mod:`marketdata.rollup`（:mod:`marketdata.resample`
 の規則）が本 M1 を素材に生成する。これによりチャートの足も足内更新も「同じティック
 （mid・UTC）」由来となり、書き変わりなく整合する。
@@ -32,8 +32,9 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
 :mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree` /
 :mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d） /
-:mod:`marketdata.quote_spread`（分内の気配幅＝spread 列の規則の唯一源・ISSUE-511 段階 2）にのみ
-依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
+:mod:`marketdata.quote_spread`（分内の気配幅＝spread 列の規則の唯一源・ISSUE-511 段階 2） /
+:mod:`marketdata.spread_point`（登録済み ref の spread 列を数える point の唯一の読み口・ISSUE-511
+段階 3 前提 (a)）にのみ依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
 :mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
 する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
 
@@ -47,7 +48,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, List, Protocol, runtime_checkable
+from typing import Any, Callable, List, Protocol, runtime_checkable
 
 import pandas as pd
 
@@ -56,6 +57,8 @@ from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
 # spread 列の規則の唯一源（ISSUE-511 段階 2）。モジュール属性経由で呼ぶ（計算量 Spy の継ぎ目）。
 from marketdata import quote_spread as _quote_spread
+# 登録済み ref の spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。モジュール属性経由で呼ぶ。
+from marketdata import spread_point as _spread_point
 from marketdata import tick_tree as _tick_tree
 from marketdata.paths import DATA_DIR
 
@@ -103,6 +106,17 @@ def _validate_ref(ref: str) -> None:
         raise ValueError(
             f"ref は [A-Za-z0-9_-] のみ可: {ref!r}（パス区切り・'..' を含めない・データ保全）。"
         )
+
+
+class SpreadSchemaMismatch(RuntimeError):
+    """既存 M1 CSV の spread 列の有無が、系列の宣言と食い違う（ISSUE-511 段階 3 前提 (a)）。
+
+    既存の系列を書き換えずに止める。**RuntimeError の派生であり ValueError の派生ではない**
+    （依頼者裁定 2026-09-15・T1）。:func:`append_m1_from_ticks` はヘッダ不一致の ``ValueError`` を
+    捕まえて全構築へ回す（ISSUE-455 の自己修復）。食い違いがその網に型として掛かると、R-2/Y-2 の
+    とおり既存 CSV が全書換される。是正は系列を書き換えることではなく、台帳の series を新しい名前に
+    して build で新しい置き場へ作ること（旧ファイルは残る＝可逆）。
+    """
 
 
 def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
@@ -223,24 +237,27 @@ def ticks_to_m1(
     （捨てる分の気配幅を計算することになる）。build / append は :func:`_materialize_m1_day`
     で行を選んだ後に気配幅を計算する。
     """
-    m1, work = _fold_ticks(ticks, price_basis=price_basis, point=point)
+    _validate_tick_frame(ticks, price_basis, point)
+    m1, work = _fold_ticks(ticks, price_basis=price_basis, with_spread=point is not None)
     if work is None or point is None:
         return m1
     return _with_spread(m1, work, point)  # 全分を出力するので作業表の全行が対象。
 
 
 def _fold_ticks(
-    ticks: pd.DataFrame, *, price_basis: str, point: "float | None"
+    ticks: pd.DataFrame, *, price_basis: str, with_spread: bool
 ) -> "tuple[pd.DataFrame, pd.DataFrame | None]":
-    """検証 → 時刻順の作業表 → 分へ畳む（:func:`ticks_to_m1` と :func:`_materialize_m1_day` の共通前段）。
+    """時刻順の作業表 → 分へ畳む（:func:`ticks_to_m1` と :func:`_materialize_m1_day` の共通前段）。
 
-    戻り値は ``(気配幅をまだ付けていない M1, 作業表)``。空入力は ``(_empty_m1(point), None)``。
+    入力の検証（:func:`_validate_tick_frame`）は呼出側が済ませる。戻り値は
+    ``(気配幅をまだ付けていない M1, 作業表)``。空入力は ``(_empty_m1(with_spread), None)``。
     気配幅を付けないのは、どの分に付けるかが行を選んだ後でしか決まらないため（R-1）。
+    ``with_spread`` は spread 列を持つかだけを受ける（point の値は受けない＝値の解決を気配幅を
+    計算する時まで遅らせる・ISSUE-511 段階 3 前提 (a)）。
     """
-    _validate_tick_frame(ticks, price_basis, point)
     if ticks.empty:
-        return _empty_m1(point), None
-    work = _minute_ticks(ticks, price_basis=price_basis, with_quotes=point is not None)
+        return _empty_m1(with_spread), None
+    work = _minute_ticks(ticks, price_basis=price_basis, with_quotes=with_spread)
     return _fold_minutes(work), work
 
 
@@ -273,13 +290,13 @@ def _validate_tick_frame(
         _quote_spread.validate_point(point)  # 空入力でも不正な point は通さない（fail-fast）。
 
 
-def _empty_m1(point: "float | None") -> pd.DataFrame:
-    """空入力の M1（列のみ・point 有りなら末尾に int64 の spread 列）。"""
+def _empty_m1(with_spread: bool) -> pd.DataFrame:
+    """空入力の M1（列のみ・``with_spread`` なら末尾に int64 の spread 列）。"""
     empty_idx = pd.DatetimeIndex([], name="date")
     # 列名・列順の唯一源は csv_schema（OHLCV → up/dn → spread）。ここで手書きしない。
     empty = {c: pd.Series(dtype="float64")
              for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)}
-    if point is not None:
+    if with_spread:
         empty[_csv_schema.SPREAD_COLUMN] = pd.Series(dtype="int64")
     return pd.DataFrame(empty, index=empty_idx)
 
@@ -470,28 +487,90 @@ def _materialize_m1_day(
     ticks: pd.DataFrame,
     *,
     price_basis: str,
-    point: "float | None",
+    spread: "_LazyPoint | None",
     after: Any = None,
     until: Any = None,
 ) -> pd.DataFrame:
     """1 日分のティックを CSV に書く M1 行へ素材化する（素材化の順序の唯一源・R-1）。
 
     順序: 分へ畳む → 外れ分除去（:func:`_clean_m1_day`）→ ``index > after``（追記の既存最終分）
-    → :func:`_drop_forming_bars` → 残った分のティックだけで気配幅（``point`` 有り時）。
+    → :func:`_drop_forming_bars` → 残った分のティックだけで気配幅（``spread`` 有り時）。
     行の選択はすべて index だけの条件なので、気配幅を選択の後で計算しても値は変わらず、
-    捨てる分の気配幅は 1 つも計算しない。
+    捨てる分の気配幅は 1 つも計算しない。point の値は気配幅を計算する分が残ったときに初めて
+    解決する（:class:`_LazyPoint`）。
     """
-    m1_day, work = _fold_ticks(ticks, price_basis=price_basis, point=point)
+    _validate_tick_frame(ticks, price_basis)
+    m1_day, work = _fold_ticks(ticks, price_basis=price_basis, with_spread=spread is not None)
     if work is None:
         return m1_day
     m1_day = _clean_m1_day(m1_day)
     if after is not None:
         m1_day = m1_day[m1_day.index > after]
     m1_day = _drop_forming_bars(m1_day, until)
-    if point is None or m1_day.empty:
+    if spread is None or m1_day.empty:
         return m1_day
     # 分キーの照合だけで残った分のティックを選ぶ（ask − bid は選んだ行でだけ計算する）。
-    return _with_spread(m1_day, work[work["date"].isin(m1_day.index)], point)
+    return _with_spread(m1_day, work[work["date"].isin(m1_day.index)], spread())
+
+
+class _LazyPoint:
+    """気配幅の point を、最初に気配幅を計算する時に 1 回だけ解決する（ISSUE-511 段階 3 前提 (a)）。
+
+    新しい分の無い周期ではスナップショットを読まない（読んで使わなければ浪費）。
+    """
+
+    def __init__(self, resolve: "Callable[[], float]") -> None:
+        self._resolve = resolve
+        self._value: "float | None" = None
+
+    def __call__(self) -> float:
+        if self._value is None:
+            self._value = self._resolve()
+        return self._value
+
+
+def _declared_spread(ref: str, point: "float | None") -> "_LazyPoint | None":
+    """系列が spread 列を持つか（IO なし）と point の解決手段を返す（``None``＝spread 列を持たない）。
+
+    台帳に登録済みの ref は台帳が point の唯一の源であり、呼出側の ``point`` は受けない（依頼者裁定
+    2026-09-15・T2）。受けると渡し忘れ・渡し違いで系列の spread 列の有無が呼出ごとに変わり、既存
+    CSV の全書換（R-2/Y-2）へ落ちる。台帳に無い ref（テストの合成 ref）は従来どおり ``point`` を使う。
+    """
+    if ref in _dataset_registry.REGISTRY:
+        if point is not None:
+            raise ValueError(
+                f"datasetRef {ref!r} は台帳に登録済みです。spread の point は台帳"
+                f"（spread_point_snapshot）から引くため、呼出側からは渡せません（point={point!r}）。"
+            )
+        if _dataset_registry.spread_point_snapshot_of(ref) is None:
+            return None
+        return _LazyPoint(lambda: _spread_point.spread_point_of(ref))
+    if point is None:
+        return None
+    _quote_spread.validate_point(point)
+    return _LazyPoint(lambda: point)
+
+
+def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
+    """既存 CSV の先頭行の spread 列の有無が ``with_spread`` と一致しなければ止める（書かない）。
+
+    ファイル無し・空は照合しない。比べるのは spread 列だけ（up/dn の遅れは ISSUE-455 の全構築を
+    維持する）。書き手の起動時に同じ照合で止める公開の口は、書き手を結線する ISSUE-511 段階 3
+    本体で足す（本段では本番の呼出元が無いため置かない）。
+    """
+    header = _existing_csv_header(out_path)
+    if header is None:
+        return
+    if (_csv_schema.SPREAD_COLUMN in header) == with_spread:
+        return
+    declared = "持つ" if with_spread else "持たない"
+    raise SpreadSchemaMismatch(
+        f"系列 {ref!r} の既存 M1 CSV（{out_path}）の既存ヘッダ {header} は、宣言"
+        f"（spread_point_snapshot={_dataset_registry.spread_point_snapshot_of(ref)!r}＝spread 列を"
+        f"{declared}系列）と spread 列の有無が食い違います。既存の系列は書き換えずに止めました。"
+        " spread の有無を変えるときは、台帳の series を新しい名前にして build で新しい置き場へ"
+        "作り直してください（旧ファイルは残る＝可逆）。"
+    )
 
 
 def build_m1_from_ticks(
@@ -523,10 +602,35 @@ def build_m1_from_ticks(
     ``price_basis``（既定 :data:`PRICE_BASIS_MID`）は :func:`_materialize_m1_day` へそのまま渡す。
     権威（全量）経路も増分経路と同じ基準で回せるようにするためである（片方だけが mid のまま
     だと、日次再構築が表示中の系列を静かに mid へ戻す）。
+
+    ``point``（ISSUE-511 段階 3 前提 (a)）: 台帳に登録済みの ref は台帳の宣言
+    （``spread_point_snapshot``）が spread 列の有無と point の唯一の源であり、``point`` を渡すと
+    IO の前に :class:`ValueError`。台帳に無い ref は従来どおり ``point`` が spread 列を足す。
+    既存 CSV の spread 列の有無が宣言と食い違えば、置き換えずに :class:`SpreadSchemaMismatch`。
     """
     _validate_ref(ref)
-    if point is not None:
-        _quote_spread.validate_point(point)
+    spread = _declared_spread(ref, point)
+    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    _assert_spread_schema(ref, out_path, spread is not None)
+    return _build_whole(
+        start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
+        price_basis=price_basis, writer=writer, spread=spread,
+    )
+
+
+def _build_whole(
+    start: Any,
+    end: Any,
+    *,
+    symbol: str,
+    data_dir: Any,
+    out_path: Path,
+    until: Any,
+    price_basis: str,
+    writer: "M1Writer | None",
+    spread: "_LazyPoint | None",
+) -> Path:
+    """全構築の本体（照合は呼出側が済ませる＝追記のフォールバックでヘッダを 2 度読まない）。"""
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
     if not files:
         raise FileNotFoundError(
@@ -538,18 +642,15 @@ def build_m1_from_ticks(
         # 外れ分除去・形成中分（>= until）の除外は日ごとに済ませ、残った分だけ気配幅を計算する。
         m1_day = _materialize_m1_day(
             pd.read_parquet(p, columns=_TICK_COLUMNS),
-            price_basis=price_basis, point=point, until=until,
+            price_basis=price_basis, spread=spread, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if daily_m1:
         m1 = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     else:
-        # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
-        m1 = ticks_to_m1(
-            pd.DataFrame({c: [] for c in _TICK_COLUMNS}), price_basis=price_basis, point=point
-        )
-    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+        # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する（point の値は要らない）。
+        m1 = _empty_m1(spread is not None)
     (writer or CsvM1Writer()).write_whole(m1, out_path)
     return out_path
 
@@ -711,25 +812,29 @@ def append_m1_from_ticks(
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
-    既存 CSV が不在/空、または末尾行が不健全（torn/部分書込み）なら :func:`build_m1_from_ticks`
-    （原子的全構築）へフォールバックして自己修復する。健全時は **最終バー日（当日）以降**を再読込し、
+    既存 CSV が不在/空、または末尾行が不健全（torn/部分書込み）なら :func:`build_m1_from_ticks` と
+    同じ原子的全構築（入口の照合を済ませた本体 ``_build_whole``）へフォールバックして自己修復する。健全時は **最終バー日（当日）以降**を再読込し、
     ``index > 最終 date`` の行だけ追記する。ティックは UTC 日で partition され分が日を跨がないため、
     完成済みの最終日は空追記（冪等 no-op）、途中までしか書けていない日は欠損分のみ追記され自己修復する。
     結果は全構築と一致する（過去確定日の再計算は不要）。
 
     ``until``（省略可・:class:`pd.Timestamp` 互換）を指定すると、追記する M1 バーのうち
     ``index >= until`` の行を除外する（形成中の分バー＝``floor(now, "min")`` 以降を確定値として
-    書き込まない）。フォールバック先の :func:`build_m1_from_ticks` へも同じ ``until`` を伝播する。
+    書き込まない）。フォールバック先の全構築へも同じ ``until`` を伝播する。
     ``until=None``（既定）は従来出力と完全一致（byte 不変）。
 
     前提（重要）: 取得は前方追記（resume）である。過去日への遡及バックフィル（既存最終日より前の
     欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
+
+    ``point`` の意味は :func:`build_m1_from_ticks` と同じ（ISSUE-511 段階 3 前提 (a)）。spread 列の
+    有無の照合は末尾行の読取より前に行う。食い違いは自己修復（全構築）へ回さず
+    :class:`SpreadSchemaMismatch` で止める（末尾破損でも同じ）。
     """
     _validate_ref(ref)
-    if point is not None:
-        _quote_spread.validate_point(point)
+    spread = _declared_spread(ref, point)
     writer = writer or CsvM1Writer()
     out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    _assert_spread_schema(ref, out_path, spread is not None)
     try:
         tail = _read_last_m1_row(out_path)
     except ValueError:
@@ -739,9 +844,9 @@ def append_m1_from_ticks(
         tail = None
     if tail is None or not _is_healthy_m1_row(tail):
         # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
-        return build_m1_from_ticks(
-            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer, point=point,
+        return _build_whole(
+            start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
+            price_basis=price_basis, writer=writer, spread=spread,
         )
 
     last_date = pd.Timestamp(tail.index[-1])
@@ -759,7 +864,7 @@ def append_m1_from_ticks(
         # 日ごとに選び、その分だけ気配幅を計算する。
         m1_day = _materialize_m1_day(
             pd.read_parquet(p, columns=_TICK_COLUMNS),
-            price_basis=price_basis, point=point, after=last_date, until=until,
+            price_basis=price_basis, spread=spread, after=last_date, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
@@ -772,9 +877,10 @@ def append_m1_from_ticks(
     except ValueError:
         # 既存ヘッダと追記行の列が食い違う（旧 6 列 CSV に up/dn 付き 8 列を積もうとした等）。
         # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
-        return build_m1_from_ticks(
-            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer, point=point,
+        # spread 列の有無の食い違いは入口で止めてある（SpreadSchemaMismatch は ValueError ではない）。
+        return _build_whole(
+            start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
+            price_basis=price_basis, writer=writer, spread=spread,
         )
     return out_path
 
