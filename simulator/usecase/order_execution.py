@@ -23,6 +23,7 @@ from simulator.usecase._execution import (
     close_price_for,
     derive_quotes,
     fill_market_order,
+    mt5_bid_ask,
 )
 from simulator.usecase.open_trade import OpenTrade
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
@@ -225,16 +226,23 @@ class OrderExecutor:
 
         実 MT5 はテスト終了時に未決済ポジションを最終価格で決済する（2603-01: 最終 buy を
         最終足 23:59 の close=51029.8 で決済し profit+20）。買い決済=Bid=close /
-        売り決済=Ask=close+spread×point。
+        売り決済=Ask=close+spread×point（MT5 クォート規約の唯一源 `mt5_bid_ask`・ISSUE-100 🟡-1）。
         """
-        f_bid = final_bar.close
-        f_ask = final_bar.close + final_bar.spread * self._spec.point_size
+        f_bid, f_ask = mt5_bid_ask(
+            final_bar.close, spread=final_bar.spread, point=self._spec.point_size
+        )
+        # 決済価格は玉のサイドだけで決まるため、残っているサイドごとに 1 回だけ解決して
+        # 玉に配る（玉ごとに引き直すと同じ答えを玉の数だけ求める N+1 になる。先例は
+        # position_directives.py の apply_all・ISSUE-519）。
+        close_price_by_side = {
+            side: close_price_for(side, bid=f_bid, ask=f_ask)
+            for side in {ot.position.side for ot in open_trades}
+        }
         for ot in open_trades:
-            close_price = close_price_for(ot.position.side, bid=f_bid, ask=f_ask)
             self._ledger.close(
                 ot,
                 exit_time=final_bar.time,
-                exit_price=close_price,
+                exit_price=close_price_by_side[ot.position.side],
                 exit_reason="end_of_test",
             )
         return []
