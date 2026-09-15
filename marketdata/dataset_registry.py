@@ -71,6 +71,14 @@ class DatasetDescriptor:
             分けて持つ（旧ファイルを上書きしない＝本欄を戻せば元の置き場へ可逆）。名前の解決は
             :func:`series_of` の 1 箇所で、置き場の組み立て（``marketdata.tick_m1.m1_csv_path`` と
             :mod:`marketdata.rollup_paths`）はそこから名前を受け取る。
+        spread_point_snapshot: この ref の M1 の spread 列を、どの銘柄仕様スナップショットの point で
+            数えるか（ISSUE-511 段階 3 前提 (a)）。値は ``(サーバ名, 銘柄名)`` ＝
+            ``marketdata.symbol_spec_snapshot.load_snapshot`` の引数そのものであり、point の値は持たない
+            （値の唯一源はスナップショット。読み口は ``marketdata.spread_point.spread_point_of``）。
+            None は spread 列を持たない系列。``symbol`` は流用しない（symbol は呼び値・表示桁の台帳の
+            キーであり、スナップショットの銘柄名とは別概念）。point を呼出ごとの引数にしていた間、渡し
+            忘れ・渡し違いで系列の spread 列の有無が変わり、既存 CSV が全書換されていた（R-2/Y-2）。
+            ``tick`` が True の記述子だけが宣言できる（構築時に拒否）。
     """
 
     path: Path
@@ -83,6 +91,7 @@ class DatasetDescriptor:
     price_basis: "str | None" = None
     vendor: "str | None" = None
     series: "str | None" = None
+    spread_point_snapshot: "tuple[str, str] | None" = None
 
     def __post_init__(self) -> None:
         # ISSUE-515 対策 1: ティック ref は価格基準を必ず名乗る。**構築時に**拒否する理由は、
@@ -101,6 +110,29 @@ class DatasetDescriptor:
                 "tick=True の記述子は vendor（'dukascopy' / 'mt5'）を名乗ってください。"
                 " ライブ tick バッファは ref ごとに、このベンダの供給口から作ります。"
             )
+        # ISSUE-511 段階 3 前提 (a): spread の point の所在。構築時に拒否する理由は price_basis と同じ
+        #   （読取時に投げると素材の失敗を握る包括的 except の内側になり、WARNING へ化ける）。
+        if self.spread_point_snapshot is None:
+            return
+        if not self.tick:
+            raise ValueError(
+                "spread_point_snapshot は tick=True の記述子だけが宣言できます"
+                "（spread 列はティックの気配幅から作る）。"
+            )
+        if not _is_snapshot_pair(self.spread_point_snapshot):
+            raise ValueError(
+                "spread_point_snapshot は（サーバ名, 銘柄名）の空でない文字列 2 つの tuple です:"
+                f" {self.spread_point_snapshot!r}"
+            )
+
+
+def _is_snapshot_pair(value: object) -> bool:
+    """``value`` が空でない文字列 2 つの tuple か（スナップショットの所在の形）。"""
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and all(isinstance(part, str) and part for part in value)
+    )
 
 
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
@@ -302,6 +334,17 @@ def series_of(ref: str) -> str:
     return d.series
 
 
+def spread_point_snapshot_of(ref: "str | None") -> "tuple[str, str] | None":
+    """``ref`` の spread 列を数える point の所在（サーバ名, 銘柄名）を台帳から引く（ISSUE-511 段階 3 前提 (a)）。
+
+    IO なし（照会であって検証ではない）。宣言の無い ref と台帳に無い ref は ``None``。
+    """
+    d = REGISTRY.get(ref)
+    if d is None:
+        return None
+    return d.spread_point_snapshot
+
+
 def price_basis_of_tick_token(token: str) -> str:
     """ティック木の枝名 ``token`` を畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
 
@@ -336,5 +379,6 @@ __all__ = [
     "price_basis_of_tick_token",
     "tick_vendor",
     "series_of",
+    "spread_point_snapshot_of",
     "DEFAULT_DATASET_REF",
 ]
