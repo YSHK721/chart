@@ -176,8 +176,17 @@ class TestRealTicksWiring:
         )
         result = controller._interactor.execute(request)
 
-        # Assert: 確定トレード 1 件（bar2 買い → bar4 reverse 決済）。
-        assert len(result.trades) == 1
+        # Assert: 確定トレード 2 件（bar2 買い → bar4 reverse 決済・bar4 で建った売りの
+        #   テスト期間終了時清算）。
+        assert len(result.trades) == 2
+        # 売り: 建値 bar4 バー open=Bid 1.1090 → 期末 Ask=bar5.close 1.0920+spread0 = 1.0920。
+        end = result.trades[1]
+        assert end.side == "sell"
+        assert end.exit_reason == "end_of_test"
+        assert end.entry_price == pytest.approx(1.1090)
+        assert end.exit_price == pytest.approx(1.0920)
+        assert end.pnl() == pytest.approx(0.0170)
+        assert end.exit_time == request.bars[5].time
         trade = result.trades[0]
         assert trade.side == "buy"
         assert trade.exit_reason == "reverse"

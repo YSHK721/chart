@@ -870,8 +870,9 @@ class TestBothEnginesShareTheMarketFillStage:
         result = interactor.execute(request)
         # Assert: 発行順・保有列の並び・確定トレードの並びが 1 本の順序で貫かれている。
         assert scanned == ["buy", "buy", "sell"]
-        assert [t.side for t in result.trades] == ["buy", "buy"]
-        assert [t.exit_reason for t in result.trades] == ["reverse", "reverse"]
+        #   末尾の売りは反対玉 2 本を reverse 決済して建ち、テスト期間終了時に清算される。
+        assert [t.side for t in result.trades] == ["buy", "buy", "sell"]
+        assert [t.exit_reason for t in result.trades] == ["reverse", "reverse", "end_of_test"]
 
     @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
     def test_each_fill_lands_in_the_account_before_the_next_order_is_scanned(
@@ -1075,7 +1076,8 @@ class TestBothEnginesShareThePositionDirectiveStage:
         """既定（未注入）では建玉変更の段を素通りすること（byte 等価の担保）。"""
         interactor, request = _held_positions_scenario(overrides, position_manager=None)
         result = interactor.execute(request)
-        assert [t.exit_reason for t in result.trades] == []
+        # 建玉変更による決済は 1 件も無い（2 玉ともテスト期間終了時の清算だけ）。
+        assert [t.exit_reason for t in result.trades] == ["end_of_test"] * 2
 
 
 class TestThePositionDirectiveStageDoesNotWasteWork:

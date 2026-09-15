@@ -247,9 +247,12 @@ class TestInteractorRejectsClosedBarOrders:
             tick_model=None, session_calendar=_FixedCalendar({1}),
         )
         result = interactor.execute(_request(bars))
-        # bar1 では建たず、bar2 開場で初約定。終了時は1ポジ保有（決済イベントなし）。
-        # 確定トレードは reverse/SL/TP/stop-out が無いため 0 件、建玉は bar2 で1件。
-        assert len(result.trades) == 0  # 反対シグナル無し→決済が起きない
+        # bar1 では建たず、bar2 開場で初約定（entry=bar2.open=120.0）。反対シグナルは無く、
+        # 建玉はテスト期間終了時に清算される（MT5 の end of test）＝確定 1 件。
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_time == bars[2].time
+        assert result.trades[0].entry_price == pytest.approx(120.0)
+        assert result.trades[0].exit_reason == "end_of_test"
         # equity_curve は全 trading バー分（bar-mode は 1 バー1点）記録される。
         assert len(result.equity_curve) == 3
 
@@ -269,8 +272,12 @@ class TestInteractorRejectsClosedBarOrders:
             tick_model=_ListTick(), session_calendar=_FixedCalendar({1}),
         )
         result = interactor.execute(_request(bars, config=_config(tick_model="real_ticks")))
-        # 反対シグナル無し→決済0件。閉鎖 bar1 で建たず bar2 で建玉（every-tick も抑止）。
-        assert len(result.trades) == 0
+        # 閉鎖 bar1 で建たず bar2 で建玉（every-tick も抑止）。反対シグナルは無く、
+        # 建玉はテスト期間終了時に清算される＝確定 1 件・建値時刻は bar2。
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_time == bars[2].time
+        assert result.trades[0].entry_price == pytest.approx(120.0)
+        assert result.trades[0].exit_reason == "end_of_test"
 
     def test_every_tick_without_calendar_fills_on_that_bar(self):
         # 対照: every-tick でカレンダー未注入なら bar1 で約定（閉鎖ガードが効いていない確認）。
@@ -287,9 +294,14 @@ class TestInteractorRejectsClosedBarOrders:
         )
         result = interactor.execute(_request(bars, config=_config(tick_model="real_ticks")))
         # bar1 sell 建て → bar2 buy ドテン → reverse 決済1件。entry=bar1.open=110.0。
-        assert len(result.trades) == 1
+        # bar2 で建った買いはテスト期間終了時に清算される（120.0→Bid=close 120.0）。
+        assert len(result.trades) == 2
         assert result.trades[0].side == "sell"
         assert result.trades[0].entry_price == pytest.approx(110.0)
+        assert result.trades[1].side == "buy"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(120.0)
+        assert result.trades[1].exit_price == pytest.approx(120.0)
 
     def test_without_calendar_order_fills_on_that_bar(self):
         # カレンダー未注入（None）＝既定経路: bar1 の sell が当該バーで約定する。
@@ -300,7 +312,12 @@ class TestInteractorRejectsClosedBarOrders:
         )
         result = interactor.execute(_request(bars))
         # bar1 で sell 建て → bar2 で buy（ドテン）→ reverse 決済1件確定。
-        assert len(result.trades) == 1
+        # bar2 で建った買いはテスト期間終了時に清算される（120.0→Bid=close 120.0）。
+        assert len(result.trades) == 2
         assert result.trades[0].side == "sell"
+        assert result.trades[1].side == "buy"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(120.0)
+        assert result.trades[1].exit_price == pytest.approx(120.0)
         # entry は bar1.open=110.0（閉鎖されず約定）。
         assert result.trades[0].entry_price == pytest.approx(110.0)

@@ -145,9 +145,14 @@ def test_trailing_stop_follows_reachable_price():
 
 
 def test_without_trailing_position_survives():
-    # トレーリング無し（Null）では初期 SL 95 に触れず bar2 で決済されない。
+    # トレーリング無し（Null）では初期 SL 95 に触れず bar2 で SL 決済されない。
+    #   建玉はテスト期間終了時に最終足 close=Bid 105 で清算される（entry 100 → +5）。
     result = _run(_trailing_bars(), _trailing_orders(), NullPositionManager())
-    assert len(result.trades) == 0
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.exit_reason == "end_of_test"
+    assert t.exit_price == pytest.approx(105.0)
+    assert t.pnl() == pytest.approx(5.0)
 
 
 # --- 部分決済（FR-08） ------------------------------------------------------
@@ -203,11 +208,16 @@ def test_partial_close_bar_sell_fills_at_trigger_level():
     orders = {0: [Order(side="sell", kind="market", volume=0.10, price=None,
                         sl=105.0, tp=None)]}
     result = _run(bars, orders, _partial_pm())
-    assert len(result.trades) == 1
+    assert len(result.trades) == 2
     partial = result.trades[0]
     assert partial.volume == pytest.approx(0.05)
     assert partial.exit_price == pytest.approx(95.0)
     assert partial.exit_reason == "partial"
+    # 残玉 0.05 はテスト期間終了時に最終足 Ask=close 95+spread0 で清算される。
+    residual = result.trades[1]
+    assert residual.exit_reason == "end_of_test"
+    assert residual.volume == pytest.approx(0.05)
+    assert residual.exit_price == pytest.approx(95.0)
 
 
 def test_partial_close_fires_once_not_every_bar():
@@ -218,9 +228,12 @@ def test_partial_close_fires_once_not_every_bar():
         _bar("2024-01-01T00:02", 105.0, 110.0, 105.0, 108.0),
     ]
     result = _run(bars, _partial_orders(), _partial_pm())
-    # 部分 exit は 1 件のみ（残玉は未決済で run 終了＝trades に出ない）。
-    assert len(result.trades) == 1
+    # 部分 exit は 1 件のみ（2 件目は残玉のテスト期間終了時清算であり部分決済ではない）。
+    assert [t.exit_reason for t in result.trades] == ["partial", "end_of_test"]
     assert result.trades[0].volume == pytest.approx(0.05)
+    # 残玉 0.05 は最終足 close=Bid 108 で清算される。
+    assert result.trades[1].volume == pytest.approx(0.05)
+    assert result.trades[1].exit_price == pytest.approx(108.0)
 
 
 # --- Null 等価・決定性 ------------------------------------------------------
@@ -328,12 +341,16 @@ def test_tick_partial_close_adds_exit():
         1: [(110.0, 110.0, 110.0, bars[1].time)],
     }
     result = _run_tick(bars, _partial_orders(), ticks, _partial_pm())
-    # tick=110 で 0.05 部分決済（残玉は未決済で run 終了）。tick 粒度は現在価格
+    # tick=110 で 0.05 部分決済（残玉 0.05 はテスト期間終了時に end_of_test で清算）。tick 粒度は現在価格
     #   （close_price_for=bid/ask=110）でフィル＝忠実（bar のトリガー水準フィルと非対称・裁定）。
-    assert len(result.trades) == 1
+    assert len(result.trades) == 2
     assert result.trades[0].volume == pytest.approx(0.05)
     assert result.trades[0].exit_price == pytest.approx(110.0)
     assert result.trades[0].exit_reason == "partial"
+    # 残玉 0.05 はテスト期間終了時に最終足の close=Bid 105 で清算される（最終ティック 110 ではない）。
+    assert result.trades[1].exit_reason == "end_of_test"
+    assert result.trades[1].volume == pytest.approx(0.05)
+    assert result.trades[1].exit_price == pytest.approx(105.0)
 
 
 def test_tick_null_equals_unset():
