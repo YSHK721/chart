@@ -89,7 +89,7 @@ def test_the_authoritative_day_m1_builds_from_the_bid_series(tmp_path):
     assert journal.finalize(_DAY, symbol=_TOKEN, data_dir=tmp_path) == "written"
 
     # Act
-    authoritative = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, data_dir=tmp_path)
+    authoritative = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, ref=_REF, data_dir=tmp_path)
 
     # Assert
     assert authoritative["open"].iloc[0] == _bid_of(rows[0]), (

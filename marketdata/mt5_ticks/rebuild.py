@@ -49,30 +49,34 @@ REPLACED = "replaced"
 #: 素材（確定 parquet）か対象（M1 CSV）が無いので、やることが無い。
 MISSING = "missing"
 
-#: 日次クリーニングの**唯一の実装**（``tick_m1`` の私的ラッパと同一の関数を指す）。
-#: ここで参照を持つのは「第 2 実装を作らない」ためであり、同一性は検定が固定する。
+#: 日次クリーニングの**唯一の実装**への別名（``tick_m1`` の私的ラッパが呼ぶのと同一の関数を指す）。
+#: 本モジュールはもう呼ばない: 1 日分の素材化（畳む → 日次クリーニング → 残った分だけ気配幅）は
+#: :func:`authoritative_day_m1` が ``tick_m1.materialize_m1_day`` に委ねる（ISSUE-511 段階 3 前提 (c)）。
+#: 別名と、その同一性だけを見る検定の撤去は別途判断する（ISSUE-511 A3・本段では残す）。
 clean_day_m1 = outlier_policy.repair_day_outliers
 
 
-def authoritative_day_m1(day: Any, *, symbol: str, data_dir: Any) -> pd.DataFrame:
+def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any) -> pd.DataFrame:
     """確定 parquet から当日の M1 を**権威経路と同じ計算**で作る。
 
-    :func:`marketdata.tick_m1.build_m1_from_ticks` の日別段（集計 → 日次クリーニング）と
-    同一である。同一性は検定（全量経路との突合）が固定する。
+    1 日分の素材化（畳む → 日次クリーニング → 残った分だけ気配幅）は
+    :func:`marketdata.tick_m1.materialize_m1_day` に委ねる（順序を手書き複製しない・ISSUE-511
+    段階 3 前提 (c)）。spread 列の有無と point は ``ref`` の台帳宣言が決める。全量経路との
+    同一性は検定（全量経路との突合）が固定する。
 
     列を射影せずに読むのは、この parquet が :func:`marketdata.mt5_ticks.ingest.rows_to_frame`
     の出力そのもの＝権威の 3 列しか持たないためである（列の権威をここに書き写さない）。
     日別結果の重複畳み（同一分の keep-last）は不要である。それは全量経路が**複数日の M1 を
     連結する**ときに境界分が二重になるための処置であり、ここは 1 日 1 parquet しか読まない
-    （単一 parquet 内の分は :func:`marketdata.tick_m1.ticks_to_m1` の groupby で一意になる）。
+    （単一 parquet 内の分は分 groupby で一意になる）。
 
     価格基準は増分経路と同じ :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` を渡す。ここが
     既定（mid）のままだと、日次確定のたびに再構築が「差がある」と判定して当日区間を mid へ
     書き戻す。値はどちらも「それらしい」ので、置換されたことにも気付けない。
     """
     parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
-    return clean_day_m1(
-        tick_m1.ticks_to_m1(pd.read_parquet(parquet), price_basis=ingest.PRICE_BASIS)
+    return tick_m1.materialize_m1_day(
+        pd.read_parquet(parquet), ref=ref, price_basis=ingest.PRICE_BASIS
     )
 
 
@@ -154,7 +158,7 @@ def rebuild_day(
     if not m1_path.is_file() or not parquet.is_file():
         return MISSING
 
-    expected = authoritative_day_m1(day, symbol=symbol, data_dir=data_dir)
+    expected = authoritative_day_m1(day, symbol=symbol, ref=ref, data_dir=data_dir)
     current = _read_m1_csv(m1_path)
     # 日窓 ``[真夜中, 翌日の真夜中)`` の定義は :mod:`server_clock` が唯一源である
     # （ISSUE-502 D-15）。ここで真夜中を自前で組むと第 2 定義になり、片方だけ直した日に
