@@ -26,7 +26,7 @@
 
 読む parquet は当日 1 個だけである（保存済み日数に比例しない）。
 
-依存宣言: pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.outlier_policy` /
+依存宣言: pandas / :mod:`marketdata.tick_m1` /
 :mod:`marketdata.rollup` / :mod:`marketdata.mt5_ticks` 下位。
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 
-from marketdata import outlier_policy, tick_m1
+from marketdata import tick_m1
 from marketdata.mt5_ticks import ingest, m1_chain, server_clock
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
@@ -48,12 +48,6 @@ UNCHANGED = "unchanged"
 REPLACED = "replaced"
 #: 素材（確定 parquet）か対象（M1 CSV）が無いので、やることが無い。
 MISSING = "missing"
-
-#: 日次クリーニングの**唯一の実装**への別名（``tick_m1`` の私的ラッパが呼ぶのと同一の関数を指す）。
-#: 本モジュールはもう呼ばない: 1 日分の素材化（畳む → 日次クリーニング → 残った分だけ気配幅）は
-#: :func:`authoritative_day_m1` が ``tick_m1.materialize_m1_day`` に委ねる（ISSUE-511 段階 3 前提 (c)）。
-#: 別名と、その同一性だけを見る検定の撤去は別途判断する（ISSUE-511 A3・本段では残す）。
-clean_day_m1 = outlier_policy.repair_day_outliers
 
 
 def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any) -> pd.DataFrame:

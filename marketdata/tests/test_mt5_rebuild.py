@@ -6,22 +6,33 @@
     ある。よって日中の M1 は暫定値として表示し、UTC 日が閉じた時点（確定 parquet が出来た後）で
     権威経路により当日を再計算し、**差分がある日だけ**該当日区間を原子置換する。
 
-本検定が固定するのは 4 点である:
+本検定が固定するのは次のとおりである:
     1. 再構築後の当日区間が全量経路（``tick_m1.build_m1_from_ticks``）と一致すること
        ＝「確定記録は既存権威と完全一致する」（設計 §10 の要求そのもの）
     2. 当日**以外**の区間を 1 バイトも動かさないこと
     3. 清浄日は**書込 0**（計算量検定 CX-b と整合。差が無いのに書けば、毎日全ファイルを
        書き直す常駐になる）
     4. 読む確定 parquet が当日 1 個だけであること（保存済み日数に比例して増えない）
+    5. 構造: rebuild.py は外れ値除去 ``marketdata.outlier_policy.repair_day_outliers`` を
+       import・属性参照・別名のどの形でも名指さない（外れ値除去の第 2 実装を持たない）
+    6. 外れ値除去をかけた日 − 作り直す当日 = 0（計算量検定。保存日数 2 点・外れ分の有無の両方・
+       ``authoritative_day_m1`` と ``rebuild_day`` の両方）
+    7. M1 全体の読みは周期あたり 0・閉じた日 1 回まで（蓄積 2 点）／是正が要る日を再び処理しても
+       書込が増えない（冪等）
+    8. 派生ロールアップの同日も是正し、清浄日はロールアップも書き換えない
+    9. 列構成が食い違う CSV は Fail-Stop・確定 parquet や M1 CSV が無い日は MISSING
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
+from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from marketdata import rollup, tick_m1
+from marketdata import outlier_policy, rollup, tick_m1
 from marketdata.mt5_ticks import fakes, journal, m1_chain, rebuild
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
@@ -65,6 +76,17 @@ def _publish(day, rows, until, tmp_path, *, ref=_REF, update_rollups=False):
         m1_chain.update_rollups(ref=ref, data_dir=tmp_path)
 
 
+def _publish_days_ending_on(target: dt.date, stored_days: int, tmp_path, rows_of) -> None:
+    """``target`` で終わる ``stored_days`` 日を古い日から順に公開する（各日の中身は ``rows_of(day)``）。
+
+    保存済み日数を規模とする計算量検定が共有する唯一の日の並び（日ごとのティックは各検定が決める）。
+    """
+    for offset in range(stored_days):
+        day = target - dt.timedelta(days=stored_days - 1 - offset)
+        rows, until = rows_of(day)
+        _publish(day, rows, until, tmp_path)
+
+
 def _m1_dates(tmp_path, ref=_REF) -> "list[str]":
     return list(pd.read_csv(tick_m1.m1_csv_path(ref=ref, data_dir=tmp_path))["date"])
 
@@ -78,13 +100,43 @@ def store(tmp_path):
 # 権威一致: 再構築の入力は「全量経路が作る当日 M1」そのもの
 # =====================================================================
 
-def test_the_cleaning_rule_is_the_very_function_the_authority_calls():
-    """M-1 と同型: 日次クリーニングの第 2 実装を持たない（同じ関数を指している）。
+def _identifiers_in(source: Path) -> "set[str]":
+    """``source`` のコードに現れる名前の集合（Name・属性・import の名前と別名）。
 
-    データが偶々一致することに頼らず、**参照の同一性**で固定する。権威側がクリーニング規則を
-    差し替えたら、その瞬間に本モジュールも一緒に動く（片方だけ直る事故を構造で消す）。
+    import の名前はドット区切りを分けて数える（ドット付きの import の途中の成分も拾う）。
+    docstring とコメントはコードではないので数えない（説明文に規則の名前を書くのは自由）。
     """
-    assert rebuild.clean_day_m1 is tick_m1.outlier_policy.repair_day_outliers
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    names: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.alias):
+            names.update(node.name.split("."))
+            names.update([node.asname] if node.asname else [])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.update(node.module.split("."))
+    return names
+
+
+def test_rebuild_does_not_name_the_outlier_rule_in_any_form():
+    """日次作り直しは外れ値除去を別に実装しない（素材化ごと tick_m1 の公開の口へ委ねる）。
+
+    外れ値除去の唯一の実装 ``marketdata.outlier_policy.repair_day_outliers`` を、rebuild.py は
+    import・属性参照（tick_m1 経由を含む）・別名のどの形でも名指さない。名指せば、公開の口
+    ``marketdata.tick_m1.materialize_m1_day`` の出力に外れ値除去をもう一度かける第 2 実装を
+    書けてしまう（依存表は import しか見ず、tick_m1 の属性経由の呼出しを落とせない）。
+    """
+    # Arrange
+    source = Path(rebuild.__file__)
+
+    # Act
+    named = _identifiers_in(source)
+
+    # Assert
+    assert named & {"outlier_policy", "repair_day_outliers"} == set()
 
 
 def test_the_authoritative_day_equals_what_the_whole_build_produces(tmp_path, store):
@@ -212,10 +264,10 @@ def test_the_number_of_parquet_reads_does_not_grow_with_the_stored_days(
     tmp_path, store, monkeypatch, stored_days
 ):
     """CX: 読む確定 parquet は当日 1 個。保存済み日数（2 点）を変えても発行が増えない。"""
-    for offset in range(stored_days):
-        day = _DAY - dt.timedelta(days=stored_days - 1 - offset)
-        rows, until = _rows_for(day, minutes=4, phantom_minutes=(1,) if day == _DAY else ())
-        _publish(day, rows, until, tmp_path)
+    _publish_days_ending_on(
+        _DAY, stored_days, tmp_path,
+        lambda day: _rows_for(day, minutes=4, phantom_minutes=(1,) if day == _DAY else ()),
+    )
     reads = fakes.CallSpy(pd.read_parquet)
     monkeypatch.setattr(pd, "read_parquet", reads)
 
@@ -239,10 +291,7 @@ def test_the_m1_read_is_zero_per_cycle_and_at_most_one_per_closed_day(
     どちらも蓄積（5 日 / 50 日）で変わらない。周期あたりに 1 回でも読めば、それは常駐の
     固定費が M1 の大きさに比例して伸びるということであり、ISSUE-450 と同型になる。
     """
-    for offset in range(stored_days):
-        day = _DAY - dt.timedelta(days=stored_days - 1 - offset)
-        rows, until = _rows_for(day, minutes=2)
-        _publish(day, rows, until, tmp_path)
+    _publish_days_ending_on(_DAY, stored_days, tmp_path, lambda day: _rows_for(day, minutes=2))
     reads = fakes.CallSpy(pd.read_csv)
     monkeypatch.setattr(pd, "read_csv", reads)
 
@@ -252,6 +301,49 @@ def test_the_m1_read_is_zero_per_cycle_and_at_most_one_per_closed_day(
 
     assert per_cycle == 0
     assert reads.count - per_cycle == 1
+
+
+def _days_of_the_cleaned_bars(*args, **kwargs) -> "tuple[dt.date, ...]":
+    """外れ値除去 1 回が対象にした UTC 日（渡された分バーの日・昇順）。"""
+    bars = args[0] if args else kwargs["df"]
+    return tuple(sorted(set(pd.DatetimeIndex(bars.index).date)))
+
+
+@pytest.mark.parametrize("entry", ["authoritative_day_m1", "rebuild_day"])
+@pytest.mark.parametrize("phantom", [True, False], ids=["with-phantom", "clean"])
+@pytest.mark.parametrize("stored_days", [2, 5])
+def test_the_outlier_removal_is_issued_only_for_the_day_it_rebuilds(
+    tmp_path, store, monkeypatch, entry, phantom, stored_days
+):
+    """CX（Y-B）: 外れ値除去をかけた日 − 作り直す当日 = 0（保存日数 2 点・外れ分の有無の両方）。
+
+    ``marketdata.outlier_policy.repair_day_outliers`` に Test Spy を付け、除去 1 回ごとに対象の
+    日を記録する。発行（除去をかけた日の多重集合）と使用（作り直す当日 1 日ぶん・入力の対象日から
+    導く）の差を両向きで 0 と表明する:
+
+    - 発行 − 使用 = 0: 他日を除去しない・同じ日に二重に除去しない（出力が変わらない浪費）
+    - 使用 − 発行 = 0: 除去が抜けない（清浄日では出力が変わらないため状態検証では落ちない）
+
+    除去の書き方（属性経由・別名・``getattr`` 等）に依らず、実行時に呼ばれた回数で落とす。
+    継ぎ目: 呼出元 ``tick_m1._clean_m1_day`` は ``outlier_policy.repair_day_outliers`` を
+    モジュール属性として呼出時に引くので、モジュール属性の差し替えが効く。
+    """
+    # Arrange
+    target = _DAY
+    _publish_days_ending_on(
+        target, stored_days, tmp_path,
+        lambda day: _rows_for(day, minutes=6, phantom_minutes=(2,) if phantom else ()),
+    )
+    spy = fakes.CallSpy(outlier_policy.repair_day_outliers, measure=_days_of_the_cleaned_bars)
+    monkeypatch.setattr(outlier_policy, "repair_day_outliers", spy)
+    used = Counter((day,) for day in (target,))
+
+    # Act
+    getattr(rebuild, entry)(target, **store)
+
+    # Assert
+    issued = Counter(spy.measurements)
+    assert (issued - used, used - issued) == (Counter(), Counter())
 
 
 # =====================================================================
