@@ -87,15 +87,29 @@ def _kwargs(csv_path: Path) -> dict:
 #   下記 sha256 も同値だった。下記の値は**是正前に測ったもののまま**である。
 #   したがって今後このピンが赤に転じたら、それは**是正の失敗**（片側だけ動かした・
 #   lot の解決を忘れた等）である。期待値の更新ではなく是正内容を疑うこと。
-_IS_TRADES = 4
-_IS_PROFIT = -156.29999999999563
+#
+# --- ISSUE-519 による更新（2026-09-14・依頼者の条件付き承認に基づく唯一の例外）------
+# 実 MT5 はテスト期間終了時に残る建玉を必ず清算して 1 トレードと数える
+# （`ReportTester-900005560.html` 最終 deal `end of test`）。b0d13156 がこれを常時化し、
+# IS・OOS とも区間末に買い玉が 1 本残るため end_of_test が 1 件ずつ増えた。
+# 条件の実測（b0d13156^ = 97b175f2 の複製と現行を同一手順で実走・全列比較）:
+#   - 新 trades の先頭 N 件（IS 4 / OOS 2）が旧 trades 列と **bit 一致**。
+#   - 追加は **end_of_test の 1 件だけ**（IS: buy 39415.0→39421.0 / OOS: buy 39417.5→39436.5）。
+#   - `new.profit − old.profit == trades[-1].pnl()` が完全一致（IS +6.0 / OOS +19.0）。
+#   - `balance_min` は不変（9843.700000000004）。ISSUE-445 の不変性（積 lot × contract_size）とは
+#     独立の変化であり、銘柄仕様の是正の失敗を意味しない。
+# 旧ピン（退行との識別用）: IS trades 4 / profit -156.29999999999563 /
+#   sha256 aa15b2c4a01f7234745a524330cbdd29b6ca9e93e97654c1e26ae8b53d4ff418 /
+#   OOS trades 2 / profit -91.0。
+_IS_TRADES = 5
+_IS_PROFIT = -150.29999999999563
 _IS_BALANCE_MIN = 9843.700000000004
 #: `BacktestStats` 全 39 列を畳んだ指紋（先例:
 #: `simulator/tests/integration/test_run_backtest_fingerprint.py` の `_digest`）。
 #: 列を名指しする assert だけだと、名指ししなかった列の退行を通す。
-_IS_STATS_SHA256 = "aa15b2c4a01f7234745a524330cbdd29b6ca9e93e97654c1e26ae8b53d4ff418"
-_OOS_TRADES = 2
-_OOS_PROFIT = -91.0
+_IS_STATS_SHA256 = "7fd0b3c9a58cb5b468d5e0971245d75837cb608ae55b29cf0730b63fa5222920"
+_OOS_TRADES = 3
+_OOS_PROFIT = -72.0
 
 
 def _stats_digest(stats) -> str:
