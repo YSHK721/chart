@@ -5,7 +5,9 @@ BacktestResult が生成され stats が算出され Presenter 出力が生成�
 
 合成データは MADiff(SMA period=2) が bar2 で負→正（買い）・bar4 で正→負（売り反転）
 にクロスするよう構築する。prototype 実測（Section 5 設計時）で確定した決定論的振る舞い:
-    bar2 で買い建て → bar4 の反対シグナルで reverse 決済 → 確定トレード 1 件（pnl=-0.009）。
+    bar2 で買い建て → bar4 の反対シグナルで reverse 決済（pnl=-0.009）。
+    bar4 で建った売りはテスト期間終了時に end_of_test で清算される（+0.0030。MT5 と同じく
+    期末に残る建玉は必ず清算する＝b0d13156・ISSUE-519）→ 確定トレード 2 件。
 
 usecase/adapter/framework のコミット済コードは変更しない（読み取り・結線のみ）。
 """
@@ -73,14 +75,24 @@ class TestEndToEndRun:
         csv_path = _write_csv(tmp_path / "synth_m1.csv")
         # Act: Composition Root 経由で 1 run（exit_code, result）
         exit_code, result = run_backtest(**_meta_kwargs(csv_path))
-        # Assert: 正常終了・確定トレード 1 件・stats が確定トレードから算出
+        # Assert: 正常終了・確定トレード 2 件（bar4 の reverse 決済 1 件＋期末清算 end_of_test 1 件）・
+        #   stats が確定トレード 2 件から算出
         assert exit_code == 0
         assert result is not None
-        assert result.stats.trades == 1
-        assert len(result.trades) == 1
+        #   bar4 の反対シグナルで建った売りはテスト期間終了時に清算される（MT5 の end of test・
+        #   建値 Bid=bar4.close 1.0950 → Ask=bar5.close 1.0920+spread0 = 1.0920・+0.0030）。
+        assert result.stats.trades == 2
+        assert len(result.trades) == 2
         assert result.trades[0].side == "buy"
         assert result.trades[0].exit_reason == "reverse"
-        assert result.stats.profit == pytest.approx(result.trades[0].pnl())
+        end = result.trades[1]
+        assert end.side == "sell"
+        assert end.exit_reason == "end_of_test"
+        assert end.entry_price == pytest.approx(1.0950)
+        assert end.exit_price == pytest.approx(1.0920)
+        assert end.pnl() == pytest.approx(0.0030)
+        assert result.stats.profit == pytest.approx(sum(t.pnl() for t in result.trades))
+        assert result.stats.profit == pytest.approx(-0.0060)
 
     def test_composition_root_writes_presenter_outputs(self, tmp_path):
         # Arrange

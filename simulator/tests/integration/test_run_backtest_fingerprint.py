@@ -285,9 +285,19 @@ _C_BARS = [
 ]
 
 #: 採取値（2026-09-04 実測・2 回実行一致）。空 trades では**ない**ことを検定が主張する。
-_C_STATS_SHA256 = "6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12"
-_C_TRADES_SHA256 = "d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53"
-_C_TRADE_COUNT = 4
+#:
+#: ISSUE-519 による更新（2026-09-14・依頼者の条件付き承認）: 実 MT5 はテスト期間終了時に
+#: 残る建玉を清算して 1 トレードと数える（b0d13156 で常時化）。本ケースは末尾に買い玉が
+#: 1 本残るため end_of_test が 1 件増えた。条件の実測（b0d13156^ = 97b175f2 の複製と現行を
+#: 同一手順で実走・全列比較）: 新 trades の先頭 4 件が旧列と **bit 一致**・追加は
+#: **end_of_test の 1 件だけ**（buy 1.103→1.108）・`new.profit − old.profit ==
+#: trades[-1].pnl()` が完全一致（+0.0050000000000001155）。A/B の値は不変（末尾に建玉が
+#: 残らない）。旧ピン（退行との識別用）: trade_count 4 /
+#: stats 6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12 /
+#: trades d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53。
+_C_STATS_SHA256 = "542d86738cc00654d9d6c1044dbc42d9796e82d7c9b93f5f41775b562882b173"
+_C_TRADES_SHA256 = "75b3a5207dd3d53fddef072cc67326b9a05146e5be7d27e89da533c0beb04827"
+_C_TRADE_COUNT = 5
 
 #: 空トレードのダイジェスト（ISSUE-483 が棄却した値）。錨がここへ退化したら赤にする。
 _EMPTY_TRADES_SHA256 = hashlib.sha256(b"").hexdigest()
