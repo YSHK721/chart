@@ -551,6 +551,28 @@ def _declared_spread(ref: str, point: "float | None") -> "_LazyPoint | None":
     return _LazyPoint(lambda: point)
 
 
+def materialize_m1_day(ticks: pd.DataFrame, *, ref: str, price_basis: str) -> pd.DataFrame:
+    """1 日分のティックを ``ref`` の宣言どおりに M1 行へ素材化する公開の口（ISSUE-511 段階 3 前提 (c)）。
+
+    順序（畳む → 外れ分除去 → 残った分だけ気配幅）の唯一源 :func:`_materialize_m1_day` へ、台帳の
+    宣言（:func:`_declared_spread`）を渡して委譲するだけである（規則を持たない）。呼出側（日次再構築）が
+    順序を手書き複製しないために在る。
+
+    ``ref``・``price_basis`` は必須（既定値なし）: ``ref`` を既定（:data:`_DEFAULT_REF`）にすると別系列の
+    宣言で spread 列の有無を決めてしまい、``price_basis`` を既定（mid）にすると増分経路と基準が割れて
+    日次再構築が当日を mid へ書き戻す。``point``・``after``・``until`` は受けない: 台帳に登録済みの ref
+    では台帳が point の唯一の源であり（呼出側からの明示は :func:`_declared_spread` が拒否する）、
+    行選択は現存する呼出側（閉じた UTC 日の作り直し）が使わない（YAGNI）。
+
+    ティック parquet・M1 CSV を読み書きしない（読むのは呼出側）。point の値は、宣言付き ref で気配幅を
+    計算する分が残ったときに初めて :func:`marketdata.spread_point.spread_point_of` で解決する
+    （スナップショットを読むのはこのときだけ）。
+    """
+    return _materialize_m1_day(
+        ticks, price_basis=price_basis, spread=_declared_spread(ref, None)
+    )
+
+
 def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
     """既存 CSV の先頭行の spread 列の有無が ``with_spread`` と一致しなければ止める（書かない）。
 

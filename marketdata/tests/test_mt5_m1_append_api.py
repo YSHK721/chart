@@ -207,6 +207,8 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         # ISSUE-515 対策 2（承認 2026-09-13）: 単一ティック版の価格規則 ``tick_m1.quote_price`` と、
         # 基準の検証 ``tick_m1.validate_price_basis``。ライブ tick バッファが規則を手書きしないため。
         "quote_price", "validate_price_basis",
+        # ISSUE-511 段階 3 前提 (c)（承認 2026-09-15）: rebuild が 1 日分の素材化の手順を手書き複製せず呼ぶ公開の口。
+        "materialize_m1_day",
     }
 
 
