@@ -6,7 +6,7 @@
           残った分だけ気配幅）。順序の唯一源は ``marketdata.tick_m1`` の素材化関数であり、公開の口は
           :func:`marketdata.tick_m1.materialize_m1_day`。
     手書き複製
-        ＝ ``rebuild.authoritative_day_m1`` が ``tick_m1.ticks_to_m1`` → ``rebuild.clean_day_m1`` を自分で並べていた形。
+        ＝ ``rebuild.authoritative_day_m1`` が ``tick_m1.ticks_to_m1`` → ``marketdata.outlier_policy.repair_day_outliers`` を自分で並べていた形。
           point を付けると外れ分の気配幅を計算してから捨てる（R-1 と同型）。
     宣言
         ＝ 台帳記述子の ``spread_point_snapshot``（None＝spread 列を持たない系列）。
@@ -18,8 +18,10 @@
   2. 気配幅の浪費ゼロ（``authoritative_day_m1``）: 発行した分 − 出力行数 = 0・入力ティック − 残った分の
      ティック = 0・外れ分は発行に含まれない。規模 2 点。
   3. ``rebuild_day`` 経路でも気配幅の浪費ゼロ・権威と一致して UNCHANGED。規模 2 点。
-  4. 構造: rebuild.py は ``tick_m1.ticks_to_m1`` を呼ばず ``tick_m1.materialize_m1_day`` を呼ぶ。
-  Guard: rebuild.py は tick_m1 の private 属性を参照しない／宣言無しでは気配幅を 1 つも計算しない。
+  4. 構造: rebuild.py は ``tick_m1.ticks_to_m1`` を呼ばず ``tick_m1.materialize_m1_day`` を呼ぶ
+     （属性呼出・別名・from import した関数の直接呼出の別を問わない）。
+  Guard: rebuild.py は tick_m1 の private 名を参照しない（属性参照・from import・別名のいずれでも）／
+         宣言無しでは気配幅を 1 つも計算しない。
   回数そのもの（N 回）は期待値にしない（固定するのは無駄の不在）。
 
 書込・tick 木はすべて tmp_path（data_dir を必ず渡す）。構造: Arrange-Act-Assert（AAA）。
@@ -276,21 +278,89 @@ def test_rebuild_day_of_a_declared_series_computes_spreads_only_for_the_day_rows
 
 
 # =====================================================================
+# rebuild.py の中で tick_m1 を指す名前の解決（4. 構造と Guard が共有する唯一の判定）
+# =====================================================================
+
+_TICK_M1_MODULE = "marketdata.tick_m1"
+_REBUILD_PACKAGE = "marketdata.mt5_ticks"  # rebuild.py の所属パッケージ（相対 import の起点）
+
+
+def _absolute_module(node: ast.ImportFrom) -> str:
+    """from import の取り込み元を rebuild.py の所属パッケージから絶対モジュール名へ直す。"""
+    parts = _REBUILD_PACKAGE.split(".")
+    base = parts[: len(parts) - node.level + 1] if node.level else []
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
+def _dotted(expr: ast.expr) -> "str | None":
+    """Name / Attribute の連鎖を a.b.c の文字列にする（それ以外は None）。"""
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        head = _dotted(expr.value)
+        return None if head is None else f"{head}.{expr.attr}"
+    return None
+
+
+def _tick_m1_bindings(tree: ast.AST) -> "set[str]":
+    """tick_m1 モジュールそのものを指す名前（既定の名前 tick_m1・完全修飾名・import 別名・
+    from import で取り込んだモジュール名とその別名（相対 import を含む））。"""
+    bound = {"tick_m1", _TICK_M1_MODULE}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bound |= {a.asname for a in node.names if a.name == _TICK_M1_MODULE and a.asname}
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute_module(node)
+            bound |= {a.asname or a.name for a in node.names if f"{module}.{a.name}" == _TICK_M1_MODULE}
+    return bound
+
+
+def _tick_m1_imports(tree: ast.AST) -> "list[tuple[str, str]]":
+    """tick_m1 から from import で取り込んだ名前の組（局所名, tick_m1 での名前）を取り込み 1 件ずつ列挙する。
+
+    as による改名と相対 import を含む。同じ局所名への再取り込みも 1 件ずつ残す（畳まない）。
+    """
+    return [
+        (a.asname or a.name, a.name) for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and _absolute_module(node) == _TICK_M1_MODULE
+        for a in node.names
+    ]
+
+
+# =====================================================================
 # 4. 構造: 手書き複製の撤去
 # =====================================================================
 
-def _tick_m1_attributes_called() -> "set[str]":
+def _tick_m1_function_of(func: ast.expr, bound: "set[str]", imported: "dict[str, set[str]]") -> "set[str]":
+    """呼出先がなりうる tick_m1 の関数名の集合（tick_m1 を指す名前の属性・from import した名前の直接呼出）。
+
+    同じ局所名へ再取り込みした名前は、取り込んだ全ての名前のどれにもなりうるとして全部返す（畳まない）。
+    """
+    if isinstance(func, ast.Attribute) and _dotted(func.value) in bound:
+        return {func.attr}
+    if isinstance(func, ast.Name):
+        return imported.get(func.id, set())
+    return set()
+
+
+def _tick_m1_functions_called() -> "set[str]":
+    """rebuild.py が呼ぶ tick_m1 の関数名を、import・from import・完全修飾名の形について（代入による別名や getattr 経由は振る舞いの検定が担う）集める。
+
+    tick_m1 を指す名前の判定は :func:`_tick_m1_bindings` の 1 つだけに従う（既定の名前・完全修飾名・
+    import 別名・相対 import）。from import で取り込んだ関数の直接呼出も tick_m1 の関数の呼出に数える。
+    """
     tree = ast.parse(_REBUILD_SOURCE.read_text(encoding="utf-8"))
-    return {
-        node.func.attr for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name) and node.func.value.id == "tick_m1"
-    }
+    bound = _tick_m1_bindings(tree)
+    imported: "dict[str, set[str]]" = {}
+    for local, name in _tick_m1_imports(tree):
+        imported.setdefault(local, set()).add(name)
+    calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    return set().union(*(_tick_m1_function_of(func, bound, imported) for func in calls))
 
 
 def test_rebuild_calls_the_public_materializer_instead_of_folding_by_hand():
     """rebuild.py は ``tick_m1.ticks_to_m1`` を呼ばず ``tick_m1.materialize_m1_day`` を呼ぶ（順序の第 2 定義を持たない）。"""
-    called = _tick_m1_attributes_called()
+    called = _tick_m1_functions_called()
     assert "ticks_to_m1" not in called
     assert "materialize_m1_day" in called
 
@@ -299,15 +369,30 @@ def test_rebuild_calls_the_public_materializer_instead_of_folding_by_hand():
 # Guard（前後とも緑）
 # =====================================================================
 
+def _private_tick_m1_references(tree: ast.AST) -> "list[str]":
+    """rebuild.py が tick_m1 の private 名へ届く箇所を、import・from import・完全修飾名の形について（代入による別名や getattr 経由は振る舞いの検定が担う）列挙する。
+
+    拒否する形: 属性参照（tick_m1 の後に _x・別名 t の後に _x・完全修飾名の後に _x）と、
+    tick_m1 からの from import で _ 始まりの名前を取り込む形（as による改名・相対 import も含む）。
+    from import の形は属性参照を 1 つも作らないので、属性参照だけを見る検定を素通りする（レビュー指摘 Y-1）。
+    """
+    bound = _tick_m1_bindings(tree)
+    attributes = [
+        f"{_dotted(node.value)}.{node.attr}" for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_")
+        and _dotted(node.value) in bound
+    ]
+    imported = [
+        f"from {_TICK_M1_MODULE} import {name}" for _, name in _tick_m1_imports(tree)
+        if name.startswith("_")
+    ]
+    return sorted(attributes + imported)
+
+
 def test_rebuild_never_reaches_into_private_attributes_of_tick_m1():
-    """Guard: rebuild.py は tick_m1 の private 属性を参照しない（公開の口だけを使う）。"""
+    """Guard: rebuild.py は tick_m1 の private 名を参照しない（公開の口だけを使う・属性参照／from import／別名の別を問わない）。"""
     tree = ast.parse(_REBUILD_SOURCE.read_text(encoding="utf-8"))
-    private = sorted(
-        node.attr for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-        and node.value.id == "tick_m1" and node.attr.startswith("_")
-    )
-    assert private == []
+    assert _private_tick_m1_references(tree) == []
 
 
 @pytest.mark.parametrize("stored_days", [2, 5])
