@@ -15211,7 +15211,7 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ## ISSUE-519: b0d13156（残存建玉の最終足清算）以降、simulator の検定 31 件が「約定 1 件多い」で失敗している
 
-- **ステータス**: OPEN（未着手・原因コミットは実測で特定済み）
+- **ステータス**: RESOLVED（2026-09-15。検証: marketdata/tests + simulator/tests/unit は 1 failed / 4350 passed（残る 1 件は ISSUE-517 の tickvol・別件）、simulator/tests/integration は 389 passed・失敗 0（着手前は 32 failed）、品質ゲート exit 0。実装の変更は `order_execution.close_all_at_final_bar` のみ（残る玉のサイドごとに 1 回だけ `close_price_for`・Ask は唯一源 `mt5_bid_ask`）。新規計算量テスト `test_order_executor_final_close_complexity.py`（玉数 1→4・2→8・足本数 6→48 の 2 点以上で「発行 − 使用 = 0」）はミューテーション 3 種（玉ごと解決・継ぎ目迂回・両サイド常時解決）をすべて検出。G6 の条件（旧 trades 列の先頭 N 件が bit 一致・差分は end_of_test 1 件）は IS 4→5・OOS 2→3・C 4→5 で実測成立。b0d13156 が弱めた `TestStatsComputedFromTrades` は 97b175f2 の原文で復元。レビュー: SOLID 5 項目合格・🔴 0 件）（経緯: 2026-09-14 着手・依頼者承認。ブランチ fix/issue-519-end-of-test-close。**参照実装で b0d13156 の方向が正しいと確定**: MT5 レポート `ReportTester-900005560.html`（2026.06.01-02・MA_Slope_EA・ISSUE-438・.gitignore 済み）の最終 deal は #375 `buy / out` 2026.06.01 **23:59:59**・profit +65・comment **`end of test`**＝MT5 はテスト期間終了時に残る建玉を必ず清算する。Total Deals 374（#2〜#375）・Total Trades 187＝374/2 で、end of test の往復も **1 トレードとして数える**。ma_slope 2 fixture はどちらも最終 deal が stop out（`so 99.95%`／`so 99.04%`）で期間終了時の挙動を定義しない。よって「期間終了時に建玉を残す」前提の期待値を持つ検定側が参照実装と矛盾している。**分類（2026-09-14 実測・31 件すべて期末に建玉が残るシナリオ・どれも期末挙動を意図した検定ではない・MT5 由来の期待値は 0 件）**: G1 15 件（ドテン等の残玉で end_of_test が 1 件増える・手組み）／G2 6 件（保有のまま終わり「決済 0 件」を assert）／G3 3 件（部分決済の残玉）／G4 1 件（`TestAccountPropagation`: 記録済み Account が run 全体で同一インスタンスで、期末清算が後から建玉を外す）／G5 2 件（`close_all_at_final_bar` が玉ごとに `close_price_for` を呼ぶ N+1＝計算量テストが検出）／G6 4 件（シミュレータ自身の実測ピン `_IS_TRADES`・`_C_TRADE_COUNT`）。付随: b0d13156 が `TestStatsComputedFromTrades` の assert 5 行を新テストへ移して弱めた。MT5 の end of test 時刻は期間末（23:59:59 等）でシミュレータは最終足時刻。**設計・裁定（2026-09-14）**: 実装欠陥は `order_execution.close_all_at_final_bar` の N+1（玉ごとに `close_price_for`）1 箇所のみ＝サイドごとに 1 回へ是正し計算量テストで固定。残り 30 件は期待値を期末清算込みへ手計算で更新（各検定の本来の意図は維持・`exit_reason == "end_of_test"` を明示）。G4 は設計欠陥でなく検定の読み方の誤り（呼出時点の値を記録する形へ）。G6 のピン更新は依頼者承認（条件: 旧 trades 列が bit 一致し差分が end_of_test 1 件だけであることを実測・旧値を注記に残す）。TBD-1（close 基準の run の期末清算にも spread を掛けるか）は依頼者裁定「現行のまま掛ける」。期末清算の時刻・価格の定義は ISSUE-522、同型の N+1（margin_guard・close_opposite）は ISSUE-523 へ分離）
 - **起票日**: 2026-09-14
 - **発見の経緯**: ISSUE-511 段階 2 の基準取り（develop 無変更）で、marketdata/tests + simulator/tests/unit が
   23 failed、simulator/tests/integration が 9 failed。うち 1 件（tickvol）は ISSUE-517 で既知。残る 31 件は未起票。
@@ -15276,3 +15276,40 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ### 関連
 - ISSUE-511 段階 2（発見の契機・TBD-1）／ISSUE-167（dedupe の導入）
+
+## ISSUE-522: 期末清算（end_of_test）の時刻と価格が MT5 の定義と一致しているか未確定
+
+- **ステータス**: OPEN（未着手・ISSUE-519 の設計で範囲外として分離）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-519 の是正設計（TBD-2）。
+
+### 実測（2026-09-14）
+- MT5 の `end of test` deal の時刻: `ReportTester-900005560.html`（2026.06.01-02）と `.doc/ReportTester-900005560.html`（TC24051903 Daily）は **23:59:59**、`simulator/tests/confirmation/2026-03_ma-limit/report.xlsx` は **23:59:30**（調査エージェントの読取・未再確認）。「期間末」か「最後のティック時刻」かが確定していない。
+- シミュレータは `exit_time = final_bar.time`（`simulator/usecase/order_execution.py:236`）、価格は最終足の close クォート。tick 経路では最終足の close と最後のティックが食い違いうる（`test_position_manager_engine.py` の部分決済の残玉が 105＝close で、最後のティックは 110）。
+- exit_time を使うのは report_ui・trade_markers・trace・trades_sha256。stats は参照しない（推論・grep）。
+
+### 対策（案・未実施）
+- 期間末に建玉を残す MT5 実行を 2 本以上（bar 系・tick 系）取得し、end of test deal の時刻・価格の規則を実測で確定してから `close_all_at_final_bar` を合わせる。
+
+### 関連
+- ISSUE-519（発見の契機）
+
+## ISSUE-523: 決済価格の解決が玉数に比例する N+1 が margin_guard と close_opposite に残っている
+
+- **ステータス**: OPEN（未着手・ISSUE-519 の設計で範囲外として分離）
+- **起票日**: 2026-09-14
+- **発見の経緯**: ISSUE-519 の是正設計（TBD-3）。同型の `close_all_at_final_bar` は ISSUE-519 で是正。
+
+### 実測（2026-09-14・コード読取）
+- `simulator/usecase/margin_guard.py:215-216` と `simulator/usecase/order_execution.py:87-89` が、玉ごとのループ内で決済価格（`close_price_for`）を解決している（サイドが 2 種しかないのに玉数ぶん解決する）。
+- 期末清算の是正（サイドごとに 1 回）と同じ構造で直せる（先例 `position_directives.py:55-58,70`）。
+
+### 対策（案・未実施）
+- サイド集合ごとに 1 回だけ解決して各玉へ配る形へ是正し、Test Spy で「発行 − 使ったサイド数 = 0」を玉数 2 点以上で固定する。
+- 同じ形が ISSUE-519 で `close_all_at_final_bar` に入ったため、そのまま 2 箇所へ書くと手書き複製が 3 箇所になる。
+  `_execution` に単一のプリミティブ（例 `close_prices_by_side(sides, *, bid, ask)`）を置いて 3 箇所から呼ぶ（ISSUE-519 レビュー B-5）。
+  その際、計算量テストの Spy が差し替える名前の束縛先（`order_execution` モジュールの `close_price_for`・
+  `test_run_backtest_single_engine.py` の `_ENGINE_MODULES`）から外れないようにする（外れると検定が空振りで緑になる）。
+
+### 関連
+- ISSUE-519（発見の契機）
