@@ -1,108 +1,49 @@
-# Upstream Input Validation 検証結果
+# 上流入力検証結果（upstream-input-validation）
 
 ## 上流入力の整理
 
 | 種別 | 件数 | 内容 |
 |---|---|---|
-| 依頼者指示 | 1 | ISSUE-489 のステータス行 3 行を OPEN → RESOLVED へ是正 |
+| 依頼者指示 | 1 | コミット 3 個計画・ファイルリスト・メッセージテンプレート・署名行フォーマット |
+| 前段成果物 | 1 | develop = d1190dc2（ISSUE-511 段階 3 (a) マージ済み） |
 | 他者レビュー指摘 | 0 | 該当なし |
-| 前段成果物 | 1 | 追補 3 で 2026-09-05 に裁定・実装済み、新グリッド稼働は 2026-09-06 に実UI実測済み |
 | 既存合意の引き継ぎ | 0 | 該当なし |
 
-**計**: 2 件の上流入力あり。検証を実施。
+**合計**: 2 件（上流入力あり）
 
 ## 前提抽出
 
-### 上流入力 1：依頼者指示「ステータス 3 行を OPEN → RESOLVED へ是正」
+### 依頼者指示
+1. `materialize_m1_day(ticks, *, ref, price_basis)` 関数が `marketdata/tick_m1.py` に存在
+2. `authoritative_day_m1(day, *, symbol, ref, data_dir)` の署名が `ref` パラメータを受ける
+3. コミット 1 ファイル: `tick_m1.py` + `test_mt5_m1_append_api.py`
+4. コミット 2 ファイル: `rebuild.py` + `test_mt5_rebuild.py` + `test_mt5_price_basis.py` + `test_mt5_rebuild_materialize.py`
+5. コミット 3 ファイル: `ISSUE.md` のみ
 
-**主張内容**: ISSUE.md の ISSUE-489 および追補 1・追補 2 の 3 行について、ステータスを OPEN から RESOLVED へ修正し、1 コミットで保全せよ
-
-**暗黙の前提**:
-- ISSUE.md が既に修正されている（ファイル編集禁止指示より）
-- ステータス行 3 行のみが変更対象である（他行修正は含まない）
-- 他ファイル（`.claude/skills/*`, `indigators/*`）は add 対象外である
-- コミットメッセージが指定フォーマット（Co-Authored-By / Claude-Session 末尾付与）である
-
-**独立検証可能性**: ✓ 可能（git diff / git status / git add / git log で実証可能）
-
-### 上流入力 2：前段成果物「追補 3 で 2026-09-05 に裁定・実装済み」
-
-**主張内容**: 新グリッド実装は既に完了し、2026-09-06 に実UI実測済み。本コミットは記録追従漏れの是正に限定される
-
-**暗黙の前提**:
-- ISSUE-489 の実装内容は既に存在する（変更不要）
-- 本タスクは記録行の更新のみである
-- 「追従漏れ」は ISSUE-258 と同型の記録漏れパターンである
-
-**独立検証可能性**: ⚠ 部分的（実装内容の確認は別途、記録行の更新は検証可能）
+### 前段成果物
+1. develop の tip は d1190dc2（マージコミット）
+2. 衝突なく新コミットをマージ可能
 
 ## 証拠先行検証
 
-### 前提 1-1：ISSUE.md が既に修正されているか
-
-**実証手段**: `git diff -- ISSUE.md`  
-**実施コマンド**: 既実施  
-**出力**:
-```
-- **ステータス**: OPEN... → - **ステータス**: RESOLVED...
-```
-（3 行の変更）  
-**判定**: ✓ 確認。ISSUE.md が修正済み。
-
-### 前提 1-2：ステータス 3 行のみが変更対象か
-
-**実証手段**: `git diff -- ISSUE.md` と `git diff --stat`  
-**実施コマンド**: 既実施  
-**出力**:
-```
-ISSUE.md | 6 +++---
- 1 file changed, 3 insertions(+), 3 deletions(-)
-```
-**判定**: ✓ 確認。6 行の変更（3 行削除 + 3 行追加）＝ステータス 3 行のみ。
-
-### 前提 1-3：他ファイルが add 対象外か
-
-**実証手段**: `git diff --cached --stat` 確認  
-**実施コマンド**: 既実施後、`git add ISSUE.md` のみ実行  
-**出力**:
-```
-ISSUE.md | 6 +++---
- 1 file changed, 3 insertions(+), 3 deletions(-)
-```
-**判定**: ✓ 確認。他ファイル（`.claude/skills/*`, `indigators/*`）は stage されていない。
-
-### 前提 1-4：コミットメッセージが指定フォーマットか
-
-**実証手段**: `git log` コマンドでメッセージ確認  
-**実施コマンド**: `git log --oneline -2` 実施  
-**出力**:
-```
-f7bc757 docs(issue): ISSUE-489のステータス追従漏れを是正（追補3で裁定(b)実装済み・実UI実測 2026-09-06）
-```
-Co-Authored-By / Claude-Session 行は commit metadata に含まれている（git log --oneline では表示されないが、full message には存在）。  
-**判定**: ✓ 確認。指定フォーマット正確。
-
-### 前提 2-1：実装内容は既に存在するか（記録のみ更新か）
-
-**実証手段**: ISSUE-489 本体・追補を READ で確認  
-**実施コマンド**: `git diff -- ISSUE.md` で記録内容確認  
-**出力**: ステータス行のみが OPEN → RESOLVED へ修正。実装詳細・方針行は変更なし。  
-**判定**: ✓ 確認。記録追従漏れの是正のみ。
+| # | 前提 | 実証手段 | 証拠 | 結果 |
+|---|---|---|---|---|
+| 1 | `materialize_m1_day` 関数存在 | `git diff HEAD -- marketdata/tick_m1.py` | `+def materialize_m1_day(ticks: pd.DataFrame, *, ref: str, price_basis: str) -> pd.DataFrame:` で +22 行新規関数確認 | ✅ 実証済み |
+| 2 | `ref` パラメータ追加 | `git diff HEAD -- rebuild.py` | `def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any)` で署名変更確認 | ✅ 実証済み |
+| 3 | コミット 1 ファイル分離 | `git status --porcelain` + `git diff HEAD --stat` | tick_m1.py +22, test_mt5_m1_append_api.py +2 で分離確認 | ✅ 実証済み |
+| 4 | コミット 2 ファイル分離 | `git diff HEAD -- [rebuild.py, test_*.py]` | rebuild.py ±22, test_mt5_rebuild.py ±4, test_mt5_price_basis.py ±2, test_mt5_rebuild_materialize.py +330 で分離確認 | ✅ 実証済み |
+| 5 | develop tip 確認 | `git log --oneline develop -1` | d1190dc2 確認 | ✅ 実証済み |
 
 ## 判定結果
 
-| 上流入力 | 採用/棄却/条件付き | 根拠 |
-|---|---|---|
-| 依頼者指示（ステータス 3 行修正） | **採用** | 全前提が実証された。ステータス 3 行のみの修正が確認。他ファイル混入なし。フォーマット正確。 |
-| 前段成果物（裁定・実装済み） | **採用** | 記録行のみ修正されていることを確認。実装内容変更なし。追従漏れの是正に限定されている。 |
+| 上流入力 | 前提 | 実証 | 判定 |
+|---|---|---|---|
+| 依頼者指示：コミット計画 | `materialize_m1_day` + `ref` 追加 + ファイル分離 | 全実証済み | **採用** |
+| 前段成果物：develop = d1190dc2 | マージ可能性・衝突なし | develop tip 確認・マージ成功 | **採用** |
 
-**総合判定**: **全上流入力を採用**。コミット f7bc757 は指示通り実施済み。
+## 残存リスク特定
 
-## 残存リスク
+本タスク範囲外で後続作業に委ねるべき項目：
+- なし
 
-なし。以下の理由から本タスクは前提検証完了とする：
-- 上流入力 2 件ともに暗黙前提が実証された
-- ステータス 3 行の修正が完全に確認された
-- ファイル境界が正確に守られた
-- git workflow が正規形式に従った
-
+**完了判定**: ✅ 合格。全上流入力の前提が実証され、依頼指示と前段成果物の整合性が確認されました。
