@@ -92,7 +92,7 @@ def test_the_authoritative_day_equals_what_the_whole_build_produces(tmp_path, st
     rows, until = _rows_for(_DAY, minutes=10, phantom_minutes=(4, 5))
     _publish(_DAY, rows, until, tmp_path)
 
-    got = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, data_dir=tmp_path)
+    got = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, ref=_REF, data_dir=tmp_path)
 
     tick_m1.build_m1_from_ticks(
         _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path
@@ -106,7 +106,7 @@ def test_the_authoritative_day_drops_the_phantom_bars(tmp_path):
     rows, until = _rows_for(_DAY, minutes=10, phantom_minutes=(4, 5))
     _publish(_DAY, rows, until, tmp_path)
 
-    got = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, data_dir=tmp_path)
+    got = rebuild.authoritative_day_m1(_DAY, symbol=_TOKEN, ref=_REF, data_dir=tmp_path)
 
     assert list(got.index.strftime("%H:%M")) == [
         "09:00", "09:01", "09:02", "09:03", "09:06", "09:07", "09:08", "09:09"
