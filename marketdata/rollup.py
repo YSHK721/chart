@@ -69,21 +69,22 @@ _STATE_FILENAME = "rollup_state.json"
 def merge_same_period(prev_bar: dict[str, Any], new_bar: dict[str, Any]) -> dict[str, Any]:
     """同一 period の 2 つの partial bar を結合する（結合的）。
 
-    open=最初の bar の open / high=max / low=min / close=後の bar の close / volume=合算。
-    結合的（``merge(merge(a,b),c) == merge(a,merge(b,c))``）であり、チャンク跨ぎ carry-over の
-    正しさ（D-1）の根拠となる。
+    列ごとの畳み方は :data:`marketdata.csv_schema.VALUE_COLUMN_LEDGER`（値列台帳）が持つ
+    （規則をここへ書き写さない）。必須列は欠けていたら :class:`KeyError`、任意列は**両者が
+    持つときだけ**運ぶ。結合的（``merge(merge(a,b),c) == merge(a,merge(b,c))``）であり、
+    チャンク跨ぎ carry-over の正しさ（D-1）の根拠となる。
     """
+    # 必須列は欠けていたら KeyError で落とす（黙って列を落とさない＝従来の契約）。
     merged = {
-        "open": prev_bar["open"],
-        "high": max(prev_bar["high"], new_bar["high"]),
-        "low": min(prev_bar["low"], new_bar["low"]),
-        "close": new_bar["close"],
-        "volume": prev_bar["volume"] + new_bar["volume"],
+        col: _csv_schema.combine_for(col)(prev_bar[col], new_bar[col])
+        for col in _csv_schema.required_columns()
     }
-    # 方向内訳（up/dn）も volume と同じく合算する（両者が持つときのみ・結合的）。
-    for col in _csv_schema.UPDOWN_COLUMNS:
+    # 任意列（方向内訳 up/dn・気配幅 spread）は**両者が持つときだけ**運ぶ（結合的）。
+    #   かつてここは辞書リテラル 5 キー + up/dn ループだけで、台帳へ列が増えても本経路が
+    #   その列を運ばず、チャンク跨ぎの carry-over で列ごと消えていた（spread が該当）。
+    for col in _csv_schema.optional_columns():
         if col in prev_bar and col in new_bar:
-            merged[col] = prev_bar[col] + new_bar[col]
+            merged[col] = _csv_schema.combine_for(col)(prev_bar[col], new_bar[col])
     return merged
 
 
@@ -132,45 +133,37 @@ def _rollup_path(out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> Path:
 
 
 def _bar_to_dict(row: pd.Series) -> dict[str, Any]:
-    bar = {
-        "open": float(row["open"]),
-        "high": float(row["high"]),
-        "low": float(row["low"]),
-        "close": float(row["close"]),
-        "volume": float(row["volume"]),
-    }
-    # 方向内訳（up/dn）は tick 由来データだけが持つ任意列。持つときだけ運ぶ（無い素材は不変）。
-    for col in _csv_schema.UPDOWN_COLUMNS:
-        if col in row.index:
-            bar[col] = float(row[col])
-    return bar
+    """resample 済みの 1 行を bar 辞書へ（列・順序・型の唯一源は csv_schema の値列台帳）。
+
+    型を台帳の ``cast`` で戻すのは、``resample().agg()`` が空き期間を NaN で埋める際に
+    整数列（spread）を float へ昇格させるためである（``dropna`` は昇格の後に走るので
+    取り消せない）。任意列は持つときだけ運ぶ（無い素材の出力は 1 バイトも変わらない）。
+
+    :func:`marketdata.csv_schema.cast_for` の**適用点 3 箇所のうちの 1 つ**。ここが守るのは
+    **bar 辞書の面**（``_resample_chunk`` / ``_resample_suffix`` が作り、``stream_build`` の
+    carry-over と writer へ渡る値）である。実測（本適用だけを撤去）: 休場を挟んだ素材で
+    bar の spread が ``np.float64(70.0)`` になる。
+    """
+    return {col: _csv_schema.cast_for(col)(row[col])
+            for col in _csv_schema.header_columns() if col in row.index}
 
 
 def _header_for_bars(bars: "dict[Any, dict[str, Any]]") -> list[str]:
-    """bars の内容からロールアップ CSV ヘッダを決める（up/dn を持つときだけ末尾へ足す）。"""
+    """bars の内容からロールアップ CSV ヘッダを決める（任意列は持つときだけ末尾へ足す）。"""
     sample = next(iter(bars.values()), {})
-    return _csv_schema.header_for([c for c in (*_csv_schema.OHLCV_COLUMNS,
-                                               *_csv_schema.UPDOWN_COLUMNS) if c in sample])
+    return _csv_schema.header_for(
+        [c for c in _csv_schema.header_columns() if c in sample]
+    )
 
 
 def _merge_agg(columns: Any) -> "dict[Any, str]":
     """既存 CSV と新規 tail をマージするときの列別集約規則（実在列から導出・単一定義）。
 
-    規則は :func:`marketdata.resample.resample_ohlc` と同一（OHLC=first/max/min/last、
-    :data:`marketdata.csv_schema.SUM_COLUMNS` は sum、その他は last）。列名を呼び出し側へ
-    直書きしないことで、csv_schema へ列が増えても本経路が列を落とさない。
+    規則は :func:`marketdata.resample.resample_ohlc` と同一であり、どちらも
+    :mod:`marketdata.csv_schema` の値列台帳から導出する（規則の第 2 定義を作らない）。
+    列名を呼び出し側へ直書きしないことで、台帳へ列が増えても本経路が列を落とさない。
     """
-    fixed = {"open": "first", "high": "max", "low": "min", "close": "last"}
-    agg: "dict[Any, str]" = {}
-    for col in columns:
-        lc = str(col).lower()
-        if lc in fixed:
-            agg[col] = fixed[lc]
-        elif lc in _csv_schema.SUM_COLUMNS:
-            agg[col] = "sum"
-        else:
-            agg[col] = "last"
-    return agg
+    return {col: _csv_schema.agg_for(col) for col in columns}
 
 
 def _header_of(path: Path) -> "list[str] | None":
@@ -189,12 +182,18 @@ def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
 
     ``_write_rollup``（全件一括書き）と :class:`_RollupWriter`（逐次 flush）で同一フォーマットを
     共用し、両経路の出力 CSV をバイト一致させるための行整形の単一真実源。
+
+    :func:`marketdata.csv_schema.cast_for` の**適用点 3 箇所のうちの 1 つ**。ここが守るのは
+    **``csv.writer`` で書く行の面**（``_RollupWriter`` の逐次 flush と、増分の追記
+    ``_truncate_append_bars``）である。``stream_build`` 経由では :func:`_bar_to_dict` が先に
+    整数へ戻すため、本適用だけを撤去しても ``stream_build`` の出力は変わらない（遮蔽・実測）。
+    本適用単独の効きは、float 値を持つ bar を直接渡したときに観測できる（撤去すると
+    ``70.0`` が行へ入る）。
     """
-    row = [
-        pd.Timestamp(period).strftime(_DATE_FMT),
-        bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"],
-    ]
-    row.extend(bar[c] for c in _csv_schema.UPDOWN_COLUMNS if c in bar)
+    row: "list[Any]" = [pd.Timestamp(period).strftime(_DATE_FMT)]
+    # 列・順序・型は台帳が唯一源（書く直前に cast で型を戻す＝spread は整数で書かれる）。
+    row.extend(_csv_schema.cast_for(c)(bar[c])
+               for c in _csv_schema.header_columns() if c in bar)
     return row
 
 
@@ -314,16 +313,35 @@ def _write_rollup_df(
 
     出力列は **実在する列から導出**する（``_bar_to_csv_row`` / ``_merge_agg`` と同じ規約・ISSUE-258）。
     かつてここは ``["open","high","low","close","volume"]`` を直書きしており、csv_schema へ up/dn が
-    増えたとき**本経路だけが列を落とした**。しかも一度 6 列で書かれるとヘッダ不一致で次回も全件
-    rewrite へ落ちるため自己修復せず、方向内訳が恒久的に失われる（消費側の tickvol_updown は値を
-    捏造せず KeyError で落ちる）。列の決定は csv_schema 1 点に閉じること。
+    増えたとき**本経路だけが列を落とした**。当時はヘッダ不一致を直す経路が無く、6 列で書かれた
+    まま方向内訳が恒久的に失われた（消費側の tickvol_updown は値を捏造せず KeyError で落ちる）。
+    現在は :func:`incremental_update` が不一致を検出して全件 rewrite へ落とし**ヘッダごと書き直す**
+    ため、**ヘッダ不一致を理由とする**転落は 1 回で終わる（実測 1h: 2 回目の増分は速い経路へ戻る）。
+    probe が期間始端を覆えない tf（実測 1M: probe 20,000 行 ≒ 13.9 日 < 1 か月）は、この理由とは
+    無関係に毎回ここを通る＝転落ではなく常態である。列の決定は csv_schema 1 点に閉じること。
     """
     final = _rollup_path(Path(out_dir), tf, ref_prefix)
     with _atomic_csv(final) as fh:
-        cols = [c for c in (*_csv_schema.OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)
-                if c in df.columns]
+        cols = [c for c in _csv_schema.header_columns() if c in df.columns]
         out = df[cols].sort_index()
         out = out.copy()
+        # 書く直前に台帳の型へ戻す（spread は整数）。型の**適用**がここ（pandas 面）にあるのは
+        #   csv_schema が依存ゼロ（stdlib のみ・test_module_dependency_declarations が強制）で
+        #   pandas の欠損を扱えないためであり、台帳の外に規則を置いているのではない。
+        # cast_for の**適用点 3 箇所のうちの 1 つ**。ここが守るのは**全件 rewrite 経路**の整数
+        #   表記であり、_bar_to_dict / _bar_to_csv_row はこの経路を通らない（両者は bar 辞書面と
+        #   csv.writer 面を守る）。死コードではない: この astype だけを撤去すると、欠損なしの
+        #   float64（休場を挟んで resample → dropna した df）で 70 が 70.0 になる（実測）。
+        #   検定は test_rollup_spread_aggregation の
+        #   test_the_full_rewrite_writes_the_spread_as_an_integer。
+        # 欠損を含む列は戻さない: pandas の整数 dtype は NA を表現できず astype が落ちる。欠損は
+        #   「列が増える前に書かれた旧行」に残り続けるため（実測）、この判定は 1 回で終わらない。
+        #   当該列はそのファイルを全件 rewrite する限り float のまま書かれる（``71`` でなく
+        #   ``71.0``）。旧行の値を捏造しないための選択であり、表記を揃えたいなら M1 からの全件
+        #   再構築（:func:`stream_build`）で旧行ごと作り直す。
+        for col in cols:
+            if out[col].notna().all():
+                out[col] = out[col].astype(_csv_schema.cast_for(col))
         out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
         out.index.name = "date"
         out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
@@ -744,7 +762,7 @@ def incremental_update(
                 keep = existing[existing.index < cut]
                 overlap = existing[existing.index >= cut]
                 union_tail = pd.concat([overlap, new_df])
-                # merge_same_period と同値: open=first/high=max/low=min/close=last/volume=sum。
+                # merge_same_period と同じ縮約（規則は csv_schema の値列台帳・ここへ書き写さない）。
                 #   concat 順（既存→新規）が first/last の意味（既存 open・新 close）を保証する。
                 #   集約対象の列は **実在する列から導出**する（列名をここに直書きしない）。直書きは
                 #   csv_schema へ列（up/dn）が増えたときに本経路だけ列を落とし、同じファイルへ

@@ -7,7 +7,7 @@ indicator_ui ``dataset``（薄い再エクスポート）が共通して再利�
 
 依存方向（厳守）: 本モジュールは **pandas / marketdata.csv_schema / marketdata.tf_ledger のみ** に
 依存し、indicator_ui を逆 import しない（marketdata の循環依存禁止・設計 §4）。``csv_schema`` は
-依存ゼロの定数モジュールで、合算集約する列（volume/up/dn）の唯一源＝ここで列名を書き写さない
+依存ゼロのモジュールで、**列別集約規則（値列台帳）の唯一源**＝ここへ列名も集約名も書き写さない
 ために参照する。``tf_ledger`` も依存ゼロの定数モジュールで、時間足台帳（``TfDescriptor`` /
 ``TF_DESCRIPTORS``）の唯一源である。台帳を本モジュールから外へ出したのは、pandas を import できない
 純層（``simulator.usecase.contact_scan``）が台帳を参照できず時間足→秒長の手書き複製を持たざるを
@@ -58,11 +58,10 @@ TIMEFRAME_RULES: dict[str, str | None] = {
     code: d.rule for code, d in TF_DESCRIPTORS.items()
 }
 
-# OHLC 集約規則（再集計時の列別 agg）。volume は合算、その他（OHLC 外）は最終値。
-_OHLC_AGG = {"open": "first", "high": "max", "low": "min", "close": "last"}
-# 合算集約する列（volume と、tick 由来データが持つ方向内訳 up/dn）。規則源は csv_schema。
-#   ここに無い列は従来どおり "last"（最終値）で集約される（既存挙動不変）。
-_VOLUME_NAMES = tuple(_csv_schema.SUM_COLUMNS)
+# 列別集約規則（再集計時の agg）の唯一源は csv_schema の値列台帳である。
+#   かつてここに OHLC の集約規則を辞書リテラルで持っていたが、同じ規則が rollup 側にも
+#   手書きされており、列が 1 つ増えたとき片方だけが取り残されても出力は正しげなまま残った。
+#   台帳に無い列は従来どおり "last"（最終値）で集約される（既存挙動不変）。
 
 
 def is_known_timeframe(timeframe: Any) -> bool:
@@ -264,21 +263,14 @@ def resample_ohlc(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
     """DataFrame を指定 pandas rule で OHLC 再集計する（§チャート表示時間選択・1 分足原子）。
 
     ``rule=None`` は無変換で同一 DataFrame を返す（原子＝1 分足そのもの）。それ以外は
-    resample し、open=最初/high=最大/low=最小/close=最終、volume=合算、その他列=最終値で
-    集約する。取引の無い期間（OHLC が NaN の行）は除去する（resample は連続区間を埋めるため、
-    休場区間の空行を落とす）。
+    resample し、列ごとの集約規則は :data:`marketdata.csv_schema.VALUE_COLUMN_LEDGER`（値列台帳）
+    が決める（規則をここへ書き写さない）。台帳に無い列は従来どおり最終値で集約する。取引の無い
+    期間（OHLC が NaN の行）は除去する（resample は連続区間を埋めるため、休場区間の空行を落とす）。
     """
     if rule is None:
         return df
-    agg: dict[Any, str] = {}
-    for col in df.columns:
-        lc = str(col).lower()
-        if lc in _OHLC_AGG:
-            agg[col] = _OHLC_AGG[lc]
-        elif lc in _VOLUME_NAMES:
-            agg[col] = "sum"
-        else:
-            agg[col] = "last"
+    # 列別集約は台帳へ 1 列につき 1 回だけ問う（行数に依存しない）。
+    agg: dict[Any, str] = {col: _csv_schema.agg_for(col) for col in df.columns}
     resampled = df.resample(rule).agg(agg)
     lower_map = {str(c).lower(): c for c in df.columns}
     ohlc_cols = [lower_map[k] for k in _OHLC_COLUMNS if k in lower_map]
