@@ -33,8 +33,8 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 :mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree` /
 :mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d） /
 :mod:`marketdata.quote_spread`（分内の気配幅＝spread 列の規則の唯一源・ISSUE-511 段階 2） /
-:mod:`marketdata.spread_point`（登録済み ref の spread 列を数える point の唯一の読み口・ISSUE-511
-段階 3 前提 (a)）にのみ依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
+:mod:`marketdata.spread_point`（台帳が point を持つ ref かの照会・spread 列を数える point の遅延
+解決口・宣言そのものの照会（食い違いを報せる文面用）の 3 面・ISSUE-511 段階 3 前提 (a)・段階 1）にのみ依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
 :mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
 する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
 
@@ -487,7 +487,7 @@ def _materialize_m1_day(
     ticks: pd.DataFrame,
     *,
     price_basis: str,
-    spread: "_LazyPoint | None",
+    spread: "Callable[[], float] | None",
     after: Any = None,
     until: Any = None,
 ) -> pd.DataFrame:
@@ -497,7 +497,7 @@ def _materialize_m1_day(
     → :func:`_drop_forming_bars` → 残った分のティックだけで気配幅（``spread`` 有り時）。
     行の選択はすべて index だけの条件なので、気配幅を選択の後で計算しても値は変わらず、
     捨てる分の気配幅は 1 つも計算しない。point の値は気配幅を計算する分が残ったときに初めて
-    解決する（:class:`_LazyPoint`）。
+    解決する（:func:`marketdata.spread_point.declared_point_resolver` が返す遅延の呼び口）。
     """
     _validate_tick_frame(ticks, price_basis)
     m1_day, work = _fold_ticks(ticks, price_basis=price_basis, with_spread=spread is not None)
@@ -513,42 +513,29 @@ def _materialize_m1_day(
     return _with_spread(m1_day, work[work["date"].isin(m1_day.index)], spread())
 
 
-class _LazyPoint:
-    """気配幅の point を、最初に気配幅を計算する時に 1 回だけ解決する（ISSUE-511 段階 3 前提 (a)）。
-
-    新しい分の無い周期ではスナップショットを読まない（読んで使わなければ浪費）。
-    """
-
-    def __init__(self, resolve: "Callable[[], float]") -> None:
-        self._resolve = resolve
-        self._value: "float | None" = None
-
-    def __call__(self) -> float:
-        if self._value is None:
-            self._value = self._resolve()
-        return self._value
-
-
-def _declared_spread(ref: str, point: "float | None") -> "_LazyPoint | None":
+def _declared_spread(ref: str, point: "float | None") -> "Callable[[], float] | None":
     """系列が spread 列を持つか（IO なし）と point の解決手段を返す（``None``＝spread 列を持たない）。
 
-    台帳に登録済みの ref は台帳が point の唯一の源であり、呼出側の ``point`` は受けない（依頼者裁定
-    2026-09-15・T2）。受けると渡し忘れ・渡し違いで系列の spread 列の有無が呼出ごとに変わり、既存
-    CSV の全書換（R-2/Y-2）へ落ちる。台帳に無い ref（テストの合成 ref）は従来どおり ``point`` を使う。
+    台帳が point を持つ ref かの照会（:func:`marketdata.spread_point.ledger_owns_point`）と、その
+    解決手段（:func:`marketdata.spread_point.declared_point_resolver`）は spread_point が答える。
+    本モジュールは台帳の記述子の表を見ない（ISSUE-511 段階 3 の段階 1・V-1）。表の持ち方は台帳側の
+    変更理由であり、素材化の変更理由ではない。
+
+    台帳が point を持つ ref では呼出側の ``point`` は受けない（依頼者裁定 2026-09-15・T2）。受けると
+    渡し忘れ・渡し違いで系列の spread 列の有無が呼出ごとに変わり、既存 CSV の全書換（R-2/Y-2）へ
+    落ちる。台帳に無い ref（テストの合成 ref）は従来どおり ``point`` を使う。
     """
-    if ref in _dataset_registry.REGISTRY:
+    if _spread_point.ledger_owns_point(ref):
         if point is not None:
             raise ValueError(
                 f"datasetRef {ref!r} は台帳に登録済みです。spread の point は台帳"
                 f"（spread_point_snapshot）から引くため、呼出側からは渡せません（point={point!r}）。"
             )
-        if _dataset_registry.spread_point_snapshot_of(ref) is None:
-            return None
-        return _LazyPoint(lambda: _spread_point.spread_point_of(ref))
+        return _spread_point.declared_point_resolver(ref)
     if point is None:
         return None
     _quote_spread.validate_point(point)
-    return _LazyPoint(lambda: point)
+    return lambda: point
 
 
 def materialize_m1_day(ticks: pd.DataFrame, *, ref: str, price_basis: str) -> pd.DataFrame:
@@ -565,8 +552,8 @@ def materialize_m1_day(ticks: pd.DataFrame, *, ref: str, price_basis: str) -> pd
     行選択は現存する呼出側（閉じた UTC 日の作り直し）が使わない（YAGNI）。
 
     ティック parquet・M1 CSV を読み書きしない（読むのは呼出側）。point の値は、宣言付き ref で気配幅を
-    計算する分が残ったときに初めて :func:`marketdata.spread_point.spread_point_of` で解決する
-    （スナップショットを読むのはこのときだけ）。
+    計算する分が残ったときに初めて :func:`marketdata.spread_point.declared_point_resolver` が返す
+    呼び口で解決する（スナップショットを読むのはこのときだけ）。
     """
     return _materialize_m1_day(
         ticks, price_basis=price_basis, spread=_declared_spread(ref, None)
@@ -579,6 +566,9 @@ def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
     ファイル無し・空は照合しない。比べるのは spread 列だけ（up/dn の遅れは ISSUE-455 の全構築を
     維持する）。書き手の起動時に同じ照合で止める公開の口は、書き手を結線する ISSUE-511 段階 3
     本体で足す（本段では本番の呼出元が無いため置かない）。
+
+    文面に載せる「何が宣言されているか」は :func:`marketdata.spread_point.declared_snapshot_of` が
+    答える（台帳の宣言欄をどう引くかは本モジュールの変更理由ではない・段階 1・V-1）。
     """
     header = _existing_csv_header(out_path)
     if header is None:
@@ -588,7 +578,7 @@ def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
     declared = "持つ" if with_spread else "持たない"
     raise SpreadSchemaMismatch(
         f"系列 {ref!r} の既存 M1 CSV（{out_path}）の既存ヘッダ {header} は、宣言"
-        f"（spread_point_snapshot={_dataset_registry.spread_point_snapshot_of(ref)!r}＝spread 列を"
+        f"（spread_point_snapshot={_spread_point.declared_snapshot_of(ref)!r}＝spread 列を"
         f"{declared}系列）と spread 列の有無が食い違います。既存の系列は書き換えずに止めました。"
         " spread の有無を変えるときは、台帳の series を新しい名前にして build で新しい置き場へ"
         "作り直してください（旧ファイルは残る＝可逆）。"
@@ -650,7 +640,7 @@ def _build_whole(
     until: Any,
     price_basis: str,
     writer: "M1Writer | None",
-    spread: "_LazyPoint | None",
+    spread: "Callable[[], float] | None",
 ) -> Path:
     """全構築の本体（照合は呼出側が済ませる＝追記のフォールバックでヘッダを 2 度読まない）。"""
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
