@@ -564,8 +564,8 @@ def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
     """既存 CSV の先頭行の spread 列の有無が ``with_spread`` と一致しなければ止める（書かない）。
 
     ファイル無し・空は照合しない。比べるのは spread 列だけ（up/dn の遅れは ISSUE-455 の全構築を
-    維持する）。書き手の起動時に同じ照合で止める公開の口は、書き手を結線する ISSUE-511 段階 3
-    本体で足す（本段では本番の呼出元が無いため置かない）。
+    維持する）。書き手の起動時に同じ照合を通す公開の口は :func:`check_series_schema`
+    （ISSUE-511 段階 3 の段階 4）。規則の実体は本関数 1 つで、公開面は同じ規則へ委譲する。
 
     文面に載せる「何が宣言されているか」は :func:`marketdata.spread_point.declared_snapshot_of` が
     答える（台帳の宣言欄をどう引くかは本モジュールの変更理由ではない・段階 1・V-1）。
@@ -583,6 +583,44 @@ def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
         " spread の有無を変えるときは、台帳の series を新しい名前にして build で新しい置き場へ"
         "作り直してください（旧ファイルは残る＝可逆）。"
     )
+
+
+def _checked_series(
+    ref: str, *, data_dir: Any, point: "float | None"
+) -> "tuple[Callable[[], float] | None, Path]":
+    """``ref`` の宣言を引き、既存 CSV の列形を照合して（spread の解決口, 出力パス）を返す。
+
+    書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）と、書き手が周期を
+    回し始める前に通す照合（:func:`check_series_schema`）が、同じ 1 つの手順を通るために在る。
+    ref の検証・宣言の照会・置き場の解決・列形の照合を入口ごとに書き写すと、置き場の決め方
+    （:func:`m1_csv_path`）や宣言の引き方（:func:`_declared_spread`）を変えたときに、**照合した
+    対象と実際に書く対象がずれても気付けない**（起動時の照合は緑のまま、周期の中で初めて落ちる）。
+
+    IO は対象 CSV の先頭 1 行の読取だけである（本文は読まない）。``point`` の値もここでは解決
+    しない（:func:`_declared_spread` が返すのは遅延の呼び口）。
+    """
+    _validate_ref(ref)
+    spread = _declared_spread(ref, point)
+    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    _assert_spread_schema(ref, out_path, spread is not None)
+    return spread, out_path
+
+
+def check_series_schema(ref: str, *, data_dir: Any = DATA_DIR) -> None:
+    """``ref`` の既存 M1 CSV の列形が台帳の宣言と合うかを照合する（読むだけ・書かない）。
+
+    規則は書き手の入口と同じである（:func:`_checked_series` を通る＝ファイル無し・空は照合
+    しない。比べるのは spread 列の有無だけ）。合わなければ :class:`SpreadSchemaMismatch`、
+    合えば何もしない（返り値は無い＝照合だけが目的であることを型で示す）。
+
+    用途は、書き手（常駐）が周期を回し始める前に同じ照合を通すこと（ISSUE-511 段階 3 の段階 4・
+    V-4）。周期の中で初めて検出すると、外側の包括 ``except`` が WARNING へ格下げして同じ失敗を
+    繰り返す経路に入る。照合の対象と例外の型を持つのは本モジュールなので、公開面もここに置く。
+
+    読むのは対象 CSV の先頭 1 行だけである（本文は読まない）。``point`` は解決しないため銘柄仕様
+    スナップショットも読まない（宣言の照会だけ・IO は先頭行の読取のみ）。
+    """
+    _checked_series(ref, data_dir=data_dir, point=None)
 
 
 def build_m1_from_ticks(
@@ -620,10 +658,7 @@ def build_m1_from_ticks(
     IO の前に :class:`ValueError`。台帳に無い ref は従来どおり ``point`` が spread 列を足す。
     既存 CSV の spread 列の有無が宣言と食い違えば、置き換えずに :class:`SpreadSchemaMismatch`。
     """
-    _validate_ref(ref)
-    spread = _declared_spread(ref, point)
-    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
-    _assert_spread_schema(ref, out_path, spread is not None)
+    spread, out_path = _checked_series(ref, data_dir=data_dir, point=point)
     return _build_whole(
         start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
         price_basis=price_basis, writer=writer, spread=spread,
@@ -842,11 +877,8 @@ def append_m1_from_ticks(
     有無の照合は末尾行の読取より前に行う。食い違いは自己修復（全構築）へ回さず
     :class:`SpreadSchemaMismatch` で止める（末尾破損でも同じ）。
     """
-    _validate_ref(ref)
-    spread = _declared_spread(ref, point)
+    spread, out_path = _checked_series(ref, data_dir=data_dir, point=point)
     writer = writer or CsvM1Writer()
-    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
-    _assert_spread_schema(ref, out_path, spread is not None)
     try:
         tail = _read_last_m1_row(out_path)
     except ValueError:

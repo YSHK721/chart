@@ -428,6 +428,28 @@ def build_rollup_hook(
 from common.watch_loop import run_watch  # noqa: E402,F401
 
 
+def _fatal_watch_errors() -> "tuple[type[BaseException], ...]":
+    """周期をまたいで再試行しない失敗の型（本合成点が「待っても直らない」と決めた集合）。
+
+    **現在は空である。** 本モジュールの増分追記が触るのは Dukascopy からの取得と ``--output``
+    の CSV 追記だけで、待っても直らないと判断できる失敗を 1 つも特定していない（取得失敗・
+    一時的なネットワーク断・配信の欠損はいずれも次インターバルで直りうる）。
+
+    空でも明示的に渡す理由: :func:`common.watch_loop.run_watch` の既定も空タプルだが、既定へ
+    落ちる呼び方は「どの例外とも一致しない」＝握り潰しての継続であり、**渡し忘れても構文誤りにも
+    実行時エラーにもならない**。明示しておけば「知らないから既定」ではなく「知ったうえで空」で
+    あることが呼出の形に残る。型を足すときに変えるのは本関数が返す集合だけである（受け口である
+    :func:`main` は集合をそのまま渡し、特定の型名を焼き込んでいない＝OCP）。
+
+    何を致命とするかは常駐ごとに違うため、型の集合は合成点である本モジュールが決める。共有の
+    中立核 :mod:`common.watch_loop` へ marketdata の型を知らせない（依存の向きを保つ）。
+
+    呼出の形は ``common/tests/test_run_watch_fatal_is_explicit.py`` が構文木で強制する
+    （宣言だけを残さない）。
+    """
+    return ()
+
+
 def _interval_seconds(value: str) -> int:
     """``--interval`` の型（下限 ``MIN_INTERVAL_SECONDS`` 秒のフロア）。
 
@@ -552,7 +574,7 @@ def main(argv: List[str] | None = None) -> int:
                 logger.info("増分追記: %d 行 -> %s", added, args.output)
 
         logger.info("watch 開始（interval=%ds, lag=%dmin）", args.interval, args.lag_minutes)
-        return run_watch(_update, interval=args.interval)
+        return run_watch(_update, interval=args.interval, fatal=_fatal_watch_errors())
 
     # 全期間上書き（従来据置）：--end を「その日を含む」よう 1 日加算（fetch は end 未満を返す）。
     fetch_end = args.end + timedelta(days=1)

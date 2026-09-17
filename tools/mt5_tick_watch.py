@@ -44,6 +44,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
 from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
 from marketdata.mt5_ticks import server_clock  # noqa: E402
@@ -341,6 +342,18 @@ def run(
     clock = SystemClock() if clock is None else clock
     say = log if log is not None else (lambda line: None if settings.quiet else _stderr(line))
 
+    # 起動時の列形照合（ISSUE-511 段階 3 の段階 4・V-4）: 周期を回し始める前に、台帳の宣言と
+    #   既存 M1 CSV の列形の食い違いを検出して止める。取得（トークン解決）より**前**に置くのは、
+    #   どのみち書けない状態で端末を叩かないためである（照合は読むだけで 1 バイトも書かない）。
+    #   ``--no-publish`` でも通すのは、日次確定後の再構築（rebuild.rebuild_days）が publish の
+    #   有無に関わらず M1 CSV を書きうるためである（照合を publish 側に寄せると穴が開く）。
+    #   規則の実体は marketdata 側にあり、ここは呼ぶだけである（tools は規則を持たない）。
+    try:
+        tick_m1.check_series_schema(settings.ref, data_dir=settings.data_dir)
+    except tick_m1.SpreadSchemaMismatch as exc:
+        _stderr(f"系列の列形が宣言と食い違います（再試行しません）: {exc}")
+        return EXIT_FAIL_STOP
+
     probe_at = probe_label_ms(settings, clock)
     try:
         token = resolve_token(source, symbol=settings.symbol, at_msc=probe_at)
@@ -399,10 +412,24 @@ def run(
             _stderr(f"供給が一時的に失敗しました（{failures} 回目・{delay} 秒待ちます）: {exc}")
             sleep(delay)
             continue
-        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError) as exc:
+        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError,
+                tick_m1.SpreadSchemaMismatch) as exc:
             # カーソル規約の破れも「待っても直らない」側である。型集合から漏れると、
             #   常駐はトレースバックを吐いて exit 1 で落ち、運用者には未知のクラッシュに見える。
             #   `cursor.py` は依存ゼロを保つため、繋ぐのは合成点であるここの責務。
+            # 列形の食い違い（SpreadSchemaMismatch）も同じ側である。**現行の日中経路はこの型を
+            #   送出しない**（送出点は tick_m1._assert_spread_schema 1 つで、到達するのは
+            #   _checked_series を通る 3 つの口だけ。日中追記は append_m1_rows を直接呼ぶため
+            #   通らない）。ここに挙げるのは通過口を先に用意するためであり、段階 5 で日中経路が
+            #   台帳の宣言を通るようになった時点で、漏れていれば未知のクラッシュに化ける。
+            # **現実に周期で落ちるのはこの型ではない**（射程の残り半分・運用者向け）: 台帳が
+            #   spread を宣言し、既存 M1 CSV が spread 付きヘッダを持つ状態では、日中追記は
+            #   ISSUE-455 のヘッダ不一致 ValueError（tick_m1._assert_append_header_matches）で
+            #   落ちる。これは上の捕捉集合の**外**であり（SpreadSchemaMismatch は ValueError の
+            #   派生ではない＝逃げ道にも掛からない）、traceback のまま抜けて exit 1 になる。
+            #   実測（2026-09-17・合成・1 周期・本コンテナ）: 宣言あり＋spread 付きヘッダで
+            #   exit 1・追記 0 行、宣言なしの対照は exit 0・3 行追記。既存ファイルが無い場合は
+            #   この経路に入らない（照合も追記も素通しし、spread 無しヘッダで新規作成される）。
             _stderr(f"供給の前提が崩れました（再試行しません）: {exc}")
             return EXIT_FAIL_STOP
 
