@@ -132,7 +132,197 @@ def _rollup_path(out_dir: Path, tf: str, ref_prefix: str = _REF_PREFIX) -> Path:
     return _rollup_paths.csv_path(out_dir, ref_prefix, tf)
 
 
-def _bar_to_dict(row: pd.Series) -> dict[str, Any]:
+class RollupCellCastError(ValueError):
+    """値のあるセルを台帳の型へ戻せなかった失敗（列名と period を添える）。
+
+    欠損（空欄）はこの失敗に当たらない。欠損は cast せず欠損のまま通す規約であり、本例外は
+    **欠損以外**の理由で cast が失敗したときだけ上がる（素材破損・型の取り違え等）。
+    ``ValueError`` の下位型にしてあるのは、是正前に ``int()`` が出していた ``ValueError`` を
+    捕捉している呼出側の面を狭めないためである。
+    """
+
+
+def _cell_cast_error(col: Any, value: Any, period: Any) -> RollupCellCastError:
+    """失敗の言い方の単一定義（列名と period を添える）。"""
+    return RollupCellCastError(
+        f"列 {col} の値を台帳の型へ戻せません（period={period}・値={value!r}）"
+    )
+
+
+#: 台帳の cast と欠損判定が出しうる失敗（実測 pandas 3.0.3 / numpy 2.4.6 / CPython 3.13.5）。
+#:
+#: - 台帳の cast: 非数字の文字列は ``ValueError``、``tuple`` / ``dict`` / ``set`` / ``None`` は
+#:   ``TypeError``、無限大は ``OverflowError``（``ValueError`` の下位型では**ない**）。
+#: - 欠損判定そのもの: 要素 2 つ以上の ``list`` / ``ndarray`` は ``pd.isna`` が要素ごとの配列を
+#:   返し、``bool()`` が ``ValueError`` を出す（cast へ到達しない）。
+#: - pandas の ``astype``: 欠損や無限大を含む整数化は ``IntCastingNaNError``（``ValueError`` の
+#:   下位型・実測）、dtype として解釈できない規則は ``TypeError``。
+_CAST_FAILURES = (TypeError, ValueError, OverflowError)
+
+
+class _ColumnCaster:
+    """1 列ぶんの型付け（台帳の規則を**列につき 1 回**引いて持つ）。
+
+    型の規則そのものは :func:`marketdata.csv_schema.cast_for` が所有し続ける。本クラスが足すのは
+    (1) 欠損の扱いと (2) period という文脈の 2 つだけである（``csv_schema`` は依存ゼロ＝stdlib
+    のみで、pandas の欠損も period も知れない）。
+
+    規則を列につき 1 回だけ引くのは、``cast_for`` が台帳の行を引くたびに列名を
+    ``str().lower()`` し直すためである。この引き直しは出力に 1 バイトも現れないので、値の検査でも
+    「cast の発行数」を数える検定（CX-C）でも落ちない。**cast の発行は値ごとに保つ**（減らすのは
+    引き直しであって仕事の量ではない）。引き回数は CX-H が別に固定する。
+
+    規約（3 つの適用点で共通）:
+        - 欠損は cast せず欠損のまま通す。
+        - 値のあるセルだけ台帳の型で書く（型を**列単位**でなく**値単位**で決める）。
+        - 欠損**以外**の理由で失敗したら :class:`RollupCellCastError` へ包み直す。
+
+    ``period`` を渡すのは、失敗を列名と period で名指したいときだけでよい。渡さない呼出の失敗は
+    素の失敗（:data:`_CAST_FAILURES`）のまま上がる。文脈を作るのは失敗したときだけでよく、
+    成功する限り period は出力に 1 バイトも現れない（CX-P が「生成 − 失敗 = 0」で固定する）。
+    """
+
+    __slots__ = ("column", "rule")
+
+    def __init__(self, column: Any) -> None:
+        self.column = column
+        # 束縛名を ``cast`` のような一般語にしない: 宣言整合性検定（C1）の記号索引は入れ子の
+        #   代入先も「リポジトリに実在する記号」として数えるため、一般語を束縛すると、その語を
+        #   バッククォートで名指している**無関係なモジュール**のコメントが到達不能違反になる
+        #   （実測: marketdata/tests/test_symbol_spec_snapshot.py:331 の `cast`）。
+        self.rule = _csv_schema.cast_for(column)
+
+    def __call__(self, value: Any, *, period: Any = None) -> Any:
+        """1 セルを台帳の型へ戻す（欠損は cast せず素通し）。"""
+        try:
+            if bool(pd.isna(value)):
+                return value
+            return self.rule(value)
+        except _CAST_FAILURES as exc:
+            if period is None:
+                raise
+            raise _cell_cast_error(self.column, value, period) from exc
+
+
+def _cell_caster(col: Any) -> "_ColumnCaster":
+    """列 1 つぶんの型付けを作る（規則は**列につき 1 回**引く）。規約は :class:`_ColumnCaster`。"""
+    return _ColumnCaster(col)
+
+
+def _cast_cell(col: Any, value: Any, *, period: Any) -> Any:
+    """1 セルを台帳の型へ戻す（欠損は cast せず素通し）。
+
+    規約は :class:`_ColumnCaster` が 1 つ持つ。本関数は「1 セルだけ」を扱う呼出の入口であり、
+    列ごとの caster を持ち回れない場面（検定・単発の呼出）のためにある。**列の全値**を扱う
+    場合は :func:`_cast_column`、**1 バーの全列**を扱う場合は :func:`_casters_for` が作った
+    caster を行ループの外から渡すこと（どちらも規則を列につき 1 回しか引かない）。
+    """
+    return _cell_caster(col)(value, period=period)
+
+
+def _casters_for(columns: Any) -> "dict[str, _ColumnCaster]":
+    """型付けする列ごとに caster を 1 つ作る（規則は**列につき 1 回**だけ引く）。
+
+    列と順序の唯一源は台帳（:func:`marketdata.csv_schema.header_columns`）であり、本関数は
+    そこから「素材が実際に持つ列」だけを選ぶ。**行ループの外で 1 度作り、ループの中へ渡す**こと。
+    ループの中で作ると規則の引き直しが行数に比例する（実測・是正前: ``stream_build`` が
+    ``cast_for`` を引く回数は出力 10 行で 144 回・100 行で 1440 回＝書いたセル 1 つあたり 2.4 回。
+    :func:`_resample_chunk` と :class:`_RollupWriter` は型付け列 6・出力 4 本で 24 回、
+    40 本で 240 回引いていた）。引き直しは出力に 1 バイトも現れないので、値の検査でも
+    cast の発行数を数える検定（CX-C）でも落ちない。CX-H が経路ごとに固定する。
+    """
+    return {col: _cell_caster(col) for col in _csv_schema.header_columns() if col in columns}
+
+
+def _caster_of(casters: "dict[str, _ColumnCaster]", col: Any) -> "_ColumnCaster":
+    """持ち回りの caster から ``col`` のものを採る（持っていない列はその場で作る）。
+
+    行ループの外で作った caster は「見本にした bar／frame が持つ列」ぶんしかない。見本より
+    列の多い bar が来ても**是正前と 1 バイトも変わらない行を書く**ために、その場で作って配る。
+    持ち上げが変えてよいのは規則を**引く回数**だけであって、書く内容ではない。
+
+    実測（この分岐が無い形と是正前を突合）: 見本より列の多い bar で出力が食い違った
+    （是正前は余った列も書き、持ち上げた側は落としていた）。本番の呼出でこの形が出るかは
+    **未検証**であり、ここで揃えているのは「持ち上げは表示を変えない」という不変条件である。
+    """
+    return casters[col] if col in casters else _cell_caster(col)
+
+
+def _csv_cell(caster: "_ColumnCaster", value: Any, *, period: Any) -> Any:
+    """``csv.writer`` の面の 1 セル（欠損は空欄で書く）。
+
+    実測: ``csv.writer`` は非数（float の欠損）を 3 文字の文字列として書く（空文字列と None は
+    空欄）。pandas の ``to_csv`` は欠損を空欄で書くため、揃えないと同じ欠損が経路によって
+    2 通りに書かれる。
+    """
+    cell = caster(value, period=period)
+    return "" if pd.isna(cell) else cell
+
+
+def _cast_column(col: Any, values: "pd.Series") -> "pd.Series":
+    """1 列を台帳の型へ戻す（欠損は欠損のまま）。
+
+    型付けの規約は :class:`_ColumnCaster` が 1 つ持ち、本関数が決めるのは**どう配るか**だけで
+    ある（型を列単位で決めるのではない。欠損の有無で cast するしないを変えない）。
+
+    - 欠損の**無い**列は列ごと配る（``astype``）。値単位に配った結果と出力バイトが一致することは、
+      凍結スナップショットの実ロールアップ 32 ファイル（最大 982,274 行・8 列形と 6 列形の両方）で
+      実測した。``astype`` は失敗を取りこぼさない（:data:`_CAST_FAILURES` の注記）。
+    - 欠損の**混ざる**列は値単位に配る（pandas の整数 dtype は欠損を表現できない）。
+    - どちらかが失敗したときだけ、遅い経路（:func:`_name_the_failing_cell`）で列名と period を
+      特定する。
+
+    period を値ごとに添えないのは、それが失敗の名指しにしか使われないためである。成功する限り
+    出力に 1 バイトも現れないので、値の検査でも CX-C でも CX-H でも**原理的に落ちない**。
+    実測（1,000,000 行 × 8 列・min of 3・出力は byte 一致）: 値ごとに添える形は 6.414 秒、
+    列ごとに配る形は 0.027 秒（237 倍）。メモリも ``dtype=object`` 化で実ロールアップ相当
+    （982,272 行 × 5 列）が 47.1MB → 165.0MB（3.5 倍）になっていた。本モジュールは冒頭で
+    「1 分足を二度と全ロードしない＝OOM を避ける」ことを存在理由に掲げている。
+    """
+    caster = _cell_caster(col)
+    if not bool(values.isna().any()):
+        try:
+            return values.astype(caster.rule)
+        except _CAST_FAILURES:
+            # 列ごとには配れない（値が壊れている／規則が dtype として解釈できない）。
+            #   値単位へ落とし、そこでも失敗するなら列名と period で名指す。
+            pass
+    return _cast_values(values, caster)
+
+
+def _cast_values(values: "pd.Series", caster: "_ColumnCaster") -> "pd.Series":
+    """列を**値単位**で配る（欠損は欠損のまま・period は添えない）。
+
+    dtype を object で固定するのは、``map(cast, na_action="ignore")`` だと pandas が結果の
+    dtype を再推論して float64 へ戻し ``70.0`` と書かれるためである（実測 pandas 3.0.3）。
+    """
+    # 束縛名を ``cast`` のような一般語にしない（:class:`_ColumnCaster` の注記と同じ理由。
+    #   実測: 一般語を束縛すると test_symbol_spec_snapshot.py の無関係なコメントが C1 違反になる）。
+    try:
+        typed_values = [caster(value) for value in values]
+    except _CAST_FAILURES:
+        _name_the_failing_cell(values, caster)
+        raise
+    return pd.Series(typed_values, index=values.index, dtype=object)
+
+
+def _name_the_failing_cell(values: "pd.Series", caster: "_ColumnCaster") -> None:
+    """失敗した 1 セルを、今度は period を添えて通し直す（**失敗したときだけ**通る遅い経路）。
+
+    値と period を組にする仕事はここにしかない。成功する限り 1 度も走らないので、出力に
+    現れない仕事を作らない（CX-P が「period 文脈の生成 − cast 失敗数 = 0」で固定する）。
+    通し直した呼出が :class:`RollupCellCastError` を送出するため、本関数は正常に戻らない。
+    戻った場合（2 度目は通った場合）は呼び手が元の失敗をそのまま送出する。
+    """
+    for period, value in values.items():
+        try:
+            caster(value)
+        except _CAST_FAILURES:
+            caster(value, period=period)
+
+
+def _bar_to_dict(row: pd.Series,
+                 casters: "dict[str, _ColumnCaster] | None" = None) -> dict[str, Any]:
     """resample 済みの 1 行を bar 辞書へ（列・順序・型の唯一源は csv_schema の値列台帳）。
 
     型を台帳の ``cast`` で戻すのは、``resample().agg()`` が空き期間を NaN で埋める際に
@@ -143,8 +333,17 @@ def _bar_to_dict(row: pd.Series) -> dict[str, Any]:
     **bar 辞書の面**（``_resample_chunk`` / ``_resample_suffix`` が作り、``stream_build`` の
     carry-over と writer へ渡る値）である。実測（本適用だけを撤去）: 休場を挟んだ素材で
     bar の spread が ``np.float64(70.0)`` になる。
+
+    型付けは**値単位**で行う。欠損セルは cast せず欠損のまま運ぶ（carry-over の
+    :func:`merge_same_period` が畳める形で残す）。是正前はここで ``int(NaN)`` が
+    ``ValueError`` を出し、spread 列を得る前に書かれた period で ``stream_build`` が
+    止まっていた（実測）。
+
+    ``casters`` は :func:`_casters_for` が作った列ごとの caster で、**行ループの外**から
+    渡す（省略時はこの 1 行ぶんだけ作る）。渡さないと規則の引き直しが行数に比例する。
     """
-    return {col: _csv_schema.cast_for(col)(row[col])
+    casters = _casters_for(row.index) if casters is None else casters
+    return {col: _caster_of(casters, col)(row[col], period=row.name)
             for col in _csv_schema.header_columns() if col in row.index}
 
 
@@ -177,7 +376,8 @@ def _header_of(path: Path) -> "list[str] | None":
     return line.split(",") if line else None
 
 
-def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
+def _bar_to_csv_row(period: Any, bar: dict[str, Any],
+                    casters: "dict[str, _ColumnCaster] | None" = None) -> list[Any]:
     """(period, bar) を ロールアップ CSV の 1 行（loader 互換）へ整形する（単一定義）。
 
     ``_write_rollup``（全件一括書き）と :class:`_RollupWriter`（逐次 flush）で同一フォーマットを
@@ -190,10 +390,13 @@ def _bar_to_csv_row(period: Any, bar: dict[str, Any]) -> list[Any]:
     本適用単独の効きは、float 値を持つ bar を直接渡したときに観測できる（撤去すると
     ``70.0`` が行へ入る）。
     """
+    casters = _casters_for(bar) if casters is None else casters
     row: "list[Any]" = [pd.Timestamp(period).strftime(_DATE_FMT)]
     # 列・順序・型は台帳が唯一源（書く直前に cast で型を戻す＝spread は整数で書かれる）。
-    row.extend(_csv_schema.cast_for(c)(bar[c])
-               for c in _csv_schema.header_columns() if c in bar)
+    #   型付けは値単位。欠損セルは空欄で書く（_csv_cell）。caster は行ループの外から渡す
+    #   （省略時はこの 1 行ぶんだけ作る）。
+    row.extend(_csv_cell(_caster_of(casters, col), bar[col], period=period)
+               for col in _csv_schema.header_columns() if col in bar)
     return row
 
 
@@ -328,20 +531,18 @@ def _write_rollup_df(
         # 書く直前に台帳の型へ戻す（spread は整数）。型の**適用**がここ（pandas 面）にあるのは
         #   csv_schema が依存ゼロ（stdlib のみ・test_module_dependency_declarations が強制）で
         #   pandas の欠損を扱えないためであり、台帳の外に規則を置いているのではない。
-        # cast_for の**適用点 3 箇所のうちの 1 つ**。ここが守るのは**全件 rewrite 経路**の整数
-        #   表記であり、_bar_to_dict / _bar_to_csv_row はこの経路を通らない（両者は bar 辞書面と
-        #   csv.writer 面を守る）。死コードではない: この astype だけを撤去すると、欠損なしの
-        #   float64（休場を挟んで resample → dropna した df）で 70 が 70.0 になる（実測）。
-        #   検定は test_rollup_spread_aggregation の
+        # cast_for の**適用点 3 箇所のうちの 1 つ**。ここが守るのは**全件 rewrite 経路**の表記で
+        #   あり、_bar_to_dict / _bar_to_csv_row はこの経路を通らない（両者は bar 辞書面と
+        #   csv.writer 面を守る）。死コードではない: 型付けを外すと、欠損なしの float64
+        #   （休場を挟んで resample → dropna した df）で 70 が 70.0 になる（実測）。検定は
+        #   test_rollup_spread_aggregation の
         #   test_the_full_rewrite_writes_the_spread_as_an_integer。
-        # 欠損を含む列は戻さない: pandas の整数 dtype は NA を表現できず astype が落ちる。欠損は
-        #   「列が増える前に書かれた旧行」に残り続けるため（実測）、この判定は 1 回で終わらない。
-        #   当該列はそのファイルを全件 rewrite する限り float のまま書かれる（``71`` でなく
-        #   ``71.0``）。旧行の値を捏造しないための選択であり、表記を揃えたいなら M1 からの全件
-        #   再構築（:func:`stream_build`）で旧行ごと作り直す。
+        # 是正前はここが notna().all() の**列単位**分岐で、欠損を 1 つでも含む列は cast を丸ごと
+        #   飛ばしていた。そのため既に 70 と書かれていた行が全件 rewrite のたびに 70.0 へ戻る
+        #   （実測）。値単位で決めれば、空欄は空欄のまま・値のあるセルだけ台帳の型で書ける。
+        #   欠損を持たない列の出力バイトが是正前と一致することは S-11 / S-11b が固定する。
         for col in cols:
-            if out[col].notna().all():
-                out[col] = out[col].astype(_csv_schema.cast_for(col))
+            out[col] = _cast_column(col, out[col])
         out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
         out.index.name = "date"
         out.to_csv(fh, header=list(out.columns), index_label=_HEADER[0])
@@ -375,6 +576,9 @@ class _RollupWriter:
         #   1 行も書かれなければ commit 時に既定ヘッダを書く＝従来の空 CSV と同一。
         self._header_written = False
         self._committed = False
+        # 型の規則は列につき 1 回だけ引く。どの列を持つかは最初の bar を見るまで決まらない
+        #   ため、ヘッダと同じ見本から 1 度だけ作る（:func:`_casters_for`）。
+        self._casters: "dict[str, _ColumnCaster] | None" = None
 
     def _ensure_header(self, bar: "dict[str, Any] | None") -> None:
         if self._header_written:
@@ -385,7 +589,9 @@ class _RollupWriter:
     def write(self, period: Any, bar: dict[str, Any]) -> None:
         """確定済み 1 バーを 1 行 flush する（呼び出しは date 昇順であること）。"""
         self._ensure_header(bar)
-        self._w.writerow(_bar_to_csv_row(period, bar))
+        if self._casters is None:
+            self._casters = _casters_for(bar)
+        self._w.writerow(_bar_to_csv_row(period, bar, self._casters))
 
     def commit(self) -> None:
         """tmp を閉じ確定パスへ原子スワップする（成功時のみ呼ぶ）。"""
@@ -413,9 +619,11 @@ def _resample_chunk(chunk: pd.DataFrame, tf: str) -> "OrderedBars":
     集計・日中足は UTC floor）へ単一化する。
     """
     resampled = _resample.resample_ohlc_tf(chunk, tf)
+    # 型の規則は列につき 1 回だけ引く（行ループの外で作る・:func:`_casters_for`）。
+    casters = _casters_for(resampled.columns)
     bars: "OrderedBars" = {}
     for period, row in resampled.iterrows():
-        bars[period] = _bar_to_dict(row)
+        bars[period] = _bar_to_dict(row, casters)
     return bars
 
 
@@ -481,8 +689,11 @@ def _truncate_append_bars(path: Path, offset: int, bars: "OrderedBars") -> None:
         fh.seek(offset)
         fh.truncate()
         w = _csv.writer(fh)
-        for period in sorted(bars):
-            w.writerow(_bar_to_csv_row(period, bars[period]))
+        periods = sorted(bars)
+        # 型の規則は列につき 1 回だけ引く（行ループの外で作る・:func:`_casters_for`）。
+        casters = _casters_for(bars[periods[0]]) if periods else {}
+        for period in periods:
+            w.writerow(_bar_to_csv_row(period, bars[period], casters))
         fh.flush()
         os.fsync(fh.fileno())
 
@@ -497,9 +708,11 @@ def _resample_suffix(probe: pd.DataFrame, tf: str, since_period: pd.Timestamp) -
     """
     resampled = _resample.resample_ohlc_tf(probe, tf)
     suffix = resampled[resampled.index >= since_period]
+    # 型の規則は列につき 1 回だけ引く（行ループの外で作る・:func:`_casters_for`）。
+    casters = _casters_for(suffix.columns)
     bars: "OrderedBars" = {}
     for period, row in suffix.iterrows():
-        bars[period] = _bar_to_dict(row)
+        bars[period] = _bar_to_dict(row, casters)
     return bars
 
 
