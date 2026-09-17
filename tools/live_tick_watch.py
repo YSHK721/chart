@@ -210,16 +210,15 @@ def _latest_tick_day(ticks_root: Path) -> Optional[dt.date]:
 def _append_m1(start: str, end: str, until: pd.Timestamp, *, data_dir: Path) -> Path:
     """tick 由来 M1 を増分追記する（形成中分バーは until で除外・ref=jp225_tick）。
 
-    価格基準は台帳（marketdata/dataset_registry.py の ``price_basis``）から引く（ISSUE-511
-    段階 1a）。読み手（形成中バー・MP・ライブバッファ）も同じ台帳を引くため、台帳を切り替えれば
-    確定足と形成中が同じ基準のまま動く。既定値（mid）に頼ると書き手だけが取り残される。
+    価格基準は**渡さない**。登録済み ref では台帳（marketdata/dataset_registry.py の
+    ``price_basis``）が唯一の源であり、素材化の権威（``marketdata.tick_m1``）が ref から引く
+    （ISSUE-511 段階 3 の段階 6・V-3）。読み手（形成中バー・MP・ライブバッファ）も同じ台帳を引く
+    ため、台帳を切り替えれば確定足と形成中が同じ基準のまま動く。書き手が引いて渡す形だと同じ事実が
+    台帳と引数の 2 源になり、渡し忘れた書き手だけが既定（mid）で走る。
     """
-    from marketdata.tf_meta import tick_price_basis
     from marketdata.tick_m1 import append_m1_from_ticks
 
-    return append_m1_from_ticks(
-        start, end, until=until, ref=REF, data_dir=data_dir, price_basis=tick_price_basis(REF),
-    )
+    return append_m1_from_ticks(start, end, until=until, ref=REF, data_dir=data_dir)
 
 
 #: 末尾整合の自己修復（ISSUE-488）の実行周期（秒）。検査は M1 末尾 probe（固定行数）に有界
@@ -399,6 +398,33 @@ def update_once(
 
 
 # --------------------------------------------------------------------------- #
+# 致命の失敗（周期をまたいで再試行しない型）と、そのときの終了コード
+# --------------------------------------------------------------------------- #
+#: 待っても直らない失敗で止めたときの終了コード。もう 1 本の供給常駐（``tools/mt5_tick_watch.py``）
+#: が同じ意味（fail-stop）で使っている値に合わせる＝運用側が 2 本の常駐で同じ読み方をできる。
+#: 2 は本ファイルでは既に二重起動（:class:`WriterLockHeld`）が使っているため空いていない。
+_EXIT_FAIL_STOP = 3
+
+
+def _fatal_watch_errors() -> "tuple[type[BaseException], ...]":
+    """周期をまたいで再試行しない失敗の型（本合成点が「待っても直らない」と決めた集合）。
+
+    現在の要素は系列の列形の食い違い（:class:`marketdata.tick_m1.SpreadSchemaMismatch`）1 つ。
+    宣言と既存 CSV の列形が合わない状態は、次の周期でも同じ結果になる（外部要因では変わらない）。
+    :func:`stream_loop` の周期ループと :func:`common.watch_loop.run_watch` の両方がこの集合を
+    見るため、致命の型を 2 箇所へ書き分けない。遅延 import で marketdata の読込を実行時に限定する。
+
+    型を足すときに変えるのは本関数の返す集合だけである。受け口（:func:`main`）は集合をそのまま
+    捕まえ、終了コードにも文面にも特定の型名を焼き込んでいない（型名は送出された例外から採る）。
+
+    置き場所: 周期の回し方に属するため CLI 節ではなくここに置く（:func:`stream_loop` が使う）。
+    """
+    from marketdata.tick_m1 import SpreadSchemaMismatch
+
+    return (SpreadSchemaMismatch,)
+
+
+# --------------------------------------------------------------------------- #
 # ストリーミング取得（ISSUE-161 根治・参照実装 prototype_260707-01 _poll_loop 踏襲）
 # --------------------------------------------------------------------------- #
 # 参照実装のセマンティクス（絶対遵守）: 増分カーソル（厳密 > cursor）・直列 1 接続・
@@ -501,9 +527,14 @@ def stream_loop(
     30 分ごとに当日全量再取得（refresh_day_parquet）で自己修復する（増分ドリフト・欠落の恒久補正。
     再取得が空を返した場合は既存 parquet 温存＝増分で貯めた当日データを失わない）。
     日跨ぎでは前日を全量再取得で確定し、当日バッファを新規に始める。
+
+    例外の扱いは 2 種類に分かれる: 一過性障害（取得失敗等）はバックオフして次周期へ継続し、
+    :func:`_fatal_watch_errors` に挙げた「待っても直らない失敗」は握らずに送出したまま抜ける
+    （ISSUE-511 段階 3 の段階 4・V-4。格下げすると同じ失敗を繰り返したまま回り続ける）。
     """
     from marketdata.dukascopy_source import fetch_ticks_since
 
+    fatal = _fatal_watch_errors()
     now = _utc_now()
     today = now.date()
     refresh_day_parquet(today, data_dir)                 # スキーマ正の seed（空なら温存）
@@ -547,6 +578,8 @@ def stream_loop(
             backoff = float(interval)
             errors_in_row = 0
         except KeyboardInterrupt:
+            raise
+        except fatal:  # 待っても直らない失敗は格下げせず止める（ISSUE-511 段階 3 の段階 4）
             raise
         except Exception as exc:  # noqa: BLE001 — 参照実装: 一過性障害はバックオフして継続
             errors_in_row += 1
@@ -629,10 +662,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI 入口。致命の失敗（:func:`_fatal_watch_errors`）は非 0 の終了コードで止める。
+
+    起動時の照合も周期の中の検出も同じ 1 箇所で受ける（どこで気付いたかで終わり方を変えない）。
+    """
     args = build_arg_parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
+    try:
+        return _run(args)
+    except _fatal_watch_errors() as error:
+        LOG.error("待っても直らない失敗のため停止しました（%s）: %s", type(error).__name__, error)
+        return _EXIT_FAIL_STOP
 
+
+def _run(args: argparse.Namespace) -> int:
+    """モードを選んで実行する本体（終了コードを返す）。致命の失敗は :func:`main` が受ける。"""
     data_dir = args.data_dir if args.data_dir is not None else _data_dir()
+    # 起動時の列形照合（ISSUE-511 段階 3 の段階 4・V-4）: 周期を回し始める前に、宣言と既存 M1 CSV の
+    #   列形の食い違いを検出して止める。単一書き手ロックより**前**に置くのは、--takeover が先行の
+    #   書き手へ SIGTERM を送ってから止まると、供給を止めたうえで自分も終わることになるため
+    #   （照合は読むだけで何も書かない）。
+    from marketdata.tick_m1 import check_series_schema
+
+    check_series_schema(REF, data_dir=data_dir)
     # 単一書き手ロック（ISSUE-488 根治）: 派生物へ書くどのモードよりも先に獲得する。
     #   返り値の参照をプロセス存命中保持する（GC で閉じるとロックが外れる）。
     try:
@@ -665,7 +717,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)
 
     LOG.info("live_tick_watch 開始（interval=%ds・ref=%s）", args.interval, REF)
-    return run_watch(_update, interval=args.interval)
+    return run_watch(_update, interval=args.interval, fatal=_fatal_watch_errors())
 
 
 if __name__ == "__main__":

@@ -91,8 +91,11 @@ def test_既存refの記述子は1バイトも動いていない():
     assert r["jp225_tick"].path == DATA_DIR / "jp225_tick_bid_m1.csv"
     assert (r["jp225_tick"].rollup, r["jp225_tick"].tick) == (True, True)
     assert r["sample"].path.name == "ohlcv.csv"
-    # ティック由来は jp225_tick と jp225_mt5 の 2 つ（ISSUE-512 段階 3 で MT5 が加わった）。
-    assert dataset_registry.tick_refs() == frozenset({"jp225_tick", "jp225_mt5"})
+    # ティック由来は 3 つ（ISSUE-512 段階 3 で jp225_mt5、ISSUE-511 段階 3 の段階 7a で
+    # spread 列つきの jp225_mt5_spread が加わった）。
+    assert dataset_registry.tick_refs() == frozenset(
+        {"jp225_tick", "jp225_mt5", "jp225_mt5_spread"}
+    )
 
 
 # --- 計算量（Test Spy・発行−使用=0）: 台帳登録は I/O を 1 件も発行しない ----- #

@@ -16,7 +16,10 @@ from marketdata.paths import DATA_DIR
 # --- 従来値の byte 不変（回帰の壁） --------------------------------------- #
 def test_whitelist_values_unchanged():
     wl = dataset.DATASET_WHITELIST
-    assert set(wl) == {"sample", "jp225", "jp225_m1", "jp225_tick", "jp225_mt5"}
+    # ISSUE-511 段階 3 の段階 7a で spread 列つきの新系列 jp225_mt5_spread が加わった。
+    assert set(wl) == {
+        "sample", "jp225", "jp225_m1", "jp225_tick", "jp225_mt5", "jp225_mt5_spread",
+    }
     assert wl["jp225"] == DATA_DIR / "jp225_daily.csv"
     assert wl["jp225_m1"] == DATA_DIR / "jp225_m1.csv"
     # ISSUE-511 段階 1d: bid で作り直した保存物（旧 mid の jp225_tick_m1.csv は残置）。
@@ -27,16 +30,24 @@ def test_whitelist_values_unchanged():
 def test_clamp_refs_unchanged():
     assert dataset._OUTLIER_CLAMP_REFS_SET == {
         "jp225": True, "jp225_m1": True, "jp225_tick": True, "jp225_mt5": True,
+        # ISSUE-511 段階 3 の段階 7a: 実市場 ref ゆえクランプ対象（jp225_mt5 と同格）。
+        "jp225_mt5_spread": True,
     }
 
 
 def test_rollup_refs_unchanged():
-    assert dataset._ROLLUP_REFS == ("jp225_m1", "jp225_tick", "jp225_mt5")
+    # 挿入順（ISSUE-511 段階 3 の段階 7a で jp225_mt5_spread を末尾へ追加）。
+    assert dataset._ROLLUP_REFS == (
+        "jp225_m1", "jp225_tick", "jp225_mt5", "jp225_mt5_spread",
+    )
 
 
 def test_tick_refs_unchanged():
-    # ISSUE-512 段階 3（承認 2026-09-13）で jp225_mt5 が加わった。
-    assert tf_meta.TICK_REFS == frozenset({"jp225_tick", "jp225_mt5"})
+    # ISSUE-512 段階 3（承認 2026-09-13）で jp225_mt5 が、ISSUE-511 段階 3 の段階 7a で
+    # jp225_mt5_spread が加わった（spread 列は tick=True の記述子だけが宣言できる）。
+    assert tf_meta.TICK_REFS == frozenset(
+        {"jp225_tick", "jp225_mt5", "jp225_mt5_spread"}
+    )
 
 
 # --- 型・可変性（利用側 monkeypatch・membership が無変更で動く） ---------- #

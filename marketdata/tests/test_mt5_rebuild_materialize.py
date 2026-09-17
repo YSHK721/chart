@@ -122,9 +122,9 @@ def _put_stored_days(
 
 def _build_csv(data_dir: Path, ref: str, stored_days: int) -> Path:
     """権威（全量経路）で M1 CSV を作る（rebuild の置換対象が既に在る状態）。"""
+    # 価格基準は渡さない（2 つの ref はどちらも台帳に登録済み＝台帳が唯一の源・段階 6・V-3）。
     return tick_m1.build_m1_from_ticks(
         _day(0), _day(stored_days - 1), symbol=_TREE, ref=ref, data_dir=data_dir,
-        price_basis="bid",
     )
 
 

@@ -22,12 +22,18 @@ def run_watch(
     interval: int,
     sleep_fn: Callable[[float], None] = _time.sleep,
     stop_after: Optional[int] = None,
+    fatal: "tuple[type[BaseException], ...]" = (),
 ) -> int:
     """``update_fn`` → ``sleep_fn(interval)`` を繰り返す薄いポーリングループ（副作用）。
 
     - ``sleep_fn`` 注入でテスト可能化。``stop_after``（回数）で有限終了。
     - ``update_fn`` の一過性例外（ネットワーク断・一時 fetch 失敗等）は捕捉してログし、
       次インターバルへ継続する（無人ポーリングの可用性を保つ）。
+    - ``fatal`` に挙げた型は捕捉せず、送出したまま呼出側へ抜ける。待っても直らない失敗
+      （呼出側が決める）を、次インターバルへ進めないための通過口である。呼出側ごとに何が
+      致命かは違うため、型の集合は呼出側が注入する（本モジュールは型を知らない）。
+      既定の空タプルはどの例外とも一致しない（``except ()``）ため、``fatal`` を渡さない
+      呼び方の挙動は従来と変わらない。
     - ``KeyboardInterrupt`` を捕捉して正常終了（0 を返す）。
     """
     count = 0
@@ -36,6 +42,8 @@ def run_watch(
             try:
                 update_fn()
             except KeyboardInterrupt:
+                raise
+            except fatal:  # 呼出側が致命と決めた型は握らない（同じ失敗を繰り返さない）
                 raise
             except Exception:  # 一過性障害でポーリングを止めない（次インターバルへ継続）
                 logger.exception("増分更新に失敗しました（次インターバルへ継続します）")

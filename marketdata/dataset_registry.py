@@ -201,12 +201,52 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         clamp_outliers=True,
         rollup=True,
         tick=True,
-        # 木の枝名は marketdata.mt5_ticks.ingest.token_for（JP225 + '@' + サーバ名）の値、基準は
-        # 同 ingest.PRICE_BASIS（bid）と一致させる（両者の一致は
-        # marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
+        # 木の枝名は marketdata.mt5_ticks.ingest.token_for（JP225 + '@' + サーバ名）の値。
+        # 基準の唯一源は本台帳である（ISSUE-511 段階 3 の段階 6・TBD-4 で ingest.PRICE_BASIS を
+        # 廃し、同じ事実の 2 源を解消した）。書き手が台帳から引いていることは
+        # marketdata/tests/test_mt5_price_basis.py が固定する。
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
         vendor="mt5",
+    ),
+    # JP225 1分足（MT5 ティック由来・**spread 列つき**）。ISSUE-511 段階 3 の段階 7a で足した
+    # 記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
+    #
+    # jp225_mt5 に倣う（同じ木・同じ基準・同じベンダ・ロールアップ経路）。違うのは置き場だけで、
+    # series 欄を持たない＝ ref 名そのもの＝ <DATA_DIR>/jp225_mt5_spread_m1.csv と
+    # rollups/jp225_mt5_spread/。属性が jp225_mt5 と揃っていることは
+    # marketdata/tests/test_spread_series_ledger_new_ref.py の N-2 が、置き場が台帳のどの ref とも
+    # 衝突しないことは同 N-3 が固定する（値は書き写しであり、片方だけ動かせば赤になる）。
+    #
+    # 既存 CSV へ列を足すのではなく**新しい系列へ作る**理由（依頼者裁定 2026-09-17）: 既存 ref へ
+    # 宣言を足すと、宣言（spread あり）と既存 CSV の列形（spread なし）が食い違い、
+    # tick_m1._assert_spread_schema が SpreadSchemaMismatch で書き手を止める。通すには既存 CSV を
+    # 全書換するしかなく、それが前提 (a) で実測された経路（R-2/Y-2）である。新しい系列なら既存
+    # ref の path も series も 1 欄も変えずに済む。
+    #
+    # spread_point_snapshot は spread 列を数える point の **所在**（サーバ名, 銘柄名）であって値では
+    # ない（値の唯一源は銘柄仕様スナップショット・読み口は marketdata.spread_point.spread_point_of）。
+    # サーバ名を綴りで持つ理由: 本モジュールの許可依存は marketdata.paths だけであり
+    # （marketdata/tests/test_module_dependency_declarations.py の許可表が AST で強制する）、
+    # symbol_spec_snapshot.OANDA_JAPAN_MT5_LIVE を import すると台帳が値の供給元を知る向きになる。
+    # 循環は生じない（同モジュールは stdlib しか import しない）が、「所在は台帳・値はスナップ
+    # ショット」の 2 つを繋ぐ唯一点である marketdata/spread_point.py が繋ぎ目でなくなる。
+    # 綴りが実在の組であることは test_spread_series_ledger_new_ref.py の N-1 が、
+    # OANDA_JAPAN_MT5_LIVE との一致とスナップショットファイルの実在の 2 つで固定する。
+    #
+    # 実データ（jp225_mt5_spread_m1.csv とロールアップ）は**本段では作らない**（段階 7b）。既存
+    # ファイルの無い置き場では起動時照合 tick_m1.check_series_schema が照合せず素通しする（同
+    # N-6。食い違う CSV を置けば実際に止まることは N-7 が負の対照で示す）。
+    "jp225_mt5_spread": DatasetDescriptor(
+        path=DATA_DIR / "jp225_mt5_spread_m1.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        tick=True,
+        tick_token="JP225@OANDA-Japan-MT5-Live",
+        price_basis="bid",
+        vendor="mt5",
+        spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
     ),
 }
 

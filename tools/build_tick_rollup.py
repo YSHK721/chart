@@ -115,17 +115,15 @@ def _build_tick_m1(
     """M1 を生成する。既定は増分追記（新しい日だけ集計）、``full_rebuild`` で全再構築。
 
     増分は初回（M1 不在）に自動で全構築へフォールバックする（append_m1_from_ticks 内）。
-    価格基準は台帳から引く（ISSUE-511 段階 1a・全量と増分で同じ基準＝日次再構築が表示中の系列を
-    別の基準へ書き戻さない）。
+    価格基準は**渡さない**。登録済み ref では台帳が唯一の源であり、素材化の権威
+    （``marketdata.tick_m1``）が ``ref`` から引く（ISSUE-511 段階 3 の段階 6・V-3）。書き手が
+    引いて渡す形だと同じ事実が台帳と引数の 2 源になり、渡し忘れた書き手だけが既定（mid）で走る
+    （その実例が V-6＝``marketdata/tools/tick_m1_cli.py`` だった）。
     """
-    from marketdata.tf_meta import tick_price_basis
     from marketdata.tick_m1 import append_m1_from_ticks, build_m1_from_ticks
 
     fn = build_m1_from_ticks if full_rebuild else append_m1_from_ticks
-    return fn(
-        start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir,
-        price_basis=tick_price_basis(ref),
-    )
+    return fn(start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir)
 
 
 def _rollup_build(

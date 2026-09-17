@@ -20,26 +20,38 @@
   計算量 CX-1〜CX-4（Test Spy・発行 − 使用 = 0・規模 2 点・回数は期待値に焼き込まない）。
 
 書込はすべて tmp_path（writer 呼出は必ず data_dir を渡す）。構造: Arrange-Act-Assert（AAA）。
+合成系列の組み立て（tick 木・書き手呼出・Test Spy）は `marketdata/tests/spread_series_fixture.py`
+が唯一源であり、本ファイルはそこから import する（かつては同じ 13 ヘルパを手書きで複製していた）。
 """
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
-from marketdata import dataset_registry, quote_spread, tick_m1
+from marketdata import dataset_registry, tick_m1
 from marketdata import symbol_spec_snapshot as sss
-from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+from spread_series_fixture import (
+    LEDGER_BASIS as _LEDGER_BASIS,
+    SNAPSHOT_PAIR as _PAIR,
+    cleared_point_cache,  # noqa: F401  （import した先で autouse になる共有 fixture）
+    day as _day,
+    header_of as _header,
+    put_day as _put_day,
+    put_days as _put_days,
+    register_tick_ref as _register,
+    run_writer as _run,
+    snapshot_point as _snapshot_point,
+    spy as _spy,
+    spy_snapshot_reads as _spy_snapshot_reads,
+    spy_spent_points as _spy_spent_points,
+    used_reads as _used_reads,
+)
 
-_TREE = "SPY225"  # tick 木の枝（テスト専用・tmp_path の中だけ）
-_PAIR = (sss.OANDA_JAPAN_MT5_LIVE, "JP225")  # 宣言する組（実在するスナップショット）
 _DECLARED = "zz_spread_declared"
 _UNDECLARED = "zz_spread_undeclared"
 _UNREGISTERED = "zz_spread_unregistered"  # 台帳に無い ref（従来どおり point 引数が効く）
-_DAY0 = pd.Timestamp("2026-09-01")
 _BUILD = pytest.param(tick_m1.build_m1_from_ticks, id="build")
 _APPEND = pytest.param(tick_m1.append_m1_from_ticks, id="append")
 
@@ -47,66 +59,6 @@ _APPEND = pytest.param(tick_m1.append_m1_from_ticks, id="append")
 def _spread_point():
     """被検査モジュール（新設）を実行時に import する（未実装で収集ごと落とさない）。"""
     return importlib.import_module("marketdata.spread_point")
-
-
-@pytest.fixture(autouse=True)
-def _cleared_point_cache():
-    """point のキャッシュをテスト間で持ち越さない（F.I.R.S.T の Independent）。"""
-    _clear_point_cache()
-    yield
-    _clear_point_cache()
-
-
-def _clear_point_cache() -> None:
-    module = sys.modules.get("marketdata.spread_point")
-    if module is not None:
-        module._point_size_of_snapshot.cache_clear()
-
-
-def _register(monkeypatch, tmp_path: Path, ref: str, declared) -> None:
-    """合成のティック ref を台帳へ一時登録する（宣言 None のときは欄を渡さない＝従来の記述子）。"""
-    extra = {} if declared is None else {"spread_point_snapshot": declared}
-    monkeypatch.setitem(REGISTRY, ref, DatasetDescriptor(
-        path=tmp_path / f"{ref}_m1.csv", symbol="JP225", tick=True,
-        price_basis="bid", vendor="dukascopy", **extra,
-    ))
-
-
-def _snapshot_point() -> float:
-    """宣言した組の point（既存の公開経路 load_spec_fields で引く＝被検査の新関数を通さない）。"""
-    return sss.load_spec_fields(*_PAIR)["point_size"]
-
-
-def _day(k: int) -> pd.Timestamp:
-    return _DAY0 + pd.Timedelta(days=k)
-
-
-def _put_day(data_dir: Path, day: pd.Timestamp, n_minutes: int = 2) -> None:
-    """``day`` の先頭 ``n_minutes`` 分 × 3 本のティック（bid < ask・幅 7.x）を tick 木へ置く。"""
-    rows = [
-        (day + pd.Timedelta(minutes=m, seconds=s), 66000.0 + s * 0.1, 66007.0 + s * 0.1 + m * 0.1)
-        for m in range(n_minutes) for s in (5, 30, 55)
-    ]
-    frame = pd.DataFrame({
-        "timestamp": pd.to_datetime([r[0] for r in rows]).tz_localize("UTC"),
-        "bidPrice": [r[1] for r in rows],
-        "askPrice": [r[2] for r in rows],
-    })
-    p = tick_m1.day_parquet_path(day, symbol=_TREE, data_dir=data_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(p)
-
-
-def _put_days(data_dir: Path, n_days: int) -> "list[pd.Timestamp]":
-    days = [_day(k) for k in range(n_days)]
-    for day in days:
-        _put_day(data_dir, day)
-    return days
-
-
-def _run(entry, ref: str, data_dir: Path, start, end, **kw) -> Path:
-    """build / append を同じ引数で呼ぶ（tick 木は _TREE・基準は bid・data_dir は必ず tmp）。"""
-    return entry(start, end, symbol=_TREE, ref=ref, data_dir=data_dir, price_basis="bid", **kw)
 
 
 def _place(data_dir: Path, ref: str, source: Path) -> Path:
@@ -117,37 +69,25 @@ def _place(data_dir: Path, ref: str, source: Path) -> Path:
 
 
 def _spread_csv(data_dir: Path, days) -> Path:
-    """台帳外 ref に point を明示して spread 付き CSV を作る（段階 3 本体の書き手が作る形）。"""
+    """台帳外 ref に point を明示して spread 付き CSV を作る（段階 3 本体の書き手が作る形）。
+
+    基準は明示する（台帳外 ref には引ける宣言が無いため）。登録済み ref 側は台帳から同じ基準を
+    引くので、byte 一致の突合は「宣言と明示が同じ結果を出すか」だけを測る。
+    """
     return _run(tick_m1.build_m1_from_ticks, _UNREGISTERED, data_dir, days[0], days[-1],
-                point=_snapshot_point())
+                point=_snapshot_point(), price_basis=_LEDGER_BASIS)
 
 
 def _plain_csv(data_dir: Path, days) -> Path:
-    """spread 無し CSV（現行の書き手が作る形）。"""
-    return _run(tick_m1.build_m1_from_ticks, "zz_plain_source", data_dir, days[0], days[-1])
+    """spread 無し CSV（現行の書き手が作る形）。基準は台帳外 ref なので明示する（同上）。"""
+    return _run(tick_m1.build_m1_from_ticks, "zz_plain_source", data_dir, days[0], days[-1],
+                price_basis=_LEDGER_BASIS)
 
 
 def _tear_tail(path: Path) -> None:
     """末尾へ書き掛けの行を足す（追記がクラッシュした跡＝自己修復の全構築へ落ちる状態）。"""
     with open(path, "a", encoding="utf-8") as fh:
         fh.write("2026-09-09 00:00:00,660")
-
-
-def _header(path: Path) -> str:
-    return path.read_text(encoding="utf-8").splitlines()[0]
-
-
-def _spy(monkeypatch, module, name: str) -> "list[tuple]":
-    """``module.name`` を包み、発行ごとに引数を記録する Test Spy（モジュール属性の継ぎ目）。"""
-    real = getattr(module, name)
-    calls: "list[tuple]" = []
-
-    def spy(*args, **kwargs):
-        calls.append(args)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(module, name, spy)
-    return calls
 
 
 # =====================================================================
@@ -180,7 +120,7 @@ def test_an_append_from_the_ledger_declaration_matches_an_explicit_point(tmp_pat
     # Act
     from_ledger = _run(tick_m1.append_m1_from_ticks, _DECLARED, tmp_path, _day(0), _day(1))
     explicit = _run(tick_m1.append_m1_from_ticks, _UNREGISTERED, tmp_path, _day(0), _day(1),
-                    point=_snapshot_point())
+                    point=_snapshot_point(), price_basis=_LEDGER_BASIS)
 
     # Assert
     assert len(from_ledger.read_text(encoding="utf-8").splitlines()) == 5  # ヘッダ + 2 日 × 2 分
@@ -219,6 +159,12 @@ def test_an_explicit_point_for_a_registered_ref_is_refused_before_any_io(
     """台帳が point の唯一源なので、登録済み ref へ呼出側の point は受けない（宣言と同じ値でも常に拒否）。
 
     ファイル bytes・mtime 不変、parquet を 1 回も読まない（全書換の第 2 の源を IO の前に断つ）。
+
+    照合する語は **point 固有**（``spread_point_snapshot``＝台帳の point の宣言欄）でなければならない。
+    登録済み ref では価格基準の拒否（:func:`marketdata.tick_m1._resolved_basis`）が point の拒否より
+    **先**に上がり、両方の文面が「台帳に登録済みです」で始まる。``match="台帳"`` だと、呼出が基準も
+    渡す形へ戻ったとき本検定は基準の拒否を掴んで緑のまま通り、point 拒否を撤去しても落ちない
+    （2026-09-17 実測: 半分だけ旧の fixture ＋ point 拒否撤去で 33 passed / 0 failed）。
     """
     # Arrange
     registration(monkeypatch, tmp_path)
@@ -226,7 +172,7 @@ def test_an_explicit_point_for_a_registered_ref_is_refused_before_any_io(
     reads = _spy(monkeypatch, tick_m1.pd, "read_parquet")
 
     # Act / Assert
-    with pytest.raises(ValueError, match="台帳"):
+    with pytest.raises(ValueError, match="spread_point_snapshot"):
         _run(entry, ref, tmp_path, _day(0), _day(1), point=0.1)
     assert out.read_bytes() == before
     assert out.stat().st_mtime_ns == mtime
@@ -376,47 +322,6 @@ def test_a_mismatch_raised_inside_the_self_repair_try_propagates_without_a_rewri
 # =====================================================================
 # 計算量（Test Spy・発行 − 使用 = 0・規模 2 点・回数は焼き込まない）
 # =====================================================================
-def _spy_snapshot_reads(monkeypatch) -> "list[tuple[tuple, float]]":
-    """sss.load_snapshot を包み、発行ごとに（読んだ組, その読込で得た point_size）を記録する Test Spy。
-
-    point_size は既存の公開経路 sss.spec_fields で、読込の戻り値そのものから引く（被検査の新関数を
-    通さない）。継ぎ目はモジュール属性（marketdata.spread_point は marketdata.symbol_spec_snapshot の
-    関数をモジュール属性経由で呼ぶ）。
-    """
-    real = sss.load_snapshot
-    reads: "list[tuple[tuple, float]]" = []
-
-    def spy(*args, **kwargs):
-        snapshot = real(*args, **kwargs)
-        reads.append((args, sss.spec_fields(snapshot)["point_size"]))
-        return snapshot
-
-    monkeypatch.setattr(sss, "load_snapshot", spy)
-    return reads
-
-
-def _spy_spent_points(monkeypatch) -> "list[float]":
-    """quote_spread.minute_spread_points（出力の spread 列を数える唯一の口）へ渡された point を記録する。"""
-    real = quote_spread.minute_spread_points
-    spent: "list[float]" = []
-
-    def spy(*args, **kwargs):
-        spent.append(kwargs["point"])
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(quote_spread, "minute_spread_points", spy)
-    return spent
-
-
-def _used_reads(reads: "list[tuple[tuple, float]]", spent: "list[float]") -> int:
-    """出力の spread に使われた読込の数＝読んだ組のうち、その point が spread の計算へ渡った組の数。
-
-    同じ組を 2 回読んでも使用は 1（2 回目の読込は出力に何も足さない）。読んだ point と別の point で
-    spread を数えたら、その読込の使用は 0。
-    """
-    return len({pair for pair, point in reads if point in spent})
-
-
 def test_cx1_the_snapshot_is_read_only_for_the_point_that_is_spent(tmp_path, monkeypatch):
     """CX-1: 追記を 2 回と 20 回: スナップショット読込の発行 − spread に使った読込 = 0、発行は 2 点で等しい。"""
     reads = _spy_snapshot_reads(monkeypatch)
@@ -429,7 +334,7 @@ def test_cx1_the_snapshot_is_read_only_for_the_point_that_is_spent(tmp_path, mon
         _put_day(data_dir, _day(0))
         out = _run(tick_m1.build_m1_from_ticks, _DECLARED, data_dir, _day(0), _day(0))
         rows_before = len(out.read_text(encoding="utf-8").splitlines())
-        _spread_point()._point_size_of_snapshot.cache_clear()
+        _spread_point().forget_resolved_points()
         reads.clear()
         spent.clear()
 
@@ -479,7 +384,7 @@ def test_cx3_an_append_without_new_minutes_does_not_read_the_snapshot(tmp_path, 
     _put_day(tmp_path, _day(0))
     out = _run(tick_m1.build_m1_from_ticks, _DECLARED, tmp_path, _day(0), _day(0))
     before = out.read_bytes()
-    _spread_point()._point_size_of_snapshot.cache_clear()
+    _spread_point().forget_resolved_points()
     reads = _spy(monkeypatch, sss, "load_snapshot")
 
     # Act

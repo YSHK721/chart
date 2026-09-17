@@ -7,6 +7,14 @@ MT5 の生の並びと marketdata の台帳の境目。台帳側の規約は :mo
     pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.path_tokens` /
     :mod:`marketdata.mt5_ticks` 下位。
 
+価格基準（ティックの bid/ask のどちらを M1 の価格とするか）を本モジュールは宣言しない:
+    唯一の源は台帳（marketdata/dataset_registry.py の記述子の price_basis）であり、日中増分も
+    日次再構築も ref を渡すだけで、素材化の権威（:mod:`marketdata.tick_m1`）が引く
+    （ISSUE-511 段階 3 の段階 6・TBD-4 の裁定 2026-09-17）。かつて本モジュールが持っていた
+    PRICE_BASIS 定数は、台帳と合わせて同じ事実の 2 源になっていた（一致は検定が事後に確認して
+    いただけで、台帳だけを切り替えれば日中経路が旧基準で走った）。本パッケージが基準を宣言
+    しないことは marketdata/tests/test_mt5_price_basis.py が AST で固定する。
+
 sanitize を :mod:`marketdata.path_tokens` から取る理由（ISSUE-479 F-1）:
     銘柄・サーバ名 → パス成分の変換規則の実体は、かつて ``tools/capture_mt5_symbol_spec.py``
     にあり、本モジュールが tools を import していた（層の逆流・循環 C-1）。実害は例外型に
@@ -37,25 +45,6 @@ Row = Tuple[int, float, float]
 
 #: 銘柄とサーバを繋ぐ区切り（``JP225@OANDA-Japan-MT5-Live``）。
 TOKEN_SEPARATOR = "@"
-
-#: MT5 系列の**価格基準**（``marketdata.tick_m1.ticks_to_m1`` の ``price_basis`` へ渡す値）。
-#:
-#: MT5 端末のチャートは **bid** を描いている（``chart_mode=0``・依頼者裁定 2026-09-02）。
-#: ISSUE.md 段階 0 実測 T5 は、同日の Dukascopy M1（mid）と MT5 M1 を突き合わせて中央値
-#: ``duka(mid) - mt5(bid) = +6.97`` を得ており、MT5 のスプレッド平均 11.41（T7）のちょうど
-#: 半分に相当する。同じティックから mid で M1 を作れば、端末表示に対して半スプレッドぶん
-#: 系統的にずれる。
-#:
-#: 宣言をここ 1 箇所に置く理由: 日中増分（:mod:`~marketdata.mt5_ticks.m1_chain`）と日次権威
-#: 再構築（:mod:`~marketdata.mt5_ticks.rebuild`）は別の経路だが、**同じ系列**を作らねば
-#: ならない。片方だけが mid のままなら、日次再構築が表示中の系列を静かに mid へ書き戻す。
-#: 出力はどちらも「それらしい」ので、値を見ているだけでは気付けない。よって基準は綴りを
-#: 書き写すのではなく、この 1 定数を参照で渡す
-#: （``marketdata/tests/test_mt5_price_basis.py`` が AST で複製と未参照を禁じる）。
-#:
-#: 台帳（ティック parquet・ジャーナル）は bid と ask の**両方**を持ち続ける。基準は
-#: 「保存するもの」ではなく「M1 の価格として何を採るか」の選択である。
-PRICE_BASIS = tick_m1.PRICE_BASIS_BID
 
 
 def token_for(symbol: str, server: str) -> str:

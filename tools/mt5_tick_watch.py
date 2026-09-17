@@ -44,6 +44,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
 from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
 from marketdata.mt5_ticks import server_clock  # noqa: E402
@@ -341,6 +342,18 @@ def run(
     clock = SystemClock() if clock is None else clock
     say = log if log is not None else (lambda line: None if settings.quiet else _stderr(line))
 
+    # 起動時の列形照合（ISSUE-511 段階 3 の段階 4・V-4）: 周期を回し始める前に、台帳の宣言と
+    #   既存 M1 CSV の列形の食い違いを検出して止める。取得（トークン解決）より**前**に置くのは、
+    #   どのみち書けない状態で端末を叩かないためである（照合は読むだけで 1 バイトも書かない）。
+    #   ``--no-publish`` でも通すのは、日次確定後の再構築（rebuild.rebuild_days）が publish の
+    #   有無に関わらず M1 CSV を書きうるためである（照合を publish 側に寄せると穴が開く）。
+    #   規則の実体は marketdata 側にあり、ここは呼ぶだけである（tools は規則を持たない）。
+    try:
+        tick_m1.check_series_schema(settings.ref, data_dir=settings.data_dir)
+    except tick_m1.SpreadSchemaMismatch as exc:
+        _stderr(f"系列の列形が宣言と食い違います（再試行しません）: {exc}")
+        return EXIT_FAIL_STOP
+
     probe_at = probe_label_ms(settings, clock)
     try:
         token = resolve_token(source, symbol=settings.symbol, at_msc=probe_at)
@@ -399,10 +412,38 @@ def run(
             _stderr(f"供給が一時的に失敗しました（{failures} 回目・{delay} 秒待ちます）: {exc}")
             sleep(delay)
             continue
-        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError) as exc:
+        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError,
+                tick_m1.SpreadSchemaMismatch) as exc:
             # カーソル規約の破れも「待っても直らない」側である。型集合から漏れると、
             #   常駐はトレースバックを吐いて exit 1 で落ち、運用者には未知のクラッシュに見える。
             #   `cursor.py` は依存ゼロを保つため、繋ぐのは合成点であるここの責務。
+            # 列形の食い違い（SpreadSchemaMismatch）も同じ側である。**日中追記（周期の中）が
+            #   この型を送出する**（ISSUE-511 段階 3 の段階 5 以降）。畳みが m1_chain →
+            #   tick_m1.fold_ticks_for → tick_m1._checked_series を通るようになり、系列（ref）を
+            #   渡さない畳み口が無くなったためである（送出点は tick_m1._assert_spread_schema 1 つ
+            #   のまま）。かつてここには「現行の日中経路はこの型を送出しない（到達不能）」と
+            #   書いてあったが、段階 5 の結線でその記述は偽になった。
+            # 送出される条件と実測（2026-09-17・合成データ・本コンテナ・端末もサーバも起動せず）:
+            #   既存 M1 CSV の先頭行の spread 列の有無が台帳の宣言と食い違うとき。稼働中の台帳投入
+            #   （段階 7）を模した 2 周期の実行——起動時は既存 CSV 無しで照合は素通し → 1 周期目が
+            #   宣言どおり spread 無しの CSV を 2 行で作る → 周期の継ぎ目で台帳が spread を宣言 →
+            #   2 周期目の日中追記が照合に掛かる——で、exit 3（EXIT_FAIL_STOP）・2 周期目の追記は
+            #   0 行（CSV は 1 周期目の 2 行のまま）・stderr に Traceback なし。単発の呼出でも同じ
+            #   型で書込 0 バイトだった（宣言あり＋spread 無しヘッダ / 宣言なし＋spread 付きヘッダ
+            #   の 2 通り）。既存 CSV が無い場合はこの経路に入らない（照合が素通しし、宣言どおりの
+            #   列形で新規作成される）。
+            # 段階 5 **前**のツリー（HEAD 9f598012 を scratchpad へ展開）で同じシナリオを測り直すと、
+            #   迂回していた頃の振る舞いは**既存 CSV の列形で 2 つに分かれた**（2026-09-17・同条件）:
+            #   spread 列を持たない／既存 CSV が無い側は**止まらず**、台帳が宣言しても宣言と違う
+            #   列形で書き続けた（上の 2 周期シナリオは exit 0・例外なし・2 周期目も 2 行追記して
+            #   CSV は 2 → 4 行＝**静かな乖離**）。spread 列を持つ側だけが ISSUE-455 のヘッダ不一致
+            #   ValueError で書込 0 バイトだった。つまり段階 5 で変わったのは「落ち方」ではなく、
+            #   **静かに乖離していた側が止まるようになったこと**である。
+            # その ValueError（tick_m1._assert_append_header_matches）は上の捕捉集合の**外**である
+            #   （SpreadSchemaMismatch は ValueError の派生ではない＝逃げ道にも掛からない）。段階 5 前の
+            #   ツリーでは、宣言あり＋spread 付き既存ヘッダの 1 周期が run からも main からも**未捕捉
+            #   のまま**抜けた（書込 0 バイト・2026-09-17 実測）。プロセスの終了コードそのものは測って
+            #   いない（未捕捉の送出なので traceback を出して非 0 で終わる）。
             _stderr(f"供給の前提が崩れました（再試行しません）: {exc}")
             return EXIT_FAIL_STOP
 
