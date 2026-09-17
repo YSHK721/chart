@@ -129,7 +129,10 @@ def test_build_m1_from_ticks_writes_loader_compatible_csv(tmp_path: Path) -> Non
     # marketdata.resample が読める（date 列を index 化して 5m へ集計できる）。
     df = pd.read_csv(out, parse_dates=["date"]).set_index("date")
     up = resample.resample_ohlc(df, resample.TIMEFRAME_RULES["5m"])
-    assert up.iloc[0]["open"] == 101.0  # 最初の tick の mid。
+    # 台帳の jp225_tick は price_basis="bid"（ISSUE-511 段階 1d）。書き手が基準を渡さなくなり
+    #   （段階 6・V-3）、権威が台帳から引くようになったので、ここは bid である。かつては
+    #   build の既定（mid）で畳んでいたため、bid を名乗る置き場へ mid の足が入っていた（V-6）。
+    assert up.iloc[0]["open"] == 100.0  # 最初の tick の bid（台帳の price_basis）。
     assert up.iloc[0]["volume"] == 3.0  # 5m に 3 tick 合算。
 
 

@@ -141,11 +141,10 @@ def append_m1_for_closed_minutes(
 
     # 畳みは ``ref`` を渡す公開の口へ委ねる（ISSUE-511 段階 3 の段階 5・V-2）。spread 列の有無と
     #   point は台帳の宣言が決め、既存 CSV の列形との照合は書き手の入口と同じ規則を通る。
-    #   価格基準は :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` が唯一の宣言である
-    #   （綴りを書き写さない・権威経路 rebuild と必ず同じ値を使う）。
+    #   価格基準は渡さない。唯一の源は台帳であり、``ref`` を渡せば素材化の権威が引く
+    #   （段階 6・TBD-4）。権威経路 rebuild も同じ源から引くため、2 経路が割れる余地が無い。
     m1 = tick_m1.fold_ticks_for(
-        ingest.rows_to_frame(closed),
-        ref=ref, price_basis=ingest.PRICE_BASIS, data_dir=data_dir,
+        ingest.rows_to_frame(closed), ref=ref, data_dir=data_dir,
     )
     bars = tick_m1.append_m1_rows(m1, out_path)
     return AppendResult(bars=bars, pending_rows=pending)

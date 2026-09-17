@@ -33,6 +33,7 @@ import pytest
 from marketdata import dataset_registry, tick_m1
 from marketdata import symbol_spec_snapshot as sss
 from spread_series_fixture import (
+    LEDGER_BASIS as _LEDGER_BASIS,
     SNAPSHOT_PAIR as _PAIR,
     cleared_point_cache,  # noqa: F401  （import した先で autouse になる共有 fixture）
     day as _day,
@@ -68,14 +69,19 @@ def _place(data_dir: Path, ref: str, source: Path) -> Path:
 
 
 def _spread_csv(data_dir: Path, days) -> Path:
-    """台帳外 ref に point を明示して spread 付き CSV を作る（段階 3 本体の書き手が作る形）。"""
+    """台帳外 ref に point を明示して spread 付き CSV を作る（段階 3 本体の書き手が作る形）。
+
+    基準は明示する（台帳外 ref には引ける宣言が無いため）。登録済み ref 側は台帳から同じ基準を
+    引くので、byte 一致の突合は「宣言と明示が同じ結果を出すか」だけを測る。
+    """
     return _run(tick_m1.build_m1_from_ticks, _UNREGISTERED, data_dir, days[0], days[-1],
-                point=_snapshot_point())
+                point=_snapshot_point(), price_basis=_LEDGER_BASIS)
 
 
 def _plain_csv(data_dir: Path, days) -> Path:
-    """spread 無し CSV（現行の書き手が作る形）。"""
-    return _run(tick_m1.build_m1_from_ticks, "zz_plain_source", data_dir, days[0], days[-1])
+    """spread 無し CSV（現行の書き手が作る形）。基準は台帳外 ref なので明示する（同上）。"""
+    return _run(tick_m1.build_m1_from_ticks, "zz_plain_source", data_dir, days[0], days[-1],
+                price_basis=_LEDGER_BASIS)
 
 
 def _tear_tail(path: Path) -> None:
@@ -114,7 +120,7 @@ def test_an_append_from_the_ledger_declaration_matches_an_explicit_point(tmp_pat
     # Act
     from_ledger = _run(tick_m1.append_m1_from_ticks, _DECLARED, tmp_path, _day(0), _day(1))
     explicit = _run(tick_m1.append_m1_from_ticks, _UNREGISTERED, tmp_path, _day(0), _day(1),
-                    point=_snapshot_point())
+                    point=_snapshot_point(), price_basis=_LEDGER_BASIS)
 
     # Assert
     assert len(from_ledger.read_text(encoding="utf-8").splitlines()) == 5  # ヘッダ + 2 日 × 2 分
@@ -153,6 +159,12 @@ def test_an_explicit_point_for_a_registered_ref_is_refused_before_any_io(
     """台帳が point の唯一源なので、登録済み ref へ呼出側の point は受けない（宣言と同じ値でも常に拒否）。
 
     ファイル bytes・mtime 不変、parquet を 1 回も読まない（全書換の第 2 の源を IO の前に断つ）。
+
+    照合する語は **point 固有**（``spread_point_snapshot``＝台帳の point の宣言欄）でなければならない。
+    登録済み ref では価格基準の拒否（:func:`marketdata.tick_m1._resolved_basis`）が point の拒否より
+    **先**に上がり、両方の文面が「台帳に登録済みです」で始まる。``match="台帳"`` だと、呼出が基準も
+    渡す形へ戻ったとき本検定は基準の拒否を掴んで緑のまま通り、point 拒否を撤去しても落ちない
+    （2026-09-17 実測: 半分だけ旧の fixture ＋ point 拒否撤去で 33 passed / 0 failed）。
     """
     # Arrange
     registration(monkeypatch, tmp_path)
@@ -160,7 +172,7 @@ def test_an_explicit_point_for_a_registered_ref_is_refused_before_any_io(
     reads = _spy(monkeypatch, tick_m1.pd, "read_parquet")
 
     # Act / Assert
-    with pytest.raises(ValueError, match="台帳"):
+    with pytest.raises(ValueError, match="spread_point_snapshot"):
         _run(entry, ref, tmp_path, _day(0), _day(1), point=0.1)
     assert out.read_bytes() == before
     assert out.stat().st_mtime_ns == mtime

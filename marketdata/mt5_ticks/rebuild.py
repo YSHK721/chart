@@ -39,7 +39,7 @@ from typing import Any, Iterable, Optional
 import pandas as pd
 
 from marketdata import tick_m1
-from marketdata.mt5_ticks import ingest, m1_chain, server_clock
+from marketdata.mt5_ticks import m1_chain, server_clock
 from marketdata.mt5_ticks.port import Mt5SupplyError
 
 #: 差が無かった（1 バイトも書いていない）。
@@ -64,14 +64,14 @@ def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any) -> p
     連結する**ときに境界分が二重になるための処置であり、ここは 1 日 1 parquet しか読まない
     （単一 parquet 内の分は分 groupby で一意になる）。
 
-    価格基準は増分経路と同じ :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` を渡す。ここが
-    既定（mid）のままだと、日次確定のたびに再構築が「差がある」と判定して当日区間を mid へ
-    書き戻す。値はどちらも「それらしい」ので、置換されたことにも気付けない。
+    価格基準は**渡さない**。唯一の源は台帳（``ref`` の記述子の ``price_basis``）であり、増分経路
+    （:mod:`marketdata.mt5_ticks.m1_chain`）も同じ源から引く（ISSUE-511 段階 3 の段階 6・TBD-4）。
+    かつては本モジュールと増分経路が同じ定数を渡していたが、台帳と定数の 2 源が残ると、台帳だけを
+    切り替えたときに日中経路が旧基準で走り、日次確定のたびに再構築が「差がある」と判定して当日
+    区間を旧基準へ書き戻す。値はどちらも「それらしい」ので、置換されたことにも気付けない。
     """
     parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
-    return tick_m1.materialize_m1_day(
-        pd.read_parquet(parquet), ref=ref, price_basis=ingest.PRICE_BASIS
-    )
+    return tick_m1.materialize_m1_day(pd.read_parquet(parquet), ref=ref)
 
 
 def _read_m1_csv(path: Path) -> pd.DataFrame:
@@ -97,6 +97,15 @@ def _refuse_incompatible_columns(
 
     連結してから整形すると、欠けている列は NaN になり、置換したい当日だけでなく**当日以外の
     行**まで空欄付きで書き直される。出力を壊すより先に止める。
+
+    列形の防御は 2 つあり、**統合しない**（見る入力が違う・ISSUE-511 段階 3 の段階 6 の申し送り）:
+    本関数は「既に読み込んだ CSV の**全列**」と「権威が組み立てた当日区間の全列」を突き合わせ、
+    過不足があれば :class:`marketdata.mt5_ticks.port.Mt5SupplyError` を送出する。もう一方の
+    :func:`marketdata.tick_m1._assert_spread_schema` は「系列の**宣言**」と「既存 CSV の先頭行」を
+    突き合わせ、spread 列の有無だけを見て
+    :class:`marketdata.tick_m1.SpreadSchemaMismatch` を送出する（書く前に止める）。前者は連結時に
+    NaN が生える食い違い、後者は宣言との食い違いを見ており、片方に寄せるともう片方の入力が
+    手に入らない（本関数は宣言を知らず、あちらは読み込んだ本文を持たない）。
     """
     missing = [c for c in expected.columns if c not in current.columns]
     extra = [c for c in current.columns if c not in expected.columns]

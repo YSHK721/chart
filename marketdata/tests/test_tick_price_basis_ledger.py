@@ -26,7 +26,6 @@ import pytest
 
 from marketdata import dataset_registry, tf_meta, tick_m1
 from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
-from marketdata.mt5_ticks import ingest
 
 
 # --------------------------------------------------------------------------- #
@@ -38,13 +37,16 @@ def test_jp225_tick_is_bid():
     assert tf_meta.tick_price_basis("jp225_tick") == tick_m1.PRICE_BASIS_BID
 
 
-def test_jp225_mt5_is_read_with_the_basis_it_is_written_with():
-    """``jp225_mt5`` の読み手の基準は、確定足の書き手（ingest）の基準と一致する。
+def test_jp225_mt5_is_bid():
+    """``jp225_mt5`` の基準は bid（MT5 端末が描いている系列・依頼者裁定 2026-09-02）。
 
+    かつてここは ``marketdata.mt5_ticks.ingest`` の定数との一致を見ていた。段階 6（TBD-4）で
+    その定数を廃し台帳が唯一の源になったので、ここが固定するのは**値そのもの**である
+    （書き手が台帳から引いていることは ``marketdata/tests/test_mt5_price_basis.py`` が持つ）。
     ここが食い違うと、形成中バーは確定のたびに半スプレッド前後跳ねる（ISSUE-515 実測 +7.5）。
     """
     # Arrange / Act / Assert
-    assert REGISTRY["jp225_mt5"].price_basis == ingest.PRICE_BASIS
+    assert REGISTRY["jp225_mt5"].price_basis == tick_m1.PRICE_BASIS_BID
 
 
 def test_every_declared_basis_is_a_known_basis():
@@ -113,13 +115,13 @@ def test_the_dukascopy_tree_is_read_as_bid():
 
 
 def test_the_mt5_tree_is_read_as_bid():
-    """MT5 の木の基準は、その木を書く ingest の基準と一致する。"""
+    """MT5 の木の基準は bid（木から一意に引ける・段階 6 以降は台帳が唯一の源）。"""
     # Arrange
     token = REGISTRY["jp225_mt5"].tick_token
 
     # Act / Assert
     assert token is not None, "jp225_mt5 の木が台帳に無い"
-    assert dataset_registry.price_basis_of_tick_token(token) == ingest.PRICE_BASIS
+    assert dataset_registry.price_basis_of_tick_token(token) == tick_m1.PRICE_BASIS_BID
 
 
 def test_every_tree_has_exactly_one_basis():

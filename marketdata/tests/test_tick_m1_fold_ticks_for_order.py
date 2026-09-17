@@ -50,7 +50,7 @@ from spread_series_fixture import (
 _DECLARED = "zz_fold_declared"
 _UNDECLARED = "zz_fold_undeclared"
 
-_BASIS = "bid"
+#: 価格基準は渡さない（合成 ref は 2 つとも台帳へ一時登録する＝台帳が唯一の源・段階 6・V-3）。
 _PER_MINUTE = 4
 _T0 = pd.Timestamp("2026-09-01 09:00:00")
 
@@ -89,7 +89,7 @@ def test_r16_an_invalid_non_empty_frame_is_refused_before_the_point_is_resolved(
 
     # Act
     with pytest.raises(ValueError):
-        tick_m1.fold_ticks_for(ticks, ref=_DECLARED, price_basis=_BASIS, data_dir=tmp_path)
+        tick_m1.fold_ticks_for(ticks, ref=_DECLARED, data_dir=tmp_path)
 
     # Assert: 出力が無い＝使用 0。発行 − 使用 = 0 が成り立つのは発行 0 のときだけ。
     used = used_reads(reads, spent)
@@ -114,13 +114,13 @@ def test_r16_the_two_public_entries_refuse_in_the_same_order(tmp_path, monkeypat
     # Act
     reads_fold = spy_snapshot_reads(monkeypatch)
     with pytest.raises(ValueError):
-        tick_m1.fold_ticks_for(ticks, ref=_DECLARED, price_basis=_BASIS, data_dir=tmp_path)
+        tick_m1.fold_ticks_for(ticks, ref=_DECLARED, data_dir=tmp_path)
     issued_fold = len(reads_fold)
 
     sp.forget_resolved_points()
     reads_day = spy_snapshot_reads(monkeypatch)
     with pytest.raises(ValueError):
-        tick_m1.materialize_m1_day(ticks, ref=_DECLARED, price_basis=_BASIS)
+        tick_m1.materialize_m1_day(ticks, ref=_DECLARED)
     issued_day = len(reads_day)
 
     # Assert
@@ -144,7 +144,7 @@ def test_cxi1_an_empty_frame_resolves_no_point(tmp_path, monkeypatch, declared):
 
     # Act
     out = tick_m1.fold_ticks_for(
-        _frame(minutes=0), ref=ref, price_basis=_BASIS, data_dir=tmp_path
+        _frame(minutes=0), ref=ref, data_dir=tmp_path
     )
 
     # Assert: 出力 0 行＝使用 0。列形は宣言どおり（空でも列は宣言に従う）。
@@ -176,7 +176,7 @@ def test_cxi2_snapshot_reads_do_not_grow_with_the_number_of_folded_minutes(tmp_p
 
         # Act
         out = tick_m1.fold_ticks_for(
-            _frame(minutes=minutes), ref=_DECLARED, price_basis=_BASIS, data_dir=tmp_path
+            _frame(minutes=minutes), ref=_DECLARED, data_dir=tmp_path
         )
 
         # Assert

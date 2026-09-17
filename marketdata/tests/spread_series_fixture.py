@@ -43,6 +43,9 @@ from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
 TICK_TREE = "SPY225"
 #: 宣言する組（実在するスナップショット）。
 SNAPSHOT_PAIR = (sss.OANDA_JAPAN_MT5_LIVE, "JP225")
+#: 合成 ref の台帳が名乗る価格基準。台帳外 ref へ同じ基準を明示したい呼出もここを使う
+#: （登録済み側と台帳外側で綴りが割れると、byte 一致の突合が「基準の食い違い」を測ってしまう）。
+LEDGER_BASIS = "bid"
 #: 合成系列の起点の日。
 DAY0 = pd.Timestamp("2026-09-01")
 
@@ -63,7 +66,7 @@ def register_tick_ref(monkeypatch, tmp_path: Path, ref: str, declared) -> None:
     extra = {} if declared is None else {"spread_point_snapshot": declared}
     monkeypatch.setitem(REGISTRY, ref, DatasetDescriptor(
         path=tmp_path / f"{ref}_m1.csv", symbol="JP225", tick=True,
-        price_basis="bid", vendor="dukascopy", **extra,
+        price_basis=LEDGER_BASIS, vendor="dukascopy", **extra,
     ))
 
 
@@ -102,8 +105,15 @@ def put_days(data_dir: Path, n_days: int) -> "list[pd.Timestamp]":
 
 
 def run_writer(entry, ref: str, data_dir: Path, start, end, **kw) -> Path:
-    """build / append を同じ引数で呼ぶ（tick 木は TICK_TREE・基準は bid・data_dir は必ず tmp）。"""
-    return entry(start, end, symbol=TICK_TREE, ref=ref, data_dir=data_dir, price_basis="bid", **kw)
+    """build / append を同じ引数で呼ぶ（tick 木は TICK_TREE・data_dir は必ず tmp）。
+
+    価格基準は**渡さない**。登録済み ref では台帳が唯一の源であり、明示は拒否される
+    （ISSUE-511 段階 3 の段階 6・V-3）。かつてここが全呼出へ無条件に ``price_basis="bid"`` を
+    渡していたため、基準の拒否を入れると point ではなく基準で ``ValueError`` が上がり、point の
+    明示拒否を測る検定が ``match="台帳"`` に一致したまま緑で通って主張が空洞化した（2026-09-17 実測）。
+    台帳外 ref へ基準が要る呼出は、呼出側が ``price_basis=LEDGER_BASIS`` を ``kw`` で渡す。
+    """
+    return entry(start, end, symbol=TICK_TREE, ref=ref, data_dir=data_dir, **kw)
 
 
 def header_of(path: Path) -> str:

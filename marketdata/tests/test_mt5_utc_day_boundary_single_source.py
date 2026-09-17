@@ -465,6 +465,23 @@ _RB_PHANTOM_PRICE = 15100.0
 _RB_CLEAN_PRICE = 66000.0
 
 
+@pytest.fixture(autouse=True)
+def _registered_rb_ref(monkeypatch, tmp_path: Path):
+    """合成 ref を台帳へ一時登録する（価格基準の唯一源は台帳・ISSUE-511 段階 3 の段階 6）。
+
+    増分経路（``m1_chain``）も権威経路（``rebuild``）も基準を渡さず ref から引くようになった
+    ので、登録が無いと「台帳に無い ref では price_basis が必須」で止まる。実在の MT5 系列と同じ
+    基準を名乗らせる（本節が測るのは日窓の帰属であって基準ではない）。
+    """
+    from marketdata import dataset_registry
+    from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
+
+    monkeypatch.setitem(REGISTRY, _RB_REF, DatasetDescriptor(
+        path=tmp_path / f"{_RB_REF}_m1.csv", symbol="JP225", tick=True,
+        price_basis=dataset_registry.tick_price_basis("jp225_mt5"), vendor="mt5",
+    ))
+
+
 def _rb_label_ms(utc: dt.datetime) -> int:
     """UTC の壁時計 → サーバ時刻ラベル ms（検定入力の生成のみ）。"""
     epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)

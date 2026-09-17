@@ -8,7 +8,8 @@
 
 本ファイルが固定するもの:
     1. **両経路**（日中増分＝``m1_chain`` / 日次権威再構築＝``rebuild``）が bid で M1 を作る
-    2. 基準の宣言は本パッケージ内の **1 定数**であり、各経路はそれを渡すだけ（手書き複製禁止）
+    2. 基準の宣言は**台帳**（marketdata/dataset_registry.py）にただ 1 つあり、各経路は ref を
+       渡すだけである（本パッケージは基準を宣言も送信もしない・段階 6・TBD-4）
     3. 増分と権威が**同じ基準**であること（片方だけが mid だと、日次再構築が表示中の系列を
        静かに mid へ書き戻す。出力は「それらしい」ので状態検証では気付けない）
     4. M-4 同値性（ジャーナル畳み == 確定 parquet 畳み）が bid でも成立し続けること
@@ -21,8 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from marketdata import tick_m1
-from marketdata.mt5_ticks import ingest, journal, m1_chain, rebuild
+from marketdata import dataset_registry, tick_m1
+from marketdata.mt5_ticks import journal, m1_chain, rebuild
 
 _PKG = Path(tick_m1.__file__).resolve().parent / "mt5_ticks"
 _TOKEN = "JP225@OANDA-Japan-MT5-Live"
@@ -124,17 +125,17 @@ def test_a_clean_day_needs_no_replacement_because_both_paths_share_the_basis(tmp
 
 # M-4 同値性（ジャーナル畳み == 確定 parquet 畳み・外れ値日の再構築後の記録 == 全量経路）は
 #   ``marketdata/tests/test_mt5_equivalence.py`` が持つ。本裁定に合わせて、あちらは突合の
-#   **両側**を ``ingest.PRICE_BASIS`` で回すよう揃えた。ここで同じ突合を繰り返すと検定が
-#   2 箇所に割れ、片方だけが基準を追随して静かに食い違う。
+#   **両側**を台帳の基準で回すよう揃えた。ここで同じ突合を繰り返すと検定が 2 箇所に割れ、
+#   片方だけが基準を追随して静かに食い違う。
 
 
 # =====================================================================
-# 単一宣言（手書き複製禁止）
+# 単一宣言（台帳が唯一の源）
 # =====================================================================
 
-def test_the_package_declares_the_price_basis_as_bid():
-    """基準の宣言は bid である（``tick_m1`` の識別子そのものを指す）。"""
-    assert ingest.PRICE_BASIS == tick_m1.PRICE_BASIS_BID
+def test_the_ledger_declares_the_price_basis_as_bid():
+    """基準の宣言は**台帳**にあり bid である（``tick_m1`` の識別子そのものを指す）。"""
+    assert dataset_registry.tick_price_basis(_REF) == tick_m1.PRICE_BASIS_BID
 
 
 def _modules_defining(name: str) -> "list[str]":
@@ -152,17 +153,23 @@ def _modules_defining(name: str) -> "list[str]":
     return sorted(set(out))
 
 
-def test_the_price_basis_is_declared_in_exactly_one_module():
-    """宣言は 1 箇所（2 箇所になった瞬間、片方だけ直って系列が割れる）。"""
-    assert _modules_defining("PRICE_BASIS") == ["ingest.py"]
+def test_no_module_in_the_package_declares_a_price_basis():
+    """本パッケージは基準を宣言しない（宣言が 2 箇所になった瞬間、片方だけ直って系列が割れる）。
+
+    かつては ``ingest.PRICE_BASIS`` がこの宣言を持ち、台帳と合わせて 2 源になっていた。両者の
+    一致は本ファイルが事後に確認していただけなので、台帳だけを切り替えれば日中経路が旧基準で
+    走った（段階 6・TBD-4 の裁定 2026-09-17）。
+    """
+    assert _modules_defining("PRICE_BASIS") == []
 
 
-def _call_sites_passing_a_basis_literal() -> "list[str]":
-    """``price_basis=`` へ**綴りを直書き**している呼出位置を集める。
+def _call_sites_passing_a_basis() -> "list[str]":
+    """``price_basis=`` を渡している呼出位置を集める（値が綴りでも参照でも数える）。
 
-    「"bid" という文字列がどこかに在る」では測らない。転送層は同じ綴りをフィールド名として
-    持っており、それは価格基準ではない（別概念を同じ検査で捕まえると偽陽性になる）。
-    危険なのは **宣言を経由せずに基準を決めている呼出**そのものである。
+    直書きだけを数えていた頃より広い。段階 6 以降は「宣言を経由せずに基準を決めている呼出」
+    だけでなく、**基準を渡すこと自体**が 2 源の入口だからである（渡す限り、渡し忘れた経路と
+    渡した経路が別の基準で走り得る）。転送層が同じ綴りをフィールド名として持っていても、
+    ここは ``price_basis`` という**キーワード引数**だけを見るので偽陽性にならない。
     """
     out: "list[str]" = []
     for path in sorted(_PKG.glob("*.py")):
@@ -171,28 +178,18 @@ def _call_sites_passing_a_basis_literal() -> "list[str]":
             if not isinstance(node, ast.Call):
                 continue
             for kw in node.keywords:
-                if kw.arg == "price_basis" and isinstance(kw.value, ast.Constant):
+                if kw.arg == "price_basis":
                     out.append(f"{path.name}:{node.lineno}")
     return sorted(out)
 
 
-def test_no_call_site_hand_copies_the_basis_spelling():
-    """``price_basis`` へ綴りを直書きする呼出が 1 つも無い（必ず宣言を渡す）。"""
-    assert _call_sites_passing_a_basis_literal() == [], (
-        "価格基準を直書きしています。ingest.PRICE_BASIS を渡してください"
-        "（綴りが 2 箇所になると、片方だけ直って増分と権威で系列が割れます）。"
+def test_neither_path_passes_a_basis_because_the_authority_pulls_it():
+    """両経路とも ``price_basis`` を渡さない（ref だけを渡し、素材化の権威が台帳から引く）。
+
+    渡す形に戻すと同じ事実が台帳と引数の 2 源になり、渡し忘れた経路だけが既定（mid）で走る。
+    その実例が V-6 で、CLI が台帳の bid を名乗る置き場へ mid の足を書いていた（2026-09-17 実測）。
+    """
+    assert _call_sites_passing_a_basis() == [], (
+        "MT5 経路が価格基準を渡しています。ref だけを渡して台帳から引かせてください"
+        "（2 源になると、台帳を切り替えたとき片方だけが旧基準で走ります）。"
     )
-
-
-def test_both_paths_pass_the_declared_constant_by_reference():
-    """両経路が ``PRICE_BASIS`` を**参照で**渡している（AST 上に属性参照が在る）。"""
-    for filename in ("m1_chain.py", "rebuild.py"):
-        tree = ast.parse((_PKG / filename).read_text(encoding="utf-8"))
-        referenced = any(
-            isinstance(node, ast.Attribute) and node.attr == "PRICE_BASIS"
-            for node in ast.walk(tree)
-        )
-        assert referenced, (
-            f"{filename} が価格基準の宣言を参照していません"
-            "（渡していなければ既定の mid で作られます）。"
-        )
