@@ -80,8 +80,19 @@ def _is_missing(value: Any) -> bool:
     判定を pandas に頼らない（本モジュールは依存ゼロ＝stdlib のみ）。非数は自分自身と
     等しくないという性質で判り、``None`` だけを別に見る。実測（pandas 3.0.3 /
     numpy 2.4.6 / CPython 3.13.5）: 非数・numpy の非数・``None``・NaT・整数・浮動小数・
-    負数・空文字列・文字列・無限大・numpy の整数 の 13 通りで pandas の isna と判定が
-    一致する（不一致 0 件）。スカラ以外は射程外（呼び手が値列のセルだけを渡す）。
+    負数・空文字列・文字列・無限大・numpy の整数 の **11 通り**で pandas の isna と判定が
+    一致する（不一致 0 件）。
+
+    射程（実測 2026-09-17・同構成）:
+        - **スカラ以外は射程外**（呼び手が値列のセルだけを渡す）。
+        - **``pd.NA`` 等の nullable スカラも射程外**。``pd.NA != pd.NA`` は ``bool`` でなく
+          ``pd.NA`` を返すため、本関数は ``pd.NA`` を**返し**（``True`` でも ``False`` でも
+          ない）、それを ``if`` で見る :func:`_skipping_missing` の内側で
+          ``TypeError: boolean value of NA is ambiguous`` になる。``pd.isna(pd.NA)`` は
+          ``True`` なので、この 1 点は pandas と一致しない。
+          扱えるようにするために pandas を import してはならない（本モジュールの依存ゼロは
+          ``marketdata/tests/test_module_dependency_declarations.py`` が強制する）。射程外で
+          あることを明示するに留める。
     """
     return value is None or value != value
 
@@ -101,6 +112,13 @@ def _skipping_missing(combine: "Callable[[Any, Any], Any]") -> "Callable[[Any, A
     集約と同じく欠損を飛ばす。sum は**両方が欠損**のときだけ pandas が 0.0 を返すのに
     対し本規約は欠損を返す（この 1 点は一致しない）。両方が欠損なら欠損のまま残すのは、
     値を捏造しないためである。
+
+    ただしこの不一致は :func:`marketdata.rollup.stream_build` からは**到達しない**（実測
+    2026-09-17・pandas 3.0.3）: 合算列が全欠損の期間について
+    ``resample().agg("sum")`` が ``0.0`` を返すため、:func:`marketdata.rollup.merge_same_period`
+    へ渡る bar の合算列は欠損になりえず、両オペランドが欠損という入力が作れない
+    （``marketdata.rollup._resample_chunk`` を通した実測: 60 分すべて欠損の 1 時間足で
+    volume 列は ``0.0``）。不一致が観測できるのは、本二項面を直接呼んだときだけである。
     """
 
     def folded(prev: Any, new: Any) -> Any:
