@@ -16,36 +16,40 @@
           進めること。格下げされると同じ失敗を繰り返したまま常駐が回り続ける。
 
 射程（実測済み・憶測を仕様にしない）:
-    :class:`marketdata.tick_m1.SpreadSchemaMismatch` の送出点はリポジトリに 1 つだけで
+    :class:`tick_m1.SpreadSchemaMismatch` の送出点はリポジトリに 1 つだけで
     （``marketdata/tick_m1.py`` の ``tick_m1._assert_spread_schema``）、そこへ到達するのは
-    ``tick_m1._checked_series`` を通る 3 つの口（``tick_m1.check_series_schema`` /
-    ``tick_m1.build_m1_from_ticks`` / ``tick_m1.append_m1_from_ticks``）に限られる。MT5 の
-    日中追記は ``marketdata/mt5_ticks/m1_chain.py`` が ``tick_m1.append_m1_rows`` を直接呼ぶため
-    **この 3 つを通らない**（同ファイルの docstring が ``tick_m1.append_m1_from_ticks`` を
-    使わない理由を明記している）。日次再構築が列構成の食い違いで
-    送出するのは :class:`~marketdata.mt5_ticks.port.Mt5SupplyError` であり、これは既に捕捉
-    集合に在る。
+    ``tick_m1._checked_series`` を通る口に限られる。**MT5 の日中追記もその 1 つである**
+    （ISSUE-511 段階 3 の段階 5 で ``marketdata/mt5_ticks/m1_chain.py`` の畳みが
+    ``tick_m1.fold_ticks_for`` 経由になり、系列（ref）を渡さない唯一の畳み口が無くなった）。
+    日次再構築が列構成の食い違いで送出するのは
+    :class:`~marketdata.mt5_ticks.port.Mt5SupplyError` であり、これは既に捕捉集合に在る。
 
-    **現実に周期で落ちるのはヘッダ不一致の ValueError である**（射程の残り半分）: 台帳が
-    spread を宣言し、既存 M1 CSV が spread 付きヘッダを持つ状態で 1 周期回すと、日中追記は
-    ISSUE-455 の ``ValueError``（``tick_m1._assert_append_header_matches``）で落ちる。これは
-    常駐が捕捉する型の集合の**外**であり（``SpreadSchemaMismatch`` は ``ValueError`` の派生では
-    ないため、追記側の ``except ValueError`` にも本検定が固定する通過口にも掛からない）、
-    traceback のまま抜けて exit 1 になる。実測（2026-09-17・合成・1 周期・本コンテナ）:
-    宣言あり＋spread 付きヘッダ＝exit 1・追記 0 行／宣言なしの対照＝exit 0・3 行追記。
-    既存ファイルが無い場合はこの経路に入らない（起動時照合も追記も素通しし、spread 無しの
-    ヘッダで新規作成される）。
-
-    よって本検定が固定するのは次の 2 つであって、「現行の周期経路が当該例外を送出すること」
-    ではない:
+    よって本検定が固定するのは次の 2 つである:
       - 起動時の照合で食い違いを検出し、何も書かずに fail-stop で終わること（R-11〜R-13）。
-      - 周期の中で送出されたときに格下げされない**通過口が在る**こと（F-1）。
+      - **現行の周期経路が実際にこの型を送出し**、格下げされずに fail-stop で終わること（F-1）。
+
+    F-1 の格上げの実測（2026-09-17・合成・本コンテナ・2 周期・段階 5 の実装で測り直した）:
+    起動時は既存 CSV が無く照合は素通し → 1 周期目が宣言どおり（spread 無し）の CSV を 2 行で
+    作る → 周期の継ぎ目で台帳が spread を宣言する（段階 7 の投入と同じ形）→ 2 周期目の日中追記が
+    照合に掛かり ``tick_m1.SpreadSchemaMismatch``・exit 3・**2 周期目の追記 0 行**・traceback なし。
+
+    段階 5 **前**のツリー（HEAD＝9f598012 を scratchpad へ展開）で同じ 2 周期シナリオを測り直した
+    （2026-09-17・同じ合成データ・本コンテナ）。迂回していた頃の振る舞いは**既存 CSV の列形で
+    2 つに分かれ**、この 2 周期シナリオは「落ちない」方だった:
+      - 既存 CSV が spread 列を持たない／存在しないとき（＝本試験のシナリオ）: **止まらない**。
+        台帳が spread を宣言しても、日中追記は宣言と違う列形（spread 無し）で書き続ける。実測は
+        exit 0・例外なし・2 周期目も 2 行追記（CSV は 2 → 4 行）＝**静かな乖離**。
+      - 既存 CSV が spread 列を持つとき: 畳みが spread 列を作れないため ISSUE-455 のヘッダ不一致
+        ``ValueError``（捕捉集合の外）で書込 0 バイト。
+    よって段階 5 で変わったのは「落ち方」ではなく、**静かに乖離していた側が止まるようになったこと**
+    である（型の格上げだけを見ると、この価値が読めない）。
 
 書込はすべて ``tmp_path`` の下（常駐・サーバは起動しない。ネットワークは叩かない）。
 構造: Arrange-Act-Assert（AAA）。
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from pathlib import Path
 from typing import NamedTuple
@@ -53,6 +57,8 @@ from typing import NamedTuple
 import pytest
 
 from marketdata import csv_schema, tick_m1
+from marketdata import symbol_spec_snapshot as sss
+from marketdata.dataset_registry import REGISTRY
 from marketdata.mt5_ticks import fakes
 from tools import mt5_tick_watch as watch
 # テープ（端末が持つティック列）の組み立ては供給常駐の既存検定が唯一の定義を持つ。ここで書き写すと
@@ -73,6 +79,9 @@ _PLAIN = csv_schema.header_for(["open", "high", "low", "close", "volume", "up", 
 _WITH_SPREAD = csv_schema.header_for(
     ["open", "high", "low", "close", "volume", "up", "dn", csv_schema.SPREAD_COLUMN]
 )
+
+#: 宣言する組（実在するスナップショット）。値は解決まで至らない（照合が先に止める）。
+_PAIR = (sss.OANDA_JAPAN_MT5_LIVE, "JP225")
 
 
 class _Measured(NamedTuple):
@@ -202,35 +211,51 @@ def test_a_matching_column_form_does_not_stop_the_start(tmp_path, secret, prepar
 
 
 # =====================================================================
-# F-1 周期の中の致命型は格下げされない（通過口の存在）
+# F-1 周期の中の致命型は格下げされない（**現行経路が実際に送出する**）
 # =====================================================================
-def test_a_fatal_error_raised_in_a_cycle_is_not_downgraded(tmp_path, secret, monkeypatch, capsys):
-    """F-1: 周期の中で送出された致命型は、次周期へ進まず fail-stop で終わる。
+def _observed(data_dir: Path) -> "tuple[str | None, int]":
+    """常駐が書いた M1 CSV の（先頭行, データ行数）。不在は ``(None, 0)``。"""
+    path = tick_m1.m1_csv_path(ref=watch.DEFAULT_REF, data_dir=data_dir)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    return (lines[0] if lines else None, max(len(lines) - 1, 0))
 
-    現行の周期経路がこの型を送出しないことはモジュール docstring の射程に書いたとおりである。
-    ここで固定するのは**通過口の存在**であり、型集合から漏れていれば常駐はトレースバックを
-    吐いて exit 1 で落ちる（運用者には未知のクラッシュに見える）。
+
+def test_a_fatal_mismatch_from_the_real_cycle_is_not_downgraded(tmp_path, secret, monkeypatch, capsys):
+    """F-1: 周期の中の**日中追記**が送出した列形の食い違いで、次周期へ進まず fail-stop で終わる。
+
+    段階 7（台帳へ spread を宣言する）を常駐の稼働中に行った形をそのまま再現する: 起動時は既存
+    CSV が無く照合は素通し → 1 周期目が宣言どおり（spread 無し）の CSV を作る → 周期の継ぎ目で
+    台帳が宣言する → 2 周期目の日中追記が照合に掛かる。差し替えるのは**台帳の宣言と時計だけ**で
+    あり、周期の経路そのものは本番と同じである（かつてここは ``watch.build_cycle`` を丸ごと
+    差し替えて「通過口の存在」だけを固定しており、現行経路が送出するかは測っていなかった）。
+
+    型集合から漏れていれば、常駐はトレースバックを吐いて exit 1 で落ちる（運用者には未知の
+    クラッシュに見える）。格下げする実装なら次の周期へ進み、待ちも発行される。
     """
-    # Arrange: 起動時の照合は通る列形。周期の中で食い違いを送出する。
-    _write_m1(tmp_path, _PLAIN)
-    cycles: "list[int]" = []
-    slept: "list[float]" = []
+    # Arrange
+    source = fakes.CountingTickSource(_tape(_START, minutes=30))
+    clock = fakes.FixedClock(_NOW)
+    settings = watch.settings_from(watch.build_parser().parse_args(
+        ["--data-dir", str(tmp_path), "--from", _FROM]
+    ))
+    seen: "list[tuple[str | None, int]]" = []
 
-    def _raise(_state):
-        cycles.append(len(cycles))
-        raise tick_m1.SpreadSchemaMismatch("周期の中で検出した列形の食い違い")
-
-    monkeypatch.setattr(watch, "build_cycle", lambda *a, **k: _raise)
+    def between_cycles(_seconds):
+        """周期の継ぎ目: 新しい分が閉じるまで時計を進め、台帳が spread を宣言する。"""
+        seen.append(_observed(tmp_path))
+        clock.advance(minutes=2)
+        monkeypatch.setitem(REGISTRY, watch.DEFAULT_REF, dataclasses.replace(
+            REGISTRY[watch.DEFAULT_REF], spread_point_snapshot=_PAIR
+        ))
 
     # Act
-    code = watch.main(
-        _argv(tmp_path, "--no-publish"), source=fakes.FakeTickSource(_tape(_START, minutes=2)),
-        clock=fakes.FixedClock(_NOW), sleep=slept.append,
-    )
+    code = watch.run(settings, source=source, clock=clock, cycles=2, sleep=between_cycles)
 
-    # Assert: 格下げする実装なら周期を回し続け、待ちも発行される。
-    assert (code, cycles) == (watch.EXIT_FAIL_STOP, [0])
-    assert slept == []
+    # Assert
+    assert code == watch.EXIT_FAIL_STOP
+    assert len(seen) == 1, f"周期の継ぎ目が {len(seen)} 回でした（2 周期目で止まっていません）"
+    assert seen[0] == (",".join(_PLAIN), 2)      # 空振り防止（1 周期目は宣言どおりに書いた）
+    assert _observed(tmp_path) == seen[0]        # 2 周期目は 1 バイトも書いていない
     assert "Traceback" not in capsys.readouterr().err
 
 

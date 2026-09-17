@@ -560,6 +560,58 @@ def materialize_m1_day(ticks: pd.DataFrame, *, ref: str, price_basis: str) -> pd
     )
 
 
+def fold_ticks_for(
+    ticks: pd.DataFrame, *, ref: str, price_basis: str, data_dir: Any = DATA_DIR
+) -> pd.DataFrame:
+    """``ticks`` を ``ref`` の宣言どおりに分へ畳む（**行選択も外れ分除去もしない**・ISSUE-511 段階 3 の段階 5）。
+
+    用途は日中の増分供給（``marketdata.mt5_ticks.m1_chain``）である。渡された行をそのまま畳み、
+    spread 列の有無と point は ``ref`` の台帳宣言が決める。
+
+    :func:`materialize_m1_day` との非対称は意図したものである（設計 §10 の裁定・理由は
+    ``marketdata/mt5_ticks/m1_chain.py`` の docstring が持つ）: 日次クリーニング（日内 close 中央値
+    から ±30% 乖離する分バーの除去・ISSUE-107）は**日単位の統計**を要するため、分単位の増分では
+    同じ判断ができない（数本のバーの中央値は日の中央値ではない）。よって本関数は行を 1 つも
+    落とさない。落とす判断は UTC 日が閉じた後に権威経路（``marketdata.mt5_ticks.rebuild``）が行う。
+
+    台帳照合は書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）と**同じ
+    規則**（:func:`_checked_series`）を通る。日中の追記だけが照合を迂回すると、台帳が spread を
+    宣言した瞬間にこの経路だけが宣言と違う列形を書こうとし、ISSUE-455 のヘッダ不一致
+    :class:`ValueError` で落ちる（常駐の捕捉集合の外＝traceback のまま exit 1・段階 4 で実測）。
+    照合した置き場と実際に書く置き場が同じなのは、どちらも :func:`m1_csv_path` が決めるためである
+    （本関数は畳みだけを返し、置き場は呼出側が同じ口で解決する）。本関数の IO は、その照合のための
+    既存 CSV の**先頭 1 行の読取だけ**である（本文は読まない・:func:`_checked_series`）。
+
+    ``ref``・``price_basis`` は必須（既定値なし）: ``ref`` を既定にすると別系列の宣言で列形を決めて
+    しまい、``price_basis`` を既定（mid）にすると日次再構築と基準が割れる（:func:`materialize_m1_day`
+    と同じ理由）。``point`` は受けない（台帳に登録済みの ref では台帳が唯一の源であり、明示は
+    :func:`_declared_spread` が拒否する）。
+
+    契約（計算量・R-1）: 渡した分は**すべて**出力される。呼出側は畳みの**前に**行を選ぶこと
+    （閉じた分だけを渡す）。畳んでから捨てると、捨てる分の気配幅を計算することになる。point の値は、
+    必須列・価格基準の検証を通り、かつ畳む分が 1 つ以上あるときにだけ解決する（空入力でも、必須列を
+    欠く非空フレームでもスナップショットを読まない＝使わない point を読まない。列形はどちらも宣言
+    どおりのまま）。検証を point の解決より先に置くのは :func:`materialize_m1_day` と同じ順序にする
+    ためである。
+
+    この契約は宣言では守られない: 空入力の分岐を消す変異は、下記の検定を足す**前**には
+    ``marketdata/tests`` の 1,463 件のうち 1 件も落とさなかった（2026-09-17 実測・本コンテナ）。
+    順序と発行数を機械的に固定するのは
+    ``marketdata/tests/test_tick_m1_fold_ticks_for_order.py``（R-16・CX-I）である。
+    """
+    spread, _ = _checked_series(ref, data_dir=data_dir, point=None)
+    # 検証は point の解決より先に置く（素材化の唯一源 _materialize_m1_day と同じ順序）。後ろに
+    #   置くと、必須列を欠く非空フレームで「落ちる前にスナップショットを 1 回読む」ことになる
+    #   （出力はどちらも ValueError なので状態検証では落ちない・R-16 が順序を固定する）。
+    #   ticks_to_m1 も内部で同じ検証を通る（規則の実体は _validate_tick_frame 1 つのまま）。
+    _validate_tick_frame(ticks, price_basis)
+    if ticks.empty:
+        return _empty_m1(spread is not None)
+    return ticks_to_m1(
+        ticks, price_basis=price_basis, point=None if spread is None else spread()
+    )
+
+
 def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
     """既存 CSV の先頭行の spread 列の有無が ``with_spread`` と一致しなければ止める（書かない）。
 

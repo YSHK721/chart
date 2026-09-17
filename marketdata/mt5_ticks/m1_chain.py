@@ -24,6 +24,15 @@
     かつては private の整形関数を直接 import していたが、承認事項 A-5 によりその依存は
     恒久解消した（``marketdata/tests/test_mt5_m1_append_api.py`` が AST で再発を禁じる）。
 
+列形の権威（ISSUE-511 段階 3 の段階 5・V-2）:
+    畳みは ``tick_m1.fold_ticks_for`` へ委譲し、``ref`` を渡す。spread 列の有無と、その列を数える
+    point は**台帳の宣言**（``marketdata.dataset_registry`` の ``spread_point_snapshot``）が決め、
+    既存 M1 CSV の列形との照合は書き手の入口（``tick_m1.build_m1_from_ticks`` /
+    ``tick_m1.append_m1_from_ticks``）と同じ規則を通る。かつて本モジュールは ``ref`` を渡さない
+    唯一の畳み口であり、照合を迂回していた。迂回したままで台帳が spread を宣言すると、日中追記
+    だけが宣言と違う列形を書こうとして ISSUE-455 のヘッダ不一致 ``ValueError`` で落ちる
+    （常駐の捕捉集合の外＝traceback のまま exit 1・段階 4 で実測）。
+
 依存宣言: pandas / :mod:`marketdata.tick_m1` / :mod:`marketdata.rollup` /
 :mod:`marketdata.rollup_paths`（ロールアップ配置の唯一権威・ISSUE-502 D-16）/
 :mod:`marketdata.dataset_registry`（保存物の名前＝series・ISSUE-511 段階 1d）/
@@ -109,7 +118,13 @@ def append_m1_for_closed_minutes(
     if boundary.tzinfo is None:
         boundary = boundary.tz_localize("UTC")
 
-    settled = tick_m1.last_m1_date(tick_m1.m1_csv_path(ref=ref, data_dir=data_dir))
+    # 置き場は 1 回だけ解決して使い回す（既存側の読みと追記が同じファイルを指すことを、同じ
+    #   呼出の結果であることで示す）。畳み（``tick_m1.fold_ticks_for``）の中の列形の照合も
+    #   同じ ``ref`` / ``data_dir`` から ``tick_m1.m1_csv_path`` を引くため、照合した対象と
+    #   書く対象は構造的に一致する（置き場の決め方を本モジュールが持たないことが前提）。
+    out_path = tick_m1.m1_csv_path(ref=ref, data_dir=data_dir)
+
+    settled = tick_m1.last_m1_date(out_path)
     if settled is not None and settled.tzinfo is None:
         settled = settled.tz_localize("UTC")  # M1 CSV の date は naive=UTC（既存契約）。
 
@@ -124,12 +139,15 @@ def append_m1_for_closed_minutes(
     if not closed:
         return AppendResult(bars=0, pending_rows=pending)
 
-    # 価格基準は :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` が唯一の宣言である
+    # 畳みは ``ref`` を渡す公開の口へ委ねる（ISSUE-511 段階 3 の段階 5・V-2）。spread 列の有無と
+    #   point は台帳の宣言が決め、既存 CSV の列形との照合は書き手の入口と同じ規則を通る。
+    #   価格基準は :data:`marketdata.mt5_ticks.ingest.PRICE_BASIS` が唯一の宣言である
     #   （綴りを書き写さない・権威経路 rebuild と必ず同じ値を使う）。
-    m1 = tick_m1.ticks_to_m1(
-        ingest.rows_to_frame(closed), price_basis=ingest.PRICE_BASIS
+    m1 = tick_m1.fold_ticks_for(
+        ingest.rows_to_frame(closed),
+        ref=ref, price_basis=ingest.PRICE_BASIS, data_dir=data_dir,
     )
-    bars = tick_m1.append_m1_rows(m1, tick_m1.m1_csv_path(ref=ref, data_dir=data_dir))
+    bars = tick_m1.append_m1_rows(m1, out_path)
     return AppendResult(bars=bars, pending_rows=pending)
 
 

@@ -214,6 +214,11 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         # 例外型を持つのが本モジュールであるため、公開面もここに置く（規則の実体は
         # 既存の private な照合関数 1 つのままで、増えたのは呼び口だけ）。
         "check_series_schema",
+        # ISSUE-511 段階 3 の段階 5（設計 §3・§7 (4)・工程 5 レビューの申し送り 2026-09-17）:
+        # 日中の増分供給が系列（ref）を渡して畳む公開の口 ``tick_m1.fold_ticks_for``。これが無いと
+        # ``m1_chain`` は ``tick_m1.ticks_to_m1`` を直呼びして台帳照合を迂回し続ける（＝台帳が spread を
+        # 宣言した瞬間に日中追記だけが別の列形を書こうとして落ちる）。追加は 1 名に閉じる。
+        "fold_ticks_for",
     }
 
 
