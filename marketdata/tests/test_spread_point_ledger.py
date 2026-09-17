@@ -10,7 +10,8 @@
 
 本検定が固定するもの:
   1. 構築時の拒否: tick=False の記述子・形の不正な組は作れない。
-  2. 値ピン: 現行台帳の全記述子は宣言 None（本段では実データを 1 バイトも変えない）。
+  2. 値ピン: 現行台帳の宣言は spread 系列の 1 件のみで、他の記述子はすべて None
+     （段階 7a で jp225_mt5_spread が 1 件目の宣言になった。実データはまだ 1 バイトも作っていない）。
   3. 宣言された組のスナップショットが実在する（合成記述子で正・負の対照）。
   4. 読み口はスナップショットの point_size を返す（期待値は表 SYMBOL_FIELD_SOURCES 経由で素の
      JSON から取る・リテラルを書かない）。宣言無し・台帳外は None。スナップショット無しは Fail-Stop。
@@ -147,8 +148,13 @@ def test_the_ledger_answers_the_declared_snapshot_and_none_otherwise(tmp_path, m
 # --------------------------------------------------------------------------- #
 # 2. 値ピン（本段では実データを変えない）
 # --------------------------------------------------------------------------- #
-def test_no_current_descriptor_declares_a_spread_point():
-    """現行台帳の全記述子は宣言 None（書き手の出力は 1 バイトも変わらない）。"""
+def test_only_the_new_spread_series_declares_a_spread_point():
+    """宣言を持つのは spread 列つきの新系列ただ 1 つ（ISSUE-511 段階 3 の段階 7a）。
+
+    段階 7a より前はここが ``{}``（宣言 0 件）だった。新系列 ``jp225_mt5_spread`` を足したので
+    **閉じた集合のまま** 1 件へ更新する（``in`` や「含む」へ緩めない。緩めると、宣言が別の既存
+    系列へ漏れて既存 CSV の列形が変わっても落ちなくなる＝R-2/Y-2 の再来を検出できない）。
+    """
     # Arrange / Act
     declared = {
         ref: d.spread_point_snapshot
@@ -157,7 +163,7 @@ def test_no_current_descriptor_declares_a_spread_point():
     }
 
     # Assert
-    assert declared == {}
+    assert declared == {"jp225_mt5_spread": (_SERVER, _SYMBOL)}
 
 
 # --------------------------------------------------------------------------- #
@@ -174,7 +180,7 @@ def snapshots_missing_for(registry) -> "list[str]":
 
 
 def test_every_declared_snapshot_exists_in_the_ledger():
-    """現行台帳で宣言された組はすべて実在する（宣言 0 件のため下の 2 件の対照と対で読む）。"""
+    """現行台帳で宣言された組はすべて実在する（宣言 1 件。下の 2 件の対照と対で読む）。"""
     # Arrange / Act / Assert
     assert snapshots_missing_for(REGISTRY) == []
 
