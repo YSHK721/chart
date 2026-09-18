@@ -40,8 +40,15 @@
     UTF-8 バイトだけだった（列数を増やした本文は pandas が先頭列を索引と解して落ちず、
     閉じない引用符は 5 行で落ちるが 5,000 行では落ちない）。よって対照には UTF-8 を使う。
 
-Test Spy は `marketdata/tests/spread_series_fixture.py` の実装を import して使う
-（同じ Spy を手書き複製しない）。
+共有するテストヘルパは import して使う（同じものを手書き複製しない）:
+    Test Spy … `marketdata/tests/spread_series_fixture.py`
+    ヘッダ定数と書き出し … `simulator/tests/ohlc_header_fixtures.py`
+
+    後者は工程 5 レビュー 🟡-1 の是正である。本ファイルと
+    `simulator/tests/unit/test_unsupported_n17_supplies_spread_boundary.py` が同じヘッダ
+    定数と同じ書き出しヘルパを手書きで複製しており、**片方だけ書き換わってもどの検定も
+    落ちなかった**。本ファイルは各ヘッダに対する ``supplies_spread`` の答えを直接固定する
+    ため、唯一源が腐れば必ずここが落ちる。
 """
 from __future__ import annotations
 
@@ -53,6 +60,18 @@ import pytest
 
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
+from simulator.tests.ohlc_header_fixtures import (
+    COMMA,
+    COMMA_NO_SPREAD,
+    COMMA_PADDED,
+    GARBAGE,
+    MD6,
+    MD9,
+    MD9_PADDED,
+    MT5_TAB,
+    MT5_TAB_NO_SPREAD,
+    write_header,
+)
 from simulator.tests.unit.test_ea_bindings_source_declarations_are_bound import (
     _UNKNOWN_FORM,
     returned_string_literals,
@@ -65,37 +84,8 @@ _MT5_FIXTURE = (
     / "input" / "JP225_M1_202501.csv"
 )
 
-#: 実データの実測ヘッダ（data/marketdata/jp225_mt5_spread_m1.csv の 1 行目・2026-09-18）。
-#: バッククォートで囲まないのは、静的品質検定 C1 の索引が data/marketdata の symlink を
-#: 辿らず「存在しない」と報せるためである（実体は head -1 で実測済み）。
-_MD9 = "date,open,high,low,close,volume,up,dn,spread"
-#: 実データの実測ヘッダ（data/marketdata/jp225_m1.csv の 1 行目・同日）。
-_MD6 = "date,open,high,low,close,volume"
-#: comma 形式（CsvOHLCRepository の必須列）。
-_COMMA = "time,open,high,low,close,volume,spread"
-#: 気配幅の列を持たない comma 形式（探索用サンプルと同形）。
-_COMMA_NO_SPREAD = "time,open,high,low,close,volume"
-#: MT5 エクスポート（タブ区切り・気配幅あり）。
-_MT5_TAB = "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>"
-#: 同じタブ区切りだが気配幅の列を持たない実体（形式で決め打っていないことの対照）。
-_MT5_TAB_NO_SPREAD = "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>"
-#: どの形式でもないヘッダ。
-_GARBAGE = "foo,bar"
-#: 区切りの両側に空白を挟んだ marketdata 9 列（空白は列名の一部ではない）。
-#: 列名を割るときに前後の空白を落とさないと、気配幅の列が " spread" になって見つからない。
-_MD9_PADDED = "date, open, high, low, close, volume, up, dn, spread "
-#: 同じ空白の入れ方をした comma 形式（空白の扱いが 1 形式だけの都合でないことの対照）。
-_COMMA_PADDED = "time, open, high, low, close, volume, spread "
-
-
-def _write(tmp_path, name: str, header: str, body: str = "") -> str:
-    path = tmp_path / name
-    path.write_text(header + "\n" + body, encoding="utf-8")
-    return str(path)
-
-
 def _md9_rows(n: int) -> str:
-    """``_MD9`` の形をした ``n`` 行の本文（値は使われない）。"""
+    """``MD9`` の形をした ``n`` 行の本文（値は使われない）。"""
     return "".join(
         "2024-01-08 00:00:00,100.0,101.0,99.0,100.5,10.0,1.0,0.0,71\n" for _ in range(n)
     )
@@ -113,21 +103,21 @@ def _first_line_bytes(path) -> bytes:
 @pytest.mark.parametrize(
     ("header", "expected"),
     [
-        (_MD9, True),
-        (_MD6, False),
-        (_COMMA, True),
-        (_COMMA_NO_SPREAD, False),
-        (_MT5_TAB, True),
-        (_MT5_TAB_NO_SPREAD, False),
-        (_GARBAGE, False),
-        (_MD9_PADDED, True),      # 空白は列名の一部ではない（割った列名の前後を落とす）
-        (_COMMA_PADDED, True),    # 同上・別形式
+        (MD9, True),
+        (MD6, False),
+        (COMMA, True),
+        (COMMA_NO_SPREAD, False),
+        (MT5_TAB, True),
+        (MT5_TAB_NO_SPREAD, False),
+        (GARBAGE, False),
+        (MD9_PADDED, True),      # 空白は列名の一部ではない（割った列名の前後を落とす）
+        (COMMA_PADDED, True),    # 同上・別形式
     ],
 )
 def test_the_header_columns_decide_whether_the_entity_supplies_spread(
     tmp_path, header, expected
 ):
-    path = _write(tmp_path, "header.csv", header)
+    path = write_header(tmp_path, "header.csv", header)
     assert ohlc_marketdata_csv.supplies_spread(path) is expected
 
 
@@ -165,11 +155,11 @@ def test_a_source_that_is_not_a_path_answers_false():
 @pytest.mark.parametrize(
     ("header", "would_fire"),
     [
-        (_MD6, True),             # 気配幅なし marketdata: 従来どおり弾く
-        (_MD9, False),            # 気配幅つき marketdata: 8-C で通す（境界解除の目的）
-        (_MT5_TAB, False),        # MT5 TAB: 従来どおり通す（指紋 A/B の経路）
-        (_COMMA, False),          # 気配幅つき comma: 現在も非発火・不変
-        (_COMMA_NO_SPREAD, True),  # 気配幅なし comma: 弾く側へ寄る
+        (MD6, True),             # 気配幅なし marketdata: 従来どおり弾く
+        (MD9, False),            # 気配幅つき marketdata: 8-C で通す（境界解除の目的）
+        (MT5_TAB, False),        # MT5 TAB: 従来どおり通す（指紋 A/B の経路）
+        (COMMA, False),          # 気配幅つき comma: 現在も非発火・不変
+        (COMMA_NO_SPREAD, True),  # 気配幅なし comma: 弾く側へ寄る
     ],
 )
 def test_the_stage_8c_substitution_would_keep_mt5_tab_unblocked(
@@ -179,7 +169,7 @@ def test_the_stage_8c_substitution_would_keep_mt5_tab_unblocked(
 
     本段では N-17 を変更しない（呼び手は無い）。ここで固定するのは述語の戻り値だけである。
     """
-    path = _write(tmp_path, "entity.csv", header)
+    path = write_header(tmp_path, "entity.csv", header)
     assert (not ohlc_marketdata_csv.supplies_spread(path)) is would_fire
 
 
@@ -224,9 +214,9 @@ def _answer_and_delivered_bytes(monkeypatch, path: str) -> "tuple[bool, int]":
 
 
 def test_it_reads_only_the_header_line_whatever_the_file_size(monkeypatch, tmp_path):
-    small = _write(tmp_path, "small.csv", _MD9, _md9_rows(5))
-    large = _write(tmp_path, "large.csv", _MD9, _md9_rows(5_000))
-    header_bytes = len((_MD9 + "\n").encode("utf-8"))
+    small = write_header(tmp_path, "small.csv", MD9, _md9_rows(5))
+    large = write_header(tmp_path, "large.csv", MD9, _md9_rows(5_000))
+    header_bytes = len((MD9 + "\n").encode("utf-8"))
 
     small_answer, small_read = _answer_and_delivered_bytes(monkeypatch, small)
     large_answer, large_read = _answer_and_delivered_bytes(monkeypatch, large)
@@ -251,7 +241,7 @@ def test_it_answers_even_when_the_body_cannot_be_parsed(tmp_path):
     # 本文が不正な UTF-8 の 5,000 行（本文を解釈する読みは同じファイルで落ちる）。
     path = tmp_path / "broken.csv"
     path.write_bytes(
-        (_MD9 + "\n").encode("utf-8")
+        (MD9 + "\n").encode("utf-8")
         + b"".join(b"\xff\xfe" + str(i).encode("ascii") + b"\n" for i in range(5_000))
     )
     assert ohlc_marketdata_csv.supplies_spread(str(path)) is True
@@ -275,9 +265,9 @@ def _entities(tmp_path) -> "list[str]":
     合図と同じ None になるため、ここを測らないと縮退経路だけが黙って 2 回読む。
     """
     return [
-        _write(tmp_path, "a.csv", _MD9, _md9_rows(5)),
-        _write(tmp_path, "b.csv", _MD6, _md9_rows(5)),
-        _write(tmp_path, "c.csv", _MT5_TAB),
+        write_header(tmp_path, "a.csv", MD9, _md9_rows(5)),
+        write_header(tmp_path, "b.csv", MD6, _md9_rows(5)),
+        write_header(tmp_path, "c.csv", MT5_TAB),
         str(tmp_path / "absent.csv"),
     ]
 
@@ -285,7 +275,7 @@ def _entities(tmp_path) -> "list[str]":
 def _issued_and_used(monkeypatch, tmp_path, rows: int) -> "tuple[int, int]":
     """``rows`` 行の実体 1 つを判定したときの（発行数, 使用数）。"""
     calls = spy(monkeypatch, ohlc_marketdata_csv, "supplies_spread")
-    path = _write(tmp_path, f"scale_{rows}.csv", _MD9, _md9_rows(rows))
+    path = write_header(tmp_path, f"scale_{rows}.csv", MD9, _md9_rows(rows))
     answers = _judged([path])
     monkeypatch.undo()
     return len(calls), len(answers)
@@ -343,10 +333,10 @@ def test_a_header_that_was_already_read_is_not_read_again(monkeypatch, tmp_path)
     """
     # Arrange
     reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
-    path = _write(tmp_path, "readable.csv", _MD9)
+    path = write_header(tmp_path, "readable.csv", MD9)
 
     # Act
-    form = ohlc_marketdata_csv.detect_ohlc_form(path, header=_MD9)
+    form = ohlc_marketdata_csv.detect_ohlc_form(path, header=MD9)
 
     # Assert
     assert form == "marketdata"   # 空振り防止（渡した 1 行だけで判定できている）
@@ -363,7 +353,7 @@ def test_a_header_that_could_not_be_read_is_not_read_again(monkeypatch, tmp_path
     """
     # Arrange
     reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
-    path = _write(tmp_path, "readable.csv", _MD9)
+    path = write_header(tmp_path, "readable.csv", MD9)
 
     # Act
     form = ohlc_marketdata_csv.detect_ohlc_form(path, header=None)
