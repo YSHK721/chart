@@ -10,12 +10,13 @@
     3. MT5 TAB 形式は従来どおり `Mt5CsvOHLCRepository` へ解決する（fixture 経路無改変）。
     4. 形式不明・必要列欠落は `DataError` で Fail-Stop する（既定へ沈黙縮退しない）。
        是正前は pandas の KeyError が翻訳されずに裸で抜けていた。
-    5. **保証境界は閉じたまま**である: N-17 の発火表は本段で 1 マスも動かない
-       （marketdata 形式は気配幅の列の有無によらず発火・MT5 TAB は非発火）。
-       境界の述語を変えるのは段階 8-C であり、本段の対象外。
+    5. **保証境界は気配幅の供給で決まる**（段階 8-C で述語を置換）: N-17 の発火表は
+       marketdata 6 列で発火・marketdata 9 列で非発火・MT5 TAB で非発火。段階 8-B の
+       時点では述語が「形式 == marketdata」で代理していたため 9 列でも発火していた
+       ——その 1 マスだけが段階 8-C で動く。
 
-なぜ 5 を本ファイルで測るか: 構築側を形式非依存にすると「境界も一緒に開いた」と
-誤認されうる。開いていないことを同じ段で機械的に示す。
+なぜ 5 を本ファイルで測るか: 構築側（形式非依存）と保証境界（気配幅の供給）は別の関心
+であり、片方を変えたときにもう片方が黙って動いていないことを同じ段で機械的に示す。
 """
 from __future__ import annotations
 
@@ -210,13 +211,15 @@ def _fires(ea_name, csv_path):
 
 
 @pytest.mark.parametrize("ea_name", sorted(_EA_SERIES))
-def test_the_guarantee_boundary_table_is_unchanged_for_all_three_forms(
+def test_the_guarantee_boundary_follows_whether_the_entity_supplies_spread(
     ea_name, tmp_path
 ):
-    """3 本 × 3 形式の発火表が段階 8-B で 1 マスも動かないこと。
+    """3 本 × 3 形式の発火表（段階 8-C の述語）。
 
-    marketdata 形式は気配幅の列の有無に関わらず発火する（述語は形式のままである）。
-    ここが動いたら、構築側の是正で境界まで開けてしまっている。
+    気配幅を供給する実体（MT5 TAB・marketdata 9 列）では非発火、供給しない実体
+    （marketdata 6 列）では発火する。同じ形式で答えが割れる組（marketdata 9 列 /
+    6 列）が、判定が形式ではなく**気配幅の供給**で決まっていることを示す。
+    段階 8-B までは述語が形式の代理だったため 9 列でも発火していた。
     """
     # Arrange
     forms = {
@@ -229,6 +232,6 @@ def test_the_guarantee_boundary_table_is_unchanged_for_all_three_forms(
     # Assert
     assert measured == {
         "mt5_tab": False,
-        "marketdata_with_spread": True,
+        "marketdata_with_spread": False,
         "marketdata_without_spread": True,
     }

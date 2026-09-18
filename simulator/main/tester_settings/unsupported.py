@@ -259,18 +259,51 @@ SPREAD_DEPENDENT_EA_NAMES: "frozenset[str]" = frozenset(
 def _detect_spread_dependent_ea_on_spreadless_data(
     effective: EffectiveSettings, binding: "EngineBinding"
 ) -> Any:
-    """N-17: spread 依存 EA × spread 列の無いデータ形式（marketdata 形式）。
+    """N-17: spread 依存 EA × 気配幅の列を供給しないデータ実体。
 
-    marketdata 系列は spread を持たず spread=0 供給になるため、約定価格式が
-    open + spread×point の EA は実 MT5 と一致しない（H-4）。形式の判定はデータ実体の
-    ヘッダ実測（`detect_ohlc_form`）で行う——EA 名や拡張子から推測しない。
+    気配幅を供給しない系列では spread=0 供給になるため、約定価格式が
+    open + spread×point の EA は実 MT5 と一致しない（H-4）。判定はデータ実体の
+    ヘッダ実測（`supplies_spread`）で行う——EA 名や拡張子から推測しない。
+
+    **問うのは形式ではなく気配幅の供給そのものである**（ISSUE-511 段階 8-C）。段階 8-B
+    までは「形式 == marketdata」で代理していたが、形式は気配幅の代理変数にすぎない。
+    代理で測ると、気配幅の列を持つ marketdata 9 列（段階 2 の新系列）まで弾き、
+    気配幅を持たない comma 形式は素通しする。列名を知るのは読み手だけでよい——
+    本モジュールは「供給するか」の 2 値だけを受け取る。
+
+    ``data_path is None``（バー系列を供給しない）は**対象外**である。「気配幅の無い
+    データで走らせる」ことと「データを 1 行も読まない」ことは別の事実であり、後者では
+    本宣言が防ぐ事象（spread=0 供給が実 MT5 と一致しない）が原理的に起こらない。両者が
+    同値であることの根拠は規則 S: 本宣言を含む表を適用する
+    `apply_unsupported_rules` の**非テストの呼び手は
+    `simulator/main/tester_settings/kwargs_mapper.effective_to_interactor_kwargs`
+    ただ 1 つ**であり、その関数は規則 S の整合検査を**先に**呼ぶ。その検査
+    （`simulator/main/engine_data_consistency.py` へ委譲）は
+    ``consumes_market_data(tick_model) != has_data`` を E-03 で Fail-Stop する双条件で
+    ある。この 2 点（唯一の入口であること・そこで規則 S が先に効くこと）は
+    `simulator/tests/unit/test_unsupported_rules_run_after_rule_s.py` が構文木で固定する。
+    かつてここは「規則 S を本判定の**直前**に呼ぶ」と書いていたが、その強い主張は機械が
+    守っていなかったため撤回した（工程 5 レビュー 🟡-2。実測 2026-09-18・本作業ツリー:
+    2 行を入れ替えた状態で `marketdata/tests simulator/tests/unit` を全件走らせ、
+    1 failed / 4758 passed / 2 xfailed が是正前 baseline と一致した＝新たに赤になった
+    検定は 0 件）。したがって本判定に届く ``data_path is None`` は `MATH_CALCULATIONS`
+    （`Model=3`）と同値になる。ここを落とすと、完走していた `Model=3` の run が
+    exit 0 から exit 2 へ変わる（実測 2026-09-18・本作業ツリー。数え方: 本条件を外した
+    版を一時適用して `simulator/sim_ui/tests` を全件走らせ、赤になった検定を数えた
+    ——1,219 件中 1 件）。
     """
-    from simulator.adapter.repository.ohlc_marketdata_csv import detect_ohlc_form
+    from simulator.adapter.repository.ohlc_marketdata_csv import supplies_spread
 
     name = ea_stem(effective.subject_path)
-    if name in SPREAD_DEPENDENT_EA_NAMES and detect_ohlc_form(binding.data_path) == "marketdata":
-        return name
-    return NOT_VIOLATED
+    if name not in SPREAD_DEPENDENT_EA_NAMES:
+        return NOT_VIOLATED
+    if binding.data_path is None:
+        # 気配幅の有無とは**別の事実**（バー系列を 1 行も読まない）。連言の 1 項として
+        # 畳むと「気配幅が無い」の一種に見えるが、根拠も所有者も違う（規則 S・上記）。
+        return NOT_VIOLATED
+    if supplies_spread(binding.data_path):
+        return NOT_VIOLATED
+    return name
 
 
 def _detect_relative_preset(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
@@ -393,9 +426,8 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         unsupported_id="N-17",
         field="subject_path",
         reason=(
-            "spread 依存 EA（約定式が open + spread×point）は、spread 列を持たない"
-            " marketdata 形式データセットでは実行できません（spread=0 供給になり"
-            "実 MT5 と一致しない・H-4）"
+            "spread 依存 EA（約定式が open + spread×point）は、気配幅の列を供給しない"
+            "データセットでは実行できません（spread=0 供給になり実 MT5 と一致しない・H-4）"
         ),
         detect=_detect_spread_dependent_ea_on_spreadless_data,
         # 生トークンだけでは判定できない（データ実体の形式に依存する）——N-10 と同じ形。

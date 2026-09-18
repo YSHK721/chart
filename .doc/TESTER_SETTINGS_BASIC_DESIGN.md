@@ -757,6 +757,7 @@ MT5 UI の項目間活性/非活性依存を、**検証規則**（不整合を�
 | N-12 | 本 corpus 外の `[Tester]` キー（`Report` / `ReplaceReport` / `ShutdownTerminal` / `UseLocal` 等） | §2.2.3。実測されていないキーの意味を推定しない | ロード時 | `UnknownSettingKeyError` |
 | N-13 | `Dates=1` / `3` 以降、`ForwardMode=1` / `2`、`Optimization=3`、`OptimizationCriterion=2` 以降 | corpus 未出現（§9.3） | ロード時 | `UnknownSettingValueError` |
 | N-14 | `.set` ファイル（`sample/MQL5/Profiles/Tester/*.set`）の読み書き | Settings タブではなく Inputs タブの独立保存形式。書式（`; saved automatically on …` ヘッダ付き）が `.ini` と異なる | — | （範囲外） |
+| N-17 | spread 依存 EA（`MA_Slope_EA` / `MA_Slope_Pending_EA` / `StopEntryProbe_EA`）× **気配幅の列を供給しないデータ実体** | 約定価格式が `open + spread×point` の EA に気配幅の無い系列を与えると spread=0 供給になり実 MT5 と一致しない（H-4）。判定はデータ実体のヘッダ実測（`adapter/repository/ohlc_marketdata_csv.supplies_spread`）で行い、EA 名・拡張子・形式名から推測しない（ISSUE-511 段階 8-C。段階 8-B までは「形式 == marketdata」を気配幅の代理変数にしていたため、気配幅の列を持つ marketdata 9 列まで弾いていた）。⚠️ `data_path is None`（バー系列を供給しない `MATH_CALCULATIONS`＝`Model=3`）は**対象外**——規則 S（§4.5.5）が、本判定へ至る**唯一の入口**（`kwargs_mapper.effective_to_interactor_kwargs`）で**先に**効いて双条件で整合を保証しており（唯一性と評価順は `simulator/tests/unit/test_unsupported_rules_run_after_rule_s.py` が構文木で固定する。「直前に呼ぶ」という強い主張は 2 行を入れ替えても検定が 1 件も落ちなかったため撤回した——工程 5 レビュー 🟡-2）、データを 1 行も読まない run では spread=0 供給が原理的に起こらない | 実行要求時 | `UnsupportedSettingError` |
 
 **対象（保証する範囲）**
 
