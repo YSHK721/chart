@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
-from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
-from simulator.main.ea_bindings.sources import load_mt5_dataframe
+from simulator.main.ea_bindings.sources import source_for
 
 
 def build_registry(df, *, ma_period: int) -> PandasIndicatorRegistry:
@@ -19,10 +18,12 @@ def build_registry(df, *, ma_period: int) -> PandasIndicatorRegistry:
 
 
 def _factory_ma_slope(ctx: EaBuildContext):
-    # MA_Slope_EA は MT5 エクスポート形式（タブ区切り・<DATE>/<TIME>/<SPREAD>）を読む。
-    df = load_mt5_dataframe(ctx.data_path)
-    registry = build_registry(df, ma_period=ctx.param("ma_period"))
-    return MaSlope(), registry, Mt5CsvOHLCRepository()
+    # 読む形式はデータ実体が決める（ISSUE-511 段階 8-B）。本 EA が宣言するのは
+    # 「close から EMA を作る」ことだけであり、TAB か comma かは `sources` の内側の話。
+    # frame と読み手は**同じ 1 回の解決**から受け取る（形式判定を 2 回発行しない）。
+    source = source_for(ctx.data_path)
+    registry = build_registry(source.frame, ma_period=ctx.param("ma_period"))
+    return MaSlope(), registry, source.repository
 
 
 BINDING = EaBinding(

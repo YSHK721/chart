@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
-from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
-from simulator.main.ea_bindings.sources import load_mt5_dataframe
+from simulator.main.ea_bindings.sources import series_or_data_error, source_for
 
 #: 発注価格を当該バー始値クォートから作る EA が共有する戦略パラメータ宣言。
 PENDING_STRATEGY_PARAMS = (
@@ -23,23 +22,27 @@ def build_registry(df, *, ma_period: int) -> PandasIndicatorRegistry:
 
     MaSlopePending は確定足 EMA（"ema"）でシグナルを出しつつ、ペンディング価格を当該バー
     始値クォート（bid=open / ask=open+spread×point）から算出するため "open"/"spread" 系列を
-    参照する（ma_slope_pending.py を Read で実証）。spread は MT5 CSV の <SPREAD>（ポイント）。
+    参照する（ma_slope_pending.py を Read で実証）。気配幅は整数ポイントであり、その意味は
+    形式に依らない（MT5 表記と marketdata 表記は同じ量・ISSUE-511）。
+    列名の差は `sources` が正規化済みであり、本モジュールは正規化後の名前だけを知る。
+    列が無いデータを渡された場合は既定 0 で補わず Fail-Stop する（`series_or_data_error`）。
     """
     ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry(
         {
             "ema": ema,
-            "open": df["open"].astype(float).reset_index(drop=True),
-            "spread": df["<SPREAD>"].astype(float).reset_index(drop=True),
+            "open": series_or_data_error(df, "open"),
+            "spread": series_or_data_error(df, "spread"),
         }
     )
 
 
 def _factory_ma_slope_pending(ctx: EaBuildContext):
-    # 指値/逆指値版。MA_Slope_EA と同じ MT5 CSV を読み、open/spread も registry に載せる。
-    df = load_mt5_dataframe(ctx.data_path)
-    registry = build_registry(df, ma_period=ctx.param("ma_period"))
-    return MaSlopePending(), registry, Mt5CsvOHLCRepository()
+    # 指値/逆指値版。読む形式はデータ実体が決める（ISSUE-511 段階 8-B）。
+    # frame と読み手は**同じ 1 回の解決**から受け取る（形式判定を 2 回発行しない）。
+    source = source_for(ctx.data_path)
+    registry = build_registry(source.frame, ma_period=ctx.param("ma_period"))
+    return MaSlopePending(), registry, source.repository
 
 
 BINDING = EaBinding(
