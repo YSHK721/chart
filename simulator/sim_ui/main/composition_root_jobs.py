@@ -8,7 +8,8 @@ Phase 1 の `composition_root.build_sim_app`（配信面だけ）を置き換え
     JobLauncherPort            → SubprocessJobLauncher（子プロセス・setsid しない）
     IndicatorSeriesCatalogPort → EaRegistrySeriesCatalog（`build_ea_indicators` で実構築）
     StopLossParamCatalogPort   → EaStopLossParamCatalog（`build_ea_strategy` で実構築）
-    RunOptionsPort             → SymbolSpecCatalog（`known_ea_names` を EA 名の権威に）
+    RunOptionsPort             → SymbolSpecCatalog（`known_ea_names` を EA 名の権威に・
+                                 建値基準の値は変換層の単一ソースから注入）
     必要系列を決める関数        → `simulator.usecase.sizing_ports.required_price_series`
 
 エンジン（`simulator.main`）を知ってよいのは本モジュールと `run_job.py` だけである
@@ -121,9 +122,27 @@ def build_stop_loss_catalog() -> EaStopLossParamCatalog:
     return EaStopLossParamCatalog(probe=EaBuildProbe(_build_ea_strategy))
 
 
+def _entry_price_basis() -> str:
+    """変換層の ENTRY_PRICE_BASIS への束縛（建値基準の値の単一ソース）。
+
+    カタログ（adapter）が持ってよいのは「データ実体が気配幅を供給するか」という事実だけ
+    であり、載せる値そのものは知らない（ISSUE-511 段階 8-D-1）。束ねるのは本 Composition
+    Root である（`_known_ea_names` と同型・R-4）。既定束縛を adapter 側に置くと
+    adapter → main の外向き依存が復活する。
+
+    import を関数内に置く理由は `_build_ea_indicators` と同じ（本モジュールの import で
+    設定変換系一式を引き込まない）。
+    """
+    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
+
+    return ENTRY_PRICE_BASIS
+
+
 def build_run_options_port() -> SymbolSpecCatalog:
     """実行指示フォームの選択肢を供給する RunOptionsPort（束縛済み）。"""
-    return SymbolSpecCatalog(known_ea_names=_known_ea_names)
+    return SymbolSpecCatalog(
+        known_ea_names=_known_ea_names, entry_price_basis=_entry_price_basis()
+    )
 
 
 def build_settings_schema_port() -> TesterSettingsSchemaCatalog:

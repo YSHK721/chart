@@ -60,14 +60,17 @@ def test_data_path_points_to_the_full_marketdata_jp225_csv():
     assert detect_ohlc_form(p) == "marketdata"
 
 
-def test_config_overrides_follow_the_data_form():
-    """決定論設定の override はデータ実体の形式から導く（宣言は _config_overrides_for）。
+def test_config_overrides_follow_whether_the_entity_supplies_spread():
+    """決定論設定の override は実体が気配幅を供給するかで決まる（宣言は _config_overrides_for）。
 
-    MT5 TAB 形式のみ current_open（MT5 ローダ EA が close 系列を持たない・実測）。
-    marketdata 形式（現行データセット）は override なし＝既定 close。
+    現行の実行データセット（marketdata 6 列・気配幅なし）は override なし＝**キー不在**。
+    気配幅を供給する MT5 突合フィクスチャには、注入された建値基準が載る。値のリテラルを
+    ここに書かない——単一ソースは変換層の ENTRY_PRICE_BASIS である（ISSUE-511 段階 8-D-1）。
+    軸そのものの真理値表は simulator/tests/unit/test_symbol_spec_catalog_spread_axis.py が持つ。
     """
     from pathlib import Path
 
+    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
     from simulator.sim_ui.adapter.symbol_spec_catalog import _config_overrides_for
 
     jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
@@ -78,7 +81,9 @@ def test_config_overrides_follow_the_data_form():
         / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv"
     )
     assert mt5_fixture.is_file(), "MT5 fixture が見つかりません（前提の崩れ）"
-    assert _config_overrides_for(mt5_fixture) == {"entry_price_basis": "current_open"}
+    assert _config_overrides_for(
+        mt5_fixture, entry_price_basis=ENTRY_PRICE_BASIS
+    ) == {"entry_price_basis": ENTRY_PRICE_BASIS}
 
 
 def test_ea_names_come_from_the_engine_accessor():
@@ -94,8 +99,16 @@ def test_ea_names_come_from_the_engine_accessor():
 
 
 def test_ea_names_are_not_hardcoded_in_the_catalog():
-    """注入元を差し替えれば一覧が変わる＝表を書き写していないことの実証。"""
-    catalog = SymbolSpecCatalog(known_ea_names=lambda: ("A_EA", "B_EA"))
+    """注入元を差し替えれば一覧が変わる＝表を書き写していないことの実証。
+
+    建値基準は本検定の関心外だが、既定束縛を持たない必須注入であるため与える
+    （値の単一ソースは変換層の ENTRY_PRICE_BASIS・ISSUE-511 段階 8-D-1）。
+    """
+    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
+
+    catalog = SymbolSpecCatalog(
+        known_ea_names=lambda: ("A_EA", "B_EA"), entry_price_basis=ENTRY_PRICE_BASIS
+    )
     assert catalog.ea_names() == ["A_EA", "B_EA"]
 
 

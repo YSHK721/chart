@@ -28,24 +28,33 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     **stops_level は 0 ではなく 5**（供給元 ``trade_stops_level``・実測）。0 は出所の無い値
     だった。この変更で結果が変わる戦略の実測は下記「stops_level の影響」を参照。
 
-    data_path は **MT5 形式の実 JP225 M1 CSV**（カタログ authored 固定パス）を指す。理由（実測・
-    憶測禁止）: run の実行ローダ（EA factory が選ぶ MarketDataPort）が**実際に読める形式**の実
-    データでなければ、投入 job はデータ読込段で ``MissingBarError`` になり通過条件が成立しない。
-    dataset_registry の ``jp225_m1.csv``（列 ``date,open,high,low,close,volume``・``time``/``spread``
-    無し）は comma ローダ（``CsvOHLCRepository`` COMMA_SPEC の必須列 ``time,…,spread``）でも
-    MT5 ローダ（TAB ``<DATE>``）でも読めない（実測）。よって MT5 ローダ EA（MA_Slope 系）が読める
-    **MT5 突合 fixture と同系譜の実 OANDA-Japan MT5 JP225 M1**（``JP225_M1_202501.csv``・TAB
-    ``<DATE> <TIME> … <SPREAD>``）を data_path とする。カタログが著したリテラル固定パスであり
+    data_path は data/marketdata/jp225_m1.csv（本カタログが著した固定パス ``_JP225_DATA_CSV``）を
+    指す。実体は **marketdata 形式 6 列**（``date,open,high,low,close,volume``・**気配幅の列なし**・
+    2026-09-19 実測）であり、形式の判定は読み手の所有者、形式ごとのリーダの選択は
+    ``simulator/main/ea_bindings/sources.py`` が持つ。気配幅を供給しないため、下の規則により
+    config_overrides は供給されない（キーごと不在）。カタログが著したリテラル固定パスであり
     ユーザー供給でない（パストラバーサル無関係・``StaticFileServer`` の許可根判定を経由しない）。
 
-    **本番データ配置は未確定**（tests/fixtures 配下の MT5 実データを参照している）。恒久的な
-    本番 JP225 データの配置場所は別途 ISSUE 化する（本 Phase は通過条件成立を優先）。
+    かつてここは「data_path は MT5 形式の実 JP225 M1 CSV（tests/fixtures 配下）」「本番データ配置は
+    未確定」と書いていたが、data_path が上記へ移った後も記述が残って偽になっていた（ISSUE-511
+    段階 8-D-1 の工程 5 レビュー 🟡-1 で是正）。
 
-    config_overrides（entry_price_basis=current_open）: MT5 ローダ EA（MA_Slope 系）の指標
-    レジストリは建値基準系列に ``open`` を持ち ``close`` を持たない（実測）。GenericConditionStrategy
-    の建値は ``required_price_series(entry_price_basis)`` で決まり、既定 ``close`` は当該 EA で
-    系列未登録になる。よって本 MT5 データセットの profile は ``current_open``（→``open`` 系列）を
-    権威値として供給する（front リテラル 0・UI フィールドを増やさない）。
+    config_overrides（建値基準の供給）: 供給するかどうかは **その実体が気配幅を供給するか**
+    （``supplies_spread``）だけで決まる（ISSUE-511 段階 8-D-1）。形式は気配幅の代理変数に
+    すぎず、代理で測ると気配幅を持つ marketdata 9 列へ供給せず、気配幅を持たないタブ区切りの
+    実体へは供給してしまう。同じ置換を保証境界 N-17 について行ったのが段階 8-C であり、
+    ここは実行条件の側を同じ軸へ揃える。
+
+    **値はここが持たない**: 建値基準の値の単一ソースは変換層の ENTRY_PRICE_BASIS であり、
+    Composition Root（build_run_options_port）が注入する（known_ea_names と同じ様式＝既定
+    束縛を置かない）。本カタログが持ってよいのは「実体が気配幅を供給するか」という事実だけ
+    である。front リテラル 0・UI フィールドを増やさないのは従来どおり。
+
+    **供給しないときはキーごと不在にする**（値を明示しない）: 変換層の override 合成は
+    setdefault で補うため、binding 側に載っているキーの方が勝つ。ここで close を明示すると、
+    いま ENTRY_PRICE_BASIS で走っている settings 経路が反転し、既存の実行結果が動く。
+    不在が末端まで保たれることは、RunProfile の JSON 化が None の任意項目を落とすことで
+    担保される。
 
     stops_level の影響（実測 2026-08-25・0 → 5）:
         ``MA_Slope`` は SL/TP を持たず ``stops_level`` を参照しないため reconcile golden は
@@ -92,7 +101,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from simulator.adapter.repository.ohlc_marketdata_csv import detect_ohlc_form
+from simulator.adapter.repository.ohlc_marketdata_csv import supplies_spread
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
     load_snapshot,
@@ -117,15 +126,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _JP225_DATA_CSV = _REPO_ROOT / "data" / "marketdata" / "jp225_m1.csv"
 
 
-def _config_overrides_for(path: Path) -> "dict | None":
-    """データ実体の形式から決定論設定の override を導く（形式の権威はヘッダ実測）。
+def _config_overrides_for(path: Path, *, entry_price_basis: str) -> "dict | None":
+    """データ実体が気配幅を供給するかで決定論設定の override を導く。
 
-    MT5 TAB 形式のみ `entry_price_basis: current_open` を供給する——MT5 ローダ EA は
-    建値系列に close を持たず open を持つ（実測・従来 fixture データセットの事情）。
-    marketdata / comma 形式は既定（close）で建値系列が成立するため override なし。
+    気配幅を供給する実体にだけ建値基準を供給する。**値は注入元が権威**であり、ここは
+    リテラルを持たない（上の docstring「値はここが持たない」）。
+
+    供給しない実体には**キーごと返さない**（None）。変換層が setdefault で補う既定を
+    ここから明示して上書きしないためである——明示すると既存の実行結果が動く。
+
+    判定は ``supplies_spread`` に委ねる。「どのリーダで読むか」（形式）と「その実体が
+    気配幅の列を持つか」は別の問いであり、ここは後者だけを直接問う。
     """
-    if detect_ohlc_form(path) == "mt5_tab":
-        return {"entry_price_basis": "current_open"}
+    if supplies_spread(path):
+        return {"entry_price_basis": entry_price_basis}
     return None
 
 
@@ -169,15 +183,25 @@ def _csv_date_range(path: Path) -> "tuple[str | None, str | None]":
 class SymbolSpecCatalog(RunOptionsPort):
     """JP225 の実行プロファイルと ea_name 一覧を供給する単一ソース。"""
 
-    def __init__(self, known_ea_names: "Callable[[], tuple[str, ...]]") -> None:
+    def __init__(
+        self,
+        known_ea_names: "Callable[[], tuple[str, ...]]",
+        entry_price_basis: str,
+    ) -> None:
         """``known_ea_names``: 実行可能な EA 名を返す関数（**必須**）。
 
         束縛の実体は `simulator.main.known_ea_names`（登録表のキー＋既定 TC 経路の名前）。
         既定値を置かないのは R-4 と同型（既定束縛があると adapter → main の外向き依存が
         復活する）。銘柄仕様（`datasets`）は本カタログが権威だが、**実行可能な EA 名は
         エンジンが権威**であり、ここは中継するだけである。
+
+        ``entry_price_basis``: 気配幅を供給する実体へ載せる建値基準の値（**必須**）。
+        既定値を置かないのは同じ R-4 の規律である——既定を置くと値の所有者が 2 つになり、
+        変換層の単一ソースと食い違っても誰も気づかない。本カタログはこの値を解釈せず、
+        「気配幅を供給するか」の判定結果に従って載せるか載せないかだけを決める。
         """
         self._known_ea_names = known_ea_names
+        self._entry_price_basis = entry_price_basis
 
     def datasets(self) -> "list[RunProfile]":
         # 供給元スナップショットを 1 回読み、銘柄仕様 8 項目と決済通貨をそこから引く。
@@ -198,8 +222,10 @@ class SymbolSpecCatalog(RunOptionsPort):
                 **spec_fields(snapshot),
                 # N-11（口座通貨 ≠ 決済通貨）の判定データ源。供給元の symbol.currency_profit。
                 settlement_currency=settlement_currency(snapshot),
-                # 決定論設定はデータ形式から導出（MT5 TAB のみ current_open・上記 docstring）。
-                config_overrides=_config_overrides_for(_JP225_DATA_CSV),
+                # 決定論設定は「気配幅を供給するか」から導出（値は注入・上記 docstring）。
+                config_overrides=_config_overrides_for(
+                    _JP225_DATA_CSV, entry_price_basis=self._entry_price_basis
+                ),
             )
         ]
 
