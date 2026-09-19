@@ -12,7 +12,9 @@
 
     * **限定は「価格 OHLC CSV を読む simulator の非テストモジュール」**である。その範囲で
       区切り文字（TAB / comma）と MT5 列名（`_MT5_COLUMN_NAMES`）を知るのは、本モジュールと
-      ``adapter/repository`` の 3 リーダだけである。**この限定より広く言ってはならない**——
+      ``adapter/repository`` の 3 リーダ、および（区切り文字だけについて）
+      `simulator/sim_ui/adapter/symbol_spec_catalog.py` の _date_token_of_row（データ範囲の表示のため
+      価格 CSV の先頭・末尾の行を TAB と comma で割る）である。**この限定より広く言ってはならない**——
       下の反例がある。
     * 反例（いずれも読み手ではないが、同じ語彙を持つ非テストモジュール）:
       `simulator/sim_ui/adapter/ea_build_probe.py`（探索用に MT5 見出し行と TAB 行を
@@ -22,10 +24,28 @@
     * ``simulator/usecase`` と ``simulator/domain`` には形式に関する語が 0 件である
       （形式名・MT5 列名・区切り指定・リーダ実装名のいずれも出現しない。上の走査語に
       ``mt5_tab`` と ``CsvOHLCRepository`` を足した再走査で 0 件を実測）。
-    * ただし**判定結果の形式名での分岐は本モジュールの外にも 2 箇所ある**——
-      保証境界 `simulator/main/tester_settings/unsupported.py`（N-17・段階 8-C の対象）と
-      実行条件 `simulator/sim_ui/adapter/symbol_spec_catalog.py`（段階 8-D の対象）。
-      この 2 つが見るのは形式の名前だけで、区切り文字と列名は見ない。
+    * **判定結果の形式名で分岐するのは、判定の所有者と本モジュールだけである**（段階 8-C と
+      段階 8-D-1 の後）。所有者側は `simulator/adapter/repository/ohlc_marketdata_csv.py` の
+      `detect_ohlc_form`（語彙そのもの）と、同モジュールの表 _SPREAD_COLUMN_BY_FORM
+      （形式 → 区切りと気配幅の列名）。本モジュール側は `_resolved_spec` と
+      `ohlc_repository_for`（どちらも `_FORMS` を引く）。
+    * かつて外にあった 2 箇所は、どちらも形式名ではなく「その実体が気配幅を供給するか」
+      （2 値）を問う形へ移った——保証境界 `simulator/main/tester_settings/unsupported.py` の
+      _detect_spread_dependent_ea_on_spreadless_data（N-17・段階 8-C）と、実行条件
+      `simulator/sim_ui/adapter/symbol_spec_catalog.py` の _config_overrides_for
+      （段階 8-D-1）。形式は気配幅の代理変数にすぎず、代理で測ると気配幅を持つ
+      marketdata 9 列を弾き、気配幅を持たないタブ区切りの実体を通してしまうためである。
+    * 走査（2026-09-19・本作業ツリー。走査範囲はリポジトリ根 /workspaces/app 以下の
+      拡張子 .py のファイルから、パスに `/tests/` を含むものを除いたもの。数え方は当該
+      識別子を含むファイルを `grep -rl` で数えた）: `detect_ohlc_form` を参照するのは
+      **2 ファイル**（判定の所有者と本モジュール）、supplies_spread を参照するのは
+      **4 ファイル**（同所有者・本モジュール（下の散文が識別子を含むため自己参照で数に入る）・`simulator/main/tester_settings/unsupported.py`・
+      `simulator/sim_ui/adapter/symbol_spec_catalog.py`）。同じ範囲での形式名リテラル
+      （``"mt5_tab"`` / ``"comma"`` / ``"marketdata"``）の出現は、同じ走査で
+      **11 ファイル・23 行**である。うち形式の語彙として使っているのは所有者（9 行）と本モジュール
+      （4 行——3 行は表 _FORMS の鍵、1 行は本散文）だけで、残る 10 行はディレクトリ名 ``data/marketdata``
+      のパス成分（追跡済みの試作 ``prototype_260626-01`` と ``prototype_260630-01`` の 3 行を含む）・
+      モジュール名・書込先の禁止接頭辞であり、形式の語彙ではない。
 """
 from __future__ import annotations
 
