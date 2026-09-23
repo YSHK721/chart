@@ -406,6 +406,44 @@ def price_basis_of_tick_token(token: str) -> str:
     return bases.pop()
 
 
+def refs_of_tick_token(token: "str | None") -> "tuple[str, ...]":
+    """ティック木の枝名 ``token`` を読む datasetRef を台帳から **すべて** 引く（ISSUE-511 段階 8-D-2b・D-3）。
+
+    同じ木から畳んで作る系列がいくつ在るかを決めるのは台帳であり、呼び手ではない。従来この集合は
+    常駐の起動引数で与えられていた（運用者が台帳の事実を再宣言する形）。先例は同じ木から別の属性を
+    引く :func:`price_basis_of_tick_token` で、本関数はその ref 版である。
+
+    Args:
+        token: ティック木の枝名（記述子の ``tick_token`` 欄の値）。
+
+    Returns:
+        その木を読む datasetRef のタプル。並びは **台帳 :data:`REGISTRY` の宣言順**（挿入順）を
+        そのまま保つ。名前順にも集合にもしない理由は、呼び手が複数系列の先端を突き合わせるとき、
+        比較の順序が実行ごとに・台帳の綴り替えごとに変わらないためである（並びの出所を台帳の
+        宣言 1 箇所に限る）。
+
+    Raises:
+        ValueError: その木を読む ref が台帳に 1 件も無いとき（Fail-Stop）。**空のタプルを返さない**。
+            返すと呼び手は「書く系列が 0 件」を正常として受け取り、何も書かないまま走り続ける
+            （出力が形式上正しいため状態検証では検出できない）。``token`` が ``None`` のとき、
+            ティック木を持たない記述子（``tick_token`` が未記入）の群れが返ることもない。
+            型を :class:`TickTokenMissing` にしないのは、同クラスが「``tick`` が True なのに
+            ``tick_token`` が未記入」専用だからである（本関数が止めるのは台帳に無い木の照会）。
+    """
+    refs = tuple(
+        ref
+        for ref, d in REGISTRY.items()
+        if d.tick_token is not None and d.tick_token == token
+    )
+    if not refs:
+        raise ValueError(
+            f"ティック木 {token!r} を読む datasetRef が台帳に 1 件もありません。"
+            " marketdata.dataset_registry.REGISTRY の記述子へ tick_token を記入してください"
+            "（同じ木を読む ref は複数あってよい）。"
+        )
+    return refs
+
+
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
@@ -417,6 +455,7 @@ __all__ = [
     "tick_tree_token",
     "tick_price_basis",
     "price_basis_of_tick_token",
+    "refs_of_tick_token",
     "tick_vendor",
     "series_of",
     "spread_point_snapshot_of",
