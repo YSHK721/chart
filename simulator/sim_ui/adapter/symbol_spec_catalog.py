@@ -28,16 +28,53 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     **stops_level は 0 ではなく 5**（供給元 ``trade_stops_level``・実測）。0 は出所の無い値
     だった。この変更で結果が変わる戦略の実測は下記「stops_level の影響」を参照。
 
-    data_path は data/marketdata/jp225_m1.csv（本カタログが著した固定パス ``_JP225_DATA_CSV``）を
-    指す。実体は **marketdata 形式 6 列**（``date,open,high,low,close,volume``・**気配幅の列なし**・
+    data_path の所在は**台帳が持つ**（ISSUE-511 段階 8-D-2）: 本カタログは「何を提供するか」＝
+    dataset ref 名 ``_JP225_REF`` を持ち、「その実体はどこか」は ``marketdata/dataset_registry.py``
+    の同じ ref の宣言へ委ねる（``whitelist()`` で引く）。**台帳を列挙はしない**——台帳には
+    sim で走らない ref（日足・ティック由来の系列）も居るためである。台帳に無い ref なら
+    読込時に ``KeyError`` で止まる（既定パスへ落とさない）。その ``KeyError`` には
+    **どこを直すか**を載せる（ref・台帳の所在・本ファイル名の 3 つ。理由は下の except 節の
+    注記、機械的検査は `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` の
+    test_a_ref_missing_from_the_ledger_stops_with_an_actionable_message）。
+
+    実体は **marketdata 形式 6 列**（``date,open,high,low,close,volume``・**気配幅の列なし**・
     2026-09-19 実測）であり、形式の判定は読み手の所有者、形式ごとのリーダの選択は
     ``simulator/main/ea_bindings/sources.py`` が持つ。気配幅を供給しないため、下の規則により
-    config_overrides は供給されない（キーごと不在）。カタログが著したリテラル固定パスであり
+    config_overrides は供給されない（キーごと不在）。台帳の宣言はソースコードであって
     ユーザー供給でない（パストラバーサル無関係・``StaticFileServer`` の許可根判定を経由しない）。
+
+    台帳経由にして何が変わったか（**実測した事実のみ**・2026-09-23・本作業ツリー）:
+        * 既定環境（環境変数 ``MARKETDATA_DATA_DIR`` 未設定）では、台帳の宣言は是正前の
+          リテラル（当時の ``_REPO_ROOT / "data" / "marketdata" / "jp225_m1.csv"``）と**文字列
+          として同一**であり、``datasets()`` の出力は byte 等価（368 バイト・sha256
+          ``33e9ce8d21a265de4ab8e37019722520622d244b6fc7528942785219106532f6``。数え方:
+          是正前後それぞれのソースを同一の ``__file__`` で実行し、``[p.to_dict() for p in
+          datasets()]`` を ``sort_keys=True`` の JSON として UTF-8 符号化して突合した）。
+        * ``MARKETDATA_DATA_DIR`` が設定された環境では、台帳の宣言はその基点の下
+          （``<MARKETDATA_DATA_DIR>/jp225_m1.csv``）を指す。是正前は環境変数に関わらず
+          「このファイルの parents[3]」の下を指していた。基点の規則の所有者は
+          ``marketdata/paths.py`` である（本カタログはその規則を持たない）。
+        * 稼働中の常駐の環境を実測した（数え方: ``ps -eo pid,cmd`` の全行から serve.sh /
+          Composition Root 直起動 / router / *_tick_watch に該当する **8 プロセス**を採り、
+          各々の ``/proc/<pid>/environ`` の ``MARKETDATA_DATA_DIR`` を読んだ。時点
+          2026-09-23・本チェックアウト）: 未設定 2（unified_ui/serve.sh・mt5_tick_watch）、
+          設定 6。設定側の値は 6 つとも ``marketdata/paths.py`` が与える既定と同一文字列で
+          あり、**稼働中の構成では指す実体が変わらない**。
+          （8-D-2 の当初記述は「常駐 4 プロセス・未設定 1・設定 3」と書いていたが、走査
+          範囲を全常駐へ広げて数え直した値が上記である。結論は変わらない。）
+        * worktree では指す実体が変わる: tools/setup_worktree.sh は本チェックアウトの
+          data/marketdata を ``MARKETDATA_DATA_DIR`` へ export する（同スクリプト 71 行目・
+          docs/git-worktree-workflow.md 110 行目も同じ絶対パスを案内）。是正前はこの
+          カタログだけが worktree 側の（実体の無い）置き場を指していた。
+        * ``datasets()`` 1 回が開くファイルの数は増えていない（台帳のパス解決は I/O を
+          伴わない）。実測は `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py`。
 
     かつてここは「data_path は MT5 形式の実 JP225 M1 CSV（tests/fixtures 配下）」「本番データ配置は
     未確定」と書いていたが、data_path が上記へ移った後も記述が残って偽になっていた（ISSUE-511
-    段階 8-D-1 の工程 5 レビュー 🟡-1 で是正）。
+    段階 8-D-1 の工程 5 レビュー 🟡-1 で是正）。同じ型の欠陥がもう 1 件あった:
+    ``sim_ui/tests/unit/test_symbol_spec_catalog.py`` の docstring 2 が「data_path は
+    dataset_registry.whitelist() の単一ソース由来」と主張していたのに、本モジュールの import に
+    台帳は 1 件も無く、主張は現に偽だった（段階 8-D-2 で結線し、検定で機械的に結んだ）。
 
     config_overrides（建値基準の供給）: 供給するかどうかは **その実体が気配幅を供給するか**
     （``supplies_spread``）だけで決まる（ISSUE-511 段階 8-D-1）。形式は気配幅の代理変数に
@@ -102,6 +139,7 @@ from pathlib import Path
 from typing import Callable
 
 from simulator.adapter.repository.ohlc_marketdata_csv import supplies_spread
+from marketdata.dataset_registry import whitelist
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
     load_snapshot,
@@ -117,13 +155,32 @@ _JP225_REF = "jp225_m1"
 _JP225_SYMBOL = "JP225"
 _JP225_SERVER = OANDA_JAPAN_MT5_LIVE
 
-# リポジトリ根 = simulator/sim_ui/adapter/symbol_spec_catalog.py の parents[3]。
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 # JP225 の実行データ実体（依頼者承認 2026-09-06: 2012 年からの全期間 marketdata 系列）。
-# 形式は `date,open,high,low,close,volume`（ISO 日時・UTC）。spread 列を持たないため
-# spread 依存 EA（MA_Slope 系）は N-17 が実行前に弾く。従来の MT5 突合 fixture
+# **実体の所在は台帳が持つ**（ISSUE-511 段階 8-D-2）: ここは上の _JP225_REF で「何を提供するか」
+# を名乗るだけで、「その実体はどこか」は台帳へ問う（詳細は上の docstring「data_path の所在は
+# 台帳が持つ」）。形式は `date,open,high,low,close,volume`（ISO 日時・UTC）。spread 列を
+# 持たないため spread 依存 EA（MA_Slope 系）は N-17 が実行前に弾く。従来の MT5 突合 fixture
 # （2025-01 の 1 ヶ月・JP225_M1_202501.csv）はテスト用途に残る（本カタログからは外す）。
-_JP225_DATA_CSV = _REPO_ROOT / "data" / "marketdata" / "jp225_m1.csv"
+try:
+    _JP225_DATA_CSV = whitelist()[_JP225_REF]
+except KeyError:
+    # 名乗った ref が台帳に無い＝**名乗りと宣言の食い違い**であり、その食い違いを知って
+    # いるのは名乗った側（ここ）である。**既定のパスへは落とさない**（落とすと別系列の
+    # データで無言に走り、出力は形式上正しいため状態検証では検出できない）。
+    #
+    # 素の KeyError にしないのは実測に基づく（2026-09-23・本作業ツリー）: この解決は読込時に
+    # 走るため、simulator/sim_ui/main/run_job.py の _build_engine_binding を包む
+    # except Exception の網（同 :429-439）の内側で送出される。網が出すのは :436 の
+    # "Tester Settings の解釈に失敗しました: {exc}" だけなので、素の KeyError だと投入者が
+    # 見るのは ref の綴り 1 語になる。台帳側の同型の Fail-Stop（dataset_registry の
+    # tick_tree_token が送る TickTokenMissing）は案内を載せており、ここだけ非対称だった。
+    # **型は KeyError のまま**（握る側の契約を変えない）。綴りは 3 つとも実体から導く
+    # （書き写すと片方だけ動いたときに案内が嘘になる）。
+    raise KeyError(
+        f"dataset ref {_JP225_REF!r} の宣言が台帳 {whitelist.__module__}.REGISTRY に"
+        f"ありません。{Path(__file__).name} の _JP225_REF（提供すると名乗る ref）か、"
+        f"台帳の宣言のどちらかを揃えてください。既定のパスへは落としません。"
+    ) from None
 
 
 def _config_overrides_for(path: Path, *, entry_price_basis: str) -> "dict | None":

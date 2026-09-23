@@ -1,0 +1,307 @@
+"""カタログの data_path を **台帳の宣言**へ結んだことの検定（ISSUE-511 段階 8-D-2）。
+
+何を固定するか:
+    「何を提供するか」（ref 名）はカタログが持ち、「その実体はどこか」（パス）は台帳
+    `marketdata/dataset_registry.py` が持つ。カタログは自分が提供する ref 名 1 つを持ち、
+    **パス解決だけ**を台帳へ委ねる。台帳を列挙はしない——台帳には sim で走らない ref
+    （日足・ティック由来の系列）も居るためである。
+
+是正前に何が偽だったか（実測 2026-09-23・本作業ツリー・HEAD e3a9fd7f）:
+    `simulator/sim_ui/tests/unit/test_symbol_spec_catalog.py` の docstring 2 が
+    「data_path は dataset_registry.whitelist() の単一ソース由来（ハードコードしない）」と
+    主張していたが、カタログの import に台帳は 1 件も無く（``grep -n "dataset_registry\\|whitelist"
+    simulator/sim_ui/adapter/symbol_spec_catalog.py`` が 0 件）、実体は
+    ``_REPO_ROOT / "data" / "marketdata" / "jp225_m1.csv"`` という自前のリテラルだった。
+    主張を機械で確かめる検定も 0 件だった（``grep -rn "dataset_registry" simulator/`` の
+    ヒットはすべて docstring 内の言及）。**宣言だけが在って検査が無い**形である。
+
+Red と回帰ガードの別（成功テスト先行を Red と称さない）:
+    * 真の Red … `test_the_data_path_follows_the_ledger_declaration_for_the_ref`。
+      台帳側の宣言を差し替える変異を当て、カタログがそれに従うことを要求する。是正前は
+      リテラルのままなので落ちる（実測値は本作業の報告に記す）。
+    * 真の Red … `test_a_ref_missing_from_the_ledger_stops_with_an_actionable_message`
+      （段階 8-D-2 工程 4）。台帳から ref が消えたときの案内を要求する。是正前は素の
+      ``KeyError`` で ref の綴り 1 語しか出なかったので落ちる。
+    * 回帰ガード … 列挙していないこと・台帳の解決が I/O を伴わないこと・読取がデータ量で
+      増えないこと。いずれも**是正前後のどちらでも緑**であり Red ではない。検出力は
+      変異で実測する（同上）。
+
+変異をどう当てるか（台帳の差し替えが届く継ぎ目）:
+    カタログは実体のパスを**モジュール読込の時点で** 1 度だけ確定する（既存の計算量検定
+    `test_symbol_spec_catalog_spread_axis.py` が継ぎ目として使っているモジュール属性
+    ``_JP225_DATA_CSV`` を保つため）。よって台帳を差し替えた効果を見るには、差し替えた状態で
+    カタログを**読み直す**必要がある。`_reimport_catalog` は sys.modules に登録しない別個の
+    モジュール写しを作って読み直すため、進行中のセッションの `symbol_spec_catalog` には
+    触れない（他の検定へ影響しない）。
+
+計算量（この段で増やしてはならないもの）:
+    台帳経由にしても `datasets()` が開くファイルの数は増えない。継ぎ目は 3 つ——ヘッダ読取
+    （`ohlc_marketdata_csv._header_line`）・範囲読取（_csv_date_range）・銘柄仕様スナップ
+    ショット読取（load_snapshot）であり、いずれも 発行 − 使用 = 0（使用 = プロファイルの数）。
+    そのうえで「開いたファイルの総数 − 3 継ぎ目の発行の和 = 0」を表明する——台帳のパス解決が
+    ファイルを開けば、この差が正になって落ちる。規模 2 点（5 行 / 5,000 行）で総数が等しい
+    ことも併せて表明する。**回数そのものは焼き込まない**。
+
+共有するテストヘルパは import して使う（同じものを手書き複製しない）:
+    Test Spy … `marketdata/tests/spread_series_fixture.py`
+    ヘッダ定数・本文・書き出し … `simulator/tests/ohlc_header_fixtures.py`
+"""
+from __future__ import annotations
+
+import builtins
+import importlib.util
+import io
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from marketdata.dataset_registry import REGISTRY, DatasetDescriptor, whitelist
+from marketdata.tests.spread_series_fixture import spy
+from simulator.adapter.repository import ohlc_marketdata_csv
+from simulator.sim_ui.adapter import symbol_spec_catalog
+from simulator.tests.ohlc_header_fixtures import MD6, MD9, body_rows, write_header
+
+#: カタログが提供すると名乗っている ref。**この綴りをここに書き写さない**——書き写すと、
+#: カタログ側が別の ref を名乗るようになっても検定が古い綴りを測り続ける。
+_REF = symbol_spec_catalog._JP225_REF
+
+#: 台帳へ一時的に足す「sim では走らない」ref（列挙していないことの対照）。台帳の実物
+#: （日足 jp225・ティック由来 jp225_tick / jp225_mt5）と同じ立場であり、カタログが台帳を
+#: 列挙していればプロファイルが 1 件増える。
+_UNRUNNABLE_REF = "not_runnable_in_sim"
+
+#: 注入された基準値であることを示す番兵（エンジンの語彙ではない）。本ファイルは建値基準の
+#: 値を測らないが、既定束縛の無い必須引数なので与える。
+_INJECTED = "__injected_basis__"
+
+#: 気配幅に依存しない EA（EA 名の注入元は本ファイルの関心外なので最小の束縛）。
+_INDEPENDENT_EA = "TC24051901"
+
+
+def _reimport_catalog():
+    """いまの台帳の宣言でカタログを**読み直した**別個の写しを返す。
+
+    sys.modules へ登録しないため、進行中のセッションが持つ
+    `simulator.sim_ui.adapter.symbol_spec_catalog` は 1 ビットも変わらない
+    （reload と違い、他の検定が掴んでいるクラス実体を差し替えない）。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "symbol_spec_catalog__under_ledger_mutation",
+        Path(symbol_spec_catalog.__file__),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _declare(monkeypatch, ref: str, descriptor: DatasetDescriptor) -> None:
+    """台帳へ ``ref`` の宣言を一時的に置く（既存 ref なら差し替え・新規なら追加）。"""
+    monkeypatch.setitem(REGISTRY, ref, descriptor)
+
+
+def _relocated(path: str) -> DatasetDescriptor:
+    """カタログの ref の宣言を、実体だけ ``path`` へ移した版（他の欄は台帳の実物のまま）。"""
+    return replace(REGISTRY[_REF], path=Path(path))
+
+
+def _datasets(module) -> list:
+    """読み直したカタログ写しの `datasets()`（束縛は本ファイルの関心外なので最小）。"""
+    return module.SymbolSpecCatalog(
+        known_ea_names=lambda: (_INDEPENDENT_EA,), entry_price_basis=_INJECTED
+    ).datasets()
+
+
+def _spy_opens(monkeypatch) -> list:
+    """これ以降に開かれたファイルを 1 件ずつ記録する Test Spy。
+
+    包む名前が 2 つ要る（実測 2026-09-23・本環境 CPython 3.13.5）: ``Path.open`` と
+    ``Path.read_text`` は ``io.open`` を呼び、`ohlc_marketdata_csv._header_line` は組込みの
+    ``open`` を呼ぶ。同じ関数実体だが参照する名前空間が違うため、``io.open`` だけを包むと
+    組込み経由を取り逃し、組込みだけを包むと ``Path`` 経由を取り逃す（実測: 3 回開く
+    プローブで前者は 2 件・後者は 1 件しか記録しなかった）。両方を同じ包みへ差し替える。
+    """
+    opened: list = []
+    real = builtins.open
+
+    def recorded(file, *args, **kwargs):
+        opened.append(file)
+        return real(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", recorded)
+    monkeypatch.setattr(io, "open", recorded)
+    return opened
+
+
+# --- 1. 結線（真の Red）------------------------------------------------------------
+
+
+def test_the_data_path_follows_the_ledger_declaration_for_the_ref(monkeypatch, tmp_path):
+    """台帳が宣言する実体を差し替えると、カタログの data_path がそれに従う。
+
+    カタログがパスを自前のリテラルで持っている限り、この差し替えは届かない＝落ちる。
+    「何を提供するか」（ref 名）はカタログのまま変わらないことも同時に見る。
+    """
+    # Arrange
+    declared = write_header(tmp_path, "relocated_jp225_m1.csv", MD6)
+    _declare(monkeypatch, _REF, _relocated(declared))
+
+    # Act
+    profile = _datasets(_reimport_catalog())[0]
+
+    # Assert
+    assert profile.data_path == declared
+    assert profile.dataset == _REF
+
+
+def test_the_data_path_is_not_a_literal_of_the_catalog(monkeypatch, tmp_path):
+    """2 つの別々の宣言へ順に差し替えると、data_path が 2 度とも追随する。
+
+    1 点の一致は「たまたま同じ綴りのリテラルを持っている」でも満たせる。追随を 2 点で見ると、
+    カタログ側にパスの値が無いことの実証になる。
+    """
+    # Arrange / Act
+    measured = []
+    for name in ("first_place.csv", "second_place.csv"):
+        declared = write_header(tmp_path, name, MD6)
+        _declare(monkeypatch, _REF, _relocated(declared))
+        measured.append((_datasets(_reimport_catalog())[0].data_path, declared))
+        monkeypatch.undo()
+
+    # Assert
+    assert [m[0] for m in measured] == [m[1] for m in measured]
+    assert measured[0][0] != measured[1][0]   # 空振り防止（2 点は別の宣言である）
+
+
+def test_a_ref_missing_from_the_ledger_stops_with_an_actionable_message(monkeypatch):
+    """台帳から ref が消えたとき、止まるだけでなく**どこを直すか**が例外に載る。
+
+    なぜ案内が要るか（実測 2026-09-23・本作業ツリー）: この解決は読込時に走るため、
+    `simulator/sim_ui/main/run_job.py` の _build_engine_binding を包む except Exception の網
+    （同 :429-439）の内側で送出される。網が出すのは :436 の
+    "Tester Settings の解釈に失敗しました: {exc}" だけなので、素の ``KeyError`` だと
+    **投入者が見るのは ref の綴り 1 語だけ**になり、台帳を直せばよいのかカタログを直せば
+    よいのか判らない。台帳の同型の Fail-Stop（dataset_registry の tick_tree_token が送る
+    TickTokenMissing）は案内を載せており、ここだけ非対称だった。
+
+    固定するのは**案内に何が載っているか**（ref・台帳の所在・カタログのファイル）であって
+    文面ではない。3 つとも綴りを書き写さず、import 済みの実体から導く。
+    """
+    # Arrange
+    monkeypatch.delitem(REGISTRY, _REF)
+
+    # Act
+    with pytest.raises(KeyError) as caught:      # 型は従来どおり（握る側の契約を変えない）
+        _reimport_catalog()
+
+    # Assert
+    message = str(caught.value)
+    assert _REF not in whitelist()               # 空振り防止（宣言は実際に消えている）
+    assert _REF in message                       # どの ref か
+    assert whitelist.__module__ in message       # どの台帳を直すか
+    assert Path(symbol_spec_catalog.__file__).name in message   # どの名乗りを直すか
+
+
+# --- 2. 列挙していないこと（回帰ガード）--------------------------------------------
+
+
+def test_the_catalog_does_not_enumerate_the_ledger(monkeypatch, tmp_path):
+    """台帳に別の ref を足しても、カタログが提供するプロファイルは増えない。
+
+    台帳には sim で走らない ref（日足・ティック由来）も居る。カタログが台帳を列挙すると
+    走らない系列がセレクタへ現れる。ここが提供する ref はカタログ自身の宣言 1 つだけである。
+    """
+    # Arrange
+    _declare(
+        monkeypatch,
+        _UNRUNNABLE_REF,
+        DatasetDescriptor(path=tmp_path / f"{_UNRUNNABLE_REF}_m1.csv", symbol="TSLA"),
+    )
+
+    # Act
+    profiles = _datasets(_reimport_catalog())
+
+    # Assert
+    assert [p.dataset for p in profiles] == [_REF]
+    assert REGISTRY[_UNRUNNABLE_REF].symbol == "TSLA"   # 空振り防止（足した ref は台帳に居る）
+
+
+def test_the_ledger_holds_more_refs_than_the_catalog_offers(monkeypatch):
+    """上の対照が空虚でないこと: 台帳は実際にカタログより多くの ref を持っている。
+
+    台帳が 1 ref しか持たない状態になれば「列挙していない」は何も測らない恒真式へ退化する。
+    数え方: 台帳の ref 数（`whitelist()` のキー数）と、カタログが提供するプロファイルの数を
+    同一時点で数えて比べる。値は焼き込まない。
+    """
+    # Act
+    offered = _datasets(_reimport_catalog())
+
+    # Assert
+    assert len(whitelist()) > len(offered)
+
+
+# --- 3. 台帳の解決の費用（回帰ガード）----------------------------------------------
+
+
+def test_resolving_the_data_path_from_the_ledger_opens_no_file(monkeypatch):
+    """台帳からのパス解決はファイルを 1 つも開かない（結線が読取を増やさない前提）。"""
+    # Arrange
+    opened = _spy_opens(monkeypatch)
+
+    # Act
+    resolved = whitelist()[_REF]
+
+    # Assert
+    assert len(opened) == 0
+    assert resolved == Path(symbol_spec_catalog._JP225_DATA_CSV)   # 空振り防止
+
+
+# --- 4. 計算量（CX）: 開いたファイルはすべて使われた継ぎ目に帰属する -----------------
+
+
+def _measure(monkeypatch, tmp_path, rows: int) -> dict:
+    """``rows`` 行の実体 1 つを台帳が宣言した状態で `datasets()` を 1 回呼び、発行と使用を数える。"""
+    declared = write_header(tmp_path, f"scale_{rows}.csv", MD9, body_rows(MD9, rows))
+    _declare(monkeypatch, _REF, _relocated(declared))
+    module = _reimport_catalog()          # 読み直しは spy を仕掛ける前に済ませる
+
+    header_reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
+    range_reads = spy(monkeypatch, module, "_csv_date_range")
+    snapshot_reads = spy(monkeypatch, module, "load_snapshot")
+    opened = _spy_opens(monkeypatch)
+
+    profiles = _datasets(module)
+    return {
+        "header": len(header_reads),
+        "range": len(range_reads),
+        "snapshot": len(snapshot_reads),
+        "opened": len(opened),
+        "used": len(profiles),
+        "data_path": profiles[0].data_path,
+        "declared": declared,
+    }
+
+
+def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp_path):
+    """`datasets()` 1 回あたりの読取が、台帳経由にしてもデータ行数でも増えない。
+
+    台帳のパス解決がファイルを開けば「開いた総数 − 3 継ぎ目の発行の和」が正になって落ちる。
+    各継ぎ目は 発行 − 使用 = 0（使用 = プロファイルの数）。規模 2 点（5 行 / 5,000 行）で
+    総数が等しいことも表明する。**回数そのものは焼き込まない**。
+    """
+    # Act
+    small = _measure(monkeypatch, tmp_path, 5)
+    monkeypatch.undo()
+    large = _measure(monkeypatch, tmp_path, 5_000)
+    monkeypatch.undo()
+
+    # Assert
+    for measured in (small, large):
+        assert measured["data_path"] == measured["declared"]   # 空振り防止（測った実体である）
+        assert measured["header"] - measured["used"] == 0
+        assert measured["range"] - measured["used"] == 0
+        assert measured["snapshot"] - measured["used"] == 0
+        # 開いたファイルはすべて、出力に使われた 3 継ぎ目に帰属する（台帳の解決は開かない）
+        seams = measured["header"] + measured["range"] + measured["snapshot"]
+        assert measured["opened"] - seams == 0
+    assert large["opened"] == small["opened"]   # 行数 1,000 倍でも開く数は増えない
