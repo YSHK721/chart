@@ -56,8 +56,23 @@ def _argv(tmp_path, *extra):
     return ["--data-dir", str(tmp_path), "--once", *extra]
 
 
+def _ledger_files(root: Path) -> "list[Path]":
+    """台帳（ジャーナル・M1・ロールアップ・parquet）のファイル。
+
+    単一書き手ロック（``WRITER_LOCK_FILENAME``・ISSUE-530）は**台帳ではない**ため除く。錠は
+    「誰が書いてよいか」を表す防護であり、受信の記録でも派生物でもない。順序をどう置いても、
+    起動して書ける状態になった常駐は必ず錠を作る（錠を数えると「書込 0」を測れなくなる）。
+    錠そのものの契約（取得の順序・二重起動の拒否・案内の中身）は
+    ``tools/tests/test_mt5_tick_watch_single_writer.py`` が固定する。
+    """
+    return [
+        p for p in root.rglob("*")
+        if p.is_file() and p.name != watch.WRITER_LOCK_FILENAME
+    ]
+
+
 def _wrote_anything(tmp_path: Path) -> bool:
-    return any(p.is_file() for p in tmp_path.rglob("*"))
+    return bool(_ledger_files(tmp_path))
 
 
 class _Restart(NamedTuple):
@@ -663,11 +678,11 @@ def test_a_cycle_without_new_rows_writes_nothing(tmp_path, secret):
     journal.append(dt.date(2026, 8, 25), tape, symbol=token, data_dir=tmp_path)
     clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 5, tzinfo=dt.timezone.utc))
     watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
-    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
+    before = {p: p.stat().st_mtime_ns for p in _ledger_files(tmp_path)}
 
     watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
 
-    after = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
+    after = {p: p.stat().st_mtime_ns for p in _ledger_files(tmp_path)}
     assert after == before
 
 

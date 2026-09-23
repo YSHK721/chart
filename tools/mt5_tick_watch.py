@@ -44,6 +44,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from common.writer_lock import WriterLockHeld, acquire_writer_lock  # noqa: E402
 from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
 from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
@@ -79,10 +80,24 @@ RESTORE_LOOKBACK_DAYS = 2
 #: トークン解決の探り窓（1 ms・1 行）。応答ヘッダのサーバ名だけが目的である。
 _TOKEN_PROBE_ROWS = 1
 
-#: 終了コード。
+#: 終了コード。二重起動（:class:`common.writer_lock.WriterLockHeld`）は ``EXIT_USAGE`` で止める
+#: ＝ライブ供給（``tools/live_tick_watch.py``）が同じ意味で返している値と揃える（運用者が 2 本の
+#: 常駐を同じ読み方で扱える）。「待っても直らない」側（``EXIT_FAIL_STOP``）と分けるのは、
+#: 二重起動は先行を止めれば直る＝運用者の一手で解ける状態だからである。
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_FAIL_STOP = 3
+
+#: 単一書き手ロックの名前（``--data-dir`` 直下）。ライブ供給の錠とは**別のファイル**にする。
+#: 止めたいのは同じ系列への 2 本目であって、別系列の常駐ではない（ISSUE-530）。
+WRITER_LOCK_FILENAME = "mt5_tick_watch.lock"
+
+#: 拒否の案内に載せる「次の一手」。本 CLI は引き継ぎ口を持たない（ライブ供給の ``--takeover``
+#: に相当するものを作らない）＝先行を止めるかどうかは運用者が決める。
+WRITER_LOCK_HINT = (
+    "先行プロセスを停止してから起動してください"
+    "（二重起動は受信の一次記録＝ジャーナルを壊します・ISSUE-530）。"
+)
 
 
 class SystemClock:
@@ -338,7 +353,19 @@ def run(
     cycles: "Optional[int]" = None,
     log: "Callable[[str], Any]" = None,
 ) -> int:
-    """周期を回す。``cycles`` は**成功した**周期の数で数える（失敗は消化しない）。"""
+    """周期を回す。``cycles`` は**成功した**周期の数で数える（失敗は消化しない）。
+
+    起動の順序（ISSUE-530）: **列形照合 → 単一書き手ロック → 端末・台帳へ触るどの経路**。
+    この 2 つの検査はどちらも「どのみち書けない状態で先へ進まない」ためのものであり、
+    ライブ供給（``tools/live_tick_watch.py``・ISSUE-488）と同じ規律に揃えてある。
+
+    - 照合が錠より**前**なのは、照合が読むだけで 1 バイトも書かないからである。順序を逆に
+      すると、引き継ぎ口（``takeover``）を持つ側では先行の書き手を退去させたうえで自分も
+      止まることになり、供給を止めるだけの起動になる。
+    - 錠がトークン解決より**前**なのは、照合を取得より前に置いたのと同じ理由による
+      （ここに既にある「どのみち書けない状態で端末を叩かない」）。2 本目の常駐は、どのみち
+      1 行も書けない相手である。錠を後ろに回すほど、2 本の起動処理が重なる区間が延びる。
+    """
     clock = SystemClock() if clock is None else clock
     say = log if log is not None else (lambda line: None if settings.quiet else _stderr(line))
 
@@ -354,6 +381,43 @@ def run(
         _stderr(f"系列の列形が宣言と食い違います（再試行しません）: {exc}")
         return EXIT_FAIL_STOP
 
+    # 単一書き手ロック（ISSUE-530 根治）: 受信の一次記録（ジャーナル）と派生物へ書くどの経路
+    #   よりも先に獲得する。錠の実体は中立核 common.writer_lock が単一定義で持ち、ライブ供給と
+    #   同じものを使う（手書きで複製すると必ず取り残しが生まれる）。守る対象は別の木・別の
+    #   系列なので、錠の名前だけが違う。
+    try:
+        writer_lock = acquire_writer_lock(
+            settings.data_dir,
+            filename=WRITER_LOCK_FILENAME,
+            name="mt5_tick_watch",
+            hint=WRITER_LOCK_HINT,
+        )
+    except WriterLockHeld as exc:
+        _stderr(str(exc))
+        return EXIT_USAGE
+
+    try:
+        return _supply(settings, source=source, clock=clock, sleep=sleep, cycles=cycles, say=say)
+    finally:
+        # 錠はカーネルが持つ（プロセス死で自動解放される）。ここで閉じるのは「この呼出が
+        #   書き手であった区間」を明示的に終えるためで、後片付けを運用に負わせないためではない。
+        writer_lock.close()
+
+
+def _supply(
+    settings: WatchSettings,
+    *,
+    source: Any,
+    clock: Any,
+    sleep: "Callable[[float], Any]",
+    cycles: "Optional[int]",
+    say: "Callable[[str], Any]",
+) -> int:
+    """錠を握った状態で供給を回す（:func:`run` の本体）。
+
+    :func:`run` から切り出してあるのは、獲得した錠をどの ``return`` でも確実に手放すためである
+    （``try/finally`` を 1 箇所に置く）。順序と防護の判断は :func:`run` が持つ。
+    """
     probe_at = probe_label_ms(settings, clock)
     try:
         token = resolve_token(source, symbol=settings.symbol, at_msc=probe_at)

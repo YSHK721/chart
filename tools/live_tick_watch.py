@@ -80,12 +80,14 @@ def _rollup_timeframes() -> Tuple[str, ...]:
 #: （stale PID ファイル問題を作らない）。ファイル内容（PID・起動時刻）は診断表示用。
 _WRITER_LOCK_FILENAME = "live_tick_watch.lock"
 
-#: --takeover で先行プロセスへ SIGTERM を送った後、ロック解放を待つ上限秒。
-_TAKEOVER_WAIT_SECONDS = 15.0
+#: 拒否の案内に載せる「次の一手」（本 CLI は引き継ぎ口 --takeover を持つ）。
+_WRITER_LOCK_HINT = "引き継ぐ場合は --takeover を付けて起動してください。"
 
-
-class WriterLockHeld(RuntimeError):
-    """同一 data_dir への書き手が既に居る（二重起動）。"""
+# 錠の実体は中立核 common.writer_lock が単一定義で持つ（ISSUE-530）。もう 1 本の供給常駐
+#   （tools/mt5_tick_watch.py）が同じ防護を要るようになったとき、ここの実装を手で複製すると
+#   必ず取り残しが生まれるため、両者が同じ定義を使う形へ出した。本ファイルが持つのは
+#   「どの名前の錠を、どの案内文で使うか」という面だけである（規則は common 側）。
+from common.writer_lock import WriterLockHeld, acquire_writer_lock as _acquire_writer_lock  # noqa: E402,F401
 
 
 def acquire_writer_lock(data_dir: Path, *, takeover: bool = False):
@@ -103,56 +105,13 @@ def acquire_writer_lock(data_dir: Path, *, takeover: bool = False):
         獲得済みロックのファイルオブジェクト。**プロセス存命中は参照を保持すること**
         （閉じると解放される）。
     """
-    import fcntl
-
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    path = data_dir / _WRITER_LOCK_FILENAME
-    handle = open(path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        holder = _lock_holder_pid(handle)
-        if not takeover:
-            handle.close()
-            raise WriterLockHeld(
-                f"live_tick_watch は既に稼働中です（PID {holder if holder else '不明'}・"
-                f"lock={path}）。引き継ぐ場合は --takeover を付けて起動してください。"
-            )
-        if holder:
-            LOG.warning("先行の live_tick_watch (PID %s) を停止して引き継ぎます。", holder)
-            try:
-                os.kill(holder, 15)   # SIGTERM
-            except ProcessLookupError:
-                pass
-        deadline = time.monotonic() + _TAKEOVER_WAIT_SECONDS
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    handle.close()
-                    raise WriterLockHeld(
-                        f"先行プロセス（PID {holder if holder else '不明'}）が"
-                        f" {_TAKEOVER_WAIT_SECONDS:.0f} 秒以内にロックを解放しませんでした。"
-                    )
-                time.sleep(0.2)
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{os.getpid()} {dt.datetime.now(dt.timezone.utc).isoformat()}\n")
-    handle.flush()
-    return handle
-
-
-def _lock_holder_pid(handle) -> "int | None":
-    """ロックファイルの先頭フィールド（保持者 PID）を読む（壊れていれば None）。"""
-    try:
-        handle.seek(0)
-        first = handle.read(64).split()
-        return int(first[0]) if first else None
-    except (ValueError, OSError):
-        return None
+    return _acquire_writer_lock(
+        data_dir,
+        filename=_WRITER_LOCK_FILENAME,
+        name="live_tick_watch",
+        hint=_WRITER_LOCK_HINT,
+        takeover=takeover,
+    )
 
 
 # --------------------------------------------------------------------------- #

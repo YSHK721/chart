@@ -18,6 +18,7 @@ stdlib のみで書かれた中立核（どのアクターにも属さない汎�
 パッケージ表面には出さず、サブモジュールを直接 import して使う:
     forming_window : 未確定足（forming）の差し替え規則。
     watch_loop     : 汎用ポーリングループ run_watch（ISSUE-479 F-3 で運用スクリプト層から移設）。
+    writer_lock    : 単一書き手ロック acquire_writer_lock（ISSUE-530 で 2 本の供給常駐が共有）。
 
 上記の公開 API は **遅延解決**する（PEP 562・ISSUE-479 F-2）。実装 applied_price.py は numpy を
 必要とするが、本パッケージには上記のとおり numpy を使わない中立核も同居しており、
