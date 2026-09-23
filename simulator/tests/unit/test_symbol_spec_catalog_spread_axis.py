@@ -39,7 +39,7 @@ Red と回帰ガードの別（成功テスト先行を Red と称さない）:
 
 共有するテストヘルパは import して使う（同じものを手書き複製しない）:
     Test Spy … `marketdata/tests/spread_series_fixture.py`
-    ヘッダ定数と書き出し … `simulator/tests/ohlc_header_fixtures.py`
+    ヘッダ定数・本文・書き出し … `simulator/tests/ohlc_header_fixtures.py`
 """
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ from simulator.tests.ohlc_header_fixtures import (
     MD9,
     MT5_TAB,
     MT5_TAB_NO_SPREAD,
+    body_rows,
     write_header,
 )
 from simulator.tests.tester_settings_engine_fixtures import (
@@ -95,16 +96,6 @@ _ALTERNATIVE = "current_close"
 
 #: 気配幅に依存しない EA（N-17 を踏まずに写像層まで通すため）。
 _INDEPENDENT_EA = "TC24051901"
-
-
-def _rows(count: int) -> str:
-    """``MD9`` と同じ列数の本文 ``count`` 行（値は本ファイルの assertion に使わない）。
-
-    列数を ``MD9`` から導くのは、ヘッダ定数が変わったときに本文だけが取り残されないため
-    である（列の綴りを書き写さない）。
-    """
-    tail = ",".join("0" for _ in MD9.split(",")[1:])
-    return "".join(f"2024-01-08 00:00:00,{tail}\n" for _ in range(count))
 
 
 def _expected_override(supplies: bool, basis: str) -> "dict | None":
@@ -245,7 +236,7 @@ def _issued_and_used(monkeypatch, tmp_path, rows: int) -> tuple:
 
     戻り値は（ヘッダ読取の発行, 範囲読取の発行, 使用＝プロファイルの数, 供給された override）。
     """
-    path = _entity(monkeypatch, tmp_path, f"scale_{rows}", MD9, _rows(rows))
+    path = _entity(monkeypatch, tmp_path, f"scale_{rows}", MD9, body_rows(MD9, rows))
     header_reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
     range_reads = spy(monkeypatch, symbol_spec_catalog, "_csv_date_range")
 
