@@ -54,7 +54,7 @@ from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 import pandas as pd
 
 from marketdata import dataset_registry, rollup_paths, tick_m1
-from marketdata.mt5_ticks import ingest, server_clock
+from marketdata.mt5_ticks import ingest, port, server_clock
 
 Row = Tuple[int, float, float]
 
@@ -173,7 +173,7 @@ def append_m1_for_closed_minutes_for_series(
         return SeriesAppendResult(bars={ref: 0 for ref in plan.refs}, pending_rows=pending)
 
     folded = tick_m1.fold_ticks_for_series(ingest.rows_to_frame(closed), plan=plan)
-    bars: "dict[str, int]" = {}
+    slices: "dict[str, pd.DataFrame]" = {}
     for ref in plan.refs:
         m1 = folded[ref]
         mark = settled[ref]
@@ -181,8 +181,68 @@ def append_m1_for_closed_minutes_for_series(
             # M1 の index は naive UTC。先端の読み替えは _settled_minute の 1 箇所だけなので、
             #   突き合わせのためにここで naive へ戻す（第 2 の読み替え規則を作らない）。
             m1 = m1[m1.index > mark.tz_localize(None)]
-        bars[ref] = tick_m1.append_m1_rows(m1, plan.paths[ref])
-    return SeriesAppendResult(bars=bars, pending_rows=pending)
+        slices[ref] = m1
+
+    # 失敗しうる判断は**最初の追記より前**に済ませる（設計 D-6 (i)）。
+    _assert_tips_converge(plan, settled=settled, slices=slices)
+
+    bars: "dict[str, int]" = {}
+    for ref in _write_order(plan):
+        try:
+            bars[ref] = tick_m1.append_m1_rows(slices[ref], plan.paths[ref])
+        except Exception as exc:                      # noqa: BLE001（分類せず状況を載せて止める）
+            if not bars:
+                raise      # 1 行も書けていない＝部分書込ではない（型を化けさせない）。
+            raise port.SeriesWriteIncomplete(
+                "系列の組の一部だけが書けました: 書けた "
+                + "・".join(f"{ref}={n} 本" for ref, n in bars.items())
+                + "／未書込 "
+                + "・".join(r for r in plan.refs if r not in bars)
+                + f"（原因: {exc}）。組の先端が揃うまで先へ進めません。"
+            ) from exc
+    return SeriesAppendResult(
+        bars={ref: bars[ref] for ref in plan.refs}, pending_rows=pending
+    )
+
+
+def _write_order(plan: "tick_m1.SeriesPlan") -> "tuple[str, ...]":
+    """追記を発行する順（**列の上位集合が先**・設計 D-6 (ii)）。
+
+    2 つ以上のファイルを原子的に書く手段は無いので、途中で死んだときに「どちらが遅れるか」だけが
+    選べる。遅らせるのは最も見られている系列（spread 列を持たない側）である——遅れが観測される側
+    に出れば、運用者は止まったことに気付ける。並びは案内の中では安定で、同じ群の中では案内の並び
+    （＝台帳の宣言順）をそのまま保つ。
+    """
+    return tuple(sorted(plan.refs, key=lambda ref: ref not in plan.spread_refs))
+
+
+def _assert_tips_converge(
+    plan: "tick_m1.SeriesPlan", *, settled: "dict[str, Optional[pd.Timestamp]]",
+    slices: "dict[str, pd.DataFrame]",
+) -> None:
+    """この追記を終えたとき組の先端が揃うかを、**書く前に**確かめる（設計 D-6 (iii)）。
+
+    揃わないのは、ある系列だけが他より先へ進んでいるとき（＝過去に片方だけ書けた周期があった
+    とき）である。その系列は以後どの周期でも 0 本のままで、組は二度と揃わない。出力は形式上
+    正しいままなので状態検証では検出できない。書く前に止めるので 1 バイトも動かさない。
+    """
+    tips: "dict[str, Optional[pd.Timestamp]]" = {}
+    for ref in plan.refs:
+        index = slices[ref].index
+        mark = settled[ref]
+        tips[ref] = index.max() if len(index) else (
+            None if mark is None else mark.tz_localize(None)
+        )
+    if len(set(tips.values())) <= 1:
+        return
+    raise port.SeriesWriteIncomplete(
+        "系列の組の先端が揃いません（書込は 1 件も発行していません）: "
+        + "・".join(
+            f"{ref}=先端 {tips[ref]}・追記予定 {len(slices[ref])} 本" for ref in plan.refs
+        )
+        + "。片方だけ先へ進んだ組は、以後どの周期でも揃いません"
+        "（進んでいない側をその先端まで埋めてから再開してください）。"
+    )
 
 
 def append_m1_for_closed_minutes(

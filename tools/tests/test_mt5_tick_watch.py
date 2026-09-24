@@ -376,9 +376,15 @@ def test_crossing_a_utc_day_finalizes_and_rebuilds_the_closed_day(tmp_path, secr
     source = fakes.FakeTickSource(tape)
     clock = fakes.FixedClock(dt.datetime(2026, 8, 26, 0, 10, tzinfo=dt.timezone.utc))
     rebuilt: "list[object]" = []
+    # 観測する継ぎ目は**組**の是正である（ISSUE-511 段階 8-D-2b 段 5・承認 2026-09-24）。常駐は
+    #   台帳が決めた系列の組を 1 回の畳みで是正するため ``rebuild.rebuild_days_for_series`` を
+    #   呼び、``rebuild.rebuild_day`` は段 3 以降 1 要素の薄い包み＝組の経路は通らない。表明
+    #   （どの日が是正されたか）は変えていない。継ぎ目の名前は実装詳細である。
     monkeypatch.setattr(
-        rebuild, "rebuild_day",
-        lambda day, **kw: rebuilt.append(day) or rebuild.UNCHANGED,
+        rebuild, "rebuild_day_for_series",
+        lambda day, *, refs, **kw: (
+            rebuilt.append(day) or {ref: rebuild.UNCHANGED for ref in refs}
+        ),
     )
 
     watch.main(_argv(tmp_path, "--from", "2026-08-26 02:58:00"), source=source, clock=clock)
@@ -386,6 +392,7 @@ def test_crossing_a_utc_day_finalizes_and_rebuilds_the_closed_day(tmp_path, secr
     assert tick_m1.day_parquet_path(
         dt.date(2026, 8, 25), symbol=token, data_dir=tmp_path
     ).is_file()
+    assert rebuilt, "是正が 1 度も呼ばれていない（継ぎ目が張り付く先を失って空振りしている）"
     assert rebuilt == [dt.date(2026, 8, 25)]
 
 

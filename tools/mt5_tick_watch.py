@@ -21,6 +21,12 @@
     のときだけ ``--from`` を要求する。``now-30 分`` のような既定を作らないのは、「どこから
     取り直したか」が運用者に見えないまま欠測が埋まらない状態を避けるためである（E-10）。
 
+書く系列の組は台帳が決める（ISSUE-511 段階 8-D-2b の段 5）:
+    ``--ref`` は「どのティック木か」を指す**種**であり、書く系列の集合ではない。集合は起動時に
+    1 回だけ台帳から引き（:func:`series_refs`）、同じタプルを列形照合・publish・日次再構築の
+    3 か所へ渡す。運用者が集合を名指せる口は置かない——台帳の事実を運用者が再宣言できる形が、
+    spread 付き系列を 9 日間誰も publish しない凍結を生んだためである（依頼者裁定 2026-09-23）。
+
 ``--from`` はサーバラベル（端末の壁時計）である:
     UTC→ラベルの逆変換は多価であり `marketdata/mt5_ticks/server_clock.py` は実装しない。
     よって運用者が渡すのは端末が見せている時刻そのもの（またはその epoch ms）である。
@@ -45,6 +51,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from common.writer_lock import WriterLockHeld, acquire_writer_lock  # noqa: E402
+from marketdata import dataset_registry  # noqa: E402
 from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
 from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
@@ -150,7 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
                              f"・下限 {MIN_INTERVAL_SECONDS}）")
     parser.add_argument("--data-dir", default=None,
                         help="データ基点（既定は marketdata の DATA_DIR）")
-    parser.add_argument("--ref", default=DEFAULT_REF, help=f"表示系列の ref（既定 {DEFAULT_REF}）")
+    parser.add_argument(
+        "--ref", default=DEFAULT_REF,
+        help=f"どのティック木から供給するかの**種**（既定 {DEFAULT_REF}）。書く表示系列の組は"
+             "その木を読む ref 全部であり、台帳が決める（ここでは選べない）",
+    )
     parser.add_argument("--from", dest="from_label", default=None,
                         help="コールドスタートの再開点。サーバラベルの壁時計"
                              "（例 '2026-09-01 12:00:00'）か epoch ミリ秒")
@@ -260,15 +271,29 @@ def probe_label_ms(settings: WatchSettings, clock: Any) -> int:
 # 1 周期の合成
 # ---------------------------------------------------------------------
 
+def series_refs(seed: str) -> "Tuple[str, ...]":
+    """種（``--ref``）が指すティック木を読む**系列の組**を台帳から引く（段 5・設計 D-3）。
+
+    集合の所有者は台帳であって運用者ではない。かつては ``--ref`` がそのまま書く系列 1 つを
+    決めており、台帳が 2 系列を宣言しても常駐は片方しか書かなかった（実測: spread 付き系列が
+    2026-09-14 で止まり 9 日間凍結）。例外口（運用者が集合を名指せる引数）は作らない——台帳の
+    事実を再宣言できる形そのものが、その凍結を生んだためである（依頼者裁定 2026-09-23）。
+
+    ここには規則は無い（木の照会も集合の導出も台帳の口へ委譲する）。答えは起動時に 1 回だけ
+    引き、同じタプルを列形照合・publish・日次再構築の 3 か所へ渡す。
+    """
+    return dataset_registry.refs_of_tick_token(dataset_registry.tick_tree_token(seed))
+
+
 @dataclass
 class SupplyCycle:
     """1 周期を組み立てる（各段はユースケースが持ち、ここは順序だけを持つ）。"""
 
     poll: usecases.PollOnce
-    publish: "Optional[usecases.PublishDataset]"
+    publish: "Optional[usecases.PublishSeries]"
     finalize: usecases.FinalizeDay
     token: str
-    ref: str
+    refs: "Tuple[str, ...]"
     data_dir: Any
 
     def __call__(self, state: WatchState) -> "Tuple[WatchState, usecases.PollResult]":
@@ -288,8 +313,8 @@ class SupplyCycle:
         # 日が閉じたものだけを確定し、そのうえで権威経路で是正する（設計 §10 の裁定）。
         settled = self.finalize(days=days, latest_observed_day=latest)
         if settled:
-            rebuild.rebuild_days(
-                settled.keys(), symbol=self.token, ref=self.ref, data_dir=self.data_dir,
+            rebuild.rebuild_days_for_series(
+                settled.keys(), symbol=self.token, refs=self.refs, data_dir=self.data_dir,
                 update_rollups=self.publish is not None,
             )
             days -= set(settled)
@@ -297,21 +322,32 @@ class SupplyCycle:
         return WatchState(result.cursor, pending, days, latest), result
 
 
-def build_cycle(settings: WatchSettings, *, source: Any, token: str, clock: Any) -> SupplyCycle:
-    """設定と供給元から 1 周期を組み立てる（依存の向きはここで 1 回だけ決まる）。"""
+def build_cycle(
+    settings: WatchSettings, *, source: Any, token: str, clock: Any,
+    refs: "Optional[Sequence[str]]" = None,
+) -> SupplyCycle:
+    """設定と供給元から 1 周期を組み立てる（依存の向きはここで 1 回だけ決まる）。
+
+    ``refs`` は起動時に 1 回だけ台帳から引いた系列の組（:func:`series_refs`）である。:func:`run`
+    は必ず渡す——同じタプルを列形照合・publish・日次再構築の 3 か所で使うためで、周期ごとに
+    引き直すと「起動時に照合した集合」と「実際に書く集合」が別物になりうる（照合は緑のまま、
+    書く側だけが増える）。省略した呼出でも集合の出所は台帳のままである（既定が
+    :func:`series_refs` の答えであり、**呼出側が組を名指す口ではない**）。
+    """
+    refs = series_refs(settings.ref) if refs is None else tuple(refs)
     return SupplyCycle(
         poll=usecases.PollOnce(
             source=source, symbol=settings.symbol, token=token, data_dir=settings.data_dir
         ),
         publish=(
-            usecases.PublishDataset(ref=settings.ref, data_dir=settings.data_dir, clock=clock)
+            usecases.PublishSeries(refs=refs, data_dir=settings.data_dir, clock=clock)
             if settings.publish else None
         ),
         finalize=usecases.FinalizeDay(
             token=token, data_dir=settings.data_dir, clock=clock
         ),
         token=token,
-        ref=settings.ref,
+        refs=refs,
         data_dir=settings.data_dir,
     )
 
@@ -382,8 +418,18 @@ def run(
     #   ``--no-publish`` でも通すのは、日次確定後の再構築（rebuild.rebuild_days）が publish の
     #   有無に関わらず M1 CSV を書きうるためである（照合を publish 側に寄せると穴が開く）。
     #   規則の実体は marketdata 側にあり、ここは呼ぶだけである（tools は規則を持たない）。
+    # 書く系列の組は台帳が決める（段 5・設計 D-3）。起動時に 1 回だけ引き、同じタプルを
+    #   列形照合・publish・日次再構築の 3 か所へ渡す。引けない（台帳にその木が無い・記入漏れ）は
+    #   運用者の一手で直る側なので ``EXIT_USAGE`` で止める（待っても直らない側と分ける）。
     try:
-        tick_m1.check_series_schema(settings.ref, data_dir=settings.data_dir)
+        refs = series_refs(settings.ref)
+    except ValueError as exc:
+        _stderr(f"書く系列の組を台帳から引けません: {exc}")
+        return EXIT_USAGE
+
+    try:
+        for ref in refs:
+            tick_m1.check_series_schema(ref, data_dir=settings.data_dir)
     except tick_m1.SpreadSchemaMismatch as exc:
         _stderr(f"系列の列形が宣言と食い違います（再試行しません）: {exc}")
         return EXIT_FAIL_STOP
@@ -405,7 +451,10 @@ def run(
         return EXIT_USAGE
 
     try:
-        return _supply(settings, source=source, clock=clock, sleep=sleep, cycles=cycles, say=say)
+        return _supply(
+            settings, source=source, clock=clock, sleep=sleep, cycles=cycles, say=say,
+            refs=refs,
+        )
     finally:
         # 錠はカーネルが持つ（プロセス死で自動解放される）。ここで閉じるのは「この呼出が
         #   書き手であった区間」を明示的に終えるためで、後片付けを運用に負わせないためではない。
@@ -420,6 +469,7 @@ def _supply(
     sleep: "Callable[[float], Any]",
     cycles: "Optional[int]",
     say: "Callable[[str], Any]",
+    refs: "Sequence[str]",
 ) -> int:
     """錠を握った状態で供給を回す（:func:`run` の本体）。
 
@@ -461,7 +511,7 @@ def _supply(
         if pending:
             _stderr(f"境界分（形成中だった分）のティックを再種付けします: {len(pending)} 行")
 
-    cycle = build_cycle(settings, source=source, token=token, clock=clock)
+    cycle = build_cycle(settings, source=source, token=token, clock=clock, refs=refs)
     state = WatchState(cursor=start, pending=pending, days=set(seeded), latest_day=None)
     done = 0
     failures = 0
