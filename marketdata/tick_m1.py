@@ -47,8 +47,9 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, List, Protocol, runtime_checkable
 
 import pandas as pd
 
@@ -117,6 +118,149 @@ class SpreadSchemaMismatch(RuntimeError):
     とおり既存 CSV が全書換される。是正は系列を書き換えることではなく、台帳の series を新しい名前に
     して build で新しい置き場へ作ること（旧ファイルは残る＝可逆）。
     """
+
+
+class SeriesPlanConflict(ValueError):
+    """同じティックから導く系列の組が、1 回の畳みでは満たせない（ISSUE-511 段階 8-D-2b の段 2）。
+
+    畳みを 1 回で済ませられるのは、組の全 ref が **同じ価格基準**で畳まれ、spread 列を持つ ref が
+    **同じ宣言**（どのスナップショットの point で数えるか）を共有するときだけである。どちらかが
+    割れたまま通すと、片方の系列が別の基準・別銘柄の point で作られた値を持つ。値は形式上正しい
+    ので状態検証では検出できない。ここで止める。
+
+    型が :class:`ValueError` の派生であるのは、握り手が「案内が作れない」を他の入力不正
+    （未知の価格基準・未登録 ref）と同じ層で扱うためである。:class:`SpreadSchemaMismatch` が
+    :class:`RuntimeError` の派生なのは、そちらが :func:`append_m1_from_ticks` の
+    ``except ValueError``（ISSUE-455 の自己修復＝既存 CSV の全書換）に掛かってはならないため
+    だが、案内の組み立てはその ``try`` の外（書き手の入口より前）でしか起きない。
+    """
+
+
+@dataclass(frozen=True)
+class SeriesPlan:
+    """同じティックから導く系列の組の案内（畳みは 1 回・spread 付きは列の上位集合）。
+
+    :func:`series_plan` が作り、:func:`fold_ticks_for_series` /
+    :func:`materialize_m1_day_for_series` が消費する。案内を作らずに複数系列を書く経路を
+    作らないために、価格基準と spread の解決口を**組に 1 つずつ**持つ。
+
+    Attributes:
+        price_basis: 組の全 ref が共有する価格基準（食い違いは :class:`SeriesPlanConflict`）。
+        refs: 案内が受けた datasetRef（並びは呼出側が渡した順＝台帳の宣言順を保つ）。
+        spread_refs: そのうち spread 列を**持つ** ref。持たない ref へは列を落とした射影を返す。
+        spread: spread 列を数える point の遅延の呼び口（組に 1 つ。``None``＝spread 列を持つ
+            ref が 1 つも無い）。取得しただけではスナップショットを読まない。
+        paths: ref ごとの M1 CSV の置き場。置き場を解決しない案内（:func:`materialize_m1_day`
+            が作る 1 要素の案内）では空である——素材化はファイルを読み書きしないため。
+    """
+
+    price_basis: str
+    refs: "tuple[str, ...]"
+    spread_refs: "frozenset[str]"
+    spread: "Callable[[], float] | None"
+    paths: "dict[str, Path]"
+
+
+def _plan_for_refs(
+    refs: "Iterable[str]",
+    *,
+    price_basis: "str | None",
+    resolve: "Callable[[str], tuple[Callable[[], float] | None, Path | None]]",
+) -> SeriesPlan:
+    """``refs`` を 1 つの案内へまとめる（宣言の引き方は ``resolve`` が決める）。
+
+    ``resolve`` を注入で受けるのは、宣言の引き方が入口ごとに違うからである:
+    :func:`series_plan` は :func:`_checked_series`（置き場の解決と既存 CSV の列形の照合を含む）を、
+    :func:`materialize_m1_day` は :func:`_declared_spread` だけ（ファイルを読まない契約）を通す。
+    この差を引数の真偽で切り替えると、照合しない経路が黙って作れてしまう。
+
+    順序は基準 → 宣言（:func:`materialize_m1_day` の従来の評価順と同じ）。
+    """
+    refs = tuple(refs)
+    if not refs:
+        raise SeriesPlanConflict(
+            "系列が 1 つも無い案内は作れません（0 件を正常として受け取ると、何も書かないまま"
+            "走り続けます）。datasetRef を 1 つ以上渡してください。"
+        )
+    if len(set(refs)) != len(refs):
+        raise SeriesPlanConflict(
+            f"同じ datasetRef が案内に 2 度以上あります: {refs}（案内の並びと出力の対応が"
+            " 1 対 1 でなくなり、同じ置き場へ二重に書きます）。"
+        )
+    bases = {ref: _resolved_basis(ref, price_basis) for ref in refs}
+    if len(set(bases.values())) != 1:
+        raise SeriesPlanConflict(
+            f"同じティックから導く系列の価格基準が食い違います: {bases}。1 回の畳みでは"
+            "満たせないため案内を作りません（台帳の price_basis を揃えてください）。"
+        )
+    spread_refs: "list[str]" = []
+    resolvers: "list[Callable[[], float]]" = []
+    paths: "dict[str, Path]" = {}
+    for ref in refs:
+        spread, path = resolve(ref)
+        if path is not None:
+            paths[ref] = path
+        if spread is not None:
+            spread_refs.append(ref)
+            resolvers.append(spread)
+    declared = {ref: _spread_point.declared_snapshot_of(ref) for ref in spread_refs}
+    if len(set(declared.values())) > 1:
+        raise SeriesPlanConflict(
+            f"spread 列を持つ系列の宣言が食い違います: {declared}。1 つの畳みから数えられる"
+            " spread は 1 通りだけです（片方は別銘柄の point で数えた値になります）。"
+        )
+    return SeriesPlan(
+        price_basis=next(iter(bases.values())),
+        refs=refs,
+        spread_refs=frozenset(spread_refs),
+        spread=resolvers[0] if resolvers else None,
+        paths=paths,
+    )
+
+
+def series_plan(refs: "Iterable[str]", *, data_dir: Any, price_basis: "str | None" = None) -> SeriesPlan:
+    """``refs`` を 1 つの案内（:class:`SeriesPlan`）にする書き手向けの口（ISSUE-511 段階 8-D-2b・D-4）。
+
+    各 ref は書き手の入口と**同じ規則**を通る: 価格基準は :func:`_resolved_basis`（登録済み ref は
+    台帳が唯一の源）、spread の宣言と置き場と既存 CSV の列形の照合は :func:`_checked_series`
+    （IO は対象 CSV の先頭 1 行の読取だけ）。照合を案内の外へ出すと「案内を作らずに書く経路」が
+    でき、起動時の照合は緑のまま周期の中で初めて落ちる。
+
+    ``price_basis`` は台帳に無い ref（検定の合成 ref）のためにあり、登録済み ref へ渡すと
+    :class:`ValueError`（台帳が唯一の源・段階 6・V-3）。
+
+    Raises:
+        SeriesPlanConflict: 組が空・ref の重複・価格基準の食い違い・spread 宣言の食い違い。
+    """
+    return _plan_for_refs(
+        refs,
+        price_basis=price_basis,
+        resolve=lambda ref: _checked_series(ref, data_dir=data_dir, point=None),
+    )
+
+
+def _without_spread(m1: pd.DataFrame) -> pd.DataFrame:
+    """spread 列を落とした射影（列を持たなければ同一オブジェクトのまま）。"""
+    if _csv_schema.SPREAD_COLUMN not in m1.columns:
+        return m1
+    return m1.drop(columns=[_csv_schema.SPREAD_COLUMN])
+
+
+def _project_for_series(m1: pd.DataFrame, plan: SeriesPlan) -> "dict[str, pd.DataFrame]":
+    """1 回の畳みの結果を案内の各 ref へ配る（spread 無しの ref へは列を落とした射影）。
+
+    **再計算しない**。spread 付きは列の上位集合であり、値列（OHLCV・up/dn）は spread 列の
+    有無で変わらない——:func:`_fold_minutes` は bid/ask を読まず、:func:`_with_spread` は末尾へ
+    列を足すだけ、並べ替えは同じキーの安定ソートだからである。**この同値は宣言では守られない**
+    ので、``marketdata/tests/test_tick_m1_series_plan.py`` の L-1 / L-2 が
+    「spread 付きで畳んで列を落とした結果」と「spread 無しで畳んだ結果」を index・列・dtype・
+    全列の値まで突き合わせて固定する（設計 8-D-2b の T-1＝値の一致は設計時点で未実測だった）。
+
+    案内が受けた ref は 1 つも落とさない（落とすと、その系列だけ黙って更新が止まる）。
+    """
+    return {
+        ref: (m1 if ref in plan.spread_refs else _without_spread(m1)) for ref in plan.refs
+    }
 
 
 def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
@@ -600,8 +744,40 @@ def materialize_m1_day(
     計算する分が残ったときに初めて :func:`marketdata.spread_point.declared_point_resolver` が返す
     呼び口で解決する（スナップショットを読むのはこのときだけ）。
     """
-    return _materialize_m1_day(
-        ticks, price_basis=_resolved_basis(ref, price_basis), spread=_declared_spread(ref, None)
+    return materialize_m1_day_for_series(ticks, plan=_day_plan(ref, price_basis))[ref]
+
+
+def _day_plan(ref: str, price_basis: "str | None") -> SeriesPlan:
+    """1 要素の案内（置き場を解決せず既存 CSV も読まない＝素材化の契約どおり）。
+
+    :func:`series_plan` と分けるのは、素材化がティック parquet も M1 CSV も読み書きしない
+    契約を持つためである（読むのは呼出側）。置き場を知らない口へ照合を足すと、照合した対象と
+    実際に書く対象がずれる余地が生まれる。
+    """
+    return _plan_for_refs(
+        (ref,), price_basis=price_basis, resolve=lambda r: (_declared_spread(r, None), None)
+    )
+
+
+def materialize_m1_day_for_series(
+    ticks: pd.DataFrame, *, plan: SeriesPlan, after: Any = None, until: Any = None
+) -> "dict[str, pd.DataFrame]":
+    """1 日分のティックを案内の**全系列**の M1 行へ素材化する（畳みは 1 回・ISSUE-511 段階 8-D-2b の段 2）。
+
+    順序（畳む → 外れ分除去 → ``index > after`` → 形成中分の除外 → 残った分だけ気配幅）の唯一源
+    :func:`_materialize_m1_day` を **1 回だけ**通し、その結果を :func:`_project_for_series` で
+    各 ref へ配る。系列ごとに素材化を呼ぶと、同じティックを系列の数だけ畳むことになる
+    （出力は正しいままなので状態検証では原理的に落ちない・ISSUE-450 と同型）。その不在は
+    ``marketdata/tests/test_tick_m1_series_plan.py`` の CX-1 が Test Spy で固定する。
+
+    戻り値の鍵は案内の全 ref（``plan.refs``）である。spread 列を持つのは ``plan.spread_refs``
+    の ref だけで、他はその列を落とした射影を受け取る。
+    """
+    return _project_for_series(
+        _materialize_m1_day(
+            ticks, price_basis=plan.price_basis, spread=plan.spread, after=after, until=until
+        ),
+        plan,
     )
 
 
@@ -647,17 +823,37 @@ def fold_ticks_for(
     順序と発行数を機械的に固定するのは
     ``marketdata/tests/test_tick_m1_fold_ticks_for_order.py``（R-16・CX-I）である。
     """
-    basis = _resolved_basis(ref, price_basis)
-    spread, _ = _checked_series(ref, data_dir=data_dir, point=None)
+    plan = series_plan((ref,), data_dir=data_dir, price_basis=price_basis)
+    return fold_ticks_for_series(ticks, plan=plan)[ref]
+
+
+def fold_ticks_for_series(
+    ticks: pd.DataFrame, *, plan: SeriesPlan
+) -> "dict[str, pd.DataFrame]":
+    """``ticks`` を案内の**全系列**の分へ畳む（畳みは 1 回・行選択も外れ分除去もしない）。
+
+    :func:`fold_ticks_for` の複数系列版であり、契約（渡した分はすべて出力される・呼出側が
+    畳みの前に行を選ぶ）も同じである。畳みは 1 回で、spread 列を持たない ref へは
+    :func:`_project_for_series` の射影を返す（**再計算しない**）。系列ごとに畳む形へ戻す変異は
+    ``marketdata/tests/test_tick_m1_series_plan.py`` の CX-1 が捕まえる。
+
+    戻り値の鍵は案内の全 ref（``plan.refs``）。空入力でも列形は宣言どおり（spread 列の有無は
+    ``plan.spread_refs``）で、point は 1 度も解決しない（使わない読込を発行しない・CX-I-1）。
+    """
     # 検証は point の解決より先に置く（素材化の唯一源 _materialize_m1_day と同じ順序）。後ろに
     #   置くと、必須列を欠く非空フレームで「落ちる前にスナップショットを 1 回読む」ことになる
     #   （出力はどちらも ValueError なので状態検証では落ちない・R-16 が順序を固定する）。
     #   ticks_to_m1 も内部で同じ検証を通る（規則の実体は _validate_tick_frame 1 つのまま）。
-    _validate_tick_frame(ticks, basis)
+    _validate_tick_frame(ticks, plan.price_basis)
     if ticks.empty:
-        return _empty_m1(spread is not None)
-    return ticks_to_m1(
-        ticks, price_basis=basis, point=None if spread is None else spread()
+        return {ref: _empty_m1(ref in plan.spread_refs) for ref in plan.refs}
+    return _project_for_series(
+        ticks_to_m1(
+            ticks,
+            price_basis=plan.price_basis,
+            point=None if plan.spread is None else plan.spread(),
+        ),
+        plan,
     )
 
 

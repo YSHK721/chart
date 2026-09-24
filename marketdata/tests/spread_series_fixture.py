@@ -61,12 +61,19 @@ def cleared_point_cache():
     sp.forget_resolved_points()
 
 
-def register_tick_ref(monkeypatch, tmp_path: Path, ref: str, declared) -> None:
-    """合成のティック ref を台帳へ一時登録する（``declared`` が None なら宣言欄を渡さない）。"""
+def register_tick_ref(
+    monkeypatch, tmp_path: Path, ref: str, declared, basis: str = LEDGER_BASIS
+) -> None:
+    """合成のティック ref を台帳へ一時登録する（``declared`` が None なら宣言欄を渡さない）。
+
+    ``basis`` は台帳が名乗る価格基準で、既定は :data:`LEDGER_BASIS`（既存の呼出は 1 つも変わらない）。
+    明示できるのは、同じティック木から導く系列の**基準の食い違い**を Fail-Stop する検定
+    （``marketdata/tests/test_tick_m1_series_plan.py`` の F-1）が、違う基準を名乗る ref を要るため。
+    """
     extra = {} if declared is None else {"spread_point_snapshot": declared}
     monkeypatch.setitem(REGISTRY, ref, DatasetDescriptor(
         path=tmp_path / f"{ref}_m1.csv", symbol="JP225", tick=True,
-        price_basis=LEDGER_BASIS, vendor="dukascopy", **extra,
+        price_basis=basis, vendor="dukascopy", **extra,
     ))
 
 

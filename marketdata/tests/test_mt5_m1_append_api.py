@@ -219,6 +219,14 @@ def test_the_public_api_is_the_only_new_name_added_to_the_authority():
         # ``m1_chain`` は ``tick_m1.ticks_to_m1`` を直呼びして台帳照合を迂回し続ける（＝台帳が spread を
         # 宣言した瞬間に日中追記だけが別の列形を書こうとして落ちる）。追加は 1 名に閉じる。
         "fold_ticks_for",
+        # ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 1 つのティック列から**複数の系列**へ畳むための
+        # 公開の口 3 名。series_plan が各 ref の価格基準と列形の宣言を先に照合して案内を組み、
+        # fold_ticks_for_series と materialize_m1_day_for_series がその案内に従って**畳みを 1 回**
+        # だけ発行し、気配幅を持たない系列へは列を落とした射影を配る（再計算しない）。素朴に系列ごと
+        # 畳むと同じティックを二度畳むことになり、計算量の規約に反する。射影で足りることは実ティック
+        # 371,753 件・4,068 行を 7 列すべて全行で突き合わせて実測した（2026-09-08〜09-10）。
+        # 既存の fold_ticks_for / materialize_m1_day は 1 要素案内の薄い包みとして名前ごと残る。
+        "series_plan", "fold_ticks_for_series", "materialize_m1_day_for_series",
     }
 
 
