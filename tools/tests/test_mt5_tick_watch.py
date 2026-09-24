@@ -127,6 +127,9 @@ def test_the_option_surface_is_exactly_the_designed_one():
     assert opts == {
         "-h", "--help", "--symbol", "--endpoint", "--key-id", "--interval",
         "--data-dir", "--ref", "--from", "--once", "--no-publish", "--quiet",
+        # 引き継ぎ口（ISSUE-530 の錠に対する「次の一手」）。ライブ供給が持つものと対称に
+        #   足した＝集合が 1 つ増えた事実をそのまま反映する（面の固定を緩めない）。
+        "--takeover",
     }
 
 

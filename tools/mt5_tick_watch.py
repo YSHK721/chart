@@ -92,10 +92,11 @@ EXIT_FAIL_STOP = 3
 #: 止めたいのは同じ系列への 2 本目であって、別系列の常駐ではない（ISSUE-530）。
 WRITER_LOCK_FILENAME = "mt5_tick_watch.lock"
 
-#: 拒否の案内に載せる「次の一手」。本 CLI は引き継ぎ口を持たない（ライブ供給の ``--takeover``
-#: に相当するものを作らない）＝先行を止めるかどうかは運用者が決める。
+#: 拒否の案内に載せる「次の一手」。本 CLI は引き継ぎ口 ``--takeover`` を持つ＝ライブ供給
+#: （``tools/live_tick_watch.py`` が同じ意味で持つ案内）と揃える（2 本の常駐で「次の一手」が
+#: 違うと、運用者は起動経路ごとに別の手順を覚えることになる）。
 WRITER_LOCK_HINT = (
-    "先行プロセスを停止してから起動してください"
+    "引き継ぐ場合は --takeover を付けて起動してください"
     "（二重起動は受信の一次記録＝ジャーナルを壊します・ISSUE-530）。"
 )
 
@@ -119,6 +120,7 @@ class WatchSettings(NamedTuple):
     from_label: "Optional[int]"
     publish: bool
     quiet: bool
+    takeover: bool
 
 
 class WatchState(NamedTuple):
@@ -156,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-publish", action="store_true",
                         help="表示系列（M1・上位足）へ書かない（取り込みだけ回す）")
     parser.add_argument("--quiet", action="store_true", help="周期ごとのログを出さない")
+    parser.add_argument(
+        "--takeover", action="store_true",
+        help="先行の mt5_tick_watch が居れば SIGTERM で停止してから引き継ぐ"
+             "（単一書き手ロック・ISSUE-530。既定は二重起動を即時拒否）",
+    )
     return parser
 
 
@@ -360,8 +367,8 @@ def run(
     ライブ供給（``tools/live_tick_watch.py``・ISSUE-488）と同じ規律に揃えてある。
 
     - 照合が錠より**前**なのは、照合が読むだけで 1 バイトも書かないからである。順序を逆に
-      すると、引き継ぎ口（``takeover``）を持つ側では先行の書き手を退去させたうえで自分も
-      止まることになり、供給を止めるだけの起動になる。
+      すると、``--takeover`` 付きの起動では先行の書き手を退去させたうえで自分も止まることに
+      なり、供給を止めるだけの起動になる。
     - 錠がトークン解決より**前**なのは、照合を取得より前に置いたのと同じ理由による
       （ここに既にある「どのみち書けない状態で端末を叩かない」）。2 本目の常駐は、どのみち
       1 行も書けない相手である。錠を後ろに回すほど、2 本の起動処理が重なる区間が延びる。
@@ -391,6 +398,7 @@ def run(
             filename=WRITER_LOCK_FILENAME,
             name="mt5_tick_watch",
             hint=WRITER_LOCK_HINT,
+            takeover=settings.takeover,
         )
     except WriterLockHeld as exc:
         _stderr(str(exc))
@@ -541,6 +549,7 @@ def settings_from(args: argparse.Namespace) -> WatchSettings:
         from_label=None if args.from_label is None else parse_from_label(args.from_label),
         publish=not args.no_publish,
         quiet=bool(args.quiet),
+        takeover=bool(args.takeover),
     )
 
 
