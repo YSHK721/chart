@@ -24,8 +24,16 @@
     かつては private の整形関数を直接 import していたが、承認事項 A-5 によりその依存は
     恒久解消した（``marketdata/tests/test_mt5_m1_append_api.py`` が AST で再発を禁じる）。
 
+系列の組（ISSUE-511 段階 8-D-2b の段 3）:
+    追記は「1 つのティック列 → 系列の集合（refs）」を受ける。畳みは案内
+    （``tick_m1.series_plan``）を 1 つ組んで ``tick_m1.fold_ticks_for_series`` へ **1 回だけ**
+    発行し、spread 列を持たない系列へは列を落とした射影が配られる。行選択の下限は
+    ``min(先端)`` で 1 回だけ決め、各系列へは自分の先端より後の分バーだけを追記する
+    （設計 D-1）。既存の 1 系列の口（``append_m1_for_closed_minutes``）は 1 要素の薄い包みとして
+    名前も戻り値も変わらない。
+
 列形の権威（ISSUE-511 段階 3 の段階 5・V-2）:
-    畳みは ``tick_m1.fold_ticks_for`` へ委譲し、``ref`` を渡す。spread 列の有無と、その列を数える
+    畳みは ``tick_m1`` の系列版の畳み口へ委譲し、``ref`` を渡す。spread 列の有無と、その列を数える
     point は**台帳の宣言**（``marketdata.dataset_registry`` の ``spread_point_snapshot``）が決め、
     既存 M1 CSV の列形との照合は書き手の入口（``tick_m1.build_m1_from_ticks`` /
     ``tick_m1.append_m1_from_ticks``）と同じ規則を通る。かつて本モジュールは ``ref`` を渡さない
@@ -62,6 +70,18 @@ class AppendResult(NamedTuple):
     pending_rows: "List[Row]"
 
 
+class SeriesAppendResult(NamedTuple):
+    """系列の組への追記結果（ISSUE-511 段階 8-D-2b の段 3）。
+
+    ``bars`` は ref ごとの追記本数。``pending_rows`` は**組に 1 本**である——形成中の分
+    （``until`` 以降）は ref に依らないので、系列ごとに持ち越しを複製すると次の周期で同じ
+    ティックを系列の数だけ畳むことになる。
+    """
+
+    bars: "dict[str, int]"
+    pending_rows: "List[Row]"
+
+
 def rollup_dir(*, ref: str, data_dir: Any) -> Path:
     """``ref`` のロールアップ出力ディレクトリ（配置権威へ委譲・ISSUE-502 D-16）。"""
     return rollup_paths.ref_dir(ref, data_dir=data_dir)
@@ -92,6 +112,79 @@ def rows_of_last_minute(rows: "Sequence[Row]") -> "List[Row]":
     return [r for r, minute in zip(rows, minutes) if minute == last]
 
 
+def _settled_minute(path: Path) -> "Optional[pd.Timestamp]":
+    """既存 M1 CSV の先端（最終 date）を **tz-aware な UTC** で返す。不在・空は ``None``。
+
+    M1 CSV の date は naive=UTC（既存契約）であり、読み替えを使う側それぞれに書くと、片方だけ
+    直った瞬間に「確定済みの分」の判断が経路ごとに 1 分ずれる。読み替えはここ 1 箇所である。
+    """
+    settled = tick_m1.last_m1_date(path)
+    if settled is not None and settled.tzinfo is None:
+        settled = settled.tz_localize("UTC")
+    return settled
+
+
+def append_m1_for_closed_minutes_for_series(
+    rows: "Sequence[Row]", *, refs: "Sequence[str]", data_dir: Any, until: Any
+) -> SeriesAppendResult:
+    """``until`` より前の分だけを**1 回だけ畳んで**、案内の全系列の M1 CSV へ追記する。
+
+    行選択（設計 D-1・ISSUE-511 段階 8-D-2b の段 3）:
+        畳みへ渡す行は**1 回だけ**選ぶ。下限は ``min(先端)``（先端の無い系列が 1 つでもあれば
+        下限なし）であり、そこから ``until`` までの行が「閉じた分」である。各系列へは
+        ``index > その系列の先端`` の分バーだけを追記する。先端に差があるときに落ちるのは
+        「進んでいる側で既に確定済みの分」だけで、その分は**必ず遅れている側が使う**——
+        つまり畳んだ分に「どの系列も使わない分」は無い。系列ごとに行を選び直して畳むと、
+        同じティックを系列の数だけ畳むことになる（出力は正しいままなので状態検証では原理的に
+        落ちない・ISSUE-450 と同型）。その不在は
+        ``marketdata/tests/test_mt5_series_fan_out.py`` の C-1 / C-2 / D-1 が固定する。
+
+    重複ガード（ISSUE-477・last_date の等号側）の規則は 1 系列のときと同じで、等号側を含めて
+    畳みの**前**に落とす。違うのは「どの先端で落とすか」だけであり、組では下限（``min``）で
+    落とし、残りは系列ごとに追記の直前で落とす。
+
+    形成中の分（pending）は ``until`` 以降の行で、ref に依らないので**組に 1 本**返す。
+    """
+    rows = list(rows)
+    refs = tuple(refs)
+    if not rows:
+        # 行 0 なら既存側の読みも案内の組み立ても発行しない（新着 0 の周期で書込・読取 0）。
+        return SeriesAppendResult(bars={ref: 0 for ref in refs}, pending_rows=[])
+    boundary = pd.Timestamp(until)
+    if boundary.tzinfo is None:
+        boundary = boundary.tz_localize("UTC")
+
+    # 案内は 1 つだけ組む。価格基準と spread 宣言の照合・置き場の解決・既存 CSV の列形の照合は
+    #   ここを通る（案内を作らずに書く経路を作らない・設計 D-4）。畳みの中の列形の照合も同じ
+    #   案内を使うため、照合した対象と書く対象は構造的に一致する。
+    plan = tick_m1.series_plan(refs, data_dir=data_dir)
+    settled = {ref: _settled_minute(plan.paths[ref]) for ref in plan.refs}
+    floor = None if any(v is None for v in settled.values()) else min(settled.values())
+
+    closed: "List[Row]" = []
+    pending: "List[Row]" = []
+    for row in rows:
+        minute = _utc_minute(row)
+        if floor is not None and minute <= floor:
+            continue  # どの系列でも確定済みの分（等号側を含む）＝重複。畳みへ入れない。
+        (closed if minute < boundary else pending).append(row)
+
+    if not closed:
+        return SeriesAppendResult(bars={ref: 0 for ref in plan.refs}, pending_rows=pending)
+
+    folded = tick_m1.fold_ticks_for_series(ingest.rows_to_frame(closed), plan=plan)
+    bars: "dict[str, int]" = {}
+    for ref in plan.refs:
+        m1 = folded[ref]
+        mark = settled[ref]
+        if mark is not None:
+            # M1 の index は naive UTC。先端の読み替えは _settled_minute の 1 箇所だけなので、
+            #   突き合わせのためにここで naive へ戻す（第 2 の読み替え規則を作らない）。
+            m1 = m1[m1.index > mark.tz_localize(None)]
+        bars[ref] = tick_m1.append_m1_rows(m1, plan.paths[ref])
+    return SeriesAppendResult(bars=bars, pending_rows=pending)
+
+
 def append_m1_for_closed_minutes(
     rows: "Sequence[Row]", *, ref: str, data_dir: Any, until: Any
 ) -> AppendResult:
@@ -99,6 +192,11 @@ def append_m1_for_closed_minutes(
 
     ``rows`` は**新着分のみ**（前周期からの持ち越しを含む）。畳みに渡すのは閉じた分の行だけで、
     当日の累積は 1 行も読み直さない（既存側は末尾 1 行だけを見る・下記ガード）。
+
+    1 要素の組を :func:`append_m1_for_closed_minutes_for_series` へ通す**薄い包み**である
+    （ISSUE-511 段階 8-D-2b の段 3）。名前・シグネチャ・戻り値は変えていない: 組が 1 つなら
+    下限（``min(先端)``）はその系列の先端そのものなので、行選択も追記も従来と 1 ビットも
+    変わらない（``marketdata/tests/test_mt5_series_fan_out.py`` の I-1 が byte で固定する）。
 
     重複ガード（ISSUE-477・**last_date の等号側**）:
         既存 M1 の最終 date と同じ分（またはそれ以前）の行は、既に確定済みであり畳まない・
@@ -111,43 +209,10 @@ def append_m1_for_closed_minutes(
         規則は :func:`marketdata.tick_m1.append_m1_from_ticks` の ``index > last_date``
         と同じ「date 狭義単調増加」である。
     """
-    rows = list(rows)
-    if not rows:
-        return AppendResult(bars=0, pending_rows=[])  # 行 0 なら既存側の読みも発行しない。
-    boundary = pd.Timestamp(until)
-    if boundary.tzinfo is None:
-        boundary = boundary.tz_localize("UTC")
-
-    # 置き場は 1 回だけ解決して使い回す（既存側の読みと追記が同じファイルを指すことを、同じ
-    #   呼出の結果であることで示す）。畳み（``tick_m1.fold_ticks_for``）の中の列形の照合も
-    #   同じ ``ref`` / ``data_dir`` から ``tick_m1.m1_csv_path`` を引くため、照合した対象と
-    #   書く対象は構造的に一致する（置き場の決め方を本モジュールが持たないことが前提）。
-    out_path = tick_m1.m1_csv_path(ref=ref, data_dir=data_dir)
-
-    settled = tick_m1.last_m1_date(out_path)
-    if settled is not None and settled.tzinfo is None:
-        settled = settled.tz_localize("UTC")  # M1 CSV の date は naive=UTC（既存契約）。
-
-    closed: "List[Row]" = []
-    pending: "List[Row]" = []
-    for row in rows:
-        minute = _utc_minute(row)
-        if settled is not None and minute <= settled:
-            continue  # 確定済みの分（等号側を含む）＝重複。畳みへ入れない。
-        (closed if minute < boundary else pending).append(row)
-
-    if not closed:
-        return AppendResult(bars=0, pending_rows=pending)
-
-    # 畳みは ``ref`` を渡す公開の口へ委ねる（ISSUE-511 段階 3 の段階 5・V-2）。spread 列の有無と
-    #   point は台帳の宣言が決め、既存 CSV の列形との照合は書き手の入口と同じ規則を通る。
-    #   価格基準は渡さない。唯一の源は台帳であり、``ref`` を渡せば素材化の権威が引く
-    #   （段階 6・TBD-4）。権威経路 rebuild も同じ源から引くため、2 経路が割れる余地が無い。
-    m1 = tick_m1.fold_ticks_for(
-        ingest.rows_to_frame(closed), ref=ref, data_dir=data_dir,
+    appended = append_m1_for_closed_minutes_for_series(
+        rows, refs=(ref,), data_dir=data_dir, until=until
     )
-    bars = tick_m1.append_m1_rows(m1, out_path)
-    return AppendResult(bars=bars, pending_rows=pending)
+    return AppendResult(bars=appended.bars[ref], pending_rows=appended.pending_rows)
 
 
 def update_rollups(*, ref: str, data_dir: Any, timeframes: "Optional[Sequence[str]]" = None):
@@ -171,3 +236,14 @@ def update_rollups(*, ref: str, data_dir: Any, timeframes: "Optional[Sequence[st
     )
     new_state.save(out_dir)
     return new_state
+
+
+def update_rollups_for_series(*, refs: "Sequence[str]", data_dir: Any) -> "dict[str, Any]":
+    """組の各系列の上位足を差分更新する（ISSUE-511 段階 8-D-2b の段 3）。
+
+    ロールアップは系列ごとに別の置き場（``rollups/<series>/``）を持ち、入力も系列ごとの M1 CSV
+    である。よってここに束ねられる計算は無く、規則の実体は :func:`update_rollups` 1 つのまま
+    （本関数は組を回すだけ）。畳みと違って「1 回で済む共通部分」が無いことを、関数を分けずに
+    ループで示す。
+    """
+    return {ref: update_rollups(ref=ref, data_dir=data_dir) for ref in refs}

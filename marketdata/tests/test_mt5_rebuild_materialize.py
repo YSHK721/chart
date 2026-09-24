@@ -359,10 +359,17 @@ def _tick_m1_functions_called() -> "set[str]":
 
 
 def test_rebuild_calls_the_public_materializer_instead_of_folding_by_hand():
-    """rebuild.py は ``tick_m1.ticks_to_m1`` を呼ばず ``tick_m1.materialize_m1_day`` を呼ぶ（順序の第 2 定義を持たない）。"""
+    """rebuild.py は ``tick_m1.ticks_to_m1`` を呼ばず、素材化の公開の口を呼ぶ（順序の第 2 定義を持たない）。
+
+    ISSUE-511 段階 8-D-2b の段 3 で rebuild は 1 系列専用の口から**系列の組の口**へ移った
+    （当日の parquet を 1 回読み、1 回だけ畳んで組の各系列へ配る）。期待する名前だけを同じ 1 段
+    移し、表明（手書き畳みの不在）は 1 文字も変えていない。空振り（名前を 1 つも拾えないまま
+    緑になる形）でないことは、拾った名前の集合が空でないことで示す。
+    """
     called = _tick_m1_functions_called()
+    assert called, "tick_m1 の呼出を 1 つも拾えていません（名前解決が空振りしています）"
     assert "ticks_to_m1" not in called
-    assert "materialize_m1_day" in called
+    assert "materialize_m1_day_for_series" in called
 
 
 # =====================================================================

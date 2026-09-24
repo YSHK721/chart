@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 import pandas as pd
 
@@ -50,12 +50,32 @@ REPLACED = "replaced"
 MISSING = "missing"
 
 
+def authoritative_day_m1_for_series(
+    day: Any, *, symbol: str, refs: "Sequence[str]", data_dir: Any
+) -> "dict[str, pd.DataFrame]":
+    """確定 parquet から当日の M1 を、案内の**全系列**ぶん作る（ISSUE-511 段階 8-D-2b の段 3）。
+
+    読むのは当日の parquet **1 個だけ**、畳むのも **1 回だけ**である（系列ごとに素材化を呼ぶと
+    同じティックを系列の数だけ畳む。出力は正しいままなので状態検証では原理的に落ちない・
+    ISSUE-450 と同型）。その不在は ``marketdata/tests/test_mt5_series_fan_out.py`` の C-3 が
+    parquet 読取と唯一の畳み点の発行で固定する。
+
+    案内（:func:`marketdata.tick_m1.series_plan`）は価格基準と spread 宣言の一致を先に照合し、
+    既存 CSV の列形とも突き合わせる。価格基準は**渡さない**（唯一の源は台帳・段階 6・TBD-4）。
+    """
+    plan = tick_m1.series_plan(refs, data_dir=data_dir)
+    parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
+    return tick_m1.materialize_m1_day_for_series(pd.read_parquet(parquet), plan=plan)
+
+
 def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any) -> pd.DataFrame:
     """確定 parquet から当日の M1 を**権威経路と同じ計算**で作る。
 
-    1 日分の素材化（畳む → 日次クリーニング → 残った分だけ気配幅）は
-    :func:`marketdata.tick_m1.materialize_m1_day` に委ねる（順序を手書き複製しない・ISSUE-511
-    段階 3 前提 (c)）。spread 列の有無と point は ``ref`` の台帳宣言が決める。全量経路との
+    1 要素の組を :func:`authoritative_day_m1_for_series` へ通す**薄い包み**である
+    （ISSUE-511 段階 8-D-2b の段 3）。名前・シグネチャ・戻り値は変えていない。
+
+    1 日分の素材化（畳む → 日次クリーニング → 残った分だけ気配幅）は :mod:`marketdata.tick_m1`
+    の素材化の口に委ねる（順序を手書き複製しない・ISSUE-511 段階 3 前提 (c)）。spread 列の有無と point は ``ref`` の台帳宣言が決める。全量経路との
     同一性は検定（全量経路との突合）が固定する。
 
     列を射影せずに読むのは、この parquet が :func:`marketdata.mt5_ticks.ingest.rows_to_frame`
@@ -70,8 +90,9 @@ def authoritative_day_m1(day: Any, *, symbol: str, ref: str, data_dir: Any) -> p
     切り替えたときに日中経路が旧基準で走り、日次確定のたびに再構築が「差がある」と判定して当日
     区間を旧基準へ書き戻す。値はどちらも「それらしい」ので、置換されたことにも気付けない。
     """
-    parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
-    return tick_m1.materialize_m1_day(pd.read_parquet(parquet), ref=ref)
+    return authoritative_day_m1_for_series(
+        day, symbol=symbol, refs=(ref,), data_dir=data_dir
+    )[ref]
 
 
 def _read_m1_csv(path: Path) -> pd.DataFrame:
@@ -149,19 +170,68 @@ def _regenerate_rollups(*, ref: str, data_dir: Any) -> None:
     rollup.stream_build(m1_path, rollup.rollup_timeframes(), out_dir, ref).save(out_dir)
 
 
+def rebuild_day_for_series(
+    day: Any, *, symbol: str, refs: "Sequence[str]", data_dir: Any,
+    update_rollups: bool = True
+) -> "dict[str, str]":
+    """閉じた UTC 日 ``day`` を、組の**全系列**について権威経路で作り直す（段 8-D-2b の段 3）。
+
+    当日の parquet を読んで畳むのは **1 回だけ**で（:func:`authoritative_day_m1_for_series`）、
+    その結果を系列ごとの M1 CSV へ突き合わせる。差が無い系列には 1 バイトも書かない
+    （清浄日は書込 0＝計算量検定 CX-b と整合）。
+
+    素材（当日 parquet）か対象（その系列の M1 CSV）が無い系列は :data:`MISSING` である。
+    **どの系列にも対象が無ければ parquet を読まない**（是正の当てが無いのに畳むのは、出力に
+    使わない計算そのもの）。案内は「対象が在る系列」だけで組む——書かない系列の列形まで照合すると、
+    まだ作っていない系列の宣言で当日の是正が止まる。
+
+    戻り値は ref ごとの :data:`UNCHANGED` / :data:`REPLACED` / :data:`MISSING`。
+    """
+    refs = tuple(refs)
+    paths = {ref: tick_m1.m1_csv_path(ref=ref, data_dir=data_dir) for ref in refs}
+    parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
+    present = [ref for ref in refs if paths[ref].is_file()]
+    if not present or not parquet.is_file():
+        return {ref: MISSING for ref in refs}
+
+    expected = authoritative_day_m1_for_series(
+        day, symbol=symbol, refs=present, data_dir=data_dir
+    )
+    outcome = {ref: MISSING for ref in refs}
+    for ref in present:
+        outcome[ref] = _replace_day_if_changed(
+            day, expected[ref], path=paths[ref], ref=ref, data_dir=data_dir,
+            update_rollups=update_rollups,
+        )
+    return outcome
+
+
 def rebuild_day(
     day: Any, *, symbol: str, ref: str, data_dir: Any, update_rollups: bool = True
 ) -> str:
     """閉じた UTC 日 ``day`` を権威経路で作り直し、差分がある場合だけ置換する。
 
+    1 要素の組を :func:`rebuild_day_for_series` へ通す**薄い包み**である（段 8-D-2b の段 3）。
+    名前・シグネチャ・戻り値は変えていない。
+
     戻り値は :data:`UNCHANGED` / :data:`REPLACED` / :data:`MISSING`。
     """
-    m1_path = tick_m1.m1_csv_path(ref=ref, data_dir=data_dir)
-    parquet = tick_m1.day_parquet_path(day, symbol=symbol, data_dir=data_dir)
-    if not m1_path.is_file() or not parquet.is_file():
-        return MISSING
+    return rebuild_day_for_series(
+        day, symbol=symbol, refs=(ref,), data_dir=data_dir, update_rollups=update_rollups
+    )[ref]
 
-    expected = authoritative_day_m1(day, symbol=symbol, ref=ref, data_dir=data_dir)
+
+def _replace_day_if_changed(
+    day: Any, expected: pd.DataFrame, *, path: Path, ref: str, data_dir: Any,
+    update_rollups: bool
+) -> str:
+    """1 系列の当日区間を権威の内容へ置換する（差が無ければ 1 バイトも書かない）。
+
+    :func:`rebuild_day_for_series` から系列ごとに呼ぶ。1 日分の畳みは呼出側が既に済ませており、
+    ここは「読んだ CSV と権威の当日区間を突き合わせて、違うときだけ原子的に差し替える」だけを
+    行う（判定・切り貼り・置換の規則は本関数 1 つが持つ＝系列が増えても第 2 定義を作らない）。
+    """
+    m1_path = path
     current = _read_m1_csv(m1_path)
     # 日窓 ``[真夜中, 翌日の真夜中)`` の定義は :mod:`server_clock` が唯一源である
     # （ISSUE-502 D-15）。ここで真夜中を自前で組むと第 2 定義になり、片方だけ直した日に
@@ -191,6 +261,24 @@ def rebuild_days(
     return {
         day: rebuild_day(
             day, symbol=symbol, ref=ref, data_dir=data_dir, update_rollups=update_rollups
+        )
+        for day in sorted(set(days or ()))
+    }
+
+
+def rebuild_days_for_series(
+    days: "Optional[Iterable[Any]]" = (), *, symbol: str, refs: "Sequence[str]", data_dir: Any,
+    update_rollups: bool = True
+) -> "dict[Any, dict[str, str]]":
+    """複数日を昇順に、組の全系列について再構築する（段 8-D-2b の段 3）。
+
+    日をまたいで束ねられる計算は無い（確定 parquet は日ごとに別のファイルである）。束ねるのは
+    「1 日を系列の数だけ読んで畳む」ことの方であり、それは :func:`rebuild_day_for_series` が
+    担う。
+    """
+    return {
+        day: rebuild_day_for_series(
+            day, symbol=symbol, refs=refs, data_dir=data_dir, update_rollups=update_rollups
         )
         for day in sorted(set(days or ()))
     }

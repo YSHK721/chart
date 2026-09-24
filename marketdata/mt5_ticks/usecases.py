@@ -63,6 +63,17 @@ class PublishResult(NamedTuple):
     pending_rows: "List[Row]"
 
 
+class SeriesPublishResult(NamedTuple):
+    """系列の組への反映結果（ISSUE-511 段階 8-D-2b の段 3）。
+
+    ``bars`` は ref ごとの追記本数。``pending_rows`` は**組に 1 本**（形成中の分は ref に
+    依らない）。
+    """
+
+    bars: "Dict[str, int]"
+    pending_rows: "List[Row]"
+
+
 @dataclass
 class PollOnce:
     """UC-01: 1 周期ぶんの増分を取り、検証し、ジャーナルへ追記する。"""
@@ -145,8 +156,41 @@ class FinalizeDay:
 
 
 @dataclass
+class PublishSeries:
+    """UC-03（系列の組）: 閉じた分を**1 回だけ畳んで**組の各系列へ配り、上位足へ差分反映する。
+
+    畳みが 1 回で済むのは、spread 付きの系列が列の上位集合だからである（案内＝
+    :func:`marketdata.tick_m1.series_plan` が価格基準と宣言の一致を先に照合する）。上位足の更新は
+    **追記が実際にあった系列だけ**へ発行する（1 本も増えていない系列の増分更新は、出力を変えない
+    読み書き＝ISSUE-450 と同型の固定費になる）。
+    """
+
+    refs: "Sequence[str]"
+    data_dir: Any
+    clock: Clock
+    update_rollups: bool = True
+
+    def __call__(self, rows: "Sequence[Row]") -> SeriesPublishResult:
+        until = _utc_now(self.clock).replace(second=0, microsecond=0)
+
+        appended = m1_chain.append_m1_for_closed_minutes_for_series(
+            rows, refs=self.refs, data_dir=self.data_dir, until=until
+        )
+        written = [ref for ref, bars in appended.bars.items() if bars]
+        if written and self.update_rollups:
+            m1_chain.update_rollups_for_series(refs=written, data_dir=self.data_dir)
+        return SeriesPublishResult(bars=appended.bars, pending_rows=appended.pending_rows)
+
+
+@dataclass
 class PublishDataset:
-    """UC-03: 閉じた分だけを M1 CSV へ追記し、上位足へ差分反映する。"""
+    """UC-03: 閉じた分だけを M1 CSV へ追記し、上位足へ差分反映する。
+
+    1 要素の組を :class:`PublishSeries` へ通す**薄い包み**である（ISSUE-511 段階 8-D-2b の段 3）。
+    名前・引数・戻り値は変えていない（Composition Root は段 5 まで 1 要素しか渡さない＝本段で
+    実行時の挙動は変わらない。``marketdata/tests/test_mt5_series_fan_out.py`` の I-2 が出力の
+    byte で固定する）。
+    """
 
     ref: str
     data_dir: Any
@@ -154,14 +198,13 @@ class PublishDataset:
     update_rollups: bool = True
 
     def __call__(self, rows: "Sequence[Row]") -> PublishResult:
-        until = _utc_now(self.clock).replace(second=0, microsecond=0)
-
-        appended = m1_chain.append_m1_for_closed_minutes(
-            rows, ref=self.ref, data_dir=self.data_dir, until=until
+        published = PublishSeries(
+            refs=(self.ref,), data_dir=self.data_dir, clock=self.clock,
+            update_rollups=self.update_rollups,
+        )(rows)
+        return PublishResult(
+            bars=published.bars[self.ref], pending_rows=published.pending_rows
         )
-        if appended.bars and self.update_rollups:
-            m1_chain.update_rollups(ref=self.ref, data_dir=self.data_dir)
-        return PublishResult(bars=appended.bars, pending_rows=appended.pending_rows)
 
 
 @dataclass

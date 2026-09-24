@@ -357,12 +357,15 @@ def test_only_closed_minute_ticks_reach_the_m1_fold(tmp_path, monkeypatch, close
             rows.append((_label_ms(when), 66000.0 + i, 66010.0 + i))
     until_utc = start + dt.timedelta(minutes=closed_minutes)
 
-    # 継ぎ目は委譲先そのもの（``tick_m1.fold_ticks_for``）に置く（段階 6 の申し送り）。かつては
+    # 継ぎ目は委譲先そのもの（``tick_m1`` の系列版の畳み口）に置く（段階 6 の申し送り）。かつては
     #   その内側の ``ticks_to_m1`` を包んでいたため、``m1_chain`` の委譲先を変えると測定が空振り
-    #   した（実装詳細ではなく「畳みへ渡る行数」を固定する）。``**_`` は ref・data_dir などの
-    #   付随引数を受け流すためだけに在る。
-    fold = CallSpy(tick_m1.fold_ticks_for, measure=lambda frame, **_: len(frame))
-    monkeypatch.setattr(tick_m1, "fold_ticks_for", fold)
+    #   した（実装詳細ではなく「畳みへ渡る行数」を固定する）。ISSUE-511 段階 8-D-2b の段 3 で
+    #   ``m1_chain`` が 1 系列専用の口から系列の組の口へ移ったので、継ぎ目も**同じ 1 段**だけ
+    #   移す（表明する量＝閉じた分のティック行数は 1 文字も変えていない。空振りしていない
+    #   ことは、下の ``fold.total`` が 0 でないことで示される）。``**_`` は plan などの付随引数を
+    #   受け流すためだけに在る。
+    fold = CallSpy(tick_m1.fold_ticks_for_series, measure=lambda frame, **_: len(frame))
+    monkeypatch.setattr(tick_m1, "fold_ticks_for_series", fold)
 
     # Act
     got = m1_chain.append_m1_for_closed_minutes(
@@ -371,6 +374,7 @@ def test_only_closed_minute_ticks_reach_the_m1_fold(tmp_path, monkeypatch, close
 
     # Assert: 発行した畳み − 出力に使った行 = 0。
     assert got.bars == closed_minutes
+    assert fold.count > 0, "継ぎ目に何も届いていません（Spy が張り付く先を失って恒真です）"
     assert fold.total == closed_minutes * per_minute, (
         f"閉じた分 {closed_minutes * per_minute} 行に対し {fold.total} 行を畳みました"
     )
