@@ -50,6 +50,15 @@ _ALLOWED: "dict[str, set[str]]" = {
     # 実測・TBD-5 承認）。ここへ 1 つでも import を足すと tf_meta↔dataset の相互依存や
     # 「台帳が読取側を知る」逆流が入り込む。宣言を検定へ昇格させる。
     "dataset_registry.py": {"marketdata.paths"},
+    # 供給の鮮度判定（ISSUE-526 段 1）。素材の所有者側に置き、暦の権威（simulator / indigators）
+    # へは依存しない。末尾読み・銘柄の台帳・M1 の置き場の権威・物理基点の 4 つだけを参照する。
+    "supply_freshness.py": {
+        "pandas",
+        "marketdata.paths",
+        "marketdata.tail_reader",
+        "marketdata.dataset_registry",
+        "marketdata.tick_m1",
+    },
     # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
     # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
     "tick_tree.py": {"pandas", "marketdata.paths"},
