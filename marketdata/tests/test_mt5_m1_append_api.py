@@ -8,16 +8,19 @@
     消えない。A-5 の裁定はこの依存を恒久的に解消することであり、そのために
     ``tick_m1`` へ追記の公開 API を 1 個だけ足す（既存関数は 1 行も変えない）。
 
-本検定が固定するのは 4 点である:
+本検定が固定するのは 5 点である:
     1. 追記結果が全構築経路（``tick_m1.build_m1_from_ticks``）と **1 バイト一致**すること
     2. ヘッダを二重に書かないこと（追記の冪等な入り口）
     3. 空入力で **1 バイトも書かない**こと（新着 0 の周期で書込 0 ＝ CX-b と整合）
     4. ``m1_chain`` が private を**もう参照していない**こと（AST 施行・宣言でなく機械検査）
+    5. 権威の公開関数が全数、理由と ISSUE 番号つきで台帳に宣言されていること
+       （ISSUE-532 欠陥 3。集合のリテラル固定＝追加ごとの承認往復を、宣言の施行へ替えた）
 """
 from __future__ import annotations
 
 import ast
 import datetime as dt
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -179,55 +182,137 @@ def test_m1_chain_calls_the_public_append_api():
     assert m1_chain.tick_m1.append_m1_rows is tick_m1.append_m1_rows
 
 
-def test_the_public_api_is_the_only_new_name_added_to_the_authority():
-    """A-5 は「1 個だけ足す」承認である。追加は 1 個に閉じる（勝手に面を広げない）。
+# =====================================================================
+# 公開面の宣言台帳（ISSUE-532 欠陥 3）: 追加を人の承認ではなく宣言で通す
+# =====================================================================
+#
+# 旧検定は公開名の集合をリテラルで固定していた。意図（面が黙って広がらない）は正しいが、
+# 名前を 1 つ足すたびに承認の往復が発生した。意図は保ち、手段だけを替える——公開関数は
+# すべて権威側の台帳 PUBLIC_API_LEDGER に「理由と ISSUE 番号」つきで宣言し、宣言と実体の
+# 食い違いを機械で落とす。人の承認なしに名前を足せるが、理由と ISSUE 番号が無ければ落ちる。
+#
+# 検査は AST のみで行う（権威側を import せずソースの構文から判定する）。宣言文の内容が
+# 妥当かは決定不能なので、機械で固定するのは決定可能な 4 点だけである:
+#   1. 公開関数に宣言が在ること        3. 宣言が ISSUE 番号を名指すこと
+#   2. 宣言に実体が在ること            4. 宣言に ISSUE 番号以外の本文（理由）が在ること
 
-    ``tick_m1`` の公開名のうち、本スライスで足してよいのは追記 API 1 個だけである。
-    """
-    public = {
-        node.name for node in ast.parse(
-            Path(tick_m1.__file__).read_text(encoding="utf-8")
-        ).body
+_LEDGER_NAME = "PUBLIC_API_LEDGER"
+_ISSUE_REF = re.compile(r"ISSUE-\d+")
+_REASON_TRIM = " 　:：・-—.,()（）"
+
+
+def _public_functions(tree: ast.Module) -> "set[str]":
+    """モジュール直下の公開関数名（``_`` 始まりを除く）。"""
+    return {
+        node.name for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
     }
-    # ISSUE-479 M-2: tick 木の権威 5 名は marketdata.tick_tree へ、CLI の main は
-    # marketdata.tools.tick_m1_cli へ移した（tick_m1 は同一オブジェクトを再輸出する）。
-    # 許容集合から 6 名が抜ける＝**縮小**であり、検定は緩まず強まる。
-    # ISSUE-512 段階 2（承認 2026-09-13）: 形成中バーの集計規則を読取から切り出した純関数
-    # ``tick_m1.forming_bar_from_frame`` を 1 名だけ足す。受信ジャーナルから読む側
-    # （marketdata.tick_day_source）と規則を共有し、規則が 2 つに割れないようにするため。
-    assert public == {
-        "ts_and_mid", "ticks_to_m1", "m1_csv_path",
-        "build_m1_from_ticks", "last_m1_date", "append_m1_from_ticks",
-        "forming_bar_from_ticks", "forming_bar_from_frame", "append_m1_rows",
-        # ISSUE-515 対策 1（承認 2026-09-13）: 価格基準つきの公開面 ``tick_m1.ts_and_price``。
-        # 市場プロファイルが ref ごとの基準（台帳）で畳むため（mid 固定の ts_and_mid の隣）。
-        "ts_and_price",
-        # ISSUE-515 対策 2（承認 2026-09-13）: 単一ティック版の価格規則 ``tick_m1.quote_price`` と、
-        # 基準の検証 ``tick_m1.validate_price_basis``。ライブ tick バッファが規則を手書きしないため。
-        "quote_price", "validate_price_basis",
-        # ISSUE-511 段階 3 前提 (c)（承認 2026-09-15）: rebuild が 1 日分の素材化の手順を手書き複製せず呼ぶ公開の口。
-        "materialize_m1_day",
-        # ISSUE-511 段階 3 の段階 4（依頼者指示 2026-09-17）: 書き手（常駐）が周期を回し始める前に
-        # 列形を照合する公開の口 ``tick_m1.check_series_schema``。照合対象の CSV パス・ヘッダ・
-        # 例外型を持つのが本モジュールであるため、公開面もここに置く（規則の実体は
-        # 既存の private な照合関数 1 つのままで、増えたのは呼び口だけ）。
-        "check_series_schema",
-        # ISSUE-511 段階 3 の段階 5（設計 §3・§7 (4)・工程 5 レビューの申し送り 2026-09-17）:
-        # 日中の増分供給が系列（ref）を渡して畳む公開の口 ``tick_m1.fold_ticks_for``。これが無いと
-        # ``m1_chain`` は ``tick_m1.ticks_to_m1`` を直呼びして台帳照合を迂回し続ける（＝台帳が spread を
-        # 宣言した瞬間に日中追記だけが別の列形を書こうとして落ちる）。追加は 1 名に閉じる。
-        "fold_ticks_for",
-        # ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 1 つのティック列から**複数の系列**へ畳むための
-        # 公開の口 3 名。series_plan が各 ref の価格基準と列形の宣言を先に照合して案内を組み、
-        # fold_ticks_for_series と materialize_m1_day_for_series がその案内に従って**畳みを 1 回**
-        # だけ発行し、気配幅を持たない系列へは列を落とした射影を配る（再計算しない）。素朴に系列ごと
-        # 畳むと同じティックを二度畳むことになり、計算量の規約に反する。射影で足りることは実ティック
-        # 371,753 件・4,068 行を 7 列すべて全行で突き合わせて実測した（2026-09-08〜09-10）。
-        # 既存の fold_ticks_for / materialize_m1_day は 1 要素案内の薄い包みとして名前ごと残る。
-        "series_plan", "fold_ticks_for_series", "materialize_m1_day_for_series",
-    }
+
+
+def _ledger_entries(tree: ast.Module) -> "dict[str, str]":
+    """公開名の台帳（名前 -> 宣言文）を AST から読む。"""
+    out: "dict[str, str]" = {}
+    for node in ast.walk(tree):
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(
+            getattr(node, "targets", []))
+        declared_here = [
+            t for t in targets if isinstance(t, ast.Name) and t.id == _LEDGER_NAME]
+        value = getattr(node, "value", None)
+        pairs = zip(getattr(value, "keys", []), getattr(value, "values", []))
+        out.update({
+            key.value: val.value
+            for _ in declared_here for key, val in pairs
+            if isinstance(key, ast.Constant) and isinstance(val, ast.Constant)
+        })
+    return out
+
+
+def _surface_findings(path: Path) -> "list[str]":
+    """公開関数の集合と台帳の宣言の食い違いを、理由つきで並べて返す。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    public = _public_functions(tree)
+    declared = _ledger_entries(tree)
+    return [
+        *(f"{name}: 台帳に宣言が無い（理由と ISSUE 番号を書く）"
+          for name in sorted(public - set(declared))),
+        *(f"{name}: 宣言だけあって実体が無い"
+          for name in sorted(set(declared) - public)),
+        *(f"{name}: 宣言に ISSUE 番号が無い"
+          for name, text in sorted(declared.items()) if not _ISSUE_REF.search(text)),
+        *(f"{name}: 宣言に理由が無い"
+          for name, text in sorted(declared.items())
+          if not _ISSUE_REF.sub("", text).strip(_REASON_TRIM)),
+    ]
+
+
+def _synthetic_module(tmp_path: Path, entries: "dict[str, str]",
+                      functions: "list[str]") -> Path:
+    """台帳 ``entries`` と公開関数 ``functions`` だけを持つモジュールを書き出す。"""
+    ledger = "".join(f"    {name!r}: {text!r},\n" for name, text in entries.items())
+    defs = "".join(f"def {name}():\n    return None\n\n\n" for name in functions)
+    path = tmp_path / "synthetic_authority.py"
+    path.write_text(
+        '"""合成モジュール（台帳検査の検出力を測るための入力）。"""\n\n'
+        f"{_LEDGER_NAME} = {{\n{ledger}}}\n\n\n{defs}",
+        encoding="utf-8")
+    return path
+
+
+def test_every_public_name_of_the_authority_declares_a_reason_and_an_issue():
+    """権威 ``tick_m1`` の公開関数は全数が台帳に理由と ISSUE 番号つきで宣言されている。"""
+    assert _surface_findings(Path(tick_m1.__file__)) == []
+
+
+def test_a_new_public_name_needs_no_approval_when_it_declares_a_reason_and_an_issue(tmp_path):
+    """宣言つきの追加は通る（承認の往復を要求しない＝ISSUE-532 欠陥 3 の達成目標）。"""
+    path = _synthetic_module(tmp_path, {"widen": "ISSUE-999: なぜこの面を足すかの理由"}, ["widen"])
+
+    assert _surface_findings(path) == []
+
+
+def test_a_public_name_with_no_declaration_is_rejected(tmp_path):
+    """宣言の無い公開名は落ちる（面が黙って広がらない＝旧検定の意図を保つ）。"""
+    path = _synthetic_module(tmp_path, {}, ["widen"])
+
+    assert _surface_findings(path) == ["widen: 台帳に宣言が無い（理由と ISSUE 番号を書く）"]
+
+
+@pytest.mark.parametrize("declaration,finding", [
+    ("なぜ足すかは書いたが出所を書かない", "widen: 宣言に ISSUE 番号が無い"),
+    ("ISSUE-999", "widen: 宣言に理由が無い"),
+    ("ISSUE-999: ", "widen: 宣言に理由が無い"),
+])
+def test_a_declaration_without_a_reason_or_an_issue_number_is_rejected(
+        tmp_path, declaration, finding):
+    """理由だけ・ISSUE 番号だけの宣言は落ちる（宣言が形骸化しない）。"""
+    path = _synthetic_module(tmp_path, {"widen": declaration}, ["widen"])
+
+    assert _surface_findings(path) == [finding]
+
+
+def test_a_declaration_whose_implementation_is_absent_is_rejected(tmp_path):
+    """宣言だけあって実体が無ければ落ちる（台帳が実体から乖離しない）。"""
+    path = _synthetic_module(tmp_path, {"ghost": "ISSUE-999: 実体の無い宣言"}, [])
+
+    assert _surface_findings(path) == ["ghost: 宣言だけあって実体が無い"]
+
+
+@pytest.mark.parametrize("declared", [1, 12])
+def test_the_ledger_is_read_in_a_single_parse_whatever_its_size(tmp_path, monkeypatch, declared):
+    """計算量: 発行した parse − 使ったソース（1 本）= 0。宣言数 2 点で増えないことも固定する。
+
+    名前ごとに読み直す実装（O(宣言数) の parse）が生えたら、ここで捕まえる。
+    """
+    entries = {f"widen_{i}": f"ISSUE-999: 理由 {i}" for i in range(declared)}
+    path = _synthetic_module(tmp_path, entries, sorted(entries))
+    parses: "list[int]" = []
+    real_parse = ast.parse
+    monkeypatch.setattr(ast, "parse", lambda *a, **k: parses.append(1) or real_parse(*a, **k))
+
+    _surface_findings(path)
+
+    assert len(parses) == 1, f"ソース 1 本に対し parse を {len(parses)} 回発行した"
 
 
 def test_the_ingest_side_still_reaches_the_authority_for_columns():
