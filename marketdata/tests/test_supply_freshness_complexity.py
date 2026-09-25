@@ -95,6 +95,17 @@ def _write_m1(data_dir, series: str, rows: int) -> None:
         _HEADER + "\n" + body + "\n", encoding="utf-8")
 
 
+def _write_torn_m1(data_dir, series: str, rows: int) -> None:
+    """健全な rows 行のあとに、列数が崩れた 1 行を足した M1 を書く（追記途中の再現）。"""
+    _write_m1(data_dir, series, rows)
+    path = data_dir / f"{series}_m1.csv"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "2026-09-24 22:30:00,1,2,0.5,1.5,10,6,4,9,9\n",
+        encoding="utf-8",
+    )
+
+
 def _observe_once(data_dir, refs, spy) -> dict:
     """1 回だけ観測して判定結果を返す（spy は 0 から数え直す）。"""
     watch = supply_freshness.M1FreshnessWatch(refs, data_dir=data_dir)
@@ -131,6 +142,34 @@ def test_the_reads_do_not_grow_with_the_number_of_m1_rows(tmp_path, monkeypatch)
     large = (spy.calls, spy.read_bytes)
 
     assert large == small
+
+
+def test_a_torn_tail_costs_no_more_reads_than_a_healthy_tail(tmp_path, monkeypatch):
+    """末尾が壊れていても、読みの発行もバイト数も健全な末尾と変わらない（読み直さない）。
+
+    壊れた末尾を安全に扱う素直な誤りは「例外が出たら全読みでやり直す」である。出力
+    （先端が読めないという値）は正しいまま、費用だけが 2 桁跳ねるので状態検証では落ちない。
+    """
+    ref = "jp225_mt5"
+    series = dataset_registry.series_of(ref)
+    healthy_dir = tmp_path / "healthy"
+    torn_small_dir = tmp_path / "torn_small"
+    torn_large_dir = tmp_path / "torn_large"
+    healthy_dir.mkdir()
+    _write_m1(healthy_dir, series, rows=_SMALL_ROWS)
+    for directory, rows in ((torn_small_dir, _SMALL_ROWS), (torn_large_dir, _LARGE_ROWS)):
+        directory.mkdir()
+        _write_torn_m1(directory, series, rows=rows)
+
+    spy = _TailSpy(monkeypatch)
+    _observe_once(healthy_dir, (ref,), spy)
+    healthy = (spy.calls, spy.read_bytes)
+    _observe_once(torn_small_dir, (ref,), spy)
+    torn_small = (spy.calls, spy.read_bytes)
+    _observe_once(torn_large_dir, (ref,), spy)
+    torn_large = (spy.calls, spy.read_bytes)
+
+    assert (torn_small, torn_large) == (healthy, healthy)
 
 
 def test_adding_a_series_does_not_raise_the_issuance_per_series(tmp_path, monkeypatch):

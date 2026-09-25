@@ -35,6 +35,14 @@ STALE = "stale"
 #: 基準が無いことを黙って合格にしない。
 UNDECIDABLE = "undecidable"
 
+#: 判定の値（先端が読めない＝M1 の末尾が torn）。健全・異常・判定不能のいずれとも別の値であり、
+#: :func:`m1_tip` の戻りもこの値を兼ねる（同じ事実に 2 つの呼び名を作らない）。
+#:
+#: 末尾は非原子的な追記の途中で壊れうる（NUL の混入・列数の崩れ）。そこで例外が素通りすると、
+#: **供給の停止を検知するはずのものが、供給の停止と同じ理由で死ぬ**（ISSUE-529 と同型）。
+#: 壊れていることを黙って健全にもせず、落ちもせず、名前を付けて返す。
+UNREADABLE = "unreadable"
+
 #: 基準系列がこれだけ進んだ観測区間でのみ判定する（分）。
 #:
 #: 1 分より大きくなければならない。兄弟系列の書き手は互いに独立した常駐であり、1 つの観測の
@@ -43,20 +51,29 @@ UNDECIDABLE = "undecidable"
 MIN_REFERENCE_ADVANCE_MINUTES = 3
 
 
-def m1_tip(ref: str, data_dir=DATA_DIR) -> Optional[pd.Timestamp]:
+def m1_tip(ref: str, data_dir=DATA_DIR) -> "Optional[pd.Timestamp | str]":
     """系列 ref の M1 CSV の**末尾 1 行**の date（naive UTC）。無い・空なら None。
 
     全読みしない。末尾からの逆シーク（:func:`marketdata.tail_reader.read_tail`）で 1 行だけ読む。
     M1 の置き場の組み立ては :func:`marketdata.tick_m1.m1_csv_path` が唯一源であり、ここでは
     その答えを受け取るだけである（置き場の規則を手書きで複製しない）。
+
+    末尾が壊れていたら :data:`UNREADABLE` を返す（**落ちない・黙って健全にしない**）。壊れ方は
+    1 つではない: 列数が崩れれば末尾読みが Fail-Stop し（ISSUE-455 の防護）、日付として
+    読めなければ日付解析が失敗し、NUL が混ざれば例外なしに欠損値が出る。どれも「先端が
+    読めない」という 1 つの事実なので、例外の有無ではなく事実の名前で返す。
     """
     path = tick_m1.m1_csv_path(ref, data_dir)
     if not path.exists():
         return None
-    tail = tail_reader.read_tail(path, 1)
-    if tail.empty:
-        return None
-    return pd.Timestamp(tail.index[-1])
+    try:
+        tail = tail_reader.read_tail(path, 1)
+        if tail.empty:
+            return None
+        tip = pd.Timestamp(tail.index[-1])
+    except Exception:
+        return UNREADABLE
+    return UNREADABLE if pd.isna(tip) else tip
 
 
 class M1FreshnessWatch:
@@ -83,16 +100,24 @@ class M1FreshnessWatch:
             ref: _advance_minutes(self._previous.get(ref), tip)
             for ref, tip in tips.items()
         }
-        self._previous = {ref: tip for ref, tip in tips.items() if tip is not None}
+        # 先端が読めなかった観測は前回観測として残さない（壊れた値を次の差分へ持ち込まない）。
+        self._previous = {
+            ref: tip for ref, tip in tips.items() if isinstance(tip, pd.Timestamp)
+        }
         return {
-            ref: _verdict(ref, _siblings(ref, advances), self._min_reference_advance)
+            ref: UNREADABLE if tips[ref] is UNREADABLE
+            else _verdict(ref, _siblings(ref, advances), self._min_reference_advance)
             for ref in self._refs
         }
 
 
 def _advance_minutes(previous, tip) -> "int | None":
-    """前回観測から何分ぶん進んだか。前回が無い・先端が無いなら None（観測できていない）。"""
-    if tip is None or previous is None:
+    """前回観測から何分ぶん進んだか。前回が無い・先端が無いなら None（観測できていない）。
+
+    先端が時刻でない（無い・読めない）ものは差分を取らない。壊れた先端で差を作ると、
+    基準としても対象としても偽の進みが入り込む。
+    """
+    if not isinstance(tip, pd.Timestamp) or previous is None:
         return None
     return int((tip - previous).total_seconds() // 60)
 
