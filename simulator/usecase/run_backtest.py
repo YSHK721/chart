@@ -36,6 +36,7 @@ from simulator.domain.account import Account
 from simulator.usecase._execution import admit_orders
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
+from simulator.usecase.entry_price_basis import declared_entry_price_basis
 from simulator.usecase.evaluation_point import TICK_GRANULARITY
 from simulator.usecase.margin_guard import MarginGuard
 from simulator.usecase.models import AccountSpec, BacktestResult
@@ -206,6 +207,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # OnInit 前処理
         self._strategy.on_init(config, self._indicators)
 
+        # 建値基準は**戦略の宣言**から読む（ISSUE-533 段階 1）。run の設定から取らない
+        #   ——判定の瞬間を知っているのは戦略だけであり、設定値と一致する保証が無い。
+        #   on_init のあとに読むのは、宣言が自分の状態から導かれる戦略（spec 駆動）を
+        #   許すためである。run につき 1 回だけ読む（評価点ごとに読み直さない）。
+        entry_price_basis = declared_entry_price_basis(self._strategy)
+
         trades: list = []
         deals: list = []
         balance_curve: list[float] = []
@@ -252,7 +259,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 spec=spec,
                 leverage=leverage,
                 contract_size=contract_size,
-                entry_price_basis=features.entry_price_basis,
+                entry_price_basis=entry_price_basis,
                 pending_oco=features.pending_oco,
             ),
             sltp=SltpMonitor(ledger=ledger, sltp_tie=features.sltp_tie),

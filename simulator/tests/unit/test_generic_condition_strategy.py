@@ -8,7 +8,7 @@ StrategyPort 実装（新規 Port 0）。spec 由来の EntryConditions（TBD-11
     - warmup ガード: bar_index < max_shift → []
     - held_sides 重複抑止（同方向保有中は再発注しない）
     - 成行 Order（kind="market"・price=None）・SL/TP は sltp_from_points（点数固定）
-    - 基準価格系列は required_price_series(entry_price_basis)（close→"close" / current_open→"open"）
+    - 基準価格系列は required_price_series(戦略自身の宣言)（close→"close" / current_open→"open"）
     - 系列未登録は例外伝播（fail-stop・無音の誤建値を作らない）
     - on_position_check → "hold"
 """
@@ -121,7 +121,11 @@ def test_warmup_guard_below_max_shift_returns_empty():
         entry_long=EntryConditions([Condition(indicator="ema", shift=2, op=">", rhs=1.0)]),
         entry_short=EntryConditions([]),
     )
-    ind = _registry(ema=[2.0, 2.0, 2.0], close=[1.2, 1.2, 1.2])
+    # 確定足だけを読む条件（shift=2）なので判定は足の始まり＝基準価格の系列は "open"
+    #   （ISSUE-533 段階 1: 宣言が系列を決める）。
+    ind = _registry(
+        ema=[2.0, 2.0, 2.0], close=[1.2, 1.2, 1.2], open=[1.1, 1.1, 1.1]
+    )
     strat.on_init(_CONFIG, ind)
 
     # Act / Assert: bar_index=1 は warmup → 空。bar_index=2 は評価され発注
@@ -161,15 +165,26 @@ def test_empty_side_never_fires():
 
 
 def test_open_basis_reads_open_series_for_base_price():
-    # Arrange: entry_price_basis="current_open" → 建値系列は "open"（required_price_series）
-    strat = _long_only(entry_price_basis="current_open")
-    ind = _registry(ema=[2.0], open=[1.5000], close=[9.9999])
+    # Arrange: ISSUE-533 段階 1 — 建値基準は設定から渡らない。確定足だけを読む条件
+    #   （shift=1）にすると判定は足の始まりになり、建値系列は "open" になる
+    #   （「`required_price_series`」）。是正前はここで entry_price_basis="current_open" を
+    #   コンストラクタへ渡していたが、それは shift=0（当該足を読む）条件との組合せでも
+    #   通ってしまう＝判定の瞬間と一致する保証が無い形だった。
+    from simulator.adapter.strategy.generic_condition_strategy import (
+        GenericConditionStrategy,
+    )
+
+    strat = GenericConditionStrategy(
+        entry_long=EntryConditions([Condition(indicator="ema", shift=1, op=">", rhs=1.0)]),
+        entry_short=EntryConditions([]),
+    )
+    ind = _registry(ema=[2.0, 2.0], open=[1.5000, 1.5000], close=[9.9999, 9.9999])
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(0, ind, _Account([]))
+    orders = strat.on_new_bar(1, ind, _Account([]))
 
-    # Assert: base=open[0]=1.5000（close は使わない）
+    # Assert: base=open[1]=1.5000（close は使わない）
     assert orders[0].sl == pytest.approx(1.5000 - 100 * 0.0001)
 
 

@@ -132,15 +132,17 @@ def test_build_strategy_override_builds_generic_from_spec() -> None:
     assert len(strategy._entry_long) == 1 and len(strategy._entry_short) == 1
 
 
-def test_build_strategy_override_reflects_entry_price_basis() -> None:
-    # Arrange: current_open → 建値系列は "open"
+def test_build_strategy_override_ignores_a_configured_entry_price_basis() -> None:
+    # Arrange: ISSUE-533 段階 1 — 建値基準は設定から戦略へ渡らない。戦略は自分の条件が
+    #   読む足から宣言を導く。ここでは設定が "current_open" を主張していても、spec の条件が
+    #   当該足（shift=0）を読む限り宣言は "close" のままである（判定は足の終わり）。
     backtest = _full_backtest_spec()
     backtest["config_overrides"] = {"entry_price_basis": "current_open"}
     spec = {"backtest": backtest, "strategy": _STRATEGY}
     # Act
     strategy = run_job._build_strategy_override(spec)
     # Assert
-    assert strategy._price_series == "open"
+    assert strategy.entry_price_basis == "close"
 
 
 # --- 3. 構築失敗の扱い -----------------------------------------------------

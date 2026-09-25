@@ -56,6 +56,8 @@ class _ConfigModel(BaseModel):
     ] = "equity_simple_bar"                                       # §7 #9 エクイティ・単純・足
     # 約定価格基準（cycle2 で BacktestConfig へ追加・cycle3 で config_loader 経由設定を結線）。
     # 既定 "close"＝従来挙動（後方互換）。"current_open"＝原典 .mq5（新規バー現値約定）。
+    # ISSUE-533 段階 1: 実行の権威は戦略の宣言（`simulator/usecase/entry_price_basis.py`）。
+    #   ここは受け口であり、明示値が宣言と食い違えば 「`build_interactor`」 が run を止める。
     entry_price_basis: Literal["close", "current_open"] = "close"
     # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来どおり raise。
     # "close_and_halt"＝強制決済して完走。default 付きのため既存 config と後方互換。

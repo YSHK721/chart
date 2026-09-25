@@ -30,10 +30,14 @@ class BacktestConfig:
     digits: int
     legacy_quirks: bool
     return_basis: str
-    # 約定価格基準（実 MT5 突合・後方互換）。既定 "close"＝従来挙動（close 約定・spread 無視）。
-    # "current_open"＝原典 .mq5（新規バーで現値約定）に整合: bid=現バー open、
+    # 約定価格基準（実 MT5 突合）: "close"＝close 約定・spread 無視 /
+    # "current_open"＝原典 .mq5（新規バーで現値約定）: bid=現バー open、
     # 買い=open+spread×point（実 fixture 初回 buy 39412=open39402+100×0.1）・売り=open。
-    # default 付きのため既存 9 引数構築（config_loader/既存テスト）と完全後方互換。
+    #
+    # **本フィールドは実行の権威ではない**（ISSUE-533 段階 1）。約定に使う値は戦略が宣言する
+    # （`simulator/usecase/entry_price_basis.py`）。判定の瞬間を知っているのは戦略だけであり、
+    # ここから与えると一致する保証が無い。受け口として残しているのは、明示された値が戦略の
+    # 宣言と食い違ったときに run を止める（黙って後勝ちにしない）ためである。撤去は段階 2。
     entry_price_basis: str = "close"
     # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来挙動
     # （margin_level < stop_out で MarginCallError を送出し部分結果を破棄）。

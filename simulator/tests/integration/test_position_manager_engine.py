@@ -36,6 +36,10 @@ class _Indicators:
 
 
 class _Strategy:
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
     def __init__(self, orders_by_bar):
         self._orders_by_bar = orders_by_bar
 

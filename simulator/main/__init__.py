@@ -63,6 +63,7 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
 # （循環は構造ごと消えた）。
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
+from simulator.usecase.entry_price_basis import verify_entry_price_basis
 from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
@@ -423,6 +424,16 @@ def build_interactor(
     # 素通り＝既存と byte 等価（MT5 突合の回帰ゼロ）。sim モードのサイジング（F-4）は
     # ここへ SizingDecorator を差し込み、戦略 6 本と run_backtest.py を無改変に保つ。
     strategy = strategy_decorator(strategy) if strategy_decorator else strategy
+
+    # ISSUE-533 段階 1: 判定の瞬間を知っているのは戦略だけなので、建値基準は戦略が名乗る。
+    #   ここは**宣言があるかと、設定が食い違っていないかを問うだけ**の点である（値を読んで
+    #   約定に使うのはエンジン側）。問える点がここしか無いのは、エンジンへ渡る実体が
+    #   `strategy_override` と `strategy_decorator` を通った後にしか確定しないからである。
+    #   宣言が無ければ run を始めない（既定へ倒すと、判定の瞬間と約定価格が一致する保証が
+    #   無いという欠陥がそのまま残る）。
+    verify_entry_price_basis(
+        strategy, configured=(config_overrides or {}).get("entry_price_basis")
+    )
 
     # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ

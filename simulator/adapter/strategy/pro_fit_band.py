@@ -38,11 +38,15 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class ProFitBand(StrategyPort):
+class ProFitBand(StrategyPort, EntryPriceBasisPort):
     """EMA 傾き + ADX + DI のトレンド追従戦略（固定 SL/TP・#5 PRO!fit_Band）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の ema・adx・±DI と、発注時の基準価格
+    #: close[bar_index] を読むので、判定は足が**閉じたあと**でしか成立しない。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: dict | None = None

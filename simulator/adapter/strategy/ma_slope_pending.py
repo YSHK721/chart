@@ -50,11 +50,16 @@ from simulator.adapter.strategy.mql5_runtime import (
     spec_value,
 )
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class MaSlopePending(StrategyPort):
+class MaSlopePending(StrategyPort, EntryPriceBasisPort):
     """EMA 傾き戦略のペンディング版（指値/逆指値・SL/TP 付き・反転はドテン）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは確定足の ema 2 点と、当該足の
+    #: open・spread である。いずれも足の**始まり**に確定している値なので、判定は足の
+    #: 始まりに成立する。
+    entry_price_basis = "current_open"
 
     def __init__(self) -> None:
         self._config: dict | None = None

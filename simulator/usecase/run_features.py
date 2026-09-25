@@ -35,6 +35,9 @@ from simulator.usecase.models import BacktestConfig
 
 #: run 中に効く config 由来のスイッチ（読み取り点はここが唯一）。
 #: 並びは `BacktestConfig` の宣言順に合わせてある（宣言と読み取りの対応を目で追えるように）。
+#:
+#: ``entry_price_basis`` は **run 中には効かない**（ISSUE-533 段階 1: 約定に使う値は戦略の
+#: 宣言から来る）。宣言の一覧としては残すが、約定段はここを読まない。撤去は段階 2。
 _FEATURE_NAMES: "tuple[str, ...]" = (
     "tick_model",
     "sltp_tie",

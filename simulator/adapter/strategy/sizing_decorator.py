@@ -28,7 +28,8 @@ from typing import Any, Callable
 
 from simulator.adapter.sizing.account_margin_sizing import AccountMarginSizing
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.entry_price_basis import declared_entry_price_basis
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 from simulator.usecase.sizing_models import (
     BLOCK_NO_RISK_DISTANCE,
     SizingConfig,
@@ -45,7 +46,7 @@ from simulator.usecase.sizing_ports import (
 _MARKET = "market"
 
 
-class SizingDecorator(StrategyPort):
+class SizingDecorator(StrategyPort, EntryPriceBasisPort):
     """内側の戦略が返した発注の量を `SizingPort` の決定で差し替える。
 
     ``price_series``: 成行の推定建値を取る指標系列名（"close" / "open"）。
@@ -57,6 +58,16 @@ class SizingDecorator(StrategyPort):
         self._inner = inner
         self._sizing = sizing
         self._price_series = price_series
+
+    @property
+    def entry_price_basis(self) -> "str | None":
+        """内側の宣言をそのまま名乗る（`EntryPriceBasisPort`・ISSUE-533 段階 1）。
+
+        判定の瞬間は内側の戦略が決める。量を差し替える本 Decorator がそれを変えてよい
+        理由は無く、ここで自前の値を持つと包むだけで約定価格が動く。内側が宣言を持たない
+        場合は `declared_entry_price_basis` がそのまま落とす（包んで隠さない）。
+        """
+        return declared_entry_price_basis(self._inner)
 
     # ---- StrategyPort（4 点すべてを透過・LSP）----
 

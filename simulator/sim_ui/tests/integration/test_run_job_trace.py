@@ -678,9 +678,8 @@ class TestTheGranularityColumnTakesBothValuesInRealRuns:
             "stop_loss_points": 500,
             "take_profit_points": 3000,
             "tick_store_root": str(tick_root),
-            "config_overrides": {
-                "tick_model": "real_ticks", "entry_price_basis": "current_open",
-            },
+            # ISSUE-533 段階 1: 建値基準は渡さない（EA の宣言が権威）。
+            "config_overrides": {"tick_model": "real_ticks"},
         }
         job_dir = tmp_path / ("0123456789abcdef" + "tickgran".ljust(16, "0")[:16])
         job_dir.mkdir()

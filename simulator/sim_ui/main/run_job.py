@@ -206,7 +206,7 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
 
     条件の解釈（未知 op / shift 負値の拒否）は framework の
     `strategy_spec_loader.load_strategy_spec`（sizing_config_loader と対称の単一ソース）へ
-    委譲する。基準価格系列は約定価格基準（config_overrides.entry_price_basis）で決まる。
+    基準価格系列は戦略自身の宣言（判定の瞬間）から決まる（ISSUE-533 段階 1）。
 
     Group（framework loader・adapter 戦略）へは**この関数の中でだけ**依存する。strategy OFF の
     経路が戦略実装の import に巻き込まれないようにするため（OFF は既存挙動と byte 等価）。
@@ -217,7 +217,6 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
     from simulator.framework.strategy_spec_loader import load_strategy_spec
 
     backtest = spec.get("backtest") or {}
-    overrides = backtest.get("config_overrides") or {}
     # trailing/partial_close（Phase 7 の建玉変更サブブロック）は別 loader
     # （position_manager_spec_loader）が担うため、strategy_spec の extra="forbid" に触れない
     # よう**この 2 キーだけ**除外して残りを渡す。entry_long/entry_short 以外の未知キー（タイポ）は
@@ -227,11 +226,9 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
         k: v for k, v in strategy_block.items() if k not in ("trailing", "partial_close")
     }
     entry_long, entry_short = load_strategy_spec(entry_block)
-    return GenericConditionStrategy(
-        entry_long=entry_long,
-        entry_short=entry_short,
-        entry_price_basis=overrides.get("entry_price_basis", "close"),
-    )
+    # ISSUE-533 段階 1: 建値基準は戦略が自分の条件から導いて名乗る。ここから渡さない
+    #   （渡すと値の権威が 2 つになり、判定の瞬間と一致する保証が消える）。
+    return GenericConditionStrategy(entry_long=entry_long, entry_short=entry_short)
 
 
 def _build_position_manager(spec: "dict[str, Any]") -> Any:

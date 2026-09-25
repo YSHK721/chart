@@ -237,9 +237,8 @@ class TestTheRealTicksFingerprintDoesNotMoveWhenObserved:
             volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
             point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
             lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
-            config_overrides={
-                "tick_model": "real_ticks", "entry_price_basis": "current_open",
-            },
+            # ISSUE-533 段階 1: 建値基準は渡さない（EA の宣言が権威）。
+            config_overrides={"tick_model": "real_ticks"},
             tick_store_root=tick_root,
         )
 
@@ -275,9 +274,8 @@ class TestTheRealTicksFingerprintDoesNotMoveWhenObserved:
                 volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
                 point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
                 lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
-                config_overrides={
-                    "tick_model": "real_ticks", "entry_price_basis": "current_open",
-                },
+                # ISSUE-533 段階 1: 建値基準は渡さない（EA の宣言が権威）。
+                config_overrides={"tick_model": "real_ticks"},
                 tick_store_root=tick_root,
             ),
             tracer,

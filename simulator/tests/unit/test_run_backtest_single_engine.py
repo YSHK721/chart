@@ -94,6 +94,10 @@ class _NullIndicators:
 
 class _NullStrategy:
     """発注しない戦略（約定の有無は本ファイルの関心ではない）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def on_init(self, config, indicators):
         return None
@@ -600,6 +604,10 @@ def _margin_breach_request(*, config_overrides, bars):
     )
 
     class _BuyOnce(_NullStrategy):
+        #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+        #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+        entry_price_basis = "close"
+
         def on_new_bar(self, bar_index, indicators, account):
             return [Order(side="buy", kind="market", volume=1.0, price=None)] if bar_index == 0 else []
 
@@ -798,6 +806,10 @@ class TestTheStopOutDecisionDoesNotWasteWork:
 
 class _OrdersPerBar(_NullStrategy):
     """指定バーで指定の成行注文列を返す戦略。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar):
         self._orders_by_bar = orders_by_bar
@@ -889,6 +901,10 @@ class TestBothEnginesShareTheMarketFillStage:
         account_box: list = []
 
         class _Recording(_OrdersPerBar):
+            #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+            #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+            entry_price_basis = "close"
+
             def on_new_bar(self, bar_index, indicators, account):
                 account_box.append(account)
                 return super().on_new_bar(bar_index, indicators, account)

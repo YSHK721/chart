@@ -101,6 +101,10 @@ class _SpyIndicators:
 
 class _BothStopsOnce:
     """bar0 の on_new_bar で両建て逆指値（SL/TP 無し）を 1 度だけ返すスパイ（OCO 検証用・非持続）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, buy_price, sell_price):
         self._orders = [
@@ -192,6 +196,10 @@ def _run(strategy, bars, ticks, *, config, session_calendar=None,
 
 class _MarketBuyOnce:
     """bar0 で成行 buy を 1 度だけ返すスパイ（stop-out 検証用）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self):
         self._done = False

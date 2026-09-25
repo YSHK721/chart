@@ -9,11 +9,16 @@ from simulator.adapter.strategy.mql5_runtime import (
     spec_value,
 )
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class OpenThenClose5mLong(StrategyPort):
+class OpenThenClose5mLong(StrategyPort, EntryPriceBasisPort):
     """始値でロングし、1本後の終値で決済する最小 EA。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の close を建値の基準として読む
+    #: （さらに 5 本先の close も読むが、それは未来参照であって判定を早めない）。
+    #: 当該足の終値が要る以上、判定は足が**閉じたあと**でしか成立しない。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: Any | None = None

@@ -167,6 +167,10 @@ class _SpyIndicator:
 
 class _SpyStrategy:
     """保有側 level-trigger を模す: 与えた signals[bar_index] が held と異なれば成行。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, signals):
         self._signals = signals

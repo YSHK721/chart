@@ -170,6 +170,10 @@ class _TicksExceptOnEmptyBars:
 
 class _BuyOnce(_NullStrategy):
     """バー 0 で 1 lot 買う（証拠金割れを起こすため）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def on_new_bar(self, bar_index, indicators, account):
         return [_market("buy")] if bar_index == 0 else []

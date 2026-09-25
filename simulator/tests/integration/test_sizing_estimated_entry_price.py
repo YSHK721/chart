@@ -292,6 +292,10 @@ def test_ペンディング発注には推定差が生じない(tmp_path: Path) 
             return SizingDecision(volume=0.5, fraction=0.05)
 
     class _Pending:
+        #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+        #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+        entry_price_basis = "close"
+
         def on_init(self, config, indicators) -> None: ...
         def on_position_check(self, position, bar_index, indicators) -> str:
             return "hold"

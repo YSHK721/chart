@@ -18,11 +18,11 @@ ISSUE-511 段階 8-D-1。
     そのまま供給されることで実証する（カタログ内のリテラルでは番兵は出てこない）。
 
 キー不在が要る理由（退行の罠）:
-    S が偽のとき **キーごと不在**にする。写像層の override 合成は
-    ``setdefault`` で補うため、``binding.config_overrides`` に載っているキーの方が勝つ。
-    ここで "close" を明示すると、いま `ENTRY_PRICE_BASIS` で走っている settings 経路が
-    反転して既存の実行結果が動く。その反転を捕まえるのが
-    test_a_spreadless_dataset_keeps_the_settings_path_default である。
+    S が偽のとき **キーごと不在**にする。ISSUE-533 段階 1 以降、写像層は建値基準を補わない
+    ——権威は戦略の宣言であり、経路が既定を置くと判定の瞬間との一致が保証されない。ここで
+    "close" を明示すると、その値が戦略の宣言と食い違った run は 「`build_interactor`」 で
+    落ちる（黙って後勝ちにしない）。不在のままであることを
+    test_a_spreadless_dataset_keeps_the_settings_path_default が固定する。
 
 Red と回帰ガードの別（成功テスト先行を Red と称さない）:
     * 真の Red … 建値基準の注入と気配幅の軸を要求する検定。実装前は
@@ -193,21 +193,25 @@ def test_the_composition_root_injects_the_engine_value(monkeypatch, tmp_path):
 # test_a_spreadless_dataset_keeps_the_settings_path_default が落ちる。
 
 
-def _effective_basis(path: str, overrides: "dict | None") -> str:
-    """profile の override を束縛に載せて写像層を 1 回通し、実効の建値基準を返す。"""
+def _effective_basis(path: str, overrides: "dict | None") -> "str | None":
+    """profile の override を束縛に載せて写像層を 1 回通し、実効の建値基準を返す。
+
+    ISSUE-533 段階 1 以降、写像層は建値基準を**補わない**（権威は戦略の宣言）。したがって
+    カタログが供給しなければキーごと不在であり、``None`` を返す。
+    """
     kwargs = to_interactor_kwargs(
         runnable_settings(Expert=f"{_INDEPENDENT_EA}.ex5"),
         engine_binding(data_path=path, config_overrides=overrides),
     )
-    return kwargs["config_overrides"]["entry_price_basis"]
+    return kwargs["config_overrides"].get("entry_price_basis")
 
 
 def test_a_spreadless_dataset_keeps_the_settings_path_default(monkeypatch, tmp_path):
-    """気配幅を供給しない実体では、settings 経路の実効値が単一ソースのままである。
+    """気配幅を供給しない実体では、settings 経路は建値基準を 1 つも供給しない。
 
-    カタログがキーを供給しないため、写像層の ``setdefault`` が補う値がそのまま実効値に
-    なる。カタログが "close" を明示すると `binding.config_overrides` が勝って反転する
-    ——その反転をここが捕まえる（負の対照）。
+    カタログがキーを供給せず、写像層も補わない（ISSUE-533 段階 1: 既定を置かない）。
+    実効の建値基準は戦略の宣言から決まる。ここが値を持つようになったら、経路が既定を
+    置き直した合図である（負の対照）。
     """
     # Arrange
     path = _entity(monkeypatch, tmp_path, "md6", MD6)
@@ -218,7 +222,7 @@ def test_a_spreadless_dataset_keeps_the_settings_path_default(monkeypatch, tmp_p
 
     # Assert
     assert profile.config_overrides is None     # キーごと不在
-    assert measured == ENTRY_PRICE_BASIS
+    assert measured is None
 
 
 def test_the_injected_basis_reaches_the_settings_path(monkeypatch, tmp_path):

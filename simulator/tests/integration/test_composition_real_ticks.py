@@ -154,23 +154,25 @@ class TestRealTicksWiring:
         # Assert: Interactor の tick_model が RealTickModel（実ティック供給経路）。
         assert isinstance(controller._interactor._tick_model, RealTickModel)
 
-    def test_real_ticks_end_to_end_fills_at_bar_open_quote(self, tmp_path):
+    def test_real_ticks_end_to_end_does_not_fill_at_a_tick_price(self, tmp_path):
         # Arrange: 小 OHLC CSV ＋ tick 価格を bar OHLC と判別可能にずらした tick-store。
-        #   実 MT5 every-tick は新規バー成行を「バー open クォート」で約定する（ティック価格
-        #   ではない）。bar2 ask=1.2222・bar4 bid=1.3333 の罠ティックを置き、約定が
-        #   ティック価格に【ならない】こと（=バー open クォート）を値で固定する。
+        #   実 MT5 every-tick は新規バー成行を**足境界のクォート**で約定する（足途中の
+        #   ティック価格ではない）。bar2 ask=1.2222・bar4 bid=1.3333 の罠ティックを置き、
+        #   約定がティック価格に【ならない】ことを値で固定する。
+        #
+        #   ISSUE-533 段階 1: どちらの足境界クォートかは**戦略の宣言**が決める。本ケースの
+        #   EA（TC24051901）は当該足の madiff と close を読む＝判定は足の終わりなので、
+        #   約定は**バー close クォート**である。是正前は設定で "current_open" を指定して
+        #   バー open クォートを期待していたが、それは判定の瞬間に存在しない価格だった。
         csv_path = _write_csv(tmp_path / "synth_m1.csv")
         tick_root = _write_distinct_tick_store(tmp_path / "ticks")
 
-        # Act: real_ticks + current_open で build → main 実経路（_bar_period→load_ticks→
+        # Act: real_ticks で build → main 実経路（_bar_period→load_ticks→
         #   RealTickModel→_execute_every_tick）を controller._interactor.execute で走らせる。
         controller, request = build_interactor(
             **_meta(
                 csv_path,
-                config_overrides={
-                    "tick_model": "real_ticks",
-                    "entry_price_basis": "current_open",
-                },
+                config_overrides={"tick_model": "real_ticks"},
                 tick_store_root=tick_root,
             )
         )
@@ -179,26 +181,23 @@ class TestRealTicksWiring:
         # Assert: 確定トレード 2 件（bar2 買い → bar4 reverse 決済・bar4 で建った売りの
         #   テスト期間終了時清算）。
         assert len(result.trades) == 2
-        # 売り: 建値 bar4 バー open=Bid 1.1090 → 期末 Ask=bar5.close 1.0920+spread0 = 1.0920。
+        # 売り: 建値 bar4.close=1.0950 → 期末 Ask=bar5.close 1.0920（close 基準は spread 非加算）。
         end = result.trades[1]
         assert end.side == "sell"
         assert end.exit_reason == "end_of_test"
-        assert end.entry_price == pytest.approx(1.1090)
+        assert end.entry_price == pytest.approx(1.0950)
         assert end.exit_price == pytest.approx(1.0920)
-        assert end.pnl() == pytest.approx(0.0170)
+        assert end.pnl() == pytest.approx(0.0030)
         assert end.exit_time == request.bars[5].time
         trade = result.trades[0]
         assert trade.side == "buy"
         assert trade.exit_reason == "reverse"
-        # entry_price は bar2 バー open Ask=open+spread×point=1.0990+200×0.0001=1.1190
-        #   （bar2.close 1.1040 でも罠ティック ask 1.2222 でもない）。
-        assert trade.entry_price == pytest.approx(1.1190)
-        assert trade.entry_price != pytest.approx(_ROWS[2][4])  # bar2.close
+        # entry_price は bar2.close=1.1040（罠ティック ask 1.2222 ではない）。
+        assert trade.entry_price == pytest.approx(1.1040)
         assert trade.entry_price != pytest.approx(1.2222)       # 罠ティック ask
-        # exit_price は bar4 バー open=Bid（long 決済=bid・spread 非加算）=1.1090
-        #   （bar4.close 1.0950 でも罠ティック bid 1.3333 でもない）。
-        assert trade.exit_price == pytest.approx(1.1090)
-        assert trade.exit_price != pytest.approx(_ROWS[4][4])   # bar4.close
+        # exit_price は bar4.close=1.0950（罠ティック bid 1.3333 ではない）。
+        assert trade.exit_price == pytest.approx(1.0950)
+        assert trade.exit_price == pytest.approx(_ROWS[4][4])   # bar4.close（判定の瞬間）
         assert trade.exit_price != pytest.approx(1.3333)        # 罠ティック bid
         assert trade.exit_time == request.bars[4].time
 

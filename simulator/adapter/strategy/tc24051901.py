@@ -21,11 +21,15 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class TC24051901(StrategyPort):
+class TC24051901(StrategyPort, EntryPriceBasisPort):
     """MADiff ゼロクロス両建て戦略（固定 SL/TP）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の madiff と、発注時の基準価格
+    #: close[bar_index] を読むので、判定は足が**閉じたあと**でしか成立しない。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: dict | None = None

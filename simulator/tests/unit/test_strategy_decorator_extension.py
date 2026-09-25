@@ -81,6 +81,10 @@ def _meta(csv_path: Path, **overrides) -> dict:
 
 class _Wrapper(StrategyPort):
     """包んだことが観測できるだけの最小 Decorator。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner

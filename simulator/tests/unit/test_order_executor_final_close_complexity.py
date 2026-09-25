@@ -180,6 +180,10 @@ class TestTheFinalCloseResolvesTheExitQuoteOncePerSide:
 
 class _BuysAtBarZero:
     """bar0 で成行買いを `lots` 本出し、以後は発注しない戦略（反対玉が出ない＝reverse 無し）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, lots):
         self._lots = lots

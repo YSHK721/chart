@@ -132,6 +132,33 @@ class StrategyPort(abc.ABC):
         return []
 
 
+class EntryPriceBasisPort(abc.ABC):
+    """戦略が**判定の瞬間**を名乗る口（ISSUE-533 段階 1）。
+
+    約定価格は「戦略が判定した瞬間に取れた価格」でなければならない。どの足のどの値を読むかは
+    戦略の実装が決めるので、判定の瞬間を知っているのは戦略だけである。よって建値基準
+    （``entry_price_basis``）の権威は戦略側にあり、run の設定から与えるのは誤りであった
+    （設定値が判定時点と一致する保証がどこにも無い＝ISSUE-533 の根本原因）。
+
+    `StrategyPort` に足さずに口を分けた理由（ISP）:
+        本宣言を要るのは約定段（建値クォートの導出）だけで、売買判断・決済判断の呼出側は
+        読まない。`StrategyPort` の抽象メンバにすると、宣言を使わないクライアントのための
+        実装まで全 `StrategyPort` 実装（検定の代役を含む）へ強制し、しかも欠落は
+        ``TypeError`` として現れて「何が足りないか」を名前で言えない。口を分けたので、
+        宣言の欠落は Composition Root が名前つきで報せる
+        （`simulator/usecase/entry_price_basis.py` の 「`declared_entry_price_basis`」）。
+
+    値は既存語のまま（"close" / "current_open"）。足境界で成行を出さない戦略は
+    ``None`` を名乗る（既定ではない——約定しようとした時点で Fail-Stop する）。
+    """
+
+    @property
+    @abc.abstractmethod
+    def entry_price_basis(self) -> "str | None":
+        """判定の瞬間に取れる建値クォートの基準。"""
+        raise NotImplementedError
+
+
 class PositionManagerPort(abc.ABC):
     """建玉変更（トレーリング FR-07・部分決済 FR-08）の隔離（Phase 7）。
 

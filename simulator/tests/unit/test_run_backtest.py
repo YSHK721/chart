@@ -50,6 +50,10 @@ class SpyIndicatorPort:
 
 class SpyStrategyPort:
     """on_new_bar が orders_by_bar[bar_index] を返すスパイ。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, log, orders_by_bar=None, close_decision="hold"):
         self._log = log
@@ -66,6 +70,17 @@ class SpyStrategyPort:
     def on_position_check(self, position, bar_index, indicators):
         self._log.append(("strategy.on_position_check", bar_index))
         return self._close_decision
+
+
+class _DecidesAtBarOpenSpy(SpyStrategyPort):
+    """足の始まりで判定すると名乗るスパイ（ISSUE-533 段階 1）。
+
+    建値基準の権威は戦略の宣言なので、「バー open クォートで約定する」ことを測る検定は
+    config ではなく**この宣言**で条件を作る。缶詰の注文を返す代役なので固有の判定時点は
+    無く、この宣言が当該検定の条件そのものである。
+    """
+
+    entry_price_basis = "current_open"
 
 
 class StubTickModelPort:
@@ -359,6 +374,10 @@ class CapturingStrategyPort:
     既存 SpyStrategyPort（account を捨てる）と独立。account 伝播の結線を
     検証するために account 引数を保持する。
     """
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar=None):
         self._orders_by_bar = orders_by_bar or {}
@@ -433,7 +452,12 @@ def _bar_s(t, o, h, l, c, spread):
 
 
 def _config_open_fill():
-    """現バー open 基準 + spread 適用モードの config（cycle2 で追加するフィールド）。"""
+    """現バー open 基準 + spread 適用モードの config（cycle2 で追加するフィールド）。
+
+    ISSUE-533 段階 1 以降、``entry_price_basis`` は**実行の権威ではない**（権威は戦略の
+    宣言）。ここに残すのは受け口が段階 1 では残るからで、値は戦略の宣言と一致させる
+    （食い違えば 「`build_interactor`」 が落とす）。
+    """
     return BacktestConfig(
         tick_model="ohlc_simulate",
         spread_model="fixed",
@@ -509,7 +533,7 @@ class TestConfigDrivenSpreadOpenFill:
         # entry_price_basis="current_open" + spread=100 + point_size=0.1。
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -532,7 +556,7 @@ class TestConfigDrivenSpreadOpenFill:
         # Arrange: sell は bid（=現バー open）で約定（spread 寄与 0）。
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [sell], 1: [buy]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -700,7 +724,7 @@ class TestReverseShortCloseSpread:
         # bar1: open=39440, spread=100, point=0.1 → 決済 ask = 39440 + 10 = 39450。
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [sell], 1: [buy]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -937,6 +961,10 @@ class _NullAccountStrategy:
     差し替えて委譲することで「account 伝播なし（同方向抑止 OFF）」を再現する。
     open_positions は持たない（duck typing の held_sides が空集合になる）。
     """
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, inner):
         self._inner = inner

@@ -28,7 +28,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.entry_price_basis import NO_BAR_BOUNDARY_DECISION
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 #: 保有玉を触らないことを表す `on_position_check` の戻り値。既存戦略 7 本
 #: （TC24051901 / MaSlope / MaSlopePending / StopEntryProbe / WeeklyVolBand /
@@ -37,8 +38,13 @@ from simulator.usecase.ports import StrategyPort
 HOLD: str = "hold"
 
 
-class NullStrategy(StrategyPort):
+class NullStrategy(StrategyPort, EntryPriceBasisPort):
     """発注も決済も行わない戦略（LSP: 既存戦略と置換可能・出力は常に空）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。本戦略は足境界で何も読まず何も発注しないので、
+    #: 判定の瞬間が無い。`NO_BAR_BOUNDARY_DECISION` は**既定値ではない**——この宣言のまま
+    #: 足境界で約定しようとすれば 「`derive_quotes`」 が落ちる。
+    entry_price_basis = NO_BAR_BOUNDARY_DECISION
 
     def on_init(self, config: Any, indicators: Any) -> None:
         """初期化で何もしない（Interactor はループ前に本メソッドを必ず呼ぶ＝実読）。"""

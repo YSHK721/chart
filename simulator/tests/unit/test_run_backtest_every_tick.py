@@ -42,6 +42,10 @@ class SpyIndicatorPort:
 
 class SpyStrategyPort:
     """on_new_bar が orders_by_bar[bar_index] を返し、呼出を記録するスパイ。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar=None):
         self._orders_by_bar = orders_by_bar or {}
@@ -56,6 +60,16 @@ class SpyStrategyPort:
 
     def on_position_check(self, position, bar_index, indicators):
         return "hold"
+
+
+class _DecidesAtBarOpenSpy(SpyStrategyPort):
+    """足の始まりで判定すると名乗るスパイ（ISSUE-533 段階 1）。
+
+    建値基準の権威は戦略の宣言であり、config ではない。「バー open クォートで約定する」
+    ことを測る検定は、この宣言で条件を作る。
+    """
+
+    entry_price_basis = "current_open"
 
 
 class ListTickModel:
@@ -149,7 +163,7 @@ class TestFillAtBarOpenQuote:
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort(orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),
@@ -261,7 +275,7 @@ class TestOnNewBarOnlyAtBarBoundary:
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort(orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),
@@ -324,7 +338,7 @@ class TestSlTpClosesAtTickPrice:
         }
         order = Order(side="buy", kind="market", volume=1.0, price=None,
                       sl=1.095, tp=1.300)
-        strategy = SpyStrategyPort(orders_by_bar={0: [order]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [order]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),

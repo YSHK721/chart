@@ -146,7 +146,7 @@ class TestEaNameMapping:
 
 
 class TestConfigOverrides:
-    """§8.1: `tick_model` と `entry_price_basis` は `config_overrides` 経由。"""
+    """§8.1: `tick_model` は `config_overrides` 経由（`entry_price_basis` は供給しない）。"""
 
     @pytest.mark.parametrize(
         ("model", "engine_id"),
@@ -156,9 +156,12 @@ class TestConfigOverrides:
         kwargs = _kwargs(settings=runnable_settings(Model=model))
         assert kwargs["config_overrides"]["tick_model"] == engine_id
 
-    def test_entry_price_basis_is_stated_explicitly(self):
-        # §4.5.1: 建値基準を暗黙の既定に委ねない
-        assert _kwargs()["config_overrides"]["entry_price_basis"] == "current_open"
+    def test_the_mapping_layer_supplies_no_entry_price_basis(self):
+        # ISSUE-533 段階 1: 建値基準の権威は**戦略の宣言**である。写像層が既定を補うと、
+        #   判定が足の終わりに成立する EA（当該足の終値を読むもの）へ足の始まりの気配を
+        #   押し付け、その EA は判定の瞬間に取得できない価格で約定する（ISSUE-533 の実測）。
+        #   ここが赤くなるのは既定が経路へ戻ったときであり、それは同じ欠陥の再発である。
+        assert "entry_price_basis" not in _kwargs()["config_overrides"]
 
     def test_binding_config_overrides_take_priority(self):
         # 銘柄仕様の権威（カタログ）が値を持つときはそれを優先する（§8.1）
