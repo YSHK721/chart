@@ -15761,6 +15761,45 @@ EA の判定時点と一致する保証がどこにも無い。
 MT5 突合ケース（`ma_slope_jp225_202501`）は `current_open` を明示宣言しており、MA_Slope の
 判定時点と一致するため不変のはずである（**未実測**）。
 
+### 段階 1 の実測（2026-09-25・コミット `ab7f3226`）
+
+**設定を一切与えずに**、各 EA が自分の判定の瞬間の価格で約定することを確認した
+（合成バー `open = close − 50`・依頼者側の独立実測）。
+
+| EA | 是正前 | 是正後 | その足の始値 / 終値 |
+|---|---|---|---|
+| `MA_Slope_EA` | 106.0（**判定の 1 分後**の価格） | **56.0** | 56.0 / 106.0 |
+| `SmaTouchLong_EA` | 40.0（**判定の 1 分前**の価格） | **90.0** | 40.0 / 90.0 |
+
+設計（実装者の判断・根拠つき）:
+- 宣言の置き場は `StrategyPort` とは別の口（**ISP**: 宣言を要るのは約定段だけで、
+  売買判断の呼出側は読まない）。強制は型ではなく Composition Root が行う
+  ——`strategy_override`・`strategy_decorator` を通った**最終の実体**が確定するのはそこだけである。
+- 値の読みは `on_init` の**後**に run につき 1 回。宣言を自分の状態から導く戦略
+  （`GenericConditionStrategy`）を許すため。
+- 規則の単一ソース `basis_for_reads((系列名, shift) の集合)`。解決できない参照は
+  `close`（遅い側）へ倒す安全側設計。
+- 新語は 1 つだけ増やした——「足境界で成行を出さないので判定の瞬間が無い」の宣言
+  （`NullStrategy`・`StopEntryProbe` が名乗る）。**既定値ではない。**
+
+宣言表（機械が実装から導いたものと一致）: `MaSlope` / `MaSlopePending` / `WeeklyVolBand`
+＝足の始まり、`SmaTouchLong` / `SimpleTouchLong` / `ProFitBand` / `TC24051901` /
+`OpenThenClose5mLong` ＝足の終わり、`GenericConditionStrategy` / `SizingDecorator` ＝導出。
+**上流の表に無かった 4 戦略を実装側が発見して追加した**（`StrategyPort` 実装は 12 件）。
+
+**指示から 1 点の逸脱（実測が根拠・採用）**: 写像層の既定供給
+（`kwargs_mapper` の `overrides.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)`）を撤去した。
+両スイートの `build_interactor` 呼出 303 件のうち **34 件**が「終値で判定する EA ＋設定
+`current_open`」であり、受け口と供給の両方を残すと**既定の settings 経路が常に Fail-Stop する**。
+
+通過（依頼者が独立に測定・同一時点・直列）: ゲート **exit 0**／`simulator/tests`
+**4522 passed / 1 xfailed / 赤 0**／`simulator/sim_ui/tests` **1230 passed**／
+指紋＋MT5 突合 **25 passed**（**MT5 突合の期待値は 1 バイトも書き換えていない**）。
+
+変異 **9 件中 9 件検出・誤検出 0**。うち 1 件は**検定の空虚を摘発した**——素材が毎足発注して
+いたため「発行 > 使用」が原理的に起きず、閾値を入れて発注の出ない足を残す素材へ直し、
+かつ二重の番人を**両方**外す変異にして初めて赤になった（片方だけの変異は他方に隠される）。
+
 ### 同じ欠陥のもう一面（実測済み・**段階 3 で扱う。別途承認**）
 
 `entry_price_basis` は**直交する 2 つの事実を 1 つの語に畳んでいる**。
@@ -15783,9 +15822,10 @@ MT5 突合ケース（`ma_slope_jp225_202501`）は `current_open` を明示宣�
 そもそも供給が無く、N-17（ISSUE-511 段階 8-C）と直接絡むためである。
 
 ### 段階
-- **段階 1（承認済み・実施中）**: 判定の瞬間を戦略が宣言し、エンジンが読む。設定は受け口を残し、
-  食い違えば Fail-Stop。既定は置かない（宣言の無い戦略は `build_interactor` で落とす）。
-- **段階 2**: `config_overrides.entry_price_basis` の供給を撤去し、ISSUE-525 の経路差が
+- **段階 1（完了 `ab7f3226`・push 済み）**: 判定の瞬間を戦略が宣言し、エンジンが読む。
+  既定は置かず、宣言の無い戦略は `build_interactor` で Fail-Stop。設定の受け口は残し、
+  食い違えば `EntryPriceBasisConflictError`。
+- **段階 2（実施中）**: `config_overrides.entry_price_basis` の供給を撤去し、ISSUE-525 の経路差が
   構造的に消えたことを検定で固定する。
 - **段階 3（要承認）**: 気配の適用を判定の瞬間から独立させる。N-17 と合わせて裁定する。
 
