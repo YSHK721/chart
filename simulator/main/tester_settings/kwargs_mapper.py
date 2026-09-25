@@ -126,7 +126,9 @@ class EngineBinding:
                          `.ini` の `Deposit` が有効な実行では**参照しない**（.ini が権威）。
     stop_out_level:      現行既定 0.0（`build_interactor` の既定値＝実測）。
     tick_store_root:     実ティック格納根（`REAL_TICKS` 用。未供給時は N-05 で拒否）。
-    config_overrides:    データセット側が権威として持つ決定論設定（`entry_price_basis` 等）。
+    config_overrides:    データセット側が権威として持つ決定論設定（「``tick_model``」 等）。
+                         建値基準は含まない——値の出所は戦略の宣言ただ 1 つであり、
+                         決定論設定の語彙から外してある（ISSUE-533 段階 2）。
 
     `RunProfile`（`sim_ui`）を受けない理由: `simulator/main` から `simulator/sim_ui` への
     参照は 0 件（実測）であり、逆向き（`sim_ui/main/run_job.py` → `simulator.main`）が実在
