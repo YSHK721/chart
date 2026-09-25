@@ -70,24 +70,10 @@ from simulator.usecase.tester_settings import (
 #: `engine_data_consistency.RULE_DATA_CONSISTENCY` にあり、ここには写さない。
 _RULE_RUNTIME_REQUIRED: str = "R"
 
-#: 建値基準の値（§4.5.1）。**実行へは供給しない**（ISSUE-533 段階 1）。
-#:
-#: 判定の瞬間を知っているのは戦略だけなので、実行に使う値は戦略の宣言から来る。経路の側で
-#: 補うと、判定が足の終わりに成立する EA（当該足の終値を読むもの）へ「足の始まりの気配」を
-#: 押し付けることになり、その EA は取得できない価格で約定する（ISSUE-533 の実測）。
-#: MT5 突合の EA（MA_Slope）はこの値と同じものを自分で宣言しているので、突合の再現性は
-#: 供給をやめても変わらない（`simulator/tests/integration/test_ma_slope_reconcile.py` が固定する）。
-#:
-#: 残る用途は**表示と受付**である: 実行指示フォームの選択肢（`SymbolSpecCatalog`）と、
-#: 気配幅を供給するデータ実体に載せる値として `simulator/sim_ui/main/composition_root_jobs.py`
-#: が読む。撤去は ISSUE-533 段階 2。
-ENTRY_PRICE_BASIS: str = "current_open"
-
 #: 証拠金ストップアウト時の挙動の明示値（MT5 実走整合の実証値）。エンジン既定
 #: "fail_stop" は `MarginCallError` を送出して部分結果を破棄するが、実 MT5 は
 #: 保有玉を強制決済したうえでテストを完走し確定レポートを出す。よって Settings 経路は
-#: `ENTRY_PRICE_BASIS` と同じ理由——「エンジン既定のままだと MT5 と別の分岐に入る」——で
-#: 明示指定する。
+#: 「エンジン既定のままだと MT5 と別の分岐に入る」という理由で明示指定する。
 #:
 #: 出典（`simulator/tests/fixtures/mt5/ma_slope_jp225_202501/` の実 MT5 出力）:
 #:   - `mt5_report/tester.log` 11663 行:
@@ -372,9 +358,8 @@ def _config_overrides(ctx: _MappingContext) -> Any:
         3. ``stop_out_action`` は未指定時のみ明示値を補う（§4.5.1・`STOP_OUT_ACTION` の
            宣言に出典を記す）。「エンジン既定のままだと MT5 と別の分岐に入る」ためである。
 
-    ``entry_price_basis`` は**補わない**（ISSUE-533 段階 1）。値の権威は戦略の宣言であり、
-    経路が既定を置くと、判定が足の終わりに成立する EA へ足の始まりの気配を押し付ける
-    （その EA は取得できない価格で約定する）。`ENTRY_PRICE_BASIS` の宣言に理由を記す。
+    建値基準（``entry_price_basis``）は**扱わない**（ISSUE-533 段階 2）。値の出所は戦略の
+    宣言ただ 1 つであり、設定からは供給できない（`load_config` が未知キーとして拒む）。
     """
     overrides = dict(ctx.binding.config_overrides or {})
     # A-1（L-5 の解消）: `Model` は全値がエンジン id を持つ（`tick_model_word` が単一の

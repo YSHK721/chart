@@ -52,9 +52,6 @@ from simulator.tests.ohlc_header_fixtures import MD6, MD9, body_rows, write_head
 #: 1 本目の ref（カタログ自身の名乗りから引く。綴りを書き写さない）。
 _LEGACY_REF = symbol_spec_catalog._JP225_REF
 
-#: 注入された基準値であることを示す番兵（エンジンの語彙ではない）。
-_INJECTED = "__injected_basis__"
-
 #: 供給元から引いていることを示す番兵の決済通貨（実在の通貨コードではない）。
 _SENTINEL_CURRENCY = "__sentinel_currency__"
 
@@ -84,10 +81,10 @@ def _ledger_spread_refs() -> "tuple[str, ...]":
     )
 
 
-def _catalog(basis: str = _INJECTED):
-    """基準値を注入したカタログ（EA 名の注入元は本ファイルの関心外なので最小の束縛）。"""
+def _catalog():
+    """カタログ（EA 名の注入元は本ファイルの関心外なので最小の束縛）。"""
     return symbol_spec_catalog.SymbolSpecCatalog(
-        known_ea_names=lambda: (_INDEPENDENT_EA,), entry_price_basis=basis
+        known_ea_names=lambda: (_INDEPENDENT_EA,)
     )
 
 
@@ -203,6 +200,9 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
     monkeypatch.setattr(symbol_spec_catalog, "_JP225_DATA_CSV", Path(legacy))
     monkeypatch.setattr(symbol_spec_catalog, "_JP225_SPREAD_DATA_CSV", Path(spread))
 
+    # ヘッダ読取は ISSUE-533 段階 2 で**問い自体が消えた**（建値基準を供給しなくなったので
+    # 「その実体は気配幅を供給するか」を datasets() が問う理由が無い）。継ぎ目は残して
+    # 「1 度も発行しないこと」を表明する——問いが戻ってきたら赤になる。
     header_reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
     range_reads = spy(monkeypatch, symbol_spec_catalog, "_csv_date_range")
     snapshot_reads = spy(monkeypatch, symbol_spec_catalog, "load_snapshot")
@@ -237,9 +237,8 @@ def test_the_reads_do_not_grow_with_the_number_of_series_or_the_data(monkeypatch
         # 空振り防止: 実際に読んでおり、両方の実体の答えを使っている
         assert measured["snapshot"] >= 1
         assert measured["data_entities"] > 1
-        assert measured["overrides"][0] is None
-        assert measured["overrides"][1] == {"entry_price_basis": _INJECTED}
-        assert measured["header"] - measured["data_entities"] == 0
+        assert measured["overrides"] == [None, None]   # 決定論設定は 1 項目も供給しない
+        assert measured["header"] == 0                 # 気配幅の問いを発行しない
         assert measured["range"] - measured["data_entities"] == 0
         assert measured["snapshot"] - measured["snapshot_entities"] == 0
     assert large["header"] == small["header"]       # 行数 1,000 倍でも発行は増えない

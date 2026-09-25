@@ -50,14 +50,19 @@ from simulator.tests.tester_settings_engine_fixtures import (
 
 #: 2024-01-01T00:00:00Z。marketdata 形式の 「`date`」 列は naive 文字列で時刻系は UTC である。
 _EPOCH_2024_01_01 = 1_704_067_200
-#: 合成する足の本数（既定 EA が売買を往復するのに足りる長さ・実測で 1 件以上の取引が出る）。
+#: 合成する足の本数（実測 2026-09-25: 20 本で 9 件・40 本で 19 件の取引が出る）。
 _BARS = 40
-#: 始値と終値を**離す**（どちらで約定したかが約定価格 1 つで判別できる）。
-_OPEN_TO_CLOSE = 5.0
+#: 始値を固定して終値だけを動かす（**どちらで約定したかが約定価格 1 つで判別できる**）。
+_OPEN = 40000.0
+#: 終値の並び。既定 EA（MADiff ゼロクロス）の判定は
+#: ``MA(close) − MA(open)`` の符号反転で起きるため、上げ 2 本・下げ 2 本を繰り返し、
+#: **上げ幅と下げ幅を違える**（同じ幅にすると移動平均がちょうど 0 を通り、
+#: 「prev < 0 かつ curr > 0」の狭義不等式が 1 度も成立しない）。
+_CLOSE_PATTERN = (_OPEN + 30.0, _OPEN + 30.0, _OPEN - 50.0, _OPEN - 50.0)
 
 
 def _rows(count: int) -> "list[tuple]":
-    """始値と終値が `_OPEN_TO_CLOSE` だけ離れた合成足。気配幅は 0（実体差を作らない）。
+    """始値を固定し終値だけを動かした合成足。気配幅は 0（実体差を作らない）。
 
     気配幅を 0 に固定するのは、2 つの実体（気配幅の列を持つ／持たない）が**同じ足**に
     なるようにするためである。列の有無だけが違う 2 実体で約定価格が一致することが、
@@ -65,10 +70,8 @@ def _rows(count: int) -> "list[tuple]":
     """
     rows = []
     for index in range(count):
-        # 上げ下げを繰り返して売買の両方向を出す（単調だと片側しか出ない）。
-        base = 100.0 + (index % 8) * 2.0
-        open_ = base
-        close = base + _OPEN_TO_CLOSE
+        open_ = _OPEN
+        close = _CLOSE_PATTERN[index % len(_CLOSE_PATTERN)]
         rows.append(
             (
                 _EPOCH_2024_01_01 + 60 * index,

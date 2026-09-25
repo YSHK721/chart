@@ -85,30 +85,16 @@ def test_data_path_is_the_ledger_declaration_for_the_ref():
     assert jp.data_path == str(whitelist()[jp.dataset])
 
 
-def test_config_overrides_follow_whether_the_entity_supplies_spread():
-    """決定論設定の override は実体が気配幅を供給するかで決まる（宣言は _config_overrides_for）。
+def test_the_catalog_supplies_no_execution_config():
+    """カタログは決定論設定を 1 項目も供給しない（ISSUE-533 段階 2）。
 
-    現行の実行データセット（marketdata 6 列・気配幅なし）は override なし＝**キー不在**。
-    気配幅を供給する MT5 突合フィクスチャには、注入された建値基準が載る。値のリテラルを
-    ここに書かない——単一ソースは変換層の ENTRY_PRICE_BASIS である（ISSUE-511 段階 8-D-1）。
-    軸そのものの真理値表は simulator/tests/unit/test_symbol_spec_catalog_spread_axis.py が持つ。
+    かつてここは「その実体が気配幅を供給するか」で建値基準を載せていた。データ実体に
+    判定の瞬間を決めさせる形であり、終値で判定する EA を気配幅つきの実体へ投げると
+    run が始まらなかった。撤去後は**どの実体でもキーごと不在**である。
     """
-    from pathlib import Path
-
-    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
-    from simulator.sim_ui.adapter.symbol_spec_catalog import _config_overrides_for
-
-    jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
-    assert jp.config_overrides is None
-    assert "config_overrides" not in jp.to_dict()
-    mt5_fixture = (
-        Path(jp.data_path).parents[2] / "simulator" / "tests" / "fixtures" / "mt5"
-        / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv"
-    )
-    assert mt5_fixture.is_file(), "MT5 fixture が見つかりません（前提の崩れ）"
-    assert _config_overrides_for(
-        mt5_fixture, entry_price_basis=ENTRY_PRICE_BASIS
-    ) == {"entry_price_basis": ENTRY_PRICE_BASIS}
+    for profile in build_run_options_port().datasets():
+        assert profile.config_overrides is None
+        assert "config_overrides" not in profile.to_dict()
 
 
 def test_ea_names_come_from_the_engine_accessor():
@@ -124,16 +110,8 @@ def test_ea_names_come_from_the_engine_accessor():
 
 
 def test_ea_names_are_not_hardcoded_in_the_catalog():
-    """注入元を差し替えれば一覧が変わる＝表を書き写していないことの実証。
-
-    建値基準は本検定の関心外だが、既定束縛を持たない必須注入であるため与える
-    （値の単一ソースは変換層の ENTRY_PRICE_BASIS・ISSUE-511 段階 8-D-1）。
-    """
-    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
-
-    catalog = SymbolSpecCatalog(
-        known_ea_names=lambda: ("A_EA", "B_EA"), entry_price_basis=ENTRY_PRICE_BASIS
-    )
+    """注入元を差し替えれば一覧が変わる＝表を書き写していないことの実証。"""
+    catalog = SymbolSpecCatalog(known_ea_names=lambda: ("A_EA", "B_EA"))
     assert catalog.ea_names() == ["A_EA", "B_EA"]
 
 

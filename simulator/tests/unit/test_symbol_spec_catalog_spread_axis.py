@@ -1,46 +1,32 @@
-"""実行条件（決定論設定の override）の軸を「形式」から「気配幅の供給」へ移した検定。
+"""カタログが実行条件（決定論設定の override）を**1 項目も供給しない**ことの固定。
 
-ISSUE-511 段階 8-D-1。
+ISSUE-533 段階 2。
 
-何が変わるか:
-    カタログが override を供給するかの判定は「形式 == mt5_tab」から
-    「その実体が気配幅を供給するか」になる。形式は気配幅の代理変数にすぎず、代理で測ると
-    気配幅を持つ marketdata 9 列（段階 2 の新系列）へ override を供給せず、気配幅を持たない
-    タブ区切りの実体には供給してしまう。同じ置換を保証境界 N-17 について行ったのが段階 8-C
-    であり（`simulator/tests/unit/test_unsupported_n17_supplies_spread_boundary.py`）、
-    本ファイルは実行条件の側について同じ軸を固定する。
+何が変わったか:
+    段階 8-D-1 では「その実体が気配幅を供給するか」で建値基準を載せるかを決めていた。
+    その軸そのものが段階 2 で消えた——判定の瞬間を知っているのは戦略だけであり、値の
+    出所は戦略の宣言ただ 1 つである。データ実体に判定の瞬間を決めさせる形は、**終値で
+    判定する EA を気配幅つきの実体へ投げると run が始まらない**という害を生んでいた
+    （実測 2026-09-25: 宣言 'close' と設定 'current_open' の食い違いで exit=2）。
 
-値の所有者:
-    建値基準の値はカタログが持たない。単一ソースは `ENTRY_PRICE_BASIS` であり、
-    `simulator.sim_ui.main.composition_root_jobs` が注入する（known_ea_names と同じ様式＝
-    既定束縛を置かない）。カタログが持ってよいのは「実体が気配幅を供給するか」という事実
-    だけである。注入であることは、エンジンの語彙でない番兵 `_INJECTED` を注入して、それが
-    そのまま供給されることで実証する（カタログ内のリテラルでは番兵は出てこない）。
+    ファイル名に残る「spread_axis」は当時の軸の名である（改名は別途承認）。本ファイルが
+    いま固定するのは、**どの形式・どの気配幅の有無でも供給が無い**ことである。
 
-キー不在が要る理由（退行の罠）:
-    S が偽のとき **キーごと不在**にする。ISSUE-533 段階 1 以降、写像層は建値基準を補わない
-    ——権威は戦略の宣言であり、経路が既定を置くと判定の瞬間との一致が保証されない。ここで
-    "close" を明示すると、その値が戦略の宣言と食い違った run は 「`build_interactor`」 で
-    落ちる（黙って後勝ちにしない）。不在のままであることを
-    test_a_spreadless_dataset_keeps_the_settings_path_default が固定する。
-
-Red と回帰ガードの別（成功テスト先行を Red と称さない）:
-    * 真の Red … 建値基準の注入と気配幅の軸を要求する検定。実装前は
-      `SymbolSpecCatalog` が当該引数を受け取らないため `TypeError` で落ちる。
-    * 回帰ガード … S が偽のときの settings 経路の実効値を固定する検定。**是正前後の
-      どちらでも緑**であり Red ではない。その検出力は「"close" を供給する版へ差し替える
-      変異」で実測する（実測値は本作業の報告に記す）。
+なぜ真理値表の形のまま残すか:
+    「気配幅を供給する実体にだけ載せる」を復活させる変更は、気配幅を持たない実体だけを
+    見る検定では 1 ビットも検出できない。7 通りの実体（気配幅あり 3・なし 4）で
+    キーごと不在を表明することが、軸の復活を機械で赤にする唯一の形である。
 
 計算量（CX-3）:
-    継ぎ目は `datasets()` が 1 実体について発行するヘッダ読取
-    （`ohlc_marketdata_csv._header_line`）と、カタログ側の範囲読取である。
-    どちらも 発行 − 使用 = 0（使用 = プロファイルの数）であり、データ行数を変えても
-    増えないことを規模 2 点で表明する。**回数そのものは焼き込まない**。
+    `datasets()` が 1 実体について発行する読取を数える。段階 2 で**ヘッダ読取は問いごと
+    消えた**（気配幅を問う理由が無くなった）ため、継ぎ目は残したまま「1 度も発行しない」
+    を表明する。範囲読取は 発行 − 使用 = 0（使用 = プロファイルの数）であり、データ行数を
+    変えても増えない。**回数そのものは焼き込まない。**
 
     **発行回数だけでは足りない**（ISSUE-511 段階 8-D-4・工程 5 レビュー 🟡-2 の是正）:
     発行回数は「1 回の読取の中で読む量が O(n) になる退化」を 1 ビットも検出しない。実測
-    2026-09-25（本作業ツリー・HEAD 14fc9a13）: 範囲読取の後読み（終端から定数窓だけ読む 3 行）を
-    先頭からの全読みへ退化させると、本ファイルと
+    2026-09-25（HEAD 14fc9a13）: 範囲読取の後読み（終端から定数窓だけ読む 3 行）を先頭からの
+    全読みへ退化させると、本ファイルと
     `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` は **20 passed のまま
     素通しした**（出力の日付トークンも発行回数も変わらないため。壁時計は 0.46s → 10.91s だが
     **時間は表明しない**）。よって同じ規律で**配られた量**も数える
@@ -60,10 +46,7 @@ import pytest
 
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
-from simulator.main.tester_settings.kwargs_mapper import (
-    ENTRY_PRICE_BASIS,
-    to_interactor_kwargs,
-)
+from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.sim_ui.adapter import symbol_spec_catalog
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
@@ -84,9 +67,8 @@ from simulator.tests.tester_settings_engine_fixtures import (
     runnable_settings,
 )
 
-#: 実体のヘッダ → その実体が気配幅を供給するか（**この表が軸の唯一の宣言**）。
-#: 同じ形式で答えが割れる 3 組（marketdata 6 列 / 9 列・comma ±spread・MT5 TAB ±SPREAD）が、
-#: 判定が形式ではなく気配幅の供給で決まっていることを示す。
+#: 実体のヘッダ → その実体が気配幅を供給するか。**答えは供給の有無を変えない**ことが
+#: 本ファイルの主張なので、真偽どちらの実体も等しく並べる（気配幅あり 3・なし 4）。
 _AXIS = {
     "marketdata_9_columns": (MD9, True),
     "marketdata_6_columns": (MD6, False),
@@ -97,28 +79,13 @@ _AXIS = {
     "unknown_form": (GARBAGE, False),
 }
 
-#: 注入された基準値であることを示す番兵。**エンジンの語彙ではない**——カタログが値の
-#: リテラルを持っていればこの文字列は出てこないため、注入の実証になる。
-_INJECTED = "__injected_basis__"
-
-#: 注入の差し替えが効くことを見るための別値（写像層まで届くかを測る positive control）。
-#: 既存の優先順位検定（binding が勝つ）と同じ語を使う。
-_ALTERNATIVE = "current_close"
-
 #: 気配幅に依存しない EA（N-17 を踏まずに写像層まで通すため）。
 _INDEPENDENT_EA = "TC24051901"
 
 
-def _expected_override(supplies: bool, basis: str) -> "dict | None":
-    """気配幅を供給する実体だけが override を受け取る（供給しなければ**キーごと不在**）。"""
-    return {"entry_price_basis": basis} if supplies else None
-
-
-def _catalog(basis: str) -> SymbolSpecCatalog:
-    """基準値を注入したカタログ（EA 名の注入元は本ファイルの関心外なので最小の束縛）。"""
-    return SymbolSpecCatalog(
-        known_ea_names=lambda: (_INDEPENDENT_EA,), entry_price_basis=basis
-    )
+def _catalog() -> SymbolSpecCatalog:
+    """カタログ（EA 名の注入元は本ファイルの関心外なので最小の束縛）。"""
+    return SymbolSpecCatalog(known_ea_names=lambda: (_INDEPENDENT_EA,))
 
 
 def _entity(monkeypatch, tmp_path, name: str, header: str, body: str = "") -> str:
@@ -128,77 +95,47 @@ def _entity(monkeypatch, tmp_path, name: str, header: str, body: str = "") -> st
     return path
 
 
-# --- 1. 真理値表（S = 気配幅を供給するか）----------------------------------------
+# --- 1. どの実体でも供給しない（軸の復活を赤にする）--------------------------------
 
 
 @pytest.mark.parametrize("name", sorted(_AXIS))
-def test_the_override_follows_whether_the_entity_supplies_spread(
-    monkeypatch, tmp_path, name
-):
-    """供給される override は、形式ではなく気配幅の供給だけで決まる。
-
-    気配幅を供給する実体には注入された基準値が入り、供給しない実体には**キーが無い**。
-    """
+def test_no_entity_supplies_an_execution_config(monkeypatch, tmp_path, name):
+    """気配幅を供給する実体でも供給しない実体でも、override はキーごと不在である。"""
     # Arrange
-    header, supplies = _AXIS[name]
-    _entity(monkeypatch, tmp_path, name, header)
+    _entity(monkeypatch, tmp_path, name, _AXIS[name][0])
 
     # Act
-    measured = _catalog(_INJECTED).datasets()[0].config_overrides
+    measured = _catalog().datasets()[0].config_overrides
 
     # Assert
-    assert measured == _expected_override(supplies, _INJECTED)
+    assert measured is None
 
 
-def test_an_entity_without_spread_leaves_no_key_in_the_payload(monkeypatch, tmp_path):
-    """S が偽の実体では、キーが応答ペイロードにも現れない（不在が末端まで保たれる）。"""
-    # Arrange
-    path = _entity(monkeypatch, tmp_path, "md6", MD6)
+def test_the_key_never_reaches_the_payload(monkeypatch, tmp_path):
+    """キーが応答ペイロードにも現れない（不在が末端まで保たれる）。"""
+    # Arrange（気配幅を供給する実体＝かつて供給していた側で測る）
+    path = _entity(monkeypatch, tmp_path, "md9", MD9)
 
     # Act
-    payload = _catalog(_INJECTED).datasets()[0].to_dict()
+    payload = _catalog().datasets()[0].to_dict()
 
     # Assert
     assert "config_overrides" not in payload
     assert payload["data_path"] == path   # 空振り防止（測った実体が差し替え先である）
 
 
-# --- 2. 値の所有者（カタログは事実だけを持ち、値は注入で受ける）--------------------
+def test_the_catalog_takes_no_entry_price_basis_binding():
+    """建値基準の注入口そのものが無い（値の所有者を 2 つにしない）。"""
+    assert "entry_price_basis" not in inspect.signature(
+        SymbolSpecCatalog.__init__
+    ).parameters
 
 
-def test_the_entry_price_basis_has_no_default_binding():
-    """基準値の注入は必須引数である（既定束縛を置くと値の所有者が 2 つになる）。"""
-    parameter = inspect.signature(SymbolSpecCatalog.__init__).parameters[
-        "entry_price_basis"
-    ]
-    assert parameter.default is inspect.Parameter.empty
-
-
-def test_the_composition_root_injects_the_engine_value(monkeypatch, tmp_path):
-    """実際に結線された注入元は写像層の単一ソースである（カタログのリテラルではない）。"""
-    # Arrange
-    _entity(monkeypatch, tmp_path, "md9", MD9)
-
-    # Act
-    measured = build_run_options_port().datasets()[0].config_overrides
-
-    # Assert
-    assert measured == {"entry_price_basis": ENTRY_PRICE_BASIS}
-
-
-# --- 3. 回帰ガード（負の対照つき）: settings 経路の実効値 --------------------------
-#
-# 下の 2 件は是正前後のどちらでも緑であり **Red ではない**（成功テスト先行を Red と
-# 称さない）。検出力は変異で実測する: S が偽の側へ "close" を供給する版へ差し替えると
-# test_a_spreadless_dataset_keeps_the_settings_path_default が落ちる。
+# --- 2. 末端（写像層の実効値）------------------------------------------------------
 
 
 def _effective_basis(path: str, overrides: "dict | None") -> "str | None":
-    """profile の override を束縛に載せて写像層を 1 回通し、実効の建値基準を返す。
-
-    ISSUE-533 段階 1 以降、写像層は建値基準を**補わない**（権威は戦略の宣言）。したがって
-    カタログが供給しなければキーごと不在であり、``None`` を返す。
-    """
+    """profile の override を束縛に載せて写像層を 1 回通し、実効の建値基準を返す。"""
     kwargs = to_interactor_kwargs(
         runnable_settings(Expert=f"{_INDEPENDENT_EA}.ex5"),
         engine_binding(data_path=path, config_overrides=overrides),
@@ -206,55 +143,33 @@ def _effective_basis(path: str, overrides: "dict | None") -> "str | None":
     return kwargs["config_overrides"].get("entry_price_basis")
 
 
-def test_a_spreadless_dataset_keeps_the_settings_path_default(monkeypatch, tmp_path):
-    """気配幅を供給しない実体では、settings 経路は建値基準を 1 つも供給しない。
+@pytest.mark.parametrize("name", sorted(_AXIS))
+def test_the_settings_path_carries_no_entry_price_basis(monkeypatch, tmp_path, name):
+    """実結線（合成根 → 写像層）でも建値基準は 1 つも運ばれない。
 
-    カタログがキーを供給せず、写像層も補わない（ISSUE-533 段階 1: 既定を置かない）。
-    実効の建値基準は戦略の宣言から決まる。ここが値を持つようになったら、経路が既定を
-    置き直した合図である（負の対照）。
+    カタログ単体の表明だけだと、合成根が別の値を差し込む形が残っても赤にならない。
     """
     # Arrange
-    path = _entity(monkeypatch, tmp_path, "md6", MD6)
+    path = _entity(monkeypatch, tmp_path, name, _AXIS[name][0])
     profile = build_run_options_port().datasets()[0]
 
     # Act
     measured = _effective_basis(path, profile.config_overrides)
 
     # Assert
-    assert profile.config_overrides is None     # キーごと不在
+    assert profile.config_overrides is None
     assert measured is None
 
 
-def test_the_injected_basis_reaches_the_settings_path(monkeypatch, tmp_path):
-    """気配幅を供給する実体では、注入された基準値が写像層の実効値になる（positive control）。
-
-    これが無いと、上の回帰ガードは「カタログが何も供給しない」ことしか見ておらず、
-    供給した値が届くかを 1 つも測らないまま緑になる。
-    """
-    # Arrange
-    path = _entity(monkeypatch, tmp_path, "md9", MD9)
-    profile = _catalog(_ALTERNATIVE).datasets()[0]
-
-    # Act
-    measured = _effective_basis(path, profile.config_overrides)
-
-    # Assert
-    assert profile.config_overrides == {"entry_price_basis": _ALTERNATIVE}
-    assert measured == _ALTERNATIVE
-
-
-# --- 4. 計算量（CX-3）: 発行 − 使用 = 0・データ量で増えない -----------------------
+# --- 3. 計算量（CX-3）: 発行 − 使用 = 0・データ量で増えない -----------------------
 
 
 def _measure(monkeypatch, tmp_path, rows: int) -> dict:
     """``rows`` 行の実体 1 つで `datasets()` を 1 回呼んだときの発行・使用・配られた量。
 
-    数え方の名前で引けるようにしてあるのは（以前は 4 要素の組を添字で引いていた）、
-    継ぎ目が 2 つ（モジュール属性の発行・ファイルから配られた量）になって組の位置が
-    意味を担えなくなったためである。**表明する量は 1 つも変えていない**（8-D-4）。
-
-    キー: header / range（発行回数）・used（使用＝プロファイルの数）・overrides（供給された
-    override）・delivered（配られた量の総和）・delivered_entity（差し替えた実体の分だけ）・
+    キー: header（気配幅を問う発行。段階 2 で問いごと消えたので 0）・range（範囲読取の
+    発行）・used（使用＝プロファイルの数）・overrides（供給された override）・
+    delivered（配られた量の総和）・delivered_entity（差し替えた実体の分だけ）・
     seeks_entity（同じ実体への位置付けの発行）・size_entity（同じ実体の大きさ）。
     """
     path = _entity(monkeypatch, tmp_path, f"scale_{rows}", MD9, body_rows(MD9, rows))
@@ -262,7 +177,7 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
     range_reads = spy(monkeypatch, symbol_spec_catalog, "_csv_date_range")
     reads = spy_file_reads(monkeypatch)
 
-    profiles = _catalog(_INJECTED).datasets()
+    profiles = _catalog().datasets()
 
     return {
         "header": len(header_reads),
@@ -279,9 +194,10 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
 def test_the_reads_do_not_grow_with_the_data(monkeypatch, tmp_path):
     """`datasets()` 1 回あたりの読取が、データ行数でも問いの数でも増えない。
 
-    形式を問うために 1 回・気配幅を問うためにもう 1 回読む形は、出力が 1 ビットも変わら
-    ないため状態検証では落ちない。ここが唯一その無駄を止める。規模 2 点（5 行 / 5,000 行）
-    で発行が等しいことも併せて表明する。**回数そのものは焼き込まない**。
+    段階 2 で気配幅の問いが消えたので、ヘッダ読取は**1 度も発行されない**。問いが戻って
+    くれば（＝実体に建値基準を決めさせる形が復活すれば）ここが赤になる。範囲読取は
+    発行 − 使用 = 0 のままである。規模 2 点（5 行 / 5,000 行）で発行が等しいことも併せて
+    表明する。**回数そのものは焼き込まない。**
 
     発行回数が等しくても**1 回で読む量**が規模で増える退化は残る。それを止める表明は
     test_the_read_volume_does_not_grow_with_the_data が持つ（8-D-4）。
@@ -293,21 +209,21 @@ def test_the_reads_do_not_grow_with_the_data(monkeypatch, tmp_path):
     monkeypatch.undo()
 
     # Assert
-    assert small["overrides"] == {"entry_price_basis": _INJECTED}   # 空振り防止（答えを使っている）
-    assert large["overrides"] == small["overrides"]
-    assert small["header"] - small["used"] == 0     # ヘッダ読取: 発行 − 使用 = 0
-    assert large["header"] - large["used"] == 0
+    assert small["overrides"] is None               # 空振り防止（供給が無いことを見ている）
+    assert large["overrides"] is None
+    assert small["header"] == 0                     # 気配幅の問いを発行しない
+    assert large["header"] == 0
     assert small["range"] - small["used"] == 0      # 範囲読取: 発行 − 使用 = 0
     assert large["range"] - large["used"] == 0
-    assert large["header"] == small["header"]       # 行数 1,000 倍でも発行は増えない
+    assert large["range"] == small["range"]         # 行数 1,000 倍でも発行は増えない
 
 
 def test_the_read_volume_does_not_grow_with_the_data(monkeypatch, tmp_path):
     """実体から**配らせる量**が、データ行数で増えない（末尾は後読みで足りる）。
 
     上の検定と同じ盲点をここでも塞ぐ（工程 5 レビュー 🟡-2）: 発行回数が等しいままでも、
-    1 回の読取で実体を全走査する退化は通ってしまう。実測 2026-09-25（本作業ツリー・
-    HEAD 14fc9a13）: 範囲読取の後読みを先頭からの全読みへ退化させると、本ファイルと
+    1 回の読取で実体を全走査する退化は通ってしまう。実測 2026-09-25（HEAD 14fc9a13）:
+    範囲読取の後読みを先頭からの全読みへ退化させると、本ファイルと
     `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` は **20 passed で
     素通しした**。**時間は表明しない**——数えるのは呼び手へ配られた量である。
 
@@ -323,8 +239,8 @@ def test_the_read_volume_does_not_grow_with_the_data(monkeypatch, tmp_path):
 
     # Assert
     for measured in (small, large):
-        assert measured["overrides"] == {"entry_price_basis": _INJECTED}  # 空振り防止（答えを使う）
-        assert measured["delivered_entity"] > 0            # 生存確認（現に読んでいる）
+        assert measured["overrides"] is None                # 空振り防止（答えを使う）
+        assert measured["delivered_entity"] > 0             # 生存確認（現に読んでいる）
         # 実体を走査していない＝配られた量が実体より小さい（＝後読みの窓に収まっていない）
         assert measured["delivered_entity"] < measured["size_entity"]
     assert large["size_entity"] > small["size_entity"]     # 空振り防止（2 点は別の規模）

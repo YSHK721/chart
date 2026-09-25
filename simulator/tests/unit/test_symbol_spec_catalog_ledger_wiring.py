@@ -81,10 +81,6 @@ _REF = symbol_spec_catalog._JP225_REF
 #: 列挙していればプロファイルが 1 件増える。
 _UNRUNNABLE_REF = "not_runnable_in_sim"
 
-#: 注入された基準値であることを示す番兵（エンジンの語彙ではない）。本ファイルは建値基準の
-#: 値を測らないが、既定束縛の無い必須引数なので与える。
-_INJECTED = "__injected_basis__"
-
 #: 気配幅に依存しない EA（EA 名の注入元は本ファイルの関心外なので最小の束縛）。
 _INDEPENDENT_EA = "TC24051901"
 
@@ -118,7 +114,7 @@ def _relocated(path: str) -> DatasetDescriptor:
 def _datasets(module) -> list:
     """読み直したカタログ写しの `datasets()`（束縛は本ファイルの関心外なので最小）。"""
     return module.SymbolSpecCatalog(
-        known_ea_names=lambda: (_INDEPENDENT_EA,), entry_price_basis=_INJECTED
+        known_ea_names=lambda: (_INDEPENDENT_EA,)
     ).datasets()
 
 
@@ -301,13 +297,15 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
 def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp_path):
     """`datasets()` 1 回あたりの読取が、台帳経由にしてもデータ行数でも増えない。
 
-    台帳のパス解決がファイルを開けば「開いた総数 − 3 継ぎ目の発行の和」が正になって落ちる。
-    各継ぎ目は 発行 − **相異なる実体の数** = 0 である: データ側（ヘッダ読取・範囲読取）は
-    プロファイルの数（系列ごとに別の CSV）、スナップショット側は読んだ ``(サーバ, 銘柄)`` の
-    相異なる数（複数系列が同じ供給元を指すため 1）。**回数そのものは焼き込まない**。
+    台帳のパス解決がファイルを開けば「開いた総数 − 継ぎ目の発行の和」が正になって落ちる。
+    各継ぎ目は 発行 − **相異なる実体の数** = 0 である: 範囲読取はプロファイルの数
+    （系列ごとに別の CSV）、スナップショットは読んだ ``(サーバ, 銘柄)`` の相異なる数
+    （複数系列が同じ供給元を指すため 1）。ヘッダ読取は ISSUE-533 段階 2 で**問いごと消えた**
+    （建値基準を供給しなくなったので「その実体は気配幅を供給するか」を問う理由が無い）ので、
+    発行は 0 である。**回数そのものは焼き込まない**。
 
     末尾の「開いた数が規模 2 点で等しい」には検出力が無い（8-D-4 で実測・行は残す）: それは
-    上の各継ぎ目の等式から論理的に含意される（使用 = 1 → 3 継ぎ目は各 1 → 開いた数 = 3）ため、
+    上の各継ぎ目の等式から論理的に含意される（使用 = 1 → 継ぎ目の発行が決まる）ため、
     新しい情報を 1 ビットも足さない。実測 2026-09-25（本作業ツリー・HEAD 14fc9a13）:
     当該行を撤去しても 20 passed のまま挙動不変だった。規模で増えてはならない量は開いた数では
     なく**配られた量**であり、検出力のある規模 2 点の表明は
@@ -323,11 +321,11 @@ def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp
     # Assert
     for measured in (small, large):
         assert measured["data_path"] == measured["declared"]   # 空振り防止（測った実体である）
-        assert measured["header"] - measured["used"] == 0
+        assert measured["header"] == 0              # 気配幅の問いを発行しない（段階 2）
         assert measured["range"] - measured["used"] == 0
         assert measured["snapshot"] >= 1            # 空振り防止（実際に読んでいる）
         assert measured["snapshot"] - measured["snapshot_entities"] == 0
-        # 開いたファイルはすべて、出力に使われた 3 継ぎ目に帰属する（台帳の解決は開かない）
+        # 開いたファイルはすべて、出力に使われた継ぎ目に帰属する（台帳の解決は開かない）
         seams = measured["header"] + measured["range"] + measured["snapshot"]
         assert measured["opened"] - seams == 0
     assert large["opened"] == small["opened"]   # 行数 1,000 倍でも開く数は増えない

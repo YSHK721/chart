@@ -122,27 +122,9 @@ def build_stop_loss_catalog() -> EaStopLossParamCatalog:
     return EaStopLossParamCatalog(probe=EaBuildProbe(_build_ea_strategy))
 
 
-def _entry_price_basis() -> str:
-    """変換層の ENTRY_PRICE_BASIS への束縛（建値基準の値の単一ソース）。
-
-    カタログ（adapter）が持ってよいのは「データ実体が気配幅を供給するか」という事実だけ
-    であり、載せる値そのものは知らない（ISSUE-511 段階 8-D-1）。束ねるのは本 Composition
-    Root である（`_known_ea_names` と同型・R-4）。既定束縛を adapter 側に置くと
-    adapter → main の外向き依存が復活する。
-
-    import を関数内に置く理由は `_build_ea_indicators` と同じ（本モジュールの import で
-    設定変換系一式を引き込まない）。
-    """
-    from simulator.main.tester_settings.kwargs_mapper import ENTRY_PRICE_BASIS
-
-    return ENTRY_PRICE_BASIS
-
-
 def build_run_options_port() -> SymbolSpecCatalog:
     """実行指示フォームの選択肢を供給する RunOptionsPort（束縛済み）。"""
-    return SymbolSpecCatalog(
-        known_ea_names=_known_ea_names, entry_price_basis=_entry_price_basis()
-    )
+    return SymbolSpecCatalog(known_ea_names=_known_ea_names)
 
 
 def build_settings_schema_port() -> TesterSettingsSchemaCatalog:

@@ -48,8 +48,7 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
 
     実体は **marketdata 形式 6 列**（``date,open,high,low,close,volume``・**気配幅の列なし**・
     2026-09-19 実測）であり、形式の判定は読み手の所有者、形式ごとのリーダの選択は
-    ``simulator/main/ea_bindings/sources.py`` が持つ。気配幅を供給しないため、下の規則により
-    config_overrides は供給されない（キーごと不在）。台帳の宣言はソースコードであって
+    ``simulator/main/ea_bindings/sources.py`` が持つ。台帳の宣言はソースコードであって
     ユーザー供給でない（パストラバーサル無関係・``StaticFileServer`` の許可根判定を経由しない）。
 
     台帳経由にして何が変わったか（**実測した事実のみ**・2026-09-23・本作業ツリー）:
@@ -85,22 +84,18 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     dataset_registry.whitelist() の単一ソース由来」と主張していたのに、本モジュールの import に
     台帳は 1 件も無く、主張は現に偽だった（段階 8-D-2 で結線し、検定で機械的に結んだ）。
 
-    config_overrides（建値基準の供給）: 供給するかどうかは **その実体が気配幅を供給するか**
-    （``supplies_spread``）だけで決まる（ISSUE-511 段階 8-D-1）。形式は気配幅の代理変数に
-    すぎず、代理で測ると気配幅を持つ marketdata 9 列へ供給せず、気配幅を持たないタブ区切りの
-    実体へは供給してしまう。同じ置換を保証境界 N-17 について行ったのが段階 8-C であり、
-    ここは実行条件の側を同じ軸へ揃える。
+    建値基準（「``entry_price_basis``」）は**供給しない**（ISSUE-533 段階 2）: 判定の瞬間を
+    知っているのは戦略だけであり、値の出所は戦略の宣言ただ 1 つである
+    （`simulator/usecase/entry_price_basis.py`）。かつてここは「その実体が気配幅を供給
+    するか」で建値基準を載せていたが、それはデータ実体に判定の瞬間を決めさせる形であり、
+    **終値で判定する EA を気配幅つきの実体へ投げると run が始まらなかった**（実測
+    2026-09-25: 宣言 'close' と設定 'current_open' の食い違いで exit=2）。供給をやめた
+    ことで、経路（settings の有無）も実体も約定価格を決めなくなる——ISSUE-525 の経路差は
+    この撤去の帰結として消える（対症は要らない）。表明は
+    `simulator/tests/integration/test_entry_price_basis_single_source.py`。
 
-    **値はここが持たない**: 建値基準の値の単一ソースは変換層の ENTRY_PRICE_BASIS であり、
-    Composition Root（build_run_options_port）が注入する（known_ea_names と同じ様式＝既定
-    束縛を置かない）。本カタログが持ってよいのは「実体が気配幅を供給するか」という事実だけ
-    である。front リテラル 0・UI フィールドを増やさないのは従来どおり。
-
-    **供給しないときはキーごと不在にする**（値を明示しない）: 変換層の override 合成は
-    setdefault で補うため、binding 側に載っているキーの方が勝つ。ここで close を明示すると、
-    いま ENTRY_PRICE_BASIS で走っている settings 経路が反転し、既存の実行結果が動く。
-    不在が末端まで保たれることは、RunProfile の JSON 化が None の任意項目を落とすことで
-    担保される。
+    ``config_overrides`` という受け口そのものは残る（「``tick_model``」 等を運ぶ任意項目）。
+    本カタログはそこへ**何も載せない**＝常にキーごと不在である。
 
     stops_level の影響（実測 2026-08-25・0 → 5）:
         ``MA_Slope`` は SL/TP を持たず ``stops_level`` を参照しないため reconcile golden は
@@ -147,7 +142,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from simulator.adapter.repository.ohlc_marketdata_csv import supplies_spread
 from marketdata.dataset_registry import whitelist
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
@@ -230,23 +224,6 @@ def _offered() -> "tuple[tuple[str, Path], ...]":
     )
 
 
-def _config_overrides_for(path: Path, *, entry_price_basis: str) -> "dict | None":
-    """データ実体が気配幅を供給するかで決定論設定の override を導く。
-
-    気配幅を供給する実体にだけ建値基準を供給する。**値は注入元が権威**であり、ここは
-    リテラルを持たない（上の docstring「値はここが持たない」）。
-
-    供給しない実体には**キーごと返さない**（None）。変換層が setdefault で補う既定を
-    ここから明示して上書きしないためである——明示すると既存の実行結果が動く。
-
-    判定は ``supplies_spread`` に委ねる。「どのリーダで読むか」（形式）と「その実体が
-    気配幅の列を持つか」は別の問いであり、ここは後者だけを直接問う。
-    """
-    if supplies_spread(path):
-        return {"entry_price_basis": entry_price_basis}
-    return None
-
-
 def _date_token_of_row(row: bytes) -> "str | None":
     """データ 1 行の先頭フィールドから `.ini` 日付トークン（`YYYY.MM.DD`）を取り出す。
 
@@ -290,7 +267,6 @@ class SymbolSpecCatalog(RunOptionsPort):
     def __init__(
         self,
         known_ea_names: "Callable[[], tuple[str, ...]]",
-        entry_price_basis: str,
     ) -> None:
         """``known_ea_names``: 実行可能な EA 名を返す関数（**必須**）。
 
@@ -298,14 +274,8 @@ class SymbolSpecCatalog(RunOptionsPort):
         既定値を置かないのは R-4 と同型（既定束縛があると adapter → main の外向き依存が
         復活する）。銘柄仕様（`datasets`）は本カタログが権威だが、**実行可能な EA 名は
         エンジンが権威**であり、ここは中継するだけである。
-
-        ``entry_price_basis``: 気配幅を供給する実体へ載せる建値基準の値（**必須**）。
-        既定値を置かないのは同じ R-4 の規律である——既定を置くと値の所有者が 2 つになり、
-        変換層の単一ソースと食い違っても誰も気づかない。本カタログはこの値を解釈せず、
-        「気配幅を供給するか」の判定結果に従って載せるか載せないかだけを決める。
         """
         self._known_ea_names = known_ea_names
-        self._entry_price_basis = entry_price_basis
 
     def datasets(self) -> "list[RunProfile]":
         # 供給元スナップショットを **1 回だけ**読み、銘柄仕様 8 項目と決済通貨をそこから引く。
@@ -334,10 +304,7 @@ class SymbolSpecCatalog(RunOptionsPort):
             **spec_fields(snapshot),
             # N-11（口座通貨 ≠ 決済通貨）の判定データ源。供給元の symbol.currency_profit。
             settlement_currency=settlement_currency(snapshot),
-            # 決定論設定は「気配幅を供給するか」から導出（値は注入・上記 docstring）。
-            config_overrides=_config_overrides_for(
-                entity, entry_price_basis=self._entry_price_basis
-            ),
+            # 決定論設定は 1 項目も供給しない（ISSUE-533 段階 2・上記 docstring）。
         )
 
     def ea_names(self) -> "list[str]":
