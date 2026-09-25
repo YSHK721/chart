@@ -1,4 +1,4 @@
-"""判定の瞬間の宣言（ISSUE-533 段階 1）。
+"""判定の瞬間の宣言（ISSUE-533 段階 1・段階 2）。
 
 **約定価格は「戦略が判定した瞬間に取れた価格」でなければならない。** 判定の瞬間を知って
 いるのは戦略だけである（どの足のどの値を読むかは戦略の実装が決める）。したがって建値基準の
@@ -7,7 +7,11 @@
 
 本モジュールが持つもの:
     `declared_entry_price_basis`  戦略が名乗る建値基準を読む（宣言が無ければ Fail-Stop）。
+    `basis_for_reads`  戦略が読む ``(系列名, shift)`` から判定の瞬間を導く唯一の規則。
     `EntryPriceBasisDeclarationError`  宣言が無い／語彙の外／宣言の無い瞬間で約定しかけた。
+
+段階 2（ISSUE-533）で設定からの供給経路を全廃した。設定と宣言の食い違いを問う
+「`verify_entry_price_basis`」 はそこで不要になった——供給が無ければ食い違いは原理的に起きない。
 
 語彙を増やさない: 名前は既存語 ``entry_price_basis`` のまま、値も既存の 2 値
 （"close" / "current_open"）のままである。変えたのは**値の出所**だけである。
@@ -45,10 +49,6 @@ SERIES_KNOWN_AT_BAR_OPEN: "frozenset[str]" = frozenset({"open", "spread"})
 
 class EntryPriceBasisDeclarationError(ConfigError):
     """戦略の建値基準の宣言が無い、または語彙の外の値である。"""
-
-
-class EntryPriceBasisConflictError(ConfigError):
-    """run の設定が明示した建値基準が、戦略の宣言と食い違っている。"""
 
 
 def basis_for_reads(reads: "Any") -> "str | None":
@@ -100,38 +100,6 @@ def declared_entry_price_basis(strategy: Any) -> "str | None":
                 "strategy": type(strategy).__name__,
                 "declared": repr(declared),
                 "declarable": list(DECLARABLE_BASES),
-            },
-        )
-    return declared
-
-
-def verify_entry_price_basis(strategy: Any, *, configured: "str | None") -> "str | None":
-    """戦略の宣言を読み、設定が明示した値と食い違わないことを確かめて宣言を返す。
-
-    ``configured``: run の設定（``config_overrides``）が**明示した**値。キーが無ければ
-    ``None`` を渡す（＝設定は何も主張していない。戦略が名乗る ``None``＝「足境界で判定
-    しない」とは意味が別である）。
-
-    食い違いを黙って後勝ちにしない理由: どちらを採っても、採らなかった側が誤っていた
-    ことを誰にも報せずに run が完走する。設定が判定の瞬間と違う値を主張しているなら、
-    その run の約定価格は「取得できない価格」であり、結果は捨てるしかない。
-
-    戦略が ``None``（足境界で判定しない）を名乗っているときは食い違いにしない——判定の
-    瞬間を主張していないものは設定と矛盾しえない。その戦略が足境界で約定しようとした
-    時点で 「`derive_quotes`」 が落とす。
-    """
-    declared = declared_entry_price_basis(strategy)
-    if configured is None or declared is NO_BAR_BOUNDARY_DECISION:
-        return declared
-    if configured != declared:
-        raise EntryPriceBasisConflictError(
-            "run の設定が指定した建値基準が、戦略が宣言した判定の瞬間と食い違います"
-            f"（戦略={type(strategy).__name__} 宣言={declared!r} 設定={configured!r}）。"
-            "権威は戦略の宣言です。設定からの指定を外すか、判定の瞬間に合う値へ直してください。",
-            context={
-                "strategy": type(strategy).__name__,
-                "declared": declared,
-                "configured": configured,
             },
         )
     return declared

@@ -68,7 +68,6 @@ COMMON = dict(
     take_profit_points=500, entry_offset_points=100.0, entry_type="stop",
     config_overrides={
         "tick_model": "ohlc_expand",
-        "entry_price_basis": "current_open",
         "floating_pnl_basis": "bid_ask",
         "stop_out_action": "close_and_halt",
         "session_calendar": "jp225",

@@ -169,10 +169,8 @@ class TestFillAtBarOpenQuote:
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
-        # Act: entry_price_basis="current_open" でバー open クォート約定
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        # Act: 戦略が current_open を宣言しているのでバー open クォート約定
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: entry はバー open Ask（1.103）。close 1.10 でもティック ask 1.123 でもない。
         assert len(result.trades) == 2
         assert result.trades[0].side == "buy"
@@ -187,8 +185,8 @@ class TestFillAtBarOpenQuote:
         assert result.trades[0].entry_price != pytest.approx(1.123)
 
     def test_real_ticks_default_basis_fills_at_close_like_bar_mode(self):
-        # 回帰防止（レビュー🟡-1）: real_ticks でも entry_price_basis 既定="close" の
-        # ときは bar.close 約定になる（bar-mode と同一・derive_quotes の close 分岐）。
+        # 回帰防止（レビュー🟡-1）: real_ticks でも戦略が close を宣言していれば
+        # bar.close 約定になる（bar-mode と同一・derive_quotes の close 分岐）。
         # open=1.10・close=1.105・spread=300 で close≠open を作り、約定が close=1.105
         # （open 1.10 でも罠ティック ask 1.123 でもない）であることを値で固定する。
         bars = [
@@ -207,7 +205,7 @@ class TestFillAtBarOpenQuote:
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
-        # Act: _config() 既定（tick_model="real_ticks" / entry_price_basis="close"）
+        # Act: tick_model="real_ticks"・戦略（`SpyStrategyPort`）は close を宣言
         result = interactor.execute(_request(bars))
         # Assert: entry は bar0.close=1.105（open 1.10 でもティック ask 1.123 でもない）
         assert len(result.trades) == 2
@@ -282,9 +280,7 @@ class TestOnNewBarOnlyAtBarBoundary:
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: on_new_bar は足境界で各 1 回（ティック数に依存しない）
         assert strategy.on_new_bar_calls == [0, 1]
         # かつ約定は「バー open クォート」でのみ起きる（ティックごとの再約定をしない）:
@@ -345,9 +341,7 @@ class TestSlTpClosesAtTickPrice:
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: ティック価格でのみ成立する SL 決済（bar.low では到達しない）
         assert len(result.trades) == 1
         # entry は bar0 バー open Ask=1.101（close 1.10 でもティック ask 1.108 でもない）

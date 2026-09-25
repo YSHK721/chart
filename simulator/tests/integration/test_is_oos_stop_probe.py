@@ -59,7 +59,6 @@ def _stop_probe_kwargs(csv_path: Path) -> dict:
         entry_type="stop",
         config_overrides={
             "tick_model": "ohlc_expand",
-            "entry_price_basis": "current_open",
             "floating_pnl_basis": "bid_ask",
             "stop_out_action": "close_and_halt",
             "session_calendar": "jp225",

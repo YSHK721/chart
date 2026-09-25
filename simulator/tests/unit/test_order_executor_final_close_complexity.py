@@ -86,6 +86,9 @@ def _holding(sides):
         )
     executor = OrderExecutor(
         account=account, ledger=ledger, spec=_spec(), leverage=_LEVERAGE,
+        # `OrderExecutor` は建値基準を**引数で受ける**（値の出所は戦略の宣言であり、
+        # 宣言を読むのは `RunBacktestInteractor` である）。本検定はエグゼキュータ単体を
+        # 組むので、その run が宣言した値をここで与える。
         contract_size=_CONTRACT, entry_price_basis="close", pending_oco=False,
     )
     return executor, open_trades, trades

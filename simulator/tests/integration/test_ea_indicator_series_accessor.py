@@ -74,7 +74,7 @@ def _kwargs(csv_path: Path, ea_name: str) -> dict:
         lot_size=0.1,
         stop_loss_points=0,
         take_profit_points=0,
-        config_overrides={"tick_model": "open_only", "entry_price_basis": "current_open"},
+        config_overrides={"tick_model": "open_only"},
     )
 
 

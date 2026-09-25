@@ -32,8 +32,8 @@ import pytest
 
 import simulator.adapter.strategy as strategy_package
 from simulator.main import build_interactor
+from simulator.domain.exceptions import ConfigError
 from simulator.usecase.entry_price_basis import (
-    EntryPriceBasisConflictError,
     EntryPriceBasisDeclarationError,
     basis_for_reads,
 )
@@ -108,59 +108,49 @@ class _DeclaresNoBarBoundaryDecision(_DeclaresBarOpen):
     entry_price_basis = None
 
 
-def test_a_configured_basis_that_contradicts_the_declaration_stops_the_run(
-    tmp_path: Path,
-) -> None:
-    """設定値と宣言が食い違えば名前つきで落ちる（黙って後勝ちにしない）。"""
-    # Arrange
-    csv_path = _write_csv(tmp_path / "m1.csv")
-    meta = _meta(
-        csv_path,
-        strategy_override=_DeclaresBarOpen(),
-        config_overrides={"entry_price_basis": "close"},
-    )
-    # Act / Assert
-    with pytest.raises(EntryPriceBasisConflictError) as caught:
-        build_interactor(**meta)
-    assert "current_open" in str(caught.value) and "close" in str(caught.value)
+def test_the_config_cannot_carry_a_basis_at_all(tmp_path: Path) -> None:
+    """設定へ建値基準を書いた run は**始まらない**（ISSUE-533 段階 2）。
 
+    段階 1 は受け口を残し「宣言と食い違えば Fail-Stop」だった。段階 2 で供給そのものを
+    撤去したので、食い違いは原理的に起きない——決定論設定の語彙から外れ、書けば
+    `ConfigError` になる。以前ここに在った 3 件（食い違いで落ちる／一致すれば通る／
+    足境界で判定しない戦略は食い違わない）は、いずれも**受け口の存在を前提にした検定**で
+    あり、受け口が無くなった時点で表明する対象が消えた。
 
-def test_a_configured_basis_that_agrees_with_the_declaration_runs(tmp_path: Path) -> None:
-    """一致する設定値は通す（受け口は本段では残す）。"""
-    # Arrange
-    csv_path = _write_csv(tmp_path / "m1.csv")
-    meta = _meta(
-        csv_path,
-        strategy_override=_DeclaresBarOpen(),
-        config_overrides={"entry_price_basis": "current_open"},
-    )
-    # Act
-    controller, _ = build_interactor(**meta)
-    # Assert
-    assert controller._interactor._strategy.entry_price_basis == "current_open"
-
-
-def test_a_strategy_without_a_bar_boundary_decision_cannot_contradict_the_setting(
-    tmp_path: Path,
-) -> None:
-    """足境界で判定しない戦略は設定と食い違わない（主張していないものは矛盾しない）。
-
-    実測（2026-09-25）: 両検定スイートの `build_interactor` 呼出 303 件のうち 58 件が
-    この形である（StopEntryProbe_EA 30 件・Math calculations の NullStrategy 28 件。
-    いずれも設定は "current_open" を明示している）。ここを食い違いにすると、判定の
-    瞬間を 1 度も主張していない戦略の run が落ちる。
+    実測（2026-09-25・段階 2 着手前）: 両検定スイートの `build_interactor` 呼出のうち
+    58 件が「宣言 None ＋ 設定 current_open」の形だった（StopEntryProbe_EA 30 件・
+    Math calculations の NullStrategy 28 件）。撤去でその 58 件は設定を 1 つも渡さなくなり、
+    宣言だけが残る。
     """
     # Arrange
     csv_path = _write_csv(tmp_path / "m1.csv")
     meta = _meta(
         csv_path,
-        strategy_override=_DeclaresNoBarBoundaryDecision(),
+        strategy_override=_DeclaresBarOpen(),
         config_overrides={"entry_price_basis": "current_open"},
     )
+
+    # Act / Assert（宣言と一致する値でも受け付けない＝受け口が無い）
+    with pytest.raises(ConfigError):
+        build_interactor(**meta)
+
+
+def test_the_declaration_alone_decides_without_any_config(tmp_path: Path) -> None:
+    """設定を 1 つも渡さずに、宣言だけで判定の瞬間が決まる。"""
+    # Arrange
+    csv_path = _write_csv(tmp_path / "m1.csv")
+
     # Act
-    controller, _ = build_interactor(**meta)
+    controller, _ = build_interactor(
+        **_meta(csv_path, strategy_override=_DeclaresBarOpen())
+    )
+    no_moment, _ = build_interactor(
+        **_meta(csv_path, strategy_override=_DeclaresNoBarBoundaryDecision())
+    )
+
     # Assert
-    assert controller._interactor._strategy.entry_price_basis is None
+    assert controller._interactor._strategy.entry_price_basis == "current_open"
+    assert no_moment._interactor._strategy.entry_price_basis is None
 
 
 class _OrdersWithoutABarBoundaryMoment(_DeclaresNoBarBoundaryDecision):

@@ -66,7 +66,7 @@ def _ma_slope_kwargs(csv_path: Path) -> dict:
         take_profit_points=0,
         slope_shift=1,
         slope_min_points=1.0,
-        config_overrides={"tick_model": "open_only", "entry_price_basis": "current_open"},
+        config_overrides={"tick_model": "open_only"},
     )
 
 

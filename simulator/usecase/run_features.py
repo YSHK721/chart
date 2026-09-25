@@ -36,12 +36,11 @@ from simulator.usecase.models import BacktestConfig
 #: run 中に効く config 由来のスイッチ（読み取り点はここが唯一）。
 #: 並びは `BacktestConfig` の宣言順に合わせてある（宣言と読み取りの対応を目で追えるように）。
 #:
-#: ``entry_price_basis`` は **run 中には効かない**（ISSUE-533 段階 1: 約定に使う値は戦略の
-#: 宣言から来る）。宣言の一覧としては残すが、約定段はここを読まない。撤去は段階 2。
+#: 建値基準（「``entry_price_basis``」）はここに**無い**（ISSUE-533 段階 2 で撤去）。約定に使う
+#: 値は戦略の宣言から来るので、config 由来のスイッチではない。
 _FEATURE_NAMES: "tuple[str, ...]" = (
     "tick_model",
     "sltp_tie",
-    "entry_price_basis",
     "stop_out_action",
     "prime_first_trading_bar",
     "floating_pnl_basis",
@@ -81,7 +80,6 @@ class RunFeatures:
 
     tick_model: Any
     sltp_tie: Any
-    entry_price_basis: Any
     stop_out_action: Any
     prime_first_trading_bar: Any
     floating_pnl_basis: Any

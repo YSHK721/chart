@@ -452,11 +452,11 @@ def _bar_s(t, o, h, l, c, spread):
 
 
 def _config_open_fill():
-    """現バー open 基準 + spread 適用モードの config（cycle2 で追加するフィールド）。
+    """現バー open 基準 + spread 適用モードの config。
 
-    ISSUE-533 段階 1 以降、``entry_price_basis`` は**実行の権威ではない**（権威は戦略の
-    宣言）。ここに残すのは受け口が段階 1 では残るからで、値は戦略の宣言と一致させる
-    （食い違えば 「`build_interactor`」 が落とす）。
+    ISSUE-533 段階 2 以降、建値基準は config に**無い**（権威は戦略の宣言ただ 1 つ）。
+    現バー open 基準で約定させるのは、この run に渡す戦略が ``current_open`` を宣言して
+    いるからである（`_DecidesAtBarOpenSpy`）。
     """
     return BacktestConfig(
         tick_model="ohlc_simulate",
@@ -468,7 +468,6 @@ def _config_open_fill():
         digits=1,
         legacy_quirks=False,
         return_basis="equity",
-        entry_price_basis="current_open",
     )
 
 
@@ -530,7 +529,7 @@ class TestConfigDrivenSpreadOpenFill:
 
     def test_buy_fills_at_open_plus_spread_times_point_when_enabled(self):
         # Arrange: 実 MT5 fixture アンカー（39412 = open 39402 + spread100×point0.1）の小データ再現。
-        # entry_price_basis="current_open" + spread=100 + point_size=0.1。
+        # 戦略が current_open を宣言 + spread=100 + point_size=0.1。
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
         strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [buy], 1: [sell]})
@@ -594,7 +593,7 @@ class TestConfigDrivenSpreadOpenFill:
             indicators=SpyIndicatorPort([]),
             tick_model=StubTickModelPort(),
         )
-        # 既定 config（entry_price_basis 未指定）。spread=100 だが従来は無視。
+        # 戦略が close を宣言（`SpyStrategyPort`）。spread=100 だが close 基準では無視。
         req = _request(self._BARS, symbol_spec=_jp225_spec())
         # Act
         result = interactor.execute(req)
@@ -656,7 +655,6 @@ class TestFloatingPnlBasisWiring:
 
     def _config(self, basis):
         c = _config()
-        c.entry_price_basis = "current_open"
         c.floating_pnl_basis = basis
         return c
 
@@ -748,8 +746,7 @@ class TestReverseShortCloseSpread:
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
 
 def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
-                       entry_price_basis=None, floating_pnl_basis=None,
-                       stop_out_at_open=None):
+                       floating_pnl_basis=None, stop_out_at_open=None):
     """margin_level < stop_out を bar1 で発生させる共通セットアップ。
 
     1 lot 買い@1.10、contract=100000、leverage=100 → 必要証拠金=1100。
@@ -758,8 +755,6 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
     cfg_kwargs = {}
     if stop_out_action is not None:
         cfg_kwargs["stop_out_action"] = stop_out_action
-    if entry_price_basis is not None:
-        cfg_kwargs["entry_price_basis"] = entry_price_basis
     if floating_pnl_basis is not None:
         cfg_kwargs["floating_pnl_basis"] = floating_pnl_basis
     if stop_out_at_open is not None:
@@ -838,7 +833,7 @@ class TestStopOutActionConfig:
         assert result.trades[0].exit_reason == "stop_out"
 
     def test_stop_out_closes_at_close_mark_price_not_bar_open(self):
-        # 回帰防止（ISSUE-019）: entry_price_basis="current_open" でも stop-out 強制決済は
+        # 回帰防止（ISSUE-019）: 建値基準が何であれ stop-out 強制決済は
         # 「margin 割れを判定した時点の現値」＝bar.close（account.mark_price）で行う。
         # 過ぎ去った始値（bar.open）で決済しない（実 MT5 整合・決済価格と判定価格の整合）。
         bars = [
@@ -848,7 +843,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             bars=bars,
         )
         result = interactor.execute(req)
@@ -893,7 +887,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             stop_out_at_open=True,
             bars=bars,
         )
@@ -913,7 +906,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             bars=bars,  # stop_out_at_open 未指定＝既定 False
         )
         result = interactor.execute(req)
@@ -929,7 +921,6 @@ class TestStopOutActionConfig:
             _bar(np.datetime64("2024-01-01T00:01"), 0.50, 1.10, 0.50, 1.05),  # open 割れ
         ]
         interactor, req = _margin_call_setup(
-            entry_price_basis="current_open",
             stop_out_at_open=True,
             bars=bars,  # stop_out_action 未指定＝既定 fail_stop
         )
@@ -982,7 +973,7 @@ class _NullAccountStrategy:
 class _RunConfigLike:
     """determinism 属性アクセス + 戦略パラメータの subscript を 1 つで満たす config。
 
-    Interactor は config.entry_price_basis 等を属性で、TC24051901 は cfg["point_size"]
+    Interactor は config.tick_model 等を属性で、TC24051901 は cfg["point_size"]
     等を subscript で参照する（main/run_config.RunConfig と同契約）。
     """
 

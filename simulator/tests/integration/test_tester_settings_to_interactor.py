@@ -157,16 +157,17 @@ class TestConfigOverrides:
         assert kwargs["config_overrides"]["tick_model"] == engine_id
 
     def test_the_mapping_layer_supplies_no_entry_price_basis(self):
-        # ISSUE-533 段階 1: 建値基準の権威は**戦略の宣言**である。写像層が既定を補うと、
-        #   判定が足の終わりに成立する EA（当該足の終値を読むもの）へ足の始まりの気配を
-        #   押し付け、その EA は判定の瞬間に取得できない価格で約定する（ISSUE-533 の実測）。
-        #   ここが赤くなるのは既定が経路へ戻ったときであり、それは同じ欠陥の再発である。
+        # ISSUE-533 段階 2: 建値基準の権威は**戦略の宣言**であり、設定の語彙から外した。
+        #   写像層が既定を補うと、判定が足の終わりに成立する EA（当該足の終値を読むもの）へ
+        #   足の始まりの気配を押し付け、その EA は判定の瞬間に取得できない価格で約定する
+        #   （ISSUE-533 の実測）。ここが赤くなるのは既定が経路へ戻ったときである。
         assert "entry_price_basis" not in _kwargs()["config_overrides"]
 
     def test_binding_config_overrides_take_priority(self):
-        # 銘柄仕様の権威（カタログ）が値を持つときはそれを優先する（§8.1）
-        kwargs = _kwargs(config_overrides={"entry_price_basis": "current_close"})
-        assert kwargs["config_overrides"]["entry_price_basis"] == "current_close"
+        # 銘柄仕様の権威（カタログ）が値を持つときはそれを優先する（§8.1）。
+        # 建値基準はもう設定の語彙に無いので、同じ優先順位を別の決定論項目で測る。
+        kwargs = _kwargs(config_overrides={"session_calendar": "jp225"})
+        assert kwargs["config_overrides"]["session_calendar"] == "jp225"
 
     def test_real_ticks_requires_a_tick_store_root(self):
         # N-05: 実ティックを合成で代替しない

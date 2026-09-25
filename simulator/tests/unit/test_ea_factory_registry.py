@@ -91,8 +91,7 @@ def _mt5_kwargs(csv_path: Path, ea_name: str) -> dict:
         **load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225"),
         ma_period=20, ma_method="ema", lot_size=0.1, stop_loss_points=0,
         take_profit_points=0, slope_shift=1, slope_min_points=1.0,
-        config_overrides={"tick_model": "open_only", "entry_price_basis": "current_open",
-                          "pending_lifecycle": True, "pending_oco": True},
+        config_overrides={"tick_model": "open_only", "pending_lifecycle": True, "pending_oco": True},
     )
 
 

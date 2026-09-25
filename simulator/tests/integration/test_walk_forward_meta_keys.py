@@ -53,7 +53,6 @@ def _run_main(tmp_path: Path, out_name: str):
         "--stop-loss-points", "200", "--take-profit-points", "500",
         "--entry-offset-points", "100.0", "--entry-type", "stop",
         "--config-override", "tick_model=ohlc_expand",
-        "--config-override", "entry_price_basis=current_open",
         "--config-override", "floating_pnl_basis=bid_ask",
         "--config-override", "stop_out_action=close_and_halt",
         "--config-override", "session_calendar=jp225",

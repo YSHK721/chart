@@ -54,11 +54,10 @@ class _ConfigModel(BaseModel):
     return_basis: Literal[
         "equity_simple_bar", "equity_log_bar", "balance_simple_trade"
     ] = "equity_simple_bar"                                       # §7 #9 エクイティ・単純・足
-    # 約定価格基準（cycle2 で BacktestConfig へ追加・cycle3 で config_loader 経由設定を結線）。
-    # 既定 "close"＝従来挙動（後方互換）。"current_open"＝原典 .mq5（新規バー現値約定）。
-    # ISSUE-533 段階 1: 実行の権威は戦略の宣言（`simulator/usecase/entry_price_basis.py`）。
-    #   ここは受け口であり、明示値が宣言と食い違えば 「`build_interactor`」 が run を止める。
-    entry_price_basis: Literal["close", "current_open"] = "close"
+    # 建値基準（「``entry_price_basis``」）の受け口は ISSUE-533 段階 2 で**撤去した**。値の出所は
+    # 戦略の宣言ただ 1 つであり（`simulator/usecase/entry_price_basis.py`）、ここに受け口が
+    # あるかぎり「設定と宣言のどちらが正か」を問い続けることになる。extra="forbid" により、
+    # 設定へ書いた指定は黙って無視されるのではなく `ConfigError` で拒まれる。
     # 証拠金ストップアウト時の挙動（cycle4 で追加）。既定 "fail_stop"＝従来どおり raise。
     # "close_and_halt"＝強制決済して完走。default 付きのため既存 config と後方互換。
     stop_out_action: Literal["fail_stop", "close_and_halt"] = "fail_stop"
@@ -173,7 +172,6 @@ def load_config(source: ConfigSource) -> BacktestConfig:
         digits=model.digits,
         legacy_quirks=model.legacy_quirks,
         return_basis=model.return_basis,
-        entry_price_basis=model.entry_price_basis,
         stop_out_action=model.stop_out_action,
         prime_first_trading_bar=model.prime_first_trading_bar,
         floating_pnl_basis=model.floating_pnl_basis,

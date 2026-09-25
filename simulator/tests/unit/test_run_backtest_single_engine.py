@@ -644,7 +644,7 @@ def _open_gap_bars():
 #: 証拠金割れが起こりうる 3 つの評価点（バー open / バー close / ティック）。
 #: 移設前はこの 3 点それぞれに同じ 2 分岐が書き写されていた。
 _BREACH_SITES = [
-    ("bar_open", {"entry_price_basis": "current_open", "stop_out_at_open": True}, _open_gap_bars),
+    ("bar_open", {"stop_out_at_open": True}, _open_gap_bars),
     ("bar_close", {}, _flat_then_crash_bars),
     ("tick", {"tick_model": "real_ticks"}, _flat_then_crash_bars),
 ]

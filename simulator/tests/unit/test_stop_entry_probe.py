@@ -149,7 +149,6 @@ def _config(**overrides):
         digits=1,
         legacy_quirks=False,
         return_basis="equity",
-        entry_price_basis="current_open",
         pending_lifecycle=True,
     )
     base.update(overrides)

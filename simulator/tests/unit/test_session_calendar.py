@@ -206,7 +206,6 @@ def _config(**ov):
         tick_model="ohlc_expand", spread_model="fixed", sltp_tie="sl",
         fill_delay="next_tick", ohlc_order="auto", session_calendar="none",
         digits=5, legacy_quirks=False, return_basis="equity",
-        entry_price_basis="current_open",
     )
     base.update(ov)
     return BacktestConfig(**base)

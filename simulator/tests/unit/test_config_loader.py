@@ -299,39 +299,35 @@ def test_normalize_time_rejects_float_as_config_error():
         normalize_time(1.5)
 
 
-# ---- cycle3: entry_price_basis を config から設定可能にする（MT5 current_open 約定の結線） ----
+# ---- ISSUE-533 段階 2: entry_price_basis の受け口は撤去した ----
 
 
-def test_load_config_defaults_entry_price_basis_to_close():
-    # Arrange: 省略時は従来挙動（close 約定・spread 無視）= 後方互換
-    from simulator.framework.config_loader import load_config
+def test_load_config_has_no_entry_price_basis_field():
+    """建値基準は決定論設定ではない（値の出所は戦略の宣言ただ 1 つ）。
 
-    # Act
-    cfg = load_config({})
+    受け口が残っているかぎり「設定と宣言のどちらが正か」を問い続けることになる。
+    フィールドごと無いことを表明する。
+    """
+    from dataclasses import fields
 
-    # Assert: 既定は "close"（cycle2 の BacktestConfig 既定と一致）
-    assert cfg.entry_price_basis == "close"
+    from simulator.usecase.models import BacktestConfig
 
-
-def test_load_config_accepts_entry_price_basis_current_open():
-    # Arrange: 原典 .mq5（新規バー現値約定）= MT5 突合に必須
-    from simulator.framework.config_loader import load_config
-
-    # Act
-    cfg = load_config({"entry_price_basis": "current_open"})
-
-    # Assert: config_loader 経由で current_open が BacktestConfig へ伝播する
-    assert cfg.entry_price_basis == "current_open"
+    assert "entry_price_basis" not in {f.name for f in fields(BacktestConfig)}
 
 
-def test_load_config_rejects_invalid_entry_price_basis():
-    # Arrange: 列挙外の値（close / current_open のみ許容）
+def test_load_config_refuses_an_entry_price_basis_key():
+    """設定へ書いた建値基準は**黙って無視されず拒まれる**（沈黙は検出できない）。
+
+    `extra="forbid"` により未知キーは `ConfigError` になる。以前ここは「省略時は close」
+    「current_open も受ける」を固定していたが、その既定こそが判定の瞬間と食い違う価格で
+    約定させていた欠陥の受け皿だった（ISSUE-533）。
+    """
     from simulator.domain.exceptions import ConfigError
     from simulator.framework.config_loader import load_config
 
-    # Act / Assert: 列挙外は ConfigError へ翻訳（silent drop 禁止）
-    with pytest.raises(ConfigError):
-        load_config({"entry_price_basis": "bogus_basis"})
+    for value in ("close", "current_open", "bogus_basis"):
+        with pytest.raises(ConfigError):
+            load_config({"entry_price_basis": value})
 
 
 # ---- 層1/層2: prime_first_trading_bar / floating_pnl_basis を config から設定可能にする ----

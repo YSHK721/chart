@@ -32,7 +32,7 @@ def _config():
         tick_model="real_ticks", spread_model="fixed", sltp_tie="sl",
         fill_delay="next_tick", ohlc_order="auto", session_calendar="none",
         digits=2, legacy_quirks=False, return_basis="equity",
-        entry_price_basis="current_open", pending_lifecycle=True,
+        pending_lifecycle=True,
     )
 
 
