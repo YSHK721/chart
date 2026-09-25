@@ -324,6 +324,71 @@ def _settings_supplied_params() -> "frozenset[str]":
     )
 
 
+class SettlementCurrencyDisagreement(ValueError):
+    """投入の実体がどの profile とも一致せず、銘柄一致の profile 群が決済通貨で食い違う。
+
+    決済通貨は非対象判定 N-11（口座通貨 ≠ 銘柄の決済通貨を拒否）の判定データ源である。
+    食い違う候補から 1 つを選ぶ規則は存在しないため、**推定しないで止める**。黙って片方を
+    採ると、通貨不一致の run が N-11 を素通りする（出力は形式上正しいので状態検証では
+    検出できない）。
+
+    ``ValueError`` の派生にしてあるのは、台帳の同型の Fail-Stop（dataset_registry が送る
+    TickTokenMissing）と同じ理由である——``ValueError`` として捕捉している既存の呼び出し側の
+    契約を変えない。
+    """
+
+
+def _settlement_currency_for_submission(
+    profiles: "Any", *, symbol: str, data_path: "Any"
+) -> str:
+    """投入から決済通貨（N-11 の判定データ源）を引く。**profile の並びに依存しない**。
+
+    規則（ISSUE-511 段階 8-D-3 / 設計 D-3・依頼者裁定 2026-09-25）:
+        1. 投入された実体（``data_path``）と一致する profile があれば、その profile の値。
+           **同一性は実体で決まる**——同じ銘柄の系列が複数あるとき、銘柄では決まらない。
+        2. 一致が無ければ、銘柄一致の profile 群が**合意している**ときだけその値。投入の実体は
+           カタログの実体でなくてよい（合成 CSV で経路を確かめる検定群が実際にそうしている）。
+        3. 合意しなければ :class:`SettlementCurrencyDisagreement` で止める（推定しない）。
+
+    是正前は ``next((p for p in datasets() if p.symbol == symbol))`` で**銘柄一致の先頭**を
+    採っていた。銘柄あたり 1 本のうちは答えが一意なので誤りが表に出ないが、同じ銘柄の系列が
+    2 本になった時点で答えが並びで決まる。取り違えても出力は形式上正しいままなので、状態検証
+    では原理的に検出できない（機械的検査は
+    ``simulator/sim_ui/tests/unit/test_run_job_profile_identity.py``）。
+
+    Raises:
+        ValueError: 銘柄一致の profile が 1 件も無い（決済通貨の供給源が無い）。
+        SettlementCurrencyDisagreement: 実体が一致せず、候補が値で食い違う。
+    """
+    submitted = None if data_path is None else str(data_path)
+    if submitted is not None:
+        exact = next((p for p in profiles if p.data_path == submitted), None)
+        if exact is not None:
+            return exact.settlement_currency
+
+    candidates = [p for p in profiles if p.symbol == symbol]
+    if not candidates:
+        raise ValueError(
+            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
+            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
+        )
+    agreed = {p.settlement_currency for p in candidates}
+    if len(agreed) != 1:
+        # 案内には「どの profile 群がどの値で食い違ったか」と「どの投入がどれとも一致しな
+        # かったか」を載せる。綴りは 1 つも書き写さず、渡された profile から導く（書き写すと
+        # 片方だけ動いたときに案内が嘘になる）。
+        disagreement = "・".join(
+            f"{p.dataset}={p.settlement_currency}" for p in candidates
+        )
+        raise SettlementCurrencyDisagreement(
+            f"投入された実体 {submitted!r} はどの実行プロファイルの実体とも一致せず、"
+            f"銘柄 {symbol!r} の実行プロファイル群は決済通貨で食い違っています"
+            f"（{disagreement}）。推定値では N-11 の判定が壊れるため、投入の実体を"
+            "いずれかのプロファイルの実体に合わせてください。"
+        )
+    return agreed.pop()
+
+
 def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     """`backtest` ブロック ＋ カタログから `EngineBinding`（§6 補助 DTO）を組む。
 
@@ -341,6 +406,8 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
                      即座に落ちる（投入 body のキー集合は不変であり、front は従来どおり
                      `leverage` を送る＝実測）。
         決済通貨   — `SymbolSpecCatalog` の profile（A-2 で恒久化された唯一の供給源）。
+                     **どの profile かは投入された実体で決まる**（`data_path` 一致・
+                     `_settlement_currency_for_submission`。ISSUE-511 段階 8-D-3）。
                      登録の無い銘柄は**推定しない**で失敗させる。
         EA 固有引数 — `backtest` のうち写像層が供給しない残余（`_settings_supplied_params`）。
         data_path  — バー系列を消費する modelling のときだけ渡す（規則 S）。要否の宣言は
@@ -356,14 +423,11 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
 
     backtest = spec.get("backtest") or {}
     symbol = backtest["symbol"]
-    profile = next(
-        (p for p in build_run_options_port().datasets() if p.symbol == symbol), None
+    settlement = _settlement_currency_for_submission(
+        build_run_options_port().datasets(),
+        symbol=symbol,
+        data_path=backtest.get("data_path"),
     )
-    if profile is None:
-        raise ValueError(
-            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
-            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
-        )
     supplied = _settings_supplied_params()
     return EngineBinding(
         symbol_spec=SymbolSpec(**{f.name: backtest[f.name] for f in fields(SymbolSpec)}),
@@ -376,7 +440,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
             else None
         ),
         known_ea_names=frozenset(known_ea_names()),
-        settlement_currency=profile.settlement_currency,
+        settlement_currency=settlement,
         ea_params={k: v for k, v in backtest.items() if k not in supplied},
         config_overrides=dict(backtest.get("config_overrides") or {}),
     )

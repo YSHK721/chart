@@ -37,7 +37,8 @@ Red と回帰ガードの別（成功テスト先行を Red と称さない）:
 計算量（この段で増やしてはならないもの）:
     台帳経由にしても `datasets()` が開くファイルの数は増えない。継ぎ目は 3 つ——ヘッダ読取
     （`ohlc_marketdata_csv._header_line`）・範囲読取（_csv_date_range）・銘柄仕様スナップ
-    ショット読取（load_snapshot）であり、いずれも 発行 − 使用 = 0（使用 = プロファイルの数）。
+    ショット読取（load_snapshot）であり、いずれも 発行 − **相異なる実体の数** = 0
+    （データ側はプロファイルの数、スナップショット側は読んだ組の相異なる数）。
     そのうえで「開いたファイルの総数 − 3 継ぎ目の発行の和 = 0」を表明する——台帳のパス解決が
     ファイルを開けば、この差が正になって落ちる。規模 2 点（5 行 / 5,000 行）で総数が等しい
     ことも併せて表明する。**回数そのものは焼き込まない**。
@@ -209,9 +210,17 @@ def test_the_catalog_does_not_enumerate_the_ledger(monkeypatch, tmp_path):
     """台帳に別の ref を足しても、カタログが提供するプロファイルは増えない。
 
     台帳には sim で走らない ref（日足・ティック由来）も居る。カタログが台帳を列挙すると
-    走らない系列がセレクタへ現れる。ここが提供する ref はカタログ自身の宣言 1 つだけである。
+    走らない系列がセレクタへ現れる。ここが提供する ref はカタログ自身が名乗ったものだけである。
+
+    符号化を改めた理由（依頼者承認 2026-09-25・ISSUE-511 段階 8-D-3）: 以前ここは命題を
+    「提供 ref がちょうど 1 件」（``== [_REF]``）で符号化していた。件数が 1 だったのは
+    **偶然**であり、命題の本体ではない。カタログが 2 本目（気配幅つき系列）を名乗ると、
+    命題は真のままなのに符号化だけが偽になる。よって「足す前と後で提供内容が変わらないこと」
+    ＝**列挙していないことそのもの**を測る形へ改めた。命題は保存されており、検出力も保たれる
+    （カタログを台帳の列挙へ差し替える変異で落ちることを実測した）。
     """
-    # Arrange
+    # Arrange: 足す前の提供内容を先に測る（比べる相手を検定内で作り、件数を焼き込まない）
+    offered_before = [p.dataset for p in _datasets(_reimport_catalog())]
     _declare(
         monkeypatch,
         _UNRUNNABLE_REF,
@@ -219,10 +228,12 @@ def test_the_catalog_does_not_enumerate_the_ledger(monkeypatch, tmp_path):
     )
 
     # Act
-    profiles = _datasets(_reimport_catalog())
+    offered_after = [p.dataset for p in _datasets(_reimport_catalog())]
 
     # Assert
-    assert [p.dataset for p in profiles] == [_REF]
+    assert offered_after == offered_before
+    assert _UNRUNNABLE_REF not in offered_after
+    assert _UNRUNNABLE_REF in whitelist()              # 空振り防止（足した ref は台帳に居る）
     assert REGISTRY[_UNRUNNABLE_REF].symbol == "TSLA"   # 空振り防止（足した ref は台帳に居る）
 
 
@@ -277,6 +288,11 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
         "snapshot": len(snapshot_reads),
         "opened": len(opened),
         "used": len(profiles),
+        # スナップショットの「使用」はプロファイル数ではなく**相異なる (サーバ, 銘柄) の数**
+        # である（依頼者承認 2026-09-25・ISSUE-511 段階 8-D-3）。複数の系列が同じ供給元を
+        # 指すため、プロファイル数を分母にすると「同じファイルを 2 回読む」ことを要求して
+        # しまう。読んだ組の集合の大きさで数える（回数は焼き込まない）。
+        "snapshot_entities": len(set(snapshot_reads)),
         "data_path": profiles[0].data_path,
         "declared": declared,
     }
@@ -286,8 +302,10 @@ def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp
     """`datasets()` 1 回あたりの読取が、台帳経由にしてもデータ行数でも増えない。
 
     台帳のパス解決がファイルを開けば「開いた総数 − 3 継ぎ目の発行の和」が正になって落ちる。
-    各継ぎ目は 発行 − 使用 = 0（使用 = プロファイルの数）。規模 2 点（5 行 / 5,000 行）で
-    総数が等しいことも表明する。**回数そのものは焼き込まない**。
+    各継ぎ目は 発行 − **相異なる実体の数** = 0 である: データ側（ヘッダ読取・範囲読取）は
+    プロファイルの数（系列ごとに別の CSV）、スナップショット側は読んだ ``(サーバ, 銘柄)`` の
+    相異なる数（複数系列が同じ供給元を指すため 1）。規模 2 点（5 行 / 5,000 行）で総数が
+    等しいことも表明する。**回数そのものは焼き込まない**。
     """
     # Act
     small = _measure(monkeypatch, tmp_path, 5)
@@ -300,7 +318,8 @@ def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp
         assert measured["data_path"] == measured["declared"]   # 空振り防止（測った実体である）
         assert measured["header"] - measured["used"] == 0
         assert measured["range"] - measured["used"] == 0
-        assert measured["snapshot"] - measured["used"] == 0
+        assert measured["snapshot"] >= 1            # 空振り防止（実際に読んでいる）
+        assert measured["snapshot"] - measured["snapshot_entities"] == 0
         # 開いたファイルはすべて、出力に使われた 3 継ぎ目に帰属する（台帳の解決は開かない）
         seams = measured["header"] + measured["range"] + measured["snapshot"]
         assert measured["opened"] - seams == 0
