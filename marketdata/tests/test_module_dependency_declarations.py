@@ -59,6 +59,15 @@ _ALLOWED: "dict[str, set[str]]" = {
         "marketdata.dataset_registry",
         "marketdata.tick_m1",
     },
+    # 供給の健全性の束ね（ISSUE-526 段 3）。鮮度（段 1）と在否（段 2）を突き合わせるだけで、
+    # 書き手の実体である tools へは依存しない（上位層への逆流になる）。在否の読み口は中立核
+    # common.writer_lock が持つ唯一の定義であり、ここへ写しを作らない。
+    "supply_health.py": {
+        "common.writer_lock",
+        "marketdata.paths",
+        "marketdata.dataset_registry",
+        "marketdata.supply_freshness",
+    },
     # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
     # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
     "tick_tree.py": {"pandas", "marketdata.paths"},

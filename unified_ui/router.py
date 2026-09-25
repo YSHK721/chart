@@ -48,6 +48,21 @@ _ASSET_SUBTREE_PREFIXES = ("js/",)
 #   ことが要点で、これが無いと照合は原理的に不可能になる。
 _SERVING_ROOT_PATH = "/__serving_root"
 
+# 供給の健全性を答える診断エンドポイント（ISSUE-526 段 3）。
+#
+# なぜ要るか: 供給が止まっているかどうかは、書いている常駐の**内側**でしか分からなかった。
+#   ISSUE-524 では受け側の常駐が起動時 Fail-Stop でログ 1 行だけ残して消え、8 日間（2026-09-15
+#   19:36 〜 09-23 08:21 UTC）誰も気づかなかった。欠測は出力に現れない（止まった時点までの CSV は
+#   正しいまま）ので、状態検証では原理的に落ちない。判定の材料をプロセス外から観測可能に
+#   しなければ、照合は原理的に不可能である（`_SERVING_ROOT_PATH` を足した ISSUE-348 と同じ構図）。
+#
+# 様式は `_SERVING_ROOT_PATH` に揃える（平文・1 行目だけで判断できる・キャッシュさせない）。
+#   起動スクリプトが jq 等の依存なしに読めることが要点である。
+#
+# 判定の規則は本ファイルに 1 行も置かない。報告は marketdata 側の単一の定義（実行可能な
+#   モジュールでもある）が作り、ルータはそれを配るだけである。
+_SUPPLY_HEALTH_PATH = "/__supply_health"
+
 # 本ファイルは `<repo_root>/unified_ui/router.py` に在る。したがって配信元ツリーの実体は
 #   本ファイルの位置から一意に決まる（引数や cwd に依存させない＝偽装の余地を作らない）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -108,7 +123,7 @@ _MODE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 RESERVED_MODE_NAMES = frozenset(
     set(_ASSET_FILES)
     | {prefix.rstrip("/") for prefix in _ASSET_SUBTREE_PREFIXES}
-    | {_SERVING_ROOT_PATH.lstrip("/")}
+    | {_SERVING_ROOT_PATH.lstrip("/"), _SUPPLY_HEALTH_PATH.lstrip("/")}
 )
 
 
@@ -217,6 +232,10 @@ class RouterHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == _SERVING_ROOT_PATH:
             self._serve_serving_root()
             return
+        # 供給の健全性も同様にルータ自身が答える（ISSUE-526 段 3）。
+        if urlsplit(self.path).path == _SUPPLY_HEALTH_PATH:
+            self._serve_supply_health()
+            return
         prefix, upstream = self._match_prefix(self.path)
         if prefix is not None:
             self._proxy(upstream, self.path[len(prefix):])
@@ -238,6 +257,42 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_supply_health(self) -> None:
+        """供給の健全性の報告をそのまま平文で返す（ISSUE-526 段 3）。
+
+        ルータは判定規則を持たない。観測器（`marketdata.supply_health` の
+        `SupplyHealthWatch`）が作った報告を配るだけである。観測器は 1 つをサーバに持たせて
+        使い回す: 進みの判定は前回観測との差なので、要求ごとに作り直すと永久に判定不能になる。
+
+        観測器の import を**この場で**行うのは、ルータの起動を供給側の都合から切り離すため
+        である。ルータは素の python で起動される（serve.sh 末尾）ので、pandas を持たない
+        インタプリタでも起動しなければならない。ここで import すれば、読めないときに壊れるのは
+        本エンドポイントだけであり、UI 自体は開く（供給が止まっていると画面も開けない、は
+        運用を壊す）。
+        """
+        body = self._supply_health_probe().report().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        # 供給の状態は変わるため、古い答えを掴ませない。
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _supply_health_probe(self):
+        """供給の健全性の観測器（サーバが 1 つだけ持つ）。
+
+        `create_router_server` が受け取っていればそれを使い、無ければ出荷時の観測器を
+        その場で作って以後使い回す。
+        """
+        probe = getattr(self.server, "supply_health", None)
+        if probe is None:
+            from marketdata.supply_health import SupplyHealthWatch
+
+            probe = SupplyHealthWatch()
+            self.server.supply_health = probe
+        return probe
 
     def _match_prefix(self, path: str):
         """path が登録済みモードの prefix 配下なら (prefix, upstream_base_url) を返す。
@@ -412,6 +467,7 @@ def create_router_server(
     web_root,
     connect_timeout=5.0,
     read_timeout=300.0,
+    supply_health=None,
 ):
     """ルータ用 HTTP サーバを構築して返す。
 
@@ -427,6 +483,10 @@ def create_router_server(
         受ければモードの追加は呼び出し側の 1 エントリで済む（§11.1 裁定 6 = V-8）。
     web_root : str
         unified web 静的資産のルート（`unified_ui/web`）。
+    supply_health : object | None
+        供給の健全性の観測器（`report()` が平文の報告を返すもの）。None なら出荷時の観測器を
+        最初の要求で作る（ISSUE-526 段 3）。差し替え口を持たせているのは、口の配管を供給の
+        実状態から切り離して検証できるようにするためである。
 
     Returns
     -------
@@ -439,6 +499,7 @@ def create_router_server(
     server.web_root = web_root
     server.connect_timeout = connect_timeout
     server.read_timeout = read_timeout
+    server.supply_health = supply_health
     return server
 
 
