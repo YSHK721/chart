@@ -51,9 +51,10 @@ test("profile-derived keys come only from the injected profile", () => {
 });
 
 test("a profile carrying config_overrides passes it through untouched", () => {
-  const withOverrides = { ...PROFILE, config_overrides: { entry_price_basis: "close" } };
+  // 例に使う値は決定論設定の語彙にあるもの（建値基準は ISSUE-533 段階 2 で語彙から外れた）。
+  const withOverrides = { ...PROFILE, config_overrides: { tick_model: "ohlc_expand" } };
   const bt = buildSubmission({ profile: withOverrides, subject: SUBJECT, inputs: INPUTS }).backtest;
-  assert.deepEqual(bt.config_overrides, { entry_price_basis: "close" });
+  assert.deepEqual(bt.config_overrides, { tick_model: "ohlc_expand" });
 });
 
 test("with no profile the backtest carries only the subject and the EA inputs", () => {

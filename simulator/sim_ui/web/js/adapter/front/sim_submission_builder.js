@@ -263,9 +263,10 @@ export function buildSubmission({ profile, subject, inputs, trace } = {}) {
   };
   if (profile) {
     for (const key of PROFILE_KEYS) backtest[key] = profile[key];
-    // profile が config_overrides（例 entry_price_basis）を持てば素通しする（front リテラル 0）。
-    // データセットの CSV 形式・EA ローダの組合せで既定の建値基準が成立しない場合に profile が
-    // 権威供給する（config_overrides は E-5b の任意キー＝build_interactor の同名 param）。
+    // profile が config_overrides（例 tick_model）を持てば素通しする（front リテラル 0）。
+    // 値の権威はカタログ側であり front は中身を解釈しない（config_overrides は E-5b の
+    // 任意キー＝build_interactor の同名 param）。建値基準はここを通らない——値の出所は
+    // 戦略の宣言ただ 1 つであり、設定へ書けば実行段が拒む（ISSUE-533 段階 2）。
     if (profile.config_overrides) backtest.config_overrides = profile.config_overrides;
   }
   const body = { backtest };
