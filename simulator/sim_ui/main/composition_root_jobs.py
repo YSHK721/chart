@@ -45,17 +45,41 @@ from simulator.sim_ui.usecase.job_ports import EaSubjectPort
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _required_series(entry_price_basis: str) -> str:
-    """約定価格基準 → 建値推定に要る指標系列名（E-3 判定に使う・§12.5）。
+#: ea_name → 建値推定に要る指標系列名（`None` は「要らない」）。同じ ea_name を 2 度
+#: 探索しないための置き場である。探索は EA を 1 本組み立てる（使い捨てデータセットへの
+#: 書き出しを伴う）ので、投入ごとに組み直すと受付が投入数に比例して重くなる——出力は
+#: 1 ビットも変わらないため状態検証では落ちない浪費である
+#: （`EaStopLossParamCatalog._cache` と同じ流儀）。
+_REQUIRED_SERIES_CACHE: "dict[str, str | None]" = {}
 
-    サイジング側の規約が権威なので `simulator.usecase.sizing_ports` へ委譲する。
-    import を関数内に置いているのは、サイジング **OFF**（既定）の経路が
-    サイジング実装の読み込みに巻き込まれないようにするため（§12.1「OFF は既存挙動と
-    byte 等価」）。sizing ON の投入が来て初めて解決される。
+
+def _required_series(ea_name: str) -> "str | None":
+    """ea_name → 建値推定に要る指標系列名（E-3 判定に使う・§12.5）。
+
+    **入力は ea_name であって設定値ではない**（ISSUE-533 段階 2）。建値基準の権威は戦略の
+    宣言ただ 1 つなので、必要な系列もその宣言から導く。設定から導いていた是正前は、
+    データ実体が載せた値で判定していたため、宣言が ``current_open`` の EA
+    （`MA_Slope_Pending_EA` / `WeeklyVolBand_EA`・実測 2026-09-25）が、供給の無い実体では
+    「``close``」 系列を要求されて**登録系列にあるのに拒まれる**形になっていた。
+
+    宣言が 「`NO_BAR_BOUNDARY_DECISION`」（足境界で判定しない）なら ``None`` を返す。その戦略は
+    足境界の成行を出さないので推定建値を要さず、E-3 の判定対象ではない。
+
+    規約の所有者は sizing 側なので系列名の対応は `simulator.usecase.sizing_ports` へ委譲する。
+    import を関数内に置いているのは、サイジング **OFF**（既定）の経路がサイジング実装の
+    読み込みに巻き込まれないようにするため（§12.1「OFF は既存挙動と byte 等価」）。
+    sizing ON の投入が来て初めて解決される。
     """
+    if ea_name in _REQUIRED_SERIES_CACHE:
+        return _REQUIRED_SERIES_CACHE[ea_name]
+
+    from simulator.usecase.entry_price_basis import declared_entry_price_basis
     from simulator.usecase.sizing_ports import required_price_series
 
-    return required_price_series(entry_price_basis)
+    declared = declared_entry_price_basis(EaBuildProbe(_build_ea_strategy).for_ea(ea_name))
+    needed = None if declared is None else required_price_series(declared)
+    _REQUIRED_SERIES_CACHE[ea_name] = needed
+    return needed
 
 
 def _dev_path_entries(root: Path) -> "list[Path]":

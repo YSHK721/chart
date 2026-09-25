@@ -92,7 +92,9 @@ def _backtest(**overrides) -> dict:
         "lot_size": 0.1,
         "stop_loss_points": _NO_SL_TP,
         "take_profit_points": _NO_SL_TP,
-        "config_overrides": dict(p.config_overrides),
+        # カタログは決定論設定を供給しない（ISSUE-533 段階 2）。front は profile が
+        # 持てば素通しするだけなので、不在は不在のまま空の受け口から始める。
+        "config_overrides": dict(p.config_overrides or {}),
     }
     # 本データセット・本 EA は初期証拠金 10,000 JPY でストップアウトに達する（実測:
     # `MarginCallError`）。エンジン既定 "fail_stop" は部分結果を破棄して落ちるが、実 MT5 は

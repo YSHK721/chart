@@ -305,14 +305,16 @@ def test_build_decoratorは銘柄の量制約をsizingへ渡す() -> None:
     assert (rule.volume_min, rule.volume_max, rule.volume_step) == (0.5, 2.0, 0.5)
 
 
-def test_build_decoratorはentry_price_basisを反映する() -> None:
-    """§12.2: 推定系列は約定価格基準で決まる。既定 close / current_open で open。"""
+def test_build_decoratorは戦略の宣言から推定系列を決める() -> None:
+    """ISSUE-533 段階 2: 推定系列は**包まれる戦略の宣言**で決まる（設定では動かない）。"""
     # Arrange
     backtest = _full_backtest_spec()
-    backtest["config_overrides"] = {"entry_price_basis": "current_open"}
     spec = {"backtest": backtest, "sizing": {"enabled": True, "sims": 5}}
 
     class _Inner:
+        #: 判定の瞬間の宣言。ここが系列の唯一の出所である。
+        entry_price_basis = "current_open"
+
         def on_init(self, config, indicators) -> None: ...
         def on_new_bar(self, bar_index, indicators, account):
             return []
@@ -320,10 +322,12 @@ def test_build_decoratorはentry_price_basisを反映する() -> None:
         def on_position_check(self, position, bar_index, indicators) -> str:
             return "hold"
 
-    # Act
-    wrapped = run_job._build_decorator(spec)(_Inner())
+    # Act（同じ工場で宣言の違う 2 戦略を包む＝工場の引数では分かれない形を赤にする）
+    factory = run_job._build_decorator(spec)
+    at_bar_open = factory(_Inner())
+    at_bar_close = factory(type("_AtClose", (_Inner,), {"entry_price_basis": "close"})())
     # Assert
-    assert wrapped._price_series == "open"
+    assert (at_bar_open._series_name(), at_bar_close._series_name()) == ("open", "close")
 
 
 def test_量制約が欠けた仕様は明示エラーになる() -> None:

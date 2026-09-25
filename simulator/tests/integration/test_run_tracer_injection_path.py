@@ -118,7 +118,7 @@ class TestTheTracerCannotBeInjectedThroughTheJobSpecification:
             ledger=_Ledger(),
             launcher=None,
             series_catalog=None,
-            required_series=lambda basis: "close",
+            required_series=lambda ea_name: "close",
             stop_loss_catalog=None,
             allowed_backtest_keys=allowed_backtest_keys,
             required_backtest_keys=required_backtest_keys,

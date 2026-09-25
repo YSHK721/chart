@@ -94,7 +94,7 @@ class SimJobApp(SimApp):
         ledger: Any,
         launcher: Any,
         series_catalog: Any,
-        required_series: "Callable[[str], str]",
+        required_series: "Callable[[str], str | None]",
         stop_loss_catalog: Any,
         allowed_backtest_keys: Any,
         required_backtest_keys: Any,

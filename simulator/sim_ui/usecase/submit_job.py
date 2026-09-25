@@ -27,8 +27,11 @@
        ——投入 API は「失敗した」という**状態**を返すのが契約だから（§4.2 F-3 後条件）。
 
 DIP: Port（台帳・起動器・系列カタログ）と、必要系列を決める関数のみに依存する。
-    ``required_series`` は Group B（`simulator.usecase.sizing_ports.required_price_series`）
-    を合成根が注入する。usecase から sizing 実装へ直接依存しない。
+    ``required_series`` は **ea_name** を受けて建値推定に要る系列名を返す関数であり、合成根が
+    注入する（実体は戦略の宣言を読み、Group B の
+    `simulator.usecase.sizing_ports.required_price_series` へ委ねる）。usecase から sizing
+    実装へ直接依存しない。建値基準を設定から読まないのは ISSUE-533 段階 2——値の出所は
+    戦略の宣言ただ 1 つである。
 """
 from __future__ import annotations
 
@@ -60,7 +63,7 @@ class SubmitJobInteractor:
         ledger: JobLedgerPort,
         launcher: JobLauncherPort,
         series_catalog: IndicatorSeriesCatalogPort,
-        required_series: "Callable[[str], str]",
+        required_series: "Callable[[str], str | None]",
         stop_loss_catalog: StopLossParamCatalogPort,
         allowed_backtest_keys: "Callable[[], frozenset[str]]",
         required_backtest_keys: "Callable[[], frozenset[str]]",
@@ -226,15 +229,21 @@ class SubmitJobInteractor:
             )
 
     def _reject_if_price_series_missing(self, submission: JobSubmission) -> None:
-        """E-3（§12.5）: 必要な価格系列が無い戦略の sizing ON を明示エラーで拒む。"""
-        needed = self._required_series(submission.entry_price_basis)
+        """E-3（§12.5）: 必要な価格系列が無い戦略の sizing ON を明示エラーで拒む。
+
+        必要な系列は **ea_name から**決まる（ISSUE-533 段階 2）。判定の瞬間を知っているのは
+        戦略だけであり、投入された設定やデータ実体ではない。``None`` は「足境界で判定しない
+        ので推定建値を要さない」であり、判定対象ではないので通す。
+        """
+        needed = self._required_series(submission.ea_name)
+        if needed is None:
+            return
         available = self._series_catalog.series_for(submission.ea_name)
         if needed not in available:
             raise SizingUnsupportedError(
                 f"戦略 {submission.ea_name} の指標レジストリは成行の建値推定に必要な "
                 f"価格系列 {needed!r} を持たないため、サイジングを有効にできません"
-                f"（約定価格基準={submission.entry_price_basis}・"
-                f"登録系列={sorted(available)}）"
+                f"（登録系列={sorted(available)}）"
             )
 
     def _reject_if_strategy_indicators_unavailable(self, submission: JobSubmission) -> None:

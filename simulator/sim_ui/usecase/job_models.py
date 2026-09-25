@@ -39,7 +39,8 @@ class JobSubmission:
 
     ``backtest``: `simulator.main.run_backtest` へ渡す meta（ea_name / symbol / period /
       data_path / config_overrides ...）。sim コアは中身を解釈せず素通しする（子プロセスが
-      解釈する）。ただし E-3 判定に必要な 2 つだけは読む（ea_name・entry_price_basis）。
+      解釈する）。ただし E-3 判定に必要な ea_name だけは読む（建値基準は読まない——値の
+      出所は戦略の宣言ただ 1 つであり、設定には載らない・ISSUE-533 段階 2）。
     ``sizing``: サイジング設定。``None`` または ``enabled`` が偽なら **OFF**（既定・
       §12.1 で「既定 OFF・OFF は既存挙動と byte 等価」と裁定済み）。
     ``strategy``: 戦略項目（Phase 6 F-8・TBD-11）。``entry_long`` / ``entry_short`` の
@@ -158,12 +159,6 @@ class JobSubmission:
         """
         strategy = self.strategy or {}
         return strategy.get("trailing"), strategy.get("partial_close")
-
-    @property
-    def entry_price_basis(self) -> str:
-        """約定価格基準。既定は config_loader と同じ "close"。"""
-        overrides = self.backtest.get("config_overrides") or {}
-        return str(overrides.get("entry_price_basis", "close"))
 
     @property
     def sizing_enabled(self) -> bool:
