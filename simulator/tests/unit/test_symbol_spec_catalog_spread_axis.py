@@ -37,8 +37,18 @@ Red と回帰ガードの別（成功テスト先行を Red と称さない）:
     どちらも 発行 − 使用 = 0（使用 = プロファイルの数）であり、データ行数を変えても
     増えないことを規模 2 点で表明する。**回数そのものは焼き込まない**。
 
+    **発行回数だけでは足りない**（ISSUE-511 段階 8-D-4・工程 5 レビュー 🟡-2 の是正）:
+    発行回数は「1 回の読取の中で読む量が O(n) になる退化」を 1 ビットも検出しない。実測
+    2026-09-25（本作業ツリー・HEAD 14fc9a13）: 範囲読取の後読み（終端から定数窓だけ読む 3 行）を
+    先頭からの全読みへ退化させると、本ファイルと
+    `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` は **20 passed のまま
+    素通しした**（出力の日付トークンも発行回数も変わらないため。壁時計は 0.46s → 10.91s だが
+    **時間は表明しない**）。よって同じ規律で**配られた量**も数える
+    （test_the_read_volume_does_not_grow_with_the_data）。
+
 共有するテストヘルパは import して使う（同じものを手書き複製しない）:
-    Test Spy … `marketdata/tests/spread_series_fixture.py`
+    Test Spy（モジュール属性の継ぎ目） … `marketdata/tests/spread_series_fixture.py`
+    Test Spy（開いた口と配られた量） … `simulator/tests/file_read_spy.py`
     ヘッダ定数・本文・書き出し … `simulator/tests/ohlc_header_fixtures.py`
 """
 from __future__ import annotations
@@ -57,6 +67,7 @@ from simulator.main.tester_settings.kwargs_mapper import (
 from simulator.sim_ui.adapter import symbol_spec_catalog
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+from simulator.tests.file_read_spy import spy_file_reads
 from simulator.tests.ohlc_header_fixtures import (
     COMMA,
     COMMA_NO_SPREAD,
@@ -231,24 +242,34 @@ def test_the_injected_basis_reaches_the_settings_path(monkeypatch, tmp_path):
 # --- 4. 計算量（CX-3）: 発行 − 使用 = 0・データ量で増えない -----------------------
 
 
-def _issued_and_used(monkeypatch, tmp_path, rows: int) -> tuple:
-    """``rows`` 行の実体 1 つで `datasets()` を 1 回呼んだときの発行と使用。
+def _measure(monkeypatch, tmp_path, rows: int) -> dict:
+    """``rows`` 行の実体 1 つで `datasets()` を 1 回呼んだときの発行・使用・配られた量。
 
-    戻り値は（ヘッダ読取の発行, 範囲読取の発行, 使用＝プロファイルの数, 供給された override）。
+    数え方の名前で引けるようにしてあるのは（以前は 4 要素の組を添字で引いていた）、
+    継ぎ目が 2 つ（モジュール属性の発行・ファイルから配られた量）になって組の位置が
+    意味を担えなくなったためである。**表明する量は 1 つも変えていない**（8-D-4）。
+
+    キー: header / range（発行回数）・used（使用＝プロファイルの数）・overrides（供給された
+    override）・delivered（配られた量の総和）・delivered_entity（差し替えた実体の分だけ）・
+    seeks_entity（同じ実体への位置付けの発行）・size_entity（同じ実体の大きさ）。
     """
     path = _entity(monkeypatch, tmp_path, f"scale_{rows}", MD9, body_rows(MD9, rows))
     header_reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
     range_reads = spy(monkeypatch, symbol_spec_catalog, "_csv_date_range")
+    reads = spy_file_reads(monkeypatch)
 
     profiles = _catalog(_INJECTED).datasets()
 
-    del path
-    return (
-        len(header_reads),
-        len(range_reads),
-        len(profiles),
-        profiles[0].config_overrides,
-    )
+    return {
+        "header": len(header_reads),
+        "range": len(range_reads),
+        "used": len(profiles),
+        "overrides": profiles[0].config_overrides,
+        "delivered": reads.delivered(),
+        "delivered_entity": reads.delivered(path),
+        "seeks_entity": reads.seek_count(path),
+        "size_entity": Path(path).stat().st_size,
+    }
 
 
 def test_the_reads_do_not_grow_with_the_data(monkeypatch, tmp_path):
@@ -257,18 +278,52 @@ def test_the_reads_do_not_grow_with_the_data(monkeypatch, tmp_path):
     形式を問うために 1 回・気配幅を問うためにもう 1 回読む形は、出力が 1 ビットも変わら
     ないため状態検証では落ちない。ここが唯一その無駄を止める。規模 2 点（5 行 / 5,000 行）
     で発行が等しいことも併せて表明する。**回数そのものは焼き込まない**。
+
+    発行回数が等しくても**1 回で読む量**が規模で増える退化は残る。それを止める表明は
+    test_the_read_volume_does_not_grow_with_the_data が持つ（8-D-4）。
     """
     # Act
-    small = _issued_and_used(monkeypatch, tmp_path, 5)
+    small = _measure(monkeypatch, tmp_path, 5)
     monkeypatch.undo()
-    large = _issued_and_used(monkeypatch, tmp_path, 5_000)
+    large = _measure(monkeypatch, tmp_path, 5_000)
     monkeypatch.undo()
 
     # Assert
-    assert small[3] == {"entry_price_basis": _INJECTED}   # 空振り防止（答えを使っている）
-    assert large[3] == small[3]
-    assert small[0] - small[2] == 0     # ヘッダ読取: 発行 − 使用 = 0
-    assert large[0] - large[2] == 0
-    assert small[1] - small[2] == 0     # 範囲読取: 発行 − 使用 = 0
-    assert large[1] - large[2] == 0
-    assert large[0] == small[0]         # 行数 1,000 倍でも発行は増えない
+    assert small["overrides"] == {"entry_price_basis": _INJECTED}   # 空振り防止（答えを使っている）
+    assert large["overrides"] == small["overrides"]
+    assert small["header"] - small["used"] == 0     # ヘッダ読取: 発行 − 使用 = 0
+    assert large["header"] - large["used"] == 0
+    assert small["range"] - small["used"] == 0      # 範囲読取: 発行 − 使用 = 0
+    assert large["range"] - large["used"] == 0
+    assert large["header"] == small["header"]       # 行数 1,000 倍でも発行は増えない
+
+
+def test_the_read_volume_does_not_grow_with_the_data(monkeypatch, tmp_path):
+    """実体から**配らせる量**が、データ行数で増えない（末尾は後読みで足りる）。
+
+    上の検定と同じ盲点をここでも塞ぐ（工程 5 レビュー 🟡-2）: 発行回数が等しいままでも、
+    1 回の読取で実体を全走査する退化は通ってしまう。実測 2026-09-25（本作業ツリー・
+    HEAD 14fc9a13）: 範囲読取の後読みを先頭からの全読みへ退化させると、本ファイルと
+    `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` は **20 passed で
+    素通しした**。**時間は表明しない**——数えるのは呼び手へ配られた量である。
+
+    規模 2 点はどちらも**後読みの窓より大きい実体**にする（小さい方が窓に収まると、後読みは
+    実体の全部を返し、等号が「実体の大きさ」を測ってしまう）。窓の大きさ（実装の定数）は
+    書き写さず、「配られた量 < 実体の大きさ」の表明そのもので確かめる。規模は 2 桁変える。
+    """
+    # Act
+    small = _measure(monkeypatch, tmp_path, 500)
+    monkeypatch.undo()
+    large = _measure(monkeypatch, tmp_path, 50_000)
+    monkeypatch.undo()
+
+    # Assert
+    for measured in (small, large):
+        assert measured["overrides"] == {"entry_price_basis": _INJECTED}  # 空振り防止（答えを使う）
+        assert measured["delivered_entity"] > 0            # 生存確認（現に読んでいる）
+        # 実体を走査していない＝配られた量が実体より小さい（＝後読みの窓に収まっていない）
+        assert measured["delivered_entity"] < measured["size_entity"]
+    assert large["size_entity"] > small["size_entity"]     # 空振り防止（2 点は別の規模）
+    assert large["delivered_entity"] == small["delivered_entity"]
+    assert large["delivered"] == small["delivered"]        # 他の実体を含めた総量も増えない
+    assert large["seeks_entity"] == small["seeks_entity"]  # 行ごとに位置付け直さない

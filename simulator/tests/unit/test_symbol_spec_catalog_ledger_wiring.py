@@ -40,18 +40,26 @@ Red と回帰ガードの別（成功テスト先行を Red と称さない）:
     ショット読取（load_snapshot）であり、いずれも 発行 − **相異なる実体の数** = 0
     （データ側はプロファイルの数、スナップショット側は読んだ組の相異なる数）。
     そのうえで「開いたファイルの総数 − 3 継ぎ目の発行の和 = 0」を表明する——台帳のパス解決が
-    ファイルを開けば、この差が正になって落ちる。規模 2 点（5 行 / 5,000 行）で総数が等しい
-    ことも併せて表明する。**回数そのものは焼き込まない**。
+    ファイルを開けば、この差が正になって落ちる。**回数そのものは焼き込まない**。
+
+    **開いた回数だけでは足りない**（ISSUE-511 段階 8-D-4・工程 5 レビュー 🟡-2 の是正）:
+    開いた回数は「1 回の open の中で読む量が O(n) になる退化」を 1 ビットも検出しない。
+    実測 2026-09-25（本作業ツリー・HEAD 14fc9a13）: _csv_date_range の後読み 3 行を先頭からの
+    全読みへ退化させると、本ファイルと `simulator/tests/unit/test_symbol_spec_catalog_spread_axis.py`
+    は **20 passed のまま素通しした**（出力の日付トークンも開いた数も変わらないため。壁時計は
+    0.46s → 10.91s だが**時間は表明しない**）。また規模 2 点の「開いた数が等しい」は先行する
+    表明（各継ぎ目 発行 − 使用 = 0）から論理的に含意され、新しい情報を 1 ビットも足していない
+    （実測: 当該行を撤去しても 20 passed のまま）。よって継ぎ目を**読取の発行と配られた量**へ
+    移し、規模 2 点の表明はそちらへ置く（test_the_read_volume_does_not_grow_with_the_data）。
 
 共有するテストヘルパは import して使う（同じものを手書き複製しない）:
-    Test Spy … `marketdata/tests/spread_series_fixture.py`
+    Test Spy（モジュール属性の継ぎ目） … `marketdata/tests/spread_series_fixture.py`
+    Test Spy（開いた口と配られた量） … `simulator/tests/file_read_spy.py`
     ヘッダ定数・本文・書き出し … `simulator/tests/ohlc_header_fixtures.py`
 """
 from __future__ import annotations
 
-import builtins
 import importlib.util
-import io
 from dataclasses import replace
 from pathlib import Path
 
@@ -61,6 +69,7 @@ from marketdata.dataset_registry import REGISTRY, DatasetDescriptor, whitelist
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
 from simulator.sim_ui.adapter import symbol_spec_catalog
+from simulator.tests.file_read_spy import spy_file_reads
 from simulator.tests.ohlc_header_fixtures import MD6, MD9, body_rows, write_header
 
 #: カタログが提供すると名乗っている ref。**この綴りをここに書き写さない**——書き写すと、
@@ -111,27 +120,6 @@ def _datasets(module) -> list:
     return module.SymbolSpecCatalog(
         known_ea_names=lambda: (_INDEPENDENT_EA,), entry_price_basis=_INJECTED
     ).datasets()
-
-
-def _spy_opens(monkeypatch) -> list:
-    """これ以降に開かれたファイルを 1 件ずつ記録する Test Spy。
-
-    包む名前が 2 つ要る（実測 2026-09-23・本環境 CPython 3.13.5）: ``Path.open`` と
-    ``Path.read_text`` は ``io.open`` を呼び、`ohlc_marketdata_csv._header_line` は組込みの
-    ``open`` を呼ぶ。同じ関数実体だが参照する名前空間が違うため、``io.open`` だけを包むと
-    組込み経由を取り逃し、組込みだけを包むと ``Path`` 経由を取り逃す（実測: 3 回開く
-    プローブで前者は 2 件・後者は 1 件しか記録しなかった）。両方を同じ包みへ差し替える。
-    """
-    opened: list = []
-    real = builtins.open
-
-    def recorded(file, *args, **kwargs):
-        opened.append(file)
-        return real(file, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", recorded)
-    monkeypatch.setattr(io, "open", recorded)
-    return opened
 
 
 # --- 1. 結線（真の Red）------------------------------------------------------------
@@ -255,15 +243,16 @@ def test_the_ledger_holds_more_refs_than_the_catalog_offers(monkeypatch):
 
 
 def test_resolving_the_data_path_from_the_ledger_opens_no_file(monkeypatch):
-    """台帳からのパス解決はファイルを 1 つも開かない（結線が読取を増やさない前提）。"""
+    """台帳からのパス解決はファイルを 1 つも開かず、1 バイトも読まない（結線が読取を増やさない前提）。"""
     # Arrange
-    opened = _spy_opens(monkeypatch)
+    reads = spy_file_reads(monkeypatch)
 
     # Act
     resolved = whitelist()[_REF]
 
     # Assert
-    assert len(opened) == 0
+    assert len(reads.opened) == 0
+    assert reads.delivered() == 0        # 開かずに読む経路（既に開いた口の使い回し）も塞ぐ
     assert resolved == Path(symbol_spec_catalog._JP225_DATA_CSV)   # 空振り防止
 
 
@@ -271,7 +260,13 @@ def test_resolving_the_data_path_from_the_ledger_opens_no_file(monkeypatch):
 
 
 def _measure(monkeypatch, tmp_path, rows: int) -> dict:
-    """``rows`` 行の実体 1 つを台帳が宣言した状態で `datasets()` を 1 回呼び、発行と使用を数える。"""
+    """``rows`` 行の実体 1 つを台帳が宣言した状態で `datasets()` を 1 回呼び、発行と使用を数える。
+
+    数えるのは開いた口だけではない（8-D-4）: `spy_file_reads` は開いた口に加えて**読取の
+    発行・配られた量・位置付け**を実体ごとに数える。宣言した実体の分だけを問えるようにして
+    あるのは、同時に読まれる他の実体（2 本目の系列・銘柄仕様スナップショット）の量に
+    埋もれさせないためである。
+    """
     declared = write_header(tmp_path, f"scale_{rows}.csv", MD9, body_rows(MD9, rows))
     _declare(monkeypatch, _REF, _relocated(declared))
     module = _reimport_catalog()          # 読み直しは spy を仕掛ける前に済ませる
@@ -279,15 +274,20 @@ def _measure(monkeypatch, tmp_path, rows: int) -> dict:
     header_reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
     range_reads = spy(monkeypatch, module, "_csv_date_range")
     snapshot_reads = spy(monkeypatch, module, "load_snapshot")
-    opened = _spy_opens(monkeypatch)
+    reads = spy_file_reads(monkeypatch)
 
     profiles = _datasets(module)
     return {
         "header": len(header_reads),
         "range": len(range_reads),
         "snapshot": len(snapshot_reads),
-        "opened": len(opened),
+        "opened": len(reads.opened),
         "used": len(profiles),
+        # 配られた量（全体 / 宣言した実体の分）・位置付けの発行・実体の大きさ。
+        "delivered": reads.delivered(),
+        "delivered_declared": reads.delivered(declared),
+        "seeks_declared": reads.seek_count(declared),
+        "size_declared": Path(declared).stat().st_size,
         # スナップショットの「使用」はプロファイル数ではなく**相異なる (サーバ, 銘柄) の数**
         # である（依頼者承認 2026-09-25・ISSUE-511 段階 8-D-3）。複数の系列が同じ供給元を
         # 指すため、プロファイル数を分母にすると「同じファイルを 2 回読む」ことを要求して
@@ -304,8 +304,15 @@ def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp
     台帳のパス解決がファイルを開けば「開いた総数 − 3 継ぎ目の発行の和」が正になって落ちる。
     各継ぎ目は 発行 − **相異なる実体の数** = 0 である: データ側（ヘッダ読取・範囲読取）は
     プロファイルの数（系列ごとに別の CSV）、スナップショット側は読んだ ``(サーバ, 銘柄)`` の
-    相異なる数（複数系列が同じ供給元を指すため 1）。規模 2 点（5 行 / 5,000 行）で総数が
-    等しいことも表明する。**回数そのものは焼き込まない**。
+    相異なる数（複数系列が同じ供給元を指すため 1）。**回数そのものは焼き込まない**。
+
+    末尾の「開いた数が規模 2 点で等しい」には検出力が無い（8-D-4 で実測・行は残す）: それは
+    上の各継ぎ目の等式から論理的に含意される（使用 = 1 → 3 継ぎ目は各 1 → 開いた数 = 3）ため、
+    新しい情報を 1 ビットも足さない。実測 2026-09-25（本作業ツリー・HEAD 14fc9a13）:
+    当該行を撤去しても 20 passed のまま挙動不変だった。規模で増えてはならない量は開いた数では
+    なく**配られた量**であり、検出力のある規模 2 点の表明は
+    test_the_read_volume_does_not_grow_with_the_data が持つ（行を消すのではなく、力のある
+    表明を足して穴を塞ぐ）。
     """
     # Act
     small = _measure(monkeypatch, tmp_path, 5)
@@ -324,3 +331,37 @@ def test_the_file_opens_do_not_grow_with_the_ledger_or_the_data(monkeypatch, tmp
         seams = measured["header"] + measured["range"] + measured["snapshot"]
         assert measured["opened"] - seams == 0
     assert large["opened"] == small["opened"]   # 行数 1,000 倍でも開く数は増えない
+
+
+def test_the_read_volume_does_not_grow_with_the_data(monkeypatch, tmp_path):
+    """`datasets()` が実体から**配らせる量**が、データ行数で増えない（末尾は後読みで足りる）。
+
+    なぜ開いた回数では足りないか（実測 2026-09-25・本作業ツリー・HEAD 14fc9a13）: 範囲読取の
+    後読み（終端から定数窓だけ読む 3 行）を先頭からの全読みへ退化させても、開いた数は 3 のまま・
+    出力の日付トークンも 1 ビットも変わらないため、上の検定を含む本ファイルと
+    `simulator/tests/unit/test_symbol_spec_catalog_spread_axis.py` は **20 passed で素通しした**。
+    _csv_date_range の宣言（「全走査しない・460 万行でも定数コスト」）を機械で確かめる検定は
+    リポジトリ内に 0 件だった。ここがその 1 件目である。**時間は表明しない**（マシン負荷で
+    揺れる閾値は緩んで浪費を通す）——数えるのは呼び手へ配られた量である。
+
+    規模 2 点をどう選ぶか: どちらも**後読みの窓より大きい実体**にする。小さい方が窓に収まると
+    後読みは実体の全部を返し、等号は「実体の大きさ」を測ってしまって全読みへの退化と区別
+    できない。窓の大きさ（実装の定数）を書き写さないため、窓に収まっていないことは
+    「配られた量 < 実体の大きさ」の表明そのもので確かめる。規模は 2 桁変える（500 行 / 50,000 行）。
+    """
+    # Act
+    small = _measure(monkeypatch, tmp_path, 500)
+    monkeypatch.undo()
+    large = _measure(monkeypatch, tmp_path, 50_000)
+    monkeypatch.undo()
+
+    # Assert
+    for measured in (small, large):
+        assert measured["data_path"] == measured["declared"]   # 空振り防止（測った実体である）
+        assert measured["delivered_declared"] > 0              # 生存確認（現に読んでいる）
+        # 実体を走査していない＝配られた量が実体より小さい（＝後読みの窓に収まっていない）
+        assert measured["delivered_declared"] < measured["size_declared"]
+    assert large["size_declared"] > small["size_declared"]     # 空振り防止（2 点は別の規模）
+    assert large["delivered_declared"] == small["delivered_declared"]
+    assert large["delivered"] == small["delivered"]            # 他の実体を含めた総量も増えない
+    assert large["seeks_declared"] == small["seeks_declared"]  # 行ごとに位置付け直さない
