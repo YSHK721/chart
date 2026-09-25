@@ -186,7 +186,6 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
     from simulator.framework.sizing_config_loader import load_sizing_config
 
     backtest = spec.get("backtest") or {}
-    overrides = backtest.get("config_overrides") or {}
     config = load_sizing_config(spec.get("sizing") or {})
     return build_sizing_decorator(
         config,
@@ -197,7 +196,6 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
         # 欠落キーは KeyError にして明示エラーへ載せる（既定値で黙って埋めない＝
         # 銘柄と違う刻みのロットが静かに出るのを防ぐ）。
         symbol_spec=_VolumeConstraints(backtest),
-        entry_price_basis=overrides.get("entry_price_basis", "close"),
     )
 
 

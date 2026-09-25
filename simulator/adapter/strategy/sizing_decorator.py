@@ -14,7 +14,10 @@
 推定建値（§3.5.5 実証 6・7／§12.2）:
     成行       — 実際の建値はエンジン内部の `derive_quotes` が決め Decorator へ渡らない。
                  したがって指標レジストリの価格系列から**推定**する。系列名は
-                 `sizing_ports.required_price_series(entry_price_basis)` が決める。
+                 **包んだ戦略の宣言**（判定の瞬間）から `sizing_ports.required_price_series`
+                 が決める（ISSUE-533 段階 2）。run の設定からは受け取らない——設定から
+                 受けると、同じ工場で包んだ戦略はすべて同じ系列で推定することになり、
+                 判定の瞬間と食い違う値で発注量が決まる。
     ペンディング — `order.price` が確定済みなので推定しない（差が生じない）。
     ティック    — 引数の bid/ask（買い=ask / 売り=bid）を使うので差が生じない。
 
@@ -45,19 +48,26 @@ from simulator.usecase.sizing_ports import (
 # 成行の kind（これ以外は price 確定済みのペンディング）。
 _MARKET = "market"
 
+#: 「推定建値の系列をまだ導いていない」ことの標識（``None`` は導出結果になりうるため
+#: 使えない——「`NO_BAR_BOUNDARY_DECISION`」 を名乗る戦略がある）。
+_ABSENT = object()
+
 
 class SizingDecorator(StrategyPort, EntryPriceBasisPort):
     """内側の戦略が返した発注の量を `SizingPort` の決定で差し替える。
 
-    ``price_series``: 成行の推定建値を取る指標系列名（"close" / "open"）。
+    成行の推定建値を取る指標系列名は**内側の宣言から導く**（ISSUE-533 段階 2）。
     """
 
-    def __init__(
-        self, inner: StrategyPort, sizing: SizingPort, *, price_series: str
-    ) -> None:
+    def __init__(self, inner: StrategyPort, sizing: SizingPort) -> None:
         self._inner = inner
         self._sizing = sizing
-        self._price_series = price_series
+        #: 導出結果の置き場（`_ABSENT` は「まだ導いていない」）。宣言は run のあいだ
+        #: 変わらないので、導くのは 1 度でよい。足ごと・発注ごとに導き直しても出力は
+        #: 1 ビットも変わらないため、その浪費は状態検証では落ちない（計算量検定
+        #: `simulator/tests/unit/test_entry_price_basis_supply_complexity.py` が
+        #: 「発行 − 使用 = 0」を表明する）。
+        self._series: Any = _ABSENT
 
     @property
     def entry_price_basis(self) -> "str | None":
@@ -101,13 +111,25 @@ class SizingDecorator(StrategyPort, EntryPriceBasisPort):
 
     # ---- 内部 ----
 
+    def _series_name(self) -> str:
+        """推定建値を取る指標系列名を**内側の宣言から**導く（導くのは 1 度だけ）。
+
+        導出を遅らせるのは、足境界で判定しない戦略（「`NO_BAR_BOUNDARY_DECISION`」 を
+        名乗るもの）を包めるようにするためである。その戦略は足境界で成行を出さないので
+        系列を要さず、包んだだけで落ちてはならない。実際に足境界の成行が出たときだけ
+        導き、そのとき宣言が無ければ `required_price_series` がそのまま落とす。
+        """
+        if self._series is _ABSENT:
+            self._series = required_price_series(declared_entry_price_basis(self._inner))
+        return self._series
+
     def _series_price(self, indicators: Any, bar_index: int) -> float:
         """指標レジストリの価格系列から推定建値を引く。
 
         系列が無い場合は例外を伝播させる（§12.5 の受付時拒否をすり抜けた場合の
         最後の砦。無音で誤った建値を使うと発注量が静かに間違う）。
         """
-        return float(indicators.get(self._price_series).iloc[bar_index])
+        return float(indicators.get(self._series_name()).iloc[bar_index])
 
     def _resize(self, orders: "list[Order]", account: Any, *, market_price) -> "list[Order]":
         resized: "list[Order]" = []
@@ -142,7 +164,7 @@ class SizingDecorator(StrategyPort, EntryPriceBasisPort):
 
 
 def build_sizing_decorator(
-    config: SizingConfig, *, symbol_spec: Any, entry_price_basis: str
+    config: SizingConfig, *, symbol_spec: Any
 ) -> "Callable[[StrategyPort], StrategyPort] | None":
     """設定から `build_interactor(strategy_decorator=...)` へ渡す関数を組み立てる。
 
@@ -152,12 +174,14 @@ def build_sizing_decorator(
     エッジ（破産確率制約 f）の解は重い MC なので、`AccountMarginSizing` を**ここで 1 個だけ**
     構築して包む関数に閉じ込める。戦略を包み直しても f は再計算されない。
 
-    ``entry_price_basis`` が未知なら `required_price_series` が例外を送出する
-    （無音で "close" へ倒すと誤った建値で量を決める）。
+    推定建値の系列は**ここでは決めない**（ISSUE-533 段階 2）。決めるのは包まれた戦略の
+    宣言であり、`SizingDecorator` が初めて足境界の成行に出会ったときに導く。工場が決めて
+    しまうと、同じ工場で包んだ戦略はすべて同じ系列で推定することになり、判定の瞬間と
+    食い違う値で発注量が決まる（実測 2026-09-25: 宣言が "close" と "current_open" の
+    2 戦略を同じ工場で包むと、両方が工場の引数どおりの系列になった）。
     """
     if not config.enabled:
         return None
-    price_series = required_price_series(entry_price_basis)
     rule = SizingRule(
         edge=config.to_edge_spec(),
         margin_rate=config.margin_rate,
@@ -169,6 +193,6 @@ def build_sizing_decorator(
     sizing = AccountMarginSizing(rule)
 
     def _wrap(strategy: StrategyPort) -> StrategyPort:
-        return SizingDecorator(strategy, sizing, price_series=price_series)
+        return SizingDecorator(strategy, sizing)
 
     return _wrap

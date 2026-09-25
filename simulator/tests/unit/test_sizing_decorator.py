@@ -59,10 +59,19 @@ class _SpyStrategy(StrategyPort):
     """発注列を固定で返し、呼ばれた引数を記録する fake 戦略。"""
     #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
     #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    #: 段階 2 以降、推定建値の系列は**この宣言から**決まるため、系列を変えたい検定は
+    #: 引数 ``declared`` で別の瞬間を名乗らせる（工場の引数では変えられない）。
     entry_price_basis = "close"
 
-
-    def __init__(self, orders: "list[Order]", tick_orders: "list[Order]" = None) -> None:
+    def __init__(
+        self,
+        orders: "list[Order]",
+        tick_orders: "list[Order]" = None,
+        *,
+        declared: "str | None" = None,
+    ) -> None:
+        if declared is not None:
+            self.entry_price_basis = declared
         self._orders = orders
         self._tick_orders = tick_orders or []
         self.init_calls: list = []
@@ -98,9 +107,10 @@ class _FixedSizing(SizingPort):
         return SizingDecision(volume=self._volume, fraction=0.05, reason="fake")
 
 
-def _decorator(strategy: StrategyPort, sizing: SizingPort, series: str = "close",
+def _decorator(strategy: StrategyPort, sizing: SizingPort,
                indicators: Any = None) -> SizingDecorator:
-    return SizingDecorator(strategy, sizing, price_series=series)
+    """推定建値の系列は**包んだ戦略の宣言**から決まる（ISSUE-533 段階 2）。"""
+    return SizingDecorator(strategy, sizing)
 
 
 _MARKET_BUY = Order(side="buy", kind="market", volume=0.1, price=None, sl=39800.0, tp=40500.0)
@@ -221,7 +231,7 @@ def test_成行の推定建値は指標レジストリの価格系列から取�
     # Arrange
     inner = _SpyStrategy([_MARKET_BUY])
     sizing = _FixedSizing()
-    dec = _decorator(inner, sizing, series="close")
+    dec = _decorator(inner, sizing)
     indicators = _FakeIndicators({"close": [40000.0, 41000.0, 42000.0]})
     # Act（bar_index=2 の発注）
     dec.on_new_bar(2, indicators, _FakeAccount())
@@ -229,12 +239,12 @@ def test_成行の推定建値は指標レジストリの価格系列から取�
     assert sizing.contexts[0].estimated_entry_price == 42000.0
 
 
-def test_推定建値の系列名は指定されたものを使う() -> None:
-    """entry_price_basis="current_open" のとき "open" 系列（sizing_ports の表）。"""
+def test_推定建値の系列名は戦略の宣言で決まる() -> None:
+    """宣言が "current_open" のとき "open" 系列（sizing_ports の表）。"""
     # Arrange
-    inner = _SpyStrategy([_MARKET_BUY])
+    inner = _SpyStrategy([_MARKET_BUY], declared="current_open")
     sizing = _FixedSizing()
-    dec = _decorator(inner, sizing, series="open")
+    dec = _decorator(inner, sizing)
     indicators = _FakeIndicators({"open": [39000.0], "close": [40000.0]})
     # Act
     dec.on_new_bar(0, indicators, _FakeAccount())
@@ -247,7 +257,7 @@ def test_ペンディング発注は自分の価格を建値に使う() -> None:
     # Arrange
     inner = _SpyStrategy([_LIMIT_BUY])
     sizing = _FixedSizing()
-    dec = _decorator(inner, sizing, series="close")
+    dec = _decorator(inner, sizing)
     # 系列の値（40000）と order.price（39900）を別値にして、どちらを使ったか判別する。
     indicators = _FakeIndicators({"close": [40000.0]})
     # Act
@@ -261,7 +271,7 @@ def test_ティック経路は引数のクォートを建値に使う() -> None:
     # Arrange
     inner = _SpyStrategy([], tick_orders=[_MARKET_BUY])
     sizing = _FixedSizing()
-    dec = _decorator(inner, sizing, series="close")
+    dec = _decorator(inner, sizing)
     # Act（買いは ask 約定）
     got = dec.on_tick(0, 39990.0, 40010.0, _FakeAccount())
     # Assert
@@ -274,7 +284,7 @@ def test_ティック経路の売りはbidを建値に使う() -> None:
     sell = Order(side="sell", kind="market", volume=0.2, price=None, sl=40200.0)
     inner = _SpyStrategy([], tick_orders=[sell])
     sizing = _FixedSizing()
-    dec = _decorator(inner, sizing, series="close")
+    dec = _decorator(inner, sizing)
     # Act
     dec.on_tick(0, 39990.0, 40010.0, _FakeAccount())
     # Assert
@@ -342,7 +352,7 @@ def test_必要な価格系列がレジストリに無ければ例外() -> None:
     """§12.5 の受付時拒否をすり抜けた場合の最後の砦。無音で誤った建値を使わない。"""
     # Arrange
     inner = _SpyStrategy([_MARKET_BUY])
-    dec = _decorator(inner, _FixedSizing(), series="close")
+    dec = _decorator(inner, _FixedSizing())
     indicators = _FakeIndicators({"ema": [40000.0]})   # MA_Slope_EA 相当
     # Act / Assert
     with pytest.raises(Exception):
@@ -365,7 +375,7 @@ def test_OFFならDecoratorを作らない() -> None:
     from simulator.usecase.sizing_models import SizingConfig
 
     got = build_sizing_decorator(
-        SizingConfig(enabled=False), symbol_spec=_Spec(), entry_price_basis="close"
+        SizingConfig(enabled=False), symbol_spec=_Spec()
     )
     assert got is None
 
@@ -378,7 +388,6 @@ def test_ONならStrategyPortを包む関数を返す() -> None:
     factory = build_sizing_decorator(
         SizingConfig(enabled=True, sims=20),
         symbol_spec=_Spec(),
-        entry_price_basis="close",
     )
     inner = _SpyStrategy([])
     # Act
@@ -392,8 +401,12 @@ def test_ONならStrategyPortを包む関数を返す() -> None:
 @pytest.mark.parametrize(
     "basis, series", [("close", "close"), ("current_open", "open")]
 )
-def test_推定に使う系列はentry_price_basisで決まる(basis: str, series: str) -> None:
-    """`sizing_ports.required_price_series` の表に従う（判断を 2 箇所に分けない）。"""
+def test_推定に使う系列は戦略の宣言で決まる(basis: str, series: str) -> None:
+    """`sizing_ports.required_price_series` の表に従う（判断を 2 箇所に分けない）。
+
+    工場は 1 つのまま、**包む戦略の宣言だけ**を変えて系列が分かれることを固定する
+    （ISSUE-533 段階 2: 工場の引数では変えられない）。
+    """
     from simulator.adapter.strategy.sizing_decorator import build_sizing_decorator
     from simulator.usecase.sizing_models import SizingConfig
 
@@ -401,10 +414,9 @@ def test_推定に使う系列はentry_price_basisで決まる(basis: str, serie
     factory = build_sizing_decorator(
         SizingConfig(enabled=True, sims=20),
         symbol_spec=_Spec(),
-        entry_price_basis=basis,
     )
     assert factory is not None
-    wrapped = factory(_SpyStrategy([_MARKET_BUY]))
+    wrapped = factory(_SpyStrategy([_MARKET_BUY], declared=basis))
     # Act（該当系列だけを持つレジストリで動くこと＝その系列を引いている）
     indicators = _FakeIndicators({series: [40000.0]})
     result = wrapped.on_new_bar(0, indicators, _FakeAccount())
@@ -412,17 +424,28 @@ def test_推定に使う系列はentry_price_basisで決まる(basis: str, serie
     assert len(result) == 1
 
 
-def test_未知のentry_price_basisは例外() -> None:
-    """無音で "close" へ倒すと誤った建値で量を決める。"""
+def test_語彙の外を宣言した戦略は例外() -> None:
+    """無音で "close" へ倒すと誤った建値で量を決める。
+
+    ISSUE-533 段階 2 以降、語彙の外の値は run の設定からは入って来られない
+    （`config_overrides` に建値基準のキーが無い）。入りうるのは**戦略の宣言**だけなので、
+    落とす点も宣言を読む点に移る。
+    """
     from simulator.adapter.strategy.sizing_decorator import build_sizing_decorator
+    from simulator.usecase.entry_price_basis import EntryPriceBasisDeclarationError
     from simulator.usecase.sizing_models import SizingConfig
 
-    with pytest.raises(ValueError):
-        build_sizing_decorator(
-            SizingConfig(enabled=True, sims=20),
-            symbol_spec=_Spec(),
-            entry_price_basis="mid",
-        )
+    # Arrange
+    factory = build_sizing_decorator(
+        SizingConfig(enabled=True, sims=20),
+        symbol_spec=_Spec(),
+    )
+    assert factory is not None
+    wrapped = factory(_SpyStrategy([_MARKET_BUY], declared="mid"))
+
+    # Act / Assert（成行が出た瞬間に落ちる。無音で系列を選ばない）
+    with pytest.raises(EntryPriceBasisDeclarationError):
+        wrapped.on_new_bar(0, _FakeIndicators({"close": [40000.0]}), _FakeAccount())
 
 
 def test_銘柄の量制約がSizingRuleへ渡る() -> None:
@@ -438,7 +461,6 @@ def test_銘柄の量制約がSizingRuleへ渡る() -> None:
     factory = build_sizing_decorator(
         SizingConfig(enabled=True, sims=20),
         symbol_spec=_Tight(),
-        entry_price_basis="close",
     )
     assert factory is not None
     wrapped = factory(_SpyStrategy([_MARKET_BUY]))
@@ -461,7 +483,6 @@ def test_エッジ計算は戦略を包む時点で一度だけ行う() -> None:
     # Arrange
     factory = build_sizing_decorator(
         SizingConfig(enabled=True, sims=20), symbol_spec=_Spec(),
-        entry_price_basis="close",
     )
     assert factory is not None
     # Act（同じ factory から 2 回包む）

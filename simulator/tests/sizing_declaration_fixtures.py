@@ -20,8 +20,9 @@ from typing import Any
 
 #: 推定建値の系列として配る値（本数は足 1 本ぶんの参照に足りればよい）。
 _SERIES_VALUE = 100.0
-_SERIES_LENGTH = 8
-#: 成行 1 本ぶんの損切り価格（リスク距離が 0 だと `SizingPort` が Fail-Stop する）。
+#: 規模を変える検定が使う足数より十分に長く取る（足りないと 「`iloc`」 が範囲外で落ちる）。
+_SERIES_LENGTH = 256
+#: 成行 1 本ぶんの損切り価格（リスク距離が 0 だと 「`SizingPort`」 が Fail-Stop する）。
 _STOP_LOSS = 90.0
 
 
@@ -83,7 +84,7 @@ class Account:
 
 
 class VolumeConstraints:
-    """量制約の代役（`build_sizing_decorator` は属性アクセスで読む）。"""
+    """量制約の代役（「`build_sizing_decorator`」 は属性アクセスで読む）。"""
 
     volume_min = 0.01
     volume_max = 100.0

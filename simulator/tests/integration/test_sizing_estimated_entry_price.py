@@ -317,7 +317,7 @@ def test_ペンディング発注には推定差が生じない(tmp_path: Path) 
         equity = 100_000.0
 
     recorder = _Recorder()
-    dec = SizingDecorator(_Pending(), recorder, price_series="open")
+    dec = SizingDecorator(_Pending(), recorder)
     # Act
     dec.on_new_bar(2, registry, _Account())
     # Assert（系列の値ではなく order.price が使われている＝推定していない）
@@ -349,7 +349,6 @@ def test_sizingONで発注量が戦略の固定値から変わる(tmp_path: Path
     decorator = build_sizing_decorator(
         _SIZING, symbol_spec=request[1].symbol_spec if isinstance(request, tuple)
         else request.symbol_spec,
-        entry_price_basis="close",
     )
     # Act
     code, on = run_backtest(
@@ -374,7 +373,7 @@ def test_sizingONの発注量は刻みの倍数である(tmp_path: Path) -> None
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act
     _, result = run_backtest(
@@ -406,7 +405,7 @@ def test_SL距離0のsizingONは無音の取引ゼロにならない(tmp_path: P
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act / Assert（BacktestController の終了コード翻訳に飲み込まれずに伝播すること）
     with pytest.raises(SizingRequiresStopLossError):
@@ -431,7 +430,7 @@ def test_SL距離が正なら従来どおり完走する(tmp_path: Path) -> None
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act
     code, result = run_backtest(

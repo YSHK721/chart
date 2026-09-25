@@ -48,7 +48,7 @@ from simulator.tests.tester_settings_engine_fixtures import (
     runnable_settings,
 )
 
-#: 2024-01-01T00:00:00Z。marketdata 形式の `date` は naive 文字列で時刻系は UTC である。
+#: 2024-01-01T00:00:00Z。marketdata 形式の 「`date`」 列は naive 文字列で時刻系は UTC である。
 _EPOCH_2024_01_01 = 1_704_067_200
 #: 合成する足の本数（既定 EA が売買を往復するのに足りる長さ・実測で 1 件以上の取引が出る）。
 _BARS = 40
@@ -142,14 +142,14 @@ def _entry_prices_via_settings(data_path: Path, overrides: "dict | None") -> "li
 def _entry_prices_direct(
     tmp_path: Path, data_path: Path, overrides: "dict | None"
 ) -> "list[float]":
-    """現行経路（settings 不在＝`backtest` ブロックを素通し）で実行する。
+    """現行経路（settings 不在＝ 「`backtest`」 ブロックを素通し）で実行する。
 
     投入引数は settings 経路と**同一のものを使う**（銘柄仕様・期間・EA 入力を手で写すと、
     2 経路の差ではなく写し間違いを測ることになる）。差し替えるのは ``config_overrides``
     だけであり、現行経路が実際に渡すもの——カタログの供給そのまま——に置く。
 
-    ``tick_model`` と ``stop_out_action`` は settings 経路が権威として供給すると宣言
-    している 2 項目（`kwargs_mapper._config_overrides`）であり、本検定の対象ではない。
+    「``tick_model``」 と 「``stop_out_action``」 は settings 経路が権威として供給すると宣言
+    している 2 項目（「`kwargs_mapper._config_overrides`」）であり、本検定の対象ではない。
     揃えておかないと modelling と証拠金の分岐が経路ごとに変わり、建値基準以外の理由で
     約定価格が動く。**建値基準はここで揃えない**——それが測りたい唯一の量である。
     """
@@ -172,7 +172,7 @@ def _entry_prices_direct(
 def test_the_route_and_the_entity_do_not_decide_the_entry_price(tmp_path, entities):
     """settings あり／なし × 気配幅あり／なしの 4 通りで約定価格が一致する。
 
-    既定 EA（`TC24051901`）は**当該足の終値**で判定する（`entry_price_basis = "close"`）。
+    既定 EA（「`TC24051901`」）は**当該足の終値**で判定する（`entry_price_basis = "close"`）。
     したがって 4 通りすべてで約定価格は足の終値と一致していなければならない。
 
     是正前（段階 1 の残存）: 気配幅を供給する実体にはカタログが ``current_open`` を載せる
@@ -203,7 +203,7 @@ def test_the_route_and_the_entity_do_not_decide_the_entry_price(tmp_path, entiti
 def test_a_close_deciding_ea_runs_on_the_entity_that_supplies_spread(tmp_path, entities):
     """気配幅を供給する実体へ終値で判定する EA を投げても run が始まる（残存リスク）。
 
-    是正前は `build_interactor` が `EntryPriceBasisConflictError` を送出し、投入は
+    是正前は `build_interactor` が 「`EntryPriceBasisConflictError`」 を送出し、投入は
     exit=2 で終わっていた（カタログが ``current_open`` を載せるため）。
     """
     # Arrange
