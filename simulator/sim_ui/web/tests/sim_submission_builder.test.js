@@ -11,11 +11,14 @@
 //   4. `settings` は null なら本文へ載せない（旧フォーム投入と byte 等価）。
 //   5. resolveProfile は symbol 一致の**先頭**を返し、一致が無ければ null（決定的）。
 //   6. symbolCandidatesOf は datasets から選べる銘柄を出現順で 1 つずつ返す（重複を畳む）。
+//   7. seriesCandidatesOf は畳んだ先の系列（`RunProfile.dataset`）を返し、分岐が実在しない
+//      （1 本だけの）銘柄では空を返す。resolveProfile は指定された系列を解決し、指定が
+//      無ければ従来どおり銘柄一致の先頭を返す（投入本文は 1 バイトも増えない）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  PROFILE_KEYS, buildSubmission, resolveProfile, symbolCandidatesOf,
+  PROFILE_KEYS, buildSubmission, resolveProfile, seriesCandidatesOf, symbolCandidatesOf,
 } from "../js/adapter/front/sim_submission_builder.js";
 
 const PROFILE = Object.freeze({
@@ -135,4 +138,82 @@ test("symbolCandidatesOf returns an empty list for an empty or missing dataset l
   assert.deepEqual(symbolCandidatesOf([]), []);
   assert.deepEqual(symbolCandidatesOf(null), []);
   assert.deepEqual(symbolCandidatesOf(undefined), []);
+});
+
+// --- 7. 系列の軸（ISSUE-511 段階 8-D-5）------------------------------------------
+// 同じ銘柄に複数のデータセット（系列）が在るとき、symbolCandidatesOf はそれを 1 候補へ
+// 畳む（候補は「選べる銘柄」であって「データセットの数」ではない）。畳んだ先を選び直す
+// 第 2 の軸がこれである。識別子は `RunProfile.dataset`（ref 名）であり PROFILE_KEYS に
+// 含まれない＝投入本文のキーにはならない。
+//
+// 軸を出すのは**実在する分岐のときだけ**である（候補 1 本なら空を返す＝画面は現行と同一）。
+// 「出すか出さないか」は規則であって器の都合ではないため、判定は M5 が持つ（View は
+// 銘柄候補と同じく「候補が在れば出す」だけを見る＝しきい値の第 2 実装を作らない）。
+
+test("seriesCandidatesOf lists the dataset refs of that symbol in run-options order", () => {
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "zzz_beta", symbol: "JP225" };
+  const other = { ...PROFILE, dataset: "zzz_other", symbol: "OTHER" };
+  assert.deepEqual(seriesCandidatesOf([other, a, b], "JP225"), ["zzz_alpha", "zzz_beta"]);
+});
+
+test("seriesCandidatesOf yields no axis when the symbol carries a single series", () => {
+  // 実在しない分岐を画面に出さない（認知負荷の最小化＝候補 1 本なら現行画面と同一）。
+  assert.deepEqual(seriesCandidatesOf([PROFILE], PROFILE.symbol), []);
+  const other = { ...PROFILE, dataset: "zzz_other", symbol: "OTHER" };
+  assert.deepEqual(seriesCandidatesOf([PROFILE, other], PROFILE.symbol), []);
+});
+
+test("seriesCandidatesOf yields no axis for an empty / missing / unknown input", () => {
+  assert.deepEqual(seriesCandidatesOf([], "JP225"), []);
+  assert.deepEqual(seriesCandidatesOf(null, "JP225"), []);
+  assert.deepEqual(seriesCandidatesOf(undefined, "JP225"), []);
+  assert.deepEqual(seriesCandidatesOf([PROFILE, { ...PROFILE, dataset: "b" }], "NOPE"), []);
+});
+
+test("seriesCandidatesOf yields strings (候補は select の値＝文字列)", () => {
+  const a = { ...PROFILE, dataset: 1, symbol: "JP225" };
+  const b = { ...PROFILE, dataset: 2, symbol: "JP225" };
+  assert.deepEqual(seriesCandidatesOf([a, b], "JP225"), ["1", "2"]);
+});
+
+test("resolveProfile follows the chosen series instead of the first of that symbol", () => {
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "zzz_beta", symbol: "JP225" };
+  assert.strictEqual(resolveProfile([a, b], "JP225", "zzz_beta"), b);
+  assert.strictEqual(resolveProfile([a, b], "JP225", "zzz_alpha"), a);
+});
+
+test("resolveProfile with no series keeps the first of that symbol (既存投入と同一)", () => {
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "zzz_beta", symbol: "JP225" };
+  for (const series of [undefined, null, ""]) {
+    assert.strictEqual(resolveProfile([a, b], "JP225", series), a, String(series));
+  }
+});
+
+test("resolveProfile returns null for a series that symbol does not carry", () => {
+  // 既定へ当てはめない（当てはめると「選んでいない系列で回った」ことが画面から分からない）。
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "zzz_beta", symbol: "JP225" };
+  assert.strictEqual(resolveProfile([a, b], "JP225", "zzz_nope"), null);
+});
+
+test("resolveProfile keeps the series axis inside the chosen symbol", () => {
+  // 系列は銘柄の内側の軸である。別銘柄の ref を指定しても、その銘柄へ乗り換えない。
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const foreign = { ...PROFILE, dataset: "zzz_foreign", symbol: "OTHER" };
+  assert.strictEqual(resolveProfile([a, foreign], "JP225", "zzz_foreign"), null);
+});
+
+test("the series axis name is not a submitted key (投入本文は 1 バイトも増えない)", () => {
+  assert.equal(PROFILE_KEYS.includes("dataset"), false);
+  const a = { ...PROFILE, dataset: "zzz_alpha", symbol: "JP225" };
+  const b = { ...PROFILE, dataset: "zzz_beta", symbol: "JP225" };
+  const first = buildSubmission({ profile: a, subject: SUBJECT, inputs: INPUTS });
+  const second = buildSubmission({ profile: b, subject: SUBJECT, inputs: INPUTS });
+  assert.deepEqual(Object.keys(second.backtest).sort(), Object.keys(first.backtest).sort());
+  for (const key of Object.keys(second.backtest)) {
+    assert.notEqual(key, "dataset", "系列の識別子が投入本文に載っています");
+  }
 });

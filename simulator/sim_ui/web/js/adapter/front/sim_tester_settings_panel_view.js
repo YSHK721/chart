@@ -35,6 +35,7 @@
 // fake DOM 前提: querySelector は使わず、キーごとに要素参照を JS 側で保持する。
 
 import { createSimDatePickerView } from "./sim_date_picker_view.js";
+import { sameCandidates } from "./sim_submission_builder.js";
 
 /** 対象種別（規則 D）: 本パネルは Expert テストだけを組む。`Indicator` は出さない。 */
 const SUBJECT_KEY = "Expert";
@@ -50,6 +51,14 @@ const FORWARD_DATE_KEY = "ForwardDate";
 const BLANK_MEANS_ABSENT = [FORWARD_DATE_KEY];
 /** 実行対象の銘柄キー（実行対象データセットの決定に使う・Phase 9 S4）。 */
 const SYMBOL_KEY = "Symbol";
+/** 系列の軸（ISSUE-511 段階 8-D-5）: 同一銘柄に複数のデータセットが在るときの選び直し。
+ *
+ *  `.ini` のキーではない＝`controls` に登録しない（登録しないことが「投入本文へ載らない」
+ *  ことの構造的な保証である。`buildTesterMapping` は `controls` からしか値を採らない）。
+ *  画面契約の宣言は `ui:`（表示制御・本文のキーにならない）であり、それは
+ *  `tests/sim_form_mt5_contract.test.js` が機械的に突き合わせる。
+ *  候補（ラベル・値）は run-options の `dataset` ref だけから来る（front リテラル 0）。 */
+const SERIES_ID = "testerSeries";
 /** 実行対象データセットとの一致が要求されるキー（写像層 `_require_match` の対象・T-3）。 */
 const PROFILE_MATCHED_KEYS = [SYMBOL_KEY, "Period"];
 /** `.ini` キー → 既定値を供給する run profile のフィールド名。
@@ -163,8 +172,13 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   let schema = null;
   let profile = null;
   let symbolCb = null;
+  let seriesCb = null;
   /** 実行対象データセットが供給する銘柄候補（Phase 9 S4）。空なら自由入力へ縮退する。 */
   let symbolCandidates = [];
+  /** 同一銘柄の系列候補（ISSUE-511 段階 8-D-5）。空なら軸を出さない（現行画面と同一）。 */
+  let seriesCandidates = [];
+  /** 系列の軸の控え（出していなければ null）。 */
+  let seriesNode = null;
   /** 行 id → その行の控え置き場（`.tester-row-controls`）。rebuild ごとに作り直す。 */
   const rowHosts = new Map();
   /** `.ini` キー → 入力要素。 */
@@ -582,6 +596,10 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     // 開く中身の件数をトグルへ書く（0 件なら CSS が消す＝押しても何も出ないボタンを残さない）。
     // schema を取れない構成でも必ず通る位置に置く（下の早期 return より前）。
     unsupportedToggle.dataset.count = String(((schema && schema.unsupported) || []).length);
+    // 行ごと作り直すため、系列の軸も必ず作り直す（古い実体を掴み続けると、画面から消えた
+    // select を「今の欄」として読み続ける）。選択だけは引き継ぐ。
+    const keptSeries = selectedSeries();
+    seriesNode = null;
     rowHosts.clear();
     controls.clear();
     controlBoxes.clear();
@@ -605,6 +623,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       ...renderedKeys.filter((k) => rowDefOf(k) === DEFAULT_ROW),
     ];
     for (const key of ordered) buildControl(key);
+    rebuildSeries(keptSeries);   // 銘柄行が出来た後（置き場所がそこ）
     applyProfileDefaults();
     applyActivation();
     applyPresetRangeDisplay();
@@ -618,6 +637,47 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   function selectedSymbol() {
     const token = currentToken(SYMBOL_KEY);
     return token === null ? "" : token;
+  }
+
+  /** 実行対象の系列（軸を出していなければ空文字＝「指定なし」）。 */
+  function selectedSeries() {
+    return seriesNode ? String(seriesNode.value == null ? "" : seriesNode.value) : "";
+  }
+
+  /** select が今出している選択肢のトークン列（HTMLCollection なので Array.from を経由）。 */
+  const offeredTokensOf = (node) => Array.from(node.children || []).map((o) => String(o.value));
+
+  /**
+   * 系列の軸を組み直す（候補が在るときだけ出す＝実在する分岐のときだけ）。
+   *
+   * **フォーム全体を作り直さない**: 候補は銘柄を変えるたびに配り直される。ここで `rebuild()`
+   * を呼ぶと、利用者が今選んだ銘柄が初期値へ戻り、触っていた要素そのものが差し替わる
+   * （ビュー自動介入の禁止）。触るのはこの 1 要素だけである。
+   *
+   * 出力が変わらない注入（同じ候補）では 1 つも生成しない——作って捨てる生成は出力が
+   * 正しいままなので状態検証では原理的に落ちない（`tests/series_axis_complexity.test.js`）。
+   *
+   * 置き場所は MT5「銘柄」行である。系列は銘柄の内側の軸であり、行ラベルがそれを示す
+   * （front に系列用の表示名を作らない＝ラベル・値はどちらも run-options 由来のまま）。
+   *
+   * @param {string} [preferred] 選択を引き継ぐ系列（省略時は今の選択）
+   */
+  function rebuildSeries(preferred) {
+    const wanted = preferred === undefined ? selectedSeries() : preferred;
+    if (seriesNode && sameCandidates(offeredTokensOf(seriesNode), seriesCandidates)) return;
+    if (seriesNode && seriesNode.parentNode) seriesNode.parentNode.removeChild(seriesNode);
+    seriesNode = null;
+    if (!schema || !seriesCandidates.length) return;
+    const node = el("select", {
+      id: SERIES_ID, className: "tester-input", dataset: { mt5: "ui:series" },
+    });
+    for (const token of seriesCandidates) {
+      node.appendChild(el("option", { value: token, textContent: token }));
+    }
+    node.value = seriesCandidates.includes(wanted) ? wanted : seriesCandidates[0];
+    node.addEventListener("change", () => { if (seriesCb) seriesCb(selectedSeries()); });
+    seriesNode = node;
+    rowHostFor(SYMBOL_KEY).appendChild(node);
   }
 
   function currentEaName() {
@@ -726,6 +786,16 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (schema) rebuild();
     },
 
+    /** 系列候補（同一銘柄の `RunProfile.dataset` 一覧）を注入する（段階 8-D-5）。
+     *
+     *  `setSymbolCandidates` と違い**フォームを組み直さない**: これは銘柄を変えるたびに
+     *  配り直される注入であり、組み直すと今選んだ銘柄が初期値へ戻る。触るのは系列の欄
+     *  1 つだけであり、候補が変わらない注入では 1 要素も生成しない。 */
+    setSeriesCandidates(list) {
+      seriesCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      rebuildSeries();
+    },
+
     /** 選択中のデータセット profile を注入する（Symbol/Period/Leverage/Currency の既定値）。 */
     setRunProfile(runProfile) {
       profile = runProfile || null;
@@ -760,6 +830,11 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
 
     /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
     onSymbolChange(cb) { symbolCb = cb; },
+
+    selectedSeries,
+
+    /** 系列変更時のコールバックを登録する（新しい系列を渡す）。 */
+    onSeriesChange(cb) { seriesCb = cb; },
 
     warnings,
     activeUnsupported,

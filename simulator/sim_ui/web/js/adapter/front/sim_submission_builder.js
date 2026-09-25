@@ -2,7 +2,8 @@
 //
 // 役割: 「実行対象データセット（profile）」「実行対象（subject＝EA と口座）」「EA パラメータ
 //   （inputs）」の 3 つから `POST /sim/jobs` の本文を組む。あわせて、実行対象データセット
-//   一覧から実行対象を引く規則（`resolveProfile` / `symbolCandidatesOf`）を所有する。
+//   一覧から実行対象を引く規則（`resolveProfile` / `symbolCandidatesOf` /
+//   `seriesCandidatesOf`）を所有する。
 //
 // なぜ純関数か: 本文の組み立て規則は front の中で最も壊れやすく、最も検証したい箇所である
 //   （キーの取りこぼし・型の落ち方は実測でしか分からない）。DOM や HTTP と同じ面に置くと
@@ -18,22 +19,96 @@ export const PROFILE_KEYS = Object.freeze([
   "leverage", "volume_min", "volume_max", "volume_step", "stops_level",
 ]);
 
-/**
- * 実行対象データセットを Symbol から決める。
+/** 系列の軸を出すのに要る候補数（ISSUE-511 段階 8-D-5）。
  *
- * 決定的であることが要点である: 同じ (datasets, symbol) からは必ず同じ profile が出る。
- * symbol 一致の**先頭**を採り、一致が無ければ null を返す（既定へ当てはめない——
- * 当てはめると「選んでいない銘柄で回った」ことが画面から分からなくなる）。
+ *  1 本しか無い銘柄では軸を出さない——実在しない分岐を画面に出すと、選ぶものが 1 つしか
+ *  無い操作を利用者に読ませることになる（認知負荷の最小化）。この閾値は**規則**であって
+ *  器の都合ではないため、判定はここが持つ（View は銘柄候補と同じく「候補が在れば出す」
+ *  だけを見る＝しきい値の第 2 実装を作らない）。 */
+const SERIES_AXIS_MIN_CANDIDATES = 2;
+
+/** 空文字へ畳んだトークン（未指定・null・undefined を 1 つの形にする）。 */
+const tokenOf = (raw) => (raw === null || raw === undefined ? "" : String(raw));
+
+/**
+ * 2 つの候補列が同じか（＝配り直しても画面の出力は 1 ビットも変わらないか）。
+ *
+ * 判定がここに在る理由: これは「同じものを配られたら組み直さない」という**規則**であり、
+ * 両方の供給元（M1 Tester Settings 面 / M4 縮退面）が同じ答えを出さなければならない。
+ * 面ごとに手書きすると、片方だけが作り直す状態が静かに生まれる（出力は正しいままなので
+ * 状態検証では落ちない）。規則は 1 箇所に置き、面は呼ぶだけにする。
+ *
+ * @param {string[]} a いま画面に出している候補列
+ * @param {string[]} b これから配る候補列
+ * @returns {boolean}
+ */
+export function sameCandidates(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((token, i) => token === b[i]);
+}
+
+/**
+ * 実行対象データセットを Symbol（＋任意で系列）から決める。
+ *
+ * 決定的であることが要点である: 同じ (datasets, symbol, series) からは必ず同じ profile が
+ * 出る。系列の指定が**無ければ** symbol 一致の先頭を採る（段階 8-D-5 以前と同一の決め方＝
+ * 軸を出さない構成の投入本文は 1 バイトも変わらない）。系列の指定が**在れば**その系列を
+ * 探す——先頭決め打ちにすると、画面で 2 本目を選んでも 1 本目で回る（選んだことが結果に
+ * 現れない沈黙の失敗）。
+ *
+ * 一致が無ければ null を返す（既定へ当てはめない——当てはめると「選んでいない銘柄・系列で
+ * 回った」ことが画面から分からなくなる）。系列は**銘柄の内側**の軸なので、別銘柄の系列を
+ * 指定しても銘柄を乗り換えない。
  *
  * @param {object[]} datasets GET /sim/run-options の datasets
  * @param {string}   symbol   利用者が選んだ Symbol
+ * @param {string}   [series] 利用者が選んだ系列（`RunProfile.dataset`＝ref 名）
  * @returns {object|null}
  */
-export function resolveProfile(datasets, symbol) {
+export function resolveProfile(datasets, symbol, series) {
   if (!Array.isArray(datasets) || !datasets.length) return null;
-  const wanted = symbol === null || symbol === undefined ? "" : String(symbol);
+  const wanted = tokenOf(symbol);
   if (wanted === "") return null;
-  return datasets.find((p) => p && String(p.symbol) === wanted) || null;
+  const ref = tokenOf(series);
+  // 1 回の走査で決める（候補の中間配列を作って捨てない）。
+  for (const profile of datasets) {
+    if (!profile || String(profile.symbol) !== wanted) continue;
+    if (ref === "") return profile;                        // 系列の指定なし＝一致の先頭
+    if (String(profile.dataset) === ref) return profile;   // 指定された系列
+  }
+  return null;
+}
+
+/**
+ * 選べる系列の一覧を実行対象データセットから引く（resolveProfile と対の規則）。
+ *
+ * `symbolCandidatesOf` は同じ銘柄のデータセットを 1 候補へ畳む（候補は「選べる銘柄」で
+ * あって「データセットの数」ではない）。**畳んだ先を選び直す第 2 の軸**がこれである。
+ * 識別子は `RunProfile.dataset`（ref 名）であり、投入本文の `PROFILE_KEYS` に含まれない
+ * ——系列を選んでも本文のキーは 1 つも増えない（増えるのは値の出所だけ）。
+ *
+ * 並びは datasets の出現順であり、同じ入力からは必ず同じ一覧が出る（決定的）。値は select
+ * の値になるため常に文字列で返す。ラベルも同じ ref 名である（`RunProfile.dataset` が
+ * 「セレクタのラベル/値」の権威＝front は表示名を作らない）。
+ *
+ * **分岐が実在しないときは空を返す**（SERIES_AXIS_MIN_CANDIDATES）。空は View にとって
+ * 銘柄候補 0 件と同じ意味であり、軸は画面に出ない＝現行画面と同一になる。
+ *
+ * @param {object[]} datasets GET /sim/run-options の datasets
+ * @param {string}   symbol   利用者が選んだ Symbol
+ * @returns {string[]}
+ */
+export function seriesCandidatesOf(datasets, symbol) {
+  if (!Array.isArray(datasets)) return [];
+  const wanted = tokenOf(symbol);
+  const refs = [];
+  for (const profile of datasets) {
+    if (!profile || String(profile.symbol) !== wanted) continue;
+    refs.push(String(profile.dataset));
+  }
+  // 足りなければ**同じ配列を空にして**返す（2 本目を作らない＝捨てる生成を持たない）。
+  if (refs.length < SERIES_AXIS_MIN_CANDIDATES) refs.length = 0;
+  return refs;
 }
 
 /**

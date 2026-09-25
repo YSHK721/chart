@@ -136,6 +136,10 @@
 #simTesterPanel .tester-row-note { color: var(--muted); }
 /* エキスパート行の控えは行いっぱい（MT5 はパス付きで横長）。 */
 #simTesterPanel .tester-row[data-row="expert"] .tester-input { width: 100%; }
+/* 銘柄行は控えが 3 つになり得る（銘柄・時間足・系列＝ISSUE-511 段階 8-D-5）。列幅に収まら
+ * なければ折り返す——横あふれで系列が列の外へ出ると、出したのに選べない状態になる。
+ * 折り返しをこの行だけに閉じるのは、他の行の並びを 1 つも動かさないためである。 */
+#simTesterPanel .tester-row[data-row="symbol"] .tester-row-controls { flex-wrap: wrap; }
 /* 不活性の欄は MT5 と同じくグレーアウト（値は残す・投入本文には載らない）。 */
 #simTesterPanel .tester-input:disabled,
 #simTesterPanel [data-inactive="1"] {
@@ -199,6 +203,7 @@
 #simTesterPanel .tester-input,
 #simEaInputsPanel .ea-input,
 #simSchemaFallbackPanel .fallback-symbol,
+#simSchemaFallbackPanel .fallback-series,
 #simSchemaFallbackPanel .fallback-ea,
 #simSchemaFallbackPanel .fallback-deposit {
   min-width: 0;          /* grid/flex の中で内容幅に押し広げられないため（横あふれ防止） */
@@ -223,10 +228,14 @@
 /* select は矢印のぶん内側が詰まる。高さは上で固定してあるので左右だけ薄くする。 */
 #simTesterPanel select.tester-input,
 #simSchemaFallbackPanel select.fallback-symbol,
+#simSchemaFallbackPanel select.fallback-series,
 #simSchemaFallbackPanel select.fallback-ea {
   padding-left: 6px;
   padding-right: 2px;
 }
+/* 系列の軸（段階 8-D-5）は銘柄と同じ枠に並ぶ。枠は 2 列グリッド（ラベル列＋値列）なので、
+ * 値列の**真下**へ落とす（指定しないとラベル列に入り、ラベルの下に控えが出る）。 */
+#simSchemaFallbackPanel .fallback-series { grid-column: 2; }
 /* --- 日付欄とカレンダー（依頼者参照デザイン 2026-09-06）---------------------------
  * ネイティブ `<input type="date">` のポップアップはブラウザ内部描画で CSS が届かず、
  * ダーク地で視認性を直せない（実測）。自前カレンダー（sim_date_picker_view.js）を

@@ -13,7 +13,9 @@ import { createSimRunActionView } from "./sim_run_action_view.js";
 import { createSimRunStatusView } from "./sim_run_status_view.js";
 import { createSimRunLayoutView } from "./sim_run_layout_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
-import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
+import {
+  buildSubmission, resolveProfile, seriesCandidatesOf, symbolCandidatesOf,
+} from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 import { createSimTracePanelView } from "./sim_trace_panel_view.js";
 import { reportViewUrl } from "./report_view_url.js";
@@ -169,14 +171,29 @@ export async function mountSimExecutionPanel({
     // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
     // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
     // 不一致は供給元の警告が画面に出す。
+    //
+    // 同じ銘柄に複数のデータセット（系列）が在る場合は、その選び直しが**第 2 の軸**に
+    // なる（ISSUE-511 段階 8-D-5）。軸を出すかどうか・どの系列が選べるかは規則なので M5 が
+    // 決め（`seriesCandidatesOf`）、ここは配って結果を受け取るだけである。系列は銘柄の内側
+    // にあるため、銘柄が動いたら候補を配り直してから profile を引き直す（順序が逆だと、
+    // 前の銘柄の系列で解決を試みて 1 手遅れる）。
     let runProfile = null;
+    function syncSeriesCandidates() {
+      subjectSource.setSeriesCandidates(
+        seriesCandidatesOf(datasets, subjectSource.selectedSymbol()),
+      );
+    }
     function syncRunProfile() {
-      const next = resolveProfile(datasets, subjectSource.selectedSymbol());
+      const next = resolveProfile(
+        datasets, subjectSource.selectedSymbol(), subjectSource.selectedSeries(),
+      );
       if (next === null || next === runProfile) return;
       runProfile = next;
       subjectSource.setRunProfile(runProfile);
     }
-    subjectSource.onSymbolChange(() => { syncRunProfile(); });
+    subjectSource.onSymbolChange(() => { syncSeriesCandidates(); syncRunProfile(); });
+    subjectSource.onSeriesChange(() => { syncRunProfile(); });
+    syncSeriesCandidates();
     syncRunProfile();
 
     // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
