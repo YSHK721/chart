@@ -299,7 +299,14 @@ def test_the_superset_series_is_written_before_the_most_watched_one(monkeypatch,
 # CX-1. 系列を増やしても parquet 読込と畳みは増えない
 # =====================================================================
 def _measure(monkeypatch, data_dir: Path, *, drop: "str | None", n_days: int) -> _Measured:
-    """``drop`` を台帳から外して 1 周期回し、発行を数える（系列数だけが違う 2 点を作る）。"""
+    """``drop`` を台帳から外して 1 周期回し、発行を数える（系列数だけが違う 2 点を作る）。
+
+    ティック実体と M1 の突合（ISSUE-534）は**周期が来ていない状態**で測る。あれは追記とは別の
+    周期を持つ独立した検査であり、同じ窓の parquet をもう一度読む。混ぜて測ると、本検定が測って
+    いるもの（追記が系列の数だけ読み直していないか）が突合の発行に埋もれる。突合そのものの費用は
+    ``marketdata/tests/test_tick_m1_day_heal.py`` と
+    ``tools/tests/test_live_tick_watch_m1_heal.py`` が測る。
+    """
     days = [_DAY1, _DAY2][:n_days]
     for day in days[:-1]:
         _put_day(data_dir, day)
@@ -319,6 +326,7 @@ def _measure(monkeypatch, data_dir: Path, *, drop: "str | None", n_days: int) ->
 
     with monkeypatch.context() as patch:
         patch.setattr(ltw, "_fetch_day", _fake_fetch)
+        patch.setattr(ltw, "_m1_heal_next_monotonic", float("inf"))
         if drop is not None:
             patch.setattr(dataset_registry, "REGISTRY", {
                 ref: d for ref, d in REGISTRY.items() if ref != drop

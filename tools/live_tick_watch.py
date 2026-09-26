@@ -11,8 +11,14 @@
   2. m1      : tick 由来 M1 を**組の全系列へ**増分追記する。形成中の分バー
                （``floor(now, "min")`` 以降）は ``until`` で除外し、確定値のみ書き込む
                （:func:`marketdata.tick_m1.append_m1_from_ticks_for_series`）。
-  3. rollup  : 各系列の M1 を上位足（5m..1M）へ差分更新する
+  3. heal    : **周期条件つきで**ティック実体（日別 parquet）と M1 を突合し、食い違う分を素材から
+               書き直す（:func:`marketdata.tick_m1.heal_m1_days_for_series`・窓は前日と当日）。
+               追記（2.）は ``index > 既存最終 date`` の行しか書かないため、一度書いた分は二度と
+               直らない——出揃う前に書かれた不完全な足 178 分と欠測 129 分が残った（ISSUE-534・
+               実測 2026-09-26）。猶予秒は原因ではないので触らない（:func:`_heal_m1_if_due`）。
+  4. rollup  : 各系列の M1 を上位足（5m..1M）へ差分更新する
                （``marketdata.rollup.incremental_update``・系列ごとの専用サブ dir へ隔離）。
+               2.〜4. の並びの唯一源は :func:`_chain_m1_heal_rollup` である。
 
 書く系列の組は台帳が決める（ISSUE-533 段階 3 の前提工事）:
     :data:`REF` は「どのティック木か」を指す**種**であり、書く系列の集合ではない。集合は起動時に
@@ -50,7 +56,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -268,12 +274,102 @@ def _heal_if_due(
     return healed
 
 
-def _rollup_update(data_dir: Path, refs: "Optional[Sequence[str]]" = None) -> "dict":
+#: ティック実体と M1 の突合（ISSUE-534 根治）の実行周期（秒）。素材（当日と前日の日別 parquet）
+#: と既存 M1 の当該区間しか読まない有界な検査だが、毎ループ（60s / 分確定）に回す必要は無い量
+#: なので、ロールアップ末尾の自己修復（:data:`_HEAL_EVERY_SECONDS`）と同じ考え方で 30 分ごとに
+#: 回す。起動直後の 1 回目は必ず実行する（前回稼働中に書かれた不完全な足を持ち越さない）。
+_M1_HEAL_EVERY_SECONDS = 1800.0
+_m1_heal_next_monotonic = 0.0
+
+
+def heal_days(now: dt.datetime) -> List[dt.date]:
+    """ティック実体と M1 を突合する UTC 日（**前日と当日**の 2 日・純粋）。
+
+    :func:`refresh_days` と分けるのは、決める基準が違うためである: あちらは「どの日の tick を
+    取り直すか」で、ポーリング間隔から日跨ぎの取りこぼしを避ける幅を採る。こちらは「どの日の
+    M1 をティック実体と突合するか」であり、**時刻に依らず 2 日で固定**する。
+
+    固定にするのは、「日跨ぎ直後だけ前日を含める」形が周期の当たり方に依存するからである——
+    30 分周期が日境界の直後に当たらなければ、前日の食い違いは永久に残る（それが ISSUE-534 の
+    形そのものである）。2 日は履歴の長さに依らない定数なので、費用は一定に保たれる。
+    """
+    return [now.date() - dt.timedelta(days=1), now.date()]
+
+
+def _heal_m1_if_due(
+    now: dt.datetime, data_dir: Path, refs: "Optional[Sequence[str]]" = None, *,
+    until: Any = None, force: bool = False,
+) -> "dict[str, int]":
+    """ティック実体と M1 の突合＋自己修復（周期実行・ISSUE-534 根治）。
+
+    検査・修復の実体は :func:`marketdata.tick_m1.heal_m1_days_for_series`（唯一の定義）。ここは
+    周期と窓の持ち主であるだけで、突合の規則を 1 つも持たない——既存の :func:`_heal_if_due` が
+    ロールアップに対して行っていることを、その 1 段下（素材側）で行う。
+
+    直した分数はログに残す（無言で直さない・既存 :func:`_heal_if_due` と同じ流儀）。
+
+    なぜ要るか（実測 2026-09-26・ISSUE-534）: 追記の口は ``index > 既存最終 date`` の行しか
+    書かないため、**一度書いた分は二度と直らない**。**猶予秒は原因ではない**——欠けたティックは
+    分が終わる 11.1 秒前〜ちょうどに発生しており、:data:`_STREAM_M1_GRACE_SECONDS` を 1 件も
+    超えていない（ティックは間に合っていたのに、書いた時点の手元に無かった）。除くのは
+    待ち時間ではなく「見直さないこと」である。
+
+    ``until`` は書き手が同じ周期で使った境界をそのまま渡す（形成中の分を確定値として書かない）。
+    突合は組で 1 回発行する（系列ごとに呼ぶと同じ parquet を系列の数だけ読んで畳む）。
+    """
+    global _m1_heal_next_monotonic
+    clock = time.monotonic()
+    if not force and clock < _m1_heal_next_monotonic:
+        return {}
+    _m1_heal_next_monotonic = clock + _M1_HEAL_EVERY_SECONDS
+    from marketdata.tick_m1 import heal_m1_days_for_series
+
+    healed = heal_m1_days_for_series(
+        heal_days(now), refs=_refs_or_ledger(refs), data_dir=data_dir, until=until
+    )
+    fixed = {ref: n for ref, n in healed.items() if n}
+    if fixed:
+        LOG.warning(
+            "M1 自己修復を実施（ティック実体と突合）: %s",
+            ", ".join(f"{ref}:{n} 分" for ref, n in fixed.items()),
+        )
+    return healed
+
+
+def _chain_m1_heal_rollup(
+    now: dt.datetime, data_dir: Path, *, full_start: dt.date, end: dt.date,
+    until: pd.Timestamp, refs: "Sequence[str]",
+) -> None:
+    """分確定の連鎖: M1 増分追記 → ティック実体との突合 → 上位足の差分更新（**順序の唯一源**）。
+
+    2 つの周期（:func:`update_once` の 1 分ループと :func:`stream_loop` の分境界）が同じ連鎖を
+    回す。違うのは ``end`` と ``until`` の決め方だけなので、決めるのは呼出側・並べるのはここに
+    分けた。並びを呼出側に持たせると、片方だけに段を足したときにもう片方が黙って古い連鎖を
+    回し続ける（ISSUE-534 で 178 分を残したのと同じ型の取り残し）。
+
+    順序の理由:
+      - 突合が追記の**後**: 追記が書いた分も同じ周期で突合の対象にする（書いた直後に不完全な
+        ままだった分を、次の 30 分まで持ち越さない）。
+      - 上位足が突合の**後**: 上位足は M1 の派生物である。壊れた土台の上に差分を積まない。
+      - 直った周期は上位足の検査を周期待ちさせない（``force_heal``）。
+    """
+    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir, refs=refs)
+    healed = _heal_m1_if_due(now, data_dir, refs, until=until)
+    _rollup_update(data_dir, refs, force_heal=any(healed.values()))
+
+
+def _rollup_update(
+    data_dir: Path, refs: "Optional[Sequence[str]]" = None, *, force_heal: bool = False
+) -> "dict":
     """組の各系列の M1 を上位足へ差分更新する（系列ごとの専用サブ dir へ隔離）。
 
     差分更新の前に、周期条件つきで末尾整合の検査＋自己修復（ISSUE-488）を通す。修復が先なのは
     増分（速い経路）が「既存末尾は正しい」前提で末尾 1 行しか触らないため（壊れた土台の上に
     差分を積まない）。
+
+    ``force_heal`` は「この周期で M1 の分バーが直った」ことを意味し、末尾整合の検査を周期待ち
+    させない。上位足は M1 の派生物なので、土台が直ったのに検査が最大 30 分先だと、その間だけ
+    M1 と上位足が食い違ったまま配信される（ISSUE-488 と同型の穴を修復自身が作る）。
 
     ロールアップは系列ごとに別の置き場・別の入力（その系列の M1 CSV）なので、ここに束ねられる
     計算は無い（畳みと違って「1 回で済む共通部分」が無いことを、関数を分けずにループで示す）。
@@ -284,7 +380,7 @@ def _rollup_update(data_dir: Path, refs: "Optional[Sequence[str]]" = None) -> "d
     from marketdata.tick_m1 import m1_csv_path
 
     refs = _refs_or_ledger(refs)
-    _heal_if_due(data_dir, refs)
+    _heal_if_due(data_dir, refs, force=force_heal)
     states = {}
     for ref in refs:
         out_dir = ref_dir(ref, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
@@ -400,8 +496,9 @@ def update_once(
     台帳のままである（既定が :func:`series_refs` の答えであり、呼出側が組を名指す口ではない）。
 
     (a) :func:`refresh_days` の各日を :func:`refresh_day_parquet` で全量再取得し原子スワップ、
-    (b) :func:`_append_m1` で ``full_start``〜``today+1`` を増分追記（``until=floor(now, "min")``
-        で形成中分バーを除外）、(c) :func:`_rollup_update` で上位足を差分更新する。
+    (b) 以降は :func:`_chain_m1_heal_rollup`（連鎖の順序の唯一源）へ委ねる: M1 増分追記
+        （``until=floor(now, "min")`` で形成中分バーを除外）→ ティック実体との突合（ISSUE-534）
+        → 上位足の差分更新。
 
     m1 の ``start`` に当日でなく ``full_start`` を渡すのは、実際の追記窓の決定を
     追記の口（marketdata.tick_m1）の resume 規則（``eff_start = max(既存最終バー日, start)``＝
@@ -416,8 +513,9 @@ def update_once(
         refresh_day_parquet(day, data_dir)
     end = now.date() + dt.timedelta(days=1)  # today+1（半開の m1 集計終端）。
     until = pd.Timestamp(now).floor("min")  # 形成中分バー（>= until）を確定値として書かない。
-    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir, refs=refs)
-    _rollup_update(data_dir, refs)
+    _chain_m1_heal_rollup(
+        now, data_dir, full_start=full_start, end=end, until=until, refs=refs
+    )
 
 
 
@@ -531,18 +629,22 @@ def _chain_m1_rollup(
     now: dt.datetime, data_dir: Path, full_start: dt.date,
     refs: "Optional[Sequence[str]]" = None,
 ) -> None:
-    """分確定の連鎖処理: M1 増分追記（形成中分バー除外）→ rollups 差分更新（update_once と同一）。
+    """分確定の連鎖処理（``end`` と ``until`` を決めて :func:`_chain_m1_heal_rollup` へ渡すだけ）。
 
     until は ``floor(now - 猶予12s)``: 分境界直後の末尾 tick 未着（feed 遅延）を待ってから
     確定する（欠けた確定バーを焼かない・ISSUE-161 ストリーミング化の正確性ガード）。
+
+    猶予を待っても手元に無かった末尾 tick が在りうる（ISSUE-534 の実測 178 分）。それを直すのは
+    待ち時間を伸ばすことではなく、書いた分を見直すこと——連鎖の突合の段（ISSUE-534）である。
 
     ``refs`` は :func:`update_once` と同じ意味（起動時に 1 回だけ引いた組）。
     """
     end = now.date() + dt.timedelta(days=1)
     until = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
-    refs = _refs_or_ledger(refs)
-    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir, refs=refs)
-    _rollup_update(data_dir, refs)
+    _chain_m1_heal_rollup(
+        now, data_dir, full_start=full_start, end=end, until=until,
+        refs=_refs_or_ledger(refs),
+    )
 
 
 def stream_loop(

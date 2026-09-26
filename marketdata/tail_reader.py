@@ -5,6 +5,11 @@
 
 不変条件: ``read_tail(path, n)`` の結果は ``全読み.tail(n)`` と index/値で一致する。
 
+行数で切る口（:func:`read_tail`）と**日時で切る口**（:func:`tail_bytes_since`）の 2 つを持つ。
+後者は「この日時以降の行だけを、その開始バイト位置とともに」返す——末尾の一部を素材から書き直す
+書き手（:func:`marketdata.tick_m1.heal_m1_days_for_series`）が、履歴（prefix）を読まず・触らずに
+窓だけを突合できるようにするためである。逆シークの実体を 2 つに割らないため同じ所に置く。
+
 依存方向（厳守）: pandas + 標準ライブラリのみに依存し、indicator_ui を逆 import しない
 （marketdata の循環依存禁止・設計 §4）。:mod:`marketdata.rollup` が tail-read 用に再利用する。
 """
@@ -33,6 +38,100 @@ def _read_header(f) -> bytes:
     """ファイル先頭の 1 行（ヘッダ）を bytes で返す。"""
     f.seek(0)
     return f.readline()
+
+
+def _line_starts(region: bytes) -> "list[int]":
+    """``region`` の各データ行が始まる相対バイト位置を行順で返す（空行は行として数えない）。
+
+    行境界で始まる領域を 1 回走査するだけで、位置を再計算しない（同じ走査を 2 度しない）。
+    末尾に改行が無い行（torn 書込）も 1 行として数える。
+    """
+    starts: "list[int]" = []
+    at = 0
+    total = len(region)
+    while at < total:
+        nl = region.find(b"\n", at)
+        end = total if nl == -1 else nl
+        if region[at:end].strip():
+            starts.append(at)
+        if nl == -1:
+            break
+        at = nl + 1
+    return starts
+
+
+def _offset_of_first_line_since(region: bytes, since: pd.Timestamp) -> "int | None":
+    """``region`` 内で ``since`` 以降の最初の行が始まる相対バイト位置（全行が以降なら ``None``）。
+
+    ``region`` は行境界で始まる date 昇順の連続領域であることを前提とする（M1・ロールアップ CSV の
+    不変条件）。昇順なので二分探索でよい——**行数に比例して日時を解釈しない**（窓の行数が増えても
+    日時の解釈は log に収まる）。``since`` より前の行が 1 つも無ければ ``None`` を返す（呼出側は
+    さらに遡る／領域の先頭を採る）。全行が ``since`` より前なら領域の長さを返す（該当行なし）。
+    """
+    starts = _line_starts(region)
+    if not starts:
+        return None
+    def date_at(i: int) -> pd.Timestamp:
+        end = region.find(b",", starts[i])
+        field = region[starts[i]:None if end == -1 else end]
+        return pd.Timestamp(field.decode("utf-8", "replace"))
+
+    lo, hi = 0, len(starts)         # date_at(lo-1) < since <= date_at(hi) を保つ二分探索。
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if date_at(mid) < since:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo == 0:
+        return None                 # 領域の全行が since 以降（さらに遡る余地がある）。
+    return starts[lo] if lo < len(starts) else len(region)
+
+
+def tail_bytes_since(csv_path: Path, since: "pd.Timestamp | str") -> "tuple[int, bytes]":
+    """date 列が ``since`` 以降の**末尾の連続領域**を、その開始バイト位置とともに返す。
+
+    返り値は「開始バイト位置, その位置以降のバイト列」の対である（バイト列は行境界で始まり、
+    ヘッダを含まない）。該当行が 1 つも無ければ ``(ファイル長, b"")`` を返す
+    ——呼出側はその位置へ追記すれば済む。
+
+    読むのは ``since`` 以降の領域とその手前 1 ブロックだけである（全読みしない）。これは
+    :func:`read_tail` と同じ逆シークで、切る基準が行数でなく日時であるだけの違いである。
+    費用が**履歴の長さで増えない**ことは
+    ``marketdata/tests/test_tick_m1_day_heal.py`` の CX-2 が履歴 2 点で固定する。
+
+    前提（呼出側が保つ）: データ行は date 昇順であること（M1 CSV の不変条件・
+    :func:`marketdata.tick_m1.append_m1_rows` が昇順で追記する）。降順・未整列のファイルへ
+    使うと、境界の意味が失われる。
+    """
+    path = Path(csv_path)
+    moment = pd.Timestamp(since)
+    with open(path, "rb") as f:
+        header = _read_header(f)
+        lower = len(header)                      # ヘッダ行末の次バイト＝データ領域の先頭。
+        f.seek(0, io.SEEK_END)
+        size = f.tell()
+        if size <= lower:
+            return size, b""                     # ヘッダのみ（データ 0 行）。
+        pos, buf = size, b""
+        while pos > lower:
+            step = min(_BLOCK_SIZE, pos - lower)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+            if pos == lower:
+                region, base = buf, pos          # データ領域の先頭まで遡った。
+            else:
+                nl = buf.find(b"\n")
+                if nl == -1:
+                    continue                     # 完全な行が 1 つも無い（さらに遡る）。
+                region, base = buf[nl + 1:], pos + nl + 1
+            rel = _offset_of_first_line_since(region, moment)
+            if rel is not None:
+                return base + rel, region[rel:]
+            if pos == lower:
+                return base, region              # 全データ行が since 以降。
+    return size, b""
 
 
 def _read_last_lines(path: Path, n_rows: int) -> tuple[bytes, list[bytes]]:

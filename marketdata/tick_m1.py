@@ -46,10 +46,11 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, List, Protocol, Sequence, runtime_checkable
 
 import pandas as pd
 
@@ -66,6 +67,10 @@ from marketdata.paths import DATA_DIR
 # ロールアップ互換の M1 CSV 列・date 書式は marketdata.csv_schema が唯一の規則源
 # （旧: rollup._HEADER / _DATE_FMT と手動同期）。旧属性名は import 共有で温存する。
 from marketdata import csv_schema as _csv_schema
+
+#: 自己修復が「何分を直したか」を残す先（無言で直さない・:func:`heal_m1_days_for_series`）。
+#: ロールアップ側の自己修復（:func:`marketdata.rollup.heal_tail_gaps`）と同じ流儀。
+logger = logging.getLogger(__name__)
 
 _HEADER = _csv_schema.HEADER
 _OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた値列。
@@ -172,6 +177,11 @@ PUBLIC_API_LEDGER: dict[str, str] = {
         "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 書込を発行する順（列の上位集合が"
         "先）の唯一源。2 ファイルを原子的に書く手段は無いので、途中で死んだときに遅れる側を"
         "選ぶ規則であり、MT5 の日中追記と Dukascopy の全構築・追記が同じ規則を使う",
+    "heal_m1_days_for_series":
+        "ISSUE-534 根治（依頼者指示 2026-09-26）: 窓の日について**ティック実体と M1 を突合し、"
+        "食い違う分を素材から書き直す**口。追記のみの規律では一度書いた分が二度と直らず、"
+        "出揃う前に書かれた不完全な足 178 分と欠測 129 分が残った（実測）。既存の自己修復"
+        "（rollup.heal_tail_gaps）はロールアップと M1 のずれだけを見るため、その 1 段下が要る",
 }
 
 
@@ -1519,6 +1529,218 @@ def _write_one_series(
             start, end, symbol=symbol, data_dir=data_dir,
             plan=_plan_subset(plan, ref), until=until, writer=writer,
         )
+
+
+# --------------------------------------------------------------------------- #
+# ティック実体と M1 の突合・修復（ISSUE-534 根治・一度書いた分を見直す経路）
+# --------------------------------------------------------------------------- #
+# なぜ在るか（実測 2026-09-26・ISSUE-534）: 追記の口（append_m1_from_ticks_for_series）は
+#   ``index > 既存最終 date`` の行しか書かないため、**一度書いた分は二度と直らない**。分の末尾
+#   ティックが書込時点の手元に無かった分（2026-09-14〜09-25 の 178 分）は不完全なまま残り、常駐が
+#   止まっていた間の分（129 分）は欠測のまま残った。どちらも出力は連続して見えるので状態検証では
+#   原理的に落ちず、鮮度監視（ISSUE-526）は先端しか見ないため検出できない。
+#   猶予秒（tools 側の確定待ち）は原因ではない——欠けたティックは分が終わる 11.1 秒前〜ちょうどに
+#   発生しており、猶予 12 秒を 1 件も超えていない（ティックは間に合っていたのに、書いた時点の
+#   手元に無かった）。除くべき原因は「書いた分を見直さないこと」であり、待ち時間ではない。
+#
+# 既存の自己修復（marketdata.rollup.heal_tail_gaps）との関係: あちらは M1 とロールアップのずれを
+#   見る。こちらはその 1 段下（ティック実体と M1）を見る。素材の権威はティック実体であり、
+#   M1 はその派生物である、という向きは両者で同じである。
+
+
+def _heal_window_days(
+    days: "Iterable[Any]", *, symbol: str, data_dir: Any
+) -> "list[pd.Timestamp]":
+    """突合の窓を「素材が実在する末尾の連続並び」へ絞る（有界・破壊しない）。
+
+    ``days`` は UTC 日の**連続した**昇順の並びでなければならない（連続でない並びを受けると、
+    窓の中に素材を読まない日が生まれ、その日の既存 M1 行を書き直しの巻き添えで失う）。
+    連続でない・重複する並びは :class:`ValueError`（fail-fast）。
+
+    素材（日別 parquet）が実在しない日は突合できない（M1 が正しいかを決める権威が無い）。
+    そこで採るのは**末尾から見て素材が揃っている最長の並び**である。休場・未取得の日が窓の
+    先頭に混ざっても、その後ろの日は従来どおり突合できる。
+    """
+    window = [pd.Timestamp(d).normalize() for d in days]
+    if not window:
+        return []
+    if any(b - a != pd.Timedelta(days=1) for a, b in zip(window, window[1:])):
+        raise ValueError(
+            f"突合の窓は連続した昇順の UTC 日であること: {[str(d.date()) for d in window]}"
+            "（間が空くと、素材を読まない日の既存 M1 行を書き直しの巻き添えで失います）。"
+        )
+    kept: "list[pd.Timestamp]" = []
+    for when in reversed(window):
+        if not day_parquet_path(when, symbol=symbol, data_dir=data_dir).is_file():
+            break
+        kept.append(when)
+    return list(reversed(kept))
+
+
+def _heal_frames_for_series(
+    window: "Sequence[pd.Timestamp]", *, plan: SeriesPlan, symbol: str, data_dir: Any, until: Any
+) -> "dict[str, pd.DataFrame]":
+    """窓の日を**ティック実体から**素材化し、案内の各系列へ配る（畳みは日ごとに 1 回）。
+
+    素材化の順序（畳む → 外れ分除去 → 形成中分の除外）は唯一源 :func:`_materialize_m1_day` の
+    ままで、全構築（:func:`_build_whole_for_series`）と同じ手順・同じ書式になる。新しい畳み方を
+    持たないのが要点である——修復が独自に畳むと、修復後の値が全構築の値と食い違いうる。
+    """
+    daily: List[pd.DataFrame] = []
+    for when in window:
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(
+                day_parquet_path(when, symbol=symbol, data_dir=data_dir), columns=_TICK_COLUMNS
+            ),
+            price_basis=plan.price_basis, spread=plan.spread, until=until,
+        )
+        if not m1_day.empty:
+            daily.append(m1_day)
+    m1 = (
+        _dedupe_minutes(pd.concat(daily).sort_index()) if daily
+        else _empty_m1(plan.spread is not None)
+    )
+    return _project_for_series(m1, plan)
+
+
+def _minute_lines(payload: bytes) -> "dict[bytes, bytes]":
+    """CSV 本文のバイト列を ``date 列の値 -> 行`` へ分解する（空行は落とす）。
+
+    突合を**行のバイト列**で行うのは、値を float へ戻して比べると書式（桁・表記）の食い違いを
+    見落とすためである。修復の目的は「全構築と同じ CSV になること」なので、比べる単位も
+    書かれる単位と同じにする。
+    """
+    out: "dict[bytes, bytes]" = {}
+    for line in payload.split(b"\n"):
+        if line.strip():
+            out[line.split(b",", 1)[0]] = line
+    return out
+
+
+def _replace_m1_tail(path: Path, offset: int, payload: bytes) -> None:
+    """``offset`` で切り詰め、``payload`` を書く（末尾だけ書く＝窓に有界・原子的でない）。
+
+    履歴（prefix）は読まず・触らない。原子性は持たない（:func:`marketdata.rollup._truncate_append_bars`
+    と同じ取引）——確定パスを原子的に置き換えるには 300MB を読み直すことになり、それは修復の費用を
+    履歴の長さに比例させる。書込中に死んだ窓では末尾が欠けうるが、次の周期で追記の口
+    （:func:`append_m1_from_ticks_for_series`）が先端から不足分を埋め、さらに本修復が窓を突合し
+    直すので復元できる。
+    """
+    import os
+
+    with open(path, "r+b") as fh:
+        fh.seek(offset)
+        fh.truncate()
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _heal_one_series(ref: str, *, path: Path, rows: pd.DataFrame, since: pd.Timestamp) -> int:
+    """1 系列の窓を突合し、食い違えば素材から書き直す。返り値は書き直した分の数。
+
+    書かない条件（どれも「無言で直さない」の裏側であり、該当時は理由をログに残す）:
+      - 既存 M1 が不在・空: 系列の生成は書き手（:func:`build_m1_from_ticks_for_series` /
+        :func:`append_m1_from_ticks_for_series`）の仕事であり、修復が作ると先端の無い系列を
+        窓の幅だけの CSV にしてしまう。
+      - 窓が既に一致: 1 バイトも書かない（冪等）。
+      - 列形が既存ヘッダと食い違う: 追記側が持つ自己修復（ISSUE-455 の全構築）へ委ねる。
+        ここで書くと 6 列ヘッダの下に 8 列行を積む（ISSUE-455 の再来）。
+      - 既存に在る分が素材に無い: **足を消す判断はしない**。素材が縮んだ状態で消すと、一過性の
+        取得不足がそのまま確定データの欠落になる。どちらが正しいかは突合では決められない。
+    """
+    from marketdata import tail_reader  # 遅延: 逆シークの唯一源（_read_last_m1_row と同じ流儀）
+
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return 0
+    formatted = _format_m1_for_csv(rows)
+    payload = formatted.to_csv(header=False, index_label=_HEADER[0]).encode("utf-8")
+    offset, existing = tail_reader.tail_bytes_since(path, since)
+    if existing == payload:
+        return 0
+    header = _existing_csv_header(path)
+    expected = [_HEADER[0], *list(formatted.columns)]
+    if header is not None and header != expected:
+        logger.warning(
+            "M1 とティック実体の突合を見送りました（%s）: 既存ヘッダ %s と素材の列 %s が"
+            "食い違います。追記側の全構築（ISSUE-455）が列ごと書き直すのを待ちます。",
+            ref, header, expected,
+        )
+        return 0
+    before, after = _minute_lines(existing), _minute_lines(payload)
+    vanished = [m.decode("utf-8", "replace") for m in before if m not in after]
+    if vanished:
+        logger.warning(
+            "M1 とティック実体の突合を見送りました（%s）: M1 に在る %d 分がティック実体に"
+            "ありません（例: %s）。修復は足を消しません（素材が縮んだ状態で消すと、一過性の"
+            "取得不足が確定データの欠落になります）。",
+            ref, len(vanished), ", ".join(vanished[:5]),
+        )
+        return 0
+    fixed = sum(1 for minute, line in after.items() if before.get(minute) != line)
+    _replace_m1_tail(path, offset, payload)
+    logger.warning(
+        "M1 の自己修復を実施（%s）: %s 以降の %d 分をティック実体から書き直しました。",
+        ref, since, fixed,
+    )
+    return fixed
+
+
+def heal_m1_days_for_series(
+    days: "Iterable[Any]",
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+) -> "dict[str, int]":
+    """窓の日について**ティック実体と M1 を突合し、食い違う分を素材から書き直す**（ISSUE-534 根治）。
+
+    追記の口は ``index > 既存最終 date`` の行しか書かないため、一度書いた分は二度と直らない。
+    本関数はその 1 点だけを埋める: 窓の日を素材から作り直し、既存 M1 の同区間と**行のバイト列で**
+    突合して、食い違えばその区間だけを書き直す。値の作り方は全構築と同一（:func:`_materialize_m1_day`）
+    なので、直った CSV は同じ素材から全構築した CSV と byte 一致する。
+
+    有界（費用が履歴の長さで増えない）:
+      - 素材は窓の日別 parquet だけを 1 日 1 回読み、畳みも 1 回である（系列の数に依らない）。
+      - 既存 M1 は窓の区間だけを逆シークで読む（:func:`marketdata.tail_reader.tail_bytes_since`）。
+      - 書くのも窓の区間だけである（履歴の prefix は読まず・触らない＝追記のみの規律を壊さない）。
+      これらは ``marketdata/tests/test_tick_m1_day_heal.py`` の CX-1 / CX-2 が履歴 2 点と
+      系列 1 → 2 で固定する（**回数そのものは期待値に焼き込まない**）。
+
+    Args:
+        days: 突合する UTC 日の**連続した昇順**の並び（窓）。広さを決めるのは周期の持ち主
+            （``tools/live_tick_watch.py``）であり、本関数は渡された窓しか見ない。素材が実在しない
+            日が先頭に混ざる場合は、末尾から見て素材が揃っている並びだけを突合する。
+        refs: 系列の組（台帳が決める・:func:`marketdata.dataset_registry.series_refs_of`）。
+            組の全系列へ効かせる——片方だけ直すと系列間が食い違う。
+        symbol: ティック木の枝名。
+        data_dir: 物理基点。
+        until: ``index >= until`` の分（形成中）を確定値として書かない境界。書き手が同じ周期で
+            使った値を渡すこと（書き手より小さい値を渡すと、書き手が既に書いた分が素材側に
+            現れず「素材に無い分」として突合を見送る）。
+
+    Returns:
+        ref → 書き直した分の数（0 ＝ 既に一致・または見送り。見送りの理由はログに残る）。
+
+    Raises:
+        ValueError: ``days`` が連続した昇順の並びでない（:func:`_heal_window_days`）。
+        SpreadSchemaMismatch: 既存 M1 の spread 列の有無が台帳の宣言と食い違う（:func:`series_plan`）。
+    """
+    plan = series_plan(refs, data_dir=data_dir)
+    window = _heal_window_days(days, symbol=symbol, data_dir=data_dir)
+    if not window:
+        return {ref: 0 for ref in plan.refs}
+    frames = _heal_frames_for_series(
+        window, plan=plan, symbol=symbol, data_dir=data_dir, until=until
+    )
+    return {
+        ref: _heal_one_series(
+            ref, path=plan.paths[ref], rows=frames[ref], since=window[0]
+        )
+        for ref in series_write_order(plan)
+    }
 
 
 def forming_bar_from_ticks(

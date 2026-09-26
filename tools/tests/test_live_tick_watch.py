@@ -100,16 +100,22 @@ def test_update_once_wires_fetch_m1_rollup_with_until(monkeypatch, tmp_path) -> 
         rec.update(start=start, end=end, until=until, data_dir=data_dir, refs=refs)
 
     monkeypatch.setattr(ltw, "_append_m1", _append)
+    # ISSUE-534: 差分更新は「この周期で M1 が直ったか」（force_heal）も受ける。替え玉は受けた
+    #   キーワードをそのまま記録する（受け口だけ合わせて中身を捨てると、伝播の欠落が見えない）。
     monkeypatch.setattr(
         ltw, "_rollup_update",
-        lambda data_dir, refs: calls.append(("rollup", data_dir, refs)),
+        lambda data_dir, refs, **kw: calls.append(("rollup", data_dir, refs, kw)),
+    )
+    monkeypatch.setattr(
+        ltw, "_heal_m1_if_due",
+        lambda now, data_dir, refs, **kw: calls.append(("heal", now, refs)) or {},
     )
 
     now = dt.datetime(2026, 7, 6, 12, 0, 30)
     ltw.update_once(now, tmp_path, interval=60)
 
-    # 順序: fetch(refresh) → m1 → rollup。
-    assert [c[0] for c in calls] == ["refresh", "m1", "rollup"]
+    # 順序: fetch(refresh) → m1 → 突合（ISSUE-534）→ rollup。
+    assert [c[0] for c in calls] == ["refresh", "m1", "heal", "rollup"]
     assert rec["until"] == pd.Timestamp("2026-07-06 12:00:00")  # floor(now, "min")。
     # start は full_start（追記窓は append_m1_from_ticks の resume 規則へ委譲）。当日を渡すと
     # 既存 M1 が数日前で停止している初回起動でその間の日が永久欠落する（回帰禁止）。
@@ -118,7 +124,7 @@ def test_update_once_wires_fetch_m1_rollup_with_until(monkeypatch, tmp_path) -> 
     # 書く系列の組は台帳が決める（ISSUE-533 段階 3 の前提工事）。周期は起動時に引いた組を受け取り、
     #   同じタプルを M1 追記とロールアップ更新へ渡す（綴りは書き写さず台帳から導く）。
     assert rec["refs"] == ltw.series_refs(ltw.REF)
-    assert calls[-1] == ("rollup", tmp_path, rec["refs"])
+    assert calls[-1] == ("rollup", tmp_path, rec["refs"], {"force_heal": False})
 
 
 def test_update_once_end_to_end_excludes_forming_and_writes_tick_ref(monkeypatch, tmp_path) -> None:
