@@ -248,7 +248,8 @@ class TestLot:
 
     def test_a_lot_below_the_minimum_refuses_to_start(self, tmp_path: Path) -> None:
         csv_path = _write_csv(tmp_path / "d.csv", _CROSSING)
-        with pytest.raises(ConfigError):
+        # 何を入れれば通るか（最小ロット）を文言で名指す。
+        with pytest.raises(ConfigError, match=f"最小ロット {_VMIN}"):
             _run(csv_path, lot_size=0.05)
 
 

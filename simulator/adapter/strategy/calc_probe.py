@@ -55,8 +55,10 @@ class CalcProbe(StrategyPort, EntryPriceBasisPort):
             ) from None
         if lot is None:
             raise ConfigError(
-                "CalcProbe の lot_size が発注可能な量になりません",
-                context={"lot_size": config["lot_size"]},
+                f"CalcProbe の lot_size={config['lot_size']} は銘柄の最小ロット "
+                f"{config['volume_min']}（刻み {config['volume_step']}）未満です。"
+                "最小ロット以上を指定してください（黙って切り上げません）",
+                context={"lot_size": config["lot_size"], "volume_min": config["volume_min"]},
             )
         self._lot = lot
 
