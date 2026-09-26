@@ -631,7 +631,7 @@ flowchart TD
 
 | 経路 | 適用条件 | 実行単位 | SL/TP 判定 |
 |---|---|---|---|
-| bar-mode（`execute`） | `tick_model ∈ {every_tick, ohlc_expand, open_only}` かつ `pending_lifecycle=False` | **1 bar = 1 OnTick** の同一 bar ループ（3 値とも共通） | bar の high/low ＋ `sltp_tie`（同時ヒット時 SL 優先）。建値は `entry_price_basis`（既定 `"close"`＝bid=ask=close で spread 無視、`"current_open"`＝MT5 突合系の実走整合値） |
+| bar-mode（`execute`） | `tick_model ∈ {every_tick, ohlc_expand, open_only}` かつ `pending_lifecycle=False` | **1 bar = 1 OnTick** の同一 bar ループ（3 値とも共通） | bar の high/low ＋ `sltp_tie`（同時ヒット時 SL 優先）。建値は `entry_price_basis`（**決定論設定から撤去済み・ISSUE-533**。`"close"`＝bid=ask=close で spread 無視、`"current_open"`＝bid=open / ask=open+spread×point。どちらを使うかは**戦略が宣言する判定の瞬間**が決める） |
 | every-tick 経路（`_execute_every_tick`） | `tick_model="real_ticks"`、または `pending_lifecycle=True`（指値・逆指値ライフサイクル） | ティック単位（`ticks_of` の消費点はこの経路のみ） | ティック列上で逐次判定。合成ティックは `OhlcExpandTickModel`（`ohlc_order` 3 値）等が生成 |
 
 | `TickModel` | `Model` | 現行 `tick_model` 値 | 実行時挙動（実測） | 本設計での実行可否 |
@@ -642,7 +642,8 @@ flowchart TD
 | `MATH_CALCULATIONS` | 3（暫定） | **対応値なし（契約拡張）** | ティック非生成・約定 0 件（§4.5.2）。⚠️ 現行 `TICK_MODEL_IDS` に存在せず、レジストリへの 1 エントリ追加＋`data` 任意化の契約拡張を要する | 契約拡張後に実行可（§4.5.2） |
 | `REAL_TICKS` | 4 | `real_ticks` | every-tick 経路。実ティック I/O（`tick_store_root`/`tick_start`/`tick_end`）から取得したティック順で約定・ヒット判定 | 実ティック供給時のみ実行可。未供給時は非対象（§4.6・E-07） |
 
-スプレッドの扱いは全経路共通の単一プリミティブ `mt5_bid_ask`（`usecase/_execution.py`。`Ask = Bid + spread × point`）に従う。⚠️ ただし既定 `entry_price_basis="close"` は bid=ask=close の spread 無視分岐であり、MT5 実走整合（golden/confirmation）は `"current_open"` で成立している（実測）。Settings 層からの実行は MT5 再現を目的とするため、**`entry_price_basis="current_open"` を明示指定する**。
+スプレッドの扱いは全経路共通の単一プリミティブ `mt5_bid_ask`（`usecase/_execution.py`。`Ask = Bid + spread × point`）に従う。⚠️ ただし既定 `entry_price_basis="close"` は bid=ask=close の spread 無視分岐であり、MT5 実走整合（golden/confirmation）は `"current_open"` で成立している（実測）。
+⚠️ **改訂（ISSUE-533・2026-09-25）**: かつて Settings 層は `"current_open"` を明示指定していたが、**これが正しいのは確定足で判定する EA だけ**である。当該足の値で判定する EA（`SmaTouchLong_EA` ほか）では、判定の 1 分前の価格で約定していた（実測）。正しい建値基準は EA の判定時点から決まるため、値の権威は**戦略の宣言**へ移し、設定からの供給は全廃した（書くと `ConfigError`）。
 
 #### 4.5.2 `Math calculations` の正常終了定義
 
@@ -881,7 +882,7 @@ erDiagram
 | `EffectiveSettings` | 活性依存を適用した実効設定。inert フィールドが `None` の派生 DTO。変換層（§6.2）はこれのみを参照する | `TesterSettings` と同一フィールド集合（inert は `None`） | `TesterSettings`, 投入契約（§6.2） |
 | `SymbolSpec` | シンボル仕様。**現行 `simulator/usecase/models.py:SymbolSpec` の 8 フィールドを正とする**（`contract_size` / `volume_min` / `volume_max` / `volume_step` / `stops_level` / `digits` / `point_size` / `leverage`。実測）。⚠️ v1.0 が流用した旧 §3.2 の 11 項目（swap/commission/freeze_level を含み leverage を含まない）は現行と別物（ISSUE-384 項 5）。供給元は `SymbolSpecCatalog`（sim-backtest 基本設計書 §16.3・単一ソース） | 実コード参照 | 投入契約（§6.2） |
 | バー系列（入力データ） | **現行契約はパス渡し**: `data_path` → Repository（`MarketDataPort.load`）→ `list[domain.Bar]`（`time` は naive `numpy.datetime64`。tz 情報を持たない＝実測）。⚠️ v1.0 の `pd.DataFrame`＋UTC tz-aware 前提（旧 §3.1）は現行と別物（ISSUE-388 項 5）。Settings 層はバー系列を保持せず、期間指定を `marketdata_window` 等へ写像する（§6.2） | 実コード参照 | 投入契約（§6.2） |
-| `BacktestConfig`（現行） | **決定論設定 DTO**（`usecase/models.py`。PROCESS §7 決定論 9 項目: `tick_model` / `spread_model` / `sltp_tie` / `fill_delay` / `ohlc_order` / `session_calendar` / `digits` / `legacy_quirks` / `return_basis` ＋拡張 `entry_price_basis`（既定 `"close"`）・`stop_out_action`（既定 `"fail_stop"`）。実測）。⚠️ v1.0 想定の「実行条件を包括する `BacktestConfig`」とは別物＝実行条件は `build_interactor` 引数群に分散している（ISSUE-384 項 2） | 実コード参照 | `run_backtest` |
+| `BacktestConfig`（現行） | **決定論設定 DTO**（`usecase/models.py`。PROCESS §7 決定論 9 項目: `tick_model` / `spread_model` / `sltp_tie` / `fill_delay` / `ohlc_order` / `session_calendar` / `digits` / `legacy_quirks` / `return_basis` ＋拡張 `entry_price_basis`（**撤去済み・ISSUE-533**。値は戦略が宣言する）・`stop_out_action`（既定 `"fail_stop"`）。実測）。⚠️ v1.0 想定の「実行条件を包括する `BacktestConfig`」とは別物＝実行条件は `build_interactor` 引数群に分散している（ISSUE-384 項 2） | 実コード参照 | `run_backtest` |
 
 ⚠️ `SymbolSpec` は `.ini` に含まれない（実測: 44 件に `digits` / `point_size` / `contract_size` 等のキーは存在しない）。したがって `TesterSettings` は**銘柄名（`symbol`）のみ**を保持し、仕様値は `SymbolSpecCatalog` から供給する（§6.1）。`symbol` に対応する仕様が catalog に無い場合は `ConfigError` を送出する。
 
@@ -965,7 +966,7 @@ erDiagram
 | `tick_model` | `tick_model`（`config_overrides` 経由の `BacktestConfig.tick_model`） | 下表の写像 |
 | `execution_delay` | （現行対応引数なし） | パススルー（エンジンへ渡さない）。保証境界は §4.5.3。実行メタ情報に元値を記録する |
 | （`.ini` にキーなし） | `stop_out_level: float = 0.0` | 既定 0.0（現行既定＝MT5 bit-exact fixture の前提値。実測）。`.ini` に対応キーが無いため設定モデルから供給しない |
-| （`.ini` にキーなし） | `entry_price_basis` | **`"current_open"` を明示指定**（MT5 実走整合の実証値。§4.5.1。既定 `"close"` のままだと spread 無視分岐＝MT5 再現にならない） |
+| （`.ini` にキーなし） | — | **撤去（ISSUE-533・2026-09-25）**。かつて `"current_open"` を明示指定していた（MT5 実走整合の実証値）。**この値が正しいのは確定足で判定する EA だけ**で、当該足で判定する EA では判定の 1 分前の価格で約定していた。値の権威は戦略の宣言へ移した。設定に書くと `ConfigError` になる |
 
 **`TickModel` → 現行 `tick_model`（`TICK_MODEL_IDS`）の写像（U-3・v1.1 再定義）**
 
