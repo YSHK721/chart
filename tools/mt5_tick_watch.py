@@ -281,8 +281,13 @@ def series_refs(seed: str) -> "Tuple[str, ...]":
 
     ここには規則は無い（木の照会も集合の導出も台帳の口へ委譲する）。答えは起動時に 1 回だけ
     引き、同じタプルを列形照合・publish・日次再構築の 3 か所へ渡す。
+
+    合成（種 → 木 → 組）そのものも台帳側の
+    :func:`marketdata.dataset_registry.series_refs_of` が持つ。もう 1 本の供給常駐
+    （``tools/live_tick_watch.py``）が同じ合成を要るようになったとき、2 行を各自に持つと片方だけ
+    直したときにもう片方が黙って別の集合を書く（ISSUE-533 段階 3 の前提工事）。
     """
-    return dataset_registry.refs_of_tick_token(dataset_registry.tick_tree_token(seed))
+    return dataset_registry.series_refs_of(seed)
 
 
 @dataclass

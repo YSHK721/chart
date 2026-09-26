@@ -208,12 +208,11 @@ def append_m1_for_closed_minutes_for_series(
 def _write_order(plan: "tick_m1.SeriesPlan") -> "tuple[str, ...]":
     """追記を発行する順（**列の上位集合が先**・設計 D-6 (ii)）。
 
-    2 つ以上のファイルを原子的に書く手段は無いので、途中で死んだときに「どちらが遅れるか」だけが
-    選べる。遅らせるのは最も見られている系列（spread 列を持たない側）である——遅れが観測される側
-    に出れば、運用者は止まったことに気付ける。並びは案内の中では安定で、同じ群の中では案内の並び
-    （＝台帳の宣言順）をそのまま保つ。
+    規則の実体は案内の持ち主 :func:`marketdata.tick_m1.series_write_order` が持つ。同じ選択を
+    Dukascopy の全構築・追記も要るようになったので、式を各自に持つのをやめた（片方だけ順序を
+    変えたときにもう片方が黙って別の系列を遅らせる・ISSUE-533 段階 3 の前提工事）。
     """
-    return tuple(sorted(plan.refs, key=lambda ref: ref not in plan.spread_refs))
+    return tick_m1.series_write_order(plan)
 
 
 def _assert_tips_converge(
