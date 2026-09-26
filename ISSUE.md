@@ -15371,8 +15371,46 @@ DHCP で払い出されるアドレスに、特定 IF bind とコード既定値
 
 ## ISSUE-525: 同じデータで schema の取得可否により約定式が変わる（settings 経路 current_open / 縮退面 close）
 
-- **ステータス**: OPEN（未着手・依頼者裁定 2026-09-18「残置して別 Issue へ起票」）
-- **重大度**: 高（**保証境界 N-17 が迂回され、対象外の設定が黙って完走する**・2026-09-25 実測）
+- **ステータス**: RESOLVED（2026-09-26）。**2 つの症状の両方を根本原因の除去で解消した。**
+  - 建値基準の経路差 → ISSUE-533 段階 1・2 で値の権威を戦略へ移し、設定からの供給を全廃（`cbe2489c`）。
+  - 保証境界の迂回 → run 引数だけで判定できる規則を**合流点 `build_interactor`** で適用（`9ccdeede`）。
+- **重大度**: 高（**保証境界 N-17 が迂回され、対象外の設定が黙って完走していた**・2026-09-25 実測）
+
+### 解消の実測（2026-09-26・依頼者が独立に測定）
+実ファイル `data/marketdata/jp225_m1.csv` のヘッダは `date,open,high,low,close,volume`＝**気配幅なし**。
+同じ 6 列形式のデータへ現行経路（`settings` 不在）で投入した結果:
+
+| EA | 是正後 |
+|---|---|
+| `MA_Slope_EA` | **拒否** N-17 |
+| `WeeklyVolBand_EA` | **拒否** N-17（**手書き列挙の取り残し**・是正前は両経路とも完走していた） |
+| `SmaTouchLong_EA`（気配幅を読まない） | 受理（**過剰発火なし**） |
+| 未知の EA 名 | **拒否** N-01（是正前は既定 EA へ**黙ってすり替わって完走**していた） |
+
+通過（同一時点・直列）: ゲート **exit 0**／`simulator/tests` **4603 passed / 1 xfailed**／
+`sim_ui` **1232 passed**／指紋＋MT5 突合 **25 passed**／赤 **0**。変異 **7 件中 7 件検出**（復元 sha256 一致）。
+
+**新たに拒まれるようになった run（6 種）**: 上記 4 種に加え、気配幅なし実体 × `MA_Slope_Pending_EA` /
+`StopEntryProbe_EA`（従来は settings 経路のみ拒否）、現行経路で `tick_model=real_ticks` かつ
+`tick_store_root` 未指定（従来は `marketdata/ticks` へ黙ってフォールバック）。
+
+**運用上の帰結**: **稼働 UI の既定（`jp225_m1` × `MA_Slope_EA`）は実行できなくなる。**
+走らせるには気配幅を供給する 9 列系列（`jp225_mt5_spread`）を配信する必要がある
+（`serve.sh` の再起動を伴うため依頼者の判断）。**実 UI での再確認は未実施。**
+
+### 実装者による前提の訂正（2 件・実測が根拠）
+- 「`current_open` の分岐だけが `bar.spread` を使う」は**成立しない**。読むのは 4 箇所
+  （`derive_quotes` の `current_open` / `resolve_eval_quote` の `bid_ask` /
+  `close_all_at_final_bar`（**無条件**）/ `tick_schedule` の pending 経路）。
+  よって導出規則は「**気配幅を読まない宣言は `close` だけ**」（安全側）とした。
+- N-10 が読む `symbol` は `build_interactor` の仮引数なので、合流点側は **4 件**（N-01/05/10/17）、
+  写像層は 6 件。N-11 は `binding.settlement_currency` も読む（分類は不変）。
+
+### 残存（**要承認**・本段では実施しない）
+- `EngineBinding.known_ea_names` が**死んだフィールド**になった（docstring の記述が偽のまま）。
+  撤去は DTO の必須フィールド削除＝`sim_ui` を含む IF 変更。
+- `close_all_at_final_bar` が**無条件に** `bar.spread` を読む（期末清算・**未検証**）。
+- `resolve_eval_quote(basis="bid_ask")` は設定由来で気配幅を読み、保証境界の対象外（**未検証**）。
 - **起票日**: 2026-09-18
 - **発見の経緯**: ISSUE-511 段階 8-D の設計（TBD-a）。
 - **起票時の限界（撤回済み）**: 起票から 2026-09-25 まで、**機構はコード上で読めるが発生は一度も実測していなかった**。
