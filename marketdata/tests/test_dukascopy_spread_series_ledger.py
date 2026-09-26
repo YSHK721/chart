@@ -19,7 +19,8 @@
   D-1 Dukascopy のティック木を読む ref のうち spread を宣言するのは 1 件で、宣言の無い側と
       ``_spread`` の命名関係で対になる（**本ファイルの Red の担い手**。綴りは書き写さず、
       ベンダ属性と宣言の有無から導く）。
-  D-2 対の記述子は、**置き場（path・series）と宣言以外のすべての欄が一致**する。比較は
+  D-2 対の記述子は、**置き場（path・series）・気配幅の宣言・sim への提供の宣言以外のすべての
+      欄が一致**する（提供の宣言は対のあいだで逆向き＝気配幅つきの側で走らせる）。比較は
       ``dataclasses.asdict`` の差分であり、リテラルの対応表を書かない（欄が 1 つ増えても
       比較対象に自動で入る）。台帳に在る対すべてに掛かる＝先例（MT5）と新系列が同じ関係を
       満たすことを 1 つの主張で固定する。
@@ -162,13 +163,18 @@ def test_the_dukascopy_tick_tree_has_one_spread_bearing_sibling():
 # =====================================================================
 @pytest.mark.parametrize(("base", "spread"), _pairs())
 def test_a_spread_series_differs_from_its_base_only_in_storage_and_declaration(base, spread):
-    """D-2: 対の記述子は置き場（path・series）と宣言以外のすべての欄が一致する。
+    """D-2: 対の記述子は置き場（path・series）と 2 つの宣言以外のすべての欄が一致する。
 
     比較は記述子の全欄の差分なので、欄が 1 つ増えても比較対象に自動で入る（リテラルの対応表を
     書かない）。片方の木・基準・ベンダだけを動かす変異はここで落ちる。
+
+    差分に ``sim_offered``（sim の実行指示フォームへ提供するか）を含めるのは、**対のあいだで
+    その宣言が逆向きである**ためである（ISSUE-533 段階 3: 気配幅つきの側で走らせる）。除外
+    したままにせず、逆向きであること自体を下で表明する——除外だけすると「両方 True」や
+    「両方 False」へ倒れても落ちなくなる。
     """
     # Arrange
-    differ = {"path", "series", "spread_point_snapshot"}
+    differ = {"path", "series", "spread_point_snapshot", "sim_offered"}
     fields = [f.name for f in dataclasses.fields(dataset_registry.DatasetDescriptor)]
     shared = [name for name in fields if name not in differ]
 
@@ -179,6 +185,8 @@ def test_a_spread_series_differs_from_its_base_only_in_storage_and_declaration(b
     # Assert
     assert set(differ) < set(fields)  # 空振り防止（除外名が実在する欄である）
     assert got == expected
+    # 提供の宣言は対のあいだで逆向き（気配幅つきの側だけが選択肢に出る）
+    assert (REGISTRY[spread].sim_offered, REGISTRY[base].sim_offered) == (True, False)
 
 
 @pytest.mark.parametrize(("base", "spread"), _pairs())

@@ -71,6 +71,17 @@ class DatasetDescriptor:
             分けて持つ（旧ファイルを上書きしない＝本欄を戻せば元の置き場へ可逆）。名前の解決は
             :func:`series_of` の 1 箇所で、置き場の組み立て（``marketdata.tick_m1.m1_csv_path`` と
             :mod:`marketdata.rollup_paths`）はそこから名前を受け取る。
+        sim_offered: この ref を sim の実行指示フォームの選択肢として提供するか（ISSUE-533 段階 3）。
+            「sim で走らせる系列か」を**推論させない**ための宣言である。従来この判定は供給側
+            （``simulator/sim_ui/adapter/symbol_spec_catalog.py``）の手書きの並びが持っており、
+            台帳へ系列を足しても選択肢へ届かなかった（実測 2026-09-26: 気配幅つきの新系列と
+            その実体が在るのに ``GET /sim/run-options`` は 2 件しか返さなかった）。列挙は必ず
+            取り残しを生むので、宣言の所有者を台帳ただ 1 つにする。
+            既定は ``None``＝**未宣言**であり、既定で拾わない・既定で落とさない。台帳に居る
+            ref が未宣言のまま選択肢を問われると :func:`sim_offered_refs` が Fail-Stop する
+            （既定値で「提供しない」に倒すと、新しい系列が黙って選択肢から漏れる——本段で
+            是正した欠陥そのものが再発する）。**台帳の全 ref は明示的に名乗る**。
+            並びは宣言順である（:func:`sim_offered_refs`）。
         spread_point_snapshot: この ref の M1 の spread 列を、どの銘柄仕様スナップショットの point で
             数えるか（ISSUE-511 段階 3 前提 (a)）。値は ``(サーバ名, 銘柄名)`` ＝
             ``marketdata.symbol_spec_snapshot.load_snapshot`` の引数そのものであり、point の値は持たない
@@ -91,6 +102,7 @@ class DatasetDescriptor:
     price_basis: "str | None" = None
     vendor: "str | None" = None
     series: "str | None" = None
+    sim_offered: "bool | None" = None
     spread_point_snapshot: "tuple[str, str] | None" = None
 
     def __post_init__(self) -> None:
@@ -154,14 +166,26 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         / "4_line_indicators"
         / "ohlcv.csv",
         symbol="TSLA",
+        # 同梱の探索用サンプル（日足）。sim の実行対象ではない。
+        sim_offered=False,
     ),
     # JP225 日足（Dukascopy E_N225Jap・外れ値補正済み）。実市場ゆえクランプ対象。
     "jp225": DatasetDescriptor(
-        path=DATA_DIR / "jp225_daily.csv", symbol="JP225", clamp_outliers=True
+        path=DATA_DIR / "jp225_daily.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        # 日足。sim は M1 原子を走らせるので実行対象ではない。
+        sim_offered=False,
     ),
     # JP225 1分足原子（全時間足はこれを resample）。実市場・ロールアップ経路。
     "jp225_m1": DatasetDescriptor(
-        path=DATA_DIR / "jp225_m1.csv", symbol="JP225", clamp_outliers=True, rollup=True
+        path=DATA_DIR / "jp225_m1.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        # sim の従来の実行系列（気配幅なし）。**提供の並びの先頭**であり、共有フィクスチャと
+        # 既存検定はここを「先頭」で引く（理由と実測は sim_offered_refs の注記）。
+        sim_offered=True,
     ),
     # JP225 1分足（ティック由来・原子）。実市場・ロールアップ経路・ティック由来供給。
     # symbol は既存事実の明文化（``tick_m1._DEFAULT_SYMBOL="JP225"`` / ``_DEFAULT_REF="jp225_tick"``）。
@@ -188,6 +212,9 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # ベンダ（ISSUE-515 対策 2）。既存事実の明文化: ライブ tick バッファはこれまで
         # Dukascopy の配信（marketdata.fetch_ticks_since）だけから作られていた。
         vendor="dukascopy",
+        # 気配幅の列を持たない（spread 依存 EA は N-17 が弾く）。同じ木から作る
+        # jp225_tick_spread が気配幅つきの提供側なので、こちらは選択肢に出さない。
+        sim_offered=False,
     ),
     # JP225 1分足（Dukascopy ティック由来・**spread 列つき**）。ISSUE-533 段階 3 の前提工事で
     # 足した記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
@@ -230,6 +257,9 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         tick_token="JP225",
         price_basis="bid",
         vendor="dukascopy",
+        # ISSUE-533 段階 3（依頼者承認 2026-09-26）: 気配幅を供給元どまたぎで比べるための
+        # 提供側。実体（407 万行・2012-06-14 から）は生成済みである。
+        sim_offered=True,
         spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
@@ -251,6 +281,8 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
         vendor="mt5",
+        # 気配幅の列を持たない（同じ木から作る jp225_mt5_spread が提供側）。
+        sim_offered=False,
     ),
     # JP225 1分足（MT5 ティック由来・**spread 列つき**）。ISSUE-511 段階 3 の段階 7a で足した
     # 記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
@@ -289,6 +321,8 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
         vendor="mt5",
+        # 取引している供給（OANDA MT5）の気配幅つき系列。従来から sim の選択肢に在る。
+        sim_offered=True,
         spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
     ),
 }
@@ -325,6 +359,40 @@ def rollup_refs() -> "tuple[str, ...]":
 #: （ISSUE-515）・リプレイの足内ティックも ref の木と基準で読む。Dukascopy へ切り戻すときは
 #: ``"jp225_tick"`` へ戻す（ISSUE-511 段階 1d で jp225_tick も bid＝同じ基準で並ぶ）。
 DEFAULT_DATASET_REF = "jp225_mt5"
+
+
+def sim_offered_refs() -> "tuple[str, ...]":
+    """sim の実行指示フォームへ提供する datasetRef を**台帳の宣言順**で導く（ISSUE-533 段階 3）。
+
+    「sim で走らせる系列か」の所有者は台帳の宣言（``sim_offered`` 欄）ただ 1 つである。供給側
+    （``simulator/sim_ui/adapter/symbol_spec_catalog.py``）はこの答えを受け取るだけで、手書きの
+    並びを持たない。列挙を供給側に置いていた間、台帳へ足した系列は選択肢へ届かなかった
+    （実測 2026-09-26: 実体つきの新系列が在るのに ``GET /sim/run-options`` は 2 件だけ）。
+
+    Returns:
+        提供する datasetRef のタプル。並びは :data:`REGISTRY` の宣言順（挿入順）をそのまま保つ。
+        名前順にも集合にもしない理由は :func:`refs_of_tick_token` と同じ——並びの出所を台帳の
+        宣言 1 箇所に限るためである。並びには**測られた危険**がある: 共有フィクスチャと既存検定は
+        profile を「先頭」または「銘柄一致の先頭」で引いており、先頭が入れ替わると**赤にならずに
+        別系列で走る**（実測 2026-09-25: 同じ 10 ファイルが 103.67 秒から 29 分超へ伸びたまま
+        終わらない。失敗ではなく実行対象の入替としてのみ現れる）。表明は
+        ``simulator/tests/unit/test_symbol_spec_catalog_ledger_offering.py`` が持つ。
+
+    Raises:
+        ValueError: 台帳に ``sim_offered`` を名乗らない ref が居るとき（Fail-Stop）。**未宣言を
+            「提供しない」へ倒さない**。倒すと、新しく足した系列が黙って選択肢から漏れる——
+            本段で是正した欠陥（宣言と実体が在るのに UI へ届かない）がそのまま再発し、しかも
+            出力は形式上正しいため状態検証では検出できない。
+    """
+    undeclared = [ref for ref, d in REGISTRY.items() if d.sim_offered is None]
+    if undeclared:
+        raise ValueError(
+            f"datasetRef {undeclared} が sim_offered を名乗っていません。"
+            f" {__name__}.REGISTRY の当該記述子へ sim_offered=True（実行指示フォームの選択肢に"
+            " 出す）か sim_offered=False（出さない）を明示してください。未宣言を既定で"
+            "「提供しない」へ倒しません（黙って選択肢から漏れる形を作らないため）。"
+        )
+    return tuple(ref for ref, d in REGISTRY.items() if d.sim_offered)
 
 
 def tick_refs() -> "frozenset[str]":
@@ -520,6 +588,7 @@ __all__ = [
     "whitelist",
     "clamp_refs",
     "rollup_refs",
+    "sim_offered_refs",
     "tick_refs",
     "tick_tree_token",
     "tick_price_basis",
