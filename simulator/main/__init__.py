@@ -283,6 +283,50 @@ def _ea_components(
     )
 
 
+def _windowed_reader(market_data: Any, data_path: Any, marketdata_window: Any) -> Any:
+    """EA 束縛が選んだ読み手へ取得窓を効かせた読み手を返す（窓が無ければそのまま）。
+
+    `build_interactor`（run）と `build_ea_indicators`（表示・トレース）が**同じ Bar 列**を
+    得るための唯一の規則（ISSUE-509: 指標を足へ時刻で合わせるには、両者が同じ窓の Bar を
+    見ていなければならない）。
+    """
+    if marketdata_window is None:
+        return market_data
+    if isinstance(market_data, CsvOHLCRepository):
+        from marketdata.csv_source import CsvCandleSource
+
+        # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
+        # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
+        # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
+        return MarketDataSourceRepository(
+            CsvCandleSource(data_path), window=marketdata_window
+        )
+    if isinstance(market_data, MarketdataCsvOHLCRepository):
+        # marketdata 形式は**フレーム段**で窓を適用する（構築時パラメータへ隔離＝
+        # CsvOHLCRepository の委譲と同じ形）。後段の窓デコレータに任せると全行の
+        # Bar を作ってから捨てる（実測 4,604,080 行で構築 442.6 秒）ISSUE-450 型の
+        # 浪費になる。構築数＝採用数は repository の計算量テストが固定する。
+        return MarketdataCsvOHLCRepository(window=marketdata_window)
+    # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
+    # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
+    return WindowedMarketDataRepository(market_data, window=marketdata_window)
+
+
+def _aligned_to_run_bars(
+    registry: Any, reader: Any, data_path: Any, bars: Any, *, tick_model: str
+) -> Any:
+    """指標の行を run の Bar 列へ**時刻で**対応させる（ISSUE-509）。
+
+    戦略は ``iloc[bar_index]`` で指標を位置参照する。registry はデータ実体の全行（期間前の
+    履歴で温まった値）から作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の
+    指標値を読む（実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError`。
+    バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
+    """
+    if bars and consumes_market_data(tick_model):
+        return align_to_bars(registry, row_times_for(reader, data_path), bars)
+    return registry
+
+
 def build_ea_indicators(**spec: Any) -> IndicatorPort:
     """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
 
@@ -297,8 +341,17 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     NullIndicatorRegistry を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
     （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
     """
-    _strategy, registry, _market_data = _ea_components(**spec)
-    return registry
+    _strategy, registry, reader = _ea_components(**spec)
+    # 実行（`build_interactor`）と**同じ**対応づけを掛ける（ISSUE-509）。掛けないと、期間を
+    #   指定した run で表示・トレース・接点が実行と別の足の値を読む。
+    data_path = spec.get("data_path")
+    tick_model = _tick_model_of(spec.get("config_overrides"))
+    if data_path is None or not consumes_market_data(tick_model):
+        return registry
+    bars = _windowed_reader(reader, data_path, spec.get("marketdata_window")).load(
+        data_path, None, None
+    )
+    return _aligned_to_run_bars(registry, reader, data_path, bars, tick_model=tick_model)
 
 
 def build_ea_strategy(**spec: Any) -> Any:
@@ -475,26 +528,7 @@ def build_interactor(
     # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
     # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
     # 素通り＝既存 4 モードと byte 等価。
-    if marketdata_window is not None:
-        if isinstance(market_data, CsvOHLCRepository):
-            from marketdata.csv_source import CsvCandleSource
-
-            # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
-            # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
-            # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
-            market_data = MarketDataSourceRepository(
-                CsvCandleSource(data_path), window=marketdata_window
-            )
-        elif isinstance(market_data, MarketdataCsvOHLCRepository):
-            # marketdata 形式は**フレーム段**で窓を適用する（構築時パラメータへ隔離＝
-            # CsvOHLCRepository の委譲と同じ形）。後段の窓デコレータに任せると全行の
-            # Bar を作ってから捨てる（実測 4,604,080 行で構築 442.6 秒）ISSUE-450 型の
-            # 浪費になる。構築数＝採用数は repository の計算量テストが固定する。
-            market_data = MarketdataCsvOHLCRepository(window=marketdata_window)
-        else:
-            # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
-            # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
-            market_data = WindowedMarketDataRepository(market_data, window=marketdata_window)
+    market_data = _windowed_reader(market_data, data_path, marketdata_window)
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -509,8 +543,9 @@ def build_interactor(
     #   作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の指標値を読む
     #   （実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError` で止める。
     #   バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
-    if bars and consumes_market_data(determinism.tick_model):
-        registry = align_to_bars(registry, row_times_for(reader, data_path), bars)
+    registry = _aligned_to_run_bars(
+        registry, reader, data_path, bars, tick_model=determinism.tick_model
+    )
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する

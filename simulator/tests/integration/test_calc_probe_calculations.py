@@ -377,6 +377,9 @@ class TestMarginAndStopOut:
         assert equity_at_breach / _independent_margin(position, leverage) * 100.0 < level
         # 以降は新規に建てない（halt）。
         assert result.trades[-1] is t
+        # 強制決済した点の観測で、有効証拠金は残高と一致する（決済済みの含み損を残さない）。
+        assert breach["equity"] == pytest.approx(breach["balance"], abs=1e-9)
+        assert breach["balance"] == pytest.approx(deposit + t.pnl(), abs=1e-9)
 
 
 # ---- 期間指定（ISSUE-509）: 指標は全履歴で温め、足とは時刻で対応する ----
@@ -451,3 +454,19 @@ class TestWindowedRun:
         for t in trades:
             row = _bar_index(t.entry_time)
             assert t.entry_price == pytest.approx(_entry_price(t.side, bars[row]), abs=1e-9)
+
+    def test_the_display_accessor_returns_what_the_run_reads(self, tmp_path: Path) -> None:
+        """表示・トレース・接点が使う `build_ea_indicators` も、実行と同じ足の値を返す。"""
+        from simulator.main import build_ea_indicators
+
+        # Arrange
+        history = [_Bar(200.0 + i, 200.5 + i) for i in range(_HISTORY)]
+        bars = history + _CROSSING
+        csv_path = _write_marketdata_csv(tmp_path / "md.csv", bars)
+        expected = _sma([b.close for b in bars], 3)[_HISTORY:]
+        # Act
+        got = build_ea_indicators(**_meta(csv_path, marketdata_window=_window_from(_HISTORY)))
+        # Assert
+        pd.testing.assert_series_equal(
+            got.get("sma"), pd.Series(expected), check_names=False, check_exact=False, atol=1e-9
+        )

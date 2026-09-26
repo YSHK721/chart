@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.strategy.calc_probe import CalcProbe
-from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
+from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext, PlotDecl
 from simulator.main.ea_bindings.sources import source_for
 
 
@@ -33,4 +33,6 @@ BINDING = EaBinding(
     build=_factory_calc_probe,
     # CalcProbe.on_init がロットを刻みへ丸めるのに読む銘柄仕様を含む。
     strategy_params=("lot_size", "volume_min", "volume_max", "volume_step"),
+    # 売買のトリガー: 始値と直前確定足の SMA の大小（SMA は価格と同じ尺度）。
+    plots=(PlotDecl("sma", "price"),),
 )

@@ -49,6 +49,7 @@ __all__ = [
     "EaBinding",
     "EaBuildContext",
     "known_ea_names",
+    "plot_declarations",
     "select_ea_binding",
     "spread_dependent_ea_names",
     "strategy_param_names",
@@ -198,6 +199,11 @@ def select_ea_binding(ea_name: str, *, tick_model: str) -> EaBinding:
     if not consumes_market_data(tick_model):
         return _DATALESS_BINDING
     return _EA_BINDINGS.get(ea_name, _DEFAULT_BINDING)
+
+
+def plot_declarations(ea_name: str, *, tick_model: str) -> "tuple[Any, ...]":
+    """その EA がチャートへ描くと宣言した指標（「`PlotDecl`」 の列）。選択は唯一の判定点を通す。"""
+    return select_ea_binding(ea_name, tick_model=tick_model).plots
 
 
 def build_ea_components(

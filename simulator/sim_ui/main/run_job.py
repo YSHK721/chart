@@ -42,8 +42,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from simulator.adapter.trace.account_curve import AccountCurveRecorder, FanOutRunTrace
+from simulator.framework.config_loader import load_config
 from simulator.main import run_backtest
-from simulator.sim_ui.adapter import contacts_supply, report_payload_writer
+from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -439,27 +441,76 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     )
 
 
-def _write_report_payload(job_dir: Path, result: Any, *, load_run_inputs, contacts_supply) -> None:
-    """表示用ペイロード（report.json）を書く。**run の成否は変えない**。
+def _write_report_payload(
+    job_dir: Path, result: Any, *, load_run_inputs, contacts_supply,
+    run_kwargs: "dict[str, Any]", account: Any,
+) -> None:
+    """表示用ペイロード（report.json と上のチャートへ重ねる成果物）を書く。**run の成否は変えない**。
 
     書出しに失敗しても終了コードを変えないのは、バックテスト自体は成功しており、表示の
     失敗で成功した計算を捨てないためである。ただし理由は残す——起動器が stderr を
     DEVNULL に固定するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
+
+    表示用の足（`load_run_inputs`）は **1 回だけ**取り直して両方の書出しで共有する。
+    取り直しは `build_interactor` の再構築であり、書出しごとに呼ぶと同じ Bar 列を
+    もう 1 度作って捨てることになる。
     """
+    loaded: "dict[str, Any]" = {}
+
+    def load_once(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
+        if "inputs" not in loaded:
+            loaded["inputs"] = load_run_inputs(backtest)
+        return loaded["inputs"]
+
     try:
         report_payload_writer.write(
             job_dir, result,
-            load_run_inputs=load_run_inputs,
+            load_run_inputs=load_once,
             contacts_supply=contacts_supply,
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"report.json の書出しに失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_report_payload_error(job_dir, message)
+    try:
+        bars, symbol_spec = load_once(run_kwargs)
+        _write_chart_overlay(job_dir, result, bars, symbol_spec, run_kwargs, account)
+    except Exception as exc:  # 表示の失敗で成功した計算を捨てない
+        message = f"chart_overlay.json の書出しに失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _record_report_payload_error(job_dir, message)
+
+
+def _write_chart_overlay(
+    job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
+    run_kwargs: "dict[str, Any]", account: Any,
+) -> None:
+    """売買マーク・トリガー指標・足ごとの口座を書く（束縛は Composition Root が持つ）。
+
+    指標は `build_ea_indicators` から得る——run と同じ対応づけ（ISSUE-509）を経た系列で
+    あり、系列の位置 i が ``bars[i]`` の時刻になる。描く系列は EA の宣言（`PlotDecl`）が
+    決める（ここで系列名を選ばない）。
+    """
+    from simulator.main import build_ea_indicators
+    from simulator.main.ea_bindings import plot_declarations
+
+    tick_model = load_config(run_kwargs.get("config_overrides") or {}).tick_model
+    chart_overlay_writer.write(
+        job_dir,
+        result=result,
+        bars=bars,
+        symbol=run_kwargs["symbol"],
+        digits=int(run_kwargs["digits"]),
+        ea_name=run_kwargs["ea_name"],
+        indicators=build_ea_indicators(**run_kwargs),
+        plots=plot_declarations(run_kwargs["ea_name"], tick_model=tick_model),
+        account=account,
+        initial_deposit=float(run_kwargs["initial_deposit"]),
+    )
 
 
 def _run_with_settings(
-    job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]"
+    job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]", account: Any
 ) -> "tuple[int, dict[str, Any] | None]":
     """Tester Settings 経路（Phase 8 §18.3「実行」）。
 
@@ -520,6 +571,7 @@ def _run_with_settings(
             job_dir, result,
             load_run_inputs=lambda _backtest: _load_run_inputs(run_kwargs),
             contacts_supply=lambda bars, _backtest: _supply_contacts(bars, run_kwargs),
+            run_kwargs=run_kwargs, account=account,
         )
     return exit_code, run_kwargs
 
@@ -602,6 +654,12 @@ def main(argv: "list[str] | None" = None) -> int:
             return _EXIT_SPEC_ERROR
         extensions["run_tracer"] = tracer
 
+    # 足ごとの口座（残高・有効証拠金・証拠金維持率）の記録器。上のチャートの資産パネルを
+    #   保有中も更新するために**毎回**渡す（2026-09-26 依頼者指示）。エンジンの観測口は
+    #   1 つなので、実行トレースが有効なときは両方へ配る合成で束ねる。
+    account = AccountCurveRecorder()
+    extensions["run_tracer"] = FanOutRunTrace(tracer, account) if tracer is not None else account
+
     # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
     # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への
     # 引数も出力段も変えていない＝旧 spec の `stats.json` は byte 等価
@@ -611,7 +669,7 @@ def main(argv: "list[str] | None" = None) -> int:
     # 分岐ごとに写すと、`_write_report_payload` が 2 箇所から呼ばれている形が増える
     # ——片方だけ改訂される複製を新しく作らない（§6.5.1）。
     if spec.get("settings"):
-        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions)
+        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions, account)
     else:
         meta.update(extensions)
         # 現行経路が `build_interactor` へ渡す引数は `meta` そのものである
@@ -632,6 +690,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 job_dir, _result,
                 load_run_inputs=_load_run_inputs,
                 contacts_supply=_supply_contacts,
+                run_kwargs=meta, account=account,
             )
 
     # 実行トレースの書出し（**唯一の呼出点**）。§12.7 不変: run 完了後に書き出す
