@@ -32,6 +32,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import ConfigError
 from simulator.main import build_interactor
 from simulator.usecase.run_trace_ports import RunTracePort
@@ -156,9 +157,9 @@ def _expected_entries(bars: "list[_Bar]", period: int) -> "list[tuple[int, str]]
     return out
 
 
-def _bar_index(epoch_seconds: int) -> int:
-    """トレードの時刻（epoch 秒）から M1 足の位置を引く。"""
-    return (int(epoch_seconds) - _EPOCH) // 60
+def _bar_index(time: Any) -> int:
+    """トレードの時刻から M1 足の位置を引く（時刻表現は経路で異なるので正規化してから）。"""
+    return (epoch_seconds(time) - _EPOCH) // 60
 
 
 def _run(csv_path: Path, **overrides: Any):
@@ -367,3 +368,77 @@ class TestMarginAndStopOut:
         assert equity_at_breach / _independent_margin(position, leverage) * 100.0 < level
         # 以降は新規に建てない（halt）。
         assert result.trades[-1] is t
+
+
+# ---- 期間指定（ISSUE-509）: 指標は全履歴で温め、足とは時刻で対応する ----
+
+#: 期間の前に置く履歴の本数。SMA 窓より長くし、期間の先頭足から判定が成立するようにする。
+_HISTORY = 10
+
+
+def _write_marketdata_csv(path: Path, bars: "list[_Bar]") -> Path:
+    """UI の実行と同じ marketdata 形式（``date`` 列は UTC の文字列）で書く。"""
+    rows = [
+        {
+            "date": pd.Timestamp(_EPOCH + 60 * i, unit="s").strftime("%Y-%m-%d %H:%M:%S"),
+            "open": b.open,
+            "high": max(b.open, b.close) + 1.0,
+            "low": min(b.open, b.close) - 1.0,
+            "close": b.close,
+            "volume": 100.0,
+            "up": 50.0,
+            "dn": 50.0,
+            "spread": _SPREAD,
+        }
+        for i, b in enumerate(bars)
+    ]
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def _window_from(row: int) -> "tuple[Any, Any]":
+    from datetime import datetime, timezone
+
+    start = datetime.fromtimestamp(_EPOCH + 60 * row, tz=timezone.utc)
+    end = datetime.fromtimestamp(_EPOCH + 60 * 10_000, tz=timezone.utc)
+    return (start, end)
+
+
+def _expected_windowed_entries(bars: "list[_Bar]", period: int, first_row: int):
+    """全履歴の SMA で、期間内の足（期間の 2 本目以降）だけを判定した (時刻, 方向) の列。"""
+    sma = _sma([b.close for b in bars], period)
+    held = None
+    out = []
+    for row in range(first_row + 1, len(bars)):
+        side = "buy" if bars[row].open > sma[row - 1] else "sell"
+        if side != held:
+            out.append((_EPOCH + 60 * row, side))
+            held = side
+    return out
+
+
+class TestWindowedRun:
+    def test_decisions_read_the_indicator_of_the_same_bar_in_time(self, tmp_path: Path) -> None:
+        # Arrange: 期間の前の履歴と期間内で値の水準を大きく変え、位置がずれれば方向が変わるようにする。
+        history = [_Bar(200.0 + i, 200.5 + i) for i in range(_HISTORY)]
+        bars = history + _CROSSING
+        csv_path = _write_marketdata_csv(tmp_path / "md.csv", bars)
+        expected = _expected_windowed_entries(bars, 3, _HISTORY)
+        # Act
+        trades = _run(csv_path, marketdata_window=_window_from(_HISTORY)).trades
+        # Assert
+        assert {s for _, s in expected} == {"buy", "sell"}, "両方向を通らない並び（検定が空虚）"
+        assert [(epoch_seconds(t.entry_time), t.side) for t in trades] == expected
+
+    def test_the_entry_price_is_the_bid_ask_of_the_same_bar(self, tmp_path: Path) -> None:
+        # Arrange
+        history = [_Bar(200.0 + i, 200.5 + i) for i in range(_HISTORY)]
+        bars = history + _CROSSING
+        csv_path = _write_marketdata_csv(tmp_path / "md.csv", bars)
+        # Act
+        trades = _run(csv_path, marketdata_window=_window_from(_HISTORY)).trades
+        # Assert
+        assert trades
+        for t in trades:
+            row = _bar_index(t.entry_time)
+            assert t.entry_price == pytest.approx(_entry_price(t.side, bars[row]), abs=1e-9)
