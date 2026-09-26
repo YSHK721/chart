@@ -52,6 +52,7 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
     DEFAULT_EA_NAME,
     build_ea_components,
     known_ea_names,
+    spread_dependent_ea_names,
     strategy_param_names,
 )
 # 規則 S（バー系列の有無と tick_model の整合）の唯一の判定点。ISSUE-502 段階 3 以前は
@@ -63,6 +64,13 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
 # （循環は構造ごと消えた）。
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
+# ISSUE-525: 保証境界のうち run 自身の引数だけで判定できる宣言と、その適用器。規則 S と
+# 同じ「どちらでもない第三の点」に置いてある（親が子パッケージを読むと ISSUE-502 の C-2＝
+# パッケージ間の双方向依存が復活し、`test_package_import_acyclicity.py` が落ちる）。
+from simulator.main.unsupported_run_scope import (
+    apply_run_scope_unsupported_rules,
+    run_scope_inputs_for,
+)
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
 from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
@@ -393,6 +401,17 @@ def build_interactor(
     # `requires_market_data=True`）は `data_path` を伴うため素通りする＝byte 等価。
     verify_engine_data_consistency(
         tick_model=determinism.tick_model, has_data=data_path is not None
+    )
+    # ISSUE-525: 保証境界のうち **run 自身の引数だけで判定できるもの**を、どの投入経路も
+    #   必ず通るこの合流点で適用する。是正前の適用点は写像層
+    #   （`main/tester_settings/kwargs_mapper.effective_to_interactor_kwargs`）の 1 箇所だけ
+    #   であり、「`settings`」 ブロックを持たない投入（`run_backtest` を直接呼ぶ経路）は保証境界の
+    #   外で完走できた（実測 2026-09-25・実 UI: 同じフォームの既定値で、schema が取れれば
+    #   N-17 で exit 2、取れなければ受理されて 46 秒以上走り続けた）。
+    #   どの規則をここで適用するかは**人手で列挙しない**——宣言（「`UnsupportedRule.reads`」）と
+    #   合流点が解決できる入力（`RUN_SCOPE_INPUTS`）の包含が決める。
+    apply_run_scope_unsupported_rules(
+        run_scope_inputs_for(job, tick_model_id=determinism.tick_model)
     )
     # 戦略へ配るパラメータ。**名前は EA 側の宣言が持つ**（`EaBinding.strategy_params`）。
     #   是正前はここに 14 行の dict リテラルが在り、EA が参照するパラメータを 1 つ増やす

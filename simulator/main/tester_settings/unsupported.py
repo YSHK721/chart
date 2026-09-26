@@ -1,19 +1,26 @@
-"""保証境界（非対象）N-01〜N-17 の宣言表と送出（基本設計 §4.6・内部設計 §8.4.4）。
+"""保証境界（非対象）N-01〜N-17 の宣言表（基本設計 §4.6・内部設計 §8.4.4）。
 
 1. 層名/責務:
-    main 層（Composition Root）。「本実装が保証しない設定」の**唯一の宣言場所**。
-    非対象の ID・対象フィールド・理由・TBD 番号・判定式・送出例外種別を 1 エントリ
-    にまとめ、実行要求時に順に評価する。判定の所有者をここ 1 箇所に閉じることで、
-    非対象の追加が既存の分岐・関数の書き換えを要さない（OCP）。
+    main 層（Composition Root）。「本実装が保証しない設定」の宣言表を**組み立てる唯一の
+    場所**であり、そのうち**設定の語彙を読む**宣言（N-02 / N-03 / N-07 / N-09 / N-11 /
+    N-15 / N-16）を所有する。判定の所有者を閉じることで、非対象の追加が既存の分岐・関数の
+    書き換えを要さない（OCP）。
+
+    run 自身の引数だけで判定できる宣言（N-01 / N-05 / N-10 / N-17）と宣言の**型**は
+    `simulator/main/unsupported_run_scope.py` が所有する（ISSUE-525）。分けた理由は
+    そちらの docstring §2 にある——合流点（`simulator.main.build_interactor`）がそれらを
+    適用する必要があり、親パッケージが子を import するとパッケージ間の双方向依存
+    （ISSUE-502 の C-2）が復活するためである。**宣言はどちらでも 1 箇所**であり、
+    置き場所は「その判定入力を所有するのは誰か」が決める。本モジュールはそれらを
+    再輸出するので、呼出側の import は従来のままでよい。
 
 2. 含む構造:
-    UiTrigger             : 設定フォームへの束縛（効くキー・発火条件・生トークン）。
-    UnsupportedRule       : 非対象 1 件の宣言（ID / field / reason / 判定式 / 送出 / UI 束縛）。
-    RULES                 : ID → 宣言（N-01〜N-17 のうち送出を伴うもの）。
+    UNSUPPORTED_RULES     : 宣言表（評価順。合流点側の宣言を織り込んだ全体）。
+    RULES                 : ID → 宣言（唯一の索引）。
     RUN_REQUEST_RULES     : 実行要求時に評価する宣言（評価順）。
+    SETTINGS_SCOPE_RULES  : 設定の語彙を読む宣言（写像層で適用する）。
     NON_RAISING_RULES     : 送出を伴わない非対象（欠番・近似・責務境界・ロード時）。
-    apply_unsupported_rules : 実行要求時の一括評価（違反は最初の 1 件で Fail-Stop）。
-    raise_unsupported     : 宣言 1 件から例外を組み立てて送出する（文言を書き写さない）。
+    apply_unsupported_rules : 設定の語彙を読む宣言の一括評価（最初の 1 件で Fail-Stop）。
 
 3. 元 MQL 対応:
     MT5 Settings タブの各コントロールが表す機能のうち、本移植が再現しないもの
@@ -22,10 +29,9 @@
 4. 依存:
     標準: dataclasses / typing
     外部: なし
-    プロジェクト内: simulator.domain.exceptions（ConfigError）/
-                    simulator.domain.tester_settings_exceptions（UnsupportedSettingError）/
+    プロジェクト内: simulator.main.unsupported_run_scope（宣言の型・合流点側の宣言・
+                        適用器。本モジュールはそれらを再輸出する）/
                     simulator.usecase.tester_settings（DTO・列挙）/
-                    simulator.main.tester_settings.ea_input_map（ea_stem）/
                     simulator.adapter.tester_settings.ini_codec（生トークン表記の唯一の宣言。
                         UI 束縛のトークンを字形ごと書き直さないために公開フォーマッタを使う）
 
@@ -34,155 +40,53 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, NoReturn
+from typing import TYPE_CHECKING, Any
 
 from simulator.adapter.tester_settings.ini_codec import (
     format_bool_token,
     format_int_token,
 )
-from simulator.domain.exceptions import BacktestError, ConfigError
-from simulator.domain.tester_settings_exceptions import UnsupportedSettingError
-from simulator.main.tester_settings.ea_input_map import ea_stem
+# ISSUE-525: 宣言の型と、合流点で適用する宣言・適用器の所有者。**再輸出する**——
+#   `RULES` / `UI_TRIGGER_*` / `UnsupportedRule` の呼出点は本番・検定に多数あり、
+#   所在の変更を呼出側へ波及させない（値と規則の所有者は 1 箇所のままである）。
+from simulator.main.unsupported_run_scope import (  # noqa: F401  (re-export: 公開 API)
+    NOT_VIOLATED,
+    RULE_REAL_TICKS_WITHOUT_STORE,
+    RULE_MULTI_SYMBOL,
+    RULE_SPREAD_DEPENDENT_EA_ON_SPREADLESS_DATA,
+    RULE_UNKNOWN_EA,
+    RUN_SCOPE_DECLARATIONS,
+    RUN_SCOPE_INPUTS,
+    RUN_SCOPE_RULES,
+    UI_TRIGGER_EXCEPT_TOKENS,
+    UI_TRIGGER_MODES,
+    UI_TRIGGER_NONE,
+    UI_TRIGGER_OFF_CANDIDATES,
+    UI_TRIGGER_OFF_PROFILE,
+    UI_TRIGGER_ON_PRESENCE,
+    UI_TRIGGER_ON_TOKENS,
+    UI_TRIGGERS_WITH_TOKENS,
+    RunScopeInputs,
+    UiTrigger,
+    UnsupportedRule,
+    apply_run_scope_unsupported_rules,
+    raise_unsupported,
+    select_run_scope_rules,
+)
 from simulator.usecase.tester_settings import (
     DatesPreset,
     EffectiveSettings,
     ForwardMode,
     OptimizationMode,
-    TickModel,
 )
 
 if TYPE_CHECKING:  # 型注釈専用（実行時は import しない＝循環回避）
     from simulator.main.tester_settings.kwargs_mapper import EngineBinding
 
-#: 「違反なし」を表す番人（``None`` / ``False`` / ``0`` が正当な違反値になり得るため、
-#: 判定式の戻り値に偽値を使わない）。
-NOT_VIOLATED: Any = object()
-
-
-def _as_unsupported_setting_error(payload: "dict[str, Any]") -> BacktestError:
-    """E-07（既定）。`context` の語彙検査は例外クラス側が行う。"""
-    return UnsupportedSettingError(**payload)
-
-
-def _as_config_error(payload: "dict[str, Any]") -> BacktestError:
-    """N-01 用。基本設計 §4.6 は N-01 の送出例外を `ConfigError` と定めている。"""
-    message = (
-        f"本実装が対象としない設定です: {payload['unsupported_id']} "
-        f"({payload['field']}={payload['value']!r})"
-    )
-    return ConfigError(message, context=payload)
-
-
-#: UI 側の発火条件（`UiTrigger.mode`）。設定フォームは `.ini` の**生トークン**しか持たない
-#: ため、判定式（`detect`）をそのまま動かせない。そこで「どのキーの・どういう値なら
-#: 当該 rule に当たるか」を宣言として持たせ、UI はこの宣言だけを照合する。
-#: キー名の正規表現でフィールド名を再導出したり、既定値との差分を該当の代理にしたりすると、
-#: 宣言と食い違っても静かに 0 件（または過剰発火）になる。
-UI_TRIGGER_ON_TOKENS = "on_tokens"           #: 列挙した生トークンに一致したら発火
-UI_TRIGGER_EXCEPT_TOKENS = "except_tokens"   #: 列挙した生トークン**以外**なら発火
-#: そのキーが投入本文に載るなら発火。**現在この形を使う rule は無い**（N-15 は R-10 で
-#: `none` へ訂正した）。語彙としては残す——「キーの存在だけで当たる非対象」は表現として
-#: 成立し、front も実装済みだからである。使う rule が現れたときに宣言 1 行で足りる。
-UI_TRIGGER_ON_PRESENCE = "on_presence"
-UI_TRIGGER_OFF_CANDIDATES = "off_candidates" #: 配った候補集合に無い値なら発火
-UI_TRIGGER_OFF_PROFILE = "off_profile"       #: 実行対象データセットの権威値と異なれば発火
-UI_TRIGGER_NONE = "none"                     #: 生トークンでは判定できない（構造不変条件の防壁）
-
-#: 妥当な発火条件の集合（UI・schema の検定が参照する唯一の宣言）。
-UI_TRIGGER_MODES: "frozenset[str]" = frozenset({
-    UI_TRIGGER_ON_TOKENS,
-    UI_TRIGGER_EXCEPT_TOKENS,
-    UI_TRIGGER_ON_PRESENCE,
-    UI_TRIGGER_OFF_CANDIDATES,
-    UI_TRIGGER_OFF_PROFILE,
-    UI_TRIGGER_NONE,
-})
-#: トークン列挙を伴う条件（空のトークン集合は宣言の書き損じ）。
-UI_TRIGGERS_WITH_TOKENS: "frozenset[str]" = frozenset({
-    UI_TRIGGER_ON_TOKENS, UI_TRIGGER_EXCEPT_TOKENS,
-})
-
-
-@dataclass(frozen=True)
-class UiTrigger:
-    """非対象 1 件の**UI 束縛**の宣言（どの `.ini` キーの・どんな値で当たるか）。
-
-    keys:   効く `.ini` キー（標準キー順に実在する名前）。**空にしない**——空は
-            「宣言はあるのに UI では絶対に出ない」告知を作り、沈黙で保証境界の外へ
-            出られるようにしてしまう。
-    mode:   発火条件（``UI_TRIGGER_*`` のいずれか）。
-    tokens: ``on_tokens`` / ``except_tokens`` のときの生トークン集合。表記は
-            `ini_codec` の公開フォーマッタ（`format_int_token` / `format_bool_token`）を
-            通して作る（字形の宣言を書き直さない）。
-    """
-
-    keys: "tuple[str, ...]"
-    mode: str
-    tokens: "tuple[str, ...]" = ()
-
-
-@dataclass(frozen=True)
-class UnsupportedRule:
-    """非対象 1 件の宣言。
-
-    unsupported_id: `N-01`〜`N-16`。例外 `context` の ``unsupported_id`` に載る。
-             この概念の呼び名は本実装で 1 つだけとする（`UnsupportedSettingError`
-             の `REQUIRED_CONTEXT` が ``unsupported_id`` を語彙として固定しており、
-             宣言側だけ別名（``id``）にすると同一概念に 2 つの名前が生じる）。
-    field:   対象フィールド名（例外 `context` の ``field`` に載る）。
-    reason:  非対象である理由（文言の唯一の宣言。送出側で書き写さない）。
-    detect:  実行要求時の判定式。違反時は**違反値**を、非違反時は ``NOT_VIOLATED``
-             を返す。``None`` は「実行要求時の一括評価では判定しない」ことを表し、
-             判定に必要な情報を持つ地点（例: 窓の解決・適用結果の検証）から
-             `raise_unsupported` で送出する。
-    tbd:     未確定事項番号（あれば `context` の ``tbd`` に載る）。
-    build:   宣言と `context` から例外を組み立てる関数（既定は E-07）。
-    ui:      設定フォームへの束縛（:class:`UiTrigger`）。投入**前**に理由を出すための
-             宣言であり、`detect` と同じものを指す（対応は
-             `tests/integration/test_tester_settings_to_interactor.py` が実行段の
-             実測で結ぶ）。``None`` は宣言の欠落であり、schema を組む側が Fail-Stop する。
-    """
-
-    unsupported_id: str
-    field: str
-    reason: str
-    detect: "Callable[[EffectiveSettings, EngineBinding], Any] | None" = None
-    tbd: "str | None" = None
-    build: "Callable[[dict[str, Any]], BacktestError]" = _as_unsupported_setting_error
-    ui: "UiTrigger | None" = None
-
-
-def raise_unsupported(rule: UnsupportedRule, *, value: Any, **context: Any) -> NoReturn:
-    """宣言 1 件から例外を組み立てて送出する（ID・文言を呼出側へ書き写さない）。"""
-    payload: "dict[str, Any]" = {
-        "unsupported_id": rule.unsupported_id,
-        "field": rule.field,
-        "value": value,
-        "reason": rule.reason,
-    }
-    if rule.tbd is not None:
-        payload["tbd"] = rule.tbd
-    payload.update(context)
-    raise rule.build(payload)
-
 
 # ---------------------------------------------------------------------------
 # 判定式（実行要求時）
 # ---------------------------------------------------------------------------
-
-
-def _detect_unknown_ea(effective: EffectiveSettings, binding: "EngineBinding") -> Any:
-    """N-01: 未登録 EA 名の沈黙フォールバックを上流で遮断する。
-
-    判定源は**注入された** ``binding.known_ea_names`` であり、EA 登録表ではない
-    （本モジュールは `simulator.main` を import しない）。遮断したい下流の挙動が
-    `main/ea_bindings` の `_EA_BINDINGS.get(ea_name, 既定)` である、という関係であって、
-    判定源そのものではない。両集合の関係（注入集合 ⊇ 登録キー、差分は既定フォールバック
-    EA 名のみ）は `test_unsupported_n01_ea_name_source.py` が固定する。
-    """
-    name = ea_stem(effective.subject_path)
-    return NOT_VIOLATED if name in binding.known_ea_names else name
 
 
 def _detect_optimization(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
@@ -199,34 +103,12 @@ def _detect_forward(effective: EffectiveSettings, _binding: "EngineBinding") -> 
     return int(forward_mode)
 
 
-def _detect_real_ticks_without_store(
-    effective: EffectiveSettings, binding: "EngineBinding"
-) -> Any:
-    if effective.tick_model is TickModel.REAL_TICKS and binding.tick_store_root is None:
-        return int(TickModel.REAL_TICKS)
-    return NOT_VIOLATED
-
-
 def _detect_profit_in_pips(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
     return True if effective.profit_in_pips is True else NOT_VIOLATED
 
 
 def _detect_visual(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
     return True if effective.visual is True else NOT_VIOLATED
-
-
-def _detect_multi_symbol(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
-    """N-10: 実効設定が保持する銘柄が単一の文字列でない場合。
-
-    `.ini` の `Symbol` は単一値であり（44 / 44 件実測）、複数指定の**表記**は corpus に
-    実例が無い。したがって「区切り文字で複数列挙されている」という判定は実証できず、
-    発明もしない。ここで固定するのは構造上の不変条件（投入契約が受けるのは
-    ``symbol: str`` 1 個）であり、それが崩れた時点で Fail-Stop する。
-    """
-    symbol = effective.symbol
-    if symbol is None or isinstance(symbol, str):
-        return NOT_VIOLATED
-    return str(symbol)
 
 
 def _detect_cross_currency(effective: EffectiveSettings, binding: "EngineBinding") -> Any:
@@ -244,68 +126,6 @@ RELATIVE_DATE_PRESETS: "frozenset[DatesPreset]" = frozenset(
 )
 
 
-#: spread 依存 EA（約定式が open + spread×point を参照する 3 本・H-4 裁定）。
-#: 権威は EA 束縛の登録表（`simulator.main.ea_bindings._EA_BINDINGS` で
-#: Mt5CsvOHLCRepository を
-#: 返す 3 本）だが、それは Composition Root の**私有名**であり本モジュールは読まない
-#: （ISSUE-502 段階 3 以前はここに「循環のため import できない」と書いていたが、循環は
-#: 是正済みであり、参照しない理由は私有名への依存を作らないことである）。よってここに
-#: 宣言し、一致は検定（test_unsupported_spread_dependency.py）が機械で固定する。
-SPREAD_DEPENDENT_EA_NAMES: "frozenset[str]" = frozenset(
-    {"MA_Slope_EA", "MA_Slope_Pending_EA", "StopEntryProbe_EA"}
-)
-
-
-def _detect_spread_dependent_ea_on_spreadless_data(
-    effective: EffectiveSettings, binding: "EngineBinding"
-) -> Any:
-    """N-17: spread 依存 EA × 気配幅の列を供給しないデータ実体。
-
-    気配幅を供給しない系列では spread=0 供給になるため、約定価格式が
-    open + spread×point の EA は実 MT5 と一致しない（H-4）。判定はデータ実体の
-    ヘッダ実測（`supplies_spread`）で行う——EA 名や拡張子から推測しない。
-
-    **問うのは形式ではなく気配幅の供給そのものである**（ISSUE-511 段階 8-C）。段階 8-B
-    までは「形式 == marketdata」で代理していたが、形式は気配幅の代理変数にすぎない。
-    代理で測ると、気配幅の列を持つ marketdata 9 列（段階 2 の新系列）まで弾き、
-    気配幅を持たない comma 形式は素通しする。列名を知るのは読み手だけでよい——
-    本モジュールは「供給するか」の 2 値だけを受け取る。
-
-    ``data_path is None``（バー系列を供給しない）は**対象外**である。「気配幅の無い
-    データで走らせる」ことと「データを 1 行も読まない」ことは別の事実であり、後者では
-    本宣言が防ぐ事象（spread=0 供給が実 MT5 と一致しない）が原理的に起こらない。両者が
-    同値であることの根拠は規則 S: 本宣言を含む表を適用する
-    `apply_unsupported_rules` の**非テストの呼び手は
-    `simulator/main/tester_settings/kwargs_mapper.effective_to_interactor_kwargs`
-    ただ 1 つ**であり、その関数は規則 S の整合検査を**先に**呼ぶ。その検査
-    （`simulator/main/engine_data_consistency.py` へ委譲）は
-    ``consumes_market_data(tick_model) != has_data`` を E-03 で Fail-Stop する双条件で
-    ある。この 2 点（唯一の入口であること・そこで規則 S が先に効くこと）は
-    `simulator/tests/unit/test_unsupported_rules_run_after_rule_s.py` が構文木で固定する。
-    かつてここは「規則 S を本判定の**直前**に呼ぶ」と書いていたが、その強い主張は機械が
-    守っていなかったため撤回した（工程 5 レビュー 🟡-2。実測 2026-09-18・本作業ツリー:
-    2 行を入れ替えた状態で `marketdata/tests simulator/tests/unit` を全件走らせ、
-    1 failed / 4758 passed / 2 xfailed が是正前 baseline と一致した＝新たに赤になった
-    検定は 0 件）。したがって本判定に届く ``data_path is None`` は `MATH_CALCULATIONS`
-    （`Model=3`）と同値になる。ここを落とすと、完走していた `Model=3` の run が
-    exit 0 から exit 2 へ変わる（実測 2026-09-18・本作業ツリー。数え方: 本条件を外した
-    版を一時適用して `simulator/sim_ui/tests` を全件走らせ、赤になった検定を数えた
-    ——1,219 件中 1 件）。
-    """
-    from simulator.adapter.repository.ohlc_marketdata_csv import supplies_spread
-
-    name = ea_stem(effective.subject_path)
-    if name not in SPREAD_DEPENDENT_EA_NAMES:
-        return NOT_VIOLATED
-    if binding.data_path is None:
-        # 気配幅の有無とは**別の事実**（バー系列を 1 行も読まない）。連言の 1 項として
-        # 畳むと「気配幅が無い」の一種に見えるが、根拠も所有者も違う（規則 S・上記）。
-        return NOT_VIOLATED
-    if supplies_spread(binding.data_path):
-        return NOT_VIOLATED
-    return name
-
-
 def _detect_relative_preset(effective: EffectiveSettings, _binding: "EngineBinding") -> Any:
     """N-16: 相対プリセット（last year / last month）。起点がバー系列の最終時刻に依存する。"""
     date_range = effective.date_range
@@ -319,24 +139,17 @@ def _detect_relative_preset(effective: EffectiveSettings, _binding: "EngineBindi
 # 宣言表
 # ---------------------------------------------------------------------------
 
+#: 宣言表（**評価順**）。ID の並びは基本設計 §4.6 のままである。`RULE_*` の 4 件は
+#: `simulator/main/unsupported_run_scope.py` が所有する宣言（run 引数だけで判定できるもの）
+#: を織り込んだものであり、値をここへ書き写してはいない。
 UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
-    UnsupportedRule(
-        unsupported_id="N-01",
-        field="subject_path",
-        reason=(
-            "実行可能な EA は注入された実行可能 EA 名集合（known_ea_names）に限られます"
-            "（未登録名の沈黙フォールバックを遮断します）"
-        ),
-        detect=_detect_unknown_ea,
-        build=_as_config_error,
-        # 候補（配った Expert 一覧＝known_ea_names）に無い値なら当たる。
-        ui=UiTrigger(keys=("Expert",), mode=UI_TRIGGER_OFF_CANDIDATES),
-    ),
+    RULE_UNKNOWN_EA,                        # N-01（合流点側の宣言）
     UnsupportedRule(
         unsupported_id="N-02",
         field="optimization",
         reason="Settings 層からの最適化実行は対象外です（単一パスのみ）",
         detect=_detect_optimization,
+        reads=("optimization",),
         ui=UiTrigger(
             keys=("Optimization",),
             mode=UI_TRIGGER_EXCEPT_TOKENS,
@@ -350,28 +163,20 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         field="forward_mode",
         reason="フォワードテストの実行はエンジンの対象外です",
         detect=_detect_forward,
+        reads=("forward_mode",),
         ui=UiTrigger(
             keys=("ForwardMode",),
             mode=UI_TRIGGER_EXCEPT_TOKENS,
             tokens=(format_int_token(ForwardMode.DISABLED),),
         ),
     ),
-    UnsupportedRule(
-        unsupported_id="N-05",
-        field="tick_model",
-        reason="実ティックの供給元（tick_store_root）が注入されていません",
-        detect=_detect_real_ticks_without_store,
-        ui=UiTrigger(
-            keys=("Model",),
-            mode=UI_TRIGGER_ON_TOKENS,
-            tokens=(format_int_token(TickModel.REAL_TICKS),),
-        ),
-    ),
+    RULE_REAL_TICKS_WITHOUT_STORE,          # N-05（合流点側の宣言）
     UnsupportedRule(
         unsupported_id="N-07",
         field="profit_in_pips",
         reason="pips 建ての集計式が BACKTEST_METRICS.md に定義されていません",
         detect=_detect_profit_in_pips,
+        reads=("profit_in_pips",),
         ui=UiTrigger(
             keys=("ProfitInPips",),
             mode=UI_TRIGGER_ON_TOKENS,
@@ -383,26 +188,20 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         field="visual",
         reason="テスターのリアルタイム描画は移植対象外です",
         detect=_detect_visual,
+        reads=("visual",),
         ui=UiTrigger(
             keys=("Visual",),
             mode=UI_TRIGGER_ON_TOKENS,
             tokens=(format_bool_token(True),),
         ),
     ),
-    UnsupportedRule(
-        unsupported_id="N-10",
-        field="symbol",
-        reason="現行エンジンの投入契約は単一銘柄（symbol: str）のみを受けます",
-        detect=_detect_multi_symbol,
-        # 判定は「単一の文字列か」という**構造**であり、`.ini` の生トークンは常に
-        # 文字列である。UI の値からは原理的に当たり得ないため発火条件を持たない。
-        ui=UiTrigger(keys=("Symbol",), mode=UI_TRIGGER_NONE),
-    ),
+    RULE_MULTI_SYMBOL,                      # N-10（合流点側の宣言）
     UnsupportedRule(
         unsupported_id="N-11",
         field="currency",
         reason="口座通貨と銘柄の決済通貨が異なります（現行エンジンは換算レートを持ちません）",
         detect=_detect_cross_currency,
+        reads=("currency", "settlement_currency"),
         # 判定源は束縛の `settlement_currency`＝実行対象データセットの権威値。
         ui=UiTrigger(keys=("Currency",), mode=UI_TRIGGER_OFF_PROFILE),
     ),
@@ -422,18 +221,7 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
         # バー系列を要するため、生トークンでは判定できない——それを N-10 と同じ形で宣言する。
         ui=UiTrigger(keys=("FromDate", "ToDate"), mode=UI_TRIGGER_NONE),
     ),
-    UnsupportedRule(
-        unsupported_id="N-17",
-        field="subject_path",
-        reason=(
-            "spread 依存 EA（約定式が open + spread×point）は、気配幅の列を供給しない"
-            "データセットでは実行できません（spread=0 供給になり実 MT5 と一致しない・H-4）"
-        ),
-        detect=_detect_spread_dependent_ea_on_spreadless_data,
-        # 生トークンだけでは判定できない（データ実体の形式に依存する）——N-10 と同じ形。
-        # 投入時の Fail-Stop が本則で、UI へは実行前の 400 で理由が届く。
-        ui=UiTrigger(keys=("Expert",), mode=UI_TRIGGER_NONE),
-    ),
+    RULE_SPREAD_DEPENDENT_EA_ON_SPREADLESS_DATA,   # N-17（合流点側の宣言）
     UnsupportedRule(
         unsupported_id="N-16",
         field="date_range.preset",
@@ -442,6 +230,7 @@ UNSUPPORTED_RULES: "tuple[UnsupportedRule, ...]" = (
             "Settings 層はデータを読まないため窓を決定できません"
         ),
         detect=_detect_relative_preset,
+        reads=("date_range",),
         tbd="TBD-14",
         ui=UiTrigger(
             keys=("Dates",),
@@ -474,16 +263,42 @@ NON_RAISING_RULES: "dict[str, str]" = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 適用範囲の分割（ISSUE-525）
+# ---------------------------------------------------------------------------
+#
+# 是正前、本表を適用する関数の呼び手は写像層
+# （「`kwargs_mapper.effective_to_interactor_kwargs`」）ただ 1 つだった。したがって写像層を
+# 通らない投入経路（「`settings`」 ブロックを持たない投入＝「`run_backtest`」 を直接呼ぶ経路）は
+# **宣言の外へ出られた**。是正は「run 自身の引数だけで判定できる規則を、両経路が必ず通る
+# 合流点で適用する」ことであり、その規則と適用器は
+# `simulator/main/unsupported_run_scope.py` が所有する（上の再輸出）。
+#
+# 分割は**人手の列挙では行わない**——各規則が読む判定入力（`UnsupportedRule.reads`）と、
+# 合流点が解決できる判定入力（`RUN_SCOPE_INPUTS`）の包含で決める。
+
+#: 設定の語彙を読む宣言（写像層で適用する）。`RUN_SCOPE_RULES` との**分割**であり、
+#: 重なりも漏れも無い（検定が固定する）。二重に評価しないのは、同じ判定を 2 度発行すると
+#: 出力に何も足さずに費用だけが増えるためである（N-17 はデータ実体のヘッダを読む）。
+SETTINGS_SCOPE_RULES: "tuple[UnsupportedRule, ...]" = tuple(
+    rule for rule in RUN_REQUEST_RULES if rule not in RUN_SCOPE_RULES
+)
+
+
 def apply_unsupported_rules(
     effective: EffectiveSettings, binding: "EngineBinding"
 ) -> None:
-    """実行要求時の非対象判定を宣言順に適用する（違反は最初の 1 件で Fail-Stop）。
+    """設定の語彙を読む非対象判定を宣言順に適用する（違反は最初の 1 件で Fail-Stop）。
 
     事前条件: ``effective`` は `TesterSettings.effective()` の像（規則 A 適用済み）。
-    事後条件: 例外を送出しなければ、`RUN_REQUEST_RULES` のいずれにも該当しない。
-    例外: E-07（`UnsupportedSettingError`）または `ConfigError`（N-01）。
+    事後条件: 例外を送出しなければ、`SETTINGS_SCOPE_RULES` のいずれにも該当しない。
+    例外: E-07（「`UnsupportedSettingError`」）。
+
+    run 自身の引数だけで判定できる規則（`RUN_SCOPE_RULES`）はここでは評価しない——
+    それらは両経路が必ず通る合流点で適用される（ISSUE-525）。ここで併せて評価すると、
+    「`settings`」 経路だけが同じ判定を 2 度発行することになる。
     """
-    for rule in RUN_REQUEST_RULES:
+    for rule in SETTINGS_SCOPE_RULES:
         assert rule.detect is not None  # RUN_REQUEST_RULES の構築条件（型の絞り込み）
         violation = rule.detect(effective, binding)
         if violation is not NOT_VIOLATED:
