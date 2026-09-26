@@ -28,6 +28,7 @@ def _factory_ma_slope(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="MA_Slope_EA",
+    strategy_type=MaSlope,
     build=_factory_ma_slope,
     strategy_params=(
         # MaSlope が参照する追加パラメータ（他戦略は未参照のため無害）。

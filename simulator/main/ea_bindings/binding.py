@@ -58,8 +58,16 @@ class EaBinding:
         Composition Root 本体に 14 行の dict リテラルが在り、EA が参照する
         パラメータを増やすたびにそこを開いていた（EA 追加の 8 編集点のうち 1 つ）。
         他 EA が参照しないパラメータが配られても無害である（現状の契約を変えない）。
+    ``strategy_type``: ``build`` が組む戦略の**型**（ISSUE-525）。値ではなく型を持つのは、
+        戦略が自分で名乗る宣言（「``entry_price_basis``」）をクラス属性として**データを読まずに**
+        問えるようにするためである。保証境界 N-17（気配幅を供給しないデータで気配幅を読む
+        EA を走らせない）は run を始める前に判定するため、データを読む ``build`` を呼べない。
+        宣言を EA 束縛側へ写さない（値を持たない）ことで、同じ事実が 2 箇所に書かれるのを
+        避けている。``build`` の戻り値と一致することは
+        `simulator/tests/unit/test_spread_dependency_from_declaration.py` が実測で固定する。
     """
 
     name: str
     build: "Callable[[EaBuildContext], tuple[Any, Any, Any]]"
     strategy_params: "tuple[str, ...]" = ()
+    strategy_type: "type | None" = None

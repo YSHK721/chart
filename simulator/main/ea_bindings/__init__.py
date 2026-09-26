@@ -17,6 +17,8 @@ EA 構築入口の引数 / build_interactor の引数 / strategy_params の dict
 規則の所在:
     * 選択（`ea_name` → 束縛。未登録は既定 TC 経路へ）は `select_ea_binding` の 1 箇所。
     * 列挙（実行可能な EA 名）は `known_ea_names` の 1 箇所。
+    * 列挙（気配幅を読む EA 名）は `spread_dependent_ea_names` の 1 箇所（ISSUE-525。
+      判定は戦略の宣言から導き、名前を書き写さない）。
     * 戦略へ配るパラメータ名の**和**は `strategy_param_names` の 1 箇所。
     3 者は役割が違い、表を引く式（`.get(ea_name, 既定)`）は選択にしか無い
     （`simulator/tests/integration/test_ea_factory_selection_rule.py` が AST で固定する）。
@@ -47,6 +49,7 @@ __all__ = [
     "EaBuildContext",
     "known_ea_names",
     "select_ea_binding",
+    "spread_dependent_ea_names",
     "strategy_param_names",
 ]
 
@@ -111,6 +114,37 @@ def known_ea_names() -> "tuple[str, ...]":
     戻り値は決定的順（昇順・重複なし）。
     """
     return tuple(sorted(set(_EA_BINDINGS) | {DEFAULT_EA_NAME}))
+
+
+def spread_dependent_ea_names() -> "tuple[str, ...]":
+    """約定価格が足の気配幅を読む EA 名を昇順で返す（ISSUE-525）。
+
+    事前条件: 各束縛が `EaBinding.strategy_type` を名乗り、その戦略が建値基準を宣言して
+        いること（どちらも欠けたら Fail-Stop する＝既定へ倒さない）。
+    事後条件: 戻り値は決定的順（昇順・重複なし）で、`known_ea_names` の部分集合。
+    例外: 「`EntryPriceBasisDeclarationError`」（宣言が無い／語彙の外）。
+
+    **列挙**であって選択ではない（`known_ea_names` と同じ役割分担）。判定は戦略の宣言
+    ただ 1 つから導く——是正前はこの集合が
+    `simulator/main/tester_settings/unsupported.py` の**手書きの 3 つの名前**であり、宣言が
+    ``current_open`` なのに列挙に無い EA（`WeeklyVolBand_EA`）が気配幅を供給しないデータで
+    完走していた（実測 2026-09-25: exit=0 / trades=1 / 約定価格＝足の始値）。
+
+    ``strategy_type`` を読むのは、保証境界が run を**始める前**に効くためである（データを
+    読む `build` を呼べない）。`known_ea_names` と同じく既定 TC 経路も覆う——未登録名は
+    そこへ落ちるため、表のキーだけでは実行可能名を尽くせない。データを読まない構成
+    （`_DATALESS_BINDING`）は `ea_name` では選ばれないので含めない。
+    """
+    from simulator.usecase.entry_price_basis import (
+        basis_consumes_bar_spread,
+        declared_entry_price_basis,
+    )
+
+    return tuple(sorted(
+        binding.name
+        for binding in (*_EA_BINDINGS.values(), _DEFAULT_BINDING)
+        if basis_consumes_bar_spread(declared_entry_price_basis(binding.strategy_type))
+    ))
 
 
 def strategy_param_names() -> "tuple[str, ...]":

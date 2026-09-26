@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
-from simulator.adapter.strategy.weekly_vol_band import make_weekly_vol_band
+from simulator.adapter.strategy.weekly_vol_band import WeeklyVolBand, make_weekly_vol_band
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
 from simulator.main.ea_bindings.sources import load_dataframe, ohlc_repository_for
 
@@ -33,4 +33,8 @@ def _factory_weekly_vol_band(ctx: EaBuildContext):
     return strategy, registry, ohlc_repository_for(ctx.data_path)
 
 
-BINDING = EaBinding(name="WeeklyVolBand_EA", build=_factory_weekly_vol_band)
+BINDING = EaBinding(
+    name="WeeklyVolBand_EA",
+    build=_factory_weekly_vol_band,
+    strategy_type=WeeklyVolBand,
+)

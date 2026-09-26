@@ -23,6 +23,7 @@ def _factory_stop_entry_probe(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="StopEntryProbe_EA",
+    strategy_type=StopEntryProbe,
     build=_factory_stop_entry_probe,
     # 発注価格の作り方は MA_Slope_Pending と同型（宣言も同じものを参照し、写さない）。
     strategy_params=PENDING_STRATEGY_PARAMS,

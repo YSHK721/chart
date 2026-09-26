@@ -47,6 +47,7 @@ def _factory_ma_slope_pending(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="MA_Slope_Pending_EA",
+    strategy_type=MaSlopePending,
     build=_factory_ma_slope_pending,
     strategy_params=PENDING_STRATEGY_PARAMS,
 )

@@ -12,9 +12,9 @@ from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
 
 
 def _factory_dataless(_ctx: EaBuildContext):
-    """`ctx.data_path` を**参照しない**（読むものが無いのが本経路の実体である）。
+    """「`ctx.data_path`」 を**参照しない**（読むものが無いのが本経路の実体である）。
 
-    既存の EA ファクトリは全て sources の CSV 読みで `data_path` を読むため（実測:
+    既存の EA ファクトリは全て sources の CSV 読みで 「`data_path`」 を読むため（実測:
     ``data_path=None`` は市場データの load より前に factory の CSV 読みで DataError に
     なる）、データ供給の有無は **market_data 実体だけでなく本 3 点組の選択**で表す
     必要がある。返す 3 点は既存の Null 実装（Port ABC の実装＝LSP 維持）。
@@ -22,4 +22,6 @@ def _factory_dataless(_ctx: EaBuildContext):
     return NullStrategy(), NullIndicatorRegistry(), NullMarketDataRepository()
 
 
-BINDING = EaBinding(name="__dataless__", build=_factory_dataless)
+BINDING = EaBinding(
+    name="__dataless__", build=_factory_dataless, strategy_type=NullStrategy
+)
