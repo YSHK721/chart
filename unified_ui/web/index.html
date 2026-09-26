@@ -70,6 +70,12 @@
        （HTML は 1 枚も触らない規約＝ISSUE-278 #16）。ここが持つのは寸法と出し入れの規則だけ。
        出し入れは #replay-bar と同じ反転記法（既定は非表示／条件を満たすときだけ出す）で書く。
        モード名を書かないので、第 4 モードを表へ足しても本規則は直さなくてよい。 */
+    /* sim のジョブ結果を上のチャート領域で見る器（result_chart_area_view.js が生成し所有する）。
+       結果を見ている間だけライブのチャートの上に重ねる（ライブの状態には触れない・2026-09-26）。 */
+    #um-result-chart { display: none; position: absolute; inset: 0; z-index: 5;
+      background: var(--ct-layoutBackground, #131722); }
+    body.um-result-chart-shown #um-result-chart { display: block; }
+    .sim-result-chart-message { padding: 12px 16px; color: var(--ct-uiTextDim, #787b86); }
     #um-bottom-splitter, #um-bottom-pane { display: none; }
     body.um-bottom-pane-mode #um-bottom-splitter { display: block; }
     body.um-bottom-pane-mode #um-bottom-pane { display: flex; }

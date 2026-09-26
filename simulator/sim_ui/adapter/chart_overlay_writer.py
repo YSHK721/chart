@@ -81,6 +81,7 @@ def write(
     plots: Sequence[Any],
     account: Any,
     initial_deposit: float,
+    dataset_ref: "str | None",
 ) -> "tuple[Path, Path]":
     """``job_dir`` へ 2 ファイルを書き、そのパスを返す。
 
@@ -120,6 +121,7 @@ def write(
     payload = {
         "timeframe": RUN_TIMEFRAME,
         "ea_name": ea_name,
+        "dataset_ref": dataset_ref,
         "indicators": series,
         "account": {
             "time": list(account.times),

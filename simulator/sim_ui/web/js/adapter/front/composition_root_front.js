@@ -42,6 +42,7 @@ import { createLwc5ChartRenderer } from "./lwc5_chart_renderer.js";
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
 import { createSimFrameView, waitForContent } from "./sim_frame_view.js";
+import { createSimResultChartView } from "./sim_result_chart_view.js";
 import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
 import { createSimContactsToggleView } from "./sim_contacts_toggle_view.js";
@@ -79,8 +80,44 @@ function resolveJobId({ jobId, search }) {
  * @param {string}   search `location.search` 相当
  * @returns {{enable: function, disable: function}}
  */
-export async function setupSimDisplay({ doc, host, jobId, search, onContentHeight, raf } = {}) {
+export async function setupSimDisplay({
+  doc, host, jobId, search, onContentHeight, raf,
+  lwc, resultChart = null, chartKit = null, fetchCandles = null,
+} = {}) {
   const frame = createSimFrameView({ doc });
+  // ジョブ結果を上のチャート領域へ描く（2026-09-26 依頼者指示）。器（`resultChart`）・部品
+  //   （`chartKit`）・足の読み手（`fetchCandles`）は統合層が注入する。どれかが無い宿主
+  //   （スタンドアロン等）では描かない＝従来どおり下の結果ビューアだけ。
+  const resultView = resultChart && chartKit && fetchCandles && lwc
+    ? createSimResultChartView({
+      doc,
+      host: resultChart.host(),
+      lwc,
+      chartKit,
+      fetchCandles,
+      fetchJson: async (url) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${url}: ${res.status}`);
+        return res.json();
+      },
+    })
+    : null;
+  // 子文書が読み込まれるたびに、それが結果ビューア（`?job=<id>`）かを見て上のチャートを合わせる。
+  //   子は投入の完了で自分を `?job=<id>` へ移す（利用者の実行指示が起点＝自動介入ではない）。
+  const onFrameLoad = () => {
+    if (!resultView) return;
+    const win = frame.childWindow();
+    const job = win ? readJobId(win.location.search) : null;
+    if (!job) {
+      resultView.clear();
+      resultChart.hide();
+      return;
+    }
+    resultChart.show();
+    resultView.render(job).catch((err) => {
+      console.warn("[sim-result-chart] 描画に失敗しました", err);
+    });
+  };
   const targetJobId = resolveJobId({ jobId, search });
   // 器は**渡された host へそのまま**挿す。どこへ置くかは統合層の判断であって sim の契約では
   //   ない（旧実装は host の中から `#app` を探していた＝統合ページの id を sim 側が知っていた）。
@@ -99,6 +136,7 @@ export async function setupSimDisplay({ doc, host, jobId, search, onContentHeigh
       if (enabled) return;
       enabled = true;
       frame.mount(mountPoint, targetJobId);
+      frame.frameElement().addEventListener("load", onFrameLoad);
       // 中身が必要とする高さを**宿主へ伝える**（ISSUE-442）。どう使うか（ペインの既定高さに
       //   するか）は宿主の判断で、sim は測って渡すだけ（DIP）。購読者が居なければ何もしない。
       //
@@ -115,6 +153,10 @@ export async function setupSimDisplay({ doc, host, jobId, search, onContentHeigh
     async disable() {
       if (!enabled) return;
       enabled = false;
+      if (resultView) {
+        resultView.clear();
+        resultChart.hide();
+      }
       frame.unmount();
     },
 
@@ -123,6 +165,9 @@ export async function setupSimDisplay({ doc, host, jobId, search, onContentHeigh
 
     /** 現在のジョブ（診断・E2E 用）。 */
     jobId() { return targetJobId; },
+
+    /** 上のチャート領域に描いているジョブ（診断・E2E 用）。描いていなければ null。 */
+    resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
 }
 
@@ -294,5 +339,8 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
 
     /** 現在のジョブ（診断・E2E 用）。 */
     jobId() { return targetJobId; },
+
+    /** 上のチャート領域に描いているジョブ（診断・E2E 用）。描いていなければ null。 */
+    resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
 }

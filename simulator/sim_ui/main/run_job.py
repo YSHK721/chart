@@ -510,7 +510,21 @@ def _write_chart_overlay(
         plots=known_plots(run_kwargs["ea_name"], config_overrides=run_kwargs.get("config_overrides")),
         account=account,
         initial_deposit=float(run_kwargs["initial_deposit"]),
+        dataset_ref=_dataset_ref_of(run_kwargs["data_path"]),
     )
+
+
+def _dataset_ref_of(data_path: Any) -> "str | None":
+    """run が読んだ実体の台帳名（台帳の宣言パスと実体が一致する ref が**ちょうど 1 つ**のとき）。
+
+    所在の権威は台帳（`marketdata/dataset_registry.py` の whitelist）である。一致が 0 件
+    （台帳外の CSV）・複数件（どれか決められない）は推測せず ``None``。
+    """
+    from marketdata.dataset_registry import whitelist
+
+    target = Path(data_path).resolve()
+    matches = [ref for ref, path in whitelist().items() if Path(path).resolve() == target]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _run_with_settings(

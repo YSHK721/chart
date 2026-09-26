@@ -125,3 +125,15 @@ def test_the_same_outputs_are_written_with_the_run_trace_enabled(tmp_path: Path)
     account = _load(job_dir, "chart_overlay.json")["account"]
     assert len(account["time"]) == len(_OPENS)
     assert (job_dir / "trade_markers.json").exists()
+
+
+def test_a_csv_outside_the_ledger_has_no_dataset_ref(job_dir: Path) -> None:
+    """台帳外の CSV は系列名を推測しない（チャート側は描かずに理由を出す）。"""
+    assert _load(job_dir, "chart_overlay.json")["dataset_ref"] is None
+
+
+def test_a_ledger_path_resolves_to_exactly_its_ref() -> None:
+    from marketdata.dataset_registry import whitelist
+
+    ref, path = next(iter(whitelist().items()))
+    assert run_job._dataset_ref_of(path) == ref

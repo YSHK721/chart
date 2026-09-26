@@ -19,6 +19,7 @@
 import { installOpLog } from './op_log.js';
 // 版面の縦 2 分割（下部ペイン＋分割線）の器。表示層はここへ挿す（裁定 2026-08-21）。
 import { createBottomPaneView } from './bottom_pane_view.js';
+import { createResultChartAreaView } from './result_chart_area_view.js';
 import { mountDashboardArea } from './dashboard_area_view.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
@@ -61,6 +62,9 @@ const LIVE_ROOT = '/live/js/public/live_root_api.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
 //   それを参照する（手書き複製の禁止）。
 const LIVE_PUBLIC_API = '/live/js/public/live_public_api.js';
+// live のチャート部品（チャート生成・売買マーク描画）の公開面。sim のジョブ結果を上のチャート
+//   領域へ描く部品として sim の表示層へ注入する（2026-09-26・重さの境界で上の面と分けてある）。
+const LIVE_CHART_KIT_API = '/live/js/public/live_chart_kit_api.js';
 // リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
 //   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
 //   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
@@ -272,9 +276,30 @@ export function createModeController({
 //   統合ページの器の事情が core 側へ漏れる。
 //   公開しない: 借り手は `loadDisplayLayers` だけで、外から差し替える口を作る理由が無い
 //   （使われない公開面は、消えたことに誰も気付けない依存を育てる）。
+/**
+ * live core の `/candles` から時刻範囲の足を読む（sim のジョブ結果を上のチャートへ描く足）。
+ * 失敗は例外にする（空配列で返すと「足が 0 本の期間」と区別できない）。
+ */
+async function fetchLiveCandleRange({ datasetRef, timeframe, from, to }) {
+  const res = await fetch(
+    `/live/candles?datasetRef=${encodeURIComponent(datasetRef)}`
+    + `&timeframe=${encodeURIComponent(timeframe)}&from=${Number(from)}&to=${Number(to)}`,
+  );
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    throw new Error(`/live/candles ${res.status}: ${JSON.stringify(body.error || body)}`);
+  }
+  return body.candles;
+}
+
 const LAYER_EXTRAS = Object.freeze({
-  [MODE.SIM]: ({ lwc, bottomPane }) => ({
+  [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit, fetchCandles }) => ({
     lwc,
+    // ジョブ結果を上のチャート領域へ描くための器・部品・足の読み手（2026-09-26 依頼者指示）。
+    //   器の所有者は統合層、部品は live core の公開面、足は live core の `/candles`（範囲読み）。
+    resultChart,
+    chartKit,
+    fetchCandles,
     // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
     //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
     //   削られ、指標ペインが狭くなって手で広げる作業が要った。
@@ -453,6 +478,9 @@ async function main() {
   //   計算できない・実測 2026-08-21）。
   const bottomPane = createBottomPaneView({ doc: document });
   bottomPane.mount(document.getElementById('app'), { above: document.querySelector('.chart-wrap') });
+  // sim のジョブ結果を上のチャート領域で見る器（ライブのチャートの上に重ねる・普段は隠れている）。
+  const resultChart = createResultChartAreaView({ doc: document });
+  resultChart.mount(document.querySelector('.chart-wrap'));
 
   // 表示層の器を用意する。**置き場所を決めるのは統合層**（器の所有者）であり、各 core は
   //   渡された host へ挿すだけで統合ページの id を知らない（DIP）。
@@ -477,6 +505,9 @@ async function main() {
         lwc: window.LightweightCharts,
         bottomPane,
         liveStorage,
+        resultChart,
+        chartKit: await import(LIVE_CHART_KIT_API),
+        fetchCandles: fetchLiveCandleRange,
       },
     });
   } catch (err) {
