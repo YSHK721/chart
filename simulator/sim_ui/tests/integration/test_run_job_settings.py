@@ -43,11 +43,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _fixture_dataset(monkeypatch):
-    from simulator.sim_ui.adapter import symbol_spec_catalog
+    from marketdata.dataset_registry import sim_offered_refs
 
-    monkeypatch.setattr(
-        symbol_spec_catalog,
-        "_JP225_DATA_CSV",
+    from simulator.tests.ledger_entity_fixtures import point_entity_at
+
+    # 台帳が提供すると宣言した先頭の系列（＝本ファイルが引く profile）の実体だけを差し替える。
+    point_entity_at(
+        monkeypatch,
+        sim_offered_refs()[0],
         Path(__file__).resolve().parents[4] / "simulator" / "tests" / "fixtures" / "mt5"
         / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv",
     )

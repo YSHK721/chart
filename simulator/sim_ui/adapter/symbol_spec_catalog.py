@@ -28,26 +28,33 @@ front にこれらのリテラルを持たせない（front リテラル 0）。
     **stops_level は 0 ではなく 5**（供給元 ``trade_stops_level``・実測）。0 は出所の無い値
     だった。この変更で結果が変わる戦略の実測は下記「stops_level の影響」を参照。
 
-    提供するのは **JP225 の 2 系列**である（ISSUE-511 段階 8-D-3・依頼者承認 2026-09-25）:
-    従来の ``_JP225_REF``（気配幅なし）と ``_JP225_SPREAD_REF``（気配幅つき）。同じ銘柄・同じ
-    供給元の**別の実体**であり、2 本を分ける識別子は dataset ref ただ 1 つ、**並びは
-    （従来, 気配幅つき）に固定**する（理由は ``_offered`` の注記）。投入 body は 1 バイトも
-    増えない（PROFILE_KEYS は 11 キーで dataset を含まない）。なお **UI からは 2 本目を
-    選べない**——front の ``symbolCandidatesOf`` が同一銘柄を 1 候補へ畳み、``resolveProfile``
-    が銘柄一致の先頭を返すためである（選べるようにするのは段階 8-D-5 の担当であり、本段では
-    ``web/`` を 1 バイトも変えていない）。
+    提供するのは **JP225 の複数系列**である（ISSUE-511 段階 8-D-3 で 2 本・ISSUE-533 段階 3 で
+    もう一方の供給の気配幅系列を加えた。依頼者承認 2026-09-26）。同じ銘柄・同じ供給元の
+    **別の実体**であり、系列を分ける識別子は dataset ref ただ 1 つである。投入 body は 1 バイトも
+    増えない（PROFILE_KEYS は 11 キーで dataset を含まない）。UI では系列は**銘柄の内側の
+    第 2 の軸**として選べる（段階 8-D-5 で結線済み。front の ``symbolCandidatesOf`` が同一銘柄を
+    1 候補へ畳み、``seriesCandidatesOf`` が同じ銘柄の ref を候補として配り、``resolveProfile`` が
+    系列指定なしのときだけ銘柄一致の先頭を返す。候補が 2 以上でなければ軸は画面に出ない）。
+    本段でも ``web/`` は 1 バイトも変えていない——提供が 1 本増えれば front の規則がそのまま
+    候補を 1 つ増やす（読んで確かめた事実であり、**実 UI での確認は依頼者が行う**）。
 
-    data_path の所在は**台帳が持つ**（ISSUE-511 段階 8-D-2）: 本カタログは「何を提供するか」＝
-    dataset ref 名を持ち、「その実体はどこか」は ``marketdata/dataset_registry.py``
-    の同じ ref の宣言へ委ねる（``whitelist()`` で引く）。**台帳を列挙はしない**——台帳には
-    sim で走らない ref（日足・ティック由来の系列）も居るためである。台帳に無い ref なら
-    読込時に ``KeyError`` で止まる（既定パスへ落とさない）。その ``KeyError`` には
-    **どこを直すか**を載せる（ref・台帳の所在・本ファイル名の 3 つ。理由は下の except 節の
-    注記、機械的検査は `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` の
-    test_a_ref_missing_from_the_ledger_stops_with_an_actionable_message）。
+    **何を提供するかも台帳が宣言する**（ISSUE-533 段階 3）: 本カタログは提供する ref の綴りを
+    1 つも持たず、``marketdata/dataset_registry.py`` の ``sim_offered`` 欄を名乗った ref を
+    宣言順に受け取る（`sim_offered_refs`）。以前ここは提供する ref を手書きの並びで名乗って
+    いたため、台帳へ系列を足しても選択肢へ届かなかった（実測 2026-09-26: 実体つきの新系列が
+    在るのに ``GET /run-options`` は 2 件だけ）。列挙は必ず取り残しを生む。台帳が ``sim_offered``
+    を名乗らない ref を持つときは、選択肢を問う時点で **どこを直すか**を載せて止まる（宣言の
+    欠落を「提供しない」へ倒さない・Fail-Stop の所有者は台帳側の `sim_offered_refs`）。
 
-    実体は **marketdata 形式 6 列**（``date,open,high,low,close,volume``・**気配幅の列なし**・
-    2026-09-19 実測）であり、形式の判定は読み手の所有者、形式ごとのリーダの選択は
+    data_path の所在も**台帳が持つ**（ISSUE-511 段階 8-D-2）: 「その実体はどこか」は同じ ref の
+    宣言へ委ねる（``whitelist()`` で引く）。**台帳を丸ごと出すのではない**——台帳には sim で
+    走らない ref（日足・同梱サンプル・気配幅なしのティック系列）も居り、それらは
+    ``sim_offered=False`` を名乗っている。
+
+    実体はいずれも **marketdata 形式**であり、従来の系列は 6 列（``date,open,high,low,close,volume``
+    ・**気配幅の列なし**・2026-09-19 実測）、気配幅つきの系列は 9 列（``up,dn,spread`` を持つ・
+    2026-09-26 実測）である。**本カタログは列形を判定しない**（形式の判定は読み手の所有者、
+    気配幅を供給するかの判定は保証境界 N-17 の所有者）。形式ごとのリーダの選択は
     ``simulator/main/ea_bindings/sources.py`` が持つ。台帳の宣言はソースコードであって
     ユーザー供給でない（パストラバーサル無関係・``StaticFileServer`` の許可根判定を経由しない）。
 
@@ -142,7 +149,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from marketdata.dataset_registry import whitelist
+from marketdata.dataset_registry import sim_offered_refs, whitelist
 from marketdata.symbol_spec_snapshot import (
     OANDA_JAPAN_MT5_LIVE,
     load_snapshot,
@@ -151,77 +158,35 @@ from marketdata.symbol_spec_snapshot import (
 )
 from simulator.sim_ui.usecase.run_options_ports import RunOptionsPort, RunProfile
 
-# JP225 の dataset ref（セレクタのラベル・MT5 突合 fixture と同系譜）。
-_JP225_REF = "jp225_m1"
-# JP225 の**気配幅つき**系列の dataset ref（ISSUE-511 段階 8-D-3・依頼者承認 2026-09-25）。
-# 同じ銘柄・同じ供給元の**別の実体**であり、2 本を分ける識別子は dataset ref ただ 1 つである。
-# 投入 body は 1 バイトも増えない——front の投入キー許可リスト（PROFILE_KEYS）は 11 キーで
-# dataset を含まない（決済通貨・データ範囲と同じ扱い。機械的検査は
-# simulator/tests/unit/test_symbol_spec_catalog_second_series.py が front の現物から読む）。
-_JP225_SPREAD_REF = "jp225_mt5_spread"
 # 銘柄仕様の供給元（機械生成スナップショット）。銘柄名・サーバ名は**同一性**の指定であって
 # 仕様の値ではない（値は 1 つもここに書かない）。
 _JP225_SYMBOL = "JP225"
 _JP225_SERVER = OANDA_JAPAN_MT5_LIVE
 
-# JP225 の実行データ実体（依頼者承認 2026-09-06: 2012 年からの全期間 marketdata 系列）。
-# **実体の所在は台帳が持つ**（ISSUE-511 段階 8-D-2）: ここは上の 2 つの ref で「何を提供するか」
-# を名乗るだけで、「その実体はどこか」は台帳へ問う（詳細は上の docstring「data_path の所在は
-# 台帳が持つ」）。_JP225_REF の形式は `date,open,high,low,close,volume`（ISO 日時・UTC）であり
-# spread 列を持たないため、spread 依存 EA（MA_Slope 系）は N-17 が実行前に弾く。
-# _JP225_SPREAD_REF は spread 列を持つ系列であり、そちらでは N-17 は踏まない（判定の軸は
-# 「その実体が気配幅を供給するか」であって形式ではない・段階 8-C / 8-D-1）。従来の MT5 突合
-# fixture（2025-01 の 1 ヶ月・JP225_M1_202501.csv）はテスト用途に残る（本カタログからは外す）。
-def _declared_entity(ref: str) -> Path:
-    """名乗った ``ref`` の実体を台帳の宣言から引く（無ければ**どこを直すか**を載せて止める）。
-
-    名乗った ref が台帳に無い＝**名乗りと宣言の食い違い**であり、その食い違いを知って
-    いるのは名乗った側（ここ）である。**既定のパスへは落とさない**（落とすと別系列の
-    データで無言に走り、出力は形式上正しいため状態検証では検出できない）。
-
-    素の KeyError にしないのは実測に基づく（2026-09-23・本作業ツリー）: この解決は読込時に
-    走るため、simulator/sim_ui/main/run_job.py の _build_engine_binding を包む
-    except Exception の網の内側で送出される。網が出すのは
-    "Tester Settings の解釈に失敗しました: {exc}" だけなので、素の KeyError だと投入者が
-    見るのは ref の綴り 1 語になる。台帳側の同型の Fail-Stop（dataset_registry の
-    tick_tree_token が送る TickTokenMissing）は案内を載せており、ここだけ非対称だった。
-    **型は KeyError のまま**（握る側の契約を変えない）。綴りは 3 つとも実体から導く
-    （書き写すと片方だけ動いたときに案内が嘘になる）。
-
-    関数にしてあるのは、提供する ref が 2 本になったとき（段階 8-D-3）に同じ案内を
-    **手書きで複製しない**ためである（複製は必ず取り残しを生む）。
-    """
-    try:
-        return whitelist()[ref]
-    except KeyError:
-        raise KeyError(
-            f"dataset ref {ref!r} の宣言が台帳 {whitelist.__module__}.REGISTRY に"
-            f"ありません。{Path(__file__).name} の名乗り（提供すると名乗る ref）か、"
-            f"台帳の宣言のどちらかを揃えてください。既定のパスへは落としません。"
-        ) from None
-
-
-_JP225_DATA_CSV = _declared_entity(_JP225_REF)
-_JP225_SPREAD_DATA_CSV = _declared_entity(_JP225_SPREAD_REF)
-
 
 def _offered() -> "tuple[tuple[str, Path], ...]":
-    """提供すると名乗る ref と、その実体（台帳の宣言）の対を**宣言順**で返す。
+    """提供する dataset ref と、その実体の対を**台帳の宣言順**で返す（ISSUE-533 段階 3）。
 
-    **この並びが `datasets()` の並び**であり、run-options 応答とセレクタの並びである。
-    先頭は従来の系列に固定する——共有フィクスチャと既存検定は profile を「先頭」または
-    「銘柄一致の先頭」で引いており、2 本目を先頭へ入れると**赤にならずに別系列で走る**
-    （実測 2026-09-25: 並びを入れ替えると、同じ 10 ファイルが 103.67 秒から 29 分超へ
-    伸びたまま終わらない。失敗ではなく実行対象の入替としてのみ現れる）。並びの表明は
-    `simulator/tests/unit/test_symbol_spec_catalog_second_series.py` が持つ。
+    **何を提供するかも台帳が宣言する**（`sim_offered_refs`）: 以前ここは提供する ref を手書きの
+    並びで名乗っていた。そのため台帳へ系列を足しても選択肢へ届かず、実体つきの新系列が
+    ``GET /run-options`` に現れなかった（実測 2026-09-26: 2 件だけ）。列挙は必ず取り残しを
+    生むので、宣言の所有者を台帳ただ 1 つにする。ここに ref の綴りは 1 つも無い。
 
-    モジュール属性を**呼出ごとに読む**のは、実体の差し替え（既存検定が継ぎ目として使う
-    ``_JP225_DATA_CSV`` / ``_JP225_SPREAD_DATA_CSV``）がそのまま届くようにするためである。
+    **この並びが `datasets()` の並び**であり、run-options 応答とセレクタの並びである。並びの
+    出所は台帳の宣言順であり、先頭は従来の系列（気配幅を宣言していない唯一の系列）である
+    ——共有フィクスチャと既存検定は profile を「先頭」または「銘柄一致の先頭」で引いており、
+    先頭が入れ替わると**赤にならずに別系列で走る**（実測 2026-09-25: 並びを入れ替えると、
+    同じ 10 ファイルが 103.67 秒から 29 分超へ伸びたまま終わらない。失敗ではなく実行対象の
+    入替としてのみ現れる）。表明は
+    `simulator/tests/unit/test_symbol_spec_catalog_ledger_offering.py` が持つ。
+
+    台帳を**呼出ごとに読む**のは、宣言の差し替え（検定が継ぎ目として使う `whitelist` の実体）が
+    そのまま届くようにするためである。名乗りが台帳由来になったので、「名乗った ref が台帳に
+    無い」という食い違いは構造的に起こりえない（従来ここに在った読込時の Fail-Stop は、
+    宣言の欠落を止める `sim_offered_refs` の Fail-Stop へ移った）。
     """
-    return (
-        (_JP225_REF, _JP225_DATA_CSV),
-        (_JP225_SPREAD_REF, _JP225_SPREAD_DATA_CSV),
-    )
+    entities = whitelist()
+    return tuple((ref, entities[ref]) for ref in sim_offered_refs())
 
 
 def _date_token_of_row(row: bytes) -> "str | None":
@@ -281,15 +246,15 @@ class SymbolSpecCatalog(RunOptionsPort):
         # 供給元スナップショットを **1 回だけ**読み、銘柄仕様 8 項目と決済通貨をそこから引く。
         # リテラルを持たない＝人が値を選べない（ISSUE-445 RC-1 の是正・D2）。
         #
-        # 系列ごとに読み直さないのは、提供する 2 本が同じ ``(サーバ, 銘柄)`` を指すためである
-        # （ISSUE-511 段階 8-D-3・依頼者承認 2026-09-25）。2 度目の読込は出力に何も足さない
+        # 系列ごとに読み直さないのは、提供する系列がすべて同じ ``(サーバ, 銘柄)`` を指すため
+        # である（ISSUE-511 段階 8-D-3・依頼者承認 2026-09-25）。2 度目の読込は出力に何も足さない
         # 純粋な無駄であり、出力は 1 ビットも変わらないため状態検証では落ちない。無駄の不在は
         # 計算量検定が「発行 − 相異なる実体の数 = 0」で表明する。
         snapshot = load_snapshot(_JP225_SERVER, _JP225_SYMBOL)
         return [self._profile(ref, entity, snapshot) for ref, entity in _offered()]
 
     def _profile(self, ref: str, entity: Path, snapshot: "dict") -> RunProfile:
-        """提供する 1 系列のプロファイルを組む（2 本で同じ組み立てを手書き複製しない）。"""
+        """提供する 1 系列のプロファイルを組む（系列ごとに同じ組み立てを手書き複製しない）。"""
         data_first, data_last = _csv_date_range(entity)
         return RunProfile(
             dataset=ref,

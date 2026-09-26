@@ -34,8 +34,9 @@ from simulator.domain.exceptions import ConfigError
 from simulator.main import build_interactor, run_backtest
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.main.tester_settings.run_from_settings import run_from_settings
-from simulator.sim_ui.adapter import symbol_spec_catalog
+from marketdata.dataset_registry import sim_offered_refs
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+from simulator.tests.ledger_entity_fixtures import point_entity_at
 from simulator.tests.ohlc_header_fixtures import MD6, MD9
 from simulator.tests.sizing_declaration_fixtures import (
     DeclaringStrategy,
@@ -109,11 +110,18 @@ def _write(path: Path, *, with_spread: bool) -> Path:
 
 @pytest.fixture()
 def entities(tmp_path, monkeypatch) -> "dict[str, Path]":
-    """カタログの 2 実体を合成データへ差し替える（既定のデータ木は 1 バイトも読まない）。"""
-    spreadless = _write(tmp_path / "spreadless.csv", with_spread=False)
-    with_spread = _write(tmp_path / "with_spread.csv", with_spread=True)
-    monkeypatch.setattr(symbol_spec_catalog, "_JP225_DATA_CSV", spreadless)
-    monkeypatch.setattr(symbol_spec_catalog, "_JP225_SPREAD_DATA_CSV", with_spread)
+    """提供系列のうち 2 本の実体を合成データへ差し替える（既定のデータ木は読まない）。
+
+    差し替えは**台帳の宣言**に当てる（ISSUE-533 段階 3 で提供する系列が台帳由来になった）。
+    当てる先は提供の先頭（従来の系列）と末尾であり、綴りは 1 つも書き写さない。
+    """
+    offered = sim_offered_refs()
+    spreadless = point_entity_at(
+        monkeypatch, offered[0], _write(tmp_path / "spreadless.csv", with_spread=False)
+    )
+    with_spread = point_entity_at(
+        monkeypatch, offered[-1], _write(tmp_path / "with_spread.csv", with_spread=True)
+    )
     return {"spreadless": spreadless, "with_spread": with_spread}
 
 

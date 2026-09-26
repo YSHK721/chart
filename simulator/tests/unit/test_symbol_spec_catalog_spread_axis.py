@@ -36,6 +36,7 @@ ISSUE-533 段階 2。
     Test Spy（モジュール属性の継ぎ目） … `marketdata/tests/spread_series_fixture.py`
     Test Spy（開いた口と配られた量） … `simulator/tests/file_read_spy.py`
     ヘッダ定数・本文・書き出し … `simulator/tests/ohlc_header_fixtures.py`
+    台帳の実体の差し替え … `simulator/tests/ledger_entity_fixtures.py`
 """
 from __future__ import annotations
 
@@ -44,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+from marketdata.dataset_registry import sim_offered_refs
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
@@ -51,6 +53,7 @@ from simulator.sim_ui.adapter import symbol_spec_catalog
 from simulator.sim_ui.adapter.symbol_spec_catalog import SymbolSpecCatalog
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.file_read_spy import spy_file_reads
+from simulator.tests.ledger_entity_fixtures import point_entity_at
 from simulator.tests.ohlc_header_fixtures import (
     COMMA,
     COMMA_NO_SPREAD,
@@ -89,9 +92,13 @@ def _catalog() -> SymbolSpecCatalog:
 
 
 def _entity(monkeypatch, tmp_path, name: str, header: str, body: str = "") -> str:
-    """``header`` を持つデータ実体を書き、カタログの実体をそれへ差し替える。"""
+    """``header`` を持つデータ実体を書き、**先頭で提供される系列**の実体をそれへ差し替える。
+
+    差し替えは台帳の宣言に当てる（ISSUE-533 段階 3 で提供が台帳由来になった）。先頭の系列に
+    当てるのは、本ファイルが測るのが ``datasets()[0]``（＝従来の系列）だからである。
+    """
     path = write_header(tmp_path, f"{name}.csv", header, body)
-    monkeypatch.setattr(symbol_spec_catalog, "_JP225_DATA_CSV", Path(path))
+    point_entity_at(monkeypatch, sim_offered_refs()[0], path)
     return path
 
 
