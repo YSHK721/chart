@@ -111,6 +111,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _data_rows(path: Path) -> int:
+    """CSV のデータ行数（ヘッダを除く）。"""
+    return max(len(path.read_text(encoding="utf-8").splitlines()) - 1, 0)
+
+
 def _build(data_dir: Path, days: "list[pd.Timestamp]", refs) -> None:
     """``days`` の全域から組の M1 CSV を全構築する（既存の口を通す＝期待値を手で組まない）。"""
     tick_m1.build_m1_from_ticks_for_series(
@@ -350,6 +355,63 @@ def test_h7_a_day_without_material_at_the_head_does_not_block_the_days_after_it(
     assert all(v > 0 for v in healed.values()), (
         f"素材が無い日が窓に混ざったら当日の修復も止まった: {healed}"
     )
+
+
+def test_h11_a_series_whose_m1_does_not_exist_yet_is_not_created_by_the_heal(tmp_path):
+    """H-11: 既存 M1 が不在・空の系列は修復が作らない（系列の生成は書き手の仕事）。
+
+    修復が作ると、窓の幅（2 日）だけの CSV が本来の履歴の置き場に出来る。全構築・追記の口が
+    履歴から作るのを待つ（そちらは先端が無い系列を原子的置換で作る＝ISSUE-455 の自己修復）。
+    """
+    # Arrange
+    refs = _series_set()
+    days = [day(k) for k in range(2)]
+    data_dir = tmp_path / "empty"
+    for when in days:
+        put_day_of_spread_points(data_dir, when, _FULL)      # 素材はある。
+    (data_dir / f"{dataset_registry.series_of(refs[0])}_m1.csv").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+
+    # Act
+    healed = _heal(data_dir, days, refs)                     # M1 は 1 つも無い。
+
+    # Assert
+    assert healed == {ref: 0 for ref in refs}
+    assert [ref for ref in refs if _m1_path(ref, data_dir).exists()] == [], (
+        "修復が M1 を新規に作った（窓の幅だけの CSV が履歴の置き場に出来る）"
+    )
+
+
+def test_h10_a_window_entirely_after_the_tip_is_filled_at_the_end(tmp_path):
+    """H-10: 先端が窓より前（常駐が止まっていた形）でも窓の分が埋まり、昇順が保たれる。
+
+    ISSUE-534 の欠測 129 分はこの形である（常駐が止まっていた間の分）。既存行が窓に 1 つも
+    無いので突合する相手が居ない——それでも素材に在る分は書く（末尾への追加になる）。
+    """
+    # Arrange
+    refs = _series_set()
+    days = [day(k) for k in range(3)]
+    data_dir = tmp_path / "broken"
+    put_day_of_spread_points(data_dir, days[0], _FULL)
+    _build(data_dir, days[:1], refs)                   # 先端は days[0]。
+    for when in days[1:]:
+        put_day_of_spread_points(data_dir, when, _FULL)  # その後の 2 日は素材だけ在る。
+    before = {ref: _data_rows(_m1_path(ref, data_dir)) for ref in refs}
+
+    # Act
+    healed = _heal(data_dir, days[1:], refs)
+
+    # Assert
+    assert healed == {ref: len(_FULL) * 2 for ref in refs}
+    for ref in refs:
+        path = _m1_path(ref, data_dir)
+        dates = [
+            line.split(",")[0]
+            for line in path.read_text(encoding="utf-8").splitlines()[1:]
+        ]
+        assert dates == sorted(dates), f"{ref} の date が昇順でない（loader の前提が壊れる）"
+        assert _data_rows(path) == before[ref] + len(_FULL) * 2
 
 
 def test_h8_a_column_shape_that_disagrees_with_the_existing_header_is_not_written(

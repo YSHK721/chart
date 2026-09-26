@@ -111,8 +111,6 @@ def tail_bytes_since(csv_path: Path, since: "pd.Timestamp | str") -> "tuple[int,
         lower = len(header)                      # ヘッダ行末の次バイト＝データ領域の先頭。
         f.seek(0, io.SEEK_END)
         size = f.tell()
-        if size <= lower:
-            return size, b""                     # ヘッダのみ（データ 0 行）。
         pos, buf = size, b""
         while pos > lower:
             step = min(_BLOCK_SIZE, pos - lower)
@@ -131,6 +129,10 @@ def tail_bytes_since(csv_path: Path, since: "pd.Timestamp | str") -> "tuple[int,
                 return base + rel, region[rel:]
             if pos == lower:
                 return base, region              # 全データ行が since 以降。
+    # ここへ落ちるのは「データ行が 0 行」（ヘッダのみ・空ファイル）のときだけである
+    #   （``size == lower`` ならループ条件 ``pos > lower`` が最初から偽）。専用の早期返却は
+    #   置かない——置いても同じ値を返すため、変異（分岐を外す）が検定を素通しする死んだ分岐に
+    #   なる（2026-09-26 に変異試験で実測。等価変異＝検定の穴ではなく不要な分岐）。
     return size, b""
 
 
