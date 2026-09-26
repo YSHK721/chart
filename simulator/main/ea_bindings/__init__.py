@@ -29,6 +29,7 @@ from typing import Any
 
 from simulator.adapter.execution.tick_model_registry import consumes_market_data
 from simulator.main.ea_bindings import (
+    calc_probe,
     dataless,
     ma_slope,
     ma_slope_pending,
@@ -64,6 +65,7 @@ _EA_MODULES = (
     sma_touch_long,
     simple_touch_long,
     open_then_close_5m,
+    calc_probe,
 )
 
 #: ea_name → 束縛の登録表。キーは各 EA モジュールの宣言が持つ（ここで名前を写さない）。
