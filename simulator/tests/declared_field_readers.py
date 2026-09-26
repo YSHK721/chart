@@ -1,18 +1,18 @@
 """宣言した欄の読み手を構文木で数える計測器（テストヘルパ・**テストではない**）。
 
 なぜ在るか（ISSUE-535・実測 2026-09-26）:
-    `EngineBinding.known_ea_names` は**設定されるだけで読み手が 1 つも無い**まま残っていた。
+    「`EngineBinding.known_ea_names`」 は**設定されるだけで読み手が 1 つも無い**まま残っていた。
     出力は 1 ビットも変わらないため状態検証では原理的に落ちず、docstring だけが
     「N-01 の事前検証に使う」と嘘を言い続けた。同型の取り残しを次の DTO でも捕まえるため、
     「宣言した欄に読み手が在るか」を**構文木で**数える。
 
 なぜ名前だけでは足りないか（本件がまさにその形）:
-    ``known_ea_names`` という綴りは合流点の別 DTO（`RunScopeInputs`）で読まれている。
-    属性名だけを数えると、その読み手を `EngineBinding` の読み手と取り違えて緑になる。
+    「`known_ea_names`」 という綴りは合流点の別 DTO（「`RunScopeInputs`」）で読まれている。
+    属性名だけを数えると、その読み手を 「`EngineBinding`」 の読み手と取り違えて緑になる。
     したがって**属性の土台がどのクラスを指すか**を注釈から解いてから数える。
 
 測り方の限界（言えないことは言わない）:
-    本器の型解決は注釈・コンストラクタ呼出・反射（`fields` 等）に限る。注釈の無い戻り値を
+    本器の型解決は注釈・コンストラクタ呼出・反射（「`fields`」 等）に限る。注釈の無い戻り値を
     経由した読み手は解けない。解けない読み手は「読み手 0」と出る側に倒れる——すなわち
     **偽陽性**になりうるので、宣言側の範囲は偽陽性 0 を実測した範囲だけに限る
     （`simulator/tests/unit/test_declared_fields_have_readers.py` の docstring に根拠）。
@@ -182,7 +182,7 @@ def _tuple_member_types(annotation) -> "tuple | None":
 
 
 def called_name(node: ast.Call) -> "str | None":
-    """呼ばれたものの名前（``f()`` なら ``f``・``x.f()`` なら ``f``）。"""
+    """呼ばれたものの名前（関数呼出ならその関数名・メソッド呼出ならそのメソッド名）。"""
     called = node.func
     if isinstance(called, ast.Attribute):
         return called.attr
@@ -445,7 +445,7 @@ def verify_exemptions(exemptions, unread: "tuple[UnreadField, ...]") -> None:
     - もう当たらない除外も認めない（読み手ができた・欄が消えた）。残った除外は
       「既定で拾わない範囲」を静かに広げる。
 
-    `sim_offered` の先例と同じ規律である: 宣言の欠落を既定へ倒さず、宣言の側で止める。
+    「`sim_offered`」 の先例と同じ規律である: 宣言の欠落を既定へ倒さず、宣言の側で止める。
     """
     without_reason = sorted(key for key, reason in exemptions.items() if not str(reason).strip())
     if without_reason:

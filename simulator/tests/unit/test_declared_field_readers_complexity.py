@@ -12,7 +12,7 @@
 継ぎ目:
     ファイルを開く口と、そこから配られた量 … `simulator/tests/file_read_spy.py`
     （同じ Spy を手書き複製しない）。**使用**の側は本器自身のファイル列挙
-    （`declared_field_readers.python_files`）から引く——1 回の走査が要るソースは
+    （「`declared_field_readers.python_files`」）から引く——1 回の走査が要るソースは
     「範囲に在るファイル 1 つにつき 1 回」である。
 
 表明（**回数そのものは焼き込まない**）:
@@ -37,7 +37,7 @@ def _write(root, relative: str, source: str) -> None:
 
 
 def _dto_source(name: str, fields: int) -> str:
-    """欄 ``fields`` 個の DTO（最初の 1 欄だけ読み手が在る）。"""
+    """欄の数だけ欄を持つ DTO（最初の 1 欄だけ読み手が在る）。"""
     declared = "".join(f"    field_{i}: str\n" for i in range(fields))
     return (
         "from dataclasses import dataclass\n"
@@ -60,7 +60,7 @@ def _reader_source(name: str) -> str:
 
 
 def _tree(root, *, dtos: int, fields: int) -> None:
-    """DTO を ``dtos`` 本・各 ``fields`` 欄で置き、それぞれに読み手 1 本を添える。"""
+    """DTO を指定した本数・指定した欄数で置き、それぞれに読み手 1 本を添える。"""
     for index in range(dtos):
         name = f"Bundle{index}"
         _write(root, f"pkg/dto_{name.lower()}.py", _dto_source(name, fields))

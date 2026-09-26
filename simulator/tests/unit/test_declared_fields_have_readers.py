@@ -1,9 +1,9 @@
 """宣言した欄に読み手が無ければ落ちる（ISSUE-535・死んだ欄の再発防止）。
 
 何を解くか:
-    `EngineBinding.known_ea_names` は **設定されるだけで読み手が 1 つも無い**状態で残って
-    いた（ISSUE-525 で N-01 の判定源を合流点の `RunScopeInputs` へ移したとき、
-    `EngineBinding` 側の欄が読まれなくなった）。出力は 1 ビットも変わらないため、
+    「`EngineBinding.known_ea_names`」 は **設定されるだけで読み手が 1 つも無い**状態で残って
+    いた（ISSUE-525 で N-01 の判定源を合流点の 「`RunScopeInputs`」 へ移したとき、
+    「`EngineBinding`」 側の欄が読まれなくなった）。出力は 1 ビットも変わらないため、
     既存の状態検証は**原理的に落ちない**。しかも docstring は「N-01 の事前検証に使う」と
     書き続けており、宣言が嘘になっていた。
 
@@ -92,7 +92,7 @@ class TestAFieldWithAReaderIsNotReported:
     """
 
     def test_a_reader_reached_through_another_dto_field_counts(self, tmp_path):
-        """TC-002: `ctx.binding.field` の形（文脈 DTO が注入束を持つ・本番実在）。"""
+        """TC-002: 「`ctx.binding.field`」 の形（文脈 DTO が注入束を持つ・本番実在）。"""
         # Arrange
         _write(tmp_path, "pkg/dto.py", (
             "from dataclasses import dataclass\n"
@@ -123,7 +123,7 @@ class TestAFieldWithAReaderIsNotReported:
             exemptions={},
         )
 
-        # Assert: `Context.bundle` も `Bundle.reached` も読まれている。
+        # Assert: 「`Context.bundle`」 も 「`Bundle.reached`」 も読まれている。
         assert reported == ()
 
     def test_a_reader_iterating_a_declared_table_counts(self, tmp_path):
@@ -375,7 +375,7 @@ class TestAFieldWithAReaderIsNotReported:
         assert reported == ()
 
     def test_a_reader_inside_the_dto_itself_counts(self, tmp_path):
-        """TC-005: 自分の持ちものを自分の演算で読む形（`self.field`・本番実在）。"""
+        """TC-005: 自分の持ちものを自分の演算で読む形（「`self.field`」・本番実在）。"""
         # Arrange
         _write(tmp_path, "pkg/dto.py", (
             "from dataclasses import dataclass\n"
@@ -528,12 +528,12 @@ class TestExemptionsCannotBecomeAnEscapeHatch:
 
 
 class TestEveryDeclaredFieldInTheCompositionRootHasAReader:
-    """本番の門（ISSUE-535 の本体）。宣言側は `DECLARATION_SCOPE` の宣言 1 箇所から引く。"""
+    """本番の門（ISSUE-535 の本体）。宣言側は 「`DECLARATION_SCOPE`」 の宣言 1 箇所から引く。"""
 
     def test_no_declared_field_is_left_without_a_reader(self):
         """TC-015: Composition Root の全 DTO の全欄に読み手が在る。
 
-        撤去前は `EngineBinding.known_ea_names` で落ちる（読み手 0 の欄が在る）。
+        撤去前は 「`EngineBinding.known_ea_names`」 で落ちる（読み手 0 の欄が在る）。
         新しい DTO・新しい欄を足して読み手を書かなければ、同じようにここで落ちる。
         """
         # Arrange / Act
@@ -551,7 +551,7 @@ class TestEveryDeclaredFieldInTheCompositionRootHasAReader:
 class TestTheCountIsTypeAwareNotNameBased:
     """属性名だけを数える器では本件を捕まえられない（本件がまさにその形）。
 
-    ``known_ea_names`` は合流点の別 DTO では読まれている。名前だけを数えると、その読み手を
+    「`known_ea_names`」 は合流点の別 DTO では読まれている。名前だけを数えると、その読み手を
     こちらの読み手と取り違えて緑になる。変異 M3（土台の型を見ない器へ退化させる）は
     この検定だけが捕まえる。
     """
@@ -588,5 +588,5 @@ class TestTheCountIsTypeAwareNotNameBased:
             exemptions={},
         )
 
-        # Assert: 読み手が在るのは `Confluence` の側だけ。
+        # Assert: 読み手が在るのは 「`Confluence`」 の側だけ。
         assert [(f.dto, f.field) for f in reported] == [("Injected", "shared_name")]
