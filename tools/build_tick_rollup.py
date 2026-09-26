@@ -9,11 +9,12 @@
                既存 tick tree があれば最新取得日の翌日〜本日+1日（増分追記）。
                tree が空（データ無し）なら full-start〜本日+1日を**全期間取得**する。
                取得は :func:`tools.fetch_ticks_ymd.run`（DukascopyTickSource）へ委譲。
-  2. m1      : 取得済みティックから tick 由来 M1（``jp225_tick_m1.csv``）を生成する。
+  2. m1      : 取得済みティックから tick 由来 M1 を**組の全系列へ**生成する。
                既定は**増分追記**（既存 M1 の最終日より後の新しい日だけ集計し末尾へ追記＝
-               全 parquet を再走査しない・:func:`marketdata.tick_m1.append_m1_from_ticks`）。
-               初回（M1 不在）は自動で全構築へフォールバック。``--full`` で全再構築。
-  3. rollup  : M1 を上位足（5m..1M）へロールアップする。既定は**差分更新**（state 以降の追記
+               全 parquet を再走査しない・:func:`marketdata.tick_m1.append_m1_from_ticks_for_series`）。
+               日別 parquet を読んで畳むのは**系列の数に依らず 1 回**である（ISSUE-533 段階 3 の
+               前提工事）。初回（M1 不在）は自動で全構築へフォールバック。``--full`` で全再構築。
+  3. rollup  : 各系列の M1 を上位足（5m..1M）へロールアップする。既定は**差分更新**（state 以降の追記
                tail のみ・:func:`marketdata.rollup.incremental_update`）。初回（state 不在）は
                自動で ``stream_build`` へフォールバック。``--full`` で全再構築。出力は
                ``ref_prefix="jp225_tick"``・``DATA_DIR/rollups/jp225_tick/jp225_tick_<tf>.csv``。
@@ -110,20 +111,27 @@ def _fetch_ticks_run(start: dt.datetime, end: dt.datetime, root: Path) -> int:
 
 
 def _build_tick_m1(
-    start: dt.date, end: dt.date, *, ref: str, data_dir: Path, full_rebuild: bool
-) -> Path:
-    """M1 を生成する。既定は増分追記（新しい日だけ集計）、``full_rebuild`` で全再構築。
+    start: dt.date, end: dt.date, *, refs: Sequence[str], data_dir: Path, full_rebuild: bool
+) -> "dict":
+    """**組の全系列**の M1 を生成する。既定は増分追記（新しい日だけ集計）、``full_rebuild`` で全再構築。
 
-    増分は初回（M1 不在）に自動で全構築へフォールバックする（append_m1_from_ticks 内）。
+    日別 parquet を読んで畳むのは**系列の数に依らず 1 回**である（ISSUE-533 段階 3 の前提工事・
+    権威は marketdata.tick_m1 の ``*_for_series``）。系列ごとに 1 系列の口を呼ぶと、14 年ぶんの
+    parquet を系列の数だけ読んで畳むことになる（出力は正しいままなので状態検証では落ちない）。
+
+    増分は初回（M1 不在）に自動で全構築へフォールバックする（追記の口の内側）。
     価格基準は**渡さない**。登録済み ref では台帳が唯一の源であり、素材化の権威
     （``marketdata.tick_m1``）が ``ref`` から引く（ISSUE-511 段階 3 の段階 6・V-3）。書き手が
     引いて渡す形だと同じ事実が台帳と引数の 2 源になり、渡し忘れた書き手だけが既定（mid）で走る
     （その実例が V-6＝``marketdata/tools/tick_m1_cli.py`` だった）。
     """
-    from marketdata.tick_m1 import append_m1_from_ticks, build_m1_from_ticks
+    from marketdata.tick_m1 import (
+        append_m1_from_ticks_for_series,
+        build_m1_from_ticks_for_series,
+    )
 
-    fn = build_m1_from_ticks if full_rebuild else append_m1_from_ticks
-    return fn(start.isoformat(), end.isoformat(), ref=ref, data_dir=data_dir)
+    fn = build_m1_from_ticks_for_series if full_rebuild else append_m1_from_ticks_for_series
+    return fn(start.isoformat(), end.isoformat(), refs=refs, data_dir=data_dir)
 
 
 def _rollup_build(
@@ -209,8 +217,19 @@ class PipelineContext:
         return tick_root(self.data_dir)
 
     @property
-    def rollups_dir(self) -> Path:
-        """tick 派生ロールアップ専用 dir（``DATA_DIR/rollups/<ref>``）。
+    def refs(self) -> "Tuple[str, ...]":
+        """このパイプラインが作る**系列の組**（種 :attr:`ref` が指すティック木を読む全 ref）。
+
+        集合の所有者は台帳である（ISSUE-533 段階 3 の前提工事）。``ref`` は「どのティック木か」を
+        指す種であり、書く系列の集合ではない。照会は IO を 1 件も発行しない（台帳からの導出だけ）
+        ので、段ごとに引き直してもコストは無い。
+        """
+        from marketdata.dataset_registry import series_refs_of  # 遅延: import 副作用を実行時に限定
+
+        return series_refs_of(self.ref)
+
+    def rollup_dir_of(self, ref: str) -> Path:
+        """``ref`` の tick 派生ロールアップ専用 dir（``DATA_DIR/rollups/<series>``）。
 
         データ保全（重要）: ``stream_build`` は ref 非依存の固定名 ``rollup_state.json`` を
         ``out_dir`` へ無条件保存するため、既存 jp225_m1 ロールアップ（``DATA_DIR/rollups`` 直下・
@@ -221,7 +240,7 @@ class PipelineContext:
         """
         from marketdata.rollup_paths import ref_dir  # 遅延: import 副作用を実行時に限定
 
-        return ref_dir(self.ref, data_dir=self.data_dir)
+        return ref_dir(ref, data_dir=self.data_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -246,32 +265,43 @@ def stage_acquire(ctx: PipelineContext) -> int:
 def stage_m1(ctx: PipelineContext) -> int:
     """取得済みティックから tick 由来 M1 を生成する（既定は増分追記・--full で全再構築）。"""
     m1_end = ctx.end if ctx.end is not None else ctx.today
-    m1_path = _build_tick_m1(
-        ctx.full_start, m1_end, ref=ctx.ref, data_dir=ctx.data_dir, full_rebuild=ctx.full_rebuild
+    m1_paths = _build_tick_m1(
+        ctx.full_start, m1_end, refs=ctx.refs, data_dir=ctx.data_dir,
+        full_rebuild=ctx.full_rebuild,
     )
-    LOG.info("m1: %s を生成（%s）", m1_path, "全再構築" if ctx.full_rebuild else "増分追記")
+    LOG.info(
+        "m1: %s を生成（%s）",
+        "・".join(str(m1_paths[ref]) for ref in ctx.refs),
+        "全再構築" if ctx.full_rebuild else "増分追記",
+    )
     return 0
 
 
 def stage_rollup(ctx: PipelineContext) -> int:
-    """tick 由来 M1 を上位足へロールアップする（ref_prefix=jp225_tick）。"""
+    """**組の各系列**の M1 を上位足へロールアップする（系列ごとの専用サブ dir へ隔離）。
+
+    ロールアップは系列ごとに別の置き場・別の入力（その系列の M1 CSV）なので、ここに束ねられる
+    計算は無い（畳みと違って「1 回で済む共通部分」が無いことを、関数を分けずにループで示す）。
+    """
     from marketdata.dataset_registry import series_of
     from marketdata.tick_m1 import m1_csv_path
 
-    m1_path = m1_csv_path(ref=ctx.ref, data_dir=ctx.data_dir)
-    if not Path(m1_path).is_file():
-        raise PipelineError(
-            f"rollup: M1 が存在しません（{m1_path}）。先に m1 段を実行してください。"
-        )
-    ctx.rollups_dir.mkdir(parents=True, exist_ok=True)
     tfs = _rollup_timeframes()
-    series = series_of(ctx.ref)   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
-    _rollup_build(m1_path, tfs, ctx.rollups_dir, series, full_rebuild=ctx.full_rebuild)
-    LOG.info(
-        "rollup: %s -> %s/%s_<tf>.csv (%s・%s)",
-        m1_path, ctx.rollups_dir, series, ",".join(tfs),
-        "全再構築" if ctx.full_rebuild else "差分更新",
-    )
+    for ref in ctx.refs:
+        m1_path = m1_csv_path(ref=ref, data_dir=ctx.data_dir)
+        if not Path(m1_path).is_file():
+            raise PipelineError(
+                f"rollup: M1 が存在しません（{m1_path}）。先に m1 段を実行してください。"
+            )
+        out_dir = ctx.rollup_dir_of(ref)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        series = series_of(ref)   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
+        _rollup_build(m1_path, tfs, out_dir, series, full_rebuild=ctx.full_rebuild)
+        LOG.info(
+            "rollup: %s -> %s/%s_<tf>.csv (%s・%s)",
+            m1_path, out_dir, series, ",".join(tfs),
+            "全再構築" if ctx.full_rebuild else "差分更新",
+        )
     return 0
 
 

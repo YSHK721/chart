@@ -38,7 +38,14 @@ class _Spy:
 
 @pytest.fixture
 def spies(monkeypatch):
-    out = {name: _Spy() for name in ("append_m1_from_ticks", "build_m1_from_ticks")}
+    out = {
+        name: _Spy()
+        for name in (
+            "append_m1_from_ticks", "build_m1_from_ticks",
+            # 組の口（ISSUE-533 段階 3 の前提工事）。書き手はこちらを通る。
+            "append_m1_from_ticks_for_series", "build_m1_from_ticks_for_series",
+        )
+    }
     for name, spy in out.items():
         monkeypatch.setattr(tick_m1, name, spy)
     return out
@@ -51,7 +58,7 @@ def _live_append(tmp_path) -> None:
 def _rollup_build(tmp_path, *, full: bool, days: int = 1) -> None:
     start = dt.date(2026, 9, 1)
     btr._build_tick_m1(
-        start, start + dt.timedelta(days=days - 1), ref=btr.REF, data_dir=tmp_path,
+        start, start + dt.timedelta(days=days - 1), refs=(btr.REF,), data_dir=tmp_path,
         full_rebuild=full,
     )
 
@@ -78,12 +85,17 @@ def test_the_live_writer_passes_no_basis(spies, tmp_path):
     _live_append(tmp_path)
 
     # Assert
-    assert len(spies["append_m1_from_ticks"].calls) == 1   # 空振り防止（実際に呼んだ）
-    assert "price_basis" not in spies["append_m1_from_ticks"].calls[0]
+    calls = spies["append_m1_from_ticks_for_series"].calls
+    assert len(calls) == 1   # 空振り防止（実際に呼んだ）
+    assert "price_basis" not in calls[0]
 
 
 @pytest.mark.parametrize(
-    "full, entry", [(False, "append_m1_from_ticks"), (True, "build_m1_from_ticks")]
+    "full, entry",
+    [
+        (False, "append_m1_from_ticks_for_series"),
+        (True, "build_m1_from_ticks_for_series"),
+    ],
 )
 def test_the_pipeline_writer_passes_no_basis(spies, tmp_path, full, entry):
     """パイプラインの書き手（増分・全量）も ``price_basis`` を渡さない。"""

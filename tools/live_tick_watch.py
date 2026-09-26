@@ -8,11 +8,18 @@
 毎ループの実体（:func:`update_once`）:
   1. refresh : 当日（＋日跨ぎ直後は前日）の tick parquet を **全量再取得**して原子スワップする
                （:func:`refresh_days` が対象日・:func:`refresh_day_parquet` が取得＋原子上書き）。
-  2. m1      : tick 由来 M1（``jp225_tick_m1.csv``）を増分追記する。形成中の分バー
+  2. m1      : tick 由来 M1 を**組の全系列へ**増分追記する。形成中の分バー
                （``floor(now, "min")`` 以降）は ``until`` で除外し、確定値のみ書き込む
-               （:func:`marketdata.tick_m1.append_m1_from_ticks`）。
-  3. rollup  : M1 を上位足（5m..1M）へ差分更新する（``ref_prefix="jp225_tick"``・
-               ``marketdata.rollup.incremental_update``・専用サブ dir へ隔離）。
+               （:func:`marketdata.tick_m1.append_m1_from_ticks_for_series`）。
+  3. rollup  : 各系列の M1 を上位足（5m..1M）へ差分更新する
+               （``marketdata.rollup.incremental_update``・系列ごとの専用サブ dir へ隔離）。
+
+書く系列の組は台帳が決める（ISSUE-533 段階 3 の前提工事）:
+    :data:`REF` は「どのティック木か」を指す**種**であり、書く系列の集合ではない。集合は起動時に
+    1 回だけ台帳から引き（:func:`series_refs`）、同じタプルを列形照合・M1 追記・ロールアップ更新の
+    3 か所へ渡す。運用者が集合を名指せる CLI 引数は置かない——台帳の事実を運用者が再宣言できる形が、
+    MT5 側で spread 付き系列を 9 日間誰も publish しない凍結を生んだためである（依頼者裁定
+    2026-09-23）。日別 parquet を読んで畳むのは**系列の数に依らず 1 回**である。
 
 起動時 1 回（:func:`catch_up`）: 既存 tick tree の最新取得日の翌日〜**昨日**までの丸日を
 ``tools.fetch_ticks_ymd.run`` で追い付き取得する（当日は毎分の full-refresh が担当）。
@@ -21,7 +28,7 @@
   - tick parquet の再取得は同一ディレクトリの一時ファイルへ書いてから ``os.replace`` で原子
     スワップする（reader は torn な中間状態を観測しない）。取得 0 件の日は **既存 parquet を
     温存**して上書きしない（休場・一過性障害の防御）。
-  - 派生物（M1・ロールアップ）は新 ref ``jp225_tick`` 専用ファイルとして生成し、既存
+  - 派生物（M1・ロールアップ）は組の各系列の専用ファイルとして生成し、既存
     ``jp225_m1.csv`` 系には触れない（読取＋新規追加のみ）。
 
 クリーンアーキ / 依存方向:
@@ -166,8 +173,43 @@ def _latest_tick_day(ticks_root: Path) -> Optional[dt.date]:
         return None
 
 
-def _append_m1(start: str, end: str, until: pd.Timestamp, *, data_dir: Path) -> Path:
-    """tick 由来 M1 を増分追記する（形成中分バーは until で除外・ref=jp225_tick）。
+def series_refs(seed: str = REF) -> Tuple[str, ...]:
+    """種（``seed``）が指すティック木を読む**系列の組**を台帳から引く（ISSUE-533 段階 3 の前提工事）。
+
+    集合の所有者は台帳であって運用者ではない。ここには規則は無い（照会は
+    ``marketdata.dataset_registry.series_refs_of`` へ委譲する）。答えは起動時に 1 回だけ引き、
+    同じタプルを列形照合・M1 追記・ロールアップ更新へ渡す。周期ごとに引き直すと「起動時に照合した
+    集合」と「実際に書く集合」が別物になりうる（照合は緑のまま、書く側だけが増える）。
+
+    組を名指す CLI 引数は**置かない**。MT5 側では運用者が集合を名指せたため、台帳が 2 系列を
+    宣言しても常駐は片方しか書かず、spread 付き系列が 9 日間凍結した（依頼者裁定 2026-09-23）。
+
+    引けないとき（台帳の記入漏れ・その木を読む ref が無い）は**握らずに送出する**。MT5 側が
+    使用法エラーの終了コードで止めるのは ``--ref`` が運用者の入力だからであり、こちらの種はモジュール定数
+    （:data:`REF`）なので、引けないのは運用の誤りではなく台帳・コードの欠陥である。錠はまだ
+    取っていないので、送出しても先行の書き手には触らない。
+    """
+    from marketdata.dataset_registry import series_refs_of
+
+    return series_refs_of(seed)
+
+
+def _refs_or_ledger(refs: "Optional[Sequence[str]]") -> Tuple[str, ...]:
+    """``refs`` が未指定なら台帳から引く（**呼出側が組を名指す口ではない**・既定は台帳の答え）。"""
+    return series_refs(REF) if refs is None else tuple(refs)
+
+
+def _append_m1(
+    start: str, end: str, until: pd.Timestamp, *, data_dir: Path,
+    refs: "Optional[Sequence[str]]" = None,
+) -> "dict":
+    """tick 由来 M1 を**組の全系列へ**増分追記する（形成中分バーは until で除外）。
+
+    日別 parquet を読んで畳むのは**系列の数に依らず 1 回**である（権威は
+    ``marketdata.tick_m1.append_m1_from_ticks_for_series``）。系列ごとに 1 系列の口を呼ぶと、同じ
+    parquet を系列の数だけ読んで畳む——出力は正しいままなので状態検証では原理的に落ちない
+    （ISSUE-450 と同型）。その不在は ``tools/tests/test_live_tick_watch_series_set.py`` の CX-1 が
+    Test Spy で固定する。
 
     価格基準は**渡さない**。登録済み ref では台帳（marketdata/dataset_registry.py の
     ``price_basis``）が唯一の源であり、素材化の権威（``marketdata.tick_m1``）が ref から引く
@@ -175,9 +217,11 @@ def _append_m1(start: str, end: str, until: pd.Timestamp, *, data_dir: Path) -> 
     ため、台帳を切り替えれば確定足と形成中が同じ基準のまま動く。書き手が引いて渡す形だと同じ事実が
     台帳と引数の 2 源になり、渡し忘れた書き手だけが既定（mid）で走る。
     """
-    from marketdata.tick_m1 import append_m1_from_ticks
+    from marketdata.tick_m1 import append_m1_from_ticks_for_series
 
-    return append_m1_from_ticks(start, end, until=until, ref=REF, data_dir=data_dir)
+    return append_m1_from_ticks_for_series(
+        start, end, until=until, refs=_refs_or_ledger(refs), data_dir=data_dir
+    )
 
 
 #: 末尾整合の自己修復（ISSUE-488）の実行周期（秒）。検査は M1 末尾 probe（固定行数）に有界
@@ -188,11 +232,17 @@ _HEAL_EVERY_SECONDS = 1800.0
 _heal_next_monotonic = 0.0
 
 
-def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
+def _heal_if_due(
+    data_dir: Path, refs: "Optional[Sequence[str]]" = None, *, force: bool = False
+) -> "list[str]":
     """ロールアップ末尾整合の機械的検査＋自己修復（周期実行・ISSUE-488 根治）。
 
     検査・修復の実体は :func:`marketdata.rollup.heal_tail_gaps`（唯一の定義）。ここは周期の
     持ち主であるだけ。修復した TF はログに残す（無言で直さない）。
+
+    組の各系列は別の置き場（``rollups/<series>/``）と別の M1 を持つので、束ねられる計算は無い
+    （系列ごとに回すだけ）。周期の判定は組で 1 回である——系列ごとに周期を持つと、系列が増える
+    たびに検査の発行が増える。
     """
     global _heal_next_monotonic
     now = time.monotonic()
@@ -204,38 +254,47 @@ def _heal_if_due(data_dir: Path, *, force: bool = False) -> "list[str]":
     from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
 
-    out_dir = ref_dir(REF, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
-    out_dir.mkdir(parents=True, exist_ok=True)
-    healed = heal_tail_gaps(
-        m1_csv_path(ref=REF, data_dir=data_dir), _rollup_timeframes(), out_dir,
-        ref_prefix=series_of(REF),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
-    )
-    if healed:
-        LOG.warning("rollup 自己修復を実施: %s", ", ".join(healed))
+    healed: "list[str]" = []
+    for ref in _refs_or_ledger(refs):
+        out_dir = ref_dir(ref, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fixed = heal_tail_gaps(
+            m1_csv_path(ref=ref, data_dir=data_dir), _rollup_timeframes(), out_dir,
+            ref_prefix=series_of(ref),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
+        )
+        if fixed:
+            LOG.warning("rollup 自己修復を実施（%s）: %s", ref, ", ".join(fixed))
+        healed.extend(f"{ref}:{tf}" for tf in fixed)
     return healed
 
 
-def _rollup_update(data_dir: Path):
-    """tick 由来 M1 を上位足へ差分更新する（ref_prefix=jp225_tick・専用サブ dir へ隔離）。
+def _rollup_update(data_dir: Path, refs: "Optional[Sequence[str]]" = None) -> "dict":
+    """組の各系列の M1 を上位足へ差分更新する（系列ごとの専用サブ dir へ隔離）。
 
     差分更新の前に、周期条件つきで末尾整合の検査＋自己修復（ISSUE-488）を通す。修復が先なのは
     増分（速い経路）が「既存末尾は正しい」前提で末尾 1 行しか触らないため（壊れた土台の上に
     差分を積まない）。
+
+    ロールアップは系列ごとに別の置き場・別の入力（その系列の M1 CSV）なので、ここに束ねられる
+    計算は無い（畳みと違って「1 回で済む共通部分」が無いことを、関数を分けずにループで示す）。
     """
     from marketdata.dataset_registry import series_of
     from marketdata.rollup import RollupState, incremental_update
     from marketdata.rollup_paths import ref_dir
     from marketdata.tick_m1 import m1_csv_path
 
-    _heal_if_due(data_dir)
-    out_dir = ref_dir(REF, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
-    out_dir.mkdir(parents=True, exist_ok=True)
-    m1_path = m1_csv_path(ref=REF, data_dir=data_dir)
-    state = RollupState.load(out_dir)
-    return incremental_update(
-        m1_path, state, _rollup_timeframes(), out_dir,
-        ref_prefix=series_of(REF),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
-    )
+    refs = _refs_or_ledger(refs)
+    _heal_if_due(data_dir, refs)
+    states = {}
+    for ref in refs:
+        out_dir = ref_dir(ref, data_dir=data_dir)   # 配置の単一権威（ISSUE-502 D-16）。
+        out_dir.mkdir(parents=True, exist_ok=True)
+        m1_path = m1_csv_path(ref=ref, data_dir=data_dir)
+        states[ref] = incremental_update(
+            m1_path, RollupState.load(out_dir), _rollup_timeframes(), out_dir,
+            ref_prefix=series_of(ref),   # 保存物の名前（台帳・ISSUE-511 段階 1d）。
+        )
+    return states
 
 
 # --------------------------------------------------------------------------- #
@@ -330,28 +389,35 @@ def catch_up(data_dir: Path, today: dt.date, *, full_start: dt.date) -> int:
 # 1 ループの実体（refresh → m1 → rollup）
 # --------------------------------------------------------------------------- #
 def update_once(
-    now: dt.datetime, data_dir: Path, *, interval: int, full_start: dt.date = _DEFAULT_FULL_START
+    now: dt.datetime, data_dir: Path, *, interval: int,
+    full_start: dt.date = _DEFAULT_FULL_START, refs: "Optional[Sequence[str]]" = None,
 ) -> None:
     """1 ループを実行する（当日 tick 再取得 → M1 増分追記 → rollups 差分更新）。
+
+    ``refs`` は起動時に 1 回だけ台帳から引いた系列の組（:func:`series_refs`）である。:func:`_run`
+    は必ず渡す——同じタプルを列形照合・M1 追記・ロールアップ更新で使うためで、周期ごとに引き直すと
+    「起動時に照合した集合」と「実際に書く集合」が別物になりうる。省略した呼出でも集合の出所は
+    台帳のままである（既定が :func:`series_refs` の答えであり、呼出側が組を名指す口ではない）。
 
     (a) :func:`refresh_days` の各日を :func:`refresh_day_parquet` で全量再取得し原子スワップ、
     (b) :func:`_append_m1` で ``full_start``〜``today+1`` を増分追記（``until=floor(now, "min")``
         で形成中分バーを除外）、(c) :func:`_rollup_update` で上位足を差分更新する。
 
     m1 の ``start`` に当日でなく ``full_start`` を渡すのは、実際の追記窓の決定を
-    ``append_m1_from_ticks`` の resume 規則（``eff_start = max(既存最終バー日, start)``＝
+    追記の口（marketdata.tick_m1）の resume 規則（``eff_start = max(既存最終バー日, start)``＝
     最終バー日から再読込・``index > 最終 date`` のみ追記）へ委ねるため。既存 M1 が数日前で
     停止していても catch_up 済みの丸日 parquet から欠損日を自己修復でき（当日 start だと
     その間の日が永久欠落する）、定常運転では最終バー日≒当日のため読むのは当日 parquet のみ。
     """
     data_dir = Path(data_dir)
+    refs = _refs_or_ledger(refs)
     days = refresh_days(now, interval)
     for day in days:
         refresh_day_parquet(day, data_dir)
     end = now.date() + dt.timedelta(days=1)  # today+1（半開の m1 集計終端）。
     until = pd.Timestamp(now).floor("min")  # 形成中分バー（>= until）を確定値として書かない。
-    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir)
-    _rollup_update(data_dir)
+    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir, refs=refs)
+    _rollup_update(data_dir, refs)
 
 
 
@@ -461,16 +527,22 @@ def _cursor_ms_of(df: "pd.DataFrame | None", now: dt.datetime) -> int:
     return int((pd.Timestamp(now, tz="UTC").timestamp() - 30 * 60) * 1000)
 
 
-def _chain_m1_rollup(now: dt.datetime, data_dir: Path, full_start: dt.date) -> None:
+def _chain_m1_rollup(
+    now: dt.datetime, data_dir: Path, full_start: dt.date,
+    refs: "Optional[Sequence[str]]" = None,
+) -> None:
     """分確定の連鎖処理: M1 増分追記（形成中分バー除外）→ rollups 差分更新（update_once と同一）。
 
     until は ``floor(now - 猶予12s)``: 分境界直後の末尾 tick 未着（feed 遅延）を待ってから
     確定する（欠けた確定バーを焼かない・ISSUE-161 ストリーミング化の正確性ガード）。
+
+    ``refs`` は :func:`update_once` と同じ意味（起動時に 1 回だけ引いた組）。
     """
     end = now.date() + dt.timedelta(days=1)
     until = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
-    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir)
-    _rollup_update(data_dir)
+    refs = _refs_or_ledger(refs)
+    _append_m1(full_start.isoformat(), end.isoformat(), until, data_dir=data_dir, refs=refs)
+    _rollup_update(data_dir, refs)
 
 
 def stream_loop(
@@ -478,6 +550,7 @@ def stream_loop(
     *,
     interval: float = STREAM_DEFAULT_INTERVAL,
     full_start: dt.date = _DEFAULT_FULL_START,
+    refs: "Optional[Sequence[str]]" = None,
 ) -> None:
     """増分カーソルストリーミング常駐ループ（参照実装踏襲・ISSUE-161 根治）。
 
@@ -499,7 +572,8 @@ def stream_loop(
     refresh_day_parquet(today, data_dir)                 # スキーマ正の seed（空なら温存）
     day_df = _load_day_frame(today, data_dir)
     cursor = _cursor_ms_of(day_df, now)
-    _chain_m1_rollup(now, data_dir, full_start)          # 起動直後に確定分を追い付き
+    refs = _refs_or_ledger(refs)
+    _chain_m1_rollup(now, data_dir, full_start, refs)    # 起動直後に確定分を追い付き
     last_minute = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
     last_reconcile = time.monotonic()
     backoff = float(interval)
@@ -527,7 +601,7 @@ def stream_loop(
                 cursor = int(rows[-1][0])
             minute = pd.Timestamp(now - dt.timedelta(seconds=_STREAM_M1_GRACE_SECONDS)).floor("min")
             if minute > last_minute:                     # 分確定（猶予後）の瞬間だけ M1/rollup を連鎖
-                _chain_m1_rollup(now, data_dir, full_start)
+                _chain_m1_rollup(now, data_dir, full_start, refs)
                 last_minute = minute
             if time.monotonic() - last_reconcile >= _STREAM_RECONCILE_SECONDS:
                 refresh_day_parquet(today, data_dir)     # 自己修復（空なら温存）
@@ -641,9 +715,14 @@ def _run(args: argparse.Namespace) -> int:
     #   列形の食い違いを検出して止める。単一書き手ロックより**前**に置くのは、--takeover が先行の
     #   書き手へ SIGTERM を送ってから止まると、供給を止めたうえで自分も終わることになるため
     #   （照合は読むだけで何も書かない）。
+    # 書く系列の組は台帳が決める（ISSUE-533 段階 3 の前提工事）。起動時に 1 回だけ引き、同じ
+    #   タプルを列形照合・M1 追記・ロールアップ更新へ渡す。照合は**組の全 ref** に掛ける——種だけに
+    #   掛けると、種でない系列の食い違いが起動を素通りして周期の中で初めて落ちる。
     from marketdata.tick_m1 import check_series_schema
 
-    check_series_schema(REF, data_dir=data_dir)
+    refs = series_refs(REF)
+    for ref in refs:
+        check_series_schema(ref, data_dir=data_dir)
     # 単一書き手ロック（ISSUE-488 根治）: 派生物へ書くどのモードよりも先に獲得する。
     #   返り値の参照をプロセス存命中保持する（GC で閉じるとロックが外れる）。
     try:
@@ -662,20 +741,30 @@ def _run(args: argparse.Namespace) -> int:
                 f"--stream-interval は {STREAM_MIN_INTERVAL} 秒以上を指定してください"
                 f"（指定値: {args.stream_interval}・過剰ポーリング抑止）"
             )
-        stream_loop(data_dir, interval=args.stream_interval, full_start=args.full_start)
+        stream_loop(
+            data_dir, interval=args.stream_interval, full_start=args.full_start, refs=refs,
+        )
         return 0
 
     if args.once:
-        update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)
+        update_once(
+            _utc_now(), data_dir, interval=args.interval, full_start=args.full_start,
+            refs=refs,
+        )
         return 0
 
     # 継続ポーリング: 中立核の run_watch（例外はログして次インターバル継続・KeyboardInterrupt 正常終了）。
     from common.watch_loop import run_watch
 
     def _update() -> None:
-        update_once(_utc_now(), data_dir, interval=args.interval, full_start=args.full_start)
+        update_once(
+            _utc_now(), data_dir, interval=args.interval, full_start=args.full_start,
+            refs=refs,
+        )
 
-    LOG.info("live_tick_watch 開始（interval=%ds・ref=%s）", args.interval, REF)
+    LOG.info(
+        "live_tick_watch 開始（interval=%ds・系列 %s）", args.interval, "・".join(refs)
+    )
     return run_watch(_update, interval=args.interval, fatal=_fatal_watch_errors())
 
 

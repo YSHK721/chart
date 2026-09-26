@@ -198,7 +198,7 @@ def test_the_stream_loop_does_not_swallow_the_mismatch(monkeypatch, tmp_path):
 
     chained: "list[int]" = []
 
-    def _chain(now, data_dir, full_start) -> None:
+    def _chain(now, data_dir, full_start, refs=None) -> None:
         chained.append(len(chained))
         if len(chained) >= 2:            # 1 回目は起動直後の追い付き、2 回目が周期の中。
             raise tick_m1.SpreadSchemaMismatch("周期の中で検出した列形の食い違い")

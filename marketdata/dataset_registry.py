@@ -487,6 +487,32 @@ def refs_of_tick_token(token: "str | None") -> "tuple[str, ...]":
     return refs
 
 
+def series_refs_of(seed: "str | None") -> "tuple[str, ...]":
+    """種（``seed``）の ref が指すティック木を読む**系列の組**を引く（ISSUE-533 段階 3 の前提工事）。
+
+    :func:`tick_tree_token` と :func:`refs_of_tick_token` の合成であり、新しい規則は持たない。
+    合成をここに置くのは、供給常駐が 2 本（``tools/live_tick_watch.py`` と
+    ``tools/mt5_tick_watch.py``）あり、どちらも「種 → 書く系列の組」を要るからである。合成点
+    （tools）は規則を持たないと宣言している（``tools/__init__.py``）ので、2 本が同じ 2 行を各自に
+    持つと、片方だけ直したときにもう片方が黙って別の集合を書く。
+
+    Args:
+        seed: 種の datasetRef。「どのティック木か」を指すだけであり、集合の決定権は持たない
+            （運用者が台帳の事実を再宣言できる形そのものが、spread 付き系列を 9 日間誰も
+            publish しない凍結を生んだ・依頼者裁定 2026-09-23）。
+
+    Returns:
+        その木を読む datasetRef のタプル（並びは台帳の宣言順）。
+
+    Raises:
+        TickTokenMissing: 種が ``tick`` なのに ``tick_token`` が未記入（:func:`tick_tree_token`）。
+        ValueError: 種がティック木を持たない（``tick`` が False・台帳に無い）ため ``None`` で
+            照会になった場合、およびその木を読む ref が台帳に 1 件も無い場合
+            （:func:`refs_of_tick_token`）。**空のタプルを返さない**。
+    """
+    return refs_of_tick_token(tick_tree_token(seed))
+
+
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
@@ -499,6 +525,7 @@ __all__ = [
     "tick_price_basis",
     "price_basis_of_tick_token",
     "refs_of_tick_token",
+    "series_refs_of",
     "tick_vendor",
     "series_of",
     "spread_point_snapshot_of",
