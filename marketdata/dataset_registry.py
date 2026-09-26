@@ -189,6 +189,49 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # Dukascopy の配信（marketdata.fetch_ticks_since）だけから作られていた。
         vendor="dukascopy",
     ),
+    # JP225 1分足（Dukascopy ティック由来・**spread 列つき**）。ISSUE-533 段階 3 の前提工事で
+    # 足した記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
+    #
+    # jp225_tick に倣う（同じ木・同じ基準・同じベンダ・ロールアップ経路・同じ data_start）。違うのは
+    # 置き場（path・series）と宣言だけで、この関係は先例 jp225_mt5 ↔ jp225_mt5_spread と同一である。
+    # 関係そのものは marketdata/tests/test_dukascopy_spread_series_ledger.py の D-2（記述子の全欄の
+    # 差分）・D-3（置き場の名前）・D-4（宣言の所在）が、台帳に在る対**すべて**に対して固定する
+    # （リテラルの対応表は持たない＝欄が 1 つ増えても比較対象に自動で入る）。
+    #
+    # 名前（ref は jp225_tick_spread・series は jp225_tick_bid_spread）の根拠:
+    #   1. ref 名は先例と同じ「<base>_spread」。base は jp225_tick である。
+    #   2. series（保存物の名前）は先例と同じ「<base の series>_spread」。jp225_tick の series は
+    #      ISSUE-511 段階 1d で jp225_tick_bid になっているので、対称形は jp225_tick_bid_spread
+    #      であって jp225_tick_spread ではない。ref 名をそのまま置き場にすると、bid で畳んだ
+    #      保存物だけが基準を名乗らないファイル名になり、旧 mid の jp225_tick_m1.csv と
+    #      並んだときにどちらの基準か読めなくなる。
+    #   3. どちらも台帳の中で一意である（D-5 が機械的に確かめる）。
+    #
+    # 気配幅を数える point の所在（spread_point_snapshot）を MT5 側と**同じ組**にしている理由:
+    #   銘柄仕様スナップショットは marketdata/symbol_specs/ に OANDA-Japan-MT5-Live/JP225 の 1 件
+    #   しか実在せず（Dukascopy の仕様スナップショットは無い）、point の値をここへ綴ることは
+    #   禁じられている（値の唯一源はスナップショット）。加えて spread 列の用途は ISSUE-533 の
+    #   「気配幅を供給元どまたぎで比べる」ことであり、同じ単位（同じ point）で数えなければ
+    #   比較にならない。読み手（simulator の ask = bid + spread × point_size）も同じ組から
+    #   point_size を引く。**別の組を宣言したくなったら、まずそのスナップショットを採取する**
+    #   （既定値へ落ちる経路は無い＝宣言した組が読めなければ SnapshotError で止まる）。
+    #
+    # 実データ（jp225_tick_bid_spread_m1.csv とロールアップ）は**本段では作らない**（生成は依頼者が
+    # 別段で実行する）。既存ファイルの無い置き場では起動時照合 tick_m1.check_series_schema が
+    # 照合せず素通しする（先例の N-6 と同じ規則）。
+    "jp225_tick_spread": DatasetDescriptor(
+        path=DATA_DIR / "jp225_tick_bid_spread_m1.csv",
+        series="jp225_tick_bid_spread",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        tick=True,
+        data_start=dt.date(2012, 6, 14),
+        tick_token="JP225",
+        price_basis="bid",
+        vendor="dukascopy",
+        spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
+    ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # 実体は設計 §5: <DATA_DIR>/jp225_mt5_m1.csv と rollups/jp225_mt5/。
     # ISSUE-447 段階 1・設計 §9 A-1（承認 2026-09-01）では tick=False（足内更新の MT5 対応＝A-6 は

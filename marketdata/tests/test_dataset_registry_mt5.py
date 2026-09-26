@@ -91,10 +91,11 @@ def test_既存refの記述子は1バイトも動いていない():
     assert r["jp225_tick"].path == DATA_DIR / "jp225_tick_bid_m1.csv"
     assert (r["jp225_tick"].rollup, r["jp225_tick"].tick) == (True, True)
     assert r["sample"].path.name == "ohlcv.csv"
-    # ティック由来は 3 つ（ISSUE-512 段階 3 で jp225_mt5、ISSUE-511 段階 3 の段階 7a で
-    # spread 列つきの jp225_mt5_spread が加わった）。
+    # ティック由来は 4 つ（ISSUE-512 段階 3 で jp225_mt5、ISSUE-511 段階 3 の段階 7a で
+    # spread 列つきの jp225_mt5_spread、ISSUE-533 段階 3 の前提工事で Dukascopy 側の対
+    # jp225_tick_spread が加わった）。
     assert dataset_registry.tick_refs() == frozenset(
-        {"jp225_tick", "jp225_mt5", "jp225_mt5_spread"}
+        {"jp225_tick", "jp225_tick_spread", "jp225_mt5", "jp225_mt5_spread"}
     )
 
 

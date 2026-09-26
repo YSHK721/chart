@@ -149,11 +149,12 @@ def test_the_ledger_answers_the_declared_snapshot_and_none_otherwise(tmp_path, m
 # 2. 値ピン（本段では実データを変えない）
 # --------------------------------------------------------------------------- #
 def test_only_the_new_spread_series_declares_a_spread_point():
-    """宣言を持つのは spread 列つきの新系列ただ 1 つ（ISSUE-511 段階 3 の段階 7a）。
+    """宣言を持つのは spread 列つきの新系列だけ（ISSUE-511 段階 3 の段階 7a・ISSUE-533 段階 3）。
 
-    段階 7a より前はここが ``{}``（宣言 0 件）だった。新系列 ``jp225_mt5_spread`` を足したので
-    **閉じた集合のまま** 1 件へ更新する（``in`` や「含む」へ緩めない。緩めると、宣言が別の既存
-    系列へ漏れて既存 CSV の列形が変わっても落ちなくなる＝R-2/Y-2 の再来を検出できない）。
+    段階 7a より前はここが ``{}``（宣言 0 件）だった。``jp225_mt5_spread`` を足して 1 件になり、
+    ISSUE-533 段階 3 の前提工事で Dukascopy 側の対 ``jp225_tick_spread`` を足して 2 件になった。
+    **閉じた集合のまま**更新する（``in`` や「含む」へ緩めない。緩めると、宣言が別の既存系列へ
+    漏れて既存 CSV の列形が変わっても落ちなくなる＝R-2/Y-2 の再来を検出できない）。
     """
     # Arrange / Act
     declared = {
@@ -163,7 +164,10 @@ def test_only_the_new_spread_series_declares_a_spread_point():
     }
 
     # Assert
-    assert declared == {"jp225_mt5_spread": (_SERVER, _SYMBOL)}
+    assert declared == {
+        "jp225_tick_spread": (_SERVER, _SYMBOL),
+        "jp225_mt5_spread": (_SERVER, _SYMBOL),
+    }
 
 
 # --------------------------------------------------------------------------- #

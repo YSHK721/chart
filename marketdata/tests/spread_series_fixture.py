@@ -17,8 +17,10 @@
         （触ると、記憶の持ち方を変えただけで検定が「失敗」ではなく「エラー」になる）。
     register_tick_ref / snapshot_point
         合成 ref の台帳への一時登録と、宣言した組の point（既存の公開経路で引く期待値）。
-    day / put_day / put_days
+    day / put_day / put_days / put_day_of_spread_points
         合成ティックを tick 木へ置く（すべて呼出側が渡す tmp_path の下）。
+        put_day は 1 分内の幅が一定、put_day_of_spread_points は**分内で幅が変わる**
+        （分内 min を first / last / max / mean へ変える変異を素通ししないための素材）。
     run_writer / header_of
         build / append を同じ引数で呼ぶ口と、出力 CSV の先頭行。
     spy / spy_snapshot_reads / spy_spent_points / used_reads
@@ -29,6 +31,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 import pytest
@@ -93,6 +96,17 @@ def put_day(data_dir: Path, when: pd.Timestamp, n_minutes: int = 2) -> None:
         (when + pd.Timedelta(minutes=m, seconds=s), 66000.0 + s * 0.1, 66007.0 + s * 0.1 + m * 0.1)
         for m in range(n_minutes) for s in (5, 30, 55)
     ]
+    _write_tick_day(data_dir, when, rows)
+
+
+def _write_tick_day(
+    data_dir: Path, when: pd.Timestamp, rows: "Sequence[tuple[pd.Timestamp, float, float]]"
+) -> None:
+    """``(時刻, bid, ask)`` の並びを ``when`` の日別 parquet へ書く（合成ティック木の書込点）。
+
+    合成ティックを置く関数が 2 つ（:func:`put_day` / :func:`put_day_of_spread_points`）あるので、
+    列名・tz・置き場の解決はここ 1 箇所に置く（書き写すと片方だけ直った瞬間に別の木を作る）。
+    """
     frame = pd.DataFrame({
         "timestamp": pd.to_datetime([r[0] for r in rows]).tz_localize("UTC"),
         "bidPrice": [r[1] for r in rows],
@@ -101,6 +115,30 @@ def put_day(data_dir: Path, when: pd.Timestamp, n_minutes: int = 2) -> None:
     p = tick_m1.day_parquet_path(when, symbol=TICK_TREE, data_dir=data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(p)
+
+
+def put_day_of_spread_points(
+    data_dir: Path, when: pd.Timestamp, widths_by_minute: "Sequence[Sequence[int]]"
+) -> None:
+    """``widths_by_minute[m]`` の各整数 points を気配幅に持つティックを ``when`` の m 分へ置く。
+
+    :func:`put_day` との違いは、**分内で気配幅が変わる**ことである。put_day は 1 分内の 3 本の
+    幅が等しいので、分内 min を first / last / max / mean へ変える変異を素通しする。
+
+    価格は ``bidPrice`` がティックごとに 0.05 ずつ動き、``askPrice`` は
+    ``bidPrice + points × point``（point は :func:`snapshot_point` の値）である。呼出側は割り算を
+    1 度もせずに期待値（その分の spread ＝ ``min(widths_by_minute[m])``）を持てる——検定が丸めの
+    規則を書き写すと、規則を変えた変異を検定も一緒に追随してしまう。
+    """
+    point = snapshot_point()
+    rows = [
+        (when + pd.Timedelta(minutes=m, seconds=5 + 25 * k),
+         66000.0 + 0.1 * m + 0.05 * k,
+         66000.0 + 0.1 * m + 0.05 * k + point * width)
+        for m, widths in enumerate(widths_by_minute)
+        for k, width in enumerate(widths)
+    ]
+    _write_tick_day(data_dir, when, rows)
 
 
 def put_days(data_dir: Path, n_days: int) -> "list[pd.Timestamp]":
