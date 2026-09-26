@@ -113,7 +113,6 @@ class EngineBinding:
     symbol / period / data_path: 実行対象データセットの識別（`.ini` の値との整合を検査する）。
                          ``data_path`` の ``None`` は「バー系列を供給しない」の意であり、
                          規則 S（`MATH_CALCULATIONS` ⇔ バー系列なし）の判定入力になる。
-    known_ea_names:      実行可能な EA 名の集合（N-01 の事前検証に使う）。
     settlement_currency: 銘柄の決済通貨（D-10）。**既定値を持たない**——「たぶん JPY」の
                          ような推定を層内に置くと銘柄仕様の単一ソース性が壊れ、通貨不一致の
                          run が沈黙で通る。
@@ -130,6 +129,11 @@ class EngineBinding:
                          建値基準は含まない——値の出所は戦略の宣言ただ 1 つであり、
                          決定論設定の語彙から外してある（ISSUE-533 段階 2）。
 
+    実行可能な EA 名の集合を**持たない**理由（ISSUE-535）: N-01（未登録 EA 名の遮断）の
+    判定源は合流点が運ぶ `RunScopeInputs.known_ea_names` であり、本注入束ではない
+    （ISSUE-525 で合流点へ移した）。ここに同じ集合を置くと、設定されるだけで誰も読まない
+    欄になる——実際にそうなっていた。同じ事実の置き場所を 2 つ持たない。
+
     `RunProfile`（`sim_ui`）を受けない理由: `simulator/main` から `simulator/sim_ui` への
     参照は 0 件（実測）であり、逆向き（`sim_ui/main/run_job.py` → `simulator.main`）が実在
     する。`RunProfile` を持つとパッケージ循環を新設するため、変換は `sim_ui` 側の責務とする。
@@ -139,7 +143,6 @@ class EngineBinding:
     symbol: str
     period: str
     data_path: "str | None"
-    known_ea_names: "frozenset[str]"
     settlement_currency: str
     ea_params: "Mapping[str, Any]"
     leverage: float

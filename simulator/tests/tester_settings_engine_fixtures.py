@@ -108,13 +108,6 @@ def jp225_leverage() -> float:
     return float(build_run_options_port().datasets()[0].leverage)
 
 
-def catalog_ea_names() -> frozenset[str]:
-    """N-01 の判定源（実行可能な EA 名の集合）。カタログが権威。"""
-    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
-
-    return frozenset(build_run_options_port().ea_names())
-
-
 def engine_binding(
     *,
     symbol_spec: SymbolSpec | None = None,
@@ -122,7 +115,6 @@ def engine_binding(
     symbol: str = "JP225",
     period: str = "Daily",
     data_path: Any = None,
-    known_ea_names: Iterable[str] | None = None,
     settlement_currency: str = SETTLEMENT_CURRENCY,
     ea_params: Mapping[str, Any] | None = None,
     **overrides: Any,
@@ -139,9 +131,6 @@ def engine_binding(
         symbol=symbol,
         period=period,
         data_path=data_path,
-        known_ea_names=(
-            frozenset(known_ea_names) if known_ea_names is not None else catalog_ea_names()
-        ),
         settlement_currency=settlement_currency,
         ea_params=dict(DEFAULT_EA_PARAMS if ea_params is None else ea_params),
         **overrides,

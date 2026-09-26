@@ -35,10 +35,7 @@ def _kwargs(**settings_overrides):
     )
     return to_interactor_kwargs(
         settings,
-        engine_binding(
-            data_path=str(_FULL_CSV), period="M1",
-            known_ea_names=("TC24051901", "MA_Slope_EA"),
-        ),
+        engine_binding(data_path=str(_FULL_CSV), period="M1"),
     )
 
 

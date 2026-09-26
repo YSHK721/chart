@@ -411,7 +411,6 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     from dataclasses import fields
 
     from simulator.adapter.execution.tick_model_registry import consumes_market_data
-    from simulator.main import known_ea_names
     from simulator.main.tester_settings.kwargs_mapper import EngineBinding, tick_model_word
     from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
     from simulator.usecase.models import SymbolSpec
@@ -434,7 +433,6 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
             if consumes_market_data(tick_model_word(effective.tick_model))
             else None
         ),
-        known_ea_names=frozenset(known_ea_names()),
         settlement_currency=settlement,
         ea_params={k: v for k, v in backtest.items() if k not in supplied},
         config_overrides=dict(backtest.get("config_overrides") or {}),

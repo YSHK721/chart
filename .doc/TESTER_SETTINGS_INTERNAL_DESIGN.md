@@ -743,7 +743,6 @@ class EngineBinding:
     symbol: str                         # SymbolSpec.symbol と一致検証用（§8.1）
     period: str                         # 表示ラベル（時間足未使用のため整合は V-3 で担保）
     data_path: str | None               # バー系列のパス。None は「バー系列を供給しない」＝規則 S の判定入力
-    known_ea_names: frozenset[str]      # SymbolSpecCatalog.ea_names() 由来（N-01 事前検証用）
     settlement_currency: str            # D-10。既定値を持たない（必須注入）
     ea_params: dict[str, str]           # TesterInput のうち [TesterInputs] セクション由来。必須注入
     stop_out_level: float = 0.0         # 現行既定（build_interactor:459 実測）
@@ -818,7 +817,7 @@ class HeaderCommentInfo:
 | `leverage` | `leverage` | `float(leverage)`。`binding.profile.leverage` と不一致なら `ConfigError`（§6.2） |
 | `deposit` | `initial_deposit` | `float` |
 | `timeframe` | `period` | `TIMEFRAME_INI_LABELS[timeframe]`。本体未使用のため整合は V-3 で担保 |
-| `subject_path` | `ea_name` | `ea_stem()` → `binding.known_ea_names` に無ければ `ConfigError`（N-01。現行の沈黙フォールバック `main/__init__.py:434,520` を上流で遮断） |
+| `subject_path` | `ea_name` | `ea_stem()` → 合流点が運ぶ `RunScopeInputs.known_ea_names` に無ければ `ConfigError`（N-01。現行の沈黙フォールバック `main/__init__.py:434,520` を上流で遮断）。判定源は ISSUE-525 で合流点へ移った。`EngineBinding` は当該集合を**持たない**——置くと設定されるだけで誰も読まない欄になる（ISSUE-535 で撤去・検査は `simulator/tests/unit/test_declared_fields_have_readers.py`） |
 | `date_range` | `marketdata_window` / `trading_start`（＋`tick_start`/`tick_end`） | §8.4 |
 | `tick_model` | `config_overrides["tick_model"]` | `EVERY_TICK→"every_tick"` / `ONE_MINUTE_OHLC→"ohlc_expand"` / `OPEN_PRICES_ONLY→"open_only"` / `REAL_TICKS→"real_ticks"`（§6.2 の表）。`MATH_CALCULATIONS` は §8.2 の別経路 |
 | （なし） | — | **撤去（ISSUE-533・2026-09-25）**。かつて写像層が `config_overrides["entry_price_basis"]` へ `"current_open"` を明示し、`binding.profile.config_overrides` の値を優先していた。**どちらも戦略の判定時点と一致する保証が無く、実際に合わない EA が在った**（`SmaTouchLong_EA` は当該足の終値で判定するのに足の始値で約定していた）。いまは戦略が判定の瞬間を宣言し、エンジンがそれを読む。設定に書くと `ConfigError` になる |
