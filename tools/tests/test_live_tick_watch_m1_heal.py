@@ -267,6 +267,33 @@ def test_the_reconciliation_runs_after_the_append_and_before_the_rollups(
 
 
 # =====================================================================
+# M-5b. 分境界の連鎖（ストリーミング）にも効く
+# =====================================================================
+def test_the_streaming_minute_close_chain_also_reconciles(monkeypatch, tmp_path):
+    """M-5b: ``--stream``（実運用で走っている経路）の分境界の連鎖も突合を発行する。
+
+    常駐は 2 つの周期を持つ（1 分ループの :func:`tools.live_tick_watch.update_once` と、
+    分境界ごとの :func:`tools.live_tick_watch._chain_m1_rollup`）。片方だけに段を足すと、
+    実際に走っている側だけが古い連鎖を回し続ける——それが ISSUE-534 で 178 分を残したのと
+    同じ型の取り残しである。形成中の境界は猶予を引いた値がそのまま渡ること（書き手より小さい
+    値で突合すると、書き手が書いた分が素材側に現れず見送りになる）。
+    """
+    # Arrange
+    for day in (_DAY1, _DAY2):
+        _put_day(tmp_path, day)
+    calls = _spy(monkeypatch, tick_m1, "heal_m1_days_for_series")
+
+    # Act
+    ltw._chain_m1_rollup(_NOW, tmp_path, _DAY1)
+
+    # Assert
+    assert len(calls) == 1, f"分境界の連鎖で突合が {len(calls)} 回発行された"
+    assert calls[0][1]["until"] == pd.Timestamp(
+        _NOW - dt.timedelta(seconds=ltw._STREAM_M1_GRACE_SECONDS)
+    ).floor("min")
+
+
+# =====================================================================
 # M-6. 周期（起動直後は走り、周期内の 2 回目は走らない）
 # =====================================================================
 def test_the_reconciliation_runs_once_per_period(monkeypatch, tmp_path):
