@@ -27,10 +27,22 @@ class MarketdataDatasetGateway:
     def load_dataframe(self, ref: str, timeframe: "str | None") -> Any:
         return _dataset.load_dataframe(ref, timeframe)
 
-    def load_candles(self, ref: str, timeframe: "str | None", limit: "int | None") -> Any:
+    def load_candles(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        limit: "int | None",
+        *,
+        start: "int | None" = None,
+        end: "int | None" = None,
+    ) -> Any:
         """配信用 candles 列を返す（ISSUE-183 item6: /candles も DIP 経由へ統一）。
 
         従来 controller が ``marketdata.dataset.load_candles`` を直呼びしていたものと等価委譲。
         モジュールオブジェクトへ実行時委譲するため既存の monkeypatch 経路も温存される。
         """
-        return _dataset.load_candles(ref, timeframe, limit)
+        # 範囲は指定されたときだけ渡す（範囲を指定しない呼出は従来の 3 引数のまま）。
+        time_range = {
+            key: value for key, value in (("start", start), ("end", end)) if value is not None
+        }
+        return _dataset.load_candles(ref, timeframe, limit, **time_range)

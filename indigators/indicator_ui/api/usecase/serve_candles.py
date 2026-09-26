@@ -31,6 +31,9 @@ class CandlesRequest:
     dataset_ref: Any = None
     timeframe: Any = None
     limit: "int | None" = None
+    #: 足の時刻の範囲（UNIX 秒・両端含む・None＝その側は無制限）。2026-09-26 承認。
+    start: "int | None" = None
+    end: "int | None" = None
 
 
 @dataclass
@@ -105,7 +108,15 @@ def serve_candles(
         return CandlesResult(error_type=violation[0], error_message=violation[1])
 
     try:
-        candles = port.load_candles(request.dataset_ref, request.timeframe, request.limit)
+        # 範囲は指定されたときだけ渡す（範囲を知らない既存の供給実装はそのまま置換可能）。
+        time_range = {
+            key: value
+            for key, value in (("start", request.start), ("end", request.end))
+            if value is not None
+        }
+        candles = port.load_candles(
+            request.dataset_ref, request.timeframe, request.limit, **time_range
+        )
     except FileNotFoundError as exc:
         # ISSUE-474: 登録済み ref の素材（M1/ロールアップ CSV）未配備は既知の構成状態であり、
         #   障害（internal 500）と区別して分類する。メッセージには「実際に開こうとした経路」

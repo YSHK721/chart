@@ -669,7 +669,9 @@ class IndicatorUIRequestHandler(BaseHTTPRequestHandler):
         ref = (query.get("datasetRef") or [None])[0]
         timeframe = (query.get("timeframe") or [None])[0]
         limit_raw = (query.get("limit") or [None])[0]
-        status, payload = handle_candles(ref, timeframe, limit_raw)
+        from_raw = (query.get("from") or [None])[0]
+        to_raw = (query.get("to") or [None])[0]
+        status, payload = handle_candles(ref, timeframe, limit_raw, from_raw, to_raw)
         self._send_json(status, payload)
 
     def _handle_forming_bar(self, query: dict[str, list[str]]) -> None:

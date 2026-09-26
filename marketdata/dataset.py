@@ -118,6 +118,19 @@ def _to_unix_seconds(value: Any) -> int:
     return int(pd.Timestamp(value).timestamp())
 
 
+def _time_range_mask(index: Any, start: "int | None", end: "int | None") -> Any:
+    """足の時刻（UNIX 秒・変換規則は `_index_unix_seconds`）が ``[start, end]`` に入る行の真偽列。"""
+    import numpy as np
+
+    seconds = np.asarray(_index_unix_seconds(index), dtype="int64")
+    mask = np.ones(len(seconds), dtype=bool)
+    if start is not None:
+        mask &= seconds >= int(start)
+    if end is not None:
+        mask &= seconds <= int(end)
+    return mask
+
+
 def _index_unix_seconds(index: Any) -> "list[int]":
     """時刻列を UNIX 秒（整数）の list へ変換する。規則は ``_to_unix_seconds`` と同一。
 
@@ -238,7 +251,12 @@ def load_atom_window(ref: str, start: int, end: int) -> pd.DataFrame:
 
 
 def load_candles(
-    ref: str, timeframe: str | None = None, limit: int | None = None
+    ref: str,
+    timeframe: str | None = None,
+    limit: int | None = None,
+    *,
+    start: int | None = None,
+    end: int | None = None,
 ) -> list[dict[str, Any]]:
     """ホワイトリスト解決済みキーを candles JSON へ変換する（§6.3・lightweight-charts 形）。
 
@@ -250,11 +268,16 @@ def load_candles(
         timeframe: 時間足コード（None=原子）。指定時は resample 後に変換する。
         limit: 直近 N 本に制限する（None=全件）。1 分足原子の全期間（数百万点）を直接
             配信しないための表示範囲制限（§配信設計: リサンプル＋直近 N 本）。
+        start / end: 足の時刻の範囲 ``start <= time <= end``（UNIX 秒・両端含む・None=その側は
+            無制限）。``limit`` より**先に**掛ける（＝範囲内の直近 N 本）。過去の期間（sim の
+            ジョブ期間など）を「直近 N 本」では取れないために在る（2026-09-26 承認）。
 
     Returns:
         ``[{time: UNIX秒, open, high, low, close}, ...]``（time 昇順・直近 limit 本）。
     """
     df = load_dataframe(ref, timeframe)
+    if start is not None or end is not None:
+        df = df.loc[_time_range_mask(df.index, start, end)]
     if limit is not None and limit > 0:
         df = df.tail(limit)
     lower_map = {str(c).lower(): c for c in df.columns}
