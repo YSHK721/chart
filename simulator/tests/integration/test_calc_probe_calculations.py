@@ -377,7 +377,7 @@ _HISTORY = 10
 
 
 def _write_marketdata_csv(path: Path, bars: "list[_Bar]") -> Path:
-    """UI の実行と同じ marketdata 形式（``date`` 列は UTC の文字列）で書く。"""
+    """UI の実行と同じ marketdata 形式（「`date`」 列は UTC の文字列）で書く。"""
     rows = [
         {
             "date": pd.Timestamp(_EPOCH + 60 * i, unit="s").strftime("%Y-%m-%d %H:%M:%S"),

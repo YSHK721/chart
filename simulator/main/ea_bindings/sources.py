@@ -52,8 +52,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
+from simulator.adapter.repository import ohlc_csv, ohlc_marketdata_csv, ohlc_mt5_csv
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_marketdata_csv import (
     MarketdataCsvOHLCRepository,
@@ -90,11 +92,15 @@ class _CsvForm:
     ``read_options``: pandas へ渡す読取引数（区切り文字など）。
     ``column_names``: registry へ載せる正規化列名への対応（空＝既に正規化済み）。
     ``repository``: その形式をバー列へ読む `MarketDataPort` 実装。
+    ``time_columns`` / ``row_times``: 各行が Bar になったときの時刻（epoch 秒）を読む列と
+        解釈（ISSUE-509）。解釈は Bar を組む読み手のモジュールが持ち、ここは名指すだけである。
     """
 
     read_options: "dict[str, Any]"
     column_names: "dict[str, str]"
     repository: "Callable[[], MarketDataPort]"
+    time_columns: "tuple[str, ...]"
+    row_times: "Callable[[pd.DataFrame], np.ndarray]"
 
 
 #: 形式 → 読み方の宣言。**形式を知る表は本モジュールにこの 1 つだけ**であり、
@@ -107,11 +113,23 @@ _FORMS = {
         read_options={"sep": "\t"},
         column_names=_MT5_COLUMN_NAMES,
         repository=Mt5CsvOHLCRepository,
+        time_columns=ohlc_mt5_csv.TIME_COLUMNS,
+        row_times=ohlc_mt5_csv.row_epoch_seconds,
     ),
     "marketdata": _CsvForm(
-        read_options={}, column_names={}, repository=MarketdataCsvOHLCRepository
+        read_options={},
+        column_names={},
+        repository=MarketdataCsvOHLCRepository,
+        time_columns=ohlc_marketdata_csv.TIME_COLUMNS,
+        row_times=ohlc_marketdata_csv.row_epoch_seconds,
     ),
-    "comma": _CsvForm(read_options={}, column_names={}, repository=CsvOHLCRepository),
+    "comma": _CsvForm(
+        read_options={},
+        column_names={},
+        repository=CsvOHLCRepository,
+        time_columns=ohlc_csv.TIME_COLUMNS,
+        row_times=ohlc_csv.row_epoch_seconds,
+    ),
 }
 
 #: 形式を判定できない実体に**バーの読み手だけ**を求められたときの既定（従来挙動）。
@@ -229,6 +247,31 @@ def dataframe_for(data_path: Any) -> pd.DataFrame:
     """
     form, spec = _resolved_spec(data_path)
     return _frame_of(data_path, form, spec)
+
+
+def row_times_for(reader: MarketDataPort, data_path: Any) -> np.ndarray:
+    """指標 registry の各行（＝データ実体の全行・並びのまま）の時刻を epoch 秒で返す。
+
+    なぜ在るか（ISSUE-509）: registry はデータ実体の**全行**から作られ、Bar 列は取得窓で
+    絞られる。戦略は ``iloc[bar_index]`` で位置参照するため、両者を**時刻で**対応させないと
+    別の足の指標値を読む（実測 2026-09-26・実 UI: 2026-09 の足で 2020-05 の値を読んでいた）。
+
+    形式を**判定し直さない**: ``reader`` は EA 束縛が形式を 1 回判定して選んだ読み手
+    （`ohlc_repository_for` / `source_for` の戻り値）であり、形式の事実はその型に既に在る。
+    ここで `detect_ohlc_form` をもう一度発行すると、同じ実体へ 2 回目の判定になる
+    （`simulator/tests/unit/test_ea_bindings_source_read_complexity.py` が赤にする）。
+
+    読むのは時刻の列だけである（``usecols``）。価格列は registry 側が既に読んでいる。
+    例外: 表に無い読み手・読めない実体は `DataError`（既定へ倒さない）。
+    """
+    spec = next((f for f in _FORMS.values() if type(reader) is f.repository), None)
+    if spec is None:
+        raise DataError(
+            "行の時刻を読む形式を読み手から決められません",
+            context={"reader": type(reader).__name__, "data_path": str(data_path)},
+        )
+    frame = _read_or_data_error(data_path, usecols=list(spec.time_columns), **spec.read_options)
+    return spec.row_times(frame)
 
 
 def series_or_data_error(frame: pd.DataFrame, column: str) -> pd.Series:

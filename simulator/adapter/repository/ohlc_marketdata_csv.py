@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from marketdata.csv_schema import SPREAD_COLUMN
@@ -69,6 +70,27 @@ def _extract_with_spread(df: pd.DataFrame, i: int) -> "dict[str, Any]":
     """spread 列を持つ marketdata 形式 1 行（spread は列の値）。"""
     return {**_ohlcv(df, i), "spread": _spread_of(df, i)}
 
+
+def _utc_times(df: pd.DataFrame) -> pd.Series:
+    """「`date`」 列を UTC aware の時刻へ 1 回だけベクトルパースする（本形式の時刻の唯一の解釈）。"""
+    return pd.to_datetime(df["date"], utc=True)
+
+
+#: 行の時刻を読むのに要る列（`row_epoch_seconds` が読む列の宣言）。
+TIME_COLUMNS = ("date",)
+
+
+def row_epoch_seconds(df: pd.DataFrame) -> np.ndarray:
+    """各行が Bar になったときの時刻を epoch 秒で返す（窓を掛けない全行・行の並びのまま）。
+
+    なぜ在るか（ISSUE-509）: 指標は全行から作られ、Bar は窓で絞られる。両者を**時刻で**
+    対応させるには指標の各行の時刻が要り、その解釈は Bar を組む本モジュールにしか無い
+    （写すと片方だけが改訂される）。`load` と同じ `_utc_times` を通す。
+    """
+    return ((_utc_times(df) - _EPOCH_UTC) // pd.Timedelta(seconds=1)).to_numpy(dtype=np.int64)
+
+
+_EPOCH_UTC = pd.Timestamp(0, tz="UTC")
 
 _SPEC = ColumnSpec(required=_REQUIRED, extract=_extract)
 _SPEC_WITH_SPREAD = ColumnSpec(
@@ -254,7 +276,7 @@ class MarketdataCsvOHLCRepository(MarketDataPort):
         df = read_csv_or_data_error(source_ref)
         if "date" in df.columns:
             # UTC aware で 1 回だけベクトルパース（date 列の時刻系は UTC＝裁定 2026-08-18）
-            times = pd.to_datetime(df["date"], utc=True)
+            times = _utc_times(df)
             if self._window is not None:
                 start, end = self._window
                 df = df.loc[(times >= start) & (times < end)]

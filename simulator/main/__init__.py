@@ -29,7 +29,12 @@ from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
     RealTickModel,
 )
-from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+from simulator.adapter.execution.tick_model_registry import (
+    TICK_MODEL_REGISTRY,
+    consumes_market_data,
+)
+from simulator.adapter.indicator.bar_aligned_registry import align_to_bars
+from simulator.main.ea_bindings.sources import row_times_for
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.presenter.json import JsonPresenter
@@ -431,6 +436,9 @@ def build_interactor(
         data_path=data_path,
         params=job,
     )
+    # EA 束縛が形式を判定して選んだ読み手（窓で包む前）。指標の行時刻の解釈はここから引く
+    #   （形式を判定し直さない・ISSUE-509）。
+    reader = market_data
     # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
     # （GenericConditionStrategy）で EA 束縛が選んだ戦略を置き換える拡張点。
     # 既定 None は素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。registry・
@@ -495,6 +503,14 @@ def build_interactor(
     # 再読み）に起因する。1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り
     # （DESIGN 申し送り）。every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
     bars = market_data.load(data_path, None, None)
+
+    # ISSUE-509: 戦略は ``iloc[bar_index]`` で指標を位置参照するので、指標の行と Bar 列を
+    #   **時刻で**対応させる。registry はデータ実体の全行（期間前の履歴で温まった値）から
+    #   作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の指標値を読む
+    #   （実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError` で止める。
+    #   バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
+    if bars and consumes_market_data(determinism.tick_model):
+        registry = align_to_bars(registry, row_times_for(reader, data_path), bars)
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
