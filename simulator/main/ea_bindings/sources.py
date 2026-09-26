@@ -264,14 +264,20 @@ def row_times_for(reader: MarketDataPort, data_path: Any) -> np.ndarray:
     読むのは時刻の列だけである（``usecols``）。価格列は registry 側が既に読んでいる。
     例外: 表に無い読み手・読めない実体は `DataError`（既定へ倒さない）。
     """
-    spec = next((f for f in _FORMS.values() if type(reader) is f.repository), None)
-    if spec is None:
-        raise DataError(
-            "行の時刻を読む形式を読み手から決められません",
-            context={"reader": type(reader).__name__, "data_path": str(data_path)},
-        )
+    spec = _form_of_reader(reader, data_path)
     frame = _read_or_data_error(data_path, usecols=list(spec.time_columns), **spec.read_options)
     return spec.row_times(frame)
+
+
+def _form_of_reader(reader: MarketDataPort, data_path: Any) -> _CsvForm:
+    """形式判定の結果である読み手から、その形式の宣言を引く（表に無ければ `DataError`）。"""
+    for form in _FORMS.values():
+        if type(reader) is form.repository:
+            return form
+    raise DataError(
+        "行の時刻を読む形式を読み手から決められません",
+        context={"reader": type(reader).__name__, "data_path": str(data_path)},
+    )
 
 
 def series_or_data_error(frame: pd.DataFrame, column: str) -> pd.Series:
