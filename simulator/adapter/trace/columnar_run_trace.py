@@ -83,6 +83,9 @@ _BUY = "buy"
 class ColumnarRunTrace(RunTracePort):
     """評価点 1 つ 1 行の列集合を持つ `RunTracePort` 実装。"""
 
+    #: 記録の単位（「`OBSERVATION_UNITS`」 の語彙）。本実装は評価点 1 つにつき 1 行。
+    OBSERVATION_UNIT = "point"
+
     __slots__ = ("_window", "columns")
 
     def __init__(self, window: Any) -> None:

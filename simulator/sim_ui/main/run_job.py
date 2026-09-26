@@ -60,6 +60,9 @@ _FAILURE_FILE = "failure.json"
 # 理由がどこにも残らない（stderr は起動器が DEVNULL に固定している
 # ＝`adapter/subprocess_job_launcher.py:75-76`）。
 _REPORT_PAYLOAD_ERROR_FILE = "report_payload_error.json"
+#: 上のチャートへ重ねる成果物の書出し失敗の理由（report.json の理由と別に残す——同じ
+#   ファイルへ書くと、後から失敗した方が先の理由を上書きして消す）。
+_CHART_OVERLAY_ERROR_FILE = "chart_overlay_error.json"
 # 実行トレース（ISSUE-508 段階 3・§6.5.3）の書出し失敗の置き場。**`failure.json` とは
 # 別にする**: run 自体は成功しており、同じファイルへ書くと「失敗した run」と区別できなくなる。
 # 終了コードも変えない（観測の失敗で成功した計算を捨てない・`report.json` と同じ扱い）。
@@ -85,6 +88,11 @@ def _record_failure(job_dir: Path, reason: str) -> None:
 def _record_report_payload_error(job_dir: Path, message: str) -> None:
     """表示用ペイロードの書出し失敗を job-dir へ残す（run の成否は変えない）。"""
     _write_note(job_dir, _REPORT_PAYLOAD_ERROR_FILE, {"message": message})
+
+
+def _record_chart_overlay_error(job_dir: Path, message: str) -> None:
+    """上のチャートへ重ねる成果物の書出し失敗を job-dir へ残す（run の成否は変えない）。"""
+    _write_note(job_dir, _CHART_OVERLAY_ERROR_FILE, {"message": message})
 
 
 def _record_trace_error(job_dir: Path, message: str) -> None:
@@ -476,7 +484,7 @@ def _write_report_payload(
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"chart_overlay.json の書出しに失敗しました: {exc}"
         print(message, file=sys.stderr)
-        _record_report_payload_error(job_dir, message)
+        _record_chart_overlay_error(job_dir, message)
 
 
 def _write_chart_overlay(
@@ -654,7 +662,8 @@ def main(argv: "list[str] | None" = None) -> int:
     #   保有中も更新するために**毎回**渡す（2026-09-26 依頼者指示）。エンジンの観測口は
     #   1 つなので、実行トレースが有効なときは両方へ配る合成で束ねる。
     #   トレース群（`simulator.adapter.trace`）は他の拡張と同じく関数内で import する（是正 D-5）。
-    from simulator.adapter.trace.account_curve import AccountCurveRecorder, FanOutRunTrace
+    from simulator.adapter.trace.account_curve import AccountCurveRecorder
+    from simulator.usecase.run_trace_ports import FanOutRunTrace
 
     account = AccountCurveRecorder()
     extensions["run_tracer"] = FanOutRunTrace(tracer, account) if tracer is not None else account

@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from simulator.adapter.trace.account_curve import AccountCurveRecorder, FanOutRunTrace
+from simulator.adapter.trace.account_curve import AccountCurveRecorder
+from simulator.usecase.run_trace_ports import FanOutRunTrace
 
 _T0 = 1_704_067_200
 

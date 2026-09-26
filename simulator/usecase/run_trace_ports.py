@@ -59,3 +59,25 @@ class RunTracePort(abc.ABC):
         それらに何も要求しない）。
         """
         raise NotImplementedError
+
+
+#: 観測器の記録の単位の語彙。"point"＝評価点 1 つにつき 1 行／"bar"＝足 1 本につき 1 行
+#: （足の最後の評価点の値）。契約（`RunTracePort`）は単位を要求しない——検定が期待行数を
+#: 導けるよう、各実装が 「`OBSERVATION_UNIT`」 として名乗る。
+OBSERVATION_UNITS = ("point", "bar")
+
+
+class FanOutRunTrace(RunTracePort):
+    """1 つの観測を複数の観測器へ配る合成（エンジンの観測口は 1 つなので合成で束ねる）。
+
+    Port の合成なので Port と同じ層に置く（具象の記録器ではない）。配る順は渡した順。
+    """
+
+    def __init__(self, *tracers: RunTracePort) -> None:
+        self._tracers = tracers
+
+    def observe(
+        self, point: Any, account: Any, open_trades: Any, halted: bool
+    ) -> None:
+        for tracer in self._tracers:
+            tracer.observe(point, account, open_trades, halted)

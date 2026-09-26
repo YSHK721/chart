@@ -1,5 +1,7 @@
 """AccountCurveRecorder — 足ごとの残高・有効証拠金を記録する観測器（RunTracePort 実装）。
 
+複数の観測器を同時に使うときの合成は Port と同じ層の「`FanOutRunTrace`」（`simulator/usecase/run_trace_ports.py`）。
+
 何を解くか:
     run の結果が持つ残高の推移（「`balance_curve`」）は**決済のたびに 1 点**であり、保有中の
     推移（含み損益を含む有効証拠金）は時刻つきではどこにも残っていない。チャートの資産パネルを
@@ -29,6 +31,9 @@ class AccountCurveRecorder(RunTracePort):
     （∞ を数値として描くと軸が壊れ、0 に置き換えると「維持率 0%」という偽の値になる）。
     """
 
+    #: 記録の単位（「`OBSERVATION_UNITS`」 の語彙）。本実装は足 1 本につき 1 行。
+    OBSERVATION_UNIT = "bar"
+
     def __init__(self) -> None:
         self._bar_index: "int | None" = None
         self.times: "list[int]" = []
@@ -52,20 +57,14 @@ class AccountCurveRecorder(RunTracePort):
         for column, value in zip(self._columns(), row):
             column[-1] = value
 
+    @property
+    def rows(self) -> int:
+        """記録行数（＝観測した足の数。列はすべて同じ長さである）。"""
+        return len(self.times)
+
     def _columns(self) -> "tuple[list, ...]":
         return (self.balance, self.equity, self.margin, self.margin_level)
 
 
 def _finite_or_none(value: float) -> "float | None":
     return float(value) if math.isfinite(value) else None
-
-
-class FanOutRunTrace(RunTracePort):
-    """1 つの観測を複数の観測器へ配る（エンジンの観測口は 1 つなので合成で束ねる）。"""
-
-    def __init__(self, *tracers: RunTracePort) -> None:
-        self._tracers = tracers
-
-    def observe(self, point: Any, account: Any, open_trades: Any, halted: bool) -> None:
-        for tracer in self._tracers:
-            tracer.observe(point, account, open_trades, halted)
