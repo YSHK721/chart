@@ -4,7 +4,7 @@ from __future__ import annotations
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.strategy.calc_probe import CalcProbe
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
-from simulator.main.ea_bindings.sources import load_dataframe, ohlc_repository_for
+from simulator.main.ea_bindings.sources import source_for
 
 
 def build_registry(df, ma_period: int) -> PandasIndicatorRegistry:
@@ -20,9 +20,11 @@ def build_registry(df, ma_period: int) -> PandasIndicatorRegistry:
 
 
 def _factory_calc_probe(ctx: EaBuildContext):
-    df = load_dataframe(ctx.data_path)
-    registry = build_registry(df, ctx.param("ma_period"))
-    return CalcProbe(), registry, ohlc_repository_for(ctx.data_path)
+    # 読む形式はデータ実体が決める（MT5 タブ形式でも動く）。frame と読み手は同じ 1 回の
+    #   解決から受け取る（形式判定を 2 回発行しない）。
+    source = source_for(ctx.data_path)
+    registry = build_registry(source.frame, ctx.param("ma_period"))
+    return CalcProbe(), registry, source.repository
 
 
 BINDING = EaBinding(
