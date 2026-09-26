@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -457,7 +458,15 @@ class TestTheDeclarationFollowsTheKwargsTheRunActuallyUsed:
         "window,declared",
         [
             (None, False),
-            ((_EPOCH + 600, _EPOCH + 1800), True),
+            # 窓の境界は `datetime`（UTC aware）が契約である（上の実測: epoch 整数は run が
+            #   取得エラーにする）。書出しは run と同じ窓で指標を読むので、契約どおりの値を渡す。
+            (
+                (
+                    datetime.fromtimestamp(_EPOCH + 600, tz=timezone.utc),
+                    datetime.fromtimestamp(_EPOCH + 1800, tz=timezone.utc),
+                ),
+                True,
+            ),
         ],
         ids=["absent", "present"],
     )

@@ -42,8 +42,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from simulator.adapter.trace.account_curve import AccountCurveRecorder, FanOutRunTrace
-from simulator.framework.config_loader import load_config
 from simulator.main import run_backtest
 from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
 
@@ -133,13 +131,13 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
       同じファイルの `_write_report_payload` が settings 経路で `run_kwargs` を渡して
       いるのと同一の形にそろえる（表示用の足も同じ理由で `backtest` から取り直さない）。
 
-    指標 registry は `build_ea_indicators(**run_kwargs)` から組んで **Callable で注入**する
+    指標 registry は `build_run_indicators(**run_kwargs)`（run と同じ窓・時刻合わせ）から組んで **Callable で注入**する
     （是正 D-4・先例 `_supply_contacts`）——interactor._indicators への到達は
     ISSUE-395/398・ISSUE-405 で 2 度是正済みのカプセル化破りと同型であり、
     エンジン（`simulator/usecase/run_backtest.py`）へプロパティを新設する案は責務分割ゲート
     （`test_run_backtest_responsibility_split.py:275-284` のメソッド集合 8 固定）が赤にする。
     """
-    from simulator.main import build_ea_indicators
+    from simulator.main import build_run_indicators
     from simulator.sim_ui.adapter import trace_writer
 
     backtest = run_kwargs or {}
@@ -150,7 +148,7 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
             # `job_dir.name` は台帳の採番規則そのものである。writer に読み直させると
             #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
             job_id=job_dir.name,
-            indicators_supply=lambda: build_ea_indicators(**backtest),
+            indicators_supply=lambda: build_run_indicators(**backtest),
             marketdata_window=backtest.get("marketdata_window"),
         )
     except Exception as exc:  # 観測の失敗で成功した計算を捨てない
@@ -280,16 +278,16 @@ def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
 def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
     """接点（agg.contacts）を「その run が使った EA の指標系列」から組む（FR-18・R-3）。
 
-    EA→指標の対応は `simulator.main.build_ea_indicators`（simulator/main/ea_bindings の
+    EA→指標の対応は `simulator.main.build_run_indicators`（run と同じ窓・時刻合わせ。simulator/main/ea_bindings の
     宣言駆動な束縛表を単一ソースにする公開アクセサ）から得る。算出式は adapter
     （contacts_supply）が report_ui の単一ソースを import して持つ。ここは供給の束縛
     （Composition Root）だけを担う。
 
     ``bars`` は writer が読み込み済みの int 時刻ビュー（二重ロードしない）。
     """
-    from simulator.main import build_ea_indicators
+    from simulator.main import build_run_indicators
 
-    indicators = build_ea_indicators(**backtest)
+    indicators = build_run_indicators(**backtest)
     return contacts_supply.build_contacts(
         bars=bars, backtest=backtest, indicators=indicators,
     )
@@ -487,14 +485,12 @@ def _write_chart_overlay(
 ) -> None:
     """売買マーク・トリガー指標・足ごとの口座を書く（束縛は Composition Root が持つ）。
 
-    指標は `build_ea_indicators` から得る——run と同じ対応づけ（ISSUE-509）を経た系列で
+    指標は `build_run_indicators` から得る——run と同じ対応づけ（ISSUE-509）を経た系列で
     あり、系列の位置 i が ``bars[i]`` の時刻になる。描く系列は EA の宣言（`PlotDecl`）が
     決める（ここで系列名を選ばない）。
     """
-    from simulator.main import build_ea_indicators
-    from simulator.main.ea_bindings import plot_declarations
+    from simulator.main import build_run_indicators, known_plots
 
-    tick_model = load_config(run_kwargs.get("config_overrides") or {}).tick_model
     chart_overlay_writer.write(
         job_dir,
         result=result,
@@ -502,8 +498,8 @@ def _write_chart_overlay(
         symbol=run_kwargs["symbol"],
         digits=int(run_kwargs["digits"]),
         ea_name=run_kwargs["ea_name"],
-        indicators=build_ea_indicators(**run_kwargs),
-        plots=plot_declarations(run_kwargs["ea_name"], tick_model=tick_model),
+        indicators=build_run_indicators(**run_kwargs),
+        plots=known_plots(run_kwargs["ea_name"], config_overrides=run_kwargs.get("config_overrides")),
         account=account,
         initial_deposit=float(run_kwargs["initial_deposit"]),
     )
@@ -657,6 +653,9 @@ def main(argv: "list[str] | None" = None) -> int:
     # 足ごとの口座（残高・有効証拠金・証拠金維持率）の記録器。上のチャートの資産パネルを
     #   保有中も更新するために**毎回**渡す（2026-09-26 依頼者指示）。エンジンの観測口は
     #   1 つなので、実行トレースが有効なときは両方へ配る合成で束ねる。
+    #   トレース群（`simulator.adapter.trace`）は他の拡張と同じく関数内で import する（是正 D-5）。
+    from simulator.adapter.trace.account_curve import AccountCurveRecorder, FanOutRunTrace
+
     account = AccountCurveRecorder()
     extensions["run_tracer"] = FanOutRunTrace(tracer, account) if tracer is not None else account
 

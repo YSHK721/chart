@@ -57,6 +57,7 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
     DEFAULT_EA_NAME,
     build_ea_components,
     known_ea_names,
+    plot_declarations,
     spread_dependent_ea_names,
     strategy_param_names,
 )
@@ -327,6 +328,15 @@ def _aligned_to_run_bars(
     return registry
 
 
+def known_plots(ea_name: str, *, config_overrides: "dict | None" = None) -> "tuple[Any, ...]":
+    """その EA がチャートへ描くと宣言した指標（「`PlotDecl`」 の列）を返す（`known_ea_names` と同じ照会）。
+
+    選択は ea_bindings の唯一の判定点を通す（判定入力 `tick_model` は `build_interactor` と
+    同じ導出）。宣言の無い EA は空（描く系列を推測で選ばない）。
+    """
+    return plot_declarations(ea_name, tick_model=_tick_model_of(config_overrides))
+
+
 def build_ea_indicators(**spec: Any) -> IndicatorPort:
     """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
 
@@ -341,9 +351,22 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     NullIndicatorRegistry を返す。系列の未登録はどちらの実装でも同じ公開エラー契約
     （`IndicatorBufferError`・context の ``available``）で呼び出し側へ届く。
     """
+    _strategy, registry, _market_data = _ea_components(**spec)
+    return registry
+
+
+def build_run_indicators(**spec: Any) -> IndicatorPort:
+    """その run が**実際に読んだ値**の指標系列を返す（系列の位置 i ＝ run の Bar 列の i 本目）。
+
+    `build_ea_indicators` との違い（ISP・用途で口を分ける）: あちらは「その EA が何の系列を
+    登録するか」を問う口であり、系列名のカタログは Bar を組めないデータ（気配幅の列が無い
+    探索用データ等）でも呼ぶ。こちらは**値を使う**口（接点・実行トレース・チャートの重ね描き）
+    であり、実行（`build_interactor`）と**同じ**窓と時刻の対応づけを掛ける（ISSUE-509）。
+    掛けないと、期間を指定した run で値の利用者が実行と別の足の値を読む。
+
+    ``spec``: `build_interactor` と同じジョブ仕様。
+    """
     _strategy, registry, reader = _ea_components(**spec)
-    # 実行（`build_interactor`）と**同じ**対応づけを掛ける（ISSUE-509）。掛けないと、期間を
-    #   指定した run で表示・トレース・接点が実行と別の足の値を読む。
     data_path = spec.get("data_path")
     tick_model = _tick_model_of(spec.get("config_overrides"))
     if data_path is None or not consumes_market_data(tick_model):

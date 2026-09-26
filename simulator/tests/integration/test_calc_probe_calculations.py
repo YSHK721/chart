@@ -456,8 +456,8 @@ class TestWindowedRun:
             assert t.entry_price == pytest.approx(_entry_price(t.side, bars[row]), abs=1e-9)
 
     def test_the_display_accessor_returns_what_the_run_reads(self, tmp_path: Path) -> None:
-        """表示・トレース・接点が使う `build_ea_indicators` も、実行と同じ足の値を返す。"""
-        from simulator.main import build_ea_indicators
+        """表示・トレース・接点が使う `build_run_indicators` は、実行と同じ足の値を返す。"""
+        from simulator.main import build_run_indicators
 
         # Arrange
         history = [_Bar(200.0 + i, 200.5 + i) for i in range(_HISTORY)]
@@ -465,7 +465,7 @@ class TestWindowedRun:
         csv_path = _write_marketdata_csv(tmp_path / "md.csv", bars)
         expected = _sma([b.close for b in bars], 3)[_HISTORY:]
         # Act
-        got = build_ea_indicators(**_meta(csv_path, marketdata_window=_window_from(_HISTORY)))
+        got = build_run_indicators(**_meta(csv_path, marketdata_window=_window_from(_HISTORY)))
         # Assert
         pd.testing.assert_series_equal(
             got.get("sma"), pd.Series(expected), check_names=False, check_exact=False, atol=1e-9
