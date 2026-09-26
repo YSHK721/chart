@@ -26,12 +26,16 @@ import pytest
 from simulator.domain.exceptions import ConfigError
 from simulator.main.ea_bindings import _EA_BINDINGS
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
-from simulator.main.tester_settings.unsupported import RULES
+from simulator.main.tester_settings.unsupported import (
+    RULES,
+    apply_run_scope_unsupported_rules,
+)
 from simulator.main import DEFAULT_EA_NAME as _DEFAULT_EA
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_NAME,
     engine_binding,
+    run_scope_inputs,
     runnable_settings,
 )
 
@@ -74,10 +78,17 @@ class TestInjectedSetVersusTheFactoryRegistry:
 
 
 class TestRejectionFollowsTheInjectedSet:
-    """振る舞い: 受理・拒否は注入集合が決める（登録表ではない）。"""
+    """振る舞い: 受理・拒否は注入集合が決める（登録表ではない）。
+
+    観測点が `to_interactor_kwargs` から合流点の適用器へ移ったのは ISSUE-525 である
+    （N-01 は run 自身の引数だけで判定できるため、「`settings`」 を持たない投入経路でも
+    効くように合流点で適用する）。**測っている保証は変わっていない**——判定源が注入集合
+    であること・拒否の `context` が ID と値を載せることの 2 点である。
+    """
 
     def test_a_name_absent_from_the_factory_registry_is_accepted_when_injected(self):
         # `_DEFAULT_EA` は登録表に無いが注入集合には載る＝N-01 を通る
+        apply_run_scope_unsupported_rules(run_scope_inputs(ea_name=_DEFAULT_EA))
         kwargs = to_interactor_kwargs(
             runnable_settings(Expert=f"{_DEFAULT_EA}.ex5"),
             engine_binding(data_path="/synthetic/jp225.csv"),
@@ -86,9 +97,8 @@ class TestRejectionFollowsTheInjectedSet:
 
     def test_a_name_absent_from_the_injected_set_is_rejected(self):
         with pytest.raises(ConfigError) as excinfo:
-            to_interactor_kwargs(
-                runnable_settings(Expert="NotAnExecutableEA.ex5"),
-                engine_binding(data_path="/synthetic/jp225.csv"),
+            apply_run_scope_unsupported_rules(
+                run_scope_inputs(ea_name="NotAnExecutableEA")
             )
         assert excinfo.value.context["unsupported_id"] == "N-01"
 
@@ -96,8 +106,7 @@ class TestRejectionFollowsTheInjectedSet:
         # 判定源が登録表なら通ってしまう入力。注入集合が権威であることを分ける実例。
         registered = sorted(FACTORY_KEYS)[0]
         with pytest.raises(ConfigError) as excinfo:
-            to_interactor_kwargs(
-                runnable_settings(Expert=f"{registered}.ex5"),
-                engine_binding(data_path="/synthetic/jp225.csv", known_ea_names=()),
+            apply_run_scope_unsupported_rules(
+                run_scope_inputs(ea_name=registered, known_ea_names=())
             )
         assert excinfo.value.context["value"] == registered

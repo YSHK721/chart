@@ -1,8 +1,13 @@
 """非対象判定の**評価順**を構文木で固定するゲート（ISSUE-511 段階 8-C / 工程 5 レビュー 🟡-2）。
 
-固定する仕様（2 点だけ）:
-    1. apply_unsupported_rules を呼ぶ**非テストの呼び手が 1 件**であること。
-    2. その囲み関数が、規則 S の整合検査 verify_data_consistency を**先に**呼ぶこと。
+固定する仕様（境界ごとに 2 点だけ・境界は `_BOUNDARIES` の 2 件）:
+    1. 一括適用を呼ぶ**非テストの呼び手が 1 件**であること。
+    2. その囲み関数が、規則 S の整合検査を**先に**呼ぶこと。
+
+    境界が 2 件あるのは ISSUE-525 で適用点が分かれたためである（設定の語彙を読む宣言は
+    写像層が適用し、run 引数だけで判定できる宣言＝N-17 を含む 4 件は合流点
+    `simulator.main.build_interactor` が適用する）。N-17 の根拠は「規則 S が先に効く」
+    ことなので、N-17 を実際に適用する側でも順序を機械で守らせる。
 
 なぜ在るか（レビューの実測）:
     N-17 の docstring と基本設計 §4.6 は「規則 S を本判定の**直前**に呼ぶ」と書いていたが、
@@ -47,18 +52,47 @@ docstring に書かない**のが本段の是正の眼目であり、本ゲー�
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from simulator.tests.unit.test_package_import_acyclicity import _production_files
 
-#: 評価順を固定する 2 つの名前（左が先に効かねばならない）。
-_RULE_S_CALL = "verify_data_consistency"
-_RULES_CALL = "apply_unsupported_rules"
 
-#: 唯一の入口として期待する囲み関数（回帰の錨）。
-_ENTRY_POINT = "effective_to_interactor_kwargs"
+@dataclass(frozen=True)
+class _Boundary:
+    """保証境界 1 つぶんの評価順の宣言。
+
+    ``rules_call``  非対象判定を一括適用する関数の名前。
+    ``rule_s_call`` その**前に**呼ばれねばならない規則 S の整合検査の名前。
+    ``entry_point`` 唯一の入口として期待する囲み関数（回帰の錨）。
+    """
+
+    rules_call: str
+    rule_s_call: str
+    entry_point: str
+
+
+#: 固定する境界。**2 件ある**のは ISSUE-525 で適用点が分かれたためである——設定の語彙を
+#: 読む宣言は写像層が適用し、run 引数だけで判定できる宣言（N-17 を含む）は合流点が適用する。
+#: N-17 が ``data_path is None`` を非発火にしてよい根拠は「規則 S の双条件が**先に**効く」
+#: ことだけなので、N-17 を適用する側（合流点）でも同じ順序を機械で守らせる必要がある。
+_BOUNDARIES: "tuple[_Boundary, ...]" = (
+    _Boundary(
+        rules_call="apply_unsupported_rules",
+        rule_s_call="verify_data_consistency",
+        entry_point="effective_to_interactor_kwargs",
+    ),
+    _Boundary(
+        rules_call="apply_run_scope_unsupported_rules",
+        rule_s_call="verify_engine_data_consistency",
+        entry_point="build_interactor",
+    ),
+)
+
+#: 抽出器そのものを測る合成ソース（下の検出力の検定）が使う境界。
+_PROBE_BOUNDARY = _BOUNDARIES[0]
 
 
 def _called_name(node: ast.Call) -> "str | None":
@@ -88,25 +122,32 @@ def _ordered_call_names(node: ast.AST) -> "list[str]":
 
 
 class _Caller:
-    """apply_unsupported_rules を呼ぶ 1 か所（囲み関数と、その中の呼出の並び）。"""
+    """一括適用を呼ぶ 1 か所（囲み関数と、その中の呼出の並び）。"""
 
-    def __init__(self, where: str, function: str, call_names: "list[str]") -> None:
+    def __init__(
+        self, where: str, function: str, call_names: "list[str]", boundary: _Boundary
+    ) -> None:
         self.where = where
         self.function = function
         self.call_names = call_names
+        self.boundary = boundary
 
     def applies_rule_s_first(self) -> bool:
-        """規則 S が apply_unsupported_rules より先に呼ばれているか。"""
-        if _RULE_S_CALL not in self.call_names:
+        """規則 S が一括適用より先に呼ばれているか。"""
+        if self.boundary.rule_s_call not in self.call_names:
             return False
-        return self.call_names.index(_RULE_S_CALL) < self.call_names.index(_RULES_CALL)
+        return self.call_names.index(self.boundary.rule_s_call) < self.call_names.index(
+            self.boundary.rules_call
+        )
 
     def __repr__(self) -> str:
         return f"{self.where}::{self.function}{self.call_names}"
 
 
-def _callers_in_source(source: str, where: str) -> "list[_Caller]":
-    """``source`` の中で apply_unsupported_rules を呼んでいる箇所を列挙する。
+def _callers_in_source(
+    source: str, where: str, boundary: _Boundary = _PROBE_BOUNDARY
+) -> "list[_Caller]":
+    """``source`` の中で当該境界の一括適用を呼んでいる箇所を列挙する。
 
     関数の中の呼出と、どの関数にも囲まれていない module 直下の呼出の両方を数える
     （module 直下へ退避されても呼び手は消えない）。
@@ -125,19 +166,19 @@ def _callers_in_source(source: str, where: str) -> "list[_Caller]":
     }
 
     out = [
-        _Caller(where, function.name, _ordered_call_names(function))
+        _Caller(where, function.name, _ordered_call_names(function), boundary)
         for function in functions
-        if _RULES_CALL in _ordered_call_names(function)
+        if boundary.rules_call in _ordered_call_names(function)
     ]
     module_level = [
         call
         for call in ast.walk(tree)
         if isinstance(call, ast.Call)
         and id(call) not in inside_functions
-        and _called_name(call) == _RULES_CALL
+        and _called_name(call) == boundary.rules_call
     ]
     if module_level:
-        out.append(_Caller(where, "<module>", _ordered_call_names(tree)))
+        out.append(_Caller(where, "<module>", _ordered_call_names(tree), boundary))
     return out
 
 
@@ -146,7 +187,9 @@ def _read_source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _scan(files, read=None) -> "tuple[list[Path], list[_Caller]]":
+def _scan(
+    files, read=None, boundary: _Boundary = _PROBE_BOUNDARY
+) -> "tuple[list[Path], list[_Caller]]":
     """``files`` を 1 ファイルにつき**読込 1 回**で走査する。
 
     読込点を引数で差し替えられるようにしてあるのは、計算量検定が「読み捨てが無い」ことを
@@ -157,48 +200,52 @@ def _scan(files, read=None) -> "tuple[list[Path], list[_Caller]]":
     callers: "list[_Caller]" = []
     for path in files:
         scanned.append(path)
-        callers.extend(_callers_in_source(reader(path), str(path)))
+        callers.extend(_callers_in_source(reader(path), str(path), boundary))
     return scanned, callers
 
 
-def _production_scan() -> "tuple[list[Path], list[_Caller]]":
-    return _scan(_production_files())
+def _production_scan(
+    boundary: _Boundary = _PROBE_BOUNDARY,
+) -> "tuple[list[Path], list[_Caller]]":
+    return _scan(_production_files(), boundary=boundary)
 
 
 # --- 固定する仕様 -----------------------------------------------------------------
 
 
+@pytest.mark.parametrize("boundary", _BOUNDARIES, ids=lambda b: b.rules_call)
 class TestTheOnlyEntryPointAppliesRuleSFirst:
-    """非テストの呼び手は 1 件で、そこで規則 S が先に効く。"""
+    """各境界について、非テストの呼び手は 1 件で、そこで規則 S が先に効く。"""
 
-    def test_there_is_exactly_one_non_test_caller(self):
+    def test_there_is_exactly_one_non_test_caller(self, boundary):
         """呼び手が 2 件以上に増えたら落ちる（第 2 の入口は評価順の保証を持たない）。"""
         # Arrange / Act
-        _scanned, callers = _production_scan()
+        _scanned, callers = _production_scan(boundary)
         # Assert
         assert len(callers) == 1, (
-            "apply_unsupported_rules の非テスト呼び手が 1 件ではない: "
+            f"{boundary.rules_call} の非テスト呼び手が 1 件ではない: "
             + ", ".join(sorted(repr(caller) for caller in callers))
             + "。呼び手を増やす場合、その囲み関数でも規則 S を先に呼ぶ必要がある"
             "（N-17 が data_path is None を非発火にする根拠が規則 S の双条件だから）。"
         )
 
-    def test_that_caller_applies_rule_s_first(self):
+    def test_that_caller_applies_rule_s_first(self, boundary):
         """その 1 件が規則 S を先に呼ぶ（2 行を入れ替えたら落ちる）。"""
         # Arrange / Act
-        _scanned, callers = _production_scan()
+        _scanned, callers = _production_scan(boundary)
         caller = callers[0]
         # Assert
         assert caller.applies_rule_s_first(), (
-            f"規則 S（{_RULE_S_CALL}）が {_RULES_CALL} より先に呼ばれていない: {caller!r}"
+            f"規則 S（{boundary.rule_s_call}）が {boundary.rules_call} より先に"
+            f"呼ばれていない: {caller!r}"
         )
 
-    def test_the_caller_is_the_mapping_entry_point(self):
-        """呼び手が写像入口であること（回帰の錨。名前が変わったら宣言側も直す）。"""
+    def test_the_caller_is_the_declared_entry_point(self, boundary):
+        """呼び手が宣言した入口であること（回帰の錨。名前が変わったら宣言側も直す）。"""
         # Arrange / Act
-        _scanned, callers = _production_scan()
+        _scanned, callers = _production_scan(boundary)
         # Assert
-        assert callers[0].function == _ENTRY_POINT
+        assert callers[0].function == boundary.entry_point
 
 
 # --- ゲートが空振りしていないこと ---------------------------------------------------
@@ -219,7 +266,7 @@ class TestTheGateHasDetectionPower:
         # Arrange / Act
         _scanned, callers = _production_scan()
         # Assert
-        assert [caller.function for caller in callers] == [_ENTRY_POINT]
+        assert [caller.function for caller in callers] == [_PROBE_BOUNDARY.entry_point]
 
     def test_a_swapped_order_is_detected(self):
         """変異 (a): 2 行を入れ替えると「先に効く」が偽になる。"""

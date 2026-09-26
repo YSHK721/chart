@@ -7,7 +7,7 @@
 固定する契約:
     1. `TICK_MODEL_IDS` の先頭 4 値が順序不変（「既存 4 モード bit-exact 不変」の通過条件。
        A-1 で 5 件目が末尾に加わるため「4 値ちょうど」では測らない）。
-    2. `required_backtest_keys()` に `data_path` が含まれる（＝投入は `data_path` キーの
+    2. `required_backtest_keys()` に 「`data_path`」 が含まれる（＝投入は 「`data_path`」 キーの
        供給を必ず要求する。`MATH_CALCULATIONS` はそのキーに ``None`` を**明示**して渡す
        ため、必須キー検査を弱めずに投入できる）。
     3. `to_interactor_kwargs` の出力キー集合が

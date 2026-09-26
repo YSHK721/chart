@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from simulator.domain.tester_settings_exceptions import UnsupportedSettingError
-from simulator.main import run_backtest
+from simulator.main import build_interactor, run_backtest
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.tests.tester_settings_engine_fixtures import (
     custom_range_settings,
@@ -54,9 +54,17 @@ def test_a_windowed_run_on_the_full_dataset_completes(tmp_path):
     assert 0 < len(result.equity_curve) <= 7 * 24 * 60 + 1
 
 
-def test_a_spread_dependent_ea_is_fail_stopped_before_running():
-    """MA_Slope 系（spread 依存）× 本データは N-17 で実行前に止まる（沈黙縮退なし）。"""
-    # Act / Assert
+def test_a_spread_dependent_ea_is_fail_stopped_before_running(tmp_path):
+    """MA_Slope 系（spread 依存）× 本データは N-17 で実行前に止まる（沈黙縮退なし）。
+
+    観測点が 2 つあるのは ISSUE-525 の是正によるものである。N-17 の適用点は合流点
+    （`build_interactor`）へ移ったので、`run_backtest` から見ると例外は**終了コードへ
+    翻訳されて**返る（送出されない）。理由の 「`context`」 は合流点で観測する。
+    """
+    # Act / Assert: 理由（合流点）
     with pytest.raises(UnsupportedSettingError) as excinfo:
-        run_backtest(**_kwargs(Expert="MA_Slope_EA.ex5"))
+        build_interactor(**_kwargs(Expert="MA_Slope_EA.ex5"))
     assert excinfo.value.context["unsupported_id"] == "N-17"
+    # Act / Assert: 終了コード（1 run 実行しても始まらない）
+    code, result = run_backtest(output_dir=tmp_path, **_kwargs(Expert="MA_Slope_EA.ex5"))
+    assert code == 2 and result is None

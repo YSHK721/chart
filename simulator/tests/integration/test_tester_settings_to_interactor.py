@@ -31,6 +31,10 @@ from simulator.domain.tester_settings_exceptions import (
 )
 from simulator.framework.tester_settings import tester_settings_from_mapping
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
+from simulator.main.unsupported_run_scope import (
+    apply_run_scope_unsupported_rules,
+    run_scope_inputs_for,
+)
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_PARAMS,
     SETTLEMENT_CURRENCY,
@@ -49,10 +53,32 @@ DATA_PATH = "/nonexistent/synthetic/jp225.csv"
 
 
 def _kwargs(settings=None, **binding_overrides):
+    """写像層だけを通す（**保証境界の一部はここでは効かない**・ISSUE-525）。"""
     return to_interactor_kwargs(
         settings if settings is not None else runnable_settings(),
         engine_binding(data_path=DATA_PATH, **binding_overrides),
     )
+
+
+def _admitted_kwargs(settings=None, **binding_overrides):
+    """投入を**受け付けるか**を、保証境界の 2 つの適用点を通して測る。
+
+    ISSUE-525 で、run 自身の引数だけで判定できる宣言（N-01 / N-05 / N-10 / N-17）の
+    適用点は合流点（`simulator.main.build_interactor`）へ移った。写像層だけを呼ぶと
+    それらは評価されないので、投入の可否を問う検定はここを使う。
+
+    合流点と同じ組立点（`run_scope_inputs_for`）を使うのは、判定入力の組み立てを
+    検定側へ書き写さないためである（写すと本番の組み立てが変わっても検定は緑のまま残る）。
+    `build_interactor` を呼ばないのは、写像層の検定がデータ実体を持たない
+    （`DATA_PATH` は実在しないパス）ためである。
+    """
+    kwargs = _kwargs(settings=settings, **binding_overrides)
+    apply_run_scope_unsupported_rules(
+        run_scope_inputs_for(
+            kwargs, tick_model_id=kwargs["config_overrides"]["tick_model"]
+        )
+    )
+    return kwargs
 
 
 def _indicator_settings(**overrides):
@@ -136,13 +162,13 @@ class TestEaNameMapping:
         # corpus 実測の EA（`TC24051903`）は `_EA_FACTORIES` に登録が無い
         settings = runnable_settings(Expert="TC24051903.ex5")
         with pytest.raises(ConfigError):
-            _kwargs(settings=settings)
+            _admitted_kwargs(settings=settings)
 
     def test_traversal_style_subject_path_is_rejected_as_unregistered(self):
         # T-15 / K-18: 語幹化しても登録集合に無いので実行されない
         settings = runnable_settings(Expert="..\\..\\etc\\passwd.ex5")
         with pytest.raises(ConfigError):
-            _kwargs(settings=settings)
+            _admitted_kwargs(settings=settings)
 
 
 class TestConfigOverrides:
@@ -173,7 +199,7 @@ class TestConfigOverrides:
         # N-05: 実ティックを合成で代替しない
         settings = runnable_settings(Model="4")
         with pytest.raises(UnsupportedSettingError) as excinfo:
-            _kwargs(settings=settings, tick_store_root=None)
+            _admitted_kwargs(settings=settings, tick_store_root=None)
         assert excinfo.value.context["unsupported_id"] == "N-05"
 
     def test_real_ticks_passes_when_the_tick_store_is_supplied(self):
@@ -263,7 +289,7 @@ class TestUnsupportedRulesAreDeclarative:
             for key in rule.ui.keys:
                 for token in rule.ui.tokens:
                     with pytest.raises(UnsupportedSettingError) as excinfo:
-                        _kwargs(settings=runnable_settings(**{key: token}))
+                        _admitted_kwargs(settings=runnable_settings(**{key: token}))
                     assert excinfo.value.context["unsupported_id"] == rule_id, (key, token)
                     checked.append((rule_id, key, token))
         assert checked, "`on_tokens` の宣言が 1 件も無い（束縛が空＝UI から発火しない）"
@@ -282,7 +308,7 @@ class TestUnsupportedRulesAreDeclarative:
             for key in rule.ui.keys:
                 for token in rule.ui.tokens:
                     # 例外が出ないこと自体が主張（出れば pytest が失敗させる）
-                    _kwargs(settings=runnable_settings(**{key: token}))
+                    _admitted_kwargs(settings=runnable_settings(**{key: token}))
                     checked.append((rule_id, key, token))
         assert checked, "`except_tokens` の宣言が 1 件も無い"
 
@@ -297,7 +323,9 @@ class TestUnsupportedRulesAreDeclarative:
         assert rule.ui.mode == UI_TRIGGER_OFF_CANDIDATES
         key = rule.ui.keys[0]
         with pytest.raises(ConfigError) as excinfo:
-            _kwargs(settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"}))
+            _admitted_kwargs(
+                settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"})
+            )
         assert excinfo.value.context["unsupported_id"] == "N-01"
 
     def test_off_profile_binding_matches_the_settlement_currency_check(self):

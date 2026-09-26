@@ -207,7 +207,7 @@ def test_ma_slope_builds_on_spreadless_marketdata_because_it_reads_no_spread_ser
 
 def _fires(ea_name, csv_path):
     """N-17 の判定結果を「発火したか」へ畳む（判定式そのものは宣言側が持つ）。"""
-    return _detect(f"{ea_name}.ex5", csv_path) is not NOT_VIOLATED
+    return _detect(ea_name, csv_path) is not NOT_VIOLATED
 
 
 @pytest.mark.parametrize("ea_name", sorted(_EA_SERIES))

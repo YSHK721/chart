@@ -85,7 +85,7 @@ def body_rows(header: str, count: int) -> str:
 def write_header(tmp_path, name: str, header: str, body: str = "") -> str:
     """``header`` 1 行（+ 任意の ``body``）を ``tmp_path/name`` へ書き、そのパスを返す。
 
-    戻り値を文字列にするのは、呼出側がデータ実体の参照（`EngineBinding.data_path` や
+    戻り値を文字列にするのは、呼出側がデータ実体の参照（「`EngineBinding.data_path`」 や
     supplies_spread の引数）としてそのまま渡すためである。
     """
     path = tmp_path / name

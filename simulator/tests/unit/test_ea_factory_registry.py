@@ -6,7 +6,8 @@
 
   1. レジストリが従来 5 経路（TC 既定 + 4 EA）を解決し、各 EA が従来と同一の
      strategy 型・market_data 型・registry 系列へ解決されること（byte 不変の構造ガード）
-  2. 未登録 ea_name が既定 TC24051901 経路へフォールバックすること
+  2. 未登録 ea_name は実行を始めない（N-01・ISSUE-525。是正前は既定 TC 経路へ
+     黙ってフォールバックしていた）。選択規則そのもののフォールバックは不変である。
   3. ProFitBand が 1 エントリ登録で生成可能になったこと（従来は未登録で生成不能）
   4. WeeklyVolBand の構築知識が共有ファクトリ `make_weekly_vol_band` へ一元化され、
      main と tools/run_weekly_vol_band_cli が同一ファクトリを参照すること
@@ -23,6 +24,7 @@ import pytest
 
 from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
+from simulator.domain.exceptions import ConfigError
 from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
 from simulator.adapter.strategy.ma_slope_pending import MaSlopePending
 from simulator.adapter.strategy.pro_fit_band import ProFitBand
@@ -144,17 +146,40 @@ def test_stop_entry_probe_resolves_strategy_and_shares_pending_registry(tmp_path
         assert interactor._indicators.get(key) is not None
 
 
-# --- 未登録 ea_name のフォールバック不変性 -----------------------------------
+# --- 未登録 ea_name は実行を**始めない**（ISSUE-525）-------------------------
 
-def test_unknown_ea_name_falls_back_to_default_tc(tmp_path):
+def test_an_unknown_ea_name_is_refused_at_the_confluence(tmp_path):
+    """未登録 EA 名の run は合流点で止まる（N-01）。
+
+    **仕様の変更（ISSUE-525・2026-09-25）**: 是正前、`build_interactor` は未登録 EA 名を
+    既定 TC 経路へ**黙って**落として完走させていた（本検定の旧名
+    ``test_unknown_ea_name_falls_back_to_default_tc`` がその挙動を固定していた）。一方
+    「`settings`」 経路は同じ入力を N-01 で拒んでいた——**経路が保証境界の適用可否を決めて
+    いた**わけで、これは ISSUE-525 の欠陥そのものである。N-01 の宣言が謳う保証は
+    「未登録名の沈黙フォールバックを遮断します」であり、遮断する側へ揃えた。
+
+    選択規則（`select_ea_binding` の ``.get(ea_name, 既定)``）は**撤去していない**
+    （下の検定が引き続き固定する）。保証境界は選択の**前**に効き、選択は
+    「バー系列を消費しない modelling は読まない構成を採る」規則を担い続ける。
+    """
     csv = _write_comma_csv(tmp_path / "synth.csv")
-    controller, _ = build_interactor(**_comma_kwargs(csv, "UNKNOWN_EA_XYZ"))
-    interactor = controller._interactor
-    assert isinstance(interactor._strategy, TC24051901)
-    assert isinstance(controller._market_data, CsvOHLCRepository)
-    # 既定 TC registry は madiff/close を供給（従来と同一）。
-    for key in ("madiff", "close"):
-        assert interactor._indicators.get(key) is not None
+    with pytest.raises(ConfigError) as excinfo:
+        build_interactor(**_comma_kwargs(csv, "UNKNOWN_EA_XYZ"))
+    assert excinfo.value.context["unsupported_id"] == "N-01"
+    assert excinfo.value.context["value"] == "UNKNOWN_EA_XYZ"
+
+
+def test_the_selection_rule_still_falls_back_to_default_tc():
+    """選択規則そのものは未登録名を既定 TC 経路へ落とす（規則を撤去していない）。
+
+    保証境界（上）が先に止めるため `build_interactor` からは到達しないが、選択規則の
+    役割は変わっていない。ここを消すと「境界を足したついでに選択規則も変えた」のか
+    「境界だけを足した」のかが後から区別できなくなる。
+    """
+    from simulator.main.ea_bindings import DEFAULT_EA_NAME, select_ea_binding
+
+    binding = select_ea_binding("UNKNOWN_EA_XYZ", tick_model="ohlc_expand")
+    assert binding.name == DEFAULT_EA_NAME
 
 
 # --- ProFitBand の生成可能性（1 エントリ登録・従来は未登録で生成不能）----------

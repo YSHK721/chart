@@ -17,7 +17,7 @@
     データ非供給（``data_path is None``）→ **非発火**。これは上の 6 行とは別の事実である
     ——「気配幅の無いデータで走らせる」ではなく「データを 1 行も読まない」であり、N-17 が
     防ぐ事象（spread=0 供給が実 MT5 と一致しない・H-4）が原理的に起こらない。根拠は規則 S:
-    `apply_unsupported_rules` を呼ぶ非テストの呼び手は、変換層の写像入口
+    「`apply_unsupported_rules`」 を呼ぶ非テストの呼び手は、変換層の写像入口
     `simulator/main/tester_settings/kwargs_mapper.effective_to_interactor_kwargs`
     ただ 1 つであり、その関数は規則 S の整合検査を**先に**呼ぶ。**行番号では指さない**
     ——行は編集で腐るため、指すのは関数名である（工程 5 レビュー 🔵-1）。唯一性と評価順は
@@ -29,7 +29,7 @@
 
 計算量（CX-2）:
     継ぎ目は形式判定と `supplies_spread` が共有するヘッダ読取
-    （`ohlc_marketdata_csv._header_line`）。`apply_unsupported_rules` 1 回あたりの発行が、
+    （`ohlc_marketdata_csv._header_line`）。「`apply_unsupported_rules`」 1 回あたりの発行が、
     評価する宣言の数で増えないことを宣言数 2 点で表明する。**回数は焼き込まない**。
 
 共有するテストヘルパは import して使う（同じものを手書き複製しない）:
@@ -53,10 +53,10 @@ import pytest
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
 from simulator.main.tester_settings import unsupported
+from simulator.main import spread_dependent_ea_names
 from simulator.main.tester_settings.unsupported import (
     NOT_VIOLATED,
     RULES,
-    SPREAD_DEPENDENT_EA_NAMES,
     UI_TRIGGER_NONE,
 )
 from simulator.tests.ohlc_header_fixtures import (
@@ -68,10 +68,7 @@ from simulator.tests.ohlc_header_fixtures import (
     MT5_TAB,
     write_header,
 )
-from simulator.tests.tester_settings_engine_fixtures import (
-    engine_binding,
-    runnable_settings,
-)
+from simulator.tests.tester_settings_engine_fixtures import run_scope_inputs
 
 _ROOT = Path(__file__).resolve().parents[3]
 #: MT5 突合フィクスチャ（実 OANDA-Japan MT5 JP225 M1・読み取りのみ）。
@@ -84,6 +81,10 @@ _FULL_CSV = _ROOT / "data" / "marketdata" / "jp225_m1.csv"
 
 #: spread 非依存 EA（対照）。既存の N-17 検定と同じ既定 TC 経路の名前。
 _INDEPENDENT_EA = "TC24051901"
+
+#: 気配幅を読む EA 名（**戦略の宣言から導いたもの**・ISSUE-525。是正前はここが
+#: `unsupported.py` の手書きの 3 名だった）。
+_SPREAD_DEPENDENT_EAS = spread_dependent_ea_names()
 
 #: 実体のヘッダ → N-17 が発火するか（**この表が発火の唯一の宣言**）。
 _BOUNDARY = {
@@ -102,14 +103,14 @@ def _violation(ea_name: str, data_path):
     ``data_path`` を**文字列化しない**のが、simulator/tests/unit/
     test_unsupported_spread_dependency.py の同種のヘルパとの唯一の差である。本ファイルは「データ非供給（``None``）」を測るため、``None`` を
     ``"None"``（実在しないパス）へ潰すとその事実が測れなくなる。
+
+    判定入力の束が 「`RunScopeInputs`」 なのは、N-17 が**合流点で適用する規則**になったため
+    である（ISSUE-525。是正前は写像層だけが適用し、「`settings`」 を持たない投入は境界の外へ
+    出られた）。同じ実体を実効設定側・注入束側の両方の役で渡す（束の docstring 参照）。
     """
     rule = RULES["N-17"]
-    settings = runnable_settings(Expert=f"{ea_name}.ex5")
-    binding = engine_binding(
-        data_path=data_path,
-        known_ea_names=tuple(SPREAD_DEPENDENT_EA_NAMES) + (_INDEPENDENT_EA,),
-    )
-    return rule.detect(settings.effective(), binding)
+    inputs = run_scope_inputs(ea_name=ea_name, data_path=data_path)
+    return rule.detect(inputs, inputs)
 
 
 def _fires(ea_name: str, data_path) -> bool:
@@ -119,7 +120,7 @@ def _fires(ea_name: str, data_path) -> bool:
 # --- R-7 / R-8 / R-10: 3 本 × 実体の発火表 ---------------------------------------
 
 
-@pytest.mark.parametrize("ea_name", sorted(SPREAD_DEPENDENT_EA_NAMES))
+@pytest.mark.parametrize("ea_name", _SPREAD_DEPENDENT_EAS)
 def test_the_boundary_follows_whether_the_entity_supplies_spread(ea_name, tmp_path):
     """spread 依存 EA 3 本すべてで、発火は気配幅の供給の有無だけで決まる。
 
@@ -140,7 +141,7 @@ def test_the_boundary_follows_whether_the_entity_supplies_spread(ea_name, tmp_pa
     }
 
 
-@pytest.mark.parametrize("ea_name", sorted(SPREAD_DEPENDENT_EA_NAMES))
+@pytest.mark.parametrize("ea_name", _SPREAD_DEPENDENT_EAS)
 def test_the_violation_value_is_the_ea_name(ea_name, tmp_path):
     """発火時の違反値は EA 名である（送出側が例外 context の value 欄に載せる）。"""
     # Arrange
@@ -176,7 +177,7 @@ def test_a_spread_independent_ea_never_fires_on_any_entity(tmp_path):
 # --- データ非供給（規則 S）は N-17 の対象外 ---------------------------------------
 
 
-@pytest.mark.parametrize("ea_name", sorted(SPREAD_DEPENDENT_EA_NAMES))
+@pytest.mark.parametrize("ea_name", _SPREAD_DEPENDENT_EAS)
 def test_a_run_that_supplies_no_data_at_all_does_not_fire(ea_name):
     """``data_path is None``（`MATH_CALCULATIONS`）では発火しない。
 
@@ -215,7 +216,7 @@ def test_the_ui_binding_still_declares_that_raw_tokens_cannot_decide():
 @pytest.mark.skipif(
     not _FULL_CSV.is_file(), reason="全期間データ実体（data/marketdata/jp225_m1.csv）が無い環境"
 )
-@pytest.mark.parametrize("ea_name", sorted(SPREAD_DEPENDENT_EA_NAMES))
+@pytest.mark.parametrize("ea_name", _SPREAD_DEPENDENT_EAS)
 def test_the_real_execution_dataset_still_fires(ea_name):
     """現行の実行データセット（6 列）では従来どおり弾き続ける（読み取りのみ）。
 
@@ -229,7 +230,7 @@ def test_the_real_execution_dataset_still_fires(ea_name):
 
 
 @pytest.mark.skipif(not _MT5_FIXTURE.is_file(), reason="MT5 突合フィクスチャが無い環境")
-@pytest.mark.parametrize("ea_name", sorted(SPREAD_DEPENDENT_EA_NAMES))
+@pytest.mark.parametrize("ea_name", _SPREAD_DEPENDENT_EAS)
 def test_the_real_mt5_fixture_still_does_not_fire(ea_name):
     """突合フィクスチャの実体（`<SPREAD>` を持つ）では発火しない＝指紋経路を保つ。"""
     # Arrange: 前提の実測
@@ -242,31 +243,29 @@ def test_the_real_mt5_fixture_still_does_not_fire(ea_name):
 
 
 def _extra_declarations(count: int) -> tuple:
-    """評価順の末尾に**発火しない**宣言を ``count`` 件足した `RUN_REQUEST_RULES`。
+    """評価順の末尾に**発火しない**宣言を ``count`` 件足した `RUN_SCOPE_RULES`。
 
-    足すのは N-17 以外の既存宣言（`RULES["N-02"]`＝最適化）である。N-17 を複製すると
-    「判定そのものが増えた」ことになり、測りたい量（**他の**宣言が増えても N-17 の発行が
-    増えないこと）と別のものを測ってしまう。
+    足すのは N-17 以外の既存宣言（`RULES["N-10"]`＝単一銘柄の構造不変条件）である。
+    N-17 を複製すると「判定そのものが増えた」ことになり、測りたい量（**他の**宣言が
+    増えても N-17 の発行が増えないこと）と別のものを測ってしまう。合流点で適用する側から
+    選ぶ必要がある——設定の語彙を読む宣言（N-02 等）を混ぜると、合流点が運ぶ判定入力に
+    その名前が無く `AttributeError` になる（測りたい量とは無関係の理由で赤になる）。
     """
-    return unsupported.RUN_REQUEST_RULES + (RULES["N-02"],) * count
+    return unsupported.RUN_SCOPE_RULES + (RULES["N-10"],) * count
 
 
 def _issued_and_used(monkeypatch, data_path, extra: int) -> "tuple[int, int]":
-    """宣言を ``extra`` 件足した状態で `apply_unsupported_rules` を 1 回適用する。
+    """宣言を ``extra`` 件足した状態で `apply_run_scope_unsupported_rules` を 1 回適用する。
 
     発行 = ヘッダ読取（形式判定と `supplies_spread` が共有する継ぎ目）。
     使用 = その適用で N-17 の判定が答えを使った回数（宣言表の N-17 の件数 × 適用 1 回）。
     """
-    settings = runnable_settings(Expert="MA_Slope_EA.ex5")
-    binding = engine_binding(
-        data_path=data_path,
-        known_ea_names=tuple(SPREAD_DEPENDENT_EA_NAMES) + (_INDEPENDENT_EA,),
-    )
+    inputs = run_scope_inputs(ea_name="MA_Slope_EA", data_path=data_path)
     declarations = _extra_declarations(extra)
-    monkeypatch.setattr(unsupported, "RUN_REQUEST_RULES", declarations)
+    monkeypatch.setattr(unsupported, "RUN_SCOPE_RULES", declarations)
     reads = spy(monkeypatch, ohlc_marketdata_csv, "_header_line")
 
-    unsupported.apply_unsupported_rules(settings.effective(), binding)
+    unsupported.apply_run_scope_unsupported_rules(inputs)
 
     used = sum(1 for rule in declarations if rule.unsupported_id == "N-17")
     return len(reads), used
@@ -275,7 +274,7 @@ def _issued_and_used(monkeypatch, data_path, extra: int) -> "tuple[int, int]":
 def test_the_header_reads_do_not_grow_with_the_number_of_declarations(
     monkeypatch, tmp_path
 ):
-    """`apply_unsupported_rules` 1 回あたりの読取が、評価する宣言の数で増えない。
+    """`apply_run_scope_unsupported_rules` 1 回あたりの読取が、評価する宣言の数で増えない。
 
     規模 2 点（宣言を 0 件足した表と 5 件足した表）で、発行 − 使用 = 0 と、両点で発行が
     等しいことを表明する。**回数そのものは焼き込まない**——焼き込むと、いま何回読んで
