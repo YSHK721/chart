@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from marketdata.dataset_registry import REGISTRY, whitelist
+from marketdata.dataset_registry import DEFAULT_DATASET_REF, REGISTRY, whitelist
 from marketdata.symbol_spec_snapshot import settlement_currency, spec_fields
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
@@ -75,9 +75,18 @@ def _submission_keys() -> "tuple[str, ...]":
 
 
 def _ledger_spread_refs() -> "tuple[str, ...]":
-    """台帳が**気配幅を宣言している** ref（``spread_point_snapshot`` を持つ記述子）。"""
+    """台帳が**気配幅を宣言している** ref のうち、**実際に取引している供給**のもの。
+
+    台帳の気配幅系列は 1 件ではない（ISSUE-533 段階 3 の前提工事で Dukascopy 側にも対が
+    できた）。sim が走るのは実際に取引している口座の系列なので、既定 datasetRef
+    （``DEFAULT_DATASET_REF``＝取引している供給）のベンダで絞る。これで対照は一意に戻り、
+    かつ綴りは 1 つも書き写さない——カタログが別の供給の気配幅系列を名乗るようになれば、
+    ここが食い違いとして落ちる。
+    """
+    traded = REGISTRY[DEFAULT_DATASET_REF].vendor
     return tuple(
-        ref for ref, d in REGISTRY.items() if d.spread_point_snapshot is not None
+        ref for ref, d in REGISTRY.items()
+        if d.spread_point_snapshot is not None and d.vendor == traded
     )
 
 
@@ -104,7 +113,7 @@ def test_the_catalog_offers_the_legacy_series_first_and_the_spread_series_second
     offered = [p.dataset for p in _catalog().datasets()]
 
     # Assert
-    assert len(declared_spread) == 1, "台帳の気配幅系列が一意でない（対照が空虚になる）"
+    assert len(declared_spread) == 1, "取引している供給の気配幅系列が一意でない（対照が空虚になる）"
     assert declared_spread[0] != _LEGACY_REF   # 空振り防止（2 つは別の ref）
     assert offered == [_LEGACY_REF, declared_spread[0]]
 

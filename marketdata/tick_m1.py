@@ -161,6 +161,17 @@ PUBLIC_API_LEDGER: dict[str, str] = {
     "materialize_m1_day_for_series":
         "ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 1 日分のティックを案内の全系列の "
         "M1 行へ素材化する口（畳みは 1 回）",
+    "build_m1_from_ticks_for_series":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 期間の日別 parquet を 1 回だけ"
+        "読んで案内の全系列の M1 CSV を作る口。系列ごとに全構築を呼ぶと同じ parquet を系列の"
+        "数だけ読んで畳む（出力は正しいままなので状態検証では落ちない）",
+    "append_m1_from_ticks_for_series":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 同じ走査で案内の全系列へ"
+        "不足分を追記する口。常駐が周期ごとに系列の数だけ parquet を読み直さないため",
+    "series_write_order":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 書込を発行する順（列の上位集合が"
+        "先）の唯一源。2 ファイルを原子的に書く手段は無いので、途中で死んだときに遅れる側を"
+        "選ぶ規則であり、MT5 の日中追記と Dukascopy の全構築・追記が同じ規則を使う",
 }
 
 
@@ -233,6 +244,7 @@ def _plan_for_refs(
     *,
     price_basis: "str | None",
     resolve: "Callable[[str], tuple[Callable[[], float] | None, Path | None]]",
+    default_basis: "str | None" = None,
 ) -> SeriesPlan:
     """``refs`` を 1 つの案内へまとめる（宣言の引き方は ``resolve`` が決める）。
 
@@ -242,6 +254,11 @@ def _plan_for_refs(
     この差を引数の真偽で切り替えると、照合しない経路が黙って作れてしまう。
 
     順序は基準 → 宣言（:func:`materialize_m1_day` の従来の評価順と同じ）。
+
+    ``default_basis`` は台帳に無い ref で ``price_basis`` も未指定だったときの基準である。
+    ``None``（既定）は「未指定を許さない」を意味する。書き手の入口（:func:`build_m1_from_ticks` /
+    :func:`append_m1_from_ticks`）だけが :data:`PRICE_BASIS_MID` を渡す——台帳外 ref への既存呼出を
+    1 バイトも変えないためであり、案内を組む他の口（:func:`series_plan`）は既定へ落とさない。
     """
     refs = tuple(refs)
     if not refs:
@@ -254,7 +271,7 @@ def _plan_for_refs(
             f"同じ datasetRef が案内に 2 度以上あります: {refs}（案内の並びと出力の対応が"
             " 1 対 1 でなくなり、同じ置き場へ二重に書きます）。"
         )
-    bases = {ref: _resolved_basis(ref, price_basis) for ref in refs}
+    bases = {ref: _resolved_basis(ref, price_basis, default=default_basis) for ref in refs}
     if len(set(bases.values())) != 1:
         raise SeriesPlanConflict(
             f"同じティックから導く系列の価格基準が食い違います: {bases}。1 回の畳みでは"
@@ -270,7 +287,14 @@ def _plan_for_refs(
         if spread is not None:
             spread_refs.append(ref)
             resolvers.append(spread)
-    declared = {ref: _spread_point.declared_snapshot_of(ref) for ref in spread_refs}
+    # 宣言の突合は spread 列を持つ ref が 2 つ以上あるときだけ発行する。1 つ以下なら比べる相手が
+    #   居らず、引いた宣言は出力に何も足さない（発行 − 使用 ≠ 0）。書き手の入口は 1 要素の案内で
+    #   毎回ここを通るため、無条件に引くと build / append のたびに使わない照会が 1 件出る
+    #   （marketdata/tests/test_spread_point_ownership.py の CX-B が 2026-09-26 に実測した）。
+    declared = (
+        {ref: _spread_point.declared_snapshot_of(ref) for ref in spread_refs}
+        if len(spread_refs) > 1 else {}
+    )
     if len(set(declared.values())) > 1:
         raise SeriesPlanConflict(
             f"spread 列を持つ系列の宣言が食い違います: {declared}。1 つの畳みから数えられる"
@@ -328,6 +352,38 @@ def _project_for_series(m1: pd.DataFrame, plan: SeriesPlan) -> "dict[str, pd.Dat
     return {
         ref: (m1 if ref in plan.spread_refs else _without_spread(m1)) for ref in plan.refs
     }
+
+
+def series_write_order(plan: SeriesPlan) -> "tuple[str, ...]":
+    """案内の系列へ書込を発行する順（**列の上位集合が先**・ISSUE-511 段階 8-D-2b の設計 D-6 (ii)）。
+
+    2 つ以上のファイルを原子的に書く手段は無いので、途中で死んだときに「どちらが遅れるか」だけが
+    選べる。遅らせるのは最も見られている系列（spread 列を持たない側）である——遅れが観測される側に
+    出れば、運用者は止まったことに気付ける。同じ群の中では案内の並び（＝台帳の宣言順）をそのまま
+    保つ（``sorted`` は安定であり、鍵は「上位集合でない」の真偽だけ）。
+
+    規則を案内の持ち主（本モジュール）に置くのは、同じ選択を MT5 の日中追記
+    （:mod:`marketdata.mt5_ticks.m1_chain`）と Dukascopy の全構築・追記が共有するためである。
+    書き手ごとに写しを持つと、片方だけ順序を変えたときにもう片方が黙って別の系列を遅らせる。
+    """
+    return tuple(sorted(plan.refs, key=lambda ref: ref not in plan.spread_refs))
+
+
+def _plan_subset(plan: SeriesPlan, ref: str) -> SeriesPlan:
+    """案内から ``ref`` だけを取り出した 1 要素の案内（解決済みの宣言・置き場をそのまま使う）。
+
+    用途は、組のうち 1 系列だけを全構築で書き直す自己修復（ISSUE-455）である。台帳と既存 CSV を
+    もう一度引き直さないのは、照合した対象と書く対象がずれる余地を作らないためである。
+    spread 列を持たない ref の部分案内は ``spread`` を持たない（気配幅を計算しない）。
+    """
+    owns_spread = ref in plan.spread_refs
+    return SeriesPlan(
+        price_basis=plan.price_basis,
+        refs=(ref,),
+        spread_refs=frozenset({ref}) if owns_spread else frozenset(),
+        spread=plan.spread if owns_spread else None,
+        paths={ref: plan.paths[ref]},
+    )
 
 
 def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
@@ -1034,27 +1090,76 @@ def build_m1_from_ticks(
     IO の前に :class:`ValueError`。台帳に無い ref は従来どおり ``point`` が spread 列を足す。
     既存 CSV の spread 列の有無が宣言と食い違えば、置き換えずに :class:`SpreadSchemaMismatch`。
     """
-    basis = _resolved_basis(ref, price_basis, default=PRICE_BASIS_MID)
-    spread, out_path = _checked_series(ref, data_dir=data_dir, point=point)
-    return _build_whole(
-        start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
-        price_basis=basis, writer=writer, spread=spread,
+    plan = _entry_plan(ref, data_dir=data_dir, price_basis=price_basis, point=point)
+    return _build_whole_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )[ref]
+
+
+def _entry_plan(
+    ref: str, *, data_dir: Any, price_basis: "str | None", point: "float | None"
+) -> SeriesPlan:
+    """書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）が通す 1 要素の案内。
+
+    :func:`series_plan` と分けるのは、この 2 つの入口だけが台帳外 ref への既存契約を持つためである:
+    基準の既定が :data:`PRICE_BASIS_MID`、``point`` の明示が効く（どちらも登録済み ref では拒否
+    される）。案内の組み立てそのものは :func:`_plan_for_refs` 1 箇所を通る（評価順＝基準 → 宣言も
+    従来どおり）。
+    """
+    return _plan_for_refs(
+        (ref,),
+        price_basis=price_basis,
+        default_basis=PRICE_BASIS_MID,
+        resolve=lambda r: _checked_series(r, data_dir=data_dir, point=point),
     )
 
 
-def _build_whole(
+def build_m1_from_ticks_for_series(
+    start: Any,
+    end: Any,
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+    price_basis: "str | None" = None,
+    writer: "M1Writer | None" = None,
+) -> "dict[str, Path]":
+    """``[start, end]`` の日別ティック parquet を **1 回だけ**読んで組の全系列の M1 CSV を作る。
+
+    ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）。履歴を生成する口であり、畳み方は
+    1 つも持たない: 案内は :func:`series_plan`、素材化は :func:`materialize_m1_day_for_series`
+    （その内側の :func:`_materialize_m1_day` が順序の唯一源）、配り方は :func:`_project_for_series`。
+
+    系列ごとに :func:`build_m1_from_ticks` を呼ぶと、同じ日別 parquet を系列の数だけ読んで
+    畳むことになる。出力はどちらも正しいので状態検証では原理的に落ちない（ISSUE-450 と同型）。
+    その不在は ``marketdata/tests/test_tick_m1_series_fan_out_build.py`` の CX-1 が Test Spy で
+    固定する（系列 1 → 2 で読込・畳みの発行が増えないこと・発行 − 使用 = 0）。
+
+    戻り値は ref → 出力パス（鍵は案内の全 ref）。``price_basis`` は台帳に無い ref（検定の合成 ref）
+    のためにあり、登録済み ref へ渡すと :class:`ValueError`（台帳が唯一の源）。
+    """
+    plan = series_plan(refs, data_dir=data_dir, price_basis=price_basis)
+    return _build_whole_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )
+
+
+def _build_whole_for_series(
     start: Any,
     end: Any,
     *,
     symbol: str,
     data_dir: Any,
-    out_path: Path,
+    plan: SeriesPlan,
     until: Any,
-    price_basis: str,
     writer: "M1Writer | None",
-    spread: "Callable[[], float] | None",
-) -> Path:
-    """全構築の本体（照合は呼出側が済ませる＝追記のフォールバックでヘッダを 2 度読まない）。"""
+) -> "dict[str, Path]":
+    """全構築の本体（照合は呼出側が済ませる＝追記のフォールバックでヘッダを 2 度読まない）。
+
+    日別 parquet は 1 ファイル 1 回だけ読み、畳みも 1 回で、結果を :func:`_project_for_series` で
+    各系列へ配る（**再計算しない**）。書込の発行順は :func:`series_write_order`。
+    """
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
     if not files:
         raise FileNotFoundError(
@@ -1066,7 +1171,7 @@ def _build_whole(
         # 外れ分除去・形成中分（>= until）の除外は日ごとに済ませ、残った分だけ気配幅を計算する。
         m1_day = _materialize_m1_day(
             pd.read_parquet(p, columns=_TICK_COLUMNS),
-            price_basis=price_basis, spread=spread, until=until,
+            price_basis=plan.price_basis, spread=plan.spread, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
@@ -1074,9 +1179,12 @@ def _build_whole(
         m1 = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     else:
         # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する（point の値は要らない）。
-        m1 = _empty_m1(spread is not None)
-    (writer or CsvM1Writer()).write_whole(m1, out_path)
-    return out_path
+        m1 = _empty_m1(plan.spread is not None)
+    projected = _project_for_series(m1, plan)
+    writer = writer or CsvM1Writer()
+    for ref in series_write_order(plan):
+        writer.write_whole(projected[ref], plan.paths[ref])
+    return {ref: plan.paths[ref] for ref in plan.refs}
 
 
 def _read_last_m1_row(out_path: Any) -> "pd.DataFrame | None":
@@ -1255,57 +1363,162 @@ def append_m1_from_ticks(
     有無の照合は末尾行の読取より前に行う。食い違いは自己修復（全構築）へ回さず
     :class:`SpreadSchemaMismatch` で止める（末尾破損でも同じ）。
     """
-    basis = _resolved_basis(ref, price_basis, default=PRICE_BASIS_MID)
-    spread, out_path = _checked_series(ref, data_dir=data_dir, point=point)
-    writer = writer or CsvM1Writer()
+    plan = _entry_plan(ref, data_dir=data_dir, price_basis=price_basis, point=point)
+    return _append_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )[ref]
+
+
+def append_m1_from_ticks_for_series(
+    start: Any,
+    end: Any,
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+    price_basis: "str | None" = None,
+    writer: "M1Writer | None" = None,
+) -> "dict[str, Path]":
+    """組の全系列へ「不足分」だけを **1 回の走査で**追記する（ISSUE-533 段階 3 の前提工事）。
+
+    :func:`append_m1_from_ticks` の複数系列版であり、増分・メモリ有界・自己修復の規約も同じである。
+    違うのは、日別 parquet を読んで畳むのが系列の数に依らず **1 回**であることだけ
+    （``marketdata/tests/test_tick_m1_series_fan_out_build.py`` の CX-2 が固定する）。
+
+    再読込の窓（行選択・設計は MT5 の日中追記 :func:`marketdata.mt5_ticks.m1_chain.append_m1_for_closed_minutes_for_series`
+    と同じ形）: 窓の下限は ``min(先端)`` であり、健全な先端を持たない系列が 1 つでもあれば下限なし
+    （その系列は ``start`` から全構築を要る）。各系列へは ``index > その系列の先端`` の分バーだけを
+    追記する。先端に差があるときに落ちるのは「進んでいる側で既に確定済みの分」だけで、その分は
+    必ず遅れている側が使う——つまり畳んだ分に「どの系列も使わない分」は無い。
+
+    **先端が揃わないことを Fail-Stop にしない**のは MT5 側との意図した非対称である（そちらは
+    :class:`marketdata.mt5_ticks.port.SeriesWriteIncomplete` で止める）: あちらの素材は受信ジャーナルの
+    行であり、周期を過ぎた行は二度と来ないので遅れた系列は永久に追いつけない。こちらの素材は日別
+    parquet として残るので、次の周期でも下限（``min(先端)``）がその系列まで戻り、放っておいても
+    追いつく。止めると、追いつける組の供給を人手が要る停止へ変えてしまう。
+
+    戻り値は ref → 出力パス（鍵は案内の全 ref）。
+    """
+    plan = series_plan(refs, data_dir=data_dir, price_basis=price_basis)
+    return _append_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )
+
+
+def _healthy_tail_date(out_path: Any) -> "pd.Timestamp | None":
+    """既存 M1 CSV の**健全な**最終バーの分。不在・空・末尾 torn・構造破損は ``None``。
+
+    ``None`` は「この系列は全構築を要る」を意味する（ISSUE-455 の自己修復）。読取が
+    :class:`ValueError` で Fail-Stop する構造破損（列数超過＝8 列化 tail 等）も同じ側へ倒す——
+    常駐をクラッシュさせず、壊れた素材を正しい素材で置き換えるのが根本修復である。
+    """
     try:
         tail = _read_last_m1_row(out_path)
     except ValueError:
-        # 既存 CSV の tail が構造破損（列数超過＝ISSUE-455 の 8 列化 tail 等）で read_tail が
-        # Fail-Stop した。watch をクラッシュさせず、原子的全構築へフォールバックして自己修復する
-        # （症状回避ではなく、壊れた素材を正しい素材で置き換える根本修復）。
-        tail = None
+        return None
     if tail is None or not _is_healthy_m1_row(tail):
-        # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
-        return _build_whole(
-            start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
-            price_basis=basis, writer=writer, spread=spread,
-        )
+        return None
+    return pd.Timestamp(tail.index[-1])
 
-    last_date = pd.Timestamp(tail.index[-1])
-    # 最終バー日（当日）から再読込し index > last_date のみ追記する。完成日は冪等 no-op、
-    # 部分日は欠損分のみ自己修復（要求 start がそれより後ろならそれを尊重）。
-    resume_start = last_date.normalize()
-    eff_start = max(resume_start, pd.Timestamp(start))
+
+def _append_for_series(
+    start: Any,
+    end: Any,
+    *,
+    symbol: str,
+    data_dir: Any,
+    plan: SeriesPlan,
+    until: Any,
+    writer: "M1Writer | None",
+) -> "dict[str, Path]":
+    """追記の本体（照合は呼出側が済ませる＝ヘッダを 2 度読まない）。走査は系列数に依らず 1 回。"""
+    writer = writer or CsvM1Writer()
+    tips = {ref: _healthy_tail_date(plan.paths[ref]) for ref in plan.refs}
+    out = {ref: plan.paths[ref] for ref in plan.refs}
+    # 下限は min(先端)。全構築を要る系列が 1 つでもあれば下限なし（その系列は start から要る）。
+    floor = None if any(tip is None for tip in tips.values()) else min(tips.values())
+    eff_start = (
+        pd.Timestamp(start) if floor is None
+        else max(floor.normalize(), pd.Timestamp(start))
+    )
     files = day_parquet_files(eff_start, end, symbol=symbol, data_dir=data_dir)
     if not files:
-        return out_path  # 追記すべき新しい日は無い。
+        if floor is None:
+            # 全構築を要る系列が居るのに素材が 1 つも無い（全構築と同じ fail-fast）。
+            raise FileNotFoundError(
+                f"ティック parquet が見つかりません（{start}..{end} / {tick_root(data_dir)} / "
+                f"symbol={symbol}）。"
+            )
+        return out  # 追記すべき新しい日は無い。
 
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        # 厳密に既存最終 date より後（重複防止）かつ形成中分（>= until）を除いた分だけを
-        # 日ごとに選び、その分だけ気配幅を計算する。
+        # 下限（どの系列でも確定済みの分）より後かつ形成中分（>= until）を除いた分だけを日ごとに
+        # 選び、その分だけ気配幅を計算する。
         m1_day = _materialize_m1_day(
             pd.read_parquet(p, columns=_TICK_COLUMNS),
-            price_basis=basis, spread=spread, after=last_date, until=until,
+            price_basis=plan.price_basis, spread=plan.spread, after=floor, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
-    if not daily_m1:
-        return out_path
-    # daily_m1 は非空の日だけ → 連結は 1 行以上・keep-last は各分を 1 行残す＝m1_new は非空。
-    m1_new = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
+    # daily_m1 は非空の日だけ → 連結は 1 行以上・keep-last は各分を 1 行残す＝非空。
+    folded = (
+        _project_for_series(_dedupe_minutes(pd.concat(daily_m1).sort_index()), plan)
+        if daily_m1 else None
+    )
+    for ref in series_write_order(plan):
+        _write_one_series(
+            ref, plan=plan, folded=folded, tip=tips[ref], writer=writer,
+            start=start, end=end, symbol=symbol, data_dir=data_dir, until=until,
+        )
+    return out
+
+
+def _write_one_series(
+    ref: str,
+    *,
+    plan: SeriesPlan,
+    folded: "dict[str, pd.DataFrame] | None",
+    tip: "pd.Timestamp | None",
+    writer: "M1Writer",
+    start: Any,
+    end: Any,
+    symbol: str,
+    data_dir: Any,
+    until: Any,
+) -> None:
+    """1 系列ぶんの書込（全構築を要る側は置き換え・先端を持つ側は不足分の追記）。
+
+    ``folded`` が ``None`` は「畳んだ結果が 0 行」である。そのとき全構築を要る系列にはヘッダのみの
+    空 M1 を置き（parquet は在るが全日空＝全構築と同じ出力）、先端を持つ系列には何も書かない
+    （冪等 no-op）。
+    """
+    path = plan.paths[ref]
+    if tip is None:
+        # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的置換で（再）生成し自己修復。
+        frame = (
+            folded[ref] if folded is not None else _empty_m1(ref in plan.spread_refs)
+        )
+        writer.write_whole(frame, path)
+        return
+    if folded is None:
+        return
+    rows = folded[ref]
+    rows = rows[rows.index > tip]  # 厳密に既存最終 date より後（重複防止）。
+    if rows.empty:
+        return
     try:
-        writer.append(m1_new, out_path)
+        writer.append(rows, path)
     except ValueError:
         # 既存ヘッダと追記行の列が食い違う（旧 6 列 CSV に up/dn 付き 8 列を積もうとした等）。
-        # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
+        # 黙って乖離を育てず、**その系列だけ**を原子的全構築で書き直して是正する（ISSUE-455）。
+        # 兄弟の置き場には触らない（既存系列の全書換＝R-2/Y-2 を組の事情で起こさない）。
         # spread 列の有無の食い違いは入口で止めてある（SpreadSchemaMismatch は ValueError ではない）。
-        return _build_whole(
-            start, end, symbol=symbol, data_dir=data_dir, out_path=out_path, until=until,
-            price_basis=basis, writer=writer, spread=spread,
+        _build_whole_for_series(
+            start, end, symbol=symbol, data_dir=data_dir,
+            plan=_plan_subset(plan, ref), until=until, writer=writer,
         )
-    return out_path
 
 
 def forming_bar_from_ticks(
