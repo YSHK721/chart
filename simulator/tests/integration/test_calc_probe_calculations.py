@@ -11,7 +11,7 @@
         必要証拠金: lot × contract_size × entry / leverage
         維持率:     equity / margin × 100、equity = balance + Σ 含み損益
         ロスカット: 維持率 < stop_out_level の評価点で、全玉を当該点の Bid/Ask で決済
-        ロット:     lot_size を volume_step へ切り捨て、[volume_min, volume_max] に収める
+        ロット:     lot_size を volume_min まで切り上げ、volume_step へ切り捨て、volume_max に収める
         SMA:        直近 period 本の終値の算術平均（期間未満は未成立）
 
 観測の境界:
@@ -247,11 +247,20 @@ class TestLot:
         for t in trades:
             assert t.volume == pytest.approx(_floor_lot(lot_size), abs=1e-9)
 
-    def test_a_lot_below_the_minimum_refuses_to_start(self, tmp_path: Path) -> None:
+    def test_a_lot_below_the_minimum_is_raised_to_the_minimum(self, tmp_path: Path) -> None:
+        """MT5 と同じく最小ロットまで切り上げる（原本: Lot=0.1 が volume_min=1 で約定）。"""
         csv_path = _write_csv(tmp_path / "d.csv", _CROSSING)
-        # 何を入れれば通るか（最小ロット）を文言で名指す。
-        with pytest.raises(ConfigError, match=f"最小ロット {_VMIN}"):
-            _run(csv_path, lot_size=0.05)
+        trades = _run(csv_path, lot_size=0.05).trades
+        assert trades
+        assert [t.volume for t in trades] == pytest.approx([_VMIN] * len(trades), abs=1e-9)
+
+    @pytest.mark.parametrize("lot_size", [0.0, -1.0])
+    def test_a_lot_that_is_not_positive_refuses_to_start(
+        self, tmp_path: Path, lot_size: float
+    ) -> None:
+        csv_path = _write_csv(tmp_path / "d.csv", _CROSSING)
+        with pytest.raises(ConfigError):
+            _run(csv_path, lot_size=lot_size)
 
 
 # ---- 証拠金・ロスカット ----

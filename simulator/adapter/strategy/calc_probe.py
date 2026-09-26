@@ -16,9 +16,11 @@
     買いと売りを交互に建てるため、bid/ask の両側・損益の両符号・途転決済の経路を必ず通る。
 
 ロット:
-    ``lot_size`` を ``on_init`` で **1 回だけ** 銘柄の刻みへ切り捨てて保持する。刻みの規則は
-    domain の `floor_to_step` が唯一の所有者であり、ここで書き直さない。発注できない量
-    （刻みが正でない・最小未満）は `ConfigError`＝起動失敗とする。
+    ``lot_size`` を ``on_init`` で **1 回だけ** 銘柄の最小ロットまで切り上げ、刻みへ切り捨てて
+    保持する。最小ロットへの切り上げは MT5 の挙動に従う（MT5 原本
+    `simulator/tests/fixtures/mt5/ma_slope_jp225_202501` で Lot=0.1 が volume_min=1 で約定・
+    依頼者裁定 2026-09-26）。刻みの規則は domain の `floor_to_step` が唯一の所有者であり、
+    ここで書き直さない。正でない ``lot_size`` と正でない刻みは `ConfigError`＝起動失敗とする。
 """
 from __future__ import annotations
 
@@ -42,11 +44,18 @@ class CalcProbe(StrategyPort, EntryPriceBasisPort):
         self._lot: float | None = None
 
     def on_init(self, config: Any, indicators: Any) -> None:
+        requested = float(config["lot_size"])
+        if requested <= 0.0:
+            raise ConfigError(
+                f"CalcProbe の lot_size={config['lot_size']} は正でありません",
+                context={"lot_size": config["lot_size"]},
+            )
+        minimum = float(config["volume_min"])
         try:
             lot = floor_to_step(
-                float(config["lot_size"]),
+                max(requested, minimum),
                 step=float(config["volume_step"]),
-                minimum=float(config["volume_min"]),
+                minimum=minimum,
                 maximum=float(config["volume_max"]),
             )
         except ValueError as exc:
@@ -55,10 +64,8 @@ class CalcProbe(StrategyPort, EntryPriceBasisPort):
             ) from None
         if lot is None:
             raise ConfigError(
-                f"CalcProbe の lot_size={config['lot_size']} は銘柄の最小ロット "
-                f"{config['volume_min']}（刻み {config['volume_step']}）未満です。"
-                "最小ロット以上を指定してください（黙って切り上げません）",
-                context={"lot_size": config["lot_size"], "volume_min": config["volume_min"]},
+                "CalcProbe は最小ロットを刻みへ丸めると発注可能な量になりません",
+                context={"volume_min": config["volume_min"], "volume_step": config["volume_step"]},
             )
         self._lot = lot
 
