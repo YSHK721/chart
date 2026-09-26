@@ -36,6 +36,7 @@ from simulator.tests.declared_field_readers import (
     DECLARATION_SCOPE,
     EXEMPT_UNREAD_FIELDS,
     READER_SCOPE,
+    AmbiguousDeclarationError,
     ExemptionError,
     unread_declared_fields,
 )
@@ -590,3 +591,86 @@ class TestTheCountIsTypeAwareNotNameBased:
 
         # Assert: 読み手が在るのは 「`Confluence`」 の側だけ。
         assert [(f.dto, f.field) for f in reported] == [("Injected", "shared_name")]
+
+
+class TestTheMeasurementStopsWhenItCannotSayWhatItMeasured:
+    """解けない入力では黙って数えない（測れないものを測ったふりにしない）。"""
+
+    def test_a_dto_name_declared_in_two_places_fails_the_scan(self, tmp_path):
+        """TC-017: 同名の DTO が 2 つの実体で宣言されていたら止まる。
+
+        名前で引く索引は同名を 1 つに畳んでしまう。畳むと片方の読み手がもう片方の読み手として
+        数えられ、**死んだ欄を隠す**（本段が捕まえたい向きの誤り）。リポジトリ全体には現に
+        同名の `@dataclass` が複数ある（実測 2026-09-26: 14 件）ので、対象側に同名が入って
+        きたら必ず止める。
+        """
+        # Arrange: 対象側と対象外に同名の DTO を置く。
+        _write(tmp_path, "pkg/dto.py", (
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class Bundle:\n"
+            "    unread: str\n"
+        ))
+        _write(tmp_path, "other/dto.py", (
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class Bundle:\n"
+            "    unread: str\n"
+        ))
+        _write(tmp_path, "other/consumer.py", (
+            "from other.dto import Bundle\n"
+            "\n"
+            "\n"
+            "def consume(bundle: Bundle) -> str:\n"
+            "    return bundle.unread\n"
+        ))
+
+        # Act / Assert
+        with pytest.raises(AmbiguousDeclarationError) as excinfo:
+            unread_declared_fields(
+                root=tmp_path,
+                declared_under=("pkg",),
+                read_under=(".",),
+                exemptions={},
+            )
+        assert "Bundle" in str(excinfo.value)
+
+    def test_a_class_level_constant_is_not_counted_as_a_field(self, tmp_path):
+        """TC-018: 「`ClassVar`」 は欄ではない（読み手が無くても報告しない）。
+
+        `dataclass` は 「`ClassVar`」 を欄にしない。欄として数えると、定数を 1 つ置いた
+        だけで検査が赤くなり、除外表で黙らせる運用へ倒れる。
+        """
+        # Arrange
+        _write(tmp_path, "pkg/dto.py", (
+            "from dataclasses import dataclass\n"
+            "from typing import ClassVar\n"
+            "\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class Bundle:\n"
+            '    NOBODY_READS_THIS: ClassVar[str] = "constant"\n'
+            "    reached: str\n"
+        ))
+        _write(tmp_path, "pkg/consumer.py", (
+            "from pkg.dto import Bundle\n"
+            "\n"
+            "\n"
+            "def consume(bundle: Bundle) -> str:\n"
+            "    return bundle.reached\n"
+        ))
+
+        # Act
+        reported = unread_declared_fields(
+            root=tmp_path,
+            declared_under=("pkg/dto.py",),
+            read_under=("pkg",),
+            exemptions={},
+        )
+
+        # Assert
+        assert reported == ()

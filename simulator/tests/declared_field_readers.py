@@ -88,6 +88,10 @@ class UnreadField:
         return f"{self.dto}.{self.field} ({self.module})"
 
 
+class AmbiguousDeclarationError(AssertionError):
+    """同名の DTO が複数の実体で宣言されている（どちらの欄を数えたか言えない）。"""
+
+
 class ExemptionError(AssertionError):
     """除外の宣言が規律を満たさない（理由が無い／もう当たらない）。"""
 
@@ -181,6 +185,15 @@ def _tuple_member_types(annotation) -> "tuple | None":
     return tuple(_annotation_type(member) for member in members)
 
 
+def _is_class_level_constant(annotation) -> bool:
+    """注釈が 「`ClassVar`」 か（欄ではなくクラスの定数を宣言しているか）。"""
+    annotation = _unstring(annotation) if annotation is not None else None
+    if not isinstance(annotation, ast.Subscript):
+        return False
+    head = _annotation_type(annotation.value)
+    return head is not None and head.dto == "ClassVar"
+
+
 def called_name(node: ast.Call) -> "str | None":
     """呼ばれたものの名前（関数呼出ならその関数名・メソッド呼出ならそのメソッド名）。"""
     called = node.func
@@ -255,6 +268,8 @@ class DataclassIndex:
         self.declared_in[node.name] = path
         for statement in node.body:
             if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                if _is_class_level_constant(statement.annotation):
+                    continue        # `dataclass` はこれを欄にしない
                 self.fields[node.name][statement.target.id] = statement.annotation
 
     def field_type(self, dto: str, attribute: str) -> "TypeRef | None":
@@ -469,10 +484,18 @@ def unread_declared_fields(*, root, declared_under, read_under, exemptions) -> "
     index = DataclassIndex(trees)
     reads, reflected = field_reads(index, trees)
     declared_paths = {str(path) for path in python_files(root, declared_under)}
+    in_scope = [
+        (dto, path) for dto, path in sorted(index.declared_in.items()) if path in declared_paths
+    ]
+    ambiguous = sorted({dto for dto, _path in in_scope} & index.ambiguous)
+    if ambiguous:
+        raise AmbiguousDeclarationError(
+            "同名の DTO が複数の実体で宣言されています（どちらの欄を数えたか言えない）: "
+            + ", ".join(ambiguous)
+        )
     unread = tuple(
         UnreadField(dto=dto, field=field, module=str(Path(path).relative_to(root)))
-        for dto, path in sorted(index.declared_in.items())
-        if path in declared_paths
+        for dto, path in in_scope
         for field in index.fields[dto]
         if reads[(dto, field)] == 0 and dto not in reflected
     )
