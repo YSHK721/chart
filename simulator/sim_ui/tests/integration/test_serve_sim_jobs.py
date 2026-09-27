@@ -194,6 +194,65 @@ def test_状態を照会できる(server) -> None:
     assert got["failure_reason"] is None
 
 
+def test_保留照会は完了まで応答を保留する(server) -> None:
+    """NFR-04 改訂（2026-09-27）: `wait_ms` 付きの状態照会は terminal まで応答を保留する。
+
+    別スレッドで 0.2 秒後に子プロセスを完了へ倒し、保留照会が「完了の直後」に返ることを
+    実測する（1 秒周期のポーリングなら平均 0.5 秒の待ちが乗る）。
+    """
+    import time as _time
+
+    base, _ledger, launcher = server
+    _status, body = _submit(base)
+    job_id = body["job_id"]
+
+    def _finish_soon():
+        _time.sleep(0.2)
+        launcher.finish(job_id, 0)
+
+    t = threading.Thread(target=_finish_soon, daemon=True)
+    started = _time.monotonic()
+    t.start()
+    status, payload = _json(base, f"/jobs/{job_id}?wait_ms=5000")
+    elapsed = _time.monotonic() - started
+    t.join(timeout=2)
+    assert (status, payload["terminal"]) == (200, True)
+    assert payload["status"] == "completed"
+    assert 0.2 <= elapsed < 1.0, f"保留照会が完了の直後に返っていません: {elapsed:.3f}s"
+
+
+def test_保留照会は締め切りで現在の状態を返す(server) -> None:
+    import time as _time
+
+    base, _ledger, _launcher = server
+    _status, body = _submit(base)
+    started = _time.monotonic()
+    status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=150")
+    elapsed = _time.monotonic() - started
+    assert (status, payload["status"], payload["terminal"]) == (200, "running", False)
+    assert 0.15 <= elapsed < 1.0
+
+
+def test_終端済みへの保留照会は即応答(server) -> None:
+    import time as _time
+
+    base, _ledger, launcher = server
+    _status, body = _submit(base)
+    launcher.finish(body["job_id"], 0)
+    started = _time.monotonic()
+    status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=5000")
+    assert (status, payload["terminal"]) == (200, True)
+    assert _time.monotonic() - started < 0.5, "終端済みなのに保留しています"
+
+
+def test_不正なwait_msは400(server) -> None:
+    base, _ledger, _launcher = server
+    _status, body = _submit(base)
+    for bad in ("abc", "-1"):
+        status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms={bad}")
+        assert status == 400, (bad, payload)
+
+
 def test_未知のジョブ照会は404(server) -> None:
     base, _, _ = server
     status, _ = _json(base, "/jobs/" + "f" * 32)

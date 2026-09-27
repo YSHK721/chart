@@ -23,10 +23,11 @@ LSP: ジョブ経路（`/jobs*` `/data/*`）以外の GET は `super().do_GET()`
 """
 from __future__ import annotations
 
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from simulator.replay_ui.framework.static_file_server import StaticFileServer
 from simulator.sim_ui.adapter.job_api_controller import ApiResponse, JobApiController
@@ -41,6 +42,12 @@ _MAX_BODY = 1 << 20
 # 接続してから要求行・ヘッダを送り切るまでの待ち上限。設定しないと、接続だけして
 # 何も送らないクライアントが ThreadingHTTPServer のワーカースレッドを無期限に占有する。
 _HANDLER_TIMEOUT_SEC = 30.0
+#: 保留照会（long-poll・NFR-04 改訂 2026-09-27）の保留上限と、保留中に状態を見直す間隔。
+#: 上限はハンドラの socket timeout（30 秒）より短くする——保留がそれを超えると、応答を
+#: 書く前に接続側の締め切りへ達する。ThreadingHTTPServer は要求ごとに 1 スレッドなので、
+#: 保留中も他の要求（静的配信・投入・取消）は塞がれない。
+_WAIT_MS_MAX = 25_000
+_WAIT_POLL_SEC = 0.05
 
 
 def is_same_origin_request(headers, host_header: "str | None") -> bool:
@@ -145,16 +152,17 @@ def make_handler(app: SimJobApp):
         timeout = _HANDLER_TIMEOUT_SEC
 
         def do_GET(self):  # noqa: N802
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path.startswith("/jobs"):
-                return self._get_job(path)
+                return self._get_job(path, parsed.query)
             if path.startswith("/data/"):
                 return self._get_result(path)
             # ジョブ経路以外は Phase 1 の挙動をそのまま使う（LSP）。
             return super().do_GET()
 
         def do_POST(self):  # noqa: N802
-            # 変更系のみ要求元を検査する（GET＝状態照会は 1 秒間隔ポーリングで
+            # 変更系のみ要求元を検査する（GET＝状態照会は保留つき（long-poll）でも
             # 状態を変えないため対象外）。
             if not is_same_origin_request(self.headers, self.headers.get("Host")):
                 return self._write(
@@ -173,12 +181,17 @@ def make_handler(app: SimJobApp):
 
         # --- GET の内訳 --------------------------------------------------
 
-        def _get_job(self, path: str):
+        def _get_job(self, path: str, query: str = ""):
             segments = _segments(path)
             # 一覧 GET は作らない（§11.4 YAGNI）。/jobs 単体は 404。
             if len(segments) != 2:
                 return self._write(ApiResponse(404, {"error": "not found"}))
-            return self._write(app.controller.query(segments[1]))
+            wait_ms, error = _parse_wait_ms(query)
+            if error is not None:
+                return self._write(error)
+            if wait_ms is None:
+                return self._write(app.controller.query(segments[1]))
+            return self._write(_query_waiting(app.controller, segments[1], wait_ms))
 
         def _get_result(self, path: str):
             segments = _segments(path)
@@ -232,6 +245,56 @@ def make_handler(app: SimJobApp):
             self.wfile.write(body)
 
     return JobHandler
+
+
+def _parse_wait_ms(query: str) -> "tuple[int | None, ApiResponse | None]":
+    """状態照会の ``wait_ms``（保留照会・NFR-04 改訂）を読む。
+
+    不在は ``(None, None)``＝従来の即時応答。整数でない・負の値は 400（黙って既定へ
+    倒さない——打った待ち時間と違う待ち方で応えるのは無音の誤配）。上限 ``_WAIT_MS_MAX``
+    へは黙って丸める（長すぎる待ちの要求は「上限まで待つ」の意図と一致する）。
+    """
+    values = parse_qs(query or "").get("wait_ms")
+    if not values:
+        return None, None
+    try:
+        wait_ms = int(values[-1])
+    except ValueError:
+        return None, ApiResponse(400, {"error": "wait_ms は 0 以上の整数です"})
+    if wait_ms < 0:
+        return None, ApiResponse(400, {"error": "wait_ms は 0 以上の整数です"})
+    return min(wait_ms, _WAIT_MS_MAX), None
+
+
+def _query_waiting(
+    controller: Any,
+    job_id: str,
+    wait_ms: int,
+    *,
+    now: "Callable[[], float]" = time.monotonic,
+    sleep: "Callable[[float], None]" = time.sleep,
+) -> ApiResponse:
+    """終端（terminal）になるまで応答を保留する状態照会（long-poll・NFR-04 改訂 2026-09-27）。
+
+    なぜ在るか: 1 秒周期のポーリングは完了の検知に平均 0.5 秒の待ちを足し、run が
+    約 1 秒になった後は経路の最大の無駄だった（ISSUE-541 の実測）。原因（周期で見に
+    行く形）を除去し、完了の瞬間に応答が返る形にする。
+
+    事後条件: terminal / 非 200（未知のジョブ等）は即応答。それ以外は ``wait_ms`` まで
+    ``_WAIT_POLL_SEC`` 間隔で照会し直し、締め切りで現在の状態を返す（クライアントは
+    応答を受けて再び保留照会する＝周期タイマーを持たない）。
+    ``now`` / ``sleep`` は検査の注入点（実時間を待たずに締め切りを測る）。
+    """
+    deadline = now() + wait_ms / 1000.0
+    while True:
+        response = controller.query(job_id)
+        if response.status != 200:
+            return response
+        if response.payload.get("terminal") is True:
+            return response
+        if now() >= deadline:
+            return response
+        sleep(_WAIT_POLL_SEC)
 
 
 def _segments(path: str) -> "list[str]":

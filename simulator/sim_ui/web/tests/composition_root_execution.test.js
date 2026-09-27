@@ -457,9 +457,12 @@ function watchFetch(jobIds, statesByJob) {
       return { ok: true, status: 202, json: async () => ({ job_id: jobId, status: "received" }) };
     }
     for (const jobId of jobIds) {
-      if (url === `/sim/jobs/${jobId}`) {
+      if (String(url).split("?")[0] === `/sim/jobs/${jobId}`) {
         const queue = statesByJob[jobId];
-        const state = queue.length > 1 ? queue.shift() : queue[0];
+        // 台本が尽きたら**保留**（NFR-04 改訂: サーバは完了まで応答を保留する。末尾を
+        // 繰り返すと保留照会の直列がテストの中で無限ループになる）。
+        if (queue.length === 0) return new Promise(() => {});
+        const state = queue.shift();
         return { ok: true, status: 200, json: async () => state };
       }
     }
@@ -468,6 +471,12 @@ function watchFetch(jobIds, statesByJob) {
   fn.calls = calls;
   return fn;
 }
+
+/** 状態照会（保留つき）の URL からジョブのパス部だけを取り出す。 */
+const polledPaths = (fetchFn) => fetchFn.calls
+  .map((c) => String(c.url))
+  .filter((u) => u.startsWith("/sim/jobs/"))
+  .map((u) => u.split("?")[0]);
 
 test("an accepted submit starts a watch that follows the job to its terminal state", async () => {
   // Arrange
@@ -483,17 +492,15 @@ test("an accepted submit starts a watch that follows the job to its terminal sta
     doc, host: doc.body, fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear,
   });
   findById(doc.body, "runStart")._listeners.click[0]();
+  // Act: 保留照会の直列（NFR-04 改訂）はタイマーを使わず終端まで進む
   await flush();
-  // Act
-  await timer.tick();
-  // Assert: 実行中が掲示される
-  assert.equal(statusTextOf(doc.body, "run-status-state"), "running");
-  // Act: 終端まで進める
-  await timer.tick();
+  await flush();
   // Assert: 失敗理由（N-05）が画面に出て監視が止まる
   assert.equal(statusTextOf(doc.body, "run-status-state"), "failed");
   assert.equal(statusTextOf(doc.body, "run-status-reason"), "N-05: 非対象トークン");
-  assert.equal(await timer.tick(), false, "終端に達しても監視が続いています");
+  assert.equal(timer.pending.size, 0, "成功応答の間にタイマーを使っています");
+  // 計算量: 発行した照会 − 受けた応答 = 0（終端後は照会しない）
+  assert.equal(polledPaths(fetchFn).length, 2, "終端後も照会しています");
 });
 
 test("re-submitting stops the previous watch (同時 1 本)", async () => {
@@ -510,15 +517,18 @@ test("re-submitting stops the previous watch (同時 1 本)", async () => {
   const start = findById(doc.body, "runStart")._listeners.click[0];
   start();
   await flush();
+  const j1Polls = polledPaths(fetchFn).filter((u) => u === "/sim/jobs/j1").length;
   // Act: 2 回目の投入
   start();
   await flush();
-  // Assert: 監視は 1 本だけで、指しているのは新しい job
-  assert.equal(timer.pending.size, 1, "前の監視が落ちていません（掲示が古い run に上書きされます）");
-  await timer.tick();
-  const polled = fetchFn.calls.filter((c) => String(c.url).startsWith("/sim/jobs/")).map((c) => c.url);
-  assert.deepEqual(polled, ["/sim/jobs/j2"], `古い job を監視しています: ${polled.join(",")}`);
+  await flush();
+  // Assert: 新しい job だけが監視され、前の監視は増えない（保留中のまま捨てられる）
   assert.equal(statusTextOf(doc.body, "run-status-job"), "j2");
+  assert.ok(polledPaths(fetchFn).includes("/sim/jobs/j2"), "新しい job を監視していません");
+  assert.equal(
+    polledPaths(fetchFn).filter((u) => u === "/sim/jobs/j1").length, j1Polls,
+    "前の監視が続いています（掲示が古い run に上書きされます）",
+  );
 });
 
 // --- 🟡-1: 応答前の二度押しでも監視は 1 本（同時 1 本の破れ）---------------------------
@@ -545,13 +555,16 @@ function deferredSubmitFetch(jobIds) {
       return new Promise((resolve) => { gates.push(() => resolve(response)); });
     }
     for (const jobId of jobIds) {
-      if (url === `/sim/jobs/${jobId}`) {
+      if (String(url).split("?")[0] === `/sim/jobs/${jobId}`) {
+        if (fn.served.has(jobId)) return new Promise(() => {});   // 2 回目からは保留（NFR-04 改訂）
+        fn.served.add(jobId);
         return { ok: true, status: 200, json: async () => ({ job_id: jobId, status: "running", terminal: false }) };
       }
     }
     return { ok: false, status: 404, json: async () => ({ error: "nope" }) };
   };
   fn.calls = calls;
+  fn.served = new Set();
   /** 保留していた投入応答をすべて返す（`newestFirst` で到着順を逆転させる）。 */
   fn.releaseAll = ({ newestFirst = false } = {}) => {
     const pending = gates.slice();
@@ -581,17 +594,17 @@ test("pressing start twice before the first response still leaves one watch (�
   fetchFn.releaseAll();
   await flush();
   await flush();
-  // Assert: 投入は 2 回だが監視は 1 本だけ
+  // Assert: 投入は 2 回だが監視は 1 本だけ（新しい run だけを照会する）
   assert.equal(fetchFn.calls.filter((c) => c.url === "/sim/jobs").length, 2, "二度押しになっていません");
-  assert.equal(timer.pending.size, 1, "監視が 2 本走っています（古い run が掲示を上書きし続けます）");
+  // 末尾は保留中の直列照会（サーバが握っている 1 本）なので、本数でなく行き先で表明する。
+  assert.ok(
+    polledPaths(fetchFn).length >= 1 && polledPaths(fetchFn).every((u) => u === "/sim/jobs/j2"),
+    `古い run を監視しています: ${polledPaths(fetchFn).join(",")}`,
+  );
   // 掲示と結果導線は新しい run を指す
   assert.equal(statusTextOf(doc.body, "run-status-job"), "j2");
   findById(doc.body, "execViewResult")._listeners.click[0]();
   assert.deepEqual(nav, ["?job=j2"], "結果導線が古い run を指しています");
-  // 動いている 1 本が新しい run を照会している
-  await timer.tick();
-  const polled = fetchFn.calls.filter((c) => String(c.url).startsWith("/sim/jobs/")).map((c) => c.url);
-  assert.deepEqual(polled, ["/sim/jobs/j2"], `古い run を監視しています: ${polled.join(",")}`);
 });
 
 test("a late stale response does not overwrite the current run's posting (🟡-1)", async () => {
@@ -619,7 +632,10 @@ test("a late stale response does not overwrite the current run's posting (🟡-1
     "遅れて届いた古い応答が現在の run の掲示を上書きしています");
   findById(doc.body, "execViewResult")._listeners.click[0]();
   assert.deepEqual(nav, ["?job=j2"], "結果導線が古い run へ差し替わっています");
-  assert.equal(timer.pending.size, 1, "監視が 2 本走っています");
+  assert.ok(
+    polledPaths(fetchFn).length >= 1 && polledPaths(fetchFn).every((u) => u === "/sim/jobs/j2"),
+    `古い run を監視しています: ${polledPaths(fetchFn).join(",")}`,
+  );
 });
 
 test("a watch that gives up posts the reason instead of freezing (無音で監視を諦めない)", async () => {
