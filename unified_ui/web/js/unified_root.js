@@ -276,22 +276,6 @@ export function createModeController({
 //   統合ページの器の事情が core 側へ漏れる。
 //   公開しない: 借り手は `loadDisplayLayers` だけで、外から差し替える口を作る理由が無い
 //   （使われない公開面は、消えたことに誰も気付けない依存を育てる）。
-/**
- * live core の `/candles` から時刻範囲の足を読む（sim のジョブ結果を上のチャートへ描く足）。
- * 失敗は例外にする（空配列で返すと「足が 0 本の期間」と区別できない）。
- */
-async function fetchLiveCandleRange({ datasetRef, timeframe, from, to }) {
-  const res = await fetch(
-    `/live/candles?datasetRef=${encodeURIComponent(datasetRef)}`
-    + `&timeframe=${encodeURIComponent(timeframe)}&from=${Number(from)}&to=${Number(to)}`,
-  );
-  const body = await res.json();
-  if (!res.ok || !body.ok) {
-    throw new Error(`/live/candles ${res.status}: ${JSON.stringify(body.error || body)}`);
-  }
-  return body.candles;
-}
-
 const LAYER_EXTRAS = Object.freeze({
   [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit, fetchCandles }) => ({
     lwc,
@@ -376,6 +360,11 @@ async function main() {
   const routedFetch = createRoutedFetch({
     baseFetch: globalThis.fetch.bind(globalThis),
     getMode: () => (modeController ? modeController.getMode() : MODE.LIVE),
+  });
+  // 常に live core へ届く fetch（simチャートの足の読み込み用）。規則は routedFetch と同じ 1 つ。
+  const liveFetch = createRoutedFetch({
+    baseFetch: globalThis.fetch.bind(globalThis),
+    getMode: () => MODE.LIVE,
   });
 
   const vendorOk = await loadVendor(MODE.LIVE);
@@ -498,6 +487,8 @@ async function main() {
   //   sim の job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
   let layers;
   try {
+    // live core のチャート部品の公開面（simチャートの組み立て・足の読み込み）。
+    const chartKit = await import(LIVE_CHART_KIT_API);
     layers = await loadDisplayLayers({
       context: {
         doc: document,
@@ -506,8 +497,11 @@ async function main() {
         bottomPane,
         liveStorage,
         resultChart,
-        chartKit: await import(LIVE_CHART_KIT_API),
-        fetchCandles: fetchLiveCandleRange,
+        chartKit,
+        // simチャートの足は live core の `/candles` から読む。問い合わせの組み立ては live core の
+        //   fetchCandleRange（ライブチャートの fetchCandles と同じ処理）、行き先はモードの振り分け規則を
+        //   ライブ固定で使う（sim モード中でも live core へ届く・`/live` を手で書かない）。
+        fetchCandles: (range) => chartKit.fetchCandleRange(liveFetch, range),
       },
     });
   } catch (err) {

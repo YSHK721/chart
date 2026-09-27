@@ -72,29 +72,57 @@ import { createPriceLevels } from '../../domain/price_levels.js';
 //   既定（1.6 秒）より長く取る（読み切れないと能動通知の意味がない）。
 const SERIES_GUARD_TOAST_MS = 10000;
 
-// GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
+// GET /candles の問い合わせと応答の読み方の単一ソース。失敗（HTTP・`ok:false`・通信）は例外にする。
+//   ライブチャートの読み込み（fetchCandles）と、simチャートの範囲読み（fetchCandleRange）が共有する
+//   （2026-09-27: 統合層が同じ問い合わせを手書きしていた手書き複製の解消）。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
+//   from / to は UNIX 秒・両端を含む（サーバ `/candles` の時刻範囲）。
+async function requestCandles(fetchImpl, { datasetRef, timeframe = null, limit = null, from = null, to = null }) {
+  let url = `/candles?datasetRef=${encodeURIComponent(datasetRef)}`;
+  if (timeframe) {
+    url += `&timeframe=${encodeURIComponent(timeframe)}`;
+  }
+  if (limit) {
+    url += `&limit=${encodeURIComponent(limit)}`;
+  }
+  if (from !== null) {
+    url += `&from=${encodeURIComponent(from)}`;
+  }
+  if (to !== null) {
+    url += `&to=${encodeURIComponent(to)}`;
+  }
+  const resp = await fetchImpl(url);
+  if (!resp.ok) {
+    throw new Error(`/candles ${resp.status}`);
+  }
+  const payload = await resp.json();
+  if (!payload || !payload.ok) {
+    throw new Error(`/candles: ${JSON.stringify(payload && (payload.error || payload))}`);
+  }
+  return payload.candles;
+}
+
+// GET /candles?datasetRef=&timeframe=&limit= で candles を取得する（B方式）。失敗時は null。
 export async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe = null, limit = null) {
   if (typeof fetchImpl !== 'function') {
     return null;
   }
   try {
-    let url = `/candles?datasetRef=${encodeURIComponent(datasetRef)}`;
-    if (timeframe) {
-      url += `&timeframe=${encodeURIComponent(timeframe)}`;
-    }
-    if (limit) {
-      url += `&limit=${encodeURIComponent(limit)}`;
-    }
-    const resp = await fetchImpl(url);
-    if (!resp.ok) {
-      return null;
-    }
-    const payload = await resp.json();
-    return payload && payload.ok ? payload.candles : null;
+    return await requestCandles(fetchImpl, { datasetRef, timeframe, limit });
   } catch {
     return null;
   }
+}
+
+/**
+ * 時刻範囲の足を読む（simチャートが run の足と同じ足を読む）。失敗は例外にする——空配列で返すと
+ * 「足が 0 本の期間」と区別できない。
+ *
+ * @param {function} fetchImpl ライブチャートの core へ届く fetch（行き先の振り分けは呼び出し側）
+ * @param {{datasetRef: string, timeframe: string, from: number, to: number}} range UNIX 秒・両端を含む
+ */
+export function fetchCandleRange(fetchImpl, { datasetRef, timeframe, from, to }) {
+  return requestCandles(fetchImpl, { datasetRef, timeframe, from, to });
 }
 
 // controller 以前の組み立て（チャート・描画・永続化・catalog）。両 root で完全に同一。

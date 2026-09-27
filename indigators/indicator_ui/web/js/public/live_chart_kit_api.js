@@ -11,6 +11,7 @@
 //   installChartOperations … 操作性（価格軸ホイール・ダブルクリック復帰・縦ドラッグ・最新足ボタン・右クリック）
 //   ChartToastView         … 右クリック「情報をコピーする」の告知
 //   TradeMarkersRenderer   … 売買マーク（売買ペア線・hover 減光・明細ポップアップ）
+//   fetchCandleRange       … 時刻範囲の足（ライブチャートの fetchCandles と同じ /candles の問い合わせ）
 //
 // なぜ `live_public_api.js` と分けるか: あちらは dashboard core も読み込む軽い面である。チャート
 //   部品（クロム色・ペア線 primitive 等の推移閉包）をそこへ足すと、借り手でない dashboard の
@@ -19,7 +20,7 @@
 // 中身を持たない: 再輸出だけを置く。
 
 export {
-  composeChartViewer, installPaneGeometry, installChartOperations,
+  composeChartViewer, installPaneGeometry, installChartOperations, fetchCandleRange,
 } from '../adapter/front/chart_app_wiring.js';
 export { ChartToastView } from '../adapter/front/chart_toast_view.js';
 export { TradeMarkersRenderer } from '../adapter/front/trade_markers_renderer.js';
