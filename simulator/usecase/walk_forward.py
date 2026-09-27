@@ -120,6 +120,7 @@ _ADDITIVE_FIELDS = (
     "trades", "profit_trades", "loss_trades",
     "long_trades", "short_trades",
     "profit_long_trades", "profit_short_trades",
+    "deals",  # in + out の件数（窓をまたいで和になる・2026-09-27 追加）
 )
 
 _NON_STITCHABLE_FIELDS = (
@@ -131,6 +132,9 @@ _NON_STITCHABLE_FIELDS = (
     "con_profit_max", "con_profit_max_trades", "con_loss_max", "con_loss_max_trades",
     "profit_trades_avg_con", "loss_trades_avg_con",
     "equity_dd_abs", "equity_dd_max", "equity_dd_max_percent",
+    # 系列全体から決まる量（窓の値から通期を組めない・2026-09-27 追加）。
+    "ghpr", "lr_correlation", "lr_standard_error",
+    "equity_ddrel_percent", "equity_dd_relative",
 )
 
 

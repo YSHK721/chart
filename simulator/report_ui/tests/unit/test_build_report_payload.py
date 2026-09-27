@@ -74,6 +74,12 @@ class _FakeStats:
     equity_dd_max: float = 0.0
     equity_dd_max_percent: float = 0.0
     z_score: float = 0.0
+    ghpr: float = 0.0
+    lr_correlation: float = 0.0
+    lr_standard_error: float = 0.0
+    equity_ddrel_percent: float = 0.0
+    equity_dd_relative: float = 0.0
+    deals: int = 0
 
 
 @dataclass
@@ -503,6 +509,12 @@ class _FullStats:
     equity_dd_max: float = 2600.0
     equity_dd_max_percent: float = 11.2
     z_score: float = -1.34
+    ghpr: float = 1.0001
+    lr_correlation: float = 0.968951
+    lr_standard_error: float = 1158.656705
+    equity_ddrel_percent: float = 11.59
+    equity_dd_relative: float = 1620.0
+    deals: int = 10448
 
 
 def _result_with_stats(stats, profits=(10.0, -5.0), exit_times=(2000, 3000),
@@ -622,10 +634,25 @@ class TestSegmentReport:
 
     def test_missing_metrics_are_not_emitted(self):
         # §4.5 確定方針: BacktestStats 非保持の指標は report に出力しない（欠落キーは出さない）。
+        #   GHPR / LR Correlation は 2026-09-27 に保持指標へ移った（下の検定が値を固定する）。
         seg = _run_report(_FullStats()).segments["is"]
-        for k in ("GHPR", "Correlation (Profits,MFE)", "LR Correlation",
-                  "Margin Level", "Ticks", "Minimal position holding time",
-                  "History Quality"):
+        for k in ("Correlation (Profits,MFE)", "Margin Level", "Ticks",
+                  "Minimal position holding time", "History Quality"):
+            assert k not in seg.report
+
+    def test_mt5_parity_metrics_use_the_mt5_report_format(self):
+        # 2026-09-27 追加の保持指標。書式は MT5 レポート（ReportTester-900005560.html）と同じ。
+        seg = _run_report(_FullStats()).segments["is"]
+        assert seg.report["GHPR"] == "1.0001 (0.01%)"
+        assert seg.report["Total Deals"] == "10448"
+        assert seg.report["Equity Drawdown Relative"] == "11.59% (1620)"
+        assert seg.report["LR Correlation"] == "0.97"
+        assert seg.report["LR Standard Error"] == "1159"
+
+    def test_run_facts_are_emitted_only_when_the_caller_supplies_them(self):
+        # 表示足が取引開始前の足を含む経路で len(bars) を「バー数」と名乗らせない（§4.5 改訂）。
+        seg = _run_report(_FullStats()).segments["is"]
+        for k in ("Currency", "Leverage", "Symbols", "Bars"):
             assert k not in seg.report
 
     def test_profit_factor_inf_renders_as_inf_string(self):

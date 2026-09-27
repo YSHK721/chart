@@ -67,9 +67,11 @@ from simulator.usecase.metrics_spec import (  # noqa: F401
 from simulator.usecase.mt5_parity import (  # noqa: F401
     average_loss_trade,
     average_profit_trade,
+    balance_linear_regression,
     equity_dd_absolute,
     equity_dd_maximal,
     equity_dd_maximal_percent,
+    equity_dd_relative,
     is_count_win,
     loss_trades,
     profit_long_trades,
@@ -77,6 +79,7 @@ from simulator.usecase.mt5_parity import (  # noqa: F401
     profit_trades,
     recovery_factor_equity,
     sharpe_ratio_per_trade,
+    total_deals,
     z_score,
 )
 
@@ -101,9 +104,15 @@ def compute_stats(
         フォールバック（後方互換）。
       * equity 系 DD（equity_dd_abs / max / max_percent）は equity_curve から算出。
         equity_curve 未供給時は 0（後方互換）。
+      * ghpr / lr_correlation / lr_standard_error / equity_ddrel_percent / equity_dd_relative /
+        deals は実 MT5 レポートとの突き合わせで追加（2026-09-27・mt5_parity 参照）。
     balance 系 STAT_*（balance_dd 等）は不変（metrics_spec）。
     """
     has_equity = len(equity_curve) > 0
+    lr_corr, lr_se = balance_linear_regression(balance_curve, initial_deposit)
+    eq_rel_pct, eq_rel_amount = (
+        equity_dd_relative(equity_curve, initial_deposit) if has_equity else (0.0, 0.0)
+    )
     recovery = (
         recovery_factor_equity(trades, equity_curve, initial_deposit)
         if has_equity
@@ -158,4 +167,10 @@ def compute_stats(
             if has_equity
             else 0.0
         ),
+        ghpr=ghpr(balance_curve, initial_deposit),
+        lr_correlation=lr_corr,
+        lr_standard_error=lr_se,
+        equity_ddrel_percent=eq_rel_pct,
+        equity_dd_relative=eq_rel_amount,
+        deals=total_deals(trades),
     )

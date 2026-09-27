@@ -46,6 +46,27 @@ SINGLE_SEGMENT_NOTE = (
 )
 
 
+def _run_facts(spec: dict, backtest: dict, bars: list) -> dict:
+    """サマリーの run の事実（通貨・レバレッジ・銘柄数・バー数）を job の値から拾う。
+
+    無い値は入れない（捏造しない）。
+    - 通貨: `.ini` の `Currency`（settings 経路のみ存在）。
+    - レバレッジ: `backtest.leverage`（エンジンへ渡った値）。
+    - 銘柄数: 1。エンジンは 1 run に 1 銘柄だけを取る（`build_interactor` の `symbol`）。
+    - バー数: 表示用の足の本数。sim の経路は取引開始の境界を持たない
+      （`simulator/main/tester_settings/window.py` が `trading_start` を常に None にする）ので、
+      足はすべてテスト期間の足である。MT5 の Bars と同じ数え方（取引開始以降の足の本数）は
+      report_ui export の IS 区間で MT5 xlsx と一致（13206・2026-09-27）。
+    """
+    facts: dict = {"symbols": 1, "tested_bars": len(bars)}
+    currency = ((spec.get("settings") or {}).get("tester") or {}).get("Currency")
+    if currency:
+        facts["currency"] = currency
+    if backtest.get("leverage") is not None:
+        facts["leverage"] = backtest["leverage"]
+    return facts
+
+
 def write(
     job_dir: Any,
     result: Any,
@@ -97,6 +118,7 @@ def write(
             # 期間の表示文字列は job 仕様に無い（実測していないものを書かない）。
             "period": "",
             "label": "",
+            **_run_facts(spec, backtest, bars),
         },
         # 別実験の所与（既定値）を持ち込まない。job の事実だけで組む。
         report_meta=ReportMeta(

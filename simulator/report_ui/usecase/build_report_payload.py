@@ -193,7 +193,7 @@ class BuildReportPayload:
             label=meta.get("label", ""),
             meta=seg_meta,
             # §4.5 BacktestStats→report 写像
-            report=self._report(result.stats, seg_meta, report_meta),
+            report=self._report(result.stats, seg_meta, report_meta, meta),
             bars=bars_out,
             trades=trade_rows,
             orders=[],          # 遅延（空配列・キー確保）
@@ -312,13 +312,20 @@ class BuildReportPayload:
 
     # --- report（§4.5 BacktestStats→report ラベル dict 写像） -----------------
 
-    def _report(self, stats: Any, seg_meta: dict, report_meta: ReportMeta) -> dict:
+    def _report(
+        self, stats: Any, seg_meta: dict, report_meta: ReportMeta, meta: "dict | None" = None,
+    ) -> dict:
         """BacktestStats を §4.5 写像で report ラベル dict（全値 str）へ写す。
 
         stats 直引き＋文字列整形の組立のみ（derive 化しない）。BacktestStats が保持する
-        指標のみ set し、非保持（GHPR/Correlation/LR/Margin/保有時間統計/Ticks 等）は
+        指標のみ set し、非保持（相関係数 3 種・Margin Level・保有時間統計・Ticks 等）は
         出力しない（§4.5 確定方針＝欠落キーは出さない）。inf は `f"{inf:.2f}"` が "inf" を
         返すため文字列 "inf" として出力される（report 値は文字列・presenter 素通し）。
+
+        run の事実（``meta`` の ``currency`` / ``leverage`` / ``symbols`` / ``tested_bars``）は
+        呼び出し側が渡したものだけを写す（§4.5 改訂 2026-09-27）。渡されないキーは出さない
+        ——表示足が取引開始前の足を含む経路（report_ui export）で ``len(bars)`` を
+        「バー数」と名乗らせないため。
         """
         def pct_n(num, den):
             p = (num / den * 100) if den else 0.0
@@ -367,7 +374,29 @@ class BuildReportPayload:
             "Equity Drawdown Maximal":
                 f"{stats.equity_dd_max:.0f} ({stats.equity_dd_max_percent:.2f}%)",
             "Z-Score": f"{stats.z_score:.2f}",
+            # 実 MT5 レポートとの突き合わせで追加（2026-09-27・書式は MT5 レポートと同じ）。
+            "GHPR": f"{stats.ghpr:.4f} ({(stats.ghpr - 1) * 100:.2f}%)",
+            "Total Deals": f"{stats.deals}",
+            "Equity Drawdown Relative":
+                f"{stats.equity_ddrel_percent:.2f}% ({stats.equity_dd_relative:.0f})",
+            "LR Correlation": f"{stats.lr_correlation:.2f}",
+            "LR Standard Error": f"{stats.lr_standard_error:.0f}",
+            **self._run_facts(meta or {}),
         }
+
+    @staticmethod
+    def _run_facts(meta: dict) -> dict:
+        """run の事実を report ラベルへ写す（渡されたキーだけ・値は加工しない）。"""
+        out = {}
+        if "currency" in meta:
+            out["Currency"] = str(meta["currency"])
+        if "leverage" in meta:
+            out["Leverage"] = f"1:{float(meta['leverage']):g}"
+        if "symbols" in meta:
+            out["Symbols"] = f"{meta['symbols']}"
+        if "tested_bars" in meta:
+            out["Bars"] = f"{meta['tested_bars']}"
+        return out
 
     # --- degradation / verdict は AssessmentPolicy へ委譲（ISSUE-094 🟡-5）------
     # 劣化率算出・合否判定木・閾値は self._policy（AssessmentPolicy）が担う。

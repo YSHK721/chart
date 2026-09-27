@@ -291,3 +291,29 @@ def test_writerはmain層をimportしない() -> None:
     source = Path(report_payload_writer.__file__).read_text(encoding="utf-8")
     assert "from simulator.main import" not in source
     assert "import simulator.main" not in source
+
+
+# --- 7. サマリーの run の事実（2026-09-27・§4.5 改訂）------------------------------
+
+def _report_of(job_dir: Path) -> dict:
+    out = report_payload_writer.write(job_dir, _result(), load_run_inputs=_loader())
+    return json.loads(out.read_text(encoding="utf-8"))["segments"]["single"]["report"]
+
+
+def test_run_facts_come_from_the_job(tmp_path: Path) -> None:
+    job_dir = _job_dir(tmp_path, leverage=10)
+    spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
+    spec["settings"] = {"tester": {"Currency": "JPY"}, "inputs": []}
+    (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    report = _report_of(job_dir)
+    assert report["Currency"] == "JPY"
+    assert report["Leverage"] == "1:10"
+    assert report["Symbols"] == "1"
+    # バー数は表示用の足の本数（sim の経路は取引開始の境界を持たない）。
+    assert report["Bars"] == str(len(_bars([1000, 2000, 3000, 4000])))
+
+
+def test_absent_run_facts_are_not_invented(tmp_path: Path) -> None:
+    report = _report_of(_job_dir(tmp_path))  # settings も leverage も無い job
+    assert "Currency" not in report
+    assert "Leverage" not in report

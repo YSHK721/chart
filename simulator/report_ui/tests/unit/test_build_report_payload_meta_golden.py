@@ -56,10 +56,27 @@ def _payload():
     )
 
 
+#: golden 採取後に**振る舞いとして**足した report キー（理由と日付つきで宣言する）。
+#:   golden は取り直さない（上記の禁止）。これらを外した出力が golden と 1 バイトも
+#:   違わないことで、「足した以外は何も変えていない」を表明する。
+_REPORT_KEYS_ADDED_AFTER_GOLDEN = {
+    # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本との突き合わせで式を確定）。
+    "GHPR", "Total Deals", "Equity Drawdown Relative", "LR Correlation", "LR Standard Error",
+}
+
+
+def _payload_as_of_golden():
+    payload = _payload()
+    for seg in payload.segments.values():
+        for key in _REPORT_KEYS_ADDED_AFTER_GOLDEN:
+            seg.report.pop(key, None)
+    return payload
+
+
 def test_execute_output_is_byte_identical_to_the_golden(tmp_path: Path) -> None:
-    """G-1 の抽出が report.json を 1 バイトも変えないこと。"""
+    """G-1 の抽出が report.json を 1 バイトも変えないこと（後から足したキーを除いて）。"""
     out = tmp_path / "report.json"
-    ReportUiPresenter().present_report_payload(_payload(), out)
+    ReportUiPresenter().present_report_payload(_payload_as_of_golden(), out)
     raw = out.read_bytes()
     assert len(raw) == _GOLDEN_LEN
     assert hashlib.sha256(raw).hexdigest() == _GOLDEN_SHA256

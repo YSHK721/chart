@@ -185,3 +185,61 @@ def z_score(trades: Sequence[TradeRecord]) -> float:
         return 0.0
     r = _z_run_count(trades)
     return (n * (r - 0.5) - p) / math.sqrt(denom_sq)
+
+
+# ---- 残高曲線の線形回帰（STAT_LR_CORRELATION / STAT_LR_STANDARD_ERROR） ----
+# 実 MT5 校正（2026-09-27）: 系列は B_0(initial_deposit) を先頭に含む決済ごとの残高
+# （x = 0..n の決済番号）。標準誤差は残差平方和 / (点数 − 2) の平方根。
+# `simulator/tests/confirmation/*/report.xlsx` など MT5 レポート 9 本の Deals 表から再計算し、
+# 相関は小数 5 桁・標準誤差は小数 6 桁まで全件一致（B_0 を含めない版・分母 n / n−1 は不一致）。
+
+def balance_linear_regression(
+    balance_curve: Sequence[float], initial_deposit: float
+) -> "tuple[float, float]":
+    """(LR Correlation, LR Standard Error) を系列の 1 回の読み取りで返す。
+
+    点数が 3 未満（標準誤差の分母が 0 以下）や残高が一定（相関が定義されない）のときは
+    該当値を 0.0 とする。
+    """
+    y = _full_balance(balance_curve, initial_deposit)
+    n = len(y)
+    if n < 3:
+        return 0.0, 0.0
+    x = np.arange(n, dtype=float)
+    xc = x - x.mean()
+    yc = y - y.mean()
+    sxx = float(xc @ xc)
+    syy = float(yc @ yc)
+    sxy = float(xc @ yc)
+    corr = sxy / math.sqrt(sxx * syy) if syy > 0 else 0.0
+    rss = max(syy - sxy * sxy / sxx, 0.0)
+    return corr, math.sqrt(rss / (n - 2))
+
+
+# ---- Equity DD Relative（STAT_EQUITY_DDREL_PERCENT / STAT_EQUITY_DD_RELATIVE） ----
+# balance 系 balance_dd_relative_percent / _amount と同型（% DD の最大点とその金額）を
+# equity_curve に適用する。実 MT5 校正（2026-09-27）: stop-probe IS 11.59% (1 620)・
+# OOS 41.66% (4 270) を再現（report_ui export の実 run と MT5 xlsx の突き合わせ）。
+
+def equity_dd_relative(
+    equity_curve: Sequence[float], initial_deposit: float
+) -> "tuple[float, float]":
+    """(% DD の最大値, その点の金額 DD) を系列の 1 回の読み取りで返す。"""
+    dd_abs, dd_pct = _dd_arrays(equity_curve, initial_deposit)
+    k = int(dd_pct.argmax())
+    return float(dd_pct[k]), float(dd_abs[k])
+
+
+# ---- 総ディール数（STAT_DEALS） ----
+
+def total_deals(trades: Sequence[TradeRecord]) -> int:
+    """建てた約定（in）と決済の約定（out）の合計。
+
+    MT5 の Total Deals = in + out（MT5 レポート 9 本で 2 × Total Trades と全件一致・
+    2026-09-27）。out は確定トレード 1 件につき 1 つ（部分決済も 1 件）。in は玉 1 つに
+    つき 1 つで、玉は最後に部分決済以外の理由でちょうど 1 回閉じる（trade_ledger の
+    記帳規則）ので、in の数 = 部分決済以外のトレード数。部分決済を含む run の MT5
+    突き合わせは未実施。
+    """
+    opened = sum(1 for t in trades if t.exit_reason != "partial")
+    return len(trades) + opened

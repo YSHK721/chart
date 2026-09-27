@@ -115,9 +115,21 @@ def _meta(case, *, trading_start=None) -> dict:
     return meta
 
 
+#: 指紋の採取後に足した `BacktestStats` の列（理由と日付つきで宣言する）。指紋は取り直さず、
+#:   これらを外した `stats.json` が採取時と一致することで「既存の列は動いていない」を表明する。
+_STATS_FIELDS_ADDED_AFTER_PIN = frozenset({
+    # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本と突き合わせた式）。
+    "ghpr", "lr_correlation", "lr_standard_error",
+    "equity_ddrel_percent", "equity_dd_relative", "deals",
+})
+
+
 def _digest(result, stats_json: Path) -> "dict[str, object]":
     """`stats.json` 全フィールドと全確定トレードを 2 つの sha256 へ畳む。"""
     payload = json.loads(stats_json.read_text(encoding="utf-8"))
+    payload["stats"] = {
+        k: v for k, v in payload["stats"].items() if k not in _STATS_FIELDS_ADDED_AFTER_PIN
+    }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     trades = "\n".join(
         json.dumps(asdict(t), sort_keys=True, default=str) for t in result.trades
