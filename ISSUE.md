@@ -16275,7 +16275,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   数えない」。基本設計書 NFR-04 の 2 行を改訂。
 
 ## ISSUE-543: 静的品質検定の違反キーが Python 版依存で、環境の版差だけで既存違反が「新規」再報告される
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-27 依頼者指示「止めろ」により根本対策を実施）
 - **重大度**: 中（実測: 本セッション〔クラウドコンテナ・Python 3.11.15〕で Stop フックが毎ターン exit 2 → 再喚起。作業を実際に塞いだ）
 - **事象（実測 2026-09-27）**: Stop フックの静的品質検定が「新規違反 22 件（＋T1 ほか 141 件）」を報告。
   列挙されたファイルはいずれも本セッションの変更対象外（変更 8 ファイルとの一致 0 件を突合で確認）。
@@ -16290,9 +16290,24 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **原因**: `violation_key.node_digest` が `sha1(ast.dump(node))`。`ast.dump` の出力は Python の
   版で変わるため、キーが「違反ノードの内容」ではなく「内容 × インタープリタ版」に依存する。
   プロジェクト規定の実行系は python:3.14（Dockerfile:31）、本コンテナは 3.11.15。
-- **対策（根本・未着手・承認待ち）**: 違反キーの材料を版非依存の表現（該当ノードのソース断片
-  `ast.get_source_segment` の正規化テキスト等）に変える。キー体系の変更は全 baseline の再凍結
-  （--write-baseline＝人間の裁定事項）を伴うため、着手前に承認を要する。
-- **記録（発生未実測・調査せず）**: 3.14 でも残る新規 4 件は T8（`__init__.py` の無いディレクトリでの
-  テスト basename 重複: test_module_loader.py ×2 / test_core.py ×19 / test_rolling_span_freeze_last.py ×2 /
-  test_levels.py ×2）。pytest の import 衝突は未観測。本セッションの変更とは無関係（変更前から存在）。
+- **対策（実施 2026-09-27・依頼者指示「止めろ」を承認として実施）**:
+  1. `violation_key.node_digest` の材料を `sha1(ast.dump(node))` から**違反ノードのソース断片**
+     （`ast.get_source_segment` の空白正規化テキスト）の sha1 へ変更。ソーステキストは版に依らず
+     同一なので、キーは内容だけに依存する。全 digest 呼出点（C2/C3/T1/T4/T5/T7/T8-syspath）へ
+     src を明示注入（観測境界の宣言）。
+  2. T8 の代表パス `nopkg[0]` を `sorted(nopkg)[0]` に決定化（挿入順＝`rglob` 走査順は 3.13 の
+     実装変更で版依存だった。同型の版依存）。
+  3. 「違反集合」の定義を `run_quality_gate.SUITES` へ単一ソース化。`test_static_quality.py` と
+     `test_declaration_integrity.py` が生の `di.run`/`tq.run` で第 2 定義を持ち、gate が落とす
+     C1（散文引用・実在パス）をテストだけが数えて恒常的に赤だった（実測: HEAD を worktree ＋
+     3.14 で走らせて 4 件赤＝本セッション以前からの既存債務）。
+  4. baseline を再凍結（di 1662 件・tq 439 件。ratchet 上限 1859/450 以内）。
+  5. 検定追加: `test_ident_stability.py` に「別版の python3 で同一木を走査して ident 集合一致」を
+     機械的に強制する性質 5 を追加（宣言でなく検査で強制）。
+- **実測（対策後）**: ident 全集合が 3.11 と 3.14 で完全一致（declaration 1662 / test_quality 439・
+  差分 0）。`run_quality_gate.py` は 3.11 で exit 0・3.14 で exit 0。ゲート自己検定 26 件（3.11）＋
+  10 件（3.14）全緑。
+- **記録（発生未実測・調査せず）**: T8（`__init__.py` の無いディレクトリでのテスト basename 重複・
+  代表パス決定化後 5 件: test_module_loader.py ×2 / test_core.py ×19 / test_lwc_chart.py ×21 /
+  test_rolling_span_freeze_last.py ×2 / test_levels.py ×2）は本セッション以前から存在し、再凍結で
+  baseline へ凍結した。pytest の import 衝突は未観測。解消は別作業（ファイル改名 or パッケージ化）。

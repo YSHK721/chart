@@ -30,8 +30,18 @@ def _frozen() -> set[str]:
     return set(json.loads(BASELINE.read_text(encoding="utf-8")))
 
 
+def _gate_declaration_violations() -> list:
+    """リポジトリ全体の違反集合は run_quality_gate.SUITES が唯一定義する（第 2 定義を作らない）。
+
+    生の `run(REPO, ...)` をここで組むと、gate が落とす C1（散文引用・実在パス）を
+    こちらだけが数えて gate 緑・pytest 赤が恒常化する（ISSUE-543 の裁定で単一ソース化）。
+    """
+    import run_quality_gate as gate
+    return gate.SUITES["declaration"][1]()
+
+
 def test_no_new_declaration_violations() -> None:
-    vs = run(REPO, _infer_prefixes(REPO), CHECKS)
+    vs = _gate_declaration_violations()
     frozen = _frozen()
     new = [v for v in vs if v.ident() not in frozen]
     assert not new, "新規の宣言整合性違反:\n" + "\n".join(
@@ -41,7 +51,7 @@ def test_no_new_declaration_violations() -> None:
 
 def test_baseline_is_not_stale() -> None:
     """解消済みの違反が baseline に残り続けることを防ぐ（後退の禁止）。"""
-    vs = run(REPO, _infer_prefixes(REPO), CHECKS)
+    vs = _gate_declaration_violations()
     stale = _frozen() - {v.ident() for v in vs}
     assert not stale, (
         f"baseline に解消済みの {len(stale)} 件が残っている。"

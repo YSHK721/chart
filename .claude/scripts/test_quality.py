@@ -219,7 +219,7 @@ def _assertions(fn: ast.AST) -> list[ast.AST]:
     return out
 
 
-def check_weak_and_missing(rel: Path, tree: ast.AST, checks: set[str]) -> list[Violation]:
+def check_weak_and_missing(rel: Path, tree: ast.AST, checks: set[str], src: str) -> list[Violation]:
     out: list[Violation] = []
     for fn in test_funcs(tree):
         asserts = _assertions(fn)
@@ -237,10 +237,10 @@ def check_weak_and_missing(rel: Path, tree: ast.AST, checks: set[str]) -> list[V
                 if reason == "`is not None` のみ" and len(asserts) > 1:
                     continue
                 out.append(Violation("T1", rel.as_posix(), a.lineno,
-                                     f"{fn.name}:{vk.node_digest(a)}", reason))
+                                     f"{fn.name}:{vk.node_digest(a, src)}", reason))
         for a in asserts:
             if isinstance(a, ast.Call) and callee(a) in {"assertIsNotNone", "assertTrue"} and len(asserts) == 1:
-                out.append(Violation("T1", rel.as_posix(), a.lineno, f"{fn.name}:{vk.node_digest(a)}",
+                out.append(Violation("T1", rel.as_posix(), a.lineno, f"{fn.name}:{vk.node_digest(a, src)}",
                                      f"`{callee(a)}` 単独では検査が弱い"))
     return out
 
@@ -271,7 +271,7 @@ def check_nondeterminism(rel: Path, tree: ast.AST, src: str) -> list[Violation]:
 # ---------------------------------------------------------------- T4
 
 
-def check_swallow(rel: Path, tree: ast.AST) -> list[Violation]:
+def check_swallow(rel: Path, tree: ast.AST, src: str) -> list[Violation]:
     out: list[Violation] = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.ExceptHandler):
@@ -285,14 +285,14 @@ def check_swallow(rel: Path, tree: ast.AST) -> list[Violation]:
         )
         if bare or trivial:
             kind = "bare except" if bare else "例外を握り潰して定数を返す"
-            out.append(Violation("T4", rel.as_posix(), n.lineno, vk.node_digest(n), kind))
+            out.append(Violation("T4", rel.as_posix(), n.lineno, vk.node_digest(n, src), kind))
     return out
 
 
 # ---------------------------------------------------------------- T5
 
 
-def check_skip(rel: Path, tree: ast.AST) -> list[Violation]:
+def check_skip(rel: Path, tree: ast.AST, src: str) -> list[Violation]:
     out: list[Violation] = []
     for fn in test_funcs(tree) + [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
         for dec in getattr(fn, "decorator_list", []):
@@ -313,7 +313,7 @@ def check_skip(rel: Path, tree: ast.AST) -> list[Violation]:
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and callee(n) == "skip":
             if any(k.arg == "allow_module_level" for k in n.keywords):
-                out.append(Violation("T5", rel.as_posix(), n.lineno, f"module:{vk.node_digest(n)}",
+                out.append(Violation("T5", rel.as_posix(), n.lineno, f"module:{vk.node_digest(n, src)}",
                                      "モジュール全体の skip"))
     return out
 
@@ -338,7 +338,7 @@ def check_conditional(rel: Path, tree: ast.AST) -> list[Violation]:
 # ---------------------------------------------------------------- T7
 
 
-def check_mock_spec(rel: Path, tree: ast.AST) -> list[Violation]:
+def check_mock_spec(rel: Path, tree: ast.AST, src: str) -> list[Violation]:
     out: list[Violation] = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
@@ -346,13 +346,13 @@ def check_mock_spec(rel: Path, tree: ast.AST) -> list[Violation]:
         name = callee(n)
         kw = {k.arg for k in n.keywords if k.arg}
         if name in MOCK_FACTORIES and not (kw & SPEC_KWARGS):
-            out.append(Violation("T7", rel.as_posix(), n.lineno, f"{name}:{vk.node_digest(n)}",
+            out.append(Violation("T7", rel.as_posix(), n.lineno, f"{name}:{vk.node_digest(n, src)}",
                                  f"`{name}` が spec を持たない。実物に無い属性を許す"))
         elif name in {"patch", "object"} and _is_patch(n):
             # 位置引数で置換対象（new）を明示している場合は自動 Mock ではない
             explicit_new = len(n.args) >= (3 if name == "object" else 2)
             if not (kw & SPEC_KWARGS) and not explicit_new:
-                out.append(Violation("T7", rel.as_posix(), n.lineno, f"patch:{vk.node_digest(n)}",
+                out.append(Violation("T7", rel.as_posix(), n.lineno, f"patch:{vk.node_digest(n, src)}",
                                      "`patch` が autospec / new_callable を持たない"))
     return out
 
@@ -387,7 +387,9 @@ def check_structure(root: Path, files: list[Path]) -> list[Violation]:
     for base, paths in sorted(by_base.items()):
         if base.startswith("__nopkg__:") or len(paths) < 2:
             continue
-        nopkg = [p for p in paths if not (root / p).parent.joinpath("__init__.py").exists()]
+        nopkg = sorted(p for p in paths if not (root / p).parent.joinpath("__init__.py").exists())
+        # 代表パスは sorted の先頭で決定化する。挿入順（= rglob の走査順）は Python の版で
+        #   変わり（3.13 で実装変更）、同じ違反の ident が版ごとに揺れる（ISSUE-543 と同型）。
         if len(nopkg) >= 2:
             out.append(Violation("T8", nopkg[0].as_posix(), 1, f"basename:{base}",
                                  f"`__init__.py` の無いディレクトリで basename が {len(nopkg)} 重複。"
@@ -398,7 +400,8 @@ def check_structure(root: Path, files: list[Path]) -> list[Violation]:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+                f_src = f.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(f_src)
         except SyntaxError:
             continue
         for n in ast.walk(tree):
@@ -407,7 +410,7 @@ def check_structure(root: Path, files: list[Path]) -> list[Violation]:
                 if isinstance(v, ast.Attribute) and v.attr == "path" \
                         and isinstance(v.value, ast.Name) and v.value.id == "sys" \
                         and n.func.attr in {"insert", "append"}:
-                    out.append(Violation("T8", rel.as_posix(), n.lineno, f"syspath:{vk.node_digest(n)}",
+                    out.append(Violation("T8", rel.as_posix(), n.lineno, f"syspath:{vk.node_digest(n, f_src)}",
                                          "テストが `sys.path` を改変する。"
                                          "モジュール同一性がプロダクトと食い違う"))
     return out
@@ -430,17 +433,17 @@ def run(root: Path, checks: set[str]) -> list[Violation]:
             continue
         sup = suppressions(src)
         found: list[Violation] = []
-        found += check_weak_and_missing(rel, tree, checks)
+        found += check_weak_and_missing(rel, tree, checks, src)
         if "T3" in checks:
             found += check_nondeterminism(rel, tree, src)
         if "T4" in checks:
-            found += check_swallow(rel, tree)
+            found += check_swallow(rel, tree, src)
         if "T5" in checks:
-            found += check_skip(rel, tree)
+            found += check_skip(rel, tree, src)
         if "T6" in checks:
             found += check_conditional(rel, tree)
         if "T7" in checks:
-            found += check_mock_spec(rel, tree)
+            found += check_mock_spec(rel, tree, src)
         for v in found:
             if v.check in checks and v.check not in sup.get(v.line, set()):
                 out.append(v)
