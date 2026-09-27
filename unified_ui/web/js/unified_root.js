@@ -62,8 +62,8 @@ const LIVE_ROOT = '/live/js/public/live_root_api.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
 //   それを参照する（手書き複製の禁止）。
 const LIVE_PUBLIC_API = '/live/js/public/live_public_api.js';
-// live のチャート部品（チャート生成・売買マーク描画）の公開面。sim のジョブ結果を上のチャート
-//   領域へ描く部品として sim の表示層へ注入する（2026-09-26・重さの境界で上の面と分けてある）。
+// live のチャート部品（チャート生成・売買マーク描画）の公開面。sim のジョブ結果を売買履歴チャートへ
+//   描く部品として sim の表示層へ注入する（2026-09-26・重さの境界で上の面と分けてある）。
 const LIVE_CHART_KIT_API = '/live/js/public/live_chart_kit_api.js';
 // リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
 //   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
@@ -279,7 +279,7 @@ export function createModeController({
 const LAYER_EXTRAS = Object.freeze({
   [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit, fetchCandles }) => ({
     lwc,
-    // ジョブ結果を上のチャート領域へ描くための器・部品・足の読み手（2026-09-26 依頼者指示）。
+    // ジョブ結果を売買履歴チャートへ描くための売買履歴チャートの器・部品・足の読み手（2026-09-26 依頼者指示）。
     //   器の所有者は統合層、部品は live core の公開面、足は live core の `/candles`（範囲読み）。
     resultChart,
     chartKit,
@@ -361,7 +361,7 @@ async function main() {
     baseFetch: globalThis.fetch.bind(globalThis),
     getMode: () => (modeController ? modeController.getMode() : MODE.LIVE),
   });
-  // 常に live core へ届く fetch（simチャートの足の読み込み用）。規則は routedFetch と同じ 1 つ。
+  // 常に live core へ届く fetch（売買履歴チャートの足の読み込み用）。規則は routedFetch と同じ 1 つ。
   const liveFetch = createRoutedFetch({
     baseFetch: globalThis.fetch.bind(globalThis),
     getMode: () => MODE.LIVE,
@@ -467,7 +467,7 @@ async function main() {
   //   計算できない・実測 2026-08-21）。
   const bottomPane = createBottomPaneView({ doc: document });
   bottomPane.mount(document.getElementById('app'), { above: document.querySelector('.chart-wrap') });
-  // sim のジョブ結果を上のチャート領域で見る器（ライブのチャートの上に重ねる・普段は隠れている）。
+  // 売買履歴チャートの器（売買履歴チャートを出している間だけ版面に出る・普段は隠れている）。
   const resultChart = createResultChartAreaView({ doc: document });
   resultChart.mount(document.querySelector('.chart-wrap'));
 
@@ -487,7 +487,7 @@ async function main() {
   //   sim の job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
   let layers;
   try {
-    // live core のチャート部品の公開面（simチャートの組み立て・足の読み込み）。
+    // live core のチャート部品の公開面（売買履歴チャートの組み立て・足の読み込み）。
     const chartKit = await import(LIVE_CHART_KIT_API);
     layers = await loadDisplayLayers({
       context: {
@@ -498,7 +498,7 @@ async function main() {
         liveStorage,
         resultChart,
         chartKit,
-        // simチャートの足は live core の `/candles` から読む。問い合わせの組み立ては live core の
+        // 売買履歴チャートの足は live core の `/candles` から読む。問い合わせの組み立ては live core の
         //   fetchCandleRange（ライブチャートの fetchCandles と同じ処理）、行き先はモードの振り分け規則を
         //   ライブ固定で使う（sim モード中でも live core へ届く・`/live` を手で書かない）。
         fetchCandles: (range) => chartKit.fetchCandleRange(liveFetch, range),

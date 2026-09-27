@@ -1,8 +1,8 @@
-// result_chart_area_view.js — 上のチャート領域に置く「sim 結果チャートの器」を生成し所有する View。
+// result_chart_area_view.js — 版面（.chart-wrap）に置く「売買履歴チャートの器」を生成し所有する View。
 //
 // なぜ在るか（2026-09-26 依頼者指示「上のチャートが結果を表示」）:
 //   sim のジョブ結果（売買マーク・トリガー指標・口座のパネル）を下部ペインの小さな結果ビューアでは
-//   なく上のチャート領域で見る。ライブのチャート（#chart）の状態には触れない——ライブの適用済み
+//   なく売買履歴チャートで見る。ライブチャート（#chart）の状態には触れない——ライブの適用済み
 //   指標は「直近 N 本」で計算されており、ジョブの過去期間へ差し替えると別期間の値が残るため。
 //   結果を見ている間だけ器をライブのチャートの上に重ね、閉じればライブへそのまま戻る。
 //
@@ -21,7 +21,7 @@ export const RESULT_CHART_SHOWN_CLASS = 'um-result-chart-shown';
 export function createResultChartAreaView({ doc } = {}) {
   let area = null;
   return {
-    /** 器を `chartWrap`（上のチャートの版面）の直下へ置く（二重 mount は無視）。 */
+    /** 売買履歴チャートの器を `chartWrap`（版面）の直下へ置く（二重 mount は無視）。 */
     mount(chartWrap) {
       if (area) return area;
       area = doc.createElement('div');

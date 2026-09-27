@@ -1,6 +1,6 @@
 // 統合層が core の API の問い合わせを手書きしないことの固定（2026-09-27・手書き複製の解消）。
 //
-// 由来: unified_root.js が simチャートの足を読むために `/live/candles?datasetRef=…` を手書きしていた。
+// 由来: unified_root.js が売買履歴チャートの足を読むために `/live/candles?datasetRef=…` を手書きしていた。
 //   同じ問い合わせは live core の chart_app_wiring.js（fetchCandles）が持っており、片方だけ直ると
 //   食い違う。問い合わせは live core の公開面（fetchCandleRange）から借り、行き先は routedFetch の
 //   規則で決める。

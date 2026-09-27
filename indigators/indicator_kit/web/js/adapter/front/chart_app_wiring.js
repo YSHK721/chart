@@ -73,7 +73,7 @@ import { createPriceLevels } from '../../domain/price_levels.js';
 const SERIES_GUARD_TOAST_MS = 10000;
 
 // GET /candles の問い合わせと応答の読み方の単一ソース。失敗（HTTP・`ok:false`・通信）は例外にする。
-//   ライブチャートの読み込み（fetchCandles）と、simチャートの範囲読み（fetchCandleRange）が共有する
+//   ライブチャートの読み込み（fetchCandles）と、売買履歴チャートの範囲読み（fetchCandleRange）が共有する
 //   （2026-09-27: 統合層が同じ問い合わせを手書きしていた手書き複製の解消）。
 //   timeframe 省略時はサーバが原子（再集計なし）扱い、limit 省略時は全件（後方互換）。
 //   from / to は UNIX 秒・両端を含む（サーバ `/candles` の時刻範囲）。
@@ -115,7 +115,7 @@ export async function fetchCandles(fetchImpl, datasetRef = 'sample', timeframe =
 }
 
 /**
- * 時刻範囲の足を読む（simチャートが run の足と同じ足を読む）。失敗は例外にする——空配列で返すと
+ * 時刻範囲の足を読む（売買履歴チャートが run の足と同じ足を読む）。失敗は例外にする——空配列で返すと
  * 「足が 0 本の期間」と区別できない。
  *
  * @param {function} fetchImpl ライブチャートの core へ届く fetch（行き先の振り分けは呼び出し側）
@@ -193,7 +193,7 @@ export async function composeChartShell({
  * チャートの本体（チャート・メイン系列・現在値・読み取り欄・ペイン別凡例・ChartRenderer）を組み立てる。
  *
  * ライブチャート（`composeChartShell`）と、ライブチャートの部品で描く別の版面（sim のジョブ結果を描く
- * simチャート・2026-09-27 依頼者指示「チャートの操作性もライブモードと同期しろ」）が共有する単一ソース。
+ * 売買履歴チャート・2026-09-27 依頼者指示「チャートの操作性もライブモードと同期しろ」）が共有する単一ソース。
  * 版面ごとに書き写すと、ライブチャートの修正が届かない版面が必ず生まれる（本モジュール冒頭の由来）。
  *
  * @param {object} lwc        lightweight-charts v5
@@ -267,7 +267,7 @@ export function installPaneGeometry({ container, chart, renderer }) {
 
 /**
  * チャートの操作（価格軸ホイールズーム・価格軸ダブルクリックでの復帰・本体の縦ドラッグ・最新の足へ
- * 戻るボタン・右クリックのメニュー「情報をコピーする」）を結ぶ。ライブチャートと simチャートが共有する
+ * 戻るボタン・右クリックのメニュー「情報をコピーする」）を結ぶ。ライブチャートと売買履歴チャートが共有する
  * 単一ソース（2026-09-27 依頼者指示「チャートの操作性もライブモードと同期しろ」）。
  *
  * @param {Element} container   操作を受けるチャートの要素

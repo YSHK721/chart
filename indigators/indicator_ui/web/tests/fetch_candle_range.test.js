@@ -1,6 +1,6 @@
 // /candles の問い合わせの単一ソース（fetchCandles と fetchCandleRange が同じ処理を使う・2026-09-27）。
 //
-// 由来: 統合層（unified_root.js）が simチャートの足を読むために `/candles` の問い合わせを手書きしていた
+// 由来: 統合層（unified_root.js）が売買履歴チャートの足を読むために `/candles` の問い合わせを手書きしていた
 //   （手書き複製）。組み立てと応答の読み方を chart_app_wiring.js の 1 つの処理へ寄せた。
 //
 // 観測の境界: 注入する fetch（Test Spy）。要求した URL と回数を数える。

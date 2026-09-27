@@ -147,7 +147,7 @@ export class PaneLegendView {
 
   // 左上オーバーレイの器。版面を注入された（ライブチャート以外の版面に置かれた）ときは、その版面の
   //   中から探す——文書全体の id で引くと、先に在るライブチャートの器を掴み、別の版面の凡例が
-  //   ライブチャートの欄の高さでずれる（simチャート・2026-09-27）。注入が無ければ従来どおり。
+  //   ライブチャートの欄の高さでずれる（売買履歴チャート・2026-09-27）。注入が無ければ従来どおり。
   _overlayStack() {
     const anchor = this._anchor;
     if (anchor && typeof anchor.querySelector === 'function') {
@@ -296,7 +296,7 @@ export class PaneLegendView {
 
     el.append(eye);
     // 設定（⚙）と削除（✕）は、その操作を持つ行にだけ出す。押しても何も起きないボタンを置かない
-    //   （simチャートの行は設定も削除も持たない・2026-09-27）。ライブチャートの行は両方を持つ＝従来どおり。
+    //   （売買履歴チャートの行は設定も削除も持たない・2026-09-27）。ライブチャートの行は両方を持つ＝従来どおり。
     if (typeof meta.onGear === 'function') {
       const gear = doc.createElement('button');
       gear.type = 'button';

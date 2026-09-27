@@ -1,4 +1,4 @@
-// result_chart_model.js — 上のチャートへ重ねる sim 結果の「何をどのパネルへ描くか」（純ロジック）。
+// result_chart_model.js — 売買履歴チャートの「何をどのパネルへ描くか」（純ロジック）。
 //
 // 入力はジョブの成果物 `chart_overlay.json`（サーバ `sim_ui/adapter/chart_overlay_writer.py` が書く）。
 // DOM・lwc に触れない。描画はライブチャートの ChartRenderer が行い、View は本モジュールの
@@ -113,7 +113,7 @@ export function resultChartInstances(overlay) {
 }
 
 /**
- * 上のチャートが読む足の範囲（`/candles` のクエリ材料）。台帳の系列でなければ null。
+ * 売買履歴チャートが読む足の範囲（`/candles` のクエリ材料）。台帳の系列でなければ null。
  * 範囲は run の足の最初と最後（両端含む・`/candles` の from/to と同じ規約）。
  */
 export function candleRequestOf(overlay) {

@@ -1,4 +1,4 @@
-// sim_result_chart_view.js — ジョブ結果を上のチャート領域へ描く View（simチャート・2026-09-26 依頼者指示）。
+// sim_result_chart_view.js — ジョブ結果を売買履歴チャートへ描く View（2026-09-26 依頼者指示）。
 //
 // 何を描くか（「何をどのパネルへ」は usecase/result_chart_model.js が決め、ここは描くだけ）:
 //   価格パネル … run が読んだ系列と同じ足（`/candles` の範囲読み）・売買マーク・トリガー指標
@@ -8,7 +8,7 @@
 //   を統合層が注入する。sim は live core の URL を知らない）。2026-09-27 依頼者指示「チャートの
 //   操作性もライブモードと同期しろ」: 読み取り欄・ペイン別凡例・価格軸ホイール・ダブルクリック復帰・
 //   縦ドラッグ・最新足ボタン・右クリックのメニューは、ライブチャートの組み立て関数が付ける。
-//   ここで部品を new し直すと、ライブチャートの修正が simチャートへ届かない第 2 実装になる。
+//   ここで部品を new し直すと、ライブチャートの修正が売買履歴チャートへ届かない第 2 実装になる。
 //   本ファイルは lwc の API を直接呼ばない（系列の追加・表示範囲はすべて ChartRenderer 経由）。
 //
 // 描かない条件（黙ってずらさない）:
@@ -28,7 +28,7 @@ const CANVAS_CLASS = 'sim-result-chart-canvas';
 /**
  * @param {object}   deps
  * @param {Document} deps.doc
- * @param {Element}  deps.host          描画先（上のチャート領域の器）
+ * @param {Element}  deps.host          描画先（売買履歴チャートの器）
  * @param {object}   deps.lwc           lightweight-charts v5
  * @param {object}   deps.chartKit      live core の公開面（composeChartViewer・installPaneGeometry・
  *                                      installChartOperations・ChartToastView・TradeMarkersRenderer）
@@ -90,7 +90,7 @@ export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, 
     for (const inst of instances) {
       renderer.renderLine(inst.instanceId, inst.payloads, { pane: inst.pane });
     }
-    // ペイン別凡例の行（ライブチャートの行と同じ形）。simチャートの行が持つ操作は表示/非表示だけ。
+    // ペイン別凡例の行（ライブチャートの行と同じ形）。売買履歴チャートの行が持つ操作は表示/非表示だけ。
     const legendRows = () => instances.map((inst) => ({
       instanceId: inst.instanceId,
       label: inst.label,
@@ -130,12 +130,12 @@ export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, 
       const overlay = await fetchJson(`/sim/data/${encodeURIComponent(jobId)}/chart_overlay.json`);
       const request = candleRequestOf(overlay);
       if (!request) {
-        showMessage('このジョブの価格系列はデータ台帳に無いため、上のチャートには表示できません。');
+        showMessage('このジョブの価格系列はデータ台帳に無いため、売買履歴チャートには表示できません。');
         return false;
       }
       const candles = await fetchCandles(request);
       if (!candlesMatchRunBars(candles, overlay.account.time)) {
-        showMessage('上のチャートの足がジョブの足と一致しないため表示しません。');
+        showMessage('売買履歴チャートの足がジョブの足と一致しないため表示しません。');
         return false;
       }
       built = build(overlay, candles);

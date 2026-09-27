@@ -70,17 +70,17 @@
        （HTML は 1 枚も触らない規約＝ISSUE-278 #16）。ここが持つのは寸法と出し入れの規則だけ。
        出し入れは #replay-bar と同じ反転記法（既定は非表示／条件を満たすときだけ出す）で書く。
        モード名を書かないので、第 4 モードを表へ足しても本規則は直さなくてよい。 */
-    /* sim のジョブ結果を上のチャート領域で見る器（result_chart_area_view.js が生成し所有する）。
+    /* 売買履歴チャートの器（result_chart_area_view.js が生成し所有する）。
        結果を見ている間だけライブのチャートの上に重ねる（ライブの状態には触れない・2026-09-26）。 */
     #um-result-chart { display: none; position: absolute; inset: 0; z-index: 5;
       background: var(--ct-layoutBackground, #131722); }
     body.um-result-chart-shown #um-result-chart { display: block; }
-    /* simチャートを出している間は、版面にあるライブチャート側の表示（チャート・読み取り欄・
+    /* 売買履歴チャートを出している間は、版面にあるライブチャート側の表示（チャート・読み取り欄・
        ペイン別凡例・最新足ボタン・メニュー）をすべて隠す（ISSUE-537・2026-09-27）。重なり順の
        数値で上下を決めると、ライブチャート側に重ねる表示が増えるたびに同じ食い違いが起きる。
        版面の子のうち器以外、という規則で書くので、ライブチャート側の表示が増えても直さなくてよい。 */
     body.um-result-chart-shown .chart-wrap > :not(#um-result-chart) { visibility: hidden; }
-    /* simチャートのチャート本体（sim_result_chart_view.js が器の中に生成する）。 */
+    /* 売買履歴チャートのチャート本体（sim_result_chart_view.js が器の中に生成する）。 */
     #um-result-chart .sim-result-chart-canvas { position: absolute; inset: 0; }
     .sim-result-chart-message { padding: 12px 16px; color: var(--ct-uiTextDim, #787b86); }
     #um-bottom-splitter, #um-bottom-pane { display: none; }

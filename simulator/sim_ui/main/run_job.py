@@ -60,7 +60,7 @@ _FAILURE_FILE = "failure.json"
 # 理由がどこにも残らない（stderr は起動器が DEVNULL に固定している
 # ＝`adapter/subprocess_job_launcher.py:75-76`）。
 _REPORT_PAYLOAD_ERROR_FILE = "report_payload_error.json"
-#: 上のチャートへ重ねる成果物の書出し失敗の理由（report.json の理由と別に残す——同じ
+#: 売買履歴チャートへ描く成果物の書出し失敗の理由（report.json の理由と別に残す——同じ
 #   ファイルへ書くと、後から失敗した方が先の理由を上書きして消す）。
 _CHART_OVERLAY_ERROR_FILE = "chart_overlay_error.json"
 # 実行トレース（ISSUE-508 段階 3・§6.5.3）の書出し失敗の置き場。**`failure.json` とは
@@ -91,7 +91,7 @@ def _record_report_payload_error(job_dir: Path, message: str) -> None:
 
 
 def _record_chart_overlay_error(job_dir: Path, message: str) -> None:
-    """上のチャートへ重ねる成果物の書出し失敗を job-dir へ残す（run の成否は変えない）。"""
+    """売買履歴チャートへ描く成果物の書出し失敗を job-dir へ残す（run の成否は変えない）。"""
     _write_note(job_dir, _CHART_OVERLAY_ERROR_FILE, {"message": message})
 
 
@@ -451,7 +451,7 @@ def _write_report_payload(
     job_dir: Path, result: Any, *, load_run_inputs, contacts_supply,
     run_kwargs: "dict[str, Any]", account: Any,
 ) -> None:
-    """表示用ペイロード（report.json と上のチャートへ重ねる成果物）を書く。**run の成否は変えない**。
+    """表示用ペイロード（report.json と売買履歴チャートへ描く成果物）を書く。**run の成否は変えない**。
 
     書出しに失敗しても終了コードを変えないのは、バックテスト自体は成功しており、表示の
     失敗で成功した計算を捨てないためである。ただし理由は残す——起動器が stderr を
@@ -672,7 +672,7 @@ def main(argv: "list[str] | None" = None) -> int:
             return _EXIT_SPEC_ERROR
         extensions["run_tracer"] = tracer
 
-    # 足ごとの口座（残高・有効証拠金・証拠金維持率）の記録器。上のチャートの資産パネルを
+    # 足ごとの口座（残高・有効証拠金・証拠金維持率）の記録器。売買履歴チャートの資産パネルを
     #   保有中も更新するために**毎回**渡す（2026-09-26 依頼者指示）。エンジンの観測口は
     #   1 つなので、実行トレースが有効なときは両方へ配る合成で束ねる。
     #   トレース群（`simulator.adapter.trace`）は他の拡張と同じく関数内で import する（是正 D-5）。

@@ -85,7 +85,7 @@ export async function setupSimDisplay({
   lwc, resultChart = null, chartKit = null, fetchCandles = null,
 } = {}) {
   const frame = createSimFrameView({ doc });
-  // ジョブ結果を上のチャート領域へ描く（2026-09-26 依頼者指示）。器（`resultChart`）・部品
+  // ジョブ結果を売買履歴チャートへ描く（2026-09-26 依頼者指示）。売買履歴チャートの器（`resultChart`）・部品
   //   （`chartKit`）・足の読み手（`fetchCandles`）は統合層が注入する。どれかが無い宿主
   //   （スタンドアロン等）では描かない＝従来どおり下の結果ビューアだけ。
   const resultView = resultChart && chartKit && fetchCandles && lwc
@@ -102,7 +102,7 @@ export async function setupSimDisplay({
       },
     })
     : null;
-  // 子文書が読み込まれるたびに、それが結果ビューア（`?job=<id>`）かを見て上のチャートを合わせる。
+  // 子文書が読み込まれるたびに、それが結果ビューア（`?job=<id>`）かを見て売買履歴チャートを合わせる。
   //   子は投入の完了で自分を `?job=<id>` へ移す（利用者の実行指示が起点＝自動介入ではない）。
   const onFrameLoad = () => {
     if (!resultView) return;
@@ -166,7 +166,7 @@ export async function setupSimDisplay({
     /** 現在のジョブ（診断・E2E 用）。 */
     jobId() { return targetJobId; },
 
-    /** 上のチャート領域に描いているジョブ（診断・E2E 用）。描いていなければ null。 */
+    /** 売買履歴チャートに描いているジョブ（診断・E2E 用）。描いていなければ null。 */
     resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
 }
@@ -340,7 +340,7 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
     /** 現在のジョブ（診断・E2E 用）。 */
     jobId() { return targetJobId; },
 
-    /** 上のチャート領域に描いているジョブ（診断・E2E 用）。描いていなければ null。 */
+    /** 売買履歴チャートに描いているジョブ（診断・E2E 用）。描いていなければ null。 */
     resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
 }

@@ -1,4 +1,4 @@
-// sim_result_chart_view.js — simチャートの描画（描かない 2 条件・ライブチャートの組み立て関数を使うこと・計算量）。
+// sim_result_chart_view.js — 売買履歴チャートの描画（描かない 2 条件・ライブチャートの組み立て関数を使うこと・計算量）。
 //
 // 観測の境界: 注入される `chartKit`（live core の公開面）。ライブチャートと同じ組み立て関数を
 //   呼んでいることを、公開面の 3 関数（composeChartViewer・installPaneGeometry・installChartOperations）
@@ -104,7 +104,7 @@ test('ライブチャートと同じ組み立て関数で組み、操作性を�
   assert.equal(k.calls.geometry, 1);
   assert.equal(k.calls.operations.length, 1);
   assert.equal(k.calls.operations[0].anchor, host);
-  // 右クリック「情報をコピーする」の文脈は simチャートのジョブのもの。
+  // 右クリック「情報をコピーする」の文脈は売買履歴チャートのジョブのもの。
   assert.equal(k.calls.operations[0].getMenuContext().timeframe, '1m');
 });
 
