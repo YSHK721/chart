@@ -16311,3 +16311,19 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   代表パス決定化後 5 件: test_module_loader.py ×2 / test_core.py ×19 / test_lwc_chart.py ×21 /
   test_rolling_span_freeze_last.py ×2 / test_levels.py ×2）は本セッション以前から存在し、再凍結で
   baseline へ凍結した。pytest の import 衝突は未観測。解消は別作業（ファイル改名 or パッケージ化）。
+
+## ISSUE-544: report.json の meta.initial_deposit が run 設定に依らず定数 10000 で書かれる
+- **ステータス**: OPEN
+- **重大度**: 低〜中（payload の誤値は実測。表示面への波及は機構確認のみ・発生未実測）
+- **事象（実測 2026-09-27・MarginProbe_EA の動作確認中に発見）**: ジョブ経路
+  （`run_job.py --job-dir`）で `spec.json` の `backtest.initial_deposit=100000.0` を指定して
+  実行したところ、書き出された `report.json` の `meta.initial_deposit` が `10000.0` だった
+  （`stats.json` の `initial_deposit` は 100000.0 で正しい）。
+- **原因（機構は確認）**: `simulator/report_ui/usecase/build_report_payload.py:30` の定数
+  `INITIAL = 10000.0` が `_meta()`（同 :149）で run 設定を読まずそのまま書かれる。
+- **記録（発生未実測）**: 親ページの売買履歴チャートは `payload.meta.initial_deposit` を
+  `tradeCloseCurves` の基準に使う（`composition_root_front.js` loadTradeClose）ため、
+  初期資金 10000 以外の run では残高・DD 系列の基準がずれる機構になっている。表示のずれ
+  自体は未実測（実測した時点で本文へ追記する）。
+- **数え方**: MarginProbe_EA・合成データ 20 本・initial_deposit=100000 の 1 run。触ったのは
+  spec.json の値のみ。修正は未実施（report_ui 共有 UC のため承認後に着手）。
