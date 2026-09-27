@@ -705,3 +705,31 @@ test("結合は読み取りだけ: buildSettings を何度呼んでも欄の値�
   assert.equal(field(host, "FromDate").value, "2026.09.25");
   assert.equal(timeField(host, "FromDate").value, "01:30");
 });
+
+test("期間指定中に系列が変わる（setRunProfile）と From/To を新しいデータ範囲へ引き直し、時刻欄は空へ戻す", () => {
+  const { host, view } = ready();
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2026.09.25";
+  timeField(host, "FromDate").value = "01:30";
+  const next = runProfile();
+  next.data_first_date = "2020.05.01";
+  next.data_last_date = "2026.09.25";
+  view.setRunProfile(next);
+  assert.equal(field(host, "FromDate").value, "2020.05.01");
+  assert.equal(field(host, "ToDate").value, "2026.09.25");
+  assert.equal(timeField(host, "FromDate").value, "");
+  assert.equal(timeField(host, "ToDate").value, "");
+});
+
+test("引き直しの契機は run profile だけ: Dates の切替（期間指定へ入る）では従来どおり残す", () => {
+  const { host, schema } = ready();
+  const dates = field(host, "Dates");
+  // プリセット表示（全履歴＝fixture のデータ範囲）が出ている状態から期間指定へ。
+  const shown = field(host, "FromDate").value;
+  chooseCustomRange(host);
+  assert.equal(field(host, "FromDate").value, shown, "期間指定へ入るだけでは書き換えない");
+  dates.value = defaultTokens(schema).Dates;
+  fire(dates);
+  chooseCustomRange(host);
+  assert.equal(field(host, "FromDate").value, shown);
+});

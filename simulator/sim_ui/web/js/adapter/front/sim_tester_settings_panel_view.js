@@ -455,6 +455,27 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     return null;   // 未知の種別は表示しない（発明しない・投入には関与しない）
   }
 
+  /** 期間指定（カスタム）中に、選択中の系列のデータ範囲を From/To へ引き直す（依頼者指摘
+   *  2026-09-27「ティックデータを変更しても期間が更新されない」）。呼び出しは**系列・銘柄の
+   *  変更（run profile の引き直し）だけ**——系列を替えるとは対象データを替えることなので、
+   *  打ってあった期間もその系列の範囲へ引き直す。時刻欄は空（日単位）へ戻す（前の系列の
+   *  分指定を新しい範囲へ持ち越すと、意図しない分単位の窓が黙って残る）。 */
+  function applySeriesRangeToCustom() {
+    if (!schema || !isCustomRange() || !profile) return;
+    const first = profile.data_first_date;
+    const last = profile.data_last_date;
+    if (!first || !last) return;
+    const fromNode = controls.get(CUSTOM_DATE_KEYS[0]);
+    const toNode = controls.get(CUSTOM_DATE_KEYS[1]);
+    if (!fromNode || !toNode) return;
+    fromNode.value = String(first);
+    toNode.value = String(last);
+    for (const key of CUSTOM_DATE_KEYS) {
+      const timeNode = timeControls.get(key);
+      if (timeNode) timeNode.value = "";
+    }
+  }
+
   /** プリセット選択時、解決済み期間を不活性の From/To ボックスへ**表示**する（MT5 実測:
    *  ss20260906204441/204651。値は表示専用＝不活性キーは投入本文に載らない）。期間指定
    *  （カスタム）では上書きしない——直前のプリセット表示が手入力の起点として残る。 */
@@ -848,6 +869,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (!schema) return;
       applyProfileDefaults();
       applyPresetRangeDisplay();   // データ範囲の供給元が変わった＝表示期間も引き直す
+      applySeriesRangeToCustom();  // 期間指定中も同じ理由で引き直す（時刻欄は空へ）
       applyForwardSplitDisplay();  // 表示期間が動いた＝分割日も引き直す
       renderUnsupportedActivation();
       renderWarnings();
