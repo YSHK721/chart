@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from marketdata.csv_schema import SPREAD_COLUMN
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.adapter.repository._ohlc_frame import (
     ColumnSpec,
     frame_to_bars,
@@ -72,8 +73,16 @@ def _extract_with_spread(df: pd.DataFrame, i: int) -> "dict[str, Any]":
 
 
 def _utc_times(df: pd.DataFrame) -> pd.Series:
-    """「`date`」 列を UTC aware の時刻へ 1 回だけベクトルパースする（本形式の時刻の唯一の解釈）。"""
-    return pd.to_datetime(df["date"], utc=True)
+    """「`date`」 列を UTC aware の時刻へ解釈する（本形式の時刻の唯一の解釈）。
+
+    導出は同じ frame につき 1 回（ISSUE-541 段 3）。run 本体と指標の組み立てが同じ共有
+    frame から各 2 回（load と行時刻）呼ぶため、memo が無いと全列の to_datetime を
+    4 回発行していた（実測 1.36 秒・出力は不変＝状態検証では落ちない形）。
+    戻り値は共有実体＝読むだけ（呼び出し側は slice・演算で新しいオブジェクトを作る）。
+    """
+    return ohlc_frame_cache.memo_on(
+        df, "marketdata:utc_times", lambda frame: pd.to_datetime(frame["date"], utc=True)
+    )
 
 
 #: 行の時刻を読むのに要る列（`row_epoch_seconds` が読む列の宣言）。

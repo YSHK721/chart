@@ -27,12 +27,22 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from typing import Any, Callable
 
 import pandas as pd
 
 from simulator.domain.exceptions import ConfigError
+
+#: parse エンジン（ISSUE-541 段 3）。pyarrow は複数スレッドで parse し、同じ 147MB の
+#: 実体で 1.22 秒 → 実測で数分の一になる。pyarrow は tick-store（tick_parquet）が既に
+#: 依存している＝新しいライブラリではない。導入されていない環境では pandas 既定の
+#: C パーサ（値は同じ・遅いだけ）。判定は import 時に 1 回（呼び出しごとに黙って
+#: 切り替わらない・テストが読める定数）。
+PARSE_ENGINE: "str | None" = (
+    "pyarrow" if importlib.util.find_spec("pyarrow") is not None else None
+)
 
 #: parse の実体（注入点）。既定は pandas。例外の内側翻訳は呼び出し側の読み口が行う
 #: （sources 側と _ohlc_frame 側の読み口＝従来どおり）。
@@ -43,6 +53,11 @@ _frames: "dict[tuple, pd.DataFrame]" = {}
 
 #: 発行した parse の鍵の列（観測境界。検定は「発行 − 相異なる実体 = 0」を表明する）。
 parse_log: "list[tuple]" = []
+
+#: 派生値の memo（鍵 = (frame の同一性, 名前)）。同じ frame からの同じ導出（例: 時刻列の
+#: UTC 解釈）を 2 度計算しない（ISSUE-541 段 3。実測: 全列 to_datetime ×4 で 1.36 秒）。
+#: frame はキャッシュが生かしている実体だけを鍵にする（id は frame が生きている間だけ一意）。
+_derived: "dict[tuple, Any]" = {}
 
 
 def set_reader(reader: "Callable[..., pd.DataFrame] | None") -> None:
@@ -55,6 +70,29 @@ def clear() -> None:
     """キャッシュと発行記録を空にする（テストが run を独立に測るための後始末）。"""
     _frames.clear()
     parse_log.clear()
+    _derived.clear()
+
+
+def memo_on(frame: pd.DataFrame, name: str, fn: "Callable[[pd.DataFrame], Any]") -> Any:
+    """``frame`` からの導出 ``fn`` を、同じ (frame, name) につき 1 回だけ計算する。
+
+    事前条件: ``fn`` は frame を読むだけ（書き換えない）。戻り値も共有実体になるため
+        呼び出し側は読むだけにする（read_frame の契約と同じ規律）。
+    事後条件: 同じ frame・同じ名前への 2 回目以降は同じ実体を返す。
+
+    キャッシュ外の frame（テストの合成 frame 等）にも使える——その場合の寿命は本 memo が
+    参照を持つ間（clear まで）である。
+    """
+    key = (id(frame), name)
+    if key not in _derived:
+        # id の再利用（元 frame の解放後に別オブジェクトが同じ id を得る）で別物の導出を
+        # 返さないよう、frame 自体も值として保持する（生存保証＋同一性の検証）。
+        _derived[key] = (frame, fn(frame))
+    held, value = _derived[key]
+    if held is not frame:
+        _derived[key] = (frame, fn(frame))
+        held, value = _derived[key]
+    return value
 
 
 def _key_of(source_ref: Any, sep: "str | None") -> tuple:
@@ -82,7 +120,12 @@ def read_frame(
     key = _key_of(source_ref, sep)
     frame = _frames.get(key)
     if frame is None:
-        frame = _reader(source_ref) if sep is None else _reader(source_ref, sep=sep)
+        options: "dict[str, Any]" = {} if sep is None else {"sep": sep}
+        if _reader is pd.read_csv and PARSE_ENGINE is not None:
+            # エンジン指定は既定 reader のときだけ（注入された検定用 reader へ渡すと
+            # 偽の引数になる）。値は同じでパースだけ速い（段 3）。
+            options["engine"] = PARSE_ENGINE
+        frame = _reader(source_ref, **options)
         _frames[key] = frame
         parse_log.append(key)
     if usecols is not None:

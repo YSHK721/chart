@@ -96,3 +96,47 @@ def test_unknown_read_options_are_rejected(tmp_path):
 def test_missing_file_raises_for_the_caller_to_translate(tmp_path):
     with pytest.raises(OSError):
         cache.read_frame(tmp_path / "missing.csv")
+
+
+# ---- 派生値の memo（ISSUE-541 段 3）----------------------------------------------
+
+
+def test_memo_on_computes_once_per_frame_and_name():
+    frame_a = pd.DataFrame({"x": [1, 2]})
+    frame_b = pd.DataFrame({"x": [3]})
+    calls = []
+
+    def derive(f):
+        calls.append(id(f))
+        return f["x"].sum()
+
+    first = cache.memo_on(frame_a, "sum", derive)
+    again = cache.memo_on(frame_a, "sum", derive)
+    other_name = cache.memo_on(frame_a, "sum2", derive)
+    other_frame = cache.memo_on(frame_b, "sum", derive)
+
+    # 発行 − 相異なる (frame, name) = 0
+    assert len(calls) - 3 == 0
+    assert first == again == 3
+    assert other_name == 3
+    assert other_frame == 3
+
+
+def test_memo_on_recomputes_when_the_identity_is_reused_by_a_different_frame():
+    """id の再利用で別物の導出を返さない（保持している frame と同一性で照合する）。"""
+    frame = pd.DataFrame({"x": [1]})
+    key = (id(frame), "guard")
+    # 前の住人の値を人工的に置く（id 再利用の再現）。
+    cache._derived[key] = (pd.DataFrame({"x": [99]}), 99)
+    assert cache.memo_on(frame, "guard", lambda f: int(f["x"].sum())) == 1
+
+
+def test_parse_engine_values_match_the_default_parser(tmp_path):
+    """pyarrow エンジン（PARSE_ENGINE）で読んだ値が pandas 既定の C パーサと一致する。
+
+    速さだけが違い、値は同じであることの正の対照（違えば run の成果物が変わる）。
+    """
+    path = _write(tmp_path / "a.csv")
+    via_cache = cache.read_frame(path)
+    plain = pd.read_csv(path)
+    assert via_cache.equals(plain), (via_cache.dtypes, plain.dtypes)
