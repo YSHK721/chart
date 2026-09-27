@@ -634,3 +634,74 @@ test("offered candidates survive a real-DOM HTMLCollection (children に .map �
   fire(sel);
   assert.ok(activeIds(view).includes("X-06"), "HTMLCollection 相当の children で告知判定が動いていません");
 });
+
+// ---- 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）------------------
+//
+// 承認済みの規則: 分の置き場は時刻欄 1 つ／未入力なら日単位／プリセット切替で時刻欄は保持。
+
+/** 期間キー K の時刻欄（id は `tester{Key}Time`）。 */
+const timeField = (host, key) => findById(host, `tester${key}Time`);
+
+test("時刻欄は FromDate / ToDate だけに在り、ForwardDate には無い", () => {
+  const { host } = ready();
+  assert.ok(timeField(host, "FromDate"));
+  assert.ok(timeField(host, "ToDate"));
+  assert.equal(timeField(host, "ForwardDate"), null);
+  assert.match(String(timeField(host, "FromDate").title), /UTC/);
+  assert.match(String(timeField(host, "ToDate").title), /当日の終わり/);
+});
+
+test("時刻欄あり: 日付と結合した 1 トークンを送る。空・空白だけなら日単位（日付のみ）", () => {
+  const { host, view } = ready();
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2026.09.25";
+  field(host, "ToDate").value = "2026.09.25";
+  timeField(host, "FromDate").value = "01:30";
+  timeField(host, "ToDate").value = "  ";
+  const tester = view.buildSettings().tester;
+  assert.equal(tester.FromDate, "2026.09.25 01:30");
+  assert.equal(tester.ToDate, "2026.09.25");
+});
+
+test("日付欄に時刻ごと打たれたら、確定時に時刻部を時刻欄へ移す（分の置き場は 1 つ）", () => {
+  const { host, view } = ready();
+  chooseCustomRange(host);
+  const dateNode = field(host, "FromDate");
+  dateNode.value = "2026.09.25 01:30";
+  fire(dateNode);
+  assert.equal(dateNode.value, "2026.09.25");
+  assert.equal(timeField(host, "FromDate").value, "01:30");
+  field(host, "ToDate").value = "2026.09.25";
+  assert.equal(view.buildSettings().tester.FromDate, "2026.09.25 01:30");
+});
+
+test("プリセットへ切り替えて戻しても時刻欄の値は保持される（承認済みの規則 2）", () => {
+  const { host, schema } = ready();
+  chooseCustomRange(host);
+  timeField(host, "FromDate").value = "01:30";
+  const dates = field(host, "Dates");
+  dates.value = defaultTokens(schema).Dates;   // プリセットへ
+  fire(dates);
+  assert.equal(timeField(host, "FromDate").value, "01:30");
+  chooseCustomRange(host);                     // 期間指定へ戻す
+  assert.equal(timeField(host, "FromDate").value, "01:30");
+});
+
+test("プリセット中（期間キーが不活性）は時刻欄も打てない", () => {
+  const { host } = ready();
+  // 既定はプリセット形＝FromDate/ToDate は不活性。
+  assert.equal(timeField(host, "FromDate").disabled, true);
+  chooseCustomRange(host);
+  assert.equal(timeField(host, "FromDate").disabled, false);
+});
+
+test("結合は読み取りだけ: buildSettings を何度呼んでも欄の値を書き換えない（自動介入なし）", () => {
+  const { host, view } = ready();
+  chooseCustomRange(host);
+  field(host, "FromDate").value = "2026.09.25";
+  timeField(host, "FromDate").value = "01:30";
+  field(host, "ToDate").value = "2026.09.25";
+  for (let i = 0; i < 3; i += 1) view.buildSettings();
+  assert.equal(field(host, "FromDate").value, "2026.09.25");
+  assert.equal(timeField(host, "FromDate").value, "01:30");
+});

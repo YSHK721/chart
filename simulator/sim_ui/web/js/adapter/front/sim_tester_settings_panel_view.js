@@ -43,6 +43,16 @@ const INDICATOR_KEY = "Indicator";
 /** 期間（規則 E）: プリセット 1 キー ⇄ カスタム 2 キーの排他。 */
 const PRESET_DATE_KEY = "Dates";
 const CUSTOM_DATE_KEYS = ["FromDate", "ToDate"];
+/** 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）の説明。ホバーで規則が
+ *  読める（枠の外に説明行を足さない＝MT5 面の行構成を崩さない）。時刻系は UTC（画面全体の
+ *  時間軸・取引明細と同じ）。未入力なら日単位＝従来どおり。 */
+const TIME_TITLES = {
+  FromDate: "開始時刻 HH:MM（UTC）。未入力なら日単位（当日 00:00 から）",
+  ToDate: "終了時刻 HH:MM（UTC）。未入力なら日単位（当日の終わりまで）。入力した分を含む",
+};
+/** 日付欄に時刻ごと打たれたとき（例: `2026.09.25 01:30`）に分離する形。分の置き場は
+ *  時刻欄 1 つ（承認済み仕様）——日付欄と時刻欄の両方に時刻が在る状態を作らない。 */
+const DATE_WITH_TIME = /^\s*([0-9]{4}\.[0-9]{2}\.[0-9]{2})[ \u3000]+([0-9]{2}:[0-9]{2})\s*$/;
 /** フォワード分割（規則 F）: 分割比は schema の `ForwardMode` 選択肢が配る宣言
  *  （enums `FORWARD_MODE_SPLIT_DENOMINATORS` 由来・表示専用）。 */
 const FORWARD_MODE_KEY = "ForwardMode";
@@ -185,6 +195,8 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   const controls = new Map();
   /** `.ini` キー → 欄を包む見た目の箱（日付箱・レバレッジ箱など。無いキーは登録しない）。 */
   const controlBoxes = new Map();
+  /** 期間キー → 時刻欄（`CUSTOM_DATE_KEYS` だけが持つ。値の結合は buildTesterMapping が行う）。 */
+  const timeControls = new Map();
   /** Expert の生トークン → EA 名の語幹（接尾辞の切り出しを front でやらない）。 */
   const expertLabels = new Map();
 
@@ -376,6 +388,30 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     });
     box.appendChild(node);
     box.appendChild(btn);
+    if (CUSTOM_DATE_KEYS.includes(key)) {
+      // 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）。未入力なら日単位。
+      //   検証はしない——書式の正否はサーバの `_strict_date_minute`（R10）が単一ソース
+      //   （日付欄・カレンダーと同じ方針）。
+      const time = el("input", {
+        id: `tester${key}Time`, className: "tester-time", type: "text",
+        placeholder: "HH:MM", title: TIME_TITLES[key] || "",
+        dataset: { key, mt5: `ui:time:${key}` },
+      });
+      time.addEventListener("change", () => onChanged(key));
+      time.addEventListener("input", () => onChanged(key));
+      timeControls.set(key, time);
+      box.appendChild(time);
+      // 日付欄に時刻ごと打たれたら、確定（change）時に時刻部を時刻欄へ移す。分の置き場を
+      //   時刻欄 1 つにする（承認済み仕様）。input 中に動かすとタイプ中の欄を書き換えて
+      //   しまうため、確定時だけ行う。移した結果は投入本文では同じ 1 つのトークンになる。
+      node.addEventListener("change", () => {
+        const matched = DATE_WITH_TIME.exec(node.value);
+        if (!matched) return;
+        node.value = matched[1];
+        time.value = matched[2];
+        onChanged(key);
+      });
+    }
     return box;
   }
 
@@ -487,7 +523,8 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (isDateKey(key)) {
         // 日付箱の▾ボタンも同時に殺す（欄だけ殺すとカレンダーから書けてしまう）。
         for (const child of piece.children || []) {
-          if (child.tagName === "BUTTON") child.disabled = !active;
+          // ▾ボタンと時刻欄も同時に殺す（欄だけ殺すと不活性でも時刻だけ打てる欄が残る）。
+          if (child.tagName === "BUTTON" || child.tagName === "INPUT") child.disabled = !active;
         }
       }
     }
@@ -603,6 +640,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     rowHosts.clear();
     controls.clear();
     controlBoxes.clear();
+    timeControls.clear();
     expertLabels.clear();
     picker.close();      // 組み直しで欄が入れ替わるため、開いたままのカレンダーを残さない
     pickerKey = null;
@@ -727,8 +765,13 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (!isActive(key) && !isDisplayOnlyActivation(key)) continue;
       const node = controls.get(key);
       if (!node) continue;
-      const value = valueOf(node);
+      let value = valueOf(node);
       if (value === "" && BLANK_MEANS_ABSENT.includes(key)) continue;
+      // 期間キーは時刻欄（未入力なら日単位）と結合して 1 つのトークンにする（依頼者指示
+      //   2026-09-27）。日付が空のときは結合しない（時刻だけの期間は存在しない）。
+      const timeNode = timeControls.get(key);
+      const timeValue = timeNode ? String(timeNode.value || "").trim() : "";
+      if (value !== "" && timeValue !== "") value = `${value} ${timeValue}`;
       mapping[key] = value;
     }
     return mapping;
