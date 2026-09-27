@@ -440,6 +440,10 @@ def build_interactor(
     weekly_f_risk: float = 0.01,
     adx_min: float = 22.0,
     adx_period: int = 8,
+    # MarginProbe_EA（証拠金維持率の動作確認・2026-09-27）が読む狙いの維持率（%）。
+    #   注入専用ブロック（strategy_decorator〜run_tracer）は末尾固定なので、ジョブ仕様の
+    #   パラメータはその**前**へ足す（test_run_tracer_injection_path が末尾を固定する）。
+    margin_level_target: float = 95.0,
     marketdata_window: Any = None,
     strategy_decorator: "Callable[[Any], Any] | None" = None,
     strategy_override: "Any | None" = None,

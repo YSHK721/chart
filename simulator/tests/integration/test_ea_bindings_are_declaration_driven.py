@@ -227,11 +227,13 @@ class TestANewEaNeedsNoChangeToTheCompositionRoot:
             EaBinding(
                 name="Probe2_EA",
                 build=lambda ctx: (None, None, None),
-                strategy_params=("leverage",),  # 既存の宣言に無い build_interactor 引数
+                # 既存の宣言に無い build_interactor 引数（"leverage" は MarginProbe_EA が
+                # 宣言したため負の対照に使えなくなった・2026-09-27）。
+                strategy_params=("weekly_p_tp",),
             ),
         )
         after = strategy_param_names()
-        assert set(after) - set(before) == {"leverage"}
+        assert set(after) - set(before) == {"weekly_p_tp"}
 
     def test_the_composition_root_file_is_not_involved(self, probe):
         """上の 5 件が通るあいだ、Composition Root は 1 文字も変わっていないこと。
@@ -318,6 +320,10 @@ class TestTheStrategyParametersComeFromTheDeclarations:
             "entry_offset_points",
             "entry_type",
             "adx_min",
+            # MarginProbe_EA（2026-09-27）の宣言分。既存 14 名の並びは 1 文字も動いていない。
+            "margin_level_target",
+            "leverage",
+            "contract_size",
         )
 
 
@@ -337,7 +343,12 @@ class TestThePublicSignatureIsUntouched:
         "take_profit_points", "config_overrides", "stop_out_level", "slope_shift",
         "slope_min_points", "entry_offset_points", "entry_type", "trading_start",
         "tick_store_root", "tick_start", "tick_end", "weekly_forecast", "weekly_p_tp",
-        "weekly_capital", "weekly_f_risk", "adx_min", "adx_period", "marketdata_window",
+        "weekly_capital", "weekly_f_risk", "adx_min", "adx_period",
+        # MarginProbe_EA（証拠金維持率の動作確認・2026-09-27）で追加。注入専用ブロック
+        #   （strategy_decorator〜run_tracer）は末尾固定（test_run_tracer_injection_path）
+        #   なのでその前へ足す。既定値つき＝必須キー集合は不変・既存名の相対順も不変。
+        "margin_level_target",
+        "marketdata_window",
         "strategy_decorator", "strategy_override", "position_manager",
         # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3・是正 F-6）で末尾へ追加。
         #   仕様変更への追随であり、既存 38 名の並びは 1 文字も動いていない。

@@ -33,6 +33,7 @@ from simulator.main.ea_bindings import (
     dataless,
     ma_slope,
     ma_slope_pending,
+    margin_probe,
     open_then_close_5m,
     pro_fit_band,
     simple_touch_long,
@@ -67,6 +68,7 @@ _EA_MODULES = (
     simple_touch_long,
     open_then_close_5m,
     calc_probe,
+    margin_probe,
 )
 
 #: ea_name → 束縛の登録表。キーは各 EA モジュールの宣言が持つ（ここで名前を写さない）。

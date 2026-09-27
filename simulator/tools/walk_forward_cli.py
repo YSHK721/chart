@@ -45,6 +45,9 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     "tick_store_root", "tick_start", "tick_end",
     "weekly_forecast", "weekly_p_tp", "weekly_capital", "weekly_f_risk",
     "adx_min", "adx_period",
+    # MarginProbe_EA（証拠金維持率の動作確認・2026-09-27）の狙い維持率。実シグネチャと
+    # 一致させる規約（test_walk_forward_cli.py）に従い列挙する。
+    "margin_level_target",
     "marketdata_window",
     # E-2（基本設計書 §12.4）で追加された戦略 Decorator の差し込み口。探索対象の
     # スカラーではないが、本集合は build_interactor の実シグネチャと一致させる規約
