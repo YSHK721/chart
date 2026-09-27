@@ -16,9 +16,11 @@
 
        このページが持つのは「器」だけである:
          - 移植元 style.css（実体を link・写さない）
-         - 共有 vendor の lightweight-charts v5.2.0（report_ui の v4.1.3 はどの経路にも載せない）
          - sim 表示層の合成根 1 本
-       3 窓・取引明細の DOM は **View（sim_display_view.js）が生成し所有する**。ここへ
+       lightweight-charts は載せない——3 窓チャートは撤去済み（2026-09-27 依頼者指示）で、
+       ジョブのチャート表示は親ページの売買履歴チャートだけが持つ（v4.1.3 も従来どおり
+       どの経路にも載せない）。
+       取引明細の DOM は **View（sim_display_view.js）が生成し所有する**。ここへ
        骨格を書き写さない（ISSUE-278 #16 と同じ規約。import_source.test.js が機械強制する）。
 
        job_id は親が付けた `?job=<id>` を合成根が読む（親子で読み方を二重化しない）。 -->
@@ -37,10 +39,8 @@
 <body>
   <!-- 比較・判定タブ（FR-17/18）が使う Chart.js v4.4.1（report_ui の vendor 実体・無改変）。
        compare.js は `typeof Chart === "undefined"` で**無音でスキップ**するため、これが
-       無いとグラフだけが黙って出ない。lightweight-charts は下の共有 v5.2.0 だけを載せる
-       （report_ui の v4.1.3 は allowlist 非収録＝経路そのものが無い）。 -->
+       無いとグラフだけが黙って出ない。 -->
   <script src="/sim/report-vendor/chart.umd.js"></script>
-  <script src="/sim/vendor/lightweight-charts.js"></script>
   <script type="module">
     import { mountSimReportView } from '/sim/js/adapter/front/composition_root_front.js';
     import { mountSimExecutionPanel } from '/sim/js/adapter/front/composition_root_execution.js';
@@ -57,7 +57,6 @@
       if (hasJob) {
         await mountSimReportView({
           doc: document,
-          lwc: window.LightweightCharts,
           host: document.body,
         });
       } else {

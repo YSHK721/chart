@@ -220,9 +220,13 @@ test("the child document links the sim-owned frame stylesheet (器の高さ)", (
   assert.ok(REPORT_VIEW_HTML.includes("/sim/css/sim_display.css"));
 });
 
-test("the child document loads the shared v5 vendor (v4 は載せない)", () => {
-  assert.ok(REPORT_VIEW_HTML.includes("/sim/vendor/lightweight-charts.js"));
-  assert.ok(!REPORT_VIEW_HTML.includes("standalone.js"), "v4 バンドルを載せています");
+test("the child document loads no lightweight-charts (3 窓チャート撤去・2026-09-27)", () => {
+  // 3 窓チャート撤去後、子文書にチャートは無い。lwc を載せ続けると、描かないページが
+  //   毎回 vendor 1 本ぶんの読込・評価を発行する（発行した計算 − 出力に使った計算 ≠ 0）。
+  // 判定は**実行される script 読込**に対して行う（散文＝HTML コメントの言及は正当・C1）。
+  assert.ok(!/<script[^>]*lightweight-charts/.test(REPORT_VIEW_HTML),
+    "子文書が lightweight-charts を載せています（チャートは親の売買履歴チャートだけが持つ）");
+  assert.ok(!/<script[^>]*standalone\.js/.test(REPORT_VIEW_HTML), "v4 バンドルを載せています");
 });
 
 test("the child document owns no report DOM (骨格は View が生成する)", () => {
@@ -243,15 +247,27 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
   const shared = specs.filter((s) => s.startsWith("/sim/report-js/"));
   assert.deepEqual(shared.sort(), [
     // Phase 5 で周辺表示（ヒートマップ・比較判定・用語集）の実体を足す。写さず import する。
+    // data.js（aggOf）は接点（3 窓チャート）専用だったため撤去とともに外れた（2026-09-27）。
     "/sim/report-js/chart.js",
     "/sim/report-js/compare.js",
-    "/sim/report-js/data.js",
     "/sim/report-js/format.js",
     "/sim/report-js/glossary.js",
     "/sim/report-js/heatmap.js",
     "/sim/report-js/linkage.js",
     "/sim/report-js/table.js",
   ]);
+});
+
+test("the composition root reads only tradeCloseCurves from chart.js (3 窓チャート撤去)", () => {
+  // chart.js の表示規則（マーカー・減光・バッジ・接点）を再び import した時点で、
+  //   子文書に描かないチャート計算が戻る芽になる（撤去の回帰の壁）。親の売買履歴チャートの
+  //   残高・DD 系列（tradeCloseCurves）だけを許す。
+  const src = read(ROOT);
+  const m = src.match(/import\s*\{([^}]*)\}\s*from\s*["']\/sim\/report-js\/chart\.js["']/);
+  assert.ok(m, "chart.js の import が見つかりません");
+  const names = m[1].split(",").map((s) => s.trim()).filter(Boolean);
+  assert.deepEqual(names, ["tradeCloseCurves"],
+    `chart.js から表示規則を import しています: ${names}`);
 });
 
 test("the composition root imports nothing but /sim/report-js/ and its own siblings", () => {
@@ -528,10 +544,13 @@ test("view and adapters use the injected doc, not the global document", () => {
 // chart.js（:307）が」公開する。sim も同じ配り方にする。合成根はブラウザ絶対パスを
 // import するため node:test から実行できない（構造検定で固定する唯一の手段）。
 
-test("the composition root publishes the linkage E2E hooks (main.js:182-183 と対称)", () => {
+test("the composition root publishes the linkage E2E hook (main.js:182 と対称)", () => {
   const src = read(ROOT);
   assert.ok(src.includes("__simLinkage"), "window.__simLinkage が無い（双方向連動の実測点）");
-  assert.ok(src.includes("__simEmitMarkerHover"), "window.__simEmitMarkerHover が無い（マーカー hover の代理）");
+  // __simEmitMarkerHover（チャート側 hover の代理）は 3 窓チャート撤去とともに消えた。
+  //   復活はチャート第 2 実装の兆候なので禁じる（チャートは親の売買履歴チャートだけ）。
+  assert.ok(!src.includes("__simEmitMarkerHover"),
+    "__simEmitMarkerHover が復活しています（子文書のチャートは撤去済み）");
 });
 
 test("the chart-side E2E hooks live in the v5 adapter only (chart.js:307 と対称)", () => {
@@ -557,11 +576,11 @@ test("the composition root reads the job id from the injected location search", 
 // 縮退、sim_contacts_toggle_view: renderer 真実源、sim_filter_pill_view: ピル）。ここでは
 // 「合成根がそれらを移植元 main.js:135-190 の順で結線しているか」を構造で固定する。
 
-test("the composition root constructs the four Phase 5 peripheral views", () => {
+test("the composition root constructs the three Phase 5 peripheral views", () => {
+  // 接点トグル（createSimContactsToggleView）は 3 窓チャートとともに撤去（2026-09-27）。
   const src = read(ROOT);
   for (const factory of [
-    "createSimSegmentView", "createSimCompareView",
-    "createSimContactsToggleView", "createSimFilterPillView",
+    "createSimSegmentView", "createSimCompareView", "createSimFilterPillView",
   ]) {
     assert.ok(src.includes(factory), `合成根が ${factory} を組み立てていません（結線の欠落）`);
   }
@@ -570,7 +589,8 @@ test("the composition root constructs the four Phase 5 peripheral views", () => 
 test("the composition root imports the peripheral report_ui builders", () => {
   const src = read(ROOT);
   // ヒートマップ・比較判定・用語集の実体は移植元から import（写さない）。
-  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary", "wireTips", "aggOf"]) {
+  // aggOf（接点の取り出し）は 3 窓チャート撤去とともに外れた（2026-09-27）。
+  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary", "wireTips"]) {
     assert.ok(src.includes(sym), `合成根が ${sym} を移植元から引いていません`);
   }
 });
@@ -585,16 +605,16 @@ test("the composition root renders compare/glossary once at init, segments per r
   const src = read(ROOT);
   assert.ok(/compareView\b/.test(src), "比較 View が結線されていません");
   assert.ok(/segmentView\b/.test(src), "区間 View が結線されていません");
-  assert.ok(/contactsToggle\b/.test(src), "接点トグル View が結線されていません");
   // wireTips は init で 1 回だけ（多重 #tip 禁止）。selectSegment 内に置くと区間切替で増える。
   const wireTipsCount = (src.match(/wireTips\s*\(/g) || []).length;
   assert.equal(wireTipsCount, 1, "wireTips の呼び出しが 1 回ではありません（多重 #tip の恐れ）");
 });
 
-test("selectSegment feeds contacts and heatmap (移植元 selectSegment と同順)", () => {
+test("selectSegment feeds the heatmap (移植元 selectSegment と同順・チャート撤去後)", () => {
   const src = read(ROOT);
-  assert.ok(/setContacts\s*\(/.test(src), "区間切替で接点を renderer へ渡していません");
   assert.ok(/buildHeatmap\s*\(/.test(src), "区間切替でヒートマップを描いていません");
+  // 接点（setContacts）の届け先＝ 3 窓チャートは撤去済み。呼び出しが戻れば第 2 実装の兆候。
+  assert.ok(!/setContacts\s*\(/.test(src), "setContacts が復活しています（子文書のチャートは撤去済み）");
 });
 
 test("the single-run heatmap drops the IS/OOS diff view (D-3 の opts を渡す)", () => {

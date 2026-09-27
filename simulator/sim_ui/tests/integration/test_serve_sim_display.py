@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -157,11 +158,17 @@ def test_子文書と器CSSが配信される(display) -> None:
     assert b"#sim-display" in body
 
 
-def test_子文書はv4バンドルを載せない(display) -> None:
+def test_子文書はlightweight_chartsを載せない(display) -> None:
+    """3 窓チャート撤去（2026-09-27 依頼者指示）後、子文書にチャートは無い。
+
+    lwc を載せ続けると、描かないページが毎回 vendor 1 本ぶんの読込・評価を発行する
+    （発行した計算 − 出力に使った計算 ≠ 0）。判定は実行される script 読込に対して行う
+    （散文＝HTML コメントの言及は正当・C1）。
+    """
     base, _app = display
     _status, body, _h = _request(base, "/report_view.html")
-    assert b"standalone.js" not in body
-    assert b"/sim/vendor/lightweight-charts.js" in body
+    assert not re.search(rb"<script[^>]*lightweight-charts", body)
+    assert not re.search(rb"<script[^>]*standalone\.js", body)
 
 
 def test_共有vendorのv5は従来どおり配信される(display) -> None:
