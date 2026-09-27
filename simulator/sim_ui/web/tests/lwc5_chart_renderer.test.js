@@ -27,8 +27,8 @@ function fakeLogic(calls = {}) {
     DIM_ALPHA: 0.15,
     MARKER_CAP: 700,
     DEFAULT_DEPOSIT: 10000,
-    balanceForwardFill(barTimes, curve, init) {
-      calls.balanceForwardFill = { barTimes, curve, init };
+    tradeCloseCurves(segment, barTimes, deposit) {
+      calls.tradeCloseCurves = { segment, barTimes, deposit };
       return {
         balData: barTimes.map((t) => ({ time: t, value: 10000 })),
         ddData: barTimes.map((t) => ({ time: t, value: 0 })),
@@ -169,13 +169,13 @@ test("candles are fed from segment.bars", () => {
   assert.deepEqual(lwc.charts[0].series[0].data.map((b) => b.time), [100, 200]);
 });
 
-test("balance / drawdown series come from the injected balanceForwardFill", () => {
+test("balance / drawdown series come from the injected tradeCloseCurves", () => {
   const calls = {};
   const { renderer } = build(calls);
-  renderer.render(SEGMENT);
-  assert.deepEqual(calls.balanceForwardFill.barTimes, [100, 200]);
-  assert.deepEqual(calls.balanceForwardFill.curve, SEGMENT.agg.balance_curve);
-  assert.equal(calls.balanceForwardFill.init, 10000);
+  renderer.render(SEGMENT, { initialDeposit: 5000 });
+  assert.deepEqual(calls.tradeCloseCurves.barTimes, [100, 200]);
+  assert.equal(calls.tradeCloseCurves.segment, SEGMENT);
+  assert.equal(calls.tradeCloseCurves.deposit, 5000);
 });
 
 test("markers come from the injected buildTradeMarkers with the hovered id", () => {

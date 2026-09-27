@@ -24,7 +24,7 @@
 //   glossary+wireTips〔init 1 回・多重 #tip 禁止〕→ segment → contacts トグル → selectSegment）。
 
 import {
-  balanceForwardFill, byTimeResolve,
+  tradeCloseCurves, byTimeResolve,
   buildTradeMarkers, buildDimBars, mergeDimBarsForTrade,
   visibleTradesInRange, chartBadgeText,
   contactsInRange, contactsToMarkers,
@@ -53,7 +53,7 @@ import { mountTraceAnalysis } from "./composition_root_analysis.js";
 
 /** 移植元 chart.js が所有する表示規則。v5 アダプタへはこの束を注入する。 */
 const CHART_LOGIC = {
-  balanceForwardFill, byTimeResolve,
+  tradeCloseCurves, byTimeResolve,
   buildTradeMarkers, buildDimBars, mergeDimBarsForTrade,
   visibleTradesInRange, chartBadgeText,
   // 接点（FR-18）の純関数も移植元 chart.js が単一ソース。v5 アダプタへ注入して使う。
@@ -99,6 +99,12 @@ export async function setupSimDisplay({
         const res = await fetch(url);
         if (!res.ok) throw new Error(`${url}: ${res.status}`);
         return res.json();
+      },
+      // 取引終了時の残高・DD は、シミュレーション結果と同じ report.json の先頭の区間から、同じ関数
+      //   （tradeCloseCurves）で作る。売買履歴チャートの足（run の足）の時刻で持つ。
+      loadTradeClose: async (jobId, barTimes) => {
+        const payload = await createReportSourceClient({}).load(jobId);
+        return tradeCloseCurves(firstSegment(payload), barTimes, payload.meta && payload.meta.initial_deposit);
       },
     })
     : null;

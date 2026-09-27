@@ -66,6 +66,17 @@ export function balanceForwardFill(barTimes, balanceCurve, initDeposit = DEFAULT
   return { balData, ddData };
 }
 
+// 区間の取引終了時の残高・DD（資産曲線 balChart・ドローダウン ddChart の系列）を各バー時刻で作る。
+//   初期証拠金は payload の meta → 区間の meta → 既定の順。シミュレーション結果（lwc5 アダプタ）と
+//   売買履歴チャート（取引終了時のレイヤー・2026-09-27 依頼者指示）が共有する単一ソース。
+export function tradeCloseCurves(segment, barTimes, payloadDeposit = null) {
+  const initDeposit = payloadDeposit
+    || (segment && segment.meta && segment.meta.initial_deposit)
+    || DEFAULT_DEPOSIT;
+  const curve = (segment && segment.agg && segment.agg.balance_curve) || [];
+  return balanceForwardFill(barTimes, curve, initDeposit);
+}
+
 // time→value の索引 Map（クロスヘア同期で他窓の同時刻値を引く・試作 *ByTime）。
 export function byTimeResolve(series) {
   return new Map((series || []).map((p) => [p.time, p.value]));

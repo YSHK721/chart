@@ -34,9 +34,13 @@ const CANVAS_CLASS = 'sim-result-chart-canvas';
  *                                      installChartOperations・ChartToastView・TradeMarkersRenderer）
  * @param {function} deps.fetchJson     (url) => Promise<object>（sim の成果物を読む）
  * @param {function} deps.fetchCandles  ({datasetRef, timeframe, from, to}) => Promise<Array>
+ * @param {function} deps.loadTradeClose (jobId, barTimes) => Promise<{balData, ddData}>（取引終了時の残高・DD。
+ *                                      シミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ系列）
  * @param {function} [deps.fetchImpl]   売買マークの読み込みに使う fetch
  */
-export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, fetchCandles, fetchImpl }) {
+export function createSimResultChartView({
+  doc, host, lwc, chartKit, fetchJson, fetchCandles, loadTradeClose, fetchImpl,
+}) {
   let built = null;
   let message = null;
   let shownJob = null;
@@ -61,7 +65,7 @@ export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, 
   }
 
   /** ライブチャートと同じ関数でチャートと操作性を組み、描いたものを片付ける関数を返す。 */
-  function build(overlay, candles) {
+  function build(overlay, candles, tradeClose) {
     const container = doc.createElement('div');
     container.className = CANVAS_CLASS;
     host.appendChild(container);
@@ -71,7 +75,7 @@ export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, 
     const { renderer } = viewer;
     const geometry = chartKit.installPaneGeometry({ container, chart: viewer.chart, renderer });
 
-    const instances = resultChartInstances(overlay);
+    const instances = resultChartInstances(overlay, tradeClose);
     const visible = new Map(instances.map((inst) => [inst.instanceId, true]));
     const labels = new Map(instances.map((inst) => [inst.instanceId, inst.label]));
     const operations = chartKit.installChartOperations({
@@ -138,7 +142,14 @@ export function createSimResultChartView({ doc, host, lwc, chartKit, fetchJson, 
         showMessage('売買履歴チャートの足がジョブの足と一致しないため表示しません。');
         return false;
       }
-      built = build(overlay, candles);
+      let tradeClose;
+      try {
+        tradeClose = await loadTradeClose(jobId, overlay.account.time);
+      } catch (err) {
+        showMessage(`取引終了時の残高・DD を読めないため表示しません（${err && err.message ? err.message : err}）。`);
+        return false;
+      }
+      built = build(overlay, candles, tradeClose);
       const { viewer } = built;
       const markers = new chartKit.TradeMarkersRenderer({
         lwc, mainSeries: viewer.mainSeries, chart: viewer.chart, chartRenderer: viewer.renderer,

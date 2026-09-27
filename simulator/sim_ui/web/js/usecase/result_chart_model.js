@@ -10,17 +10,28 @@
 //   続く  … 口座（残高・有効証拠金）／DD／損益（確定の累計・含み）／証拠金維持率
 // 口座系はすべて**足ごと**の値（保有中も更新）。値の無い足（未成立の指標・保有の無い足の
 // 維持率）は lwc の whitespace（time だけの点）にする——0 を置くと偽の値を描く。
+// 残高・DD の 2 枚には**取引終了時**のレイヤー（シミュレーション結果の資産曲線 balChart・
+// ドローダウン ddChart と同じ系列）も重ねる（依頼者指示 2026-09-27）。
 
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
   indicator: ['#f5c542', '#42a5f5', '#ab47bc', '#26c6da'],
-  balance: '#2962ff',
-  equity: '#26a69a',
-  drawdown: '#ef5350',
+  // 残高・DD の 2 枚は、取引終了時のレイヤーを足ごとのレイヤーに重ねる（2026-09-27 依頼者指示:
+  //   足ごとは「木」、取引終了時は「森」）。森を読めるよう、足ごとは不透明度を下げて細く、
+  //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色と太さで描く
+  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色・lineWidth 2）。
+  balance: 'rgba(41,98,255,0.35)',
+  equity: 'rgba(38,166,154,0.35)',
+  drawdown: 'rgba(239,83,80,0.35)',
+  balanceClose: 'rgba(59,130,246,0.9)',
+  drawdownClose: 'rgba(239,83,80,0.9)',
   realized: '#2962ff',
   floating: '#ff9800',
   marginLevel: '#ab47bc',
 });
+
+/** 取引終了時のレイヤーの線の太さ（足ごとのレイヤーは 1）。 */
+export const TRADE_CLOSE_LINE_WIDTH = 2;
 
 /** 値の列を lwc の点列へ（null・非有限は whitespace）。 */
 export function toPoints(times, values) {
@@ -36,10 +47,13 @@ export function toPoints(times, values) {
 
 /**
  * パネルの並びと各パネルの系列を返す。
- * @returns {Array<{title: string, series: Array<{name: string, color: string, points: Array}>}>}
+ * @param {object} overlay    chart_overlay.json（足ごとの値）
+ * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（report_ui の tradeCloseCurves の出力。
+ *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
+ * @returns {Array<{title: string, series: Array<{name: string, color: string, width?: number, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(overlay) {
+export function resultChartPanes(overlay, tradeClose) {
   const panes = [{ title: '価格', series: [] }];
   const indicators = Array.isArray(overlay.indicators) ? overlay.indicators : [];
   indicators.forEach((ind, i) => {
@@ -59,16 +73,21 @@ export function resultChartPanes(overlay) {
   panes.push({
     title: '残高・有効証拠金',
     series: [
-      { name: '残高', color: RESULT_CHART_COLORS.balance, points: toPoints(t, a.balance) },
-      { name: '有効証拠金', color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
+      { name: '残高（足ごと）', color: RESULT_CHART_COLORS.balance, points: toPoints(t, a.balance) },
+      { name: '有効証拠金（足ごと）', color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
+      { name: '残高（取引終了時）', color: RESULT_CHART_COLORS.balanceClose, width: TRADE_CLOSE_LINE_WIDTH,
+        points: tradeClose.balData },
     ],
   });
   panes.push({
     title: 'DD',
     series: [
       // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。
-      { name: 'DD', color: RESULT_CHART_COLORS.drawdown,
+      { name: 'DD（足ごと）', color: RESULT_CHART_COLORS.drawdown,
         points: toPoints(t, a.drawdown.map((v) => -v)) },
+      // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
+      { name: 'DD（取引終了時）', color: RESULT_CHART_COLORS.drawdownClose, width: TRADE_CLOSE_LINE_WIDTH,
+        points: tradeClose.ddData },
     ],
   });
   panes.push({
@@ -95,10 +114,10 @@ export function resultChartPanes(overlay) {
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
  *   payloads: Array<{name: string, color: string, width: number, style: string, data: Array}>}>}
  */
-export function resultChartInstances(overlay) {
-  const payload = (s) => ({ name: s.name, color: s.color, width: 1, style: 'solid', data: s.points });
+export function resultChartInstances(overlay, tradeClose) {
+  const payload = (s) => ({ name: s.name, color: s.color, width: s.width || 1, style: 'solid', data: s.points });
   const out = [];
-  resultChartPanes(overlay).forEach((pane, paneIndex) => {
+  resultChartPanes(overlay, tradeClose).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });

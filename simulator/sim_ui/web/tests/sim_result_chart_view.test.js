@@ -8,6 +8,11 @@ import assert from 'node:assert/strict';
 
 import { createSimResultChartView } from '../js/adapter/front/sim_result_chart_view.js';
 import { resultChartInstances } from '../js/usecase/result_chart_model.js';
+import { tradeCloseCurves } from '../../../report_ui/web/js/chart.js';
+
+function tradeClose(times) {
+  return tradeCloseCurves({ meta: {}, agg: { balance_curve: [] } }, times);
+}
 import { fakeEl } from './_fakes.js';
 
 const T = [100, 160, 220];
@@ -73,6 +78,11 @@ function view({ ov, candles, k }) {
     doc, host, lwc: {}, chartKit: k.chartKit,
     fetchJson: async () => ov,
     fetchCandles: async (req) => { k.calls.request = req; return candles; },
+    loadTradeClose: async (jobId, times) => {
+      k.calls.tradeClose = (k.calls.tradeClose || 0) + 1;
+      if (k.failTradeClose) throw new Error('結果未生成');
+      return tradeClose(times);
+    },
   });
   return { v, host };
 }
@@ -116,7 +126,7 @@ test('描くとき: 足・全 instance・売買マーク（ChartRenderer を渡�
   assert.equal(k.calls.candles, candles);
   assert.deepEqual(
     k.calls.renderLine.map((c) => c.id),
-    resultChartInstances(overlay()).map((inst) => inst.instanceId),
+    resultChartInstances(overlay(), tradeClose(T)).map((inst) => inst.instanceId),
   );
   assert.deepEqual(k.calls.loaded, ['/sim/data/job1/trade_markers.json']);
   assert.equal(k.calls.timeframe, '1m');
@@ -168,4 +178,20 @@ test('別のジョブへ替えるときは前のチャートと購読を片付�
   assert.equal(k.calls.removed, 1);
   assert.deepEqual(k.calls.disposed, { operations: 1, geometry: 1 });
   assert.equal(v.shownJob(), 'job2');
+});
+
+test('取引終了時の残高・DD を読めなければ描かずに理由を出す（足ごとだけの半端な描画をしない）', async () => {
+  const k = kit();
+  k.failTradeClose = true;
+  const { v, host } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
+  assert.equal(await v.render('job1'), false);
+  assert.equal(k.calls.viewer.length, 0);
+  assert.match(host.children[0].textContent, /取引終了時/);
+});
+
+test('計算量: 取引終了時の材料は 1 ジョブにつき 1 回だけ読む（同じジョブの再 render で読み直さない）', async () => {
+  const k = kit();
+  const { v } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
+  for (let i = 0; i < 4; i += 1) await v.render('job1');
+  assert.equal(k.calls.tradeClose, 1);
 });
