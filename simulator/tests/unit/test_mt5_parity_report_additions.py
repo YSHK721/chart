@@ -115,8 +115,8 @@ class _CountingSeries(Sequence):
 @pytest.mark.parametrize("func", [balance_linear_regression, equity_dd_relative])
 @pytest.mark.parametrize("n", [50, 5000])
 def test_each_metric_reads_the_series_exactly_once(func, n):
-    rng = np.random.default_rng(0)
-    series = _CountingSeries(10000.0 + np.cumsum(rng.normal(0, 10, n)))
+    # 乱数は使わない（決定的な上下動で十分・DD と回帰が退化しない形）。
+    series = _CountingSeries(10000.0 + 50.0 * np.sin(np.arange(n) / 7.0) + np.arange(n) * 0.1)
     func(series, 10000.0)
     # 読んだ数 − 出力に使った数（系列全体を 1 回）= 0。長さを 100 倍にしても 1 回のまま。
     assert series.reads - len(series) == 0

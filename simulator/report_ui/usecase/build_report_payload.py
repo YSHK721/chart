@@ -322,7 +322,7 @@ class BuildReportPayload:
         出力しない（§4.5 確定方針＝欠落キーは出さない）。inf は `f"{inf:.2f}"` が "inf" を
         返すため文字列 "inf" として出力される（report 値は文字列・presenter 素通し）。
 
-        run の事実（``meta`` の ``currency`` / ``leverage`` / ``symbols`` / ``tested_bars``）は
+        run の事実（meta の通貨・レバレッジ・銘柄数・テスト期間の足の本数）は
         呼び出し側が渡したものだけを写す（§4.5 改訂 2026-09-27）。渡されないキーは出さない
         ——表示足が取引開始前の足を含む経路（report_ui export）で ``len(bars)`` を
         「バー数」と名乗らせないため。

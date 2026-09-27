@@ -8,7 +8,7 @@
     ％は 0〜100 の 101 通りなので、知らせる回数は足の本数・評価点の数に依らず 101 回以下。
 
 契約（`RunTracePort`）: 読むのは `point.bar_index` だけ。口座・保有列には触れない。
-知らせ先（`publish`）は注入する（ファイルへ書くのは job-dir を知る側・`run_progress_file`）。
+知らせ先は注入する（ファイルへ書くのは job-dir を知る側・simulator/sim_ui/adapter/run_progress_file.py）。
 """
 from __future__ import annotations
 

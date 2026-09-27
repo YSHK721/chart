@@ -146,7 +146,7 @@ class FileJobLedger(JobLedgerPort):
         return str(reason) if reason else None
 
     def read_progress(self, job_id: str) -> "int | None":
-        """子プロセスが残した進み具合（`progress.json`・形式は run_progress_file）を読む。"""
+        """子プロセスが残した進み具合（形式は simulator/sim_ui/adapter/run_progress_file.py）を読む。"""
         try:
             job_dir = self.job_dir(job_id)
         except ValueError:

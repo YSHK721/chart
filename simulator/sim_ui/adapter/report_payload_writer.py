@@ -52,9 +52,9 @@ def _run_facts(spec: dict, backtest: dict, bars: list) -> dict:
     無い値は入れない（捏造しない）。
     - 通貨: `.ini` の `Currency`（settings 経路のみ存在）。
     - レバレッジ: `backtest.leverage`（エンジンへ渡った値）。
-    - 銘柄数: 1。エンジンは 1 run に 1 銘柄だけを取る（`build_interactor` の `symbol`）。
+    - 銘柄数: 1。エンジンは 1 run に 1 銘柄だけを取る（エンジン組み立ての銘柄引数は 1 つ）。
     - バー数: 表示用の足の本数。sim の経路は取引開始の境界を持たない
-      （`simulator/main/tester_settings/window.py` が `trading_start` を常に None にする）ので、
+      （simulator/main/tester_settings/window.py が取引開始の境界を常に None にする）ので、
       足はすべてテスト期間の足である。MT5 の Bars と同じ数え方（取引開始以降の足の本数）は
       report_ui export の IS 区間で MT5 xlsx と一致（13206・2026-09-27）。
     """
