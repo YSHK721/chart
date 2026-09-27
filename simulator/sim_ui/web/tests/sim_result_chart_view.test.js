@@ -256,3 +256,44 @@ test('計算量: 同じ linkage を何度渡しても購読は 1 つ・ジョブ
   assert.equal(newMarkers.highlighted.at(-1), 9);
   assert.equal(oldMarkers.highlighted.length, oldCount);
 });
+
+// ---- ISSUE-540: ジョブ未完了（409）の掲示と、完了後の load イベントでの再試行 ----
+
+test('材料が 409（未完了）なら理由を出し、次の render（子文書の読み直し）で組み立て直せる', async () => {
+  const k = kit();
+  const host = fakeEl();
+  const doc = { createElement: (t) => fakeEl(t) };
+  const candles = T.map((time) => ({ time }));
+  let ready = false;
+  const v = createSimResultChartView({
+    doc, host, lwc: {}, chartKit: k.chartKit,
+    fetchJson: async () => {
+      if (!ready) { const err = new Error('409'); err.status = 409; throw err; }
+      return overlay();
+    },
+    fetchCandles: async () => candles,
+    loadTradeClose: async (jobId, times) => tradeClose(times),
+  });
+
+  assert.equal(await v.render('job1'), false);
+  assert.match(host.children[0].textContent, /完了していない/);
+  assert.equal(k.calls.viewer.length, 0, '未完了の間はチャートを組まない');
+
+  ready = true;
+  assert.equal(await v.render('job1'), true, '同じジョブでも読めなかった分は再試行する');
+  assert.equal(k.calls.viewer.length, 1);
+});
+
+test('409 以外の読み込み失敗も理由を出し、覚えない（再試行できる）', async () => {
+  const k = kit();
+  const host = fakeEl();
+  const v = createSimResultChartView({
+    doc: { createElement: (t) => fakeEl(t) }, host, lwc: {}, chartKit: k.chartKit,
+    fetchJson: async () => { throw new Error('接続できません'); },
+    fetchCandles: async () => [],
+    loadTradeClose: async () => ({ balData: [], ddData: [] }),
+  });
+  assert.equal(await v.render('job1'), false);
+  assert.match(host.children[0].textContent, /接続できません/);
+  assert.equal(v.shownJob(), null);
+});

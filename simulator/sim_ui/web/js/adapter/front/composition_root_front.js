@@ -42,6 +42,8 @@ import { createLwc5ChartRenderer } from "./lwc5_chart_renderer.js";
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
 import { createSimFrameView, waitForContent, whenChildReady } from "./sim_frame_view.js";
+import { createJobStatusClient } from "./job_status_client.js";
+import { showRunningAndWaitForCompletion } from "./job_completion_wait.js";
 import { createSimResultChartView } from "./sim_result_chart_view.js";
 import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
@@ -103,7 +105,11 @@ export async function setupSimDisplay({
       fetchCandles,
       fetchJson: async (url) => {
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`${url}: ${res.status}`);
+        if (!res.ok) {
+          const err = new Error(`${url}: ${res.status}`);
+          err.status = res.status;   // 409＝未完了を見分ける材料（ISSUE-540）
+          throw err;
+        }
         return res.json();
       },
       // 取引終了時の残高・DD は、シミュレーション結果と同じ report.json の先頭の区間から、同じ関数
@@ -196,7 +202,9 @@ export async function setupSimDisplay({
  * @param {string}   search   `location.search` 相当
  * @returns {{destroy: function}}
  */
-export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch: fetchFn } = {}) {
+export async function mountSimReportView({
+  doc, lwc, host, jobId, search, fetch: fetchFn, statusClient = null,
+} = {}) {
   const view = createSimDisplayView({ doc });
   const source = createReportSourceClient({ fetch: fetchFn });
   const linkage = createLinkage();
@@ -209,6 +217,8 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
   const filterPill = createSimFilterPillView();
 
   let renderer = null;
+  // 実行中のジョブを開いたときの完了待ち（ISSUE-540）。監視は同時 1 本・破棄で必ず止める。
+  let stopJobWatch = null;
   let payload = null;
   let segKeys = [];
   let curSeg = null;
@@ -339,11 +349,25 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
       window.__simEmitMarkerHover = (id) => { if (renderer) renderer.emitMarkerHover(id); };
     }
   } catch (e) {
-    // 部分描画しない。何が起きたかだけを掲示する（fail-stop）。
-    view.showMessage(e && e.message ? e.message : "結果を表示できません");
+    if (e && e.code === "not_ready") {
+      // 実行中のジョブを開いた（投入直後に「結果を見る」を押すとここへ来る・ISSUE-540 実測 409）。
+      //   完了待ちの中身（掲示・監視・読み直し）は job_completion_wait が持ち、ここは結線だけ。
+      stopJobWatch = showRunningAndWaitForCompletion({
+        view,
+        statusClient: statusClient || createJobStatusClient({ fetch: fetchFn }),
+        jobId: targetJobId,
+        reload: () => {
+          if (doc && doc.location && typeof doc.location.reload === "function") doc.location.reload();
+        },
+      });
+    } else {
+      // 部分描画しない。何が起きたかだけを掲示する（fail-stop）。
+      view.showMessage(e && e.message ? e.message : "結果を表示できません");
+    }
   }
 
   function destroy() {
+    if (stopJobWatch) { stopJobWatch(); stopJobWatch = null; }
     if (renderer) { renderer.destroy(); renderer = null; }
     view.unmount();
   }
@@ -354,8 +378,5 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
 
     /** 現在のジョブ（診断・E2E 用）。 */
     jobId() { return targetJobId; },
-
-    /** 売買履歴チャートに描いているジョブ（診断・E2E 用）。描いていなければ null。 */
-    resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
 }

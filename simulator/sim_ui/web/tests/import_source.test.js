@@ -72,6 +72,8 @@ const TRACE_CLIENT = "trace_analysis_client.js";
 const ANALYSIS_ROOT = "composition_root_analysis.js";
 // ジョブ結果を売買履歴チャートへ描く View（2026-09-26 依頼者指示）。
 const RESULT_CHART = "sim_result_chart_view.js";
+// ISSUE-540: 実行中のジョブを開いたときの完了待ち（掲示・監視・読み直し。DOM は view 経由）。
+const COMPLETION_WAIT = "job_completion_wait.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -92,7 +94,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
     TRACE_PANEL, TRACE_VIEW, TRACE_CLIENT, ANALYSIS_ROOT,
-    RESULT_CHART,
+    RESULT_CHART, COMPLETION_WAIT,
   ].sort());
 });
 

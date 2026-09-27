@@ -140,7 +140,18 @@ export function createSimResultChartView({
       if (jobId === shownJob) return built !== null;
       clear();
       shownJob = jobId;
-      const overlay = await fetchJson(`/sim/data/${encodeURIComponent(jobId)}/chart_overlay.json`);
+      let overlay;
+      try {
+        overlay = await fetchJson(`/sim/data/${encodeURIComponent(jobId)}/chart_overlay.json`);
+      } catch (err) {
+        // 読めなかったら覚えない＝次の load イベント（子文書は完了で読み直される）で再試行できる。
+        //   覚えたままだと「同じジョブなら描き直さない」の早期 return が再試行を塞ぐ（ISSUE-540）。
+        shownJob = null;
+        showMessage(err && err.status === 409
+          ? "ジョブが完了していないため、売買履歴チャートはまだ表示できません。完了すると表示します。"
+          : `売買履歴チャートの材料を読めません（${err && err.message ? err.message : err}）。`);
+        return false;
+      }
       const request = candleRequestOf(overlay);
       if (!request) {
         showMessage('このジョブの価格系列はデータ台帳に無いため、売買履歴チャートには表示できません。');
@@ -155,6 +166,7 @@ export function createSimResultChartView({
       try {
         tradeClose = await loadTradeClose(jobId, overlay.account.time);
       } catch (err) {
+        shownJob = null;   // 次の load イベントで再試行できるように（上の 409 と同じ理由）
         showMessage(`取引終了時の残高・DD を読めないため表示しません（${err && err.message ? err.message : err}）。`);
         return false;
       }
