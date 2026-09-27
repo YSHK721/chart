@@ -252,6 +252,8 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
     "/sim/report-js/compare.js",
     "/sim/report-js/format.js",
     "/sim/report-js/glossary.js",
+    // グラフ (Graphs) タブの実体（2026-09-27 依頼者指摘で流用に追加。写さず import する）。
+    "/sim/report-js/graphs.js",
     "/sim/report-js/heatmap.js",
     "/sim/report-js/linkage.js",
     // サマリー (Report) タブの実体（2026-09-27 依頼者指示で流用に追加。写さず import する）。

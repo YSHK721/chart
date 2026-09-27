@@ -129,3 +129,32 @@ test("filter pure functions read segments[seg].trades (no flat DATA.trades)", ()
   assert.deepEqual([...filterIdsByHour(data.segments.is.trades, 0)], [1]);
   assert.deepEqual([...filterIdsByHour(data.segments.oos.trades, 0)], [3]);
 });
+
+// --- 単一系列（sim の単一 run・区間 single・2026-09-27）------------------------------
+
+import { DEFAULT_GRAPH_SERIES, holdPairSources as holdSrc, scatterPairSources as scatSrc } from "../graphs.js";
+
+const SINGLE = {
+  segments: {
+    single: { agg: {
+      scatter_mfe: [{ x: 1, y: 2, id: 1 }], scatter_mae: [{ x: 3, y: -1, id: 1 }],
+      hold_pl: { "<1m": 0, "1-2m": -35 },
+    } },
+  },
+};
+
+test("DEFAULT_GRAPH_SERIES は IS/OOS の 2 本（既定の呼び出しの挙動を固定）", () => {
+  assert.deepEqual(DEFAULT_GRAPH_SERIES.map((s) => [s.seg, s.label]), [["is", "IS"], ["oos", "OOS"]]);
+});
+
+test("区間名を渡せば single を読み、2 本目を持たない（segB=null）", () => {
+  const scf = scatSrc(SINGLE, "mfe", "single", null);
+  assert.deepEqual(scf, { a: [{ x: 1, y: 2, id: 1 }], b: [] });
+  const hp = holdSrc(SINGLE, "single", null);
+  assert.deepEqual(hp, { labels: ["<1m", "1-2m"], a: [0, -35], b: [0, 0] });
+});
+
+test("既定引数は従来どおり is/oos を読む（single だけのデータは空＝前の挙動と同一）", () => {
+  assert.deepEqual(scatSrc(SINGLE, "mfe"), { a: [], b: [] });
+  assert.deepEqual(holdSrc(SINGLE).labels, []);
+});

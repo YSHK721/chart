@@ -33,6 +33,8 @@ export const SIM_DISPLAY_IDS = Object.freeze({
   heatHost: "heatHost",       // ヒートマップの描画先（buildHeatmap の host）
   paneCompare: "pane-compare", // 比較・判定ペイン（sim_compare_view が中身を挿す）
   paneAnalysis: "pane-analysis", // 分析ペイン（composition_root_analysis が中身を挿す・§9.1）
+  graphHost: "graphHost",     // グラフ (Graphs) ペイン（移植元 index.html と同 id・buildGraphs の host）
+  graphGrid: "graphGrid",     // グラフ群の描画先（buildGraphs が host 内の #graphGrid を引く）
   paneReport: "pane-report",  // サマリー (Report) ペイン（移植元 index.html:102 と同 id）
   reportGrid: "reportGrid",   // サマリーの描画先（buildReport の host・移植元 :104 と同 id）
   paneGlossary: "pane-glossary", // 用語ペイン
@@ -51,7 +53,7 @@ export function createSimDisplayView({ doc } = {}) {
     // Phase 5:
     segHost: null, metaLine: null,
     heatHost: null, paneCompare: null, paneGlossary: null, glossHost: null,
-    reportGrid: null, clearFilter: null, detailCount: null,
+    reportGrid: null, graphHost: null, clearFilter: null, detailCount: null,
   };
 
   const el = (tag, props) => {
@@ -128,6 +130,11 @@ export function createSimDisplayView({ doc } = {}) {
     // 比較ペインと同じ受け皿方式）。
     panes.analysis.id = SIM_DISPLAY_IDS.paneAnalysis;
 
+    // グラフ (Graphs) ペイン（移植元 index.html と同じ骨格・2026-09-27 依頼者指摘）。中身は
+    //   合成根が移植元 graphs.js の buildGraphs で描く（寸法は移植元 style.css の .graph-grid）。
+    panes.graph.id = SIM_DISPLAY_IDS.graphHost;
+    panes.graph.appendChild(el("div", { id: SIM_DISPLAY_IDS.graphGrid, className: "graph-grid" }));
+
     // サマリー (Report) ペイン（移植元 index.html:101-105 と同じ骨格・2026-09-27 依頼者指示）。
     //   中身（章立てテーブル）は合成根が移植元 report.js の buildReport で描く。
     panes.report.id = SIM_DISPLAY_IDS.paneReport;
@@ -146,7 +153,7 @@ export function createSimDisplayView({ doc } = {}) {
 
     Object.assign(elements, {
       heatHost, paneCompare: panes.compare, paneAnalysis: panes.analysis,
-      paneGlossary: panes.glossary, glossHost, reportGrid,
+      paneGlossary: panes.glossary, glossHost, reportGrid, graphHost: panes.graph,
     });
 
     // 描画できないときの掲示（部分描画しない・fail-stop の表示面）。

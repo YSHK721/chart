@@ -35,6 +35,7 @@ import { buildHeatmap } from "/sim/report-js/heatmap.js";
 import { buildCompare, renderVerdictBanner } from "/sim/report-js/compare.js";
 import { buildGlossary, wireTips } from "/sim/report-js/glossary.js";
 import { buildReport } from "/sim/report-js/report.js";
+import { buildGraphs } from "/sim/report-js/graphs.js";
 
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
@@ -267,6 +268,12 @@ export async function mountSimReportView({
       () => {},
       // 単一区間（segKeys<2）では「IS vs OOS 損益差」ビューを出さない（D-3）。
       { showIsOosDiff: segKeys.length >= 2 },
+    );
+    // グラフ (Graphs)。区間が 1 つ（sim の単一 run）なら系列も 1 本（IS/OOS 並置の既定では
+    //   区間 is/oos を読むため全グラフが 0 になる）。要素クリックの抽出は linkage が担う。
+    buildGraphs(
+      view.elements.graphHost, payload, segKey, linkage, () => {},
+      segKeys.length >= 2 ? {} : { series: [{ seg: segKey, label: "この run" }] },
     );
     // サマリー (Report)。区間別 report を章立て表示（移植元 main.js selectSegment と同順・末尾）。
     buildReport(view.elements.reportGrid, curSeg.report);
