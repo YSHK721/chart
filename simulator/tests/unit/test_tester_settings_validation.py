@@ -669,19 +669,21 @@ class TestMinuteRange:
          "2020.03.30 01:30:00", "2020.03.30T01:30"],
     )
     def test_broken_minute_tokens_are_rejected(self, value):
-        _raises(
+        error = _raises(
             expert_mapping(Dates=OMIT, FromDate=value, ToDate="2020.03.31"),
             SettingsValueError,
         )
+        assert error.context["key"] == "FromDate"
 
     def test_forward_date_stays_day_only(self):
-        _raises(
+        error = _raises(
             expert_mapping(
                 Dates=OMIT, FromDate="2020.03.30", ToDate="2020.03.31",
                 ForwardMode="4", ForwardDate="2020.03.30 12:00",
             ),
             SettingsValueError,
         )
+        assert error.context["key"] == "ForwardDate"
 
     def test_rule_k_accepts_a_single_minute_and_rejects_a_reversed_minute_pair(self):
         ok = tester_settings_from_mapping(expert_mapping(
