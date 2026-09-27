@@ -82,6 +82,15 @@
     body.um-result-chart-shown .chart-wrap > :not(#um-result-chart) { visibility: hidden; }
     /* 売買履歴チャートのチャート本体（sim_result_chart_view.js が器の中に生成する）。 */
     #um-result-chart .sim-result-chart-canvas { position: absolute; inset: 0; }
+    /* 器の描画先（host）。読み取り欄・ペイン別凡例の置き場（position の基準）を兼ねる。 */
+    #um-result-chart .um-result-chart-host { position: absolute; inset: 0; }
+    /* 「⛶ チャート最大化」（参照 report_ui #maxChart と同じ右上の位置・価格軸を避ける）。 */
+    #um-result-chart .um-max-btn {
+      position: absolute; top: 8px; right: 90px; z-index: 30;
+      padding: 2px 8px; font-size: 11px; cursor: pointer;
+      color: var(--ct-uiText, #d1d4dc); background: var(--ct-uiSurface, #131722);
+      border: 1px solid var(--ct-uiBorder, #2a2e39); border-radius: 3px;
+    }
     .sim-result-chart-message { padding: 12px 16px; color: var(--ct-uiTextDim, #787b86); }
     #um-bottom-splitter, #um-bottom-pane { display: none; }
     body.um-bottom-pane-mode #um-bottom-splitter { display: block; }
@@ -102,6 +111,14 @@
       flex: 0 1 45%; overflow: hidden; flex-direction: column;
       background: var(--ct-uiSurface, #131722);
     }
+    /* 版面の最大化（参照 report_ui layout.js の 3 状態・2026-09-27）。状態クラスは
+       result_chart_area_view.js が付け外しする。下部ペインの高さは View が inline で書くため
+       !important で上書きする（復元すればその高さへそのまま戻る）。 */
+    body.um-layout-detail .chart-wrap,
+    body.um-layout-detail #um-bottom-splitter { display: none !important; }
+    body.um-layout-detail #um-bottom-pane { flex: 1 1 auto !important; }
+    body.um-layout-chart #um-bottom-pane,
+    body.um-layout-chart #um-bottom-splitter { display: none !important; }
     /* モード切替ボタンはオン・オフのトグル（全モードで常に表示）。選択中のモードは
        aria-pressed=true でアクセント青に点灯させ、どのモードかが一目で分かるようにする
        （既存 css の tb-interval は id 指定でないと点灯しないため、ここで明示指定する）。 */

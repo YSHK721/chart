@@ -255,6 +255,8 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
     // グラフ (Graphs) タブの実体（2026-09-27 依頼者指摘で流用に追加。写さず import する）。
     "/sim/report-js/graphs.js",
     "/sim/report-js/heatmap.js",
+    // 版面の最大化の状態遷移 nextLayoutMode（2026-09-27・参照 layout.js の点10。写さず import する）。
+    "/sim/report-js/layout.js",
     "/sim/report-js/linkage.js",
     // サマリー (Report) タブの実体（2026-09-27 依頼者指示で流用に追加。写さず import する）。
     "/sim/report-js/report.js",

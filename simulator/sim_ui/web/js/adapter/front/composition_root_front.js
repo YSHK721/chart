@@ -36,6 +36,7 @@ import { buildCompare, renderVerdictBanner } from "/sim/report-js/compare.js";
 import { buildGlossary, wireTips } from "/sim/report-js/glossary.js";
 import { buildReport } from "/sim/report-js/report.js";
 import { buildGraphs } from "/sim/report-js/graphs.js";
+import { nextLayoutMode } from "/sim/report-js/layout.js";
 
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
@@ -55,6 +56,14 @@ import { mountTraceAnalysis } from "./composition_root_analysis.js";
  * 売買履歴チャートが読む（ISSUE-538）。書き手と読み手がこの 1 つの定数を使う。
  */
 export const SIM_LINKAGE_GLOBAL = "__simLinkage";
+
+/**
+ * 親（統合ページ）が子文書へ渡す「版面の最大化」の口の window 名と、渡したことを知らせる
+ * イベント名（2026-09-27・参照 report_ui の ⛶ 明細最大化）。状態遷移は親が 1 つだけ持つ
+ * （チャート最大化ボタンは親の版面に在るため）。子のボタンはこの口を呼ぶだけ。
+ */
+export const SIM_HOST_LAYOUT_GLOBAL = "__simHostLayout";
+export const SIM_HOST_LAYOUT_READY = "sim-host-layout-ready";
 
 /** `?job=<id>` を読む（引数優先・注入可能にしてテストと実行を分けない）。 */
 function resolveJobId({ jobId, search }) {
@@ -107,6 +116,16 @@ export async function setupSimDisplay({
       },
     })
     : null;
+  // 版面の最大化（参照 report_ui layout.js の 3 状態・2026-09-27）。状態遷移は参照の純関数
+  //   nextLayoutMode（写さない）、表すのは統合層の器（body の状態クラス）。
+  let layoutMode = "normal";
+  const toggleLayout = (button) => {
+    layoutMode = nextLayoutMode(layoutMode, button);
+    resultChart.setLayoutMode(layoutMode);
+    return layoutMode;
+  };
+  const resetLayout = () => { layoutMode = "normal"; };
+  if (resultView) resultChart.onMaxChart(() => toggleLayout("chart"));
   // 子文書が読み込まれるたびに、それが結果ビューア（`?job=<id>`）かを見て売買履歴チャートを合わせる。
   //   子は投入の完了で自分を `?job=<id>` へ移す（利用者の実行指示が起点＝自動介入ではない）。
   const onFrameLoad = () => {
@@ -116,6 +135,7 @@ export async function setupSimDisplay({
     if (!job) {
       resultView.clear();
       resultChart.hide();
+      resetLayout();
       return;
     }
     resultChart.show();
@@ -123,7 +143,14 @@ export async function setupSimDisplay({
       console.warn("[sim-result-chart] 描画に失敗しました", err);
     });
     // 取引明細・priceChart と hover を連動させる（ISSUE-538）。子の linkage は子が組み上がってから在る。
-    whenChildReady(frame, nextFrame, (child) => resultView.bindLinkage(child[SIM_LINKAGE_GLOBAL]));
+    whenChildReady(frame, nextFrame, (child) => {
+      resultView.bindLinkage(child[SIM_LINKAGE_GLOBAL]);
+      // 版面の最大化の口を子へ渡し、渡したことを知らせる（子はそれまで ⛶ 明細最大化を出さない）。
+      child[SIM_HOST_LAYOUT_GLOBAL] = { toggleDetail: () => toggleLayout("detail"), mode: () => layoutMode };
+      if (typeof child.dispatchEvent === "function" && typeof child.Event === "function") {
+        child.dispatchEvent(new child.Event(SIM_HOST_LAYOUT_READY));
+      }
+    });
   };
   const targetJobId = resolveJobId({ jobId, search });
   // 器は**渡された host へそのまま**挿す。どこへ置くかは統合層の判断であって sim の契約では
@@ -163,6 +190,7 @@ export async function setupSimDisplay({
       if (resultView) {
         resultView.clear();
         resultChart.hide();
+        resetLayout();
       }
       frame.unmount();
     },
@@ -176,6 +204,35 @@ export async function setupSimDisplay({
     /** 売買履歴チャートに描いているジョブ（診断・E2E 用）。描いていなければ null。 */
     resultChartJob() { return resultView ? resultView.shownJob() : null; },
   };
+}
+
+/**
+ * 子文書の「⛶ 明細最大化」を親の版面の口へ結ぶ（2026-09-27・参照 report_ui layout.js の点10）。
+ * 口（window[SIM_HOST_LAYOUT_GLOBAL]）は親が子の完了後に渡し、渡したことをイベントで知らせる。
+ * 表示の追随（ボタンの文言・グラフの充填 gfill）は返った版面の状態だけで決める。
+ */
+export function wireDetailMaximize({ win, view }) {
+  const tabsView = view && typeof view.tabsView === "function" ? view.tabsView() : null;
+  const button = tabsView && typeof tabsView.maxDetailButton === "function" ? tabsView.maxDetailButton() : null;
+  if (!win || !button) return;
+  const reflect = (mode) => {
+    button.textContent = mode === "detail" ? "↙ 復元" : "⛶ 明細最大化";
+    button.classList.toggle("on", mode === "detail");
+    const graphHost = view.elements && view.elements.graphHost;
+    if (graphHost) graphHost.classList.toggle("gfill", mode === "detail");
+  };
+  const attach = () => {
+    const api = win[SIM_HOST_LAYOUT_GLOBAL];
+    if (!api) return;
+    button.hidden = false;
+    reflect(typeof api.mode === "function" ? api.mode() : "normal");
+  };
+  button.addEventListener("click", () => {
+    const api = win[SIM_HOST_LAYOUT_GLOBAL];
+    if (api) reflect(api.toggleDetail());
+  });
+  if (typeof win.addEventListener === "function") win.addEventListener(SIM_HOST_LAYOUT_READY, attach);
+  attach();   // 口が先に渡っていた場合
 }
 
 /**
@@ -313,6 +370,10 @@ export async function mountSimReportView({
     selectSegment(segKeys[0]);
     // 初期タブは明細（移植元と同じ・タブ切替は tabs View が単一経路で持つ）。
     view.activate("detail");
+
+    // ⛶ 明細最大化（参照 report_ui #maxDetail）。版面の切り替えは親が持つ口を呼ぶ。明細最大化中は
+    //   グラフを 1 画面に収める（参照の gfill）。口が渡るまではボタンを出さない。
+    wireDetailMaximize({ win: typeof window !== "undefined" ? window : null, view });
 
     // hover の状態（linkage）を親文書へ出す。親の売買履歴チャートがこれで取引明細と
     //   連動する（ISSUE-538）。E2E の実測点も兼ねる（移植元 main.js:182 と対称）。

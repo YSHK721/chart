@@ -51,6 +51,7 @@ export function createSimTabsView({ doc } = {}) {
   let host = null;
   const tabs = {};
   const panes = {};
+  let maxDetail = null;
 
   const el = (tag, props) => {
     const node = doc.createElement(tag);
@@ -93,6 +94,13 @@ export function createSimTabsView({ doc } = {}) {
       body.appendChild(pane);
     }
 
+    // 「⛶ 明細最大化」（参照 report_ui #maxDetail と同じくタブ帯の右端・2026-09-27）。
+    //   押したときの処理（版面の切り替え）は合成根が結ぶ。宿主が版面の口を渡すまでは出さない
+    //   （押しても何も起きないボタンを置かない）。
+    maxDetail = el("button", { id: "maxDetail", className: "maxbtn", textContent: "⛶ 明細最大化", type: "button" });
+    maxDetail.hidden = true;
+    bar.appendChild(maxDetail);
+
     bottom.appendChild(bar);
     bottom.appendChild(body);
     return bottom;
@@ -101,6 +109,9 @@ export function createSimTabsView({ doc } = {}) {
   return {
     /** 各ペイン（合成根が中身を挿す先）。 */
     elements: { panes },
+
+    /** 「⛶ 明細最大化」ボタン（mount 前は null）。 */
+    maxDetailButton() { return maxDetail; },
 
     isMounted() { return root !== null; },
 
