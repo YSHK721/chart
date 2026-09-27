@@ -19,11 +19,21 @@
  * @param {object}   deps.statusClient watch(jobId, onUpdate) を持つ（M7 job_status_client）
  * @param {string}   deps.jobId        監視するジョブ
  * @param {function} deps.reload       文書の読み直し（親側の再描画も load イベントで従う）
+ * @param {object}  [deps.progress]    show(percent|null) / hide() を持つ（sim_progress_view）
  * @returns {function} 監視の停止関数（破棄時に必ず呼ぶ）
  */
-export function showRunningAndWaitForCompletion({ view, statusClient, jobId, reload }) {
+export function showRunningAndWaitForCompletion({ view, statusClient, jobId, reload, progress = null }) {
   view.showMessage("ジョブは実行中です。完了すると自動で表示します。");
+  if (progress) progress.show(null);
   return statusClient.watch(jobId, (update) => {
+    if (progress) {
+      // 終わっていない間だけバーと％を出す（値が無ければ「準備中」）。
+      if (update && !update.error && update.terminal !== true) {
+        progress.show(Number.isInteger(update.progress) ? update.progress : null);
+      } else {
+        progress.hide();
+      }
+    }
     if (update && update.error) {
       // 止まったのは監視であってジョブではない（無音で止まらない・§19.6 と同じ扱い）。
       view.showMessage(`実行状態の監視を継続できません: ${update.error}`);

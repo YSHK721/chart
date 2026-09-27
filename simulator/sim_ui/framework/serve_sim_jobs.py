@@ -191,7 +191,12 @@ def make_handler(app: SimJobApp):
                 return self._write(error)
             if wait_ms is None:
                 return self._write(app.controller.query(segments[1]))
-            return self._write(_query_waiting(app.controller, segments[1], wait_ms))
+            seen, error = _parse_seen_progress(query)
+            if error is not None:
+                return self._write(error)
+            return self._write(
+                _query_waiting(app.controller, segments[1], wait_ms, seen_progress=seen)
+            )
 
         def _get_result(self, path: str):
             segments = _segments(path)
@@ -266,11 +271,40 @@ def _parse_wait_ms(query: str) -> "tuple[int | None, ApiResponse | None]":
     return min(wait_ms, _WAIT_MS_MAX), None
 
 
+#: ``seen_progress`` の「まだ進み具合を見ていない」の綴り（応答の ``progress: null`` に当たる）。
+_SEEN_NONE = "none"
+#: 保留照会の比較で「照会側が指定しなかった」を表す番兵（``None``＝null を見た、と区別する）。
+_NOT_GIVEN = object()
+
+
+def _parse_seen_progress(query: str) -> "tuple[Any, ApiResponse | None]":
+    """保留照会の ``seen_progress``（照会側が最後に見た進み具合）を読む（2026-09-27）。
+
+    不在は従来どおり（終端まで保留）。``none`` は「null を見た」、0〜100 の整数はその％。
+    それ以外は 400（打った値と違う比較で待つのは無音の誤配）。
+    """
+    values = parse_qs(query or "").get("seen_progress")
+    if not values:
+        return _NOT_GIVEN, None
+    raw = values[-1]
+    if raw == _SEEN_NONE:
+        return None, None
+    try:
+        seen = int(raw)
+    except ValueError:
+        seen = -1
+    if not 0 <= seen <= 100:
+        return None, ApiResponse(
+            400, {"error": "seen_progress は none か 0〜100 の整数です"})
+    return seen, None
+
+
 def _query_waiting(
     controller: Any,
     job_id: str,
     wait_ms: int,
     *,
+    seen_progress: Any = _NOT_GIVEN,
     now: "Callable[[], float]" = time.monotonic,
     sleep: "Callable[[float], None]" = time.sleep,
 ) -> ApiResponse:
@@ -284,6 +318,10 @@ def _query_waiting(
     ``_WAIT_POLL_SEC`` 間隔で照会し直し、締め切りで現在の状態を返す（クライアントは
     応答を受けて再び保留照会する＝周期タイマーを持たない）。
     ``now`` / ``sleep`` は検査の注入点（実時間を待たずに締め切りを測る）。
+
+    ``seen_progress`` を渡したときは、進み具合がそれと違えば終端を待たずに応答する
+    （結果待ちの画面のバーと％を動かすため・2026-09-27）。同じ値の間は保留する＝
+    応答の回数は％の変化の回数（最大 101）で抑えられ、照会の周期では増えない。
     """
     deadline = now() + wait_ms / 1000.0
     while True:
@@ -291,6 +329,8 @@ def _query_waiting(
         if response.status != 200:
             return response
         if response.payload.get("terminal") is True:
+            return response
+        if seen_progress is not _NOT_GIVEN and response.payload.get("progress") != seen_progress:
             return response
         if now() >= deadline:
             return response

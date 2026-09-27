@@ -74,6 +74,8 @@ const ANALYSIS_ROOT = "composition_root_analysis.js";
 const RESULT_CHART = "sim_result_chart_view.js";
 // ISSUE-540: 実行中のジョブを開いたときの完了待ち（掲示・監視・読み直し。DOM は view 経由）。
 const COMPLETION_WAIT = "job_completion_wait.js";
+// 結果待ちの進み具合（バーと％・DOM だけ・依存 0）。M6 と完了待ちが同じ部品を使う（2026-09-27）。
+const PROGRESS_VIEW = "sim_progress_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -94,7 +96,7 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
     TRACE_PANEL, TRACE_VIEW, TRACE_CLIENT, ANALYSIS_ROOT,
-    RESULT_CHART, COMPLETION_WAIT,
+    RESULT_CHART, COMPLETION_WAIT, PROGRESS_VIEW,
   ].sort());
 });
 
@@ -156,8 +158,22 @@ test("the run layout view imports nothing (版面は依存 0)", () => {
 // 掲示面が別の面や通信を掴むと、「状態をどう出すか」を確かめるのに器と通信のダブルが要る。
 // M6 は DOM だけ・依存 0 で保つ（M7 job_status_client も同様に DOM を知らない）。
 
-test("the run status view imports nothing (掲示面は依存 0)", () => {
-  assert.deepEqual(importSpecifiers(read(RUN_STATUS)), []);
+// M6 が掴んでよいのは「DOM だけ・依存 0 の部品」だけ（通信・時計・別の面を掴まない）。
+//   名乗る集合（理由つき）: 進み具合の部品（2026-09-27・完了待ちと共有する単一ソース）。
+const RUN_STATUS_ALLOWED_IMPORTS = new Set([`./${PROGRESS_VIEW}`]);
+
+test("the run status view imports only dependency-free DOM parts (掲示面は通信を掴まない)", () => {
+  for (const spec of importSpecifiers(read(RUN_STATUS))) {
+    assert.ok(RUN_STATUS_ALLOWED_IMPORTS.has(spec), `${RUN_STATUS} が ${spec} を import しています`);
+  }
+});
+
+test("the progress view imports nothing and touches no HTTP or timer (部品は依存 0)", () => {
+  const src = read(PROGRESS_VIEW);
+  assert.deepEqual(importSpecifiers(src), []);
+  for (const forbidden of [/\bfetch\b/, /setTimeout/, /setInterval/]) {
+    assert.ok(!forbidden.test(src), `${PROGRESS_VIEW} が ${forbidden} に触れています`);
+  }
 });
 
 test("the job status client imports nothing (通信面は依存 0)", () => {

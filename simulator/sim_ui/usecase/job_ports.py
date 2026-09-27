@@ -58,6 +58,14 @@ class JobLedgerPort(abc.ABC):
         """
         raise NotImplementedError
 
+    def read_progress(self, job_id: str) -> "int | None":
+        """実行中の子プロセスが残した進み具合（0〜100 の整数％）を読む。無ければ ``None``。
+
+        `read_failure_report` と同じ分担（子は状態を書かず、観測値だけを残す）。
+        既定は ``None``（進み具合を記録しない台帳）——値を持たない台帳に 0% を名乗らせない。
+        """
+        return None
+
     @abc.abstractmethod
     def result_path(self, job_id: str, filename: str) -> Any:
         """完了ジョブの結果ファイルの所在を返す（存在保証はしない）。"""

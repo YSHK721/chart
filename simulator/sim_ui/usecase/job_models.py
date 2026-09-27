@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from simulator.sim_ui.domain.simulation_job import SimulationJob
+from simulator.sim_ui.domain.simulation_job import JobStatus, SimulationJob
 from simulator.usecase.tester_settings import TICK_MODEL_ENGINE_IDS, TickModel
 
 #: 実効粒度が tick になるエンジン tick_model id。語彙は列挙が単一ソースであり、
@@ -191,9 +191,12 @@ class JobView:
     #: :attr:`JobStatus.is_terminal` ただ 1 つであり、終端集合を写した第 2 実装を
     #: 作らない（front は本フラグを読むだけで監視を止める）。
     terminal: bool = False
+    #: 実行中の進み具合（0〜100 の整数％・2026-09-27）。実行中以外と、まだ記録が無いときは
+    #: ``None``（front は「準備中」と出す。0% を捏造しない）。
+    progress: "int | None" = None
 
     @classmethod
-    def of(cls, job: SimulationJob) -> "JobView":
+    def of(cls, job: SimulationJob, *, progress: "int | None" = None) -> "JobView":
         """domain の :class:`SimulationJob` を照会結果へ写す。
 
         全 Interactor（投入・照会・取消）がこの 1 箇所を通る。写し方を各 Interactor に
@@ -205,6 +208,7 @@ class JobView:
             status=job.status.value,
             failure_reason=job.failure_reason,
             terminal=job.status.is_terminal,
+            progress=progress if job.status is JobStatus.RUNNING else None,
         )
 
 

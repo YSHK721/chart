@@ -698,8 +698,15 @@ def main(argv: "list[str] | None" = None) -> int:
     from simulator.adapter.trace.account_curve import AccountCurveRecorder
     from simulator.usecase.run_trace_ports import FanOutRunTrace
 
+    # 進み具合（％）の記録器。結果待ちの画面がバーと％を出す（2026-09-27 依頼者指示）。
+    #   書くのは％が変わったときだけ（最大 101 回・run_progress_recorder）。
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+    from simulator.sim_ui.adapter.run_progress_recorder import RunProgressRecorder
+
     account = AccountCurveRecorder()
-    extensions["run_tracer"] = FanOutRunTrace(tracer, account) if tracer is not None else account
+    progress = RunProgressRecorder(lambda percent: write_progress(job_dir, percent))
+    observers = (tracer, account, progress) if tracer is not None else (account, progress)
+    extensions["run_tracer"] = FanOutRunTrace(*observers)
 
     # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
     # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への

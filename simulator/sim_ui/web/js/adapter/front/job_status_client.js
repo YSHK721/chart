@@ -14,10 +14,15 @@
 // 依存 0（import しない）: 通信と時計だけの面を、器も本文も無しで素のまま確かめられる状態に
 //   保つ（`import_source.test.js` が機械強制する）。
 
-/** ジョブ状態の照会先（sim core のジョブ面）。``waitMs`` を渡すと保留照会（long-poll）。 */
-export function jobStatusUrl(jobId, waitMs = null) {
+/** ジョブ状態の照会先（sim core のジョブ面）。``waitMs`` を渡すと保留照会（long-poll）。
+ *  ``seenProgress``（最後に見た進み具合・null＝まだ見ていない）を渡すと、サーバは進み具合が
+ *  それと違えば終端を待たずに応答する（結果待ちのバーと％を動かす・2026-09-27）。 */
+export function jobStatusUrl(jobId, waitMs = null, seenProgress = undefined) {
   const base = `/sim/jobs/${encodeURIComponent(jobId)}`;
-  return waitMs == null ? base : `${base}?wait_ms=${encodeURIComponent(waitMs)}`;
+  if (waitMs == null) return base;
+  const wait = `${base}?wait_ms=${encodeURIComponent(waitMs)}`;
+  if (seenProgress === undefined) return wait;
+  return `${wait}&seen_progress=${seenProgress === null ? "none" : encodeURIComponent(seenProgress)}`;
 }
 
 /** 保留照会の保留上限（ms）。サーバ側の上限（serve_sim_jobs の _WAIT_MS_MAX）と同値。
@@ -74,8 +79,8 @@ export function createJobStatusClient({
    * ジョブ状態（{job_id, status, failure_reason, terminal}）を返す。
    * 応答は**組み替えずそのまま**返す（front で語彙を作らない）。非 2xx は JobStatusError。
    */
-  async function fetchStatus(jobId, waitMs = null, signal = null) {
-    const res = await doFetch(jobStatusUrl(jobId, waitMs), { cache: "no-store", signal });
+  async function fetchStatus(jobId, waitMs = null, signal = null, seenProgress = undefined) {
+    const res = await doFetch(jobStatusUrl(jobId, waitMs, seenProgress), { cache: "no-store", signal });
     let payload = null;
     try {
       payload = res && res.json ? await res.json() : null;
@@ -111,6 +116,8 @@ export function createJobStatusClient({
     let stopped = false;
     let failures = 0;
     let timerId = null;
+    // 最後に見た進み具合（null＝まだ見ていない）。サーバは違う値になった時点で応答する。
+    let seenProgress = null;
     // 保留照会は最長 WAIT_MS 接続を握る。stop() で切らないと、再投入を繰り返したときに
     // 停止済みの監視の接続が溜まる（ブラウザの同時接続上限を食う）。無い環境（テストの
     // 素の fake fetch / 旧実行系）では従来どおり＝応答が返った時点で stopped ガードが捨てる。
@@ -125,7 +132,7 @@ export function createJobStatusClient({
       if (stopped) return;
       let payload = null;
       try {
-        payload = await fetchStatus(jobId, WAIT_MS, aborter && aborter.signal);
+        payload = await fetchStatus(jobId, WAIT_MS, aborter && aborter.signal, seenProgress);
         failures = 0;
       } catch (e) {
         if (stopped) return;   // 停止後に切れた保留照会を失敗として数えない
@@ -139,6 +146,7 @@ export function createJobStatusClient({
         return;
       }
       if (stopped) return;   // 応答を待っている間に停止されていたら掲示もしない
+      seenProgress = payload && Number.isInteger(payload.progress) ? payload.progress : null;
       notifySubscriber(onUpdate, payload);
       if (payload && payload.terminal === true) {
         stopped = true;

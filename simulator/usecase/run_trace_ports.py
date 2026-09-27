@@ -60,6 +60,18 @@ class RunTracePort(abc.ABC):
         """
         raise NotImplementedError
 
+    def observe_start(self, bar_count: int) -> None:
+        """評価点ループに入る直前に 1 回だけ呼ばれる（`bar_count` は run の足の総数）。
+
+        なぜ在るか: 実行中の進み具合（処理した足 ÷ 足の総数）を画面へ出す実装は、分母を
+            ループの前に知る必要がある（2026-09-27 依頼者指示「結果待ちの終わりが分からない」）。
+            足の列は `build_interactor` の中で読まれるので、観測器を組む時点では本数が分からない。
+
+        既定は何もしない（評価点・足単位の記録器には要らない）。事後条件は `observe` と同じ
+            （エンジンの状態を変えない・戻り値なし）。
+        """
+        return None
+
     def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
         """期末清算（end_of_test）の直後に 1 回だけ呼ばれる（清算が無い run では呼ばれない）。
 
@@ -97,6 +109,10 @@ class FanOutRunTrace(RunTracePort):
     ) -> None:
         for tracer in self._tracers:
             tracer.observe(point, account, open_trades, halted)
+
+    def observe_start(self, bar_count: int) -> None:
+        for tracer in self._tracers:
+            tracer.observe_start(bar_count)
 
     def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
         for tracer in self._tracers:

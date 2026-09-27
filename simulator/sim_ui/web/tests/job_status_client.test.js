@@ -160,7 +160,7 @@ test("watch issues held queries back to back without a timer (保留照会の直
   // Assert
   assert.deepEqual(seen.map((u) => u.status), ["running", "running", "completed"]);
   assert.deepEqual(timer.delays, [], "成功応答の間にタイマーを使っています（周期ポーリングの再発）");
-  assert.match(fetchFn.calls[0].url, /\?wait_ms=25000$/, "保留を要求していません");
+  assert.match(fetchFn.calls[0].url, /\?wait_ms=25000&seen_progress=none$/, "保留を要求していません");
   // 計算量: 発行した照会 − 受けた応答 = 0（周期に比例しない）。
   assert.equal(fetchFn.calls.length - seen.length, 0);
 });
@@ -331,4 +331,30 @@ test("a single failure between successes does not stop the watch (境界値: 連
   assert.deepEqual(seen.map((u) => u.status), ["running", "running"]);
   assert.deepEqual(timer.delays, [POLL_INTERVAL_MS], "再試行以外でタイマーを使っています");
   assert.equal(fetchFn.calls.length, 4, "保留照会の直列が続いていません（4 回目が保留中のはず）");
+});
+
+
+test("watch sends the last seen progress so the server answers on each change (2026-09-27)", async () => {
+  // Arrange: 準備中（null）→ 10% → 55% → 完了。
+  const at = (p) => () => ({ ok: true, status: 200, json: async () => ({ job_id: "j1", status: "running", terminal: false, progress: p }) });
+  const fetchFn = scriptedFetch([at(null), at(10), at(55), completed()]);
+  const timer = fakeTimer();
+  const seen = [];
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  // Act
+  client.watch("j1", (u) => seen.push(u));
+  await settle(16);
+  // Assert: 各照会は直前の応答の進み具合を添える（最初は none）。
+  const sent = fetchFn.calls.map((c) => new URL(c.url, "http://x").searchParams.get("seen_progress"));
+  assert.deepEqual(sent, ["none", "none", "10", "55"]);
+  assert.deepEqual(seen.map((u) => u.progress ?? null), [null, 10, 55, null]);
+  // 計算量: 発行した照会 − 受けた応答 = 0。
+  assert.equal(fetchFn.calls.length - seen.length, 0);
+});
+
+test("jobStatusUrl keeps the plain and held forms unchanged when no progress is given", () => {
+  assert.equal(jobStatusUrl("a b"), "/sim/jobs/a%20b");
+  assert.equal(jobStatusUrl("j", 100), "/sim/jobs/j?wait_ms=100");
+  assert.equal(jobStatusUrl("j", 100, null), "/sim/jobs/j?wait_ms=100&seen_progress=none");
+  assert.equal(jobStatusUrl("j", 100, 42), "/sim/jobs/j?wait_ms=100&seen_progress=42");
 });

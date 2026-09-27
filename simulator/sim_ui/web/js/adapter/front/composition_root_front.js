@@ -43,6 +43,7 @@ import { createSimDisplayView } from "./sim_display_view.js";
 import { createSimFrameView, waitForContent, whenChildReady } from "./sim_frame_view.js";
 import { createJobStatusClient } from "./job_status_client.js";
 import { showRunningAndWaitForCompletion } from "./job_completion_wait.js";
+import { createSimProgressView } from "./sim_progress_view.js";
 import { createSimResultChartView } from "./sim_result_chart_view.js";
 import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
@@ -384,8 +385,12 @@ export async function mountSimReportView({
     if (e && e.code === "not_ready") {
       // 実行中のジョブを開いた（投入直後に「結果を見る」を押すとここへ来る・ISSUE-540 実測 409）。
       //   完了待ちの中身（掲示・監視・読み直し）は job_completion_wait が持ち、ここは結線だけ。
+      // 進み具合（バーと％）は掲示の直後に置く（部品は sim_progress_view・2026-09-27）。
+      const progress = createSimProgressView({ doc });
+      if (view.elements.root) progress.mount(view.elements.root);
       stopJobWatch = showRunningAndWaitForCompletion({
         view,
+        progress,
         statusClient: statusClient || createJobStatusClient({ fetch: fetchFn }),
         jobId: targetJobId,
         reload: () => {

@@ -15,6 +15,8 @@
 //
 // fake DOM 前提: querySelector は使わず、要素参照を JS 側で保持する。
 
+import { createSimProgressView } from "./sim_progress_view.js";
+
 /** 掲示の段階（front が所有する UI 文言）。状態語彙ではないので、サーバの列挙が
  *  増えてもここは変わらない（`status` は生値で別枠に出す）。 */
 const PHASE_SUBMITTING = "投入中…";
@@ -45,6 +47,8 @@ const STATUS_SLOTS = Object.freeze([
 
 export function createSimRunStatusView({ doc } = {}) {
   let root = null;
+  // 実行中の進み具合（バーと％・2026-09-27）。部品は sim_progress_view が持つ（写さない）。
+  const progress = createSimProgressView({ doc });
   /** key → 掲示枠の要素（mount 前は空＝掲示は何もしない）。 */
   const slots = new Map();
   // 掲示中の job（状態更新のたびに「どの run の話か」が消えないよう覚えておく）。
@@ -86,6 +90,8 @@ export function createSimRunStatusView({ doc } = {}) {
         slots.set(slot.key, node);
         elements[`${slot.key}Node`] = node;
       }
+      progress.mount(root);
+      elements.progressNode = progress.elements.root;
       // 先客が居なければ `firstChild` は null＝insertBefore は末尾追加と同じ意味になる
       // （実 DOM の仕様。空の host でも分岐を増やさない）。
       if (atTop) host.insertBefore(root, host.firstChild);
@@ -96,6 +102,7 @@ export function createSimRunStatusView({ doc } = {}) {
 
     /** 投入の往路（応答待ち）。 */
     showSubmitting() {
+      progress.hide();
       post({ phase: PHASE_SUBMITTING });
     },
 
@@ -107,6 +114,7 @@ export function createSimRunStatusView({ doc } = {}) {
 
     /** 投入が拒まれた（サーバの理由文と HTTP 状態をそのまま出す・ISSUE-423）。 */
     showRejected({ message, status } = {}) {
+      progress.hide();
       post({ phase: PHASE_REJECTED, state: status, reason: message });
     },
 
@@ -117,7 +125,10 @@ export function createSimRunStatusView({ doc } = {}) {
      * 終端集合を持つことになる（§19.6 R1: 終端判定の権威はサーバ）。`terminal` を配らない
      * 応答は「まだ終わっていない」側へ倒す（勝手に終わったことにしない）。
      */
-    showJobState({ status, failure_reason: failureReason, terminal } = {}) {
+    showJobState({ status, failure_reason: failureReason, terminal, progress: percent } = {}) {
+      // 進み具合は終わっていない間だけ出す（終端の後にバーが残ると、まだ動いているように読める）。
+      if (terminal === true) progress.hide();
+      else progress.show(Number.isInteger(percent) ? percent : null);
       post({
         phase: terminal === true ? PHASE_TERMINAL : PHASE_RUNNING,
         job: currentJobId,
@@ -135,6 +146,7 @@ export function createSimRunStatusView({ doc } = {}) {
      * 直近に見えていた状態は消さずに残す（どこまで見えていたかが判断材料になる）。
      */
     showWatchAbandoned({ status, failure_reason: failureReason } = {}) {
+      progress.hide();
       post({
         phase: PHASE_ABANDONED, job: currentJobId, state: status, reason: failureReason,
       });
@@ -142,6 +154,7 @@ export function createSimRunStatusView({ doc } = {}) {
 
     /** 器そのものを組めなかった（mount 段の失敗・B4）。押せる物が無い画面を無音にしない。 */
     showFatal(message) {
+      progress.hide();
       post({ phase: PHASE_FATAL, job: currentJobId, reason: message });
     },
   };

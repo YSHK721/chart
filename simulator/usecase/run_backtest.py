@@ -381,6 +381,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # 前足の終値（ティックを合成する実装が要求する。バー粒度では使われない）。
         prev_close: "float | None" = None
 
+        # 足の総数を観測器へ知らせる（進み具合の分母・1 run 1 回）。
+        if state.tracer is not None:
+            state.tracer.observe_start(len(bars))
+
         for bar_index, bar in enumerate(bars):
             # C 指標値の取得（前計算系列から現足インデックスを引く）
             self._indicators.update(bar_index)
