@@ -55,7 +55,12 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from simulator.adapter.repository import ohlc_csv, ohlc_marketdata_csv, ohlc_mt5_csv
+from simulator.adapter.repository import (
+    ohlc_csv,
+    ohlc_frame_cache,
+    ohlc_marketdata_csv,
+    ohlc_mt5_csv,
+)
 from simulator.adapter.repository.ohlc_csv import CsvOHLCRepository
 from simulator.adapter.repository.ohlc_marketdata_csv import (
     MarketdataCsvOHLCRepository,
@@ -140,9 +145,15 @@ _UNKNOWN_FORM_REPOSITORY = CsvOHLCRepository
 
 
 def _read_or_data_error(data_path: Any, **read_options: Any) -> pd.DataFrame:
-    """pandas で読み、外側例外を内側 `DataError` へ翻訳する（漏出禁止・CLEAN_ARCH §6）。"""
+    """読みの単一点（`ohlc_frame_cache`）から読み、外側例外を内側 `DataError` へ翻訳する。
+
+    parse は 1 プロセス 1 実体 1 回（ISSUE-541 段 2）。返る DataFrame は共有実体であり
+    **読むだけ**にする（本モジュールの消費は rename・astype・reset_index＝すべて新しい
+    オブジェクトを返す操作で、書き換えは無い）。例外の翻訳（漏出禁止・CLEAN_ARCH §6）は
+    従来どおり本読み口が持つ。
+    """
     try:
-        return pd.read_csv(data_path, **read_options)
+        return ohlc_frame_cache.read_frame(data_path, **read_options)
     except Exception as exc:
         raise DataError(
             f"指標計算用 CSV の読み込みに失敗しました: {data_path}",

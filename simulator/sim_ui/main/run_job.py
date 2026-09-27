@@ -283,19 +283,24 @@ def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
     return request.bars, request.symbol_spec
 
 
-def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
+def _build_run_indicators(backtest: "dict[str, Any]") -> Any:
+    """run と同じ窓・時刻合わせの指標系列を組む（`_write_report_payload` が 1 回だけ呼ぶ）。"""
+    from simulator.main import build_run_indicators
+
+    return build_run_indicators(**backtest)
+
+
+def _supply_contacts(bars: "list", backtest: "dict[str, Any]", indicators: Any) -> "list[dict]":
     """接点（agg.contacts）を「その run が使った EA の指標系列」から組む（FR-18・R-3）。
 
-    EA→指標の対応は `simulator.main.build_run_indicators`（run と同じ窓・時刻合わせ。simulator/main/ea_bindings の
-    宣言駆動な束縛表を単一ソースにする公開アクセサ）から得る。算出式は adapter
+    ``indicators`` は呼び出し側（`_write_report_payload`）が **1 回だけ**組んだ実体を
+    値で受ける（ISSUE-541 段 1: ここで `build_run_indicators` を呼び直すと、売買履歴
+    チャートの書き手と 2 回目の組み立て＝同じ CSV の読み直しになる）。算出式は adapter
     （contacts_supply）が report_ui の単一ソースを import して持つ。ここは供給の束縛
     （Composition Root）だけを担う。
 
     ``bars`` は writer が読み込み済みの int 時刻ビュー（二重ロードしない）。
     """
-    from simulator.main import build_run_indicators
-
-    indicators = build_run_indicators(**backtest)
     return contacts_supply.build_contacts(
         bars=bars, backtest=backtest, indicators=indicators,
     )
@@ -448,7 +453,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
 
 
 def _write_report_payload(
-    job_dir: Path, result: Any, *, load_run_inputs, contacts_supply,
+    job_dir: Path, result: Any, *, load_run_inputs, load_indicators,
     run_kwargs: "dict[str, Any]", account: Any,
 ) -> None:
     """表示用ペイロード（report.json と売買履歴チャートへ描く成果物）を書く。**run の成否は変えない**。
@@ -457,9 +462,10 @@ def _write_report_payload(
     失敗で成功した計算を捨てないためである。ただし理由は残す——起動器が stderr を
     DEVNULL に固定するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
 
-    表示用の足（`load_run_inputs`）は **1 回だけ**取り直して両方の書出しで共有する。
-    取り直しは `build_interactor` の再構築であり、書出しごとに呼ぶと同じ Bar 列を
-    もう 1 度作って捨てることになる。
+    材料（`load_run_inputs`＝表示用の足・`load_indicators`＝指標）は **1 回だけ**組んで
+    すべての書出しで共有する（ISSUE-541 段 1）。書出しごとに組むと、同じ CSV を
+    もう 1 度 parse して同じ Bar 列・同じ指標を作って捨てることになる（実測: 1 run で
+    12 回 parse・18.8 秒）。
     """
     loaded: "dict[str, Any]" = {}
 
@@ -468,11 +474,18 @@ def _write_report_payload(
             loaded["inputs"] = load_run_inputs(backtest)
         return loaded["inputs"]
 
+    def indicators_once() -> Any:
+        if "indicators" not in loaded:
+            loaded["indicators"] = load_indicators()
+        return loaded["indicators"]
+
     try:
         report_payload_writer.write(
             job_dir, result,
             load_run_inputs=load_once,
-            contacts_supply=contacts_supply,
+            contacts_supply=lambda bars, backtest: _supply_contacts(
+                bars, backtest, indicators_once()
+            ),
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"report.json の書出しに失敗しました: {exc}"
@@ -480,7 +493,10 @@ def _write_report_payload(
         _record_report_payload_error(job_dir, message)
     try:
         bars, symbol_spec = load_once(run_kwargs)
-        _write_chart_overlay(job_dir, result, bars, symbol_spec, run_kwargs, account)
+        _write_chart_overlay(
+            job_dir, result, bars, symbol_spec, run_kwargs, account,
+            indicators=indicators_once(),
+        )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"chart_overlay.json の書出しに失敗しました: {exc}"
         print(message, file=sys.stderr)
@@ -489,15 +505,15 @@ def _write_report_payload(
 
 def _write_chart_overlay(
     job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
-    run_kwargs: "dict[str, Any]", account: Any,
+    run_kwargs: "dict[str, Any]", account: Any, *, indicators: Any,
 ) -> None:
     """売買マーク・トリガー指標・足ごとの口座を書く（束縛は Composition Root が持つ）。
 
-    指標は `build_run_indicators` から得る——run と同じ対応づけ（ISSUE-509）を経た系列で
-    あり、系列の位置 i が ``bars[i]`` の時刻になる。描く系列は EA の宣言（`PlotDecl`）が
-    決める（ここで系列名を選ばない）。
+    ``indicators`` は呼び出し側が 1 回だけ組んだ実体（run と同じ対応づけ・ISSUE-509 を
+    経た系列で、系列の位置 i が ``bars[i]`` の時刻になる）。描く系列は EA の宣言
+    （`PlotDecl`）が決める（ここで系列名を選ばない）。
     """
-    from simulator.main import build_run_indicators, known_plots
+    from simulator.main import known_plots
 
     chart_overlay_writer.write(
         job_dir,
@@ -506,7 +522,7 @@ def _write_chart_overlay(
         symbol=run_kwargs["symbol"],
         digits=int(run_kwargs["digits"]),
         ea_name=run_kwargs["ea_name"],
-        indicators=build_run_indicators(**run_kwargs),
+        indicators=indicators,
         plots=known_plots(run_kwargs["ea_name"], config_overrides=run_kwargs.get("config_overrides")),
         account=account,
         initial_deposit=float(run_kwargs["initial_deposit"]),
@@ -565,7 +581,7 @@ def _run_with_settings(
         return _EXIT_SPEC_ERROR, None
 
     try:
-        exit_code, result, _metadata = run_settings_job(
+        exit_code, result, _metadata, request = run_settings_job(
             effective, binding, output_dir=job_dir, extensions=extensions
         )
     except BacktestError as error:
@@ -585,10 +601,13 @@ def _run_with_settings(
         # ブロックから取り直すと、`.ini` の期間窓が効いていない全期間の足が「今の結果の足」
         # として表示される（窓を絞った run ほど食い違いが大きくなる）。
         run_kwargs = effective_to_interactor_kwargs(effective, binding)
+        # 表示用の足・銘柄仕様は **run が実行した request の値**をそのまま配る（ISSUE-541 段 1）。
+        #   `_load_run_inputs`（build_interactor の再構築）で取り直すと、同じ CSV をもう 1 式
+        #   読み直して同じ Bar 列を作って捨てる（実測: 1 build ≈ 3 parse・4.7 秒）。
         _write_report_payload(
             job_dir, result,
-            load_run_inputs=lambda _backtest: _load_run_inputs(run_kwargs),
-            contacts_supply=lambda bars, _backtest: _supply_contacts(bars, run_kwargs),
+            load_run_inputs=lambda _backtest: (request.bars, request.symbol_spec),
+            load_indicators=lambda: _build_run_indicators(run_kwargs),
             run_kwargs=run_kwargs, account=account,
         )
     return exit_code, run_kwargs
@@ -711,7 +730,7 @@ def main(argv: "list[str] | None" = None) -> int:
             _write_report_payload(
                 job_dir, _result,
                 load_run_inputs=_load_run_inputs,
-                contacts_supply=_supply_contacts,
+                load_indicators=lambda: _build_run_indicators(meta),
                 run_kwargs=meta, account=account,
             )
 

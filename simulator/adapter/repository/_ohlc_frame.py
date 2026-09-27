@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.domain.bar import Bar
 from simulator.domain.exceptions import DataError, MissingBarError, TimeOrderError
 
@@ -33,9 +34,13 @@ class ColumnSpec:
 
 
 def read_csv_or_data_error(source_ref: Any, *, sep: str | None = None) -> pd.DataFrame:
-    """pandas で CSV を読み、外側例外を内側 DataError へ翻訳する（漏出禁止）。"""
+    """読みの単一点（`ohlc_frame_cache`）から読み、外側例外を内側 DataError へ翻訳する。
+
+    parse は 1 プロセス 1 実体 1 回（ISSUE-541 段 2）。返る DataFrame は共有実体であり
+    **読むだけ**にする（`frame_to_bars` は読むだけ・各リーダの後段も同様）。
+    """
     try:
-        return pd.read_csv(source_ref) if sep is None else pd.read_csv(source_ref, sep=sep)
+        return ohlc_frame_cache.read_frame(source_ref, sep=sep)
     except Exception as exc:  # pandas / OSError 等を内側へ翻訳
         raise DataError(
             f"CSV の読み込みに失敗しました: {source_ref}",

@@ -66,7 +66,7 @@ def test_衝突しない拡張は従来どおり素通しする(csv_path, tmp_pa
     out = tmp_path / "out"
     out.mkdir()
     # Act: `strategy_decorator=None` は「拡張なし」と同じ意味の素通し値
-    exit_code, _result, _meta = run_settings_job(
+    exit_code, _result, _meta, _request = run_settings_job(
         _effective(),
         engine_binding(data_path=str(csv_path)),
         output_dir=out,

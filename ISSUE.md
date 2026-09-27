@@ -16204,7 +16204,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 
 ## ISSUE-541: 1 回の run が同じ系列 CSV を 12 回読む（投入→表示の固定費 24 秒の主因）
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（段 1・段 2 実施 2026-09-27。段 3 は下の記録＝別承認）
 - **重大度**: 中（動作確認の every run に定額 24 秒。分単位の期間指定（0f460ec6）で run 自体を
   10 本へ縮めても所要時間が変わらない＝固定費が支配していることを実測）
 - **起票日**: 2026-09-27（依頼者指示「固定費の削減を調査しろ」）
@@ -16228,3 +16228,21 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
     派生ビューを配る）。通過条件: 「1 run の read_csv 発行 − 1 = 0」（窓 2 種で不変）。見込み ≈7 秒
   - 段 3（全量読みの解消・別承認）: 窓を読み込みへ押し下げられる供給形式（月分割・Parquet 等）。
     データ実体・技術スタックに触れるため別途 y/n。見込み ≈5 秒＋
+- **実施（段 1・横の単一化）**: 唯一の実行段 `execute_interactor_kwargs` が実行した request も返し、
+  `run_settings_job` がそれを 4 要素目で配る。run_job は表示用の足・銘柄仕様を request の値で受け
+  （`build_interactor` の取り直しを廃止）、指標は `_write_report_payload` の `load_indicators` が
+  1 回だけ組んで report.json（接点）と売買履歴チャートが共有する。
+- **実施（段 2・縦の単一化）**: 読みの単一点 `simulator/adapter/repository/ohlc_frame_cache.py` を
+  新設（鍵＝実パス・mtime_ns・サイズ・sep。usecols は射影＝parse しない。返す DataFrame は
+  読むだけの契約）。2 つの読み口（`sources._read_or_data_error`・`_ohlc_frame.read_csv_or_data_error`）
+  が同じ実体を 2 度 parse しない。
+- **検査**: 観測の境界は cache が宣言する `set_reader` / `parse_log`（内部名の monkeypatch なし）。
+  起票時の通過条件は「build_* の発行を Spy で 1 回」だったが、組み立ての回数は CSV を読まなければ
+  無害な CPU 量なので、**測るのは parse の発行**に改めた（発行 − 相異なる実体 = 0・1 ジョブの系列
+  parse ちょうど 1 回・窓 2 点で不変）。`test_ohlc_frame_cache.py`・`test_run_read_complexity.py`。
+- **実測（是正後・同じ 10 分 spec）**: 子プロセス 24.1 秒 → **4.2 秒**。成果物 5 ファイル
+  （report.json / stats.json / chart_overlay.json / trade_markers.json / report.md）は是正前と byte 一致。
+  Python 全件 7122 passed。
+- **記録（段 3・未着手・別承認）**: 残る固定費の主は 1 回の parse（≈1.6 秒）と起動・import。
+  窓を読み込みへ押し下げる供給形式（月分割・Parquet 等）はデータ実体・技術スタックに触れるため
+  着手前に y/n を取る。
