@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   candleRequestOf,
   candlesMatchRunBars,
+  resultChartInstances,
   resultChartPanes,
   toPoints,
 } from '../js/usecase/result_chart_model.js';
@@ -75,4 +76,25 @@ test('計算量: 点の数は足の数に一致し、系列数を増やしても
     const counts = resultChartPanes(o).flatMap((p) => p.series.map((s) => s.points.length));
     assert.deepEqual([...new Set(counts)], [n]);
   }
+});
+
+test('instance: 価格パネルは系列ごと・他のパネルは 1 枚 1 つ（ChartRenderer の payload の形）', () => {
+  const insts = resultChartInstances(overlay([
+    { series: 'sma', placement: 'price', time: T, value: [null, 1, 2] },
+    { series: 'madiff', placement: 'pane', time: T, value: [1, 2, 3] },
+  ]));
+  assert.deepEqual(insts.map((i) => [i.label, i.pane]), [
+    ['sma', false], ['madiff', true], ['残高・有効証拠金', true], ['DD', true], ['損益', true], ['証拠金維持率(%)', true],
+  ]);
+  assert.equal(new Set(insts.map((i) => i.instanceId)).size, insts.length);
+  const acct = insts.find((i) => i.label === '残高・有効証拠金');
+  assert.deepEqual(acct.payloads.map((p) => p.name), ['残高', '有効証拠金']);
+  assert.deepEqual(Object.keys(acct.payloads[0]).sort(), ['color', 'data', 'name', 'style', 'width']);
+});
+
+test('計算量: instance の点はパネルの点をそのまま渡す（作り直さない）', () => {
+  const o = overlay([{ series: 'sma', placement: 'price', time: T, value: [null, 1, 2] }]);
+  const fromPanes = resultChartPanes(o).flatMap((p) => p.series.map((s) => s.points.length));
+  const fromInsts = resultChartInstances(o).flatMap((i) => i.payloads.map((p) => p.data.length));
+  assert.deepEqual(fromInsts, fromPanes);
 });

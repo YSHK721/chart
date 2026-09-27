@@ -16121,9 +16121,17 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 
 ## ISSUE-537: sim 結果チャートの上にライブの凡例・読み取り欄が重なる
 
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-27）
 - **重大度**: 中（結果のペインに別のもの（ライブ指標）の名前と値が載り、読み違える）
 - **起票日**: 2026-09-27
 - **実測（依頼者のスクリーンショット 2026-09-26 と実 UI）**: 結果の器 `#um-result-chart` は z-index 5、
   ライブの `.pane-legends` は 7・`#chart-overlay-tl` は 6（`unified_ui/web/index.html:75`・
   `indigators/indicator_ui/web/css/app.css:104,182`）。結果表示中も左上にライブの日足 OHLC が出る。
+- **対策（根本）**: simチャートをライブチャートと同じ組み立て関数で作る（`chart_app_wiring.js` から
+  `composeChartViewer`・`installPaneGeometry`・`installChartOperations` を切り出し、公開面
+  `live_chart_kit_api.js` から注入）。simチャートの読み取り欄・ペイン別凡例は器の中に出る。
+  simチャートの表示中は版面の器以外を隠す規則（`body.um-result-chart-shown .chart-wrap > :not(#um-result-chart)`）。
+- **実 UI の実測（2026-09-27・同じ座標・同じ操作）**: 読み取り欄の更新・価格軸ダブルクリックでの復帰・
+  縦ドラッグ・右クリックのメニューがライブチャートと同じ結果。ライブチャートの表示は simチャート上に 0 件。
+  最新足ボタンは simチャートで出る。
+- **変わった見た目**: DD は面の塗りではなく線（ChartRenderer に面の塗りの種類が無い）。

@@ -57,9 +57,11 @@ const MODEL = {
     { paneIndex: 1, top: 402, height: 160, rows: [{ instanceId: 'osc#1', values: [{ name: 'OSC', value: 0.5 }] }] },
   ],
 };
+// ライブチャートの行（indicator_controller.legendRows）は目・設定・削除の処理を必ず持つ。
+const OPS = { onEye: () => {}, onGear: () => {}, onClose: () => {} };
 const ROWS = [
-  { instanceId: 'ma#1', label: 'MA', visible: true },
-  { instanceId: 'osc#1', label: 'OSC', visible: true },
+  { instanceId: 'ma#1', label: 'MA', visible: true, ...OPS },
+  { instanceId: 'osc#1', label: 'OSC', visible: true, ...OPS },
 ];
 
 test('HTML に器が無くても、View が版面配下へ自分でホストを生成して描画する', () => {
@@ -137,6 +139,21 @@ test('行の並びは 指標名 → 設定（目/歯車/×）→ 値', () => {
   assert.deepEqual(
     row.children.map((c) => c.className),
     ['pane-legend-name', 'pane-legend-visibility', 'pane-legend-gear', 'pane-legend-remove', 'pane-legend-values'],
+  );
+});
+
+test('設定・削除の処理を持たない行には ⚙ と ✕ を出さない（押しても何も起きないボタンを置かない）', () => {
+  const anchor = fakeElement('div', 'chart-wrap');
+  const view = new PaneLegendView({ document: fakeDoc(anchor) });
+
+  view.setInstances(ROWS.map(({ onGear, onClose, ...rest }) => rest));
+  view.update(MODEL);
+
+  const group = anchor.querySelector('.pane-legends').children[0];
+  const rows = group.children.find((c) => c.className === 'pane-legend-rows');
+  assert.deepEqual(
+    rows.children[0].children.map((c) => c.className),
+    ['pane-legend-name', 'pane-legend-visibility', 'pane-legend-values'],
   );
 });
 

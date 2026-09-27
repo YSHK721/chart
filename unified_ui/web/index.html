@@ -75,6 +75,13 @@
     #um-result-chart { display: none; position: absolute; inset: 0; z-index: 5;
       background: var(--ct-layoutBackground, #131722); }
     body.um-result-chart-shown #um-result-chart { display: block; }
+    /* simチャートを出している間は、版面にあるライブチャート側の表示（チャート・読み取り欄・
+       ペイン別凡例・最新足ボタン・メニュー）をすべて隠す（ISSUE-537・2026-09-27）。重なり順の
+       数値で上下を決めると、ライブチャート側に重ねる表示が増えるたびに同じ食い違いが起きる。
+       版面の子のうち器以外、という規則で書くので、ライブチャート側の表示が増えても直さなくてよい。 */
+    body.um-result-chart-shown .chart-wrap > :not(#um-result-chart) { visibility: hidden; }
+    /* simチャートのチャート本体（sim_result_chart_view.js が器の中に生成する）。 */
+    #um-result-chart .sim-result-chart-canvas { position: absolute; inset: 0; }
     .sim-result-chart-message { padding: 12px 16px; color: var(--ct-uiTextDim, #787b86); }
     #um-bottom-splitter, #um-bottom-pane { display: none; }
     body.um-bottom-pane-mode #um-bottom-splitter { display: block; }

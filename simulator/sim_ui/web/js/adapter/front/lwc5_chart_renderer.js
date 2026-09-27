@@ -388,38 +388,3 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     handles() { return { priceChart, candle, markerHandle }; },
   };
 }
-
-/** 結果チャート（上のチャート領域）の価格パネルの高さの比（他のパネルは 1）。 */
-const RESULT_PRICE_PANE_STRETCH = 4;
-
-/**
- * ジョブ結果を上のチャート領域へ描く lwc 部分（2026-09-26 依頼者指示）。
- *
- * 本ファイルが sim 表示層で唯一 lwc に触れる場所なので、結果チャートの系列の組み立てもここに
- * 置く（View は本関数を呼ぶだけ）。チャートとローソク系列の生成はライブと**同じ部品**
- * （`chartKit.createChartWithMainSeries`）を使い、見た目をライブと揃える。
- *
- * @param {object} lwc       lightweight-charts v5
- * @param {object} chartKit  live core の公開面（createChartWithMainSeries）
- * @param {Element} host     描画先
- * @param {Array}  candles   ローソク足（run と同じ足であることは呼び出し側が照合済み）
- * @param {Array}  panes     `usecase/result_chart_model.js` の resultChartPanes の出力
- * @returns {{chart: object, mainSeries: object}}
- */
-export function buildResultChart({ lwc, chartKit, host, candles, panes }) {
-  const { chart, mainSeries } = chartKit.createChartWithMainSeries({ lwc, container: host });
-  mainSeries.setData(candles);
-  panes.forEach((pane, paneIndex) => {
-    for (const s of pane.series) {
-      const type = s.kind === "area" ? lwc.AreaSeries : lwc.LineSeries;
-      const options = s.kind === "area"
-        ? { lineColor: s.color, topColor: "rgba(0,0,0,0)", bottomColor: s.color, lineWidth: 1 }
-        : { color: s.color, lineWidth: 1 };
-      chart.addSeries(type, { ...options, title: s.name, priceLineVisible: false }, paneIndex)
-        .setData(s.points);
-    }
-  });
-  const chartPanes = chart.panes();
-  if (chartPanes.length > 0) chartPanes[0].setStretchFactor(RESULT_PRICE_PANE_STRETCH);
-  return { chart, mainSeries };
-}

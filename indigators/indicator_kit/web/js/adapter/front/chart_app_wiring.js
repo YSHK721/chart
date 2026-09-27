@@ -115,43 +115,11 @@ export async function composeChartShell({
   //   root が転送する**形は既存の先例そのもの（`themeState`: 本関数が 1 回解決 → 戻り値 → root →
   //   `wireControllerCollaborators`）で、解決点は本関数の中に留まったままなので抵触しない。
   //   実際、解決済みの値を**画面の他の面へ配る**手段はこれしかない（下の `priceDigits` と同型）。
-  const symbolSpec = lookupSymbolSpec(datasetRef);
-  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
-  //   表示桁（priceFormat）は台帳の digits/tick に従わせる（A-3）。解決できなければ渡さない＝
-  //   lwc 既定（precision=2 / minMove=0.01）のまま＝従来の挙動（front が桁を勝手に決めない）。
-  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container, symbolSpec });
+  const {
+    symbolSpec, chart, mainSeries, currentPriceView, readoutView, paneLegendView, renderer,
+  } = composeChartViewer({ lwc, container, doc, datasetRef });
   // ポート実装: ComputeHttpClient（fetch /compute）。candles は /candles から取得する。
   const compute = new ComputeHttpClient({ fetch });
-
-  // 左上オーバーレイ・スタックの 2 欄。器は各 View が版面配下へ自分で生成し所有する
-  //   （ISSUE-277 の残 / ISSUE-278 #16: 配信 3 ページへの手書き複製を撤去）。
-  //   **構築順が DOM の並び**になるため「現在値 → 読み取り欄」の順に作る（従来 HTML と同じ並び）。
-  //   現在値の大型表示そのものは維持する（依頼者判断 2026-08-07）。
-  //   表示桁は既に解決済みの `symbolSpec` から**値として配る**（A-3 の「現在値」・S-6: 解決点は
-  //   本モジュールの既存 2 か所だけで、View 側に新しい引き当てを作らない）。解決できなければ
-  //   `null`＝従来の表示（無音で桁を決めない・価格軸 `priceFormat` と同じ態度）。
-  const priceDigits = symbolSpec ? symbolSpec.digits : null;
-  const currentPriceView = new CurrentPriceView({
-    document: doc, elementId: 'current-price', priceDigits,
-  });
-  const readoutView = new CrosshairReadoutView({
-    document: doc, elementId: 'crosshair-readout', priceDigits,
-  });
-  // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
-  //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
-  // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
-  //   実行は renderer の並べ替えポートへ委ねる（協働子は upstream を知らない）。renderer は直後に
-  //   生成されるため、呼び出し時解決の関数で渡す（生成順序に依存させない）。
-  const paneReorder = new PaneReorderDrag({
-    document: doc, movePane: (from, to) => renderer.movePane(from, to),
-  });
-  const paneLegendView = new PaneLegendView({ document: doc, reorder: paneReorder });
-
-  // ChartRenderer は upstream API の唯一の隔離点（系列追加系 API 名を root へ漏らさない）。
-  const renderer = new ChartRenderer({
-    chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
-    onPaneLegend: (model) => paneLegendView.update(model),
-  });
 
   // 指標カラーテーマ: クロム色を 2 機構（lwc オプション / :root の CSS カスタムプロパティ）へ
   //   配る協働子（基本設計_指標カラーテーマ.md §4.3・A-11）。JS 側の sink は ChartRenderer
@@ -172,17 +140,7 @@ export async function composeChartShell({
   //   既定を配ってからテーマを配ると、2 度目の書き込みでちらつく（二重配信）。
   chromeThemeApplier.apply(resolveAllChrome(themeState.theme));
 
-  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
-  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
-  updatePaneHeight();
-  // ペイン幾何の派生（区切り高→凡例の位置・座標→ペイン判定）は **使う時点の実測**を根拠にする
-  //   （ISSUE-440）。push だけだと、setPaneHeight を呼ばない経路（起動直後・区切りドラッグ・
-  //   版面リサイズ）で古い総高から区切り高が逆算され、ラベルだけが数十 px ずれる。
-  renderer.setPaneAreaHeightProvider(makeMeasurePaneAreaHeight({ container, chart }));
-  // 版面の寸法が変わったら凡例を引き直す（下部ペインの分割線・ウィンドウのリサイズ）。
-  //   幾何が変わっていなければ何も起きない（指紋比較のみ）。lwc の subscribeSizeChange は
-  //   autoSize 由来のリサイズで発火しないことを実測したので、寸法は自分で観測する。
-  installPaneGeometryFollow({ container, renderer });
+  const { updatePaneHeight } = installPaneGeometry({ container, chart, renderer });
 
   const persistence = new LocalStorageGateway(storage);
   // テンプレート永続化（§4.2 の 3 キー）。接頭辞は注入された storage が付ける（gateway は付けない）。
@@ -201,6 +159,132 @@ export async function composeChartShell({
     //   渡すだけで、台帳を引き直さない（解決点は本関数と wireControllerCollaborators の 2 か所のまま）。
     symbolSpec,
   };
+}
+
+/**
+ * チャートの本体（チャート・メイン系列・現在値・読み取り欄・ペイン別凡例・ChartRenderer）を組み立てる。
+ *
+ * ライブチャート（`composeChartShell`）と、ライブチャートの部品で描く別の版面（sim のジョブ結果を描く
+ * simチャート・2026-09-27 依頼者指示「チャートの操作性もライブモードと同期しろ」）が共有する単一ソース。
+ * 版面ごとに書き写すと、ライブチャートの修正が届かない版面が必ず生まれる（本モジュール冒頭の由来）。
+ *
+ * @param {object} lwc        lightweight-charts v5
+ * @param {Element} container チャートを生成する要素
+ * @param {Document} doc
+ * @param {Element|null} anchor 重ねる表示（読み取り欄・ペイン別凡例）の置き場。既定 null＝`.chart-wrap`。
+ * @param {string|null} datasetRef 銘柄仕様（表示桁）を引く系列。台帳の引き当てはこのモジュールだけが行う。
+ */
+export function composeChartViewer({ lwc, container, doc, anchor = null, datasetRef = null } = {}) {
+  const symbolSpec = lookupSymbolSpec(datasetRef);
+  // チャート生成（組み立て点）。生成オプション・メイン系列は共有ヘルパ chart_bootstrap（ISSUE-123）。
+  //   表示桁（priceFormat）は台帳の digits/tick に従わせる（A-3）。解決できなければ渡さない＝
+  //   lwc 既定（precision=2 / minMove=0.01）のまま＝従来の挙動（front が桁を勝手に決めない）。
+  const { chart, mainSeries } = createChartWithMainSeries({ lwc, container, symbolSpec });
+
+  // 左上オーバーレイ・スタックの 2 欄。器は各 View が版面配下へ自分で生成し所有する
+  //   （ISSUE-277 の残 / ISSUE-278 #16: 配信 3 ページへの手書き複製を撤去）。
+  //   **構築順が DOM の並び**になるため「現在値 → 読み取り欄」の順に作る（従来 HTML と同じ並び）。
+  //   現在値の大型表示そのものは維持する（依頼者判断 2026-08-07）。
+  //   表示桁は既に解決済みの `symbolSpec` から**値として配る**（A-3 の「現在値」・S-6: 解決点は
+  //   本モジュールの既存 2 か所だけで、View 側に新しい引き当てを作らない）。解決できなければ
+  //   `null`＝従来の表示（無音で桁を決めない・価格軸 `priceFormat` と同じ態度）。
+  const priceDigits = symbolSpec ? symbolSpec.digits : null;
+  const currentPriceView = new CurrentPriceView({
+    document: doc, elementId: 'current-price', anchor, priceDigits,
+  });
+  const readoutView = new CrosshairReadoutView({
+    document: doc, elementId: 'crosshair-readout', anchor, priceDigits,
+  });
+  // ペイン別凡例（ISSUE-276）。描画先の器は View 自身が版面（.chart-wrap）配下へ生成する
+  //   （HTML への直書き＝配信ページの手書き複製をやめた・ISSUE-277）。root は id 文字列を知らない。
+  // 指標ペインの並べ替え（ドラッグ&ドロップ・ユーザー指示 2026-08-09）。凡例のチップを掴み手にし、
+  //   実行は renderer の並べ替えポートへ委ねる（協働子は upstream を知らない）。renderer は直後に
+  //   生成されるため、呼び出し時解決の関数で渡す（生成順序に依存させない）。
+  const paneReorder = new PaneReorderDrag({
+    document: doc, movePane: (from, to) => renderer.movePane(from, to),
+  });
+  const paneLegendView = new PaneLegendView({ document: doc, anchor, reorder: paneReorder });
+
+  // ChartRenderer は upstream API の唯一の隔離点（系列追加系 API 名を root へ漏らさない）。
+  const renderer = new ChartRenderer({
+    chart, mainSeries, lwc, onCrosshairReadout: (dto) => readoutView.render(dto),
+    onPaneLegend: (model) => paneLegendView.update(model),
+  });
+
+  return {
+    symbolSpec, chart, mainSeries, currentPriceView, readoutView, paneLegendView, renderer,
+  };
+}
+
+/**
+ * ペイン幾何の供給（価格軸ホイールズームの pane 高・区切り高の実測・版面の寸法の追随）を結ぶ。
+ * `composeChartViewer` で組んだチャートならどの版面でも同じ手順。
+ *
+ * @returns {{ updatePaneHeight: function, dispose: function }} pane 高を測り直す関数と、寸法の追随の解除
+ */
+export function installPaneGeometry({ container, chart, renderer }) {
+  // 価格軸ホイールズームの座標→価格変換に使う pane 高（container 高 - timeScale 高）を供給する。
+  const updatePaneHeight = makeUpdatePaneHeight({ container, chart, renderer });
+  updatePaneHeight();
+  // ペイン幾何の派生（区切り高→凡例の位置・座標→ペイン判定）は **使う時点の実測**を根拠にする
+  //   （ISSUE-440）。push だけだと、setPaneHeight を呼ばない経路（起動直後・区切りドラッグ・
+  //   版面リサイズ）で古い総高から区切り高が逆算され、ラベルだけが数十 px ずれる。
+  renderer.setPaneAreaHeightProvider(makeMeasurePaneAreaHeight({ container, chart }));
+  // 版面の寸法が変わったら凡例を引き直す（下部ペインの分割線・ウィンドウのリサイズ）。
+  //   幾何が変わっていなければ何も起きない（指紋比較のみ）。lwc の subscribeSizeChange は
+  //   autoSize 由来のリサイズで発火しないことを実測したので、寸法は自分で観測する。
+  const dispose = installPaneGeometryFollow({ container, renderer });
+  return { updatePaneHeight, dispose };
+}
+
+/**
+ * チャートの操作（価格軸ホイールズーム・価格軸ダブルクリックでの復帰・本体の縦ドラッグ・最新の足へ
+ * 戻るボタン・右クリックのメニュー「情報をコピーする」）を結ぶ。ライブチャートと simチャートが共有する
+ * 単一ソース（2026-09-27 依頼者指示「チャートの操作性もライブモードと同期しろ」）。
+ *
+ * @param {Element} container   操作を受けるチャートの要素
+ * @param {object}  renderer    `composeChartViewer` の ChartRenderer
+ * @param {Element|null} anchor メニューの置き場（既定 null＝`.chart-wrap`）
+ * @param {function} getMenuContext () => { symbol, timeframe?, labels?, priceDigits }（コピーの文脈）
+ * @param {object}  toast       コピーの告知（ChartToastView）
+ * @returns {{ chartInteraction, chartContextMenu, dispose }} dispose は文書に張った購読（メニューの Esc）を外す
+ */
+export function installChartOperations({
+  container, renderer, doc, anchor = null, getController = () => null, updatePaneHeight,
+  isVerticalPanBlocked = undefined, toast, getMenuContext, contextMenuItems = [],
+} = {}) {
+  // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）。振る舞い本体は当該 controller が所有。
+  //   ISSUE-368 スライス 3: 生成した実体を保持する（従来は install() 後に捨てていた）。
+  //   縦パンを止めたい後発の協働子（水準線 drag）は controller 生成より後に結線されるため、
+  //   登録口を戻り値で配る。root が自前で ChartInteractionController を new し直すのは
+  //   `composition_roots_share_wiring.test.js` の SHARED_OWNED が禁じている＝配るのは共有配線の責務。
+  const chartInteraction = new ChartInteractionController({
+    container, renderer, getController, updatePaneHeight, isVerticalPanBlocked,
+  });
+  chartInteraction.install();
+
+  // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
+  new ScrollToLatestButton({ container, renderer, document: doc }).install();
+
+  const copyBarInfo = createCopyBarInfoItem({
+    renderer,
+    clipboard: new ClipboardGateway({ document: doc }),
+    toast,
+    getContext: getMenuContext,
+  });
+  // ISSUE-368 スライス 8-c: root が渡した項目を**後ろに**足す（R-P3 の価格設定 3 項目）。
+  //   共有配線が無条件に足すと replay まで項目が出る（＝replay 汚染）。逆に root で
+  //   `new ChartContextMenu` すると contextmenu リスナーが 2 本になり、メニューが二重に出る。
+  //   よって「メニューは共有・項目は注入」に保つ（ChartContextMenu 自体は 1 byte も変えない）。
+  //   ISSUE-435: 一覧は**開くたびに読み直す**。ここで `[copyBarInfo, ...items]` と新しい配列へ
+  //   写すと install 時点の内容が焼き付き、注入側の増減（設定済みの水準だけ出る解除項目）が
+  //   永久に届かない（`chart_context_menu.js:34,122` は構築時の参照を開くたびに読む・実測）。
+  //   静的な配列を渡す従来の呼び出しは、毎回同じ内容が組み直されるだけで挙動が変わらない。
+  const chartContextMenu = new ChartContextMenu({
+    document: doc, container, anchor, items: liveMenuItems(() => [copyBarInfo, ...(contextMenuItems ?? [])]),
+  });
+  chartContextMenu.install();
+  return { chartInteraction, chartContextMenu, dispose: () => chartContextMenu.dispose() };
 }
 
 // controller に依存しない UI 部品の install（controller は遅延参照で受ける）。
@@ -224,27 +308,6 @@ export function installSharedUi({
   installChartToolbar(doc, toolbar);
   installIndicatorDialog(doc, {});
 
-  // チャート操作（縦価格パン・wheel 価格ズーム・dblclick reset）。振る舞い本体は当該 controller が所有。
-  //   ISSUE-368 スライス 3: 生成した実体を保持する（従来は install() 後に捨てていた）。
-  //   縦パンを止めたい後発の協働子（水準線 drag）は controller 生成より後に結線されるため、
-  //   登録口を戻り値で配る。root が自前で ChartInteractionController を new し直すのは
-  //   `composition_roots_share_wiring.test.js` の SHARED_OWNED が禁じている＝配るのは共有配線の責務。
-  const chartInteraction = new ChartInteractionController({
-    container, renderer, getController, updatePaneHeight, isVerticalPanBlocked,
-  });
-  chartInteraction.install();
-
-  // ISSUE-116: 「最新のバーまでスクロール」ボタン（» ）。DOM 不在は install 内の防御で no-op。
-  new ScrollToLatestButton({ container, renderer, document: doc }).install();
-
-  // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
-  //   足の解決と値の取り出しは renderer（upstream 隔離点）、見出し（ラベル＋パラメータ）と時間足は
-  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の器
-  //   （`chartSymbol(doc)`＝ツールバーが表示しているのと同一の実体。front は名前を自称しない・
-  //   ISSUE-368 A-4）、書き込みは ClipboardGateway、告知は ChartToastView。
-  //   メニューは項目の中身を知らない。controller は本関数の呼び出し時点では未生成のため遅延参照する。
-  //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
-  //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
   const chartToast = new ChartToastView({ document: doc });
   // ISSUE-383（能動通知・ユーザー裁定 2026-08-17）: 時系列契約防壁の発火は console.error のみだと
   //   DevTools を開かない限り気づけず、発生源特定（残調査）の入口が失われる。版面トーストで
@@ -265,36 +328,31 @@ export function installSharedUi({
   //   解決結果**を配る＝コピーした文字列と画面表示が食い違わない（`format.js:17-18` が単一ソース化の
   //   根拠に掲げる不変条件）。解決できない構成では `null`＝従来どおり（無音で桁を決めない）。
   const priceDigits = symbolSpec ? symbolSpec.digits : null;
-  const copyBarInfo = createCopyBarInfoItem({
-    renderer,
-    clipboard: new ClipboardGateway({ document: doc }),
-    toast: chartToast,
-    getContext: () => {
-      const c = getController ? getController() : null;
-      if (!c || typeof c.legendRows !== 'function') {
-        // controller 未生成（最小 fake）＝銘柄と桁だけで縮退。
-        return { symbol: chartSymbol(doc), priceDigits };
-      }
-      return {
-        symbol: chartSymbol(doc),
-        timeframe: c._timeframe,
-        labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
-        priceDigits,
-      };
-    },
+  // ユーザー指示 2026-08-09: ローソク足上の右クリックメニュー（「情報をコピーする」）。
+  //   足の解決と値の取り出しは renderer（upstream 隔離点）、見出し（ラベル＋パラメータ）と時間足は
+  //   controller（表示名・適用状態の単一情報源）、銘柄は app_chrome_view の器
+  //   （`chartSymbol(doc)`＝ツールバーが表示しているのと同一の実体。front は名前を自称しない・
+  //   ISSUE-368 A-4）、書き込みは ClipboardGateway、告知は ChartToastView。
+  //   メニューは項目の中身を知らない。controller は本関数の呼び出し時点では未生成のため遅延参照する。
+  //   ユーザー指摘 2026-08-10: 値だけでは「どのチャート・どのパラメータの値か」が復元できないため、
+  //   コピー時点の文脈をここで集めて渡す（貼り付け先には画面が無い）。
+  const getMenuContext = () => {
+    const c = getController ? getController() : null;
+    if (!c || typeof c.legendRows !== 'function') {
+      // controller 未生成（最小 fake）＝銘柄と桁だけで縮退。
+      return { symbol: chartSymbol(doc), priceDigits };
+    }
+    return {
+      symbol: chartSymbol(doc),
+      timeframe: c._timeframe,
+      labels: new Map(c.legendRows().map((r) => [r.instanceId, indicatorHeading(r)])),
+      priceDigits,
+    };
+  };
+  const { chartInteraction, chartContextMenu } = installChartOperations({
+    container, renderer, doc, getController, updatePaneHeight, isVerticalPanBlocked,
+    toast: chartToast, getMenuContext, contextMenuItems,
   });
-  // ISSUE-368 スライス 8-c: root が渡した項目を**後ろに**足す（R-P3 の価格設定 3 項目）。
-  //   共有配線が無条件に足すと replay まで項目が出る（＝replay 汚染）。逆に root で
-  //   `new ChartContextMenu` すると contextmenu リスナーが 2 本になり、メニューが二重に出る。
-  //   よって「メニューは共有・項目は注入」に保つ（ChartContextMenu 自体は 1 byte も変えない）。
-  //   ISSUE-435: 一覧は**開くたびに読み直す**。ここで `[copyBarInfo, ...items]` と新しい配列へ
-  //   写すと install 時点の内容が焼き付き、注入側の増減（設定済みの水準だけ出る解除項目）が
-  //   永久に届かない（`chart_context_menu.js:34,122` は構築時の参照を開くたびに読む・実測）。
-  //   静的な配列を渡す従来の呼び出しは、毎回同じ内容が組み直されるだけで挙動が変わらない。
-  const chartContextMenu = new ChartContextMenu({
-    document: doc, container, items: liveMenuItems(() => [copyBarInfo, ...(contextMenuItems ?? [])]),
-  });
-  chartContextMenu.install();
 
   // ISSUE-117: 時間足ドロップダウンの開閉制御（選択・active 同期は bind() の data-timeframe 配線）。
   //   項目集合は既定＝台帳導出（ISSUE-278 #4: リプレイ側の手書き 8 足を撤去。実測でリプレイ core も
