@@ -34,8 +34,11 @@
   /* 行の高さと入力欄の幅の単一ソース（ISSUE-443）。控えの種類（select / 入力 /
    * チェックボックス）でも、面（Tester / Inputs / 縮退面）でも割れないよう、
    * 全面がこの 2 つの値を使う＝群をまたいでも欄の位置と大きさが同じ規則で決まる。 */
-  --sim-field-row-h: 24px;
-  --sim-field-input-w: 150px;
+  --sim-field-row-h: 32px;
+  --sim-field-input-w: 160px;
+  /* 期間の時刻欄（時間入力専用のテキストボックス）の幅。欄の寸法はこのブロックだけが持つ
+   * （規則は上と同じ＝リテラルを規則側に書くと寸法の宣言が 2 箇所になる）。 */
+  --sim-field-time-w: 46px;
   display: grid;
   /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
    * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
@@ -268,7 +271,7 @@
  * `.tester-input:disabled` / `[data-inactive="1"]` と同じ機構（opacity）に乗る。 */
 #simTesterPanel .tester-time {
   flex: 0 0 auto;
-  width: 46px;
+  width: var(--sim-field-time-w);
   height: 100%;
   border: 0;
   border-left: 1px solid var(--line);
