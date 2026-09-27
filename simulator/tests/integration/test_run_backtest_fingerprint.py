@@ -115,7 +115,7 @@ def _meta(case, *, trading_start=None) -> dict:
     return meta
 
 
-#: 指紋の採取後に足した `BacktestStats` の列（理由と日付つきで宣言する）。指紋は取り直さず、
+#: 指紋の採取後に足した統計の列（理由と日付つきで宣言する）。指紋は取り直さず、
 #:   これらを外した `stats.json` が採取時と一致することで「既存の列は動いていない」を表明する。
 _STATS_FIELDS_ADDED_AFTER_PIN = frozenset({
     # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本と突き合わせた式）。
