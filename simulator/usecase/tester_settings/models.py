@@ -33,7 +33,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 
 from simulator.usecase.tester_settings.enums import (
@@ -146,12 +146,38 @@ class IniDocument:
 
 @dataclass(frozen=True)
 class DateRange:
-    """期間指定（`Dates` か `FromDate`+`ToDate` のいずれか＝F-2）。"""
+    """期間指定（`Dates` か `FromDate`+`ToDate` のいずれか＝F-2）。
+
+    `from_date` / `to_date` は日付（`YYYY.MM.DD`）または**分単位**の時刻
+    （`YYYY.MM.DD HH:MM` → naive datetime・UTC 解釈。依頼者指示 2026-09-27
+    「分単位まで指定可能にしろ」）。窓への写像は下の 2 関数が唯一の定義。
+    """
 
     kind: DateRangeKind
     preset: DatesPreset | None = None
-    from_date: date | None = None
-    to_date: date | None = None
+    from_date: "date | datetime | None" = None
+    to_date: "date | datetime | None" = None
+
+
+def custom_range_start_utc(value: "date | datetime") -> datetime:
+    """`FromDate` → 窓の開始（UTC aware）。日付は当日 00:00Z、分指定はその分。
+
+    naive datetime は UTC とみなす（`test_bar_time_epoch.py` が固定する既存合意）。
+    検証（規則 K）と窓の解決（`main/tester_settings/window.py`）が共有する唯一の定義——
+    2 か所に書くと「検証は通るのに窓が別解釈」という食い違いが黙って起きる。
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+
+
+def custom_range_end_exclusive_utc(value: "date | datetime") -> datetime:
+    """`ToDate` → 窓の半開終端（UTC aware）。日付は翌日 00:00Z（当日を含む＝V-2）、
+    分指定は +1 分（その分を含む）。"""
+    if isinstance(value, datetime):
+        base = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return base + timedelta(minutes=1)
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc) + timedelta(days=1)
 
 
 @dataclass(frozen=True)
