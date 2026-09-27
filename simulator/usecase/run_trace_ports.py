@@ -60,6 +60,22 @@ class RunTracePort(abc.ABC):
         """
         raise NotImplementedError
 
+    def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
+        """期末清算（end_of_test）の直後に 1 回だけ呼ばれる（清算が無い run では呼ばれない）。
+
+        なぜ在るか: 期末清算は評価点ループの**後**で行われ、`observe` は清算後の口座を
+            見ない。足ごとの口座を記録する実装は、最終足の値が清算前のまま残り、残高が
+            run の結果（balance_curve）と食い違った（2026-09-26 実測: 8775 対 8765）。
+
+        清算は評価点ではない（新しい価格を持たない）。よって `observe` として呼ばない——
+            評価点単位の実装へ同じ点を 2 度渡すことになる。既定は何もしない（評価点単位の
+            実装には記録するものが無い）。清算後の口座を残す実装だけが上書きする。
+
+        引数: `bar_index` / `bar` は清算した足（最終足）、`account` は清算と値洗いを終えた
+            口座。事後条件と引数の寿命は `observe` と同じ（読むだけ・戻り値なし・値を写す）。
+        """
+        return None
+
 
 #: 観測器の記録の単位の語彙。"point"＝評価点 1 つにつき 1 行／"bar"＝足 1 本につき 1 行
 #: （足の最後の評価点の値）。契約（`RunTracePort`）は単位を要求しない——検定が期待行数を
@@ -81,3 +97,7 @@ class FanOutRunTrace(RunTracePort):
     ) -> None:
         for tracer in self._tracers:
             tracer.observe(point, account, open_trades, halted)
+
+    def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
+        for tracer in self._tracers:
+            tracer.observe_final_settlement(bar_index, bar, account)

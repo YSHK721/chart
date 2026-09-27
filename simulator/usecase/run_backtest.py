@@ -494,6 +494,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # その後の BacktestResult.trades に反映される（pending_lifecycle 依存の不具合を防ぐ）。
         if open_trades and bars:
             open_trades = executor.close_all_at_final_bar(open_trades, bars[-1])
+            # 清算後の口座を観測器へ渡す（評価点ではないので observe とは別の口・1 run 1 回）。
+            #   値洗いは観測器が在るときだけ行う（結果は清算後の口座を読まないので、無いときに
+            #   行えば作って捨てる計算になる）。保有 0 なので含み損益は 0 になる——しないと最後の
+            #   評価点の含み損益が残り、equity が清算前の値を名乗る（2026-09-26 実測）。
+            if state.tracer is not None:
+                state.account.update_floating_pnl_at(bid=bars[-1].close, ask=bars[-1].close)
+                state.tracer.observe_final_settlement(len(bars) - 1, bars[-1], state.account)
 
         # OnDeinit 集計
         return self._finish_run(

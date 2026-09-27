@@ -16099,3 +16099,31 @@ MT5 突合ケース（`ma_slope_jp225_202501`）は `current_open` を明示宣�
 **未実施として閉じたもの**: 段階 8-D-5 の**実ブラウザでの目視 2 点**（銘柄行の折り返し・縮退面の配置）。
 機能は JS 検定 587 件と sim_ui の e2e 1230 件で実証済みだが、**実 UI の目視は行っていない**。
 P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構造的にできない。
+
+## ISSUE-536: 上のチャートの口座パネルが期末清算を含まない（最終残高がレポートと食い違う）
+
+- **ステータス**: RESOLVED（2026-09-27・simulator/tests 4686 passed）
+- **重大度**: 中（口座パネルの最終値が誤った値を名乗る）
+- **起票日**: 2026-09-27
+- **実測（ジョブ `91291405477e41549c818dcc4176ef2d`・実 UI と成果物の突合）**: `chart_overlay.json` の最終足は
+  残高 8775・有効証拠金 8770・含み損益 −5。`report.json` は Net −1235・`balance_curve` 末尾 8765。
+  差 −10 は期末清算 trade 168（`exit_reason=end_of_test`・profit −10）。
+- **原因（コードで確認・テストで再現）**: `RunTracePort.observe` は評価点ループ内だけで呼ばれ
+  （`simulator/usecase/run_backtest.py`）、期末清算 `close_all_at_final_bar` はループの後。清算後の口座を
+  観測器が受け取る口が無かった。加えて清算後に含み損益を値洗いする者が無かった。
+- **対策（根本）**: Port に `observe_final_settlement(bar_index, bar, account)` を追加（既定は何もしない＝
+  評価点単位の記録器は不変）。エンジンは清算後、観測器が在るときだけ値洗いして 1 回呼ぶ。
+  `AccountCurveRecorder` は最終足の行を上書きする。
+- **検査**: `simulator/tests/unit/test_account_curve_final_settlement.py`（最終残高＝balance_curve 末尾・
+  含み損益 0・計算量: 通知は清算 1 回につき 1 回で足の数に非比例・行数は観測した足の数から増えない）。
+  値洗いを外す変異で赤になることを確認。値洗いを常時発行した版は既存の計算量検定
+  `TestTheSettlementDoesNotWasteWork` が赤にした（観測器が無い run で捨てる計算）ため、観測器在りに限定。
+
+## ISSUE-537: sim 結果チャートの上にライブの凡例・読み取り欄が重なる
+
+- **ステータス**: OPEN
+- **重大度**: 中（結果のペインに別のもの（ライブ指標）の名前と値が載り、読み違える）
+- **起票日**: 2026-09-27
+- **実測（依頼者のスクリーンショット 2026-09-26 と実 UI）**: 結果の器 `#um-result-chart` は z-index 5、
+  ライブの `.pane-legends` は 7・`#chart-overlay-tl` は 6（`unified_ui/web/index.html:75`・
+  `indigators/indicator_ui/web/css/app.css:104,182`）。結果表示中も左上にライブの日足 OHLC が出る。

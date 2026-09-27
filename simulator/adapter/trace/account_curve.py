@@ -43,15 +43,22 @@ class AccountCurveRecorder(RunTracePort):
         self.margin_level: "list[float | None]" = []
 
     def observe(self, point: Any, account: Any, open_trades: Any, halted: bool) -> None:
+        self._record(point.bar_index, point.bar, account)
+
+    def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
+        """期末清算後の口座で最終足の行を上書きする（清算は最終足の中で起きる＝足の終わりの口座）。"""
+        self._record(bar_index, bar, account)
+
+    def _record(self, bar_index: int, bar: Any, account: Any) -> None:
         row = (
             float(account.balance),
             float(account.equity),
             float(account.margin),
             _finite_or_none(account.margin_level()),
         )
-        if point.bar_index != self._bar_index:
-            self._bar_index = point.bar_index
-            self.times.append(epoch_seconds(point.bar.time))
+        if bar_index != self._bar_index:
+            self._bar_index = bar_index
+            self.times.append(epoch_seconds(bar.time))
             for column in self._columns():
                 column.append(None)
         for column, value in zip(self._columns(), row):
