@@ -21,10 +21,12 @@ Phase 5 で移植した**周辺の表示**（タブ・区間トグル・抽出�
     P6  判定バナー（#cmpVerdict の文言）
     P7  7 指標カード（#cmpBasic）
     P8  劣化比較表（#cmpTable 行）
+    8   サマリー (Report) タブ（#reportGrid の章立て行が移植元と同値。2026-09-27 依頼者指示
+        「シャープレシオ・取引回数・勝率などのレポートを確認したい」で流用に加えた——
+        従来の点 17「report タブ非存在」はこの指示で反転した）
     9   用語集 + tip（gcard/gitem 数・data-gg hover の #tip 発火）
     12/13/14  比較グラフ 3 種（window.__cmpCharts 経由のデータ突合）
     15  区間トグル（#segSel・segbtn 2 個・is/oos）
-    17  サマリーカード非存在（sim は report タブを持たない）
     18  抽出ピル（#clearFilter 可視・#detailCount 件数）
 
 chromium / playwright 不在環境では skip（移植元 verify.py の規約準拠）。
@@ -151,7 +153,7 @@ _ANALYSIS_PANE = """(name) => {
 }"""
 
 #: 移植元から**流用しない**タブ（YAGNI・doc §流用）。宣言はこの 1 箇所だけが持つ。
-_NOT_PORTED = {"graph", "report"}
+_NOT_PORTED = {"graph"}
 
 _HEAT_VIEWS = """() => ({
   views: document.querySelectorAll('#heatHost .heatBlock').length,
@@ -279,11 +281,25 @@ def test_sim_display_parity_peripheral(tmp_path: Path) -> None:
         assert analysis_tab not in set(ref_tabs), f"P19 reference に {analysis_tab}"
         passed.append("P19")
 
-        # 17: サマリーカード（report タブ・#summaryCard）は sim に無い。
-        assert sim.query_selector('[data-tab="report"]') is None, "17 sim に report タブ"
-        assert sim.query_selector("#summaryCard") is None, "17 sim に #summaryCard"
-        assert ref.query_selector('[data-tab="report"]') is not None, "17 reference に report タブが無い"
-        passed.append("17")
+        # 8: サマリー (Report) タブ（2026-09-27 依頼者指示で流用）。同一 payload・同一区間の
+        #    章立て行（項目×値）が移植元と同値であること。行の実体は両画面とも移植元
+        #    report.js の buildReport が描く（写しではなく同一実装の直接証拠）。
+        ref.click('.mv-tab[data-tab="report"]')
+        sim.click('.mv-tab[data-tab="report"]')
+        ref.wait_for_timeout(200)
+        sim.wait_for_timeout(200)
+        _report_rows = """() => [...document.querySelectorAll('#reportGrid .rtbl tr')]
+          .map((tr) => tr.textContent.replace(/\\s+/g, ' ').trim())"""
+        ref_rows = ref.evaluate(_report_rows)
+        sim_rows = sim.evaluate(_report_rows)
+        assert sim_rows, "8 sim のサマリーが空（検定が空虚）"
+        joined = " ".join(sim_rows)
+        # fixture の report が持つ代表キーで空虚を塞ぐ（勝率キーは実 run の payload 側で実測済み。
+        #   fixture に無いキーを針にすると検定がデータの都合で赤になる）。
+        for needle in ("Sharpe Ratio", "Total Trades"):
+            assert needle in joined, f"8 sim のサマリーに {needle} が無い: {sim_rows[:6]}"
+        assert ref_rows == sim_rows, f"8 サマリー行: ref {len(ref_rows)} 行 vs sim {len(sim_rows)} 行"
+        passed.append("8")
 
         # 15: 区間トグル（2 区間 → #segSel・segbtn 2 個・is/oos）。
         ref_seg = ref.evaluate(_SEG)

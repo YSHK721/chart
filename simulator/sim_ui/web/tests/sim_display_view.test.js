@@ -233,6 +233,17 @@ test("the filter pill starts hidden (抽出が立つまで非表示・点18)", (
   assert.equal(findById(host.children[0], "clearFilter").style.display, "none");
 });
 
+test("the report pane holds the summary grid (サマリー流用・2026-09-27)", () => {
+  const { host, view } = mounted();
+  const root = host.children[0];
+  const grid = findById(root, "reportGrid");
+  assert.ok(grid, "#reportGrid が無い（buildReport の挿し先が無い）");
+  assert.equal(view.elements.reportGrid, grid);
+  let a = grid.parent, inReport = false;
+  while (a) { if (a.dataset && a.dataset.pane === "report") { inReport = true; break; } a = a.parent; }
+  assert.ok(inReport, "#reportGrid が report ペインの外にある");
+});
+
 test("the heat / glossary hosts live in their panes", () => {
   const { host } = mounted();
   const root = host.children[0];

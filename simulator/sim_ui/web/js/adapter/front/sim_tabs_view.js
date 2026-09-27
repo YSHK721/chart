@@ -2,9 +2,10 @@
 //
 // 役割: 移植元 index.html:44-111 の「下部マルチビュー枠」のうち sim が使う分だけを生成し
 //   所有する。移植元 6 タブ（比較・明細・ヒートマップ・グラフ・サマリー・用語）のうち
-//   **graph / report は流用しない**（YAGNI・doc §流用）。共通 4 タブ（明細・ヒートマップ・
-//   比較判定・用語）だけを出す。中身（明細表・ヒートマップ・比較グラフ・用語）は
-//   合成根が各ペインへ挿す（本 View はタブの活性切替とペインの可視だけを持つ）。
+//   **graph は流用しない**（YAGNI・doc §流用）。サマリー (Report) は 2026-09-27 依頼者指示
+//   「シャープレシオ・取引回数・勝率などのレポートを確認したい」で流用に加えた。中身
+//   （明細表・ヒートマップ・比較グラフ・サマリー・用語）は合成根が各ペインへ挿す
+//   （本 View はタブの活性切替とペインの可視だけを持つ）。
 //
 // なぜ .mv-body を必ず生成するか（Phase 4 事故と同型・実測 2026-08-11）:
 //   移植元 style.css:86 は `.mv-pane { position:absolute; inset:0 }`。効かせるには
@@ -26,7 +27,7 @@
  * その取り落としは同検定の「ラベルが空でない」表明が赤にする。
  */
 export const SIM_TAB_NAMES = Object.freeze([
-  "detail", "heat", "compare", "analysis", "glossary",
+  "detail", "heat", "compare", "analysis", "report", "glossary",
 ]);
 
 /** タブ帯のラベル（移植元 index.html:47-52 の文言＋段階 4 の 1 枚）。 */
@@ -37,6 +38,7 @@ const TAB_LABELS = Object.freeze({
   // 既存の Balance / Drawdown 窓は**残高ベース**であり、こちらは equity（含み損益込み）・
   // 証拠金・維持率・保有玉数という別の量である（§9.1）。名前でその違いが読めるようにする。
   analysis: "口座推移・事象 (Equity / Margin / Events)",
+  report: "サマリー (Report)",
   glossary: "用語説明 (Glossary)",
 });
 

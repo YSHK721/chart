@@ -34,6 +34,7 @@ import { buildTradeTable } from "/sim/report-js/table.js";
 import { buildHeatmap } from "/sim/report-js/heatmap.js";
 import { buildCompare, renderVerdictBanner } from "/sim/report-js/compare.js";
 import { buildGlossary, wireTips } from "/sim/report-js/glossary.js";
+import { buildReport } from "/sim/report-js/report.js";
 
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
@@ -267,6 +268,8 @@ export async function mountSimReportView({
       // 単一区間（segKeys<2）では「IS vs OOS 損益差」ビューを出さない（D-3）。
       { showIsOosDiff: segKeys.length >= 2 },
     );
+    // サマリー (Report)。区間別 report を章立て表示（移植元 main.js selectSegment と同順・末尾）。
+    buildReport(view.elements.reportGrid, curSeg.report);
   }
 
   view.mount(host);

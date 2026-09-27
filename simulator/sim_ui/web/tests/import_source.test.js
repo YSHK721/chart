@@ -254,6 +254,8 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
     "/sim/report-js/glossary.js",
     "/sim/report-js/heatmap.js",
     "/sim/report-js/linkage.js",
+    // サマリー (Report) タブの実体（2026-09-27 依頼者指示で流用に追加。写さず import する）。
+    "/sim/report-js/report.js",
     "/sim/report-js/table.js",
   ]);
 });
@@ -590,7 +592,9 @@ test("the composition root imports the peripheral report_ui builders", () => {
   const src = read(ROOT);
   // ヒートマップ・比較判定・用語集の実体は移植元から import（写さない）。
   // aggOf（接点の取り出し）は 3 窓チャート撤去とともに外れた（2026-09-27）。
-  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary", "wireTips"]) {
+  // buildReport はサマリー (Report) タブの流用（2026-09-27 依頼者指示）で加わった。
+  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary",
+                     "wireTips", "buildReport"]) {
     assert.ok(src.includes(sym), `合成根が ${sym} を移植元から引いていません`);
   }
 });
@@ -610,9 +614,11 @@ test("the composition root renders compare/glossary once at init, segments per r
   assert.equal(wireTipsCount, 1, "wireTips の呼び出しが 1 回ではありません（多重 #tip の恐れ）");
 });
 
-test("selectSegment feeds the heatmap (移植元 selectSegment と同順・チャート撤去後)", () => {
+test("selectSegment feeds the heatmap and the report (移植元 selectSegment と同順・チャート撤去後)", () => {
   const src = read(ROOT);
   assert.ok(/buildHeatmap\s*\(/.test(src), "区間切替でヒートマップを描いていません");
+  // サマリーは**区間別** report（移植元 renderReport と同じく区間切替で描き直す）。
+  assert.ok(/buildReport\s*\(/.test(src), "区間切替でサマリー (Report) を描いていません");
   // 接点（setContacts）の届け先＝ 3 窓チャートは撤去済み。呼び出しが戻れば第 2 実装の兆候。
   assert.ok(!/setContacts\s*\(/.test(src), "setContacts が復活しています（子文書のチャートは撤去済み）");
 });

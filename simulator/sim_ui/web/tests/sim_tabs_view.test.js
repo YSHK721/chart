@@ -90,11 +90,11 @@ test("each tab button maps to a pane name (data-tab)", () => {
   assert.deepEqual(tabs.map((t) => t.dataset.tab), [...SIM_TAB_NAMES]);
 });
 
-test("graph and report tabs are not shipped (流用しない・YAGNI)", () => {
+test("the graph tab is not shipped (流用しない・YAGNI)", () => {
+  // report（サマリー）は 2026-09-27 依頼者指示で流用に加えたため非搭載の対照から外した。
   const { root } = mounted();
   const names = flatten(root).filter((n) => hasClass(n, "mv-tab")).map((t) => t.dataset.tab);
   assert.ok(!names.includes("graph"));
-  assert.ok(!names.includes("report"));
 });
 
 // --- 3. タブ切替（クリック）-----------------------------------------------------
