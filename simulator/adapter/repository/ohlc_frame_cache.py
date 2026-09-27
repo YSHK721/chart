@@ -4,11 +4,11 @@
     1 回の run が同じ系列 CSV（147MB・2,148,667 行）を **12 回** parse し、固定費 24.0 秒の
     うち 18.8 秒を占めていた。出力は 1 ビットも変わらないため状態検証では原理的に落ちない
     （ISSUE-450/257 と同型）。読みの単一点をここに置き、2 つの読み口
-    （`sources._read_or_data_error` と `_ohlc_frame.read_csv_or_data_error`）が同じ実体を
+    （sources 側の _read_or_data_error と _ohlc_frame 側の read_csv_or_data_error）が同じ実体を
     2 度 parse しない形にする。
 
 契約:
-    * 返す DataFrame は**読むだけ**にする（呼び出し側の契約・`RunTracePort.observe` の
+    * 返す DataFrame は**読むだけ**にする（呼び出し側の契約。RunTracePort の observe の
       引数と同じ規律）。書き換えれば同じ実体を読む他の消費者の入力が変わる。列を足す・
       値を書く消費者は自分で copy する。既存の消費者は全員読むだけである（rename・
       astype・reset_index・rolling はいずれも新しいオブジェクトを返す）。
@@ -35,7 +35,7 @@ import pandas as pd
 from simulator.domain.exceptions import ConfigError
 
 #: parse の実体（注入点）。既定は pandas。例外の内側翻訳は呼び出し側の読み口が行う
-#: （`sources._read_or_data_error` / `_ohlc_frame.read_csv_or_data_error`＝従来どおり）。
+#: （sources 側と _ohlc_frame 側の読み口＝従来どおり）。
 _reader: "Callable[..., pd.DataFrame]" = pd.read_csv
 
 #: (実パス, mtime_ns, サイズ, sep) → parse 済み DataFrame。

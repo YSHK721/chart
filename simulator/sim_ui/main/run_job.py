@@ -510,8 +510,8 @@ def _write_chart_overlay(
     """売買マーク・トリガー指標・足ごとの口座を書く（束縛は Composition Root が持つ）。
 
     ``indicators`` は呼び出し側が 1 回だけ組んだ実体（run と同じ対応づけ・ISSUE-509 を
-    経た系列で、系列の位置 i が ``bars[i]`` の時刻になる）。描く系列は EA の宣言
-    （`PlotDecl`）が決める（ここで系列名を選ばない）。
+    経た系列で、系列の位置 i が ``bars[i]`` の時刻になる）。描く系列は EA が宣言した
+    描画宣言（PlotDecl）が決める（ここで系列名を選ばない）。
     """
     from simulator.main import known_plots
 

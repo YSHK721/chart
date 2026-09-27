@@ -75,7 +75,7 @@ def run_settings_job(
         `position_manager` / `strategy_decorator`）への注入物。JSON スカラーで表せない
         実体であるため写像層（`.ini` 由来の値）は供給できず、呼出側が組んで渡す。
     事後条件: 成功時は ``(0, 結果, メタ, 実行した request)`` を返し、``output_dir`` に
-        `stats.json` と `report.md` が出ている。request は表示・成果物の書き手が bars /
+        stats.json と report.md のファイルが出ている。request は表示・成果物の書き手が bars /
         symbol_spec を再構築（＝同じ CSV の読み直し）せずに使うための値である（ISSUE-541 段 1）。
     例外: 設定・実行・出力の失敗（`BacktestError` 系）を**そのまま送出する**
         （モジュール docstring「なぜ例外を握らないのか」）。

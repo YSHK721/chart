@@ -52,7 +52,7 @@ def _run(tmp_path: Path, *, days: int) -> Path:
 
     `run_job.main` を使わないのは、settings 経路の受付が sim core の銘柄プロファイル台帳を
     要るため（合成銘柄では組めない）。結線（request の再利用・指標 1 回）は
-    `_run_with_settings` と同じ形をここに組む——検定の対象はその結線が生む読みの回数である。
+    run_job の settings 経路と同じ形をここに組む——検定の対象はその結線が生む読みの回数である。
     """
     csv_path = write_comma_csv(tmp_path / "synth.csv", daily_epochs(_FIRST_DAY, _BAR_DAYS))
     job_dir = tmp_path / "job"
