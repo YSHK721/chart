@@ -115,7 +115,12 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  max-width: 640px;
+  /* 一番幅を要する行＝日付行（ラベル 136 ＋ 間隔 6×3 ＋ プリセット 160 ＋ 時刻欄つきの
+   * 日付箱 216×2 ＝ 746px）が 1 段で収まる幅。640px 固定だった頃は日付行だけ折り返して
+   * 2 段になっていた（依頼者指摘 2026-09-27・実測: 行の使える幅 498px に対し中身 610px）。
+   * 変数から導出する＝時刻欄や欄幅を変えてもここが追随する。 */
+  max-width: calc(136px + 3 * 6px + var(--sim-field-input-w)
+    + 2 * (var(--sim-field-input-w) + var(--sim-field-time-w)));
 }
 #simTesterPanel .tester-row {
   display: flex;
@@ -143,8 +148,11 @@
  * なければ折り返す——横あふれで系列が列の外へ出ると、出したのに選べない状態になる。
  * 折り返しをこの行だけに閉じるのは、他の行の並びを 1 つも動かさないためである。 */
 #simTesterPanel .tester-row[data-row="symbol"] .tester-row-controls { flex-wrap: wrap; }
-/* 日付行も同じ規則で折り返す。時刻欄つきの日付箱（216px×2）で行が伸び、折り返しが無いと
- * 期間プリセットの select が押し潰される（実測 2026-09-27: 「期間指定」→「期間▼」）。 */
+/* 日付行の配分（依頼者指摘 2026-09-27「2 段になっている」）。実測: 行の使える幅 498px に
+ * 対し 160+216+216+間隔 12=610px で 112px あふれて折り返していた。1 段に収める配分:
+ *   - 期間プリセットの select は内容幅（「期間指定」が読める幅・全行一律 160px の例外）
+ *   - 時刻欄つきの日付箱 2 つは残り幅を等分（上限は日付欄＋時刻欄・下限 170px）
+ * 下限を割るほど狭い版面だけ折り返す（潰して読めなくするより折り返す）。 */
 #simTesterPanel .tester-row[data-row="dates"] .tester-row-controls { flex-wrap: wrap; }
 /* 不活性の欄は MT5 と同じくグレーアウト（値は残す・投入本文には載らない）。 */
 #simTesterPanel .tester-input:disabled,
