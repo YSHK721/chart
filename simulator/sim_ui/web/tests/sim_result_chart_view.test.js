@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { createSimResultChartView } from '../js/adapter/front/sim_result_chart_view.js';
 import { resultChartInstances } from '../js/usecase/result_chart_model.js';
 import { tradeCloseCurves } from '../../../report_ui/web/js/chart.js';
+import { createLinkage } from '../../../report_ui/web/js/linkage.js';
 
 function tradeClose(times) {
   return tradeCloseCurves({ meta: {}, agg: { balance_curve: [] } }, times);
@@ -63,9 +64,14 @@ function kit() {
     },
     ChartToastView: class {},
     TradeMarkersRenderer: class {
-      constructor(args) { calls.markers = args; }
+      constructor(args) {
+        calls.markers = args; this.highlighted = []; this.notify = null;
+        (calls.markerInstances = calls.markerInstances || []).push(this);
+      }
       setCurrentTimeframe(tf) { calls.timeframe = tf; }
       async load(url) { calls.loaded.push(url); return 0; }
+      highlightTrade(id) { this.highlighted.push(id); }
+      onHighlightChange(fn) { this.notify = fn; }
     },
   };
   return { calls, chartKit };
@@ -194,4 +200,59 @@ test('計算量: 取引終了時の材料は 1 ジョブにつき 1 回だけ読
   const { v } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
   for (let i = 0; i < 4; i += 1) await v.render('job1');
   assert.equal(k.calls.tradeClose, 1);
+});
+
+// ---- ISSUE-538: 取引明細・priceChart との hover の連動 ----
+
+function countingLinkage() {
+  const linkage = createLinkage();
+  const subscribe = linkage.subscribe.bind(linkage);
+  linkage.subscriptions = 0;
+  linkage.subscribe = (fn) => { linkage.subscriptions += 1; subscribe(fn); };
+  return linkage;
+}
+
+test('取引明細の hover（linkage）で売買履歴チャートの同じ取引番号を強調し、グリフ hover を linkage へ返す', async () => {
+  const k = kit();
+  const { v } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
+  await v.render('job1');
+  const linkage = countingLinkage();
+  v.bindLinkage(linkage);
+  const markers = k.calls.markerInstances[0];
+
+  linkage.setHover(7, 'table');
+  assert.equal(markers.highlighted.at(-1), 7);
+
+  const seen = [];
+  linkage.subscribe((id, source) => seen.push([id, source]));
+  markers.notify(3);
+  markers.notify(null);
+  assert.deepEqual(seen, [[3, 'chart'], [null, 'chart']]);
+});
+
+test('linkage が先に届いても、描いた後の売買マークを今の hover の取引で強調する', async () => {
+  const k = kit();
+  const { v } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
+  const linkage = countingLinkage();
+  linkage.setHover(4, 'table');
+  v.bindLinkage(linkage);
+  await v.render('job1');
+  assert.equal(k.calls.markerInstances[0].highlighted.at(-1), 4);
+});
+
+test('計算量: 同じ linkage を何度渡しても購読は 1 つ・ジョブを替えても増えない', async () => {
+  const k = kit();
+  const { v } = view({ ov: overlay(), candles: T.map((time) => ({ time })), k });
+  const linkage = countingLinkage();
+  await v.render('job1');
+  for (let i = 0; i < 5; i += 1) v.bindLinkage(linkage);
+  await v.render('job2');
+  v.bindLinkage(linkage);
+  assert.equal(linkage.subscriptions, 1);
+  // 替えた後の hover は新しい売買マークへ届く（古い売買マークへは届かない）。
+  const [oldMarkers, newMarkers] = k.calls.markerInstances;
+  const oldCount = oldMarkers.highlighted.length;
+  linkage.setHover(9, 'table');
+  assert.equal(newMarkers.highlighted.at(-1), 9);
+  assert.equal(oldMarkers.highlighted.length, oldCount);
 });

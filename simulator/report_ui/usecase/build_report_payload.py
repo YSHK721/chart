@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simulator.domain.trade_record import trade_number
 from simulator.report_ui.usecase import derive
 from simulator.report_ui.usecase.assessment_policy import AssessmentPolicy
 from simulator.report_ui.usecase.report_meta import ReportMeta
@@ -225,7 +226,7 @@ class BuildReportPayload:
                     tr.entry_time, tr.exit_time, spec.point_size,
                 )
             trade_rows.append(TradeRow(
-                id=i + 1,
+                id=trade_number(i),
                 side=side,
                 entry_time=int(tr.entry_time),
                 exit_time=int(tr.exit_time),
@@ -235,7 +236,7 @@ class BuildReportPayload:
                 volume=str(tr.volume),
                 sl=sl,
                 tp=tp,
-                order=i + 1,
+                order=trade_number(i),
                 comment=_EXIT_REASON_COMMENT.get(tr.exit_reason, tr.exit_reason),
                 balance=balance_curve_src[i],
                 hold_sec=int(tr.exit_time) - int(tr.entry_time),

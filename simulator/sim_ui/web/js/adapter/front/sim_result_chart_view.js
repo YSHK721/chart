@@ -44,6 +44,15 @@ export function createSimResultChartView({
   let built = null;
   let message = null;
   let shownJob = null;
+  // 取引明細・価格ローソク足priceChart と共有する hover の状態（子文書の linkage・ISSUE-538）。
+  let linkage = null;
+
+  // 売買マークを linkage と双方向に結ぶ: グリフ hover → linkage、linkage → 強調（同じ取引番号）。
+  function wireMarkers(markers) {
+    if (!linkage) return;
+    markers.onHighlightChange((id) => linkage.setHover(id, "chart"));
+    markers.highlightTrade(linkage.hoverTradeId);
+  }
 
   function clear() {
     if (built) {
@@ -157,7 +166,23 @@ export function createSimResultChartView({
       });
       markers.setCurrentTimeframe(overlay.timeframe);
       await markers.load(`/sim/data/${encodeURIComponent(jobId)}/trade_markers.json`, fetchImpl);
+      built.markers = markers;
+      wireMarkers(markers);
       return true;
+    },
+
+    /**
+     * 取引明細・priceChart と hover の状態を共有する（ISSUE-538）。子文書が作り直されると linkage も
+     * 新しくなるので、渡されるたびに結び直す（同じ linkage なら何もしない）。
+     * @param {{hoverTradeId: (number|null), setHover: function, subscribe: function}} next
+     */
+    bindLinkage(next) {
+      if (!next || next === linkage) return;
+      linkage = next;
+      linkage.subscribe((id) => {
+        if (built && built.markers) built.markers.highlightTrade(id);
+      });
+      if (built && built.markers) wireMarkers(built.markers);
     },
 
     /** 描いたものを片付ける（器へ何も残さない）。 */

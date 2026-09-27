@@ -137,3 +137,21 @@ def test_a_ledger_path_resolves_to_exactly_its_ref() -> None:
 
     ref, path = next(iter(whitelist().items()))
     assert run_job._dataset_ref_of(path) == ref
+
+
+def test_the_same_number_names_the_same_trade_in_the_report_and_the_markers(job_dir: Path) -> None:
+    """ISSUE-539: 取引明細（report.json の `id`）と売買マーク（`pairs[].id`）が同じ番号で同じ取引を指す。
+
+    期待値は番号の数え方を書き写さず、2 つの成果物の突き合わせだけで決める。
+    """
+    report = json.loads((job_dir / "report.json").read_text(encoding="utf-8"))
+    markers = json.loads((job_dir / "trade_markers.json").read_text(encoding="utf-8"))
+    segment = next(iter(report["segments"].values()))
+    by_id = {t["id"]: t for t in segment["trades"]}
+
+    assert len(markers["pairs"]) == len(by_id) > 1
+    for pair in markers["pairs"]:
+        trade = by_id[pair["id"]]
+        assert (trade["entry_time"], trade["exit_time"]) == (pair["entry"]["time"], pair["exit"]["time"])
+        assert (trade["entry_price"], trade["exit_price"]) == (pair["entry"]["price"], pair["exit"]["price"])
+        assert trade["side"] == pair["side"]

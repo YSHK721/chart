@@ -108,16 +108,31 @@ const CONTENT_READY_MAX_FRAMES = 120;
  * @param {function} notify 高さの通知先
  */
 export function waitForContent(frame, raf, notify) {
+  whenChildReady(frame, raf, () => {
+    // 表明の直後はまだ描画が確定していないことがあるので、もう 1 フレーム置いて測る。
+    raf(() => {
+      const h = frame.contentHeightPx();
+      if (h) notify(h);
+    });
+  });
+}
+
+/**
+ * 子文書が組み上がった（`window.__simReportViewReady`）ら、子の window を渡して 1 回だけ呼ぶ。
+ * 上限まで待っても表明されなければ呼ばない。高さの測定（waitForContent）と hover の連動
+ * （ISSUE-538）が共有する待ち方の単一ソース。
+ *
+ * @param {object}   frame 器の View（childWindow を持つ）
+ * @param {function} raf   次フレームの予約（無ければ何もしない）
+ * @param {function} fn    (childWindow) => void
+ */
+export function whenChildReady(frame, raf, fn) {
   if (typeof raf !== "function") return;
   let frames = 0;
   const tick = () => {
     const win = frame.childWindow();
     if (win && win.__simReportViewReady) {
-      // 表明の直後はまだ描画が確定していないことがあるので、もう 1 フレーム置いて測る。
-      raf(() => {
-        const h = frame.contentHeightPx();
-        if (h) notify(h);
-      });
+      fn(win);
       return;
     }
     frames += 1;

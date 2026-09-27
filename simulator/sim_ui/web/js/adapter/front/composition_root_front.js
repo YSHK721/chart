@@ -41,7 +41,7 @@ import { buildGlossary, wireTips } from "/sim/report-js/glossary.js";
 import { createLwc5ChartRenderer } from "./lwc5_chart_renderer.js";
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
-import { createSimFrameView, waitForContent } from "./sim_frame_view.js";
+import { createSimFrameView, waitForContent, whenChildReady } from "./sim_frame_view.js";
 import { createSimResultChartView } from "./sim_result_chart_view.js";
 import { createSimSegmentView } from "./sim_segment_view.js";
 import { createSimCompareView } from "./sim_compare_view.js";
@@ -50,6 +50,12 @@ import { createSimFilterPillView } from "./sim_filter_pill_view.js";
 // 段階 4（§9.1/§9.2）: 分析タブの結線は別合成根が持つ（node で測れる場所へ置く・
 //   `composition_root_execution.js` と同じ理由）。ここは呼ぶだけである。
 import { mountTraceAnalysis } from "./composition_root_analysis.js";
+
+/**
+ * 子文書（シミュレーション結果）が hover の状態（linkage）を出す window の名前。子が出し、親の
+ * 売買履歴チャートが読む（ISSUE-538）。書き手と読み手がこの 1 つの定数を使う。
+ */
+export const SIM_LINKAGE_GLOBAL = "__simLinkage";
 
 /** 移植元 chart.js が所有する表示規則。v5 アダプタへはこの束を注入する。 */
 const CHART_LOGIC = {
@@ -123,6 +129,8 @@ export async function setupSimDisplay({
     resultView.render(job).catch((err) => {
       console.warn("[sim-result-chart] 描画に失敗しました", err);
     });
+    // 取引明細・priceChart と hover を連動させる（ISSUE-538）。子の linkage は子が組み上がってから在る。
+    whenChildReady(frame, nextFrame, (child) => resultView.bindLinkage(child[SIM_LINKAGE_GLOBAL]));
   };
   const targetJobId = resolveJobId({ jobId, search });
   // 器は**渡された host へそのまま**挿す。どこへ置くかは統合層の判断であって sim の契約では
@@ -324,9 +332,10 @@ export async function mountSimReportView({ doc, lwc, host, jobId, search, fetch:
     // 初期タブは明細（移植元と同じ・タブ切替は tabs View が単一経路で持つ）。
     view.activate("detail");
 
-    // E2E フック（双方向結線の実測点・移植元 main.js:182-183 と対称）。
+    // hover の状態（linkage）を親文書へ出す。親の売買履歴チャートがこれで取引明細・priceChart と
+    //   連動する（ISSUE-538）。E2E の実測点も兼ねる（移植元 main.js:182-183 と対称）。
     if (typeof window !== "undefined") {
-      window.__simLinkage = linkage;
+      window[SIM_LINKAGE_GLOBAL] = linkage;
       window.__simEmitMarkerHover = (id) => { if (renderer) renderer.emitMarkerHover(id); };
     }
   } catch (e) {
