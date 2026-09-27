@@ -143,6 +143,9 @@
  * なければ折り返す——横あふれで系列が列の外へ出ると、出したのに選べない状態になる。
  * 折り返しをこの行だけに閉じるのは、他の行の並びを 1 つも動かさないためである。 */
 #simTesterPanel .tester-row[data-row="symbol"] .tester-row-controls { flex-wrap: wrap; }
+/* 日付行も同じ規則で折り返す。時刻欄つきの日付箱（216px×2）で行が伸び、折り返しが無いと
+ * 期間プリセットの select が押し潰される（実測 2026-09-27: 「期間指定」→「期間▼」）。 */
+#simTesterPanel .tester-row[data-row="dates"] .tester-row-controls { flex-wrap: wrap; }
 /* 不活性の欄は MT5 と同じくグレーアウト（値は残す・投入本文には載らない）。 */
 #simTesterPanel .tester-input:disabled,
 #simTesterPanel [data-inactive="1"] {
@@ -269,6 +272,12 @@
 /* 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）。日付箱の右端に置く。
  * 未入力なら日単位（規則はホバーの title が示す）。不活性の見た目は既存の
  * `.tester-input:disabled` / `[data-inactive="1"]` と同じ機構（opacity）に乗る。 */
+/* 時刻欄を持つ日付箱は「日付欄＋時刻欄」の幅にする。1 つの枠（--sim-field-input-w）へ
+ * 押し込むと日付部が時刻欄のぶん潰れる（依頼者指摘 2026-09-27「バランスを調整して
+ * ユーザビリティを確保しろ」）。日付部は時刻欄の追加前と同じ広さに戻る。 */
+#simTesterPanel .tester-date-wrap--with-time {
+  width: calc(var(--sim-field-input-w) + var(--sim-field-time-w));
+}
 #simTesterPanel .tester-time {
   flex: 0 0 auto;
   width: var(--sim-field-time-w);

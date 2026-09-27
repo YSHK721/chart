@@ -389,6 +389,9 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     box.appendChild(node);
     box.appendChild(btn);
     if (CUSTOM_DATE_KEYS.includes(key)) {
+      // 時刻欄を持つ日付箱は幅の規則が別（日付欄＋時刻欄）。CSS がこのクラスで広げる——
+      //   1 つの枠へ押し込むと日付部が時刻欄のぶん潰れる（依頼者指摘 2026-09-27）。
+      box.className = `${box.className} tester-date-wrap--with-time`;
       // 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）。未入力なら日単位。
       //   検証はしない——書式の正否はサーバの `_strict_date_minute`（R10）が単一ソース
       //   （日付欄・カレンダーと同じ方針）。
