@@ -20,6 +20,7 @@ import {
   candleRequestOf,
   candlesMatchRunBars,
   resultChartInstances,
+  wholeRunMinBarSpacing,
 } from '../../usecase/result_chart_model.js';
 
 /** チャートを生成する要素（器 host の中に置く。読み取り欄・凡例は host 直下に並ぶ）。 */
@@ -117,11 +118,35 @@ export function createSimResultChartView({
     viewer.paneLegendView.setInstances(legendRows());
     viewer.currentPriceView.render(renderer.lastClose());
     // run の全期間を見せる（ライブチャートは最新の足から見せるが、ジョブの結果は期間全体が対象）。
-    renderer.focusTimeRange(candles[0].time, candles[candles.length - 1].time);
+    //   足 1 本の最小幅（既定 0.5px）が「描画幅 ÷ 本数」より大きいと全期間が入らず、指定が最後の
+    //   描画幅 ÷ 0.5 本で止まる（実測 25,498 本中 3,027 本）。本数に合わせて最小幅を下げてから指定する。
+    //
+    //   初期表示の定義: **利用者が売買履歴チャートを操作するまでは、表示＝run の全期間**。
+    //   描画幅は組み立て直後に 23ms で 1600→1540→1514px と確定していく（価格目盛りが付き、文字に
+    //   合わせて広がる・実測）。最初の幅で 1 回だけ指定すると、その後の縮みで左端 430 本が押し出された。
+    //   幅が確定していくたびに（幅の変更の通知）最小幅を決め直し、利用者の操作（押す・ホイール・キー）
+    //   より前なら全期間を指定し直す。操作の後は見えている範囲に触れない（ビュー自動介入の禁止）。
+    const timeScale = viewer.chart.timeScale();
+    let userTookOver = false;
+    const takeOver = () => { userTookOver = true; };
+    const USER_EVENTS = ['pointerdown', 'wheel', 'keydown', 'touchstart'];
+    for (const type of USER_EVENTS) container.addEventListener(type, takeOver, { capture: true, passive: true });
+    const fitWholeRun = (plotWidth) => {
+      if (!(plotWidth > 0)) return;
+      viewer.chart.applyOptions({
+        timeScale: { minBarSpacing: wholeRunMinBarSpacing(plotWidth, candles.length) },
+      });
+      if (userTookOver) return;
+      renderer.focusTimeRange(candles[0].time, candles[candles.length - 1].time);
+    };
+    timeScale.subscribeSizeChange(fitWholeRun);
+    fitWholeRun(timeScale.width());
 
     return {
       viewer,
       dispose() {
+        timeScale.unsubscribeSizeChange(fitWholeRun);
+        for (const type of USER_EVENTS) container.removeEventListener(type, takeOver, { capture: true });
         operations.dispose();
         geometry.dispose();
         viewer.chart.remove();

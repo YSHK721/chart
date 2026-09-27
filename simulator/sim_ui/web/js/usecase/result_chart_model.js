@@ -131,6 +131,23 @@ export function resultChartInstances(overlay, tradeClose) {
   return out;
 }
 
+/** LightweightCharts の足 1 本の最小幅の既定（px・timeScale.minBarSpacing）。 */
+export const LWC_DEFAULT_MIN_BAR_SPACING = 0.5;
+
+/**
+ * run の全期間を 1 画面に収められる「足 1 本の最小幅」（px）。
+ *
+ * 実測（2026-09-27・実 UI）: 既定 0.5px のままだと描画幅 1514px に 3027 本までしか入らず、
+ *   25,498 本の run で「全期間を見せる」指定（setVisibleRange）が最後の 3027 本で止まった。
+ *   最小幅を 描画幅 ÷ 足の本数 以下にすると 0〜25,497 の全期間が入る。
+ * 既定より大きくはしない（足が少ない run の縮小の限界はライブチャートと同じまま）。
+ * 幅か本数が分からないときは既定を返す（推測で値を作らない）。
+ */
+export function wholeRunMinBarSpacing(plotWidth, barCount) {
+  if (!(plotWidth > 0) || !(barCount > 0)) return LWC_DEFAULT_MIN_BAR_SPACING;
+  return Math.min(LWC_DEFAULT_MIN_BAR_SPACING, plotWidth / barCount);
+}
+
 /**
  * 売買履歴チャートが読む足の範囲（`/candles` のクエリ材料）。台帳の系列でなければ null。
  * 範囲は run の足の最初と最後（両端含む・`/candles` の from/to と同じ規約）。

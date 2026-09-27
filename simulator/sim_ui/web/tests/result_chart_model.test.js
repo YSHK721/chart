@@ -150,3 +150,11 @@ test('計算量: 取引終了時のレイヤーの点は足の数に一致し、
     assert.equal(tc.ddData.length - times.length, 0);
   }
 });
+
+test('wholeRunMinBarSpacing: 全本数が描画幅に入る最小幅（既定より大きくしない・不明なら既定）', async () => {
+  const { wholeRunMinBarSpacing, LWC_DEFAULT_MIN_BAR_SPACING } = await import('../js/usecase/result_chart_model.js');
+  assert.equal(wholeRunMinBarSpacing(1514, 25498), 1514 / 25498);
+  assert.equal(wholeRunMinBarSpacing(1514, 10), LWC_DEFAULT_MIN_BAR_SPACING);
+  assert.equal(wholeRunMinBarSpacing(0, 100), LWC_DEFAULT_MIN_BAR_SPACING);
+  assert.equal(wholeRunMinBarSpacing(1514, 0), LWC_DEFAULT_MIN_BAR_SPACING);
+});

@@ -41,7 +41,17 @@ function kit() {
       calls.viewer.push(args);
       return {
         symbolSpec: null,
-        chart: { remove() { calls.removed += 1; } },
+        chart: {
+          remove() { calls.removed += 1; },
+          timeScale() {
+            return {
+              width: () => calls.plotWidth ?? 1514,
+              subscribeSizeChange(fn) { calls.sizeHandler = fn; },
+              unsubscribeSizeChange(fn) { if (calls.sizeHandler === fn) calls.sizeHandler = null; },
+            };
+          },
+          applyOptions(o) { (calls.chartOptions = calls.chartOptions || []).push(o); },
+        },
         mainSeries: {},
         currentPriceView: { render() {} },
         paneLegendView: { setInstances(rows) { calls.legendRows.push(rows); } },
@@ -296,4 +306,51 @@ test('409 以外の読み込み失敗も理由を出し、覚えない（再試�
   assert.equal(await v.render('job1'), false);
   assert.match(host.children[0].textContent, /接続できません/);
   assert.equal(v.shownJob(), null);
+});
+
+test('足 1 本の最小幅を run の本数に合わせてから全期間を指定する（既定 0.5px では 描画幅÷0.5 本で止まる・2026-09-27 実測）', async () => {
+  // Arrange: 描画幅 1000px に 5000 本（既定 0.5px なら 2000 本しか入らない）。
+  const times = Array.from({ length: 5000 }, (_, i) => 100 + i * 60);
+  const k = kit();
+  k.calls.plotWidth = 1000;
+  const { v } = view({ ov: overlay('jp225_mt5_spread', times), candles: times.map((time) => ({ time })), k });
+  // Act
+  assert.equal(await v.render('job1'), true);
+  // Assert: 最小幅 ≤ 描画幅 ÷ 本数、全期間を指定。
+  const spacing = k.calls.chartOptions.at(-1).timeScale.minBarSpacing;
+  assert.ok(spacing * times.length <= 1000, `最小幅 ${spacing}px では ${times.length} 本が 1000px に入りません`);
+  assert.deepEqual(k.calls.focus, [times[0], times.at(-1)]);
+  // 計算量: 最小幅の設定の発行 − 描画に使った設定 = 0（1 回の描画で決め直すのは 1 回だけ）。
+  assert.equal(k.calls.chartOptions.length - 1, 0);
+});
+
+test('利用者が操作するまでは幅が確定していくたびに全期間を指定し直し、操作の後は表示に触れない', async () => {
+  // Arrange: 組み立て直後の描画幅は 0。実測では 23ms で 1600→1540→1514px と確定していった。
+  const times = Array.from({ length: 5000 }, (_, i) => 100 + i * 60);
+  const k = kit();
+  k.calls.plotWidth = 0;
+  const { v, host } = view({ ov: overlay('jp225_mt5_spread', times), candles: times.map((time) => ({ time })), k });
+  const spacingOf = () => k.calls.chartOptions.at(-1).timeScale.minBarSpacing;
+  // Act / Assert: 幅 0 の間は何も決めない（推測の幅を使わない）。
+  assert.equal(await v.render('job1'), true);
+  assert.equal(k.calls.chartOptions, undefined);
+  assert.equal(k.calls.focus, null);
+  // 幅が確定していく間は、そのたびに最小幅を決め直して全期間を指定する。
+  const focuses = [];
+  for (const w of [1600, 1540, 1514]) {
+    k.calls.focus = null;
+    k.calls.sizeHandler(w, 400);
+    assert.ok(spacingOf() * times.length <= w);
+    focuses.push(k.calls.focus);
+  }
+  assert.deepEqual(focuses, [[times[0], times.at(-1)], [times[0], times.at(-1)], [times[0], times.at(-1)]]);
+  // 利用者が操作した（押した）後は、幅が変わっても最小幅だけを決め直し、表示には触れない。
+  const container = host.children.find((c) => c.className === 'sim-result-chart-canvas');
+  container._listeners.pointerdown[0]();
+  k.calls.focus = 'kept';
+  k.calls.sizeHandler(800, 400);
+  assert.ok(spacingOf() * times.length <= 800);
+  assert.equal(k.calls.focus, 'kept');
+  // 計算量: 最小幅の設定の発行 − 幅の通知（測れたもの）= 0。
+  assert.equal(k.calls.chartOptions.length - 4, 0);
 });
