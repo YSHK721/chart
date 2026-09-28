@@ -16395,3 +16395,27 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **照合済みで一致した項目（同じ実測）**: Initial Deposit・Total Net Profit・Gross Profit/Loss・
   Profit Factor・Recovery Factor・Expected Payoff・件数 4 種・Largest/Average profit/loss・連勝連敗 6 種・
   Balance DD 3 種・Equity DD 3 種・Z-Score の値・GHPR・Total Deals・LR 2 種（IS/OOS の 2 区間）。
+
+## ISSUE-549: 連勝・連敗の指標が、損益 0 の取引を含む run で MT5 と食い違う
+- **ステータス**: OPEN
+- **重大度**: 中（表示値の誤り・実測）
+- **起票日**: 2026-09-28（metrics_steps.txt の精査・依頼者指示）
+- **事象（実測）**: MT5 実レポートの Deals 表の損益を本番と同じ関数へ入れ、MT5 の表示値と突き合わせた
+  （xlsx 9 本＋固定データ golden＋HTML の 11 本・1 本あたり 33 項目）。食い違いは
+  Maximum consecutive wins（件数・金額）だけで、**損益 0 の取引を含む run でだけ**出る:
+  2026-01_ma-market（0 損益 72 件）件数 4 / 金額 130 対 MT5 5 / 155、
+  2026-03_ma-market（10 件）金額 120 対 MT5 400、golden ma_slope_202501（75 件）金額 67 対 MT5 85。
+  損益 0 が無い stop-probe 3 本・0 損益が少ない run は全件一致。
+- **原因（実測で特定）**: `metrics_spec._runs` は「損益 0 はランに属さず前後を区切る」、最長ランが
+  複数あると「最初のもの」を採る。規則の組み合わせ 12 通り（0 の扱い: 区切る／飛ばす／勝ち／負け ×
+  同長の選び方: 最初／最後／金額の絶対値が最大）を 11 本へ当てた結果、**全件一致は 1 通りだけ**:
+  「損益 0 は勝ちに数える（件数と同じ pnl ≥ 0）・同じ長さのランが複数なら金額の絶対値が最大のもの」。
+- **なぜ検査で落ちなかったか**: golden の検定は連勝の**件数**（4＝一致）だけを比べ、**金額**（85）を
+  比べていない（`test_compute_stats_golden_mt5.py:188-196`）。
+- **精査で確認した一致（同じ実測）**: 損益 4 種・件数 4 種・勝率 2 種・Largest/Average 4 種・
+  Maximal consecutive profit/loss・Average consecutive（四捨五入で 11 本一致）・Balance DD 5 種・
+  Z-Score・AHPR・GHPR・LR 2 種・Total Deals。
+- **記録（精査で見つけた小さな点・損害未実測）**: 旧 Sharpe の関数 `sharpe_ratio_per_trade` は本番から
+  呼ばれないのに「MT5 一致」と注記が残る。ログの件数の行は割合が出ていない。Z-Score の確率（%）は
+  ログにもサマリーにも無い（ISSUE-548）。ログの「一致」は同じ関数・同じ入力の照合であり、式の正しさは
+  示さない（式の正しさの根拠は MT5 との突き合わせ）。
