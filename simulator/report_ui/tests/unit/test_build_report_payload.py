@@ -112,6 +112,17 @@ def _meta(seg):
     }
 
 
+def _stats_of(trades, profits):
+    """取引から統計を作る（勝ち＝pnl ≥ 0 の MT5 規則・本番と同じ関数）。summary が統計を読むため。"""
+    from simulator.usecase import mt5_parity as mp
+    return _FakeStats(
+        profit=sum(profits), trades=len(trades),
+        profit_trades=mp.profit_trades(trades), loss_trades=mp.loss_trades(trades),
+        average_profit_trade=mp.average_profit_trade(trades),
+        average_loss_trade=mp.average_loss_trade(trades),
+    )
+
+
 def _make_result(profits, exit_times, balances, side="buy"):
     """profits/exit_times/balances から FakeResult を組む（1:1）。"""
     trades = []
@@ -122,7 +133,7 @@ def _make_result(profits, exit_times, balances, side="buy"):
             entry_price=39402.0, exit_price=39402.0 + p, volume=0.1,
             exit_reason="tp" if p > 0 else "sl", _pnl=p,
         ))
-    stats = _FakeStats(profit=sum(profits), trades=len(trades))
+    stats = _stats_of(trades, profits)
     return _FakeResult(trades=trades, balance_curve=list(balances), stats=stats)
 
 
@@ -195,6 +206,14 @@ class TestSummary:
                          [10010.0, 10030.0, 10060.0, 10055.0])
         s = _run(r, r).summary["is"]
         assert s.win_rate == 75.0
+
+    def test_win_rate_counts_zero_pnl_as_win_like_the_report(self):
+        # ISSUE-547: 勝率はサマリーの Profit Trades と同じ規則（pnl ≥ 0）。損益 0 の取引を含む。
+        r = _make_result([10.0, 0.0, -5.0, -5.0], [1, 2, 3, 4],
+                         [10010.0, 10010.0, 10005.0, 10000.0])
+        p = _run(r, r)
+        assert p.summary["is"].win_rate == 50.0
+        assert p.segments["is"].report["Profit Trades (% of total)"] == "2 (50.00%)"
 
     def test_profit_factor(self):
         # gp=30, gl=-10 → 3.0
@@ -328,7 +347,7 @@ def _make_result_with_entry(profits, entry_times, exit_times, balances, side="bu
             entry_price=39402.0, exit_price=39402.0 + p, volume=0.1,
             exit_reason="tp" if p > 0 else "sl", _pnl=p,
         ))
-    stats = _FakeStats(profit=sum(profits), trades=len(trades))
+    stats = _stats_of(trades, profits)
     return _FakeResult(trades=trades, balance_curve=list(balances), stats=stats)
 
 
@@ -556,9 +575,9 @@ class TestSegmentReport:
         assert seg.report["Expected Payoff"] == "2.18"
 
     def test_ahpr_four_decimals(self):
-        # §4.5: AHPR = f"{v:.4f}"。
+        # ISSUE-548: MT5 と同じ「値 (増減%)」。
         seg = _run_report(_FullStats(ahpr=1.0002)).segments["is"]
-        assert seg.report["AHPR"] == "1.0002"
+        assert seg.report["AHPR"] == "1.0002 (0.02%)"
 
     def test_total_trades_is_count(self):
         seg = _run_report(_FullStats(trades=5224)).segments["is"]
@@ -568,23 +587,23 @@ class TestSegmentReport:
         # §4.5: Profit Trades (% of total) = f"{pct:.2f}% ({n})"・pct=profit_trades/trades*100。
         seg = _run_report(_FullStats(trades=5224, profit_trades=2950)).segments["is"]
         # 2950/5224*100 = 56.47%
-        assert seg.report["Profit Trades (% of total)"] == "56.47% (2950)"
+        assert seg.report["Profit Trades (% of total)"] == "2950 (56.47%)"  # MT5 と同じ 件数 (割合)
 
     def test_loss_trades_percent_and_count(self):
         seg = _run_report(_FullStats(trades=5224, loss_trades=2274)).segments["is"]
         # 2274/5224*100 = 43.53%
-        assert seg.report["Loss Trades (% of total)"] == "43.53% (2274)"
+        assert seg.report["Loss Trades (% of total)"] == "2274 (43.53%)"
 
     def test_short_trades_won_percent(self):
         # §4.5: Short Trades (won %) = f"{pct:.2f}% ({n})"・pct=profit_short/short*100, n=short。
         seg = _run_report(_FullStats(short_trades=2624, profit_short_trades=1470)).segments["is"]
         # 1470/2624*100 = 56.02%
-        assert seg.report["Short Trades (won %)"] == "56.02% (2624)"
+        assert seg.report["Short Trades (won %)"] == "2624 (56.02%)"
 
     def test_long_trades_won_percent(self):
         seg = _run_report(_FullStats(long_trades=2600, profit_long_trades=1480)).segments["is"]
         # 1480/2600*100 = 56.92%
-        assert seg.report["Long Trades (won %)"] == "56.92% (2600)"
+        assert seg.report["Long Trades (won %)"] == "2600 (56.92%)"
 
     def test_largest_and_average_profit_loss_trade(self):
         seg = _run_report(_FullStats(
@@ -618,8 +637,10 @@ class TestSegmentReport:
         assert seg.report["Balance Drawdown Maximal"] == "2400 (10.50%)"
 
     def test_z_score_two_decimals(self):
+        # ISSUE-548: MT5 と同じ「z (確率%)」。確率 = erf(|z|/√2)（z=−0.09→7.17%・MT5 実レポートの値）。
         seg = _run_report(_FullStats(z_score=-1.34)).segments["is"]
-        assert seg.report["Z-Score"] == "-1.34"
+        assert seg.report["Z-Score"] == "-1.34 (81.98%)"
+        assert _run_report(_FullStats(z_score=-0.0917)).segments["is"].report["Z-Score"] == "-0.09 (7.17%)"
 
     def test_static_labels_expert_symbol_period(self):
         # §4.5: Expert=定数, Symbol=meta.symbol, Period=meta.period。

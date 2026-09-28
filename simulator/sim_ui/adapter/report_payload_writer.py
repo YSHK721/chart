@@ -22,6 +22,7 @@ UNIX 秒・Timestamp・datetime64 のいずれにもなる。その吸収は rep
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -44,6 +45,23 @@ SINGLE_SEGMENT_KEY = "single"
 SINGLE_SEGMENT_NOTE = (
     "本レポートは単一区間（1 run）。IS/OOS 分割・劣化比較・合否判定は未実施。"
 )
+
+
+def _period_label(spec: dict, timeframe: str, bars: list) -> str:
+    """サマリーの Period（MT5 と同じ ``時間足 (開始 - 終了)``・ISSUE-548）。
+
+    `.ini` の FromDate / ToDate があれば**そのまま**使う（分まで指定したときは分まで出る）。
+    全期間（``Dates=0``）で指定が無いときは、run が実際に使った足の最初と最後の日付（UTC）を使う。
+    どちらも無ければ空（捏造しない）。
+    """
+    tester = (spec.get("settings") or {}).get("tester") or {}
+    start, end = tester.get("FromDate"), tester.get("ToDate")
+    if not (start and end) and bars:
+        fmt = lambda t: _dt.datetime.fromtimestamp(int(t), _dt.timezone.utc).strftime("%Y.%m.%d")
+        start, end = fmt(bars[0].time), fmt(bars[-1].time)
+    if not (start and end):
+        return ""
+    return f"{timeframe} ({start} - {end})" if timeframe else f"{start} - {end}"
 
 
 def _run_facts(spec: dict, backtest: dict, bars: list) -> dict:
@@ -115,8 +133,8 @@ def write(
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy": strategy,
-            # 期間の表示文字列は job 仕様に無い（実測していないものを書かない）。
-            "period": "",
+            # 期間の表示（MT5 と同じ「時間足 (開始 - 終了)」・ISSUE-548）。
+            "period": _period_label(spec, timeframe, bars),
             "label": "",
             **_run_facts(spec, backtest, bars),
         },

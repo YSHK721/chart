@@ -317,3 +317,36 @@ def test_absent_run_facts_are_not_invented(tmp_path: Path) -> None:
     report = _report_of(_job_dir(tmp_path))  # settings も leverage も無い job
     assert "Currency" not in report
     assert "Leverage" not in report
+
+
+# --- 8. Period と初期証拠金（2026-09-28・ISSUE-548 / ISSUE-544）-----------------------
+
+def _write_with(tmp_path, *, settings=None, result=None, bars=None):
+    job_dir = _job_dir(tmp_path)
+    spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
+    if settings is not None:
+        spec["settings"] = settings
+    (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    out = report_payload_writer.write(job_dir, result or _result(), load_run_inputs=_loader(bars))
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_period_uses_the_ini_range_verbatim(tmp_path: Path) -> None:
+    data = _write_with(tmp_path, settings={"tester": {
+        "FromDate": "2026.09.25 01:30", "ToDate": "2026.09.25 01:39"}, "inputs": []})
+    assert data["segments"]["single"]["report"]["Period"] == "M5 (2026.09.25 01:30 - 2026.09.25 01:39)"
+
+
+def test_period_falls_back_to_the_bars_actually_used(tmp_path: Path) -> None:
+    # 全期間（Dates=0）は FromDate/ToDate が無い → run が使った足の最初と最後の日付（UTC）。
+    bars = _bars([1788220800, 1790369880])  # 2026-09-01 00:00 / 2026-09-25 20:58 UTC
+    data = _write_with(tmp_path, settings={"tester": {"Dates": "0"}, "inputs": []}, bars=bars)
+    assert data["segments"]["single"]["report"]["Period"] == "M5 (2026.09.01 - 2026.09.25)"
+
+
+def test_meta_initial_deposit_is_the_runs_value(tmp_path: Path) -> None:
+    import dataclasses
+    r = _result()
+    r = dataclasses.replace(r, stats=dataclasses.replace(r.stats, initial_deposit=100000.0))
+    data = _write_with(tmp_path, result=r)
+    assert data["meta"]["initial_deposit"] == 100000.0  # 定数 10000 ではない（ISSUE-544）

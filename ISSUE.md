@@ -16313,7 +16313,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   baseline へ凍結した。pytest の import 衝突は未観測。解消は別作業（ファイル改名 or パッケージ化）。
 
 ## ISSUE-544: report.json の meta.initial_deposit が run 設定に依らず定数 10000 で書かれる
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-28・ISSUE-547 と同じ原因の除去）
 - **重大度**: 低〜中（payload の誤値は実測。表示面への波及は機構確認のみ・発生未実測）
 - **事象（実測 2026-09-27・MarginProbe_EA の動作確認中に発見）**: ジョブ経路
   （`run_job.py --job-dir`）で `spec.json` の `backtest.initial_deposit=100000.0` を指定して
@@ -16327,6 +16327,8 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   自体は未実測（実測した時点で本文へ追記する）。
 - **数え方**: MarginProbe_EA・合成データ 20 本・initial_deposit=100000 の 1 run。触ったのは
   spec.json の値のみ。修正は未実施（report_ui 共有 UC のため承認後に着手）。
+- **実施（2026-09-28）**: 定数 `INITIAL = 10000.0` を廃止し、meta.initial_deposit と summary の return_pct・
+  final_balance の既定値を run の統計の初期証拠金から取る。検定 `test_meta_initial_deposit_is_the_runs_value`（100000 の run）。
 
 ## ISSUE-545: サマリーの Sharpe Ratio が MT5 と別の定義で計算され、値が大きく食い違う
 - **ステータス**: RESOLVED（2026-09-28・結果は本節末尾）
@@ -16374,7 +16376,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   ロスカットの規則として正しいかは未調査（2026-09-27 に 1 行記録済みの件と同じ run）。
 
 ## ISSUE-547: 同じ run の「勝率」が 比較・判定 と サマリー で違う定義になっている
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-28）
 - **重大度**: 中（同じ語に 2 つの値・実測）
 - **起票日**: 2026-09-28
 - **事象（実測）**: 上記 sim ジョブで、summary.win_rate（比較・判定タブの「勝率」）が **19.37%**、
@@ -16382,9 +16384,11 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **原因（コードで確認）**: `build_report_payload._summary` は `profit > 0` を勝ちに数え、
   サマリー（`mt5_parity.profit_trades`）は MT5 規則の `pnl >= 0` を勝ちに数える。
   summary の `return_pct` と final_balance の既定値も定数 `INITIAL = 10000.0`（ISSUE-544 と同じ原因）。
+- **実施（2026-09-28）**: summary の勝率・ペイオフ比をサマリーと同じ統計（profit_trades＝pnl ≥ 0・
+  average_profit/loss_trade）から取る。検定: 損益 0 を含む run で 比較・判定の勝率 と Profit Trades の割合が一致。
 
 ## ISSUE-548: サマリーの書式が MT5 と違う（件数と％の順・％の欠落）・sim の Period が空
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-28・Z-Score の確率 1 件の差は下に記録）
 - **重大度**: 低（値は正しい・表示の形の違い・実測）
 - **起票日**: 2026-09-28
 - **事象（実測・MT5 xlsx と並べて比較）**:
@@ -16395,6 +16399,12 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **照合済みで一致した項目（同じ実測）**: Initial Deposit・Total Net Profit・Gross Profit/Loss・
   Profit Factor・Recovery Factor・Expected Payoff・件数 4 種・Largest/Average profit/loss・連勝連敗 6 種・
   Balance DD 3 種・Equity DD 3 種・Z-Score の値・GHPR・Total Deals・LR 2 種（IS/OOS の 2 区間）。
+- **実施（2026-09-28）**: 件数 4 種を「件数 (割合%)」、AHPR/GHPR を「値 (増減%)」、Z-Score を「z (確率%)」に。
+  確率は 2 桁に丸めた z の erf(|z|/√2)（MT5 実レポート 10 本中 9 本が小数 2 桁一致・z=−3.02 だけ 99.75 対 MT5 99.74＝
+  MT5 の正規分布の近似式は未特定）。sim の Period は `.ini` の FromDate/ToDate をそのまま、無ければ run の足の
+  最初と最後の日付で「時間足 (開始 - 終了)」。実 UI で確認（M1 (2026.09.25 01:30 - 2026.09.25 01:39) など）。
+- **記録**: Sharpe などが「-5」と出る（MT5 は -5.00）のは移植元 report_ui の表示整形（fmtReportVal が小数 0 を整数に
+  する）で、プロトタイプも同じ表示だった（参照実装どおり）。
 
 ## ISSUE-549: 連勝・連敗の指標が、損益 0 の取引を含む run で MT5 と食い違う
 - **ステータス**: RESOLVED（2026-09-28・結果は本節末尾）
