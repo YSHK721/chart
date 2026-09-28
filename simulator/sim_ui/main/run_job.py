@@ -452,6 +452,38 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     )
 
 
+#: サマリー指標の計算ステップのログ（`/sim/data/{job_id}/metrics_steps.txt` で読める）。
+_METRICS_STEPS_FILE = "metrics_steps.txt"
+_METRICS_STEPS_ERROR_FILE = "metrics_steps_error.json"
+
+
+def _write_metrics_steps(job_dir: Path, result: Any) -> None:
+    """サマリー指標の計算ステップ（入力・途中の値・結果・統計との照合）を job-dir へ書く。
+
+    2026-09-28 依頼者指示「全ての指標の計算ステップを確認したいのでログを出力しろ」。
+    組み立ては usecase の metrics_steps（本番と同じ関数を呼ぶ）で、ここは書くだけ。
+    書けなくても run の成否は変えない（表示と同じ扱い）。理由は job-dir に残す。
+    """
+    from simulator.usecase.metrics_steps import build_metrics_steps, render_metrics_steps
+
+    try:
+        sections = build_metrics_steps(
+            trades=result.trades,
+            balance_curve=result.balance_curve,
+            equity_curve=result.equity_curve,
+            initial_deposit=result.stats.initial_deposit,
+            bar_open_equity=result.bar_open_equity,
+            bar_seconds=result.bar_seconds,
+            stats=result.stats,
+        )
+        (job_dir / _METRICS_STEPS_FILE).write_text(
+            render_metrics_steps(sections), encoding="utf-8")
+    except Exception as exc:  # ログの失敗で成功した計算を捨てない
+        message = f"計算ステップのログの書出しに失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _write_note(job_dir, _METRICS_STEPS_ERROR_FILE, {"message": message})
+
+
 def _write_report_payload(
     job_dir: Path, result: Any, *, load_run_inputs, load_indicators,
     run_kwargs: "dict[str, Any]", account: Any,
@@ -467,6 +499,7 @@ def _write_report_payload(
     もう 1 度 parse して同じ Bar 列・同じ指標を作って捨てることになる（実測: 1 run で
     12 回 parse・18.8 秒）。
     """
+    _write_metrics_steps(job_dir, result)
     loaded: "dict[str, Any]" = {}
 
     def load_once(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
