@@ -236,6 +236,38 @@ export async function mountSimExecutionPanel({
     // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
     // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
     // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
+    // 投入する本文（スタートと「設定をコピー」が**同じ 1 つ**を使う＝コピーした内容と実際に
+    //   送る内容がずれない）。組み立ては純関数 1 箇所（M5）で、ここは 3 つの供給元を渡すだけ。
+    function composeSubmission() {
+      const derived = subjectSource.derivedBacktest();
+      return buildSubmission({
+        profile: runProfile,
+        subject: {
+          ea_name: derived.ea_name,
+          initial_deposit: derived.initial_deposit,
+          settings: subjectSource.buildSettings(),
+        },
+        inputs: eaInputsView.values(),
+        // 実行トレースの指定（面は打たれた値を報告するだけ・解釈は M5 が唯一持つ）。
+        trace: traceView.traceSpec(),
+      });
+    }
+
+    // 「設定をコピー」（2026-09-28 依頼者指示・デバッグ用）: スタートで投入する本文を JSON で写す。
+    //   写した内容は開発者コンソールにも残す（クリップボードが使えない環境でも取り出せる）。
+    view.onCopySettings(async () => {
+      try {
+        const text = JSON.stringify(composeSubmission(), null, 2);
+        console.log(text);
+        await view.copyText(text);
+        view.showCopyResult(`コピーしました（${text.length} 文字）`);
+      } catch (e) {
+        const message = (e && e.message) || String(e);
+        view.showCopyResult(`コピーできません: ${message}`);
+        console.error(`設定をコピーできません: ${message}`);
+      }
+    });
+
     view.onStart(async () => {
       // 押した時点で通番を進める（この 1 行が「現在の run」の定義）。
       submitSeq += 1;
@@ -244,19 +276,7 @@ export async function mountSimExecutionPanel({
         if (stopWatch) { stopWatch(); stopWatch = null; }
         lastStatus = null;
         statusView.showSubmitting();
-        // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
-        const derived = subjectSource.derivedBacktest();
-        const body = buildSubmission({
-          profile: runProfile,
-          subject: {
-            ea_name: derived.ea_name,
-            initial_deposit: derived.initial_deposit,
-            settings: subjectSource.buildSettings(),
-          },
-          inputs: eaInputsView.values(),
-          // 実行トレースの指定（面は打たれた値を報告するだけ・解釈は M5 が唯一持つ）。
-          trace: traceView.traceSpec(),
-        });
+        const body = composeSubmission();
         const result = await client.submit(body);
         // 画面へ触れるのは現在の run だけ（遅れて届いた古い応答は掲示も導線も動かさない）。
         // 購読口（onSubmitted / onError）は投入ごとに従来どおり呼ぶ＝外向きの契約は不変。

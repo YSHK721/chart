@@ -862,3 +862,44 @@ test("reportViewUrl builds the ?job= dispatch url", async () => {
   assert.equal(reportViewUrl("abc"), `${SIM_REPORT_VIEW_PATH}?job=abc`);
   assert.equal(reportViewUrl(null, ""), "", "id 不在の相対形はクエリを組み立てない");
 });
+
+// --- 「設定をコピー」（2026-09-28 依頼者指示・デバッグ用）------------------------------------
+
+test("copy writes exactly the body that start submits (同じ 1 つの組み立て)", async () => {
+  const doc = fakeDoc();
+  const copied = [];
+  doc.defaultView = { navigator: { clipboard: { writeText: async (t) => { copied.push(t); } } } };
+  const fetchFn = routerFetch({ job: { job_id: "j9", status: "running" } });
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: fetchFn, eaCandidates: EA_LIST });
+  findById(doc.body, eaInputId("stop_loss_points")).value = "150";
+  // Act: コピー → スタート
+  findById(doc.body, "runCopySettings")._listeners.click[0]();
+  await flush();
+  findById(doc.body, "runStart")._listeners.click[0]();
+  await flush();
+  // Assert: コピーした JSON と投入した本文が完全に同じ。
+  const post = fetchFn.calls.find((c) => c.url === "/sim/jobs");
+  assert.equal(copied.length, 1);
+  assert.deepEqual(JSON.parse(copied[0]), JSON.parse(post.init.body));
+  assert.equal(JSON.parse(copied[0]).backtest.stop_loss_points, 150);
+  assert.match(findById(doc.body, "runCopyNote").textContent, /^コピーしました（\d+ 文字）$/);
+  // 計算量: クリップボードへの書き込み − 押した回数 = 0（押すたびに 1 回だけ組む）。
+  findById(doc.body, "runCopySettings")._listeners.click[0]();
+  await flush();
+  assert.equal(copied.length - 2, 0);
+});
+
+test("copy failure is shown, not silent", async () => {
+  const doc = fakeDoc();
+  doc.defaultView = { navigator: { clipboard: { writeText: async () => { throw new Error("denied"); } } } };
+  await mountSimExecutionPanel({ ...IDLE_WATCH_TIMER, doc, host: doc.body, fetch: routerFetch(), eaCandidates: EA_LIST });
+  const errors = [];
+  const orig = console.error;
+  console.error = (m) => errors.push(m);
+  try {
+    findById(doc.body, "runCopySettings")._listeners.click[0]();
+    await flush();
+  } finally { console.error = orig; }
+  assert.match(findById(doc.body, "runCopyNote").textContent, /^コピーできません: denied$/);
+  assert.equal(errors.length, 1);
+});

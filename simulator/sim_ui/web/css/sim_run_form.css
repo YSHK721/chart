@@ -526,6 +526,22 @@
   color: var(--accent);
   border: 1px solid var(--accent);
 }
+/* 「設定をコピー」（デバッグ用の補助）: 主操作より目立たせない。スタートと結果導線の左に置く。 */
+#simRunActionPanel .run-copy-settings {
+  order: -2;
+  padding: 0.6em 12px;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+#simRunActionPanel .run-copy-note {
+  order: -3;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 /* --- 実行状態の掲示面（M6・§19.6 段階 3）------------------------------------------- */
 /* スタートの直下に置く掲示専用の面（操作要素は 0）。押した結果・実行の状態・失敗理由を
