@@ -16327,3 +16327,59 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   自体は未実測（実測した時点で本文へ追記する）。
 - **数え方**: MarginProbe_EA・合成データ 20 本・initial_deposit=100000 の 1 run。触ったのは
   spec.json の値のみ。修正は未実施（report_ui 共有 UC のため承認後に着手）。
+
+## ISSUE-545: サマリーの Sharpe Ratio が MT5 と別の定義で計算され、値が大きく食い違う
+- **ステータス**: OPEN
+- **重大度**: 高（表示値の誤り・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: report_ui export の実 run（取引 5,224 件・純損益 11,370 が MT5 と完全一致する run）で、
+  Sharpe Ratio の表示が IS **4.83**（MT5 **23.318715**）・OOS **−2.64**（MT5 **−5.00**）。
+  sim ジョブ（CalcProbe_EA 2026.09.01〜09.25）でも同じ式の値（−3.50）が表示される。
+- **原因（コードと出典で確認）**: `simulator/usecase/mt5_parity.py` の `sharpe_ratio_per_trade`
+  は「取引ごとの損益の平均 ÷ 標準偏差 × √N を [−5, 5] で切る」。docstring 自身が「クランプは仮説・出典 TBD」。
+  MT5 の定義（MetaQuotes の回答 https://www.mql5.com/en/forum/492425 ・build 3210 で改訂・記事
+  https://www.mql5.com/en/articles/9171 ）は「足ごとの有効証拠金の対数収益（変化の無い足は除く・Rf=0・
+  母標準偏差）× √(1 日の足数) × √252」。
+- **実測（数え方）**: MT5 xlsx 9 本の Deals 表から取引ごとの式・HPR の式・日次の式を計算 → どれも不一致
+  （正の MT5 値 7.61 / 11.81 / 23.32 は上限で切られておらず、[−5,5] 仮説は否定）。
+  export の実 run に `AccountCurveRecorder` を注入して足ごとの有効証拠金を取り、MT5 の定義で計算 →
+  IS **22.66**（MT5 23.32・差 2.8%）、OOS **−13.67**（MT5 −5.00。負の MT5 値は 6 本すべて −5.00 で、
+  下限 −5 で切る形と整合＝推論）。
+- **未確定（着手前に実測で確定させる）**: IS の 2.8% の差の原因（ティックの作り方の差か＝推論）、
+  下限 −5 の有無と上限の有無。
+- **関連**: ISSUE-013（クランプ仮説の起点）
+
+## ISSUE-546: 残高が 0 以下になった run でサマリーの GHPR が「nan (nan%)」と表示される
+- **ステータス**: OPEN
+- **重大度**: 中（表示値の欠損・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: sim ジョブ（CalcProbe_EA・jp225_mt5_spread・2026.09.01〜09.25・フォーム投入）で、
+  最終残高が −55.2 になり、サマリーの GHPR が `nan (nan%)`。同じ run の AHPR は 0.9923 と数値を出すが、
+  負の残高を含む比から作った値で意味を持たない。
+- **原因（コードで確認）**: `metrics_spec.ghpr` は HPR（残高の比）の積の 1/N 乗。負の比が入ると
+  負数の分数乗で NaN。残高が 0 以下になる run の扱いが定義されていない。
+- **記録（発生未実測）**: 残高が 0 以下になるまで取引が続くこと自体（証拠金維持率 0.23%）が
+  ロスカットの規則として正しいかは未調査（2026-09-27 に 1 行記録済みの件と同じ run）。
+
+## ISSUE-547: 同じ run の「勝率」が 比較・判定 と サマリー で違う定義になっている
+- **ステータス**: OPEN
+- **重大度**: 中（同じ語に 2 つの値・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: 上記 sim ジョブで、summary.win_rate（比較・判定タブの「勝率」）が **19.37%**、
+  サマリーの Profit Trades が **21.71% (269)**。損益 0 の取引 29 件（profit>0 が 240 件・>=0 が 269 件）の扱いが違う。
+- **原因（コードで確認）**: `build_report_payload._summary` は `profit > 0` を勝ちに数え、
+  サマリー（`mt5_parity.profit_trades`）は MT5 規則の `pnl >= 0` を勝ちに数える。
+  summary の `return_pct` と final_balance の既定値も定数 `INITIAL = 10000.0`（ISSUE-544 と同じ原因）。
+
+## ISSUE-548: サマリーの書式が MT5 と違う（件数と％の順・％の欠落）・sim の Period が空
+- **ステータス**: OPEN
+- **重大度**: 低（値は正しい・表示の形の違い・実測）
+- **起票日**: 2026-09-28
+- **事象（実測・MT5 xlsx と並べて比較）**:
+  - Profit / Loss Trades・Short / Long Trades: 表示 `31.68% (1655)`、MT5 `1655 (31.68%)`（順が逆）。
+  - AHPR: 表示 `1.0001`、MT5 `1.0001 (0.01%)`。Z-Score: 表示 `-0.09`、MT5 `-0.09 (7.17%)`。
+  - sim ジョブの Period が空（writer が「期間の表示文字列は job 仕様に無い」として空文字を渡す。
+    実際には `.ini` の FromDate/ToDate が spec にある）。
+- **照合済みで一致した項目（同じ実測）**: Initial Deposit・Total Net Profit・Gross Profit/Loss・
+  Profit Factor・Recovery Factor・Expected Payoff・件数 4 種・Largest/Average profit/loss・連勝連敗 6 種・
+  Balance DD 3 種・Equity DD 3 種・Z-Score の値・GHPR・Total Deals・LR 2 種（IS/OOS の 2 区間）。
