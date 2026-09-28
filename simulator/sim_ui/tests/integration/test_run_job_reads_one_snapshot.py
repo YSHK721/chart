@@ -1,7 +1,7 @@
 """1 ジョブは実行中に追記されるデータ実体を 1 回だけ読む（ISSUE-551）。
 
 なぜ在るか（実測 2026-09-28・実 UI）:
-    MT5 常駐が毎分追記している `jp225_mt5_spread_m1.csv` で run を投入すると、約 3.5 分
+    MT5 常駐が毎分追記しているデータセット jp225_mt5_spread の系列 CSV で run を投入すると、約 3.5 分
     「準備中」のあと「指標系列の長さがデータ実体の行数と一致しません」で失敗した。1 ジョブが
     同じ実体を registry 用・Bar 列用・行の時刻用に別々に読み、読みの間に行が増えていた
     （読みの単一点 `ohlc_frame_cache` の鍵が (mtime, サイズ) を含むため、追記のたびに読み直す）。
@@ -26,7 +26,7 @@ import pytest
 from simulator.adapter.repository import ohlc_frame_cache as cache
 from simulator.sim_ui.main import run_job
 
-#: 2024-01-01T00:00:00Z（comma 形式の `time` は UNIX 秒 int が契約）。
+#: 2024-01-01T00:00:00Z（comma 形式の time 列は UNIX 秒 int が契約）。
 _EPOCH_2024_01_01 = 1_704_067_200
 _ROWS = 40
 

@@ -94,7 +94,7 @@ def test_a_negative_spread_is_refused(tmp_path):
 
 @pytest.fixture
 def conversions():
-    """`frame_to_bars` の観測口へ繋いだ記録（(Bar にした行数, 宣言した必須列) の列）。"""
+    """DataFrame → Bar 列の変換の観測口へ繋いだ記録（(Bar にした行数, 宣言した必須列) の列）。"""
     seen: "list[tuple[int, tuple[str, ...]]]" = []
     _ohlc_frame.set_observer(lambda rows, required: seen.append((rows, required)))
     yield seen
