@@ -10,7 +10,7 @@ adapter 層内部ヘルパー（usecase/domain にのみ依存・pandas を技�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import pandas as pd
 
@@ -24,13 +24,46 @@ class ColumnSpec:
     """1 形式分の列マッピング（形式差のみを保持する）。
 
     required: 必須列名タプル（欠損時 MissingBarError）。
-    extract: ``(df, i)`` を受け、位置 ``i`` の 1 行を ``domain.Bar`` 引数 dict へ
-        変換する抽出関数（実装は ``df["col"].iat[i]`` で位置参照する）。形式ごとの
-        列名・時刻パースの差をここへ閉じる。
+    columns: ``df`` を受け、``domain.Bar`` の引数名 → 全行ぶんの値の列（行の並びのまま）を
+        返す関数。形式ごとの列名・時刻パースの差をここへ閉じる。列は**列ごとに 1 回だけ**
+        取り出す（ISSUE-551 段 2: 1 行ごとに ``df["col"].iat[i]`` で取り出すと、取り出しが
+        行数 × 列数回発行され 215 万行で 3〜4 分かかった）。
     """
 
     required: tuple[str, ...]
-    extract: Callable[[pd.DataFrame, int], "dict[str, Any]"]
+    columns: Callable[[pd.DataFrame], "dict[str, Sequence[Any]]"]
+
+
+#: 変換の観測口（検定の注入点・絶対命令 2026-09-25「観測の境界を宣言する」）。
+#: `frame_to_bars` が 1 回ごとに (Bar にした行数, その形式が宣言した必須列) を渡す。既定なし。
+_observer: "Callable[[int, tuple[str, ...]], None] | None" = None
+
+
+def set_observer(observer: "Callable[[int, tuple[str, ...]], None] | None") -> None:
+    """変換の観測口を差し替える（``None`` で外す）。検定の注入点。"""
+    global _observer
+    _observer = observer
+
+
+def cell_values(column: pd.Series) -> "Sequence[Any]":
+    """列の全行を、従来の行ごとの ``column.iat[i]`` と**同じ値・同じ型**の列にする。
+
+    datetime64 の列だけは ``iat`` が pandas.Timestamp へ包むので同じく包む（包まずに
+    numpy.datetime64 を返すと、`domain.Bar` が拒む表現（Timestamp）の行が受理へ変わる）。
+    """
+    if pd.api.types.is_datetime64_any_dtype(column.dtype):
+        return list(column)
+    return column.to_numpy()
+
+
+def float_values(column: pd.Series) -> "list[float]":
+    """列の全行を Python の float の列にする（従来の行ごとの ``float(値)`` と同じ値）。"""
+    return column.to_numpy(dtype=float).tolist()
+
+
+def int_values(column: pd.Series) -> "list[int]":
+    """列の全行を Python の int の列にする（従来の行ごとの ``int(値)`` と同じ規則）。"""
+    return [int(value) for value in column.tolist()]
 
 
 def read_csv_or_data_error(source_ref: Any, *, sep: str | None = None) -> pd.DataFrame:
@@ -52,7 +85,7 @@ def frame_to_bars(df: pd.DataFrame, spec: ColumnSpec) -> list[Bar]:
     """DataFrame を検証して domain.Bar 列へ変換する（全形式共通の制御フロー）。
 
     必須列欠損 → MissingBarError / OHLC 整合違反 → domain.Bar が OHLCInvalidError /
-    時刻昇順違反 → TimeOrderError（CLEAN_ARCH §6）。形式差は spec.extract に閉じる。
+    時刻昇順違反 → TimeOrderError（CLEAN_ARCH §6）。形式差は spec.columns に閉じる。
     """
     missing = [c for c in spec.required if c not in df.columns]
     if missing:
@@ -61,11 +94,15 @@ def frame_to_bars(df: pd.DataFrame, spec: ColumnSpec) -> list[Bar]:
             context={"missing": missing, "columns": list(df.columns)},
         )
 
+    if _observer is not None:
+        _observer(len(df), spec.required)
+    fields = spec.columns(df)
+    names = tuple(fields)
     bars: list[Bar] = []
     prev_time = None
-    for i in range(len(df)):
+    for i, values in enumerate(zip(*fields.values())):
         # OHLC 整合違反は domain.Bar が OHLCInvalidError を送出（内側例外・翻訳不要）
-        bar = Bar(**spec.extract(df, i))
+        bar = Bar(**dict(zip(names, values)))
         if prev_time is not None and bar.time <= prev_time:
             raise TimeOrderError(
                 "時刻が昇順ではありません",
