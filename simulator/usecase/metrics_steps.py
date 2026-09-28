@@ -147,16 +147,16 @@ def build_metrics_steps(
     sections.append(s)
 
     # --- 4. 連勝・連敗 ------------------------------------------------------------------
-    s = StepSection("4. 連勝・連敗（ランの区切り: 勝ち = pnl > 0・pnl = 0 はランに属さず前後を区切る）")
+    s = StepSection("4. 連勝・連敗（ランの区切り: 勝ち = pnl ≥ 0 / 負け = pnl < 0・同じ長さなら金額の絶対値が大きい方・ISSUE-549）")
     win_runs, loss_runs = ms._win_runs(trades), ms._loss_runs(trades)
     s.lines += [
         f"勝ちラン {len(win_runs)} 本（トレード計 {sum(len(r) for r in win_runs)} 件）・負けラン {len(loss_runs)} 本（計 {sum(len(r) for r in loss_runs)} 件）",
     ]
     vals = [
         ("Maximum consecutive wins (件数)", ms.max_consecutive_wins_count(trades), stats.max_con_wins, "最長の勝ちランの件数"),
-        ("Maximum consecutive wins ($)", ms.max_consecutive_wins_profit(trades), stats.max_con_profit_trades, "最長の勝ちランの利益"),
+        ("Maximum consecutive wins ($)", ms.max_consecutive_wins_profit(trades), stats.max_con_profit_trades, "最長の勝ちラン（同じ長さなら金額の絶対値が最大）の利益"),
         ("Maximum consecutive losses (件数)", ms.max_consecutive_losses_count(trades), stats.max_con_losses, "最長の負けランの件数"),
-        ("Maximum consecutive losses ($)", ms.max_consecutive_losses_loss(trades), stats.max_con_loss_trades, "最長の負けランの損失"),
+        ("Maximum consecutive losses ($)", ms.max_consecutive_losses_loss(trades), stats.max_con_loss_trades, "最長の負けラン（同じ長さなら金額の絶対値が最大）の損失"),
         ("Maximal consecutive profit ($)", ms.maximal_consecutive_profit_amount(trades), stats.con_profit_max, "利益が最大の勝ちランの利益"),
         ("Maximal consecutive profit (件数)", ms.maximal_consecutive_profit_count(trades), stats.con_profit_max_trades, "そのランの件数"),
         ("Maximal consecutive loss ($)", ms.maximal_consecutive_loss_amount(trades), stats.con_loss_max, "損失の絶対値が最大の負けランの損失"),

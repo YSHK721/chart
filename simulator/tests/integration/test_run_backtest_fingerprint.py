@@ -69,12 +69,17 @@ _TRADING_START = np.datetime64("2025-01-02T01:00:00")
 #: 2026-09-28 ISSUE-545 で取り直した（Sharpe の定義変更）。取り直す前に、新しい run の Sharpe だけを
 #:   旧い式（取引ごとの式）の値へ差し戻した指紋が旧値と一致することを A・B・C すべてで確かめた
 #:   ＝Sharpe 以外の列は動いていない。旧値: A 2d696eb1… / B 767255a5… / C aef4322e…。
-_A_STATS_SHA256 = "59d46a929d0ac35689cb3f321cdc3bc9fbf402eeeb85782034322e83f713736f"
+#: 2026-09-28 ISSUE-549 で A・B を取り直した（連勝・連敗の規則を MT5 に合わせた）。コミット済みの版
+#:   （HEAD）を別の作業ツリーで走らせ、その指紋が旧値（A 59d46a92… / B 2a4d4f93…）と一致すること、
+#:   新旧で違う列が連勝・連敗の列だけであることを確かめた: A は profit_trades_avg_con 1.1765→1.2735、
+#:   B は max_con_profit_trades 67.4→85.0（MT5 golden の 85 と一致）・profit_trades_avg_con 1.1667→1.2479。
+#:   C は損益 0 の取引が無く不変。
+_A_STATS_SHA256 = "8d88872b39f97e72a03b259a40ab259667099757bc81d619c9f360357c2a114b"
 _A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610517c"
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
-_B_STATS_SHA256 = "2a4d4f935357bf866b58d20059234ccd3f94ee0b839bf75c89a235ce510ca0f3"
+_B_STATS_SHA256 = "b31a93be964a05fa10a9ff9d5da508997fedfdee6e1b5bf0705655f54aa7a704"
 _B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
 _B_TRADE_COUNT = 1164
 

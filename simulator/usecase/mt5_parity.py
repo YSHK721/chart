@@ -8,7 +8,7 @@ compute_stats() の参照仕様二重定義（ISSUE-094 🔵）を分離した�
 担当する MT5 校正統計:
     * 件数規則 pnl>=0（is_count_win）: profit_trades = count(pnl >= 0)。ゼロ損益を勝ちに
       数える。loss_trades = count(pnl < 0)。profit_long/short も同規則。
-      （連勝/連敗ラン max_con_wins/losses の win 判定は metrics_spec.is_run_win=pnl>0・別ルール）
+      （連勝/連敗ラン max_con_wins/losses の win 判定 metrics_spec.is_run_win も同じ pnl>=0・ISSUE-549）
     * average_profit_trade = gross_profit / profit_trades(>=0)。avg_loss = gross_loss / loss_trades。
     * STAT_SHARPE_RATIO (golden -5.0): per-trade profit 系列の (mean/std(ddof=0))×√N を
       MT5 返却域 [-5, 5] にクランプ → sharpe_ratio_per_trade()。素値 -5.08 → -5.0 を再現。
@@ -49,14 +49,14 @@ def is_count_win(t: TradeRecord) -> bool:
     """件数系 / Z-Score 用の勝ち判定: pnl >= 0（ゼロ損益を勝ちに数える）。
 
     根拠: 実 MT5 実測（golden report_900005560 で profit_trades=292）。連勝/連敗ラン
-    の勝ち判定 metrics_spec.is_run_win(pnl>0) とは基準が異なるため、両者を混用してはならない。
+    の勝ち判定 metrics_spec.is_run_win も 2026-09-28 から同じ pnl>=0（ISSUE-549・MT5 実レポート 11 本で実測）。
     """
     return t.pnl() >= 0
 
 
 def profit_trades(trades: Sequence[TradeRecord]) -> int:
     # 実 MT5 定義: profit_trades = count(is_count_win=pnl>=0)。ゼロ損益トレードを「勝ち」に数える。
-    # （連勝/連敗ランの win 判定 is_run_win=pnl>0 とは別ルール。golden report_900005560 で 292 を再現）
+    # （golden report_900005560 で 292 を再現。連勝/連敗ランも同じ規則・ISSUE-549）
     return sum(1 for t in trades if is_count_win(t))
 
 
@@ -156,7 +156,7 @@ def equity_dd_maximal_percent(equity_curve: Sequence[float], initial_deposit: fl
 def _z_run_count(trades: Sequence[TradeRecord]) -> int:
     """Z-Score 用のラン数 R（2 値分割: win=pnl>=0 / loss=pnl<0）。
 
-    連勝/連敗の最長ラン（is_win()=pnl>0・ゼロ中立）とは別ルール。MT5 Z-Score は
+    連勝/連敗のラン（metrics_spec._runs）も同じ pnl>=0 の 2 値分割（ISSUE-549）。MT5 Z-Score は
     profit_trades と同じく pnl>=0 を勝ち側にまとめて連を数える（golden で 468 を再現）。
     """
     r = 0

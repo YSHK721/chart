@@ -44,43 +44,36 @@ def _hpr_series(balance_curve: Sequence[float], initial_deposit: float) -> list[
 
 
 def is_run_win(t: TradeRecord) -> bool:
-    """連勝ラン用の勝ち判定: pnl > 0（ゼロ損益はラン中立で勝ちに数えない）。
+    """連勝ラン用の勝ち判定: pnl >= 0（損益 0 は勝ちに数える・件数系 is_count_win と同じ規則）。
 
-    根拠: METRICS §6.1（同値はラン区切り）/ §4.3（AvgConWins=N_w/K_w の N_w は
-    win ラン内件数）。件数系 is_count_win(pnl>=0) とは基準が異なる。
+    根拠（ISSUE-549・2026-09-28 実測）: MT5 実レポート 11 本（confirmation の xlsx 9 本・固定データ
+    golden・HTML）の Deals 表で、損益 0 の扱い 4 通り（区切る／飛ばす／勝ち／負け）を当てた結果、
+    全件一致は「勝ちに数える」だけ。旧規則（pnl > 0・0 は前後を区切る＝METRICS §6.1）は損益 0 を
+    含む 4 本で食い違った（golden: Maximum consecutive wins の金額 67 対 MT5 85）。
     """
-    return t.pnl() > 0
-
-
-def _sign(t: TradeRecord) -> int:
-    """トレードの符号 sign(pnl) ∈ {+1, 0, -1}（PROCESS §6.1: 同値は 0）。"""
-    p = t.pnl()
-    if p > 0:
-        return 1
-    if p < 0:
-        return -1
-    return 0
+    return t.pnl() >= 0
 
 
 def _runs(trades: Sequence[TradeRecord]) -> list[list[TradeRecord]]:
-    """連勝/連敗のラン列へ 3 値分割する（PROCESS §6.1:349-350）。
+    """連勝/連敗のラン列へ 2 値分割する（勝ち＝pnl ≥ 0 / 負け＝pnl < 0・ISSUE-549）。
 
-    各トレードを sign(pnl)∈{+1,0,-1} で分類し、同符号の連続をランとする。
-    同値（pnl=0）はどのランにも属さず、前後のランを区切る（カウントをリセット）。
+    同じ判定が続く区間を 1 本のランとする。どのトレードもちょうど 1 本のランに属する。
     """
     runs: list[list[TradeRecord]] = []
-    broken = False  # 直前に同値（0）が現れランを区切った
+    prev: "bool | None" = None
     for t in trades:
-        s = _sign(t)
-        if s == 0:
-            broken = True  # 同値はランに属さず、前後を区切る
-            continue
-        if runs and not broken and _sign(runs[-1][0]) == s:
+        win = is_run_win(t)
+        if runs and win == prev:
             runs[-1].append(t)
         else:
             runs.append([t])
-        broken = False
+        prev = win
     return runs
+
+
+def _longest(runs: Sequence[Sequence[TradeRecord]]) -> "Sequence[TradeRecord]":
+    """最長のラン。同じ長さが複数なら金額の絶対値が最大のもの（ISSUE-549・MT5 11 本で全件一致）。"""
+    return max(runs, key=lambda r: (len(r), abs(_run_profit(r))))
 
 
 # ---- §1 損益サマリー ----
@@ -228,7 +221,7 @@ def largest_loss_trade(trades: Sequence[TradeRecord]) -> float:
 
 
 def _win_runs(trades: Sequence[TradeRecord]) -> list[list[TradeRecord]]:
-    # ラン基準 is_run_win=pnl>0（ゼロは _runs で中立として既に除外済み）
+    # ラン基準 is_run_win=pnl>=0（ISSUE-549）
     return [r for r in _runs(trades) if r and is_run_win(r[0])]
 
 
@@ -246,12 +239,11 @@ def max_consecutive_wins_count(trades: Sequence[TradeRecord]) -> int:
 
 
 def max_consecutive_wins_profit(trades: Sequence[TradeRecord]) -> float:
-    # 最長連勝ラン（同じ区間）の利益
+    # 最長連勝ラン（同じ区間）の利益。同じ長さが複数なら金額の絶対値が最大のもの（ISSUE-549）。
     runs = _win_runs(trades)
     if not runs:
         return 0.0
-    best = max(runs, key=len)
-    return _run_profit(best)
+    return _run_profit(_longest(runs))
 
 
 def max_consecutive_losses_count(trades: Sequence[TradeRecord]) -> int:
@@ -263,8 +255,7 @@ def max_consecutive_losses_loss(trades: Sequence[TradeRecord]) -> float:
     runs = _loss_runs(trades)
     if not runs:
         return 0.0
-    best = max(runs, key=len)
-    return _run_profit(best)
+    return _run_profit(_longest(runs))
 
 
 def maximal_consecutive_profit_amount(trades: Sequence[TradeRecord]) -> float:
@@ -301,7 +292,7 @@ def maximal_consecutive_loss_count(trades: Sequence[TradeRecord]) -> int:
 
 def average_consecutive_wins(trades: Sequence[TradeRecord]) -> float:
     # METRICS §4.3: AvgConWins = N_w / K_w（K_w=0 のとき 0）。
-    # N_w = win ラン内のトレード数（is_run_win=pnl>0 でラン分割・ゼロはラン中立で区切る）。
+    # N_w = win ラン内のトレード数（is_run_win=pnl>=0 でラン分割・ISSUE-549）。
     # 件数系 profit_trades(is_count_win=pnl>=0) を分子に流用してはならない（基準が異なる）。
     runs = _win_runs(trades)
     if not runs:

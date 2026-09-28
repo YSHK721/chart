@@ -106,11 +106,11 @@ def test_balance_dd_absolute_and_maximal():
 
 # ---- §4 連勝/連敗ラン（is_run_win=pnl>0・文書版）---
 
-def test_is_run_win_excludes_zero():
+def test_is_run_win_counts_zero_as_win():
     z = TradeRecord(side="buy", volume=1.0, entry_time=0, exit_time=1,
                     entry_price=1000.0, exit_price=1000.0, contract_size=1.0,
                     swap=0.0, commission=0.0, exit_reason="tp")
-    assert metrics_spec.is_run_win(z) is False  # pnl==0 は勝ちに数えない
+    assert metrics_spec.is_run_win(z) is True  # pnl==0 は勝ちに数える（ISSUE-549・MT5 実測）
 
 
 def test_average_consecutive_wins_metrics_12():

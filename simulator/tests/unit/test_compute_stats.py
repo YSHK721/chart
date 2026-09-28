@@ -423,18 +423,15 @@ def test_zero_pnl_trade_breaks_loss_run_no_phantom_run():
 # 分子(件数) > 分母由来の実件数 となり §4.3 (AvgConWins=N_w/K_w) と乖離する。
 
 def test_average_consecutive_wins_uses_run_member_count_not_count_win():
-    # Arrange: [win(+10), zero(0), win(+20)]。
-    #   win ラン = {[+10]}, {[+20]}（ゼロが区切る） → K_w=2, N_w=2（ラン内件数）。
-    #   profit_trades(pnl>=0) = 3（+10, 0, +20）を分子に流用すると 3/2=1.5 となり誤り。
-    #   正: N_w/K_w = 2/2 = 1.0。
+    # ISSUE-549（2026-09-28・MT5 実レポート 11 本で実測）: 損益 0 は勝ちに数え、ランを区切らない。
+    # Arrange: [win(+10), zero(0), win(+20), loss(-5), win(+30)]。
+    #   勝ちラン = [+10, 0, +20], [+30] → K_w=2, N_w=4 → 4/2 = 2.0。
     from simulator.usecase.compute_stats import average_consecutive_wins
 
-    trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(20.0)]
-    # Act
-    result = average_consecutive_wins(trades)
-    # Assert: ゼロ込み件数(3) 流用なら 1.5、ラン内件数(2) なら 1.0
-    assert result == pytest.approx(1.0)
-
+    trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(20.0),
+              _trade_with_pnl(-5.0), _trade_with_pnl(30.0)]
+    # Act / Assert
+    assert average_consecutive_wins(trades) == pytest.approx(2.0)
 
 def test_average_consecutive_losses_uses_run_member_count_not_count_loss():
     # Arrange: [loss(-10), zero(0), loss(-20), loss(-30)]。
@@ -469,45 +466,48 @@ def test_is_count_win_counts_zero_pnl_as_win():
     assert is_count_win(_trade_with_pnl(-10.0)) is False
 
 
-def test_is_run_win_excludes_zero_pnl():
-    # 連勝ラン基準: pnl>0 のみ勝ち（ゼロはラン中立。METRICS §6.1/§4.3）。
+def test_is_run_win_counts_zero_pnl_as_win():
+    # 連勝ラン基準: pnl>=0 が勝ち（ISSUE-549・MT5 実レポート 11 本で全件一致した規則）。
     from simulator.usecase.compute_stats import is_run_win
 
     assert is_run_win(_trade_with_pnl(10.0)) is True
-    assert is_run_win(_trade_with_pnl(0.0)) is False
+    assert is_run_win(_trade_with_pnl(0.0)) is True
     assert is_run_win(_trade_with_pnl(-10.0)) is False
 
-
-def test_zero_pnl_trade_breaks_win_run_no_phantom_run():
-    # Arrange: [win(+40), zero(0), win(+60)]。同値が連勝ランを途切れさせるので
-    # 連勝ランは {[+40]}, {[+60]} の 2 本（最長 1）。
+def test_zero_pnl_trade_extends_the_win_run():
+    # Arrange: [win(+40), zero(0), win(+60)]。損益 0 は勝ちに数える＝1 本の連勝ラン（ISSUE-549）。
     from simulator.usecase.compute_stats import (
         max_consecutive_wins_count,
         max_consecutive_wins_profit,
     )
 
     trades = [_trade_with_pnl(40.0), _trade_with_pnl(0.0), _trade_with_pnl(60.0)]
-    # Act
-    count = max_consecutive_wins_count(trades)
-    best = max_consecutive_wins_profit(trades)
-    # Assert: (a) zero が区切るので最長連勝は 1（2 にならない）
-    assert count == 1
-    # (c) 最長連勝ランの利益は単一の +40（先頭ラン）
-    assert best == pytest.approx(40.0)
+    assert max_consecutive_wins_count(trades) == 3
+    assert max_consecutive_wins_profit(trades) == pytest.approx(100.0)
 
 
-def test_zero_pnl_excluded_from_win_and_loss_runs():
-    # Arrange: [win(+10), zero(0), loss(-10)]。zero は勝ち/負けどちらのランにも属さない。
+def test_equal_length_runs_pick_the_largest_amount():
+    # 同じ長さの最長ランが複数なら金額の絶対値が最大のもの（ISSUE-549・MT5 実測。
+    #   2026-03_ma-market: 最初のランを採ると 120、MT5 は 400）。
+    from simulator.usecase.compute_stats import (
+        max_consecutive_losses_loss,
+        max_consecutive_wins_profit,
+    )
+
+    trades = [_trade_with_pnl(p) for p in (10.0, 20.0, -5.0, 100.0, 300.0, -40.0, -50.0, 1.0, -10.0, -10.0)]
+    assert max_consecutive_wins_profit(trades) == pytest.approx(400.0)
+    assert max_consecutive_losses_loss(trades) == pytest.approx(-90.0)
+
+def test_zero_pnl_belongs_to_the_win_side():
+    # Arrange: [win(+10), zero(0), loss(-10)]。0 は勝ち側＝勝ちラン [+10, 0]・負けラン [-10]。
     from simulator.usecase.compute_stats import (
         max_consecutive_losses_count,
         max_consecutive_wins_count,
     )
 
     trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(-10.0)]
-    # Act / Assert: 連勝・連敗とも最長 1（zero は両ランから除外され区切りとなる）
-    assert max_consecutive_wins_count(trades) == 1
+    assert max_consecutive_wins_count(trades) == 2
     assert max_consecutive_losses_count(trades) == 1
-
 
 def test_compute_stats_does_not_import_pandas_at_module_level_for_purity():
     # 純粋関数群であることの確認（domain 以外の usecase 外層を import しない）
