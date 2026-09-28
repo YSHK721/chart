@@ -110,7 +110,10 @@ _IS_BALANCE_MIN = 9843.700000000004
 #: 2026-09-27 に 6 列（ghpr / lr_correlation / lr_standard_error / equity_ddrel_percent /
 #: equity_dd_relative / deals）を追加して取り直した。追加前からある列だけで畳んだ指紋が
 #: 旧値 7fd0b3c9… と一致することを確かめてから置き換えた（既存列は動いていない）。
-_IS_STATS_SHA256 = "6e4f086d1119181e98026760980e7dc4eb04426cb8ebb436792e2c19952dca88"
+#: 2026-09-28 ISSUE-545（Sharpe の定義変更）で取り直した。コミット済みの版（HEAD）を別の作業ツリーで
+#: 走らせた統計と全列を突き合わせ、違うのは sharpe_ratio（−3.4455 → −5.0）だけであること、HEAD の
+#: 統計の指紋が旧値 6e4f086d… と一致することを確かめてから置き換えた。
+_IS_STATS_SHA256 = "9edbf8d06f41016f315de9edba8ea8f67c0f2179b351ae56e3ca732141b30271"
 _OOS_TRADES = 3
 _OOS_PROFIT = -72.0
 

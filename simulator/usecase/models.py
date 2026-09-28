@@ -202,3 +202,7 @@ class BacktestResult:
     balance_curve: Any
     stats: BacktestStats
     indicator_values: dict[str, Any] = field(default_factory=dict)
+    #: 各足の最初の評価点の有効証拠金と足の秒数（Sharpe Ratio の入力・ISSUE-545）。
+    #: 計算ステップのログ（metrics_steps）が統計と同じ入力を読むために保持する。
+    bar_open_equity: list = field(default_factory=list)
+    bar_seconds: "float | None" = None

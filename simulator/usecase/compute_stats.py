@@ -19,7 +19,7 @@
 判断点（doc 不整合・upstream-input-validation で実証・据え置き）:
     * Sharpe / σ(HPR): METRICS §1.2/§11 の式（ddof=0 母分散）を採用（metrics_spec.sharpe_ratio）。
       §12.2/§12.6 記載の σ=0.020019・Sharpe=0.17 は式から再現不能のため不採用。
-      実 MT5 の Sharpe=-5.0 は per-trade クランプ版（mt5_parity.sharpe_ratio_per_trade）を結線。
+      Sharpe は足ごとの有効証拠金の MT5 定義（mt5_parity.sharpe_ratio_bar_equity・ISSUE-545）。
 """
 from __future__ import annotations
 
@@ -78,6 +78,7 @@ from simulator.usecase.mt5_parity import (  # noqa: F401
     profit_short_trades,
     profit_trades,
     recovery_factor_equity,
+    sharpe_ratio_bar_equity,
     sharpe_ratio_per_trade,
     total_deals,
     z_score,
@@ -92,13 +93,16 @@ def compute_stats(
     balance_curve: Sequence[float],
     equity_curve: Sequence[float],
     initial_deposit: float,
+    bar_open_equity: Sequence[float] = (),
+    bar_seconds: "float | None" = None,
 ) -> BacktestStats:
     """確定トレード列・balance/equity 系列から BacktestStats を算出する。
 
     実 MT5 整合（第2サイクルで結線・ISSUE-013）:
-      * sharpe_ratio は per-trade profit 系列の Sharpe を [-5,5] にクランプした値
-        （mt5_parity.sharpe_ratio_per_trade）。HPR 版 metrics_spec.sharpe_ratio() は残置
-        （METRICS §1.2 用途）。
+      * sharpe_ratio は足ごとの有効証拠金（足の最初の評価点）の対数収益から MT5 の定義で
+        算出する（mt5_parity.sharpe_ratio_bar_equity・ISSUE-545 で per-trade クランプ版から
+        置き換え）。足の系列（``bar_open_equity``）と足の秒数（``bar_seconds``）はエンジンが渡す。
+        渡されないときは 0.0（取引列からは MT5 の値を作れない・実測）。
       * recovery_factor は equity DD 基準・符号付き net（mt5_parity.recovery_factor_equity）。
         equity_curve 未供給（空列）時は balance 基準 metrics_spec.recovery_factor() へ
         フォールバック（後方互換）。
@@ -126,7 +130,7 @@ def compute_stats(
         profit_factor=profit_factor(trades),
         recovery_factor=recovery,
         expected_payoff=expected_payoff(trades),
-        sharpe_ratio=sharpe_ratio_per_trade(trades),
+        sharpe_ratio=sharpe_ratio_bar_equity(bar_open_equity, bar_seconds),
         trades=total_trades(trades),
         profit_trades=profit_trades(trades),
         loss_trades=loss_trades(trades),

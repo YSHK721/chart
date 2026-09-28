@@ -31,6 +31,7 @@ from typing import Sequence
 
 import numpy as np
 
+from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.trade_record import TradeRecord
 from simulator.usecase.metrics_spec import (
     _dd_arrays,
@@ -243,3 +244,65 @@ def total_deals(trades: Sequence[TradeRecord]) -> int:
     """
     opened = sum(1 for t in trades if t.exit_reason != "partial")
     return len(trades) + opened
+
+
+# ---- Sharpe Ratio（STAT_SHARPE_RATIO・足ごとの有効証拠金・ISSUE-545） ----
+# MT5 の定義（MetaQuotes の回答 https://www.mql5.com/en/forum/492425 ・記事
+# https://www.mql5.com/en/articles/9171 ）: 足ごとの有効証拠金の対数収益（変化の無い足は除く・
+# Rf=0）の 平均 ÷ 母標準偏差 × √(1 日の秒数 ÷ 足の秒数) × √252。
+# 実 MT5 校正（2026-09-28・report_ui export の実 run と MT5 xlsx）:
+#   足の値は**足の最初の評価点**の有効証拠金（＝前の足の最後のティックの後の値）。
+#   stop-probe IS 23.318957（MT5 23.318715）・4 月全体 11.812502（MT5 11.812356）。
+#   足の最後の点・最大・最小・平均、単純収益、ティックごとの系列はどれも不一致（1〜60%）。
+#   負の側: 定義どおりの値が −13.62（OOS）・−30.10（ma_slope 固定データ）の run は MT5 で
+#   どちらも −5.00。MT5 レポート 10 本の負の値はすべて −5.00 で、正の値は上限で切られない
+#   （23.32 まで観測）。よって下限 −5 で切る。−5〜0 の値の MT5 参照は未入手（ISSUE-545 に記録）。
+
+#: Sharpe Ratio の下限（MT5 が負の値を −5.00 に揃える観測・上の注記）。
+SHARPE_FLOOR = -5.0
+#: 年率換算の営業日数（MT5 記事の係数）。
+_TRADING_DAYS_PER_YEAR = 252
+_SECONDS_PER_DAY = 86400
+
+
+def bar_period_seconds(bars: Sequence) -> "float | None":
+    """足の時間幅（秒）＝隣り合う足の時刻差の最小値。足が 2 本未満なら None。
+
+    足の列は 1 つの時間足で並ぶので、最小の差がその時間足の幅になる（休場の穴は差を
+    大きくするだけで最小値を変えない）。
+    """
+    if len(bars) < 2:
+        return None
+    best = None
+    prev = epoch_seconds(bars[0].time)
+    for bar in bars[1:]:
+        cur = epoch_seconds(bar.time)
+        diff = cur - prev
+        if diff > 0 and (best is None or diff < best):
+            best = diff
+        prev = cur
+    return float(best) if best is not None else None
+
+
+def sharpe_ratio_bar_equity(
+    bar_open_equity: Sequence[float], bar_seconds: "float | None"
+) -> float:
+    """足ごとの有効証拠金から MT5 の Sharpe Ratio を返す（上の注記の定義）。
+
+    値が変わった隣り合う 2 足の対数収益だけを使う。有効証拠金が 0 以下の足を含む組は
+    対数が定義されないので使わない（ISSUE-546 と同じ未定義域）。収益が 2 つ未満・
+    標準偏差 0・足の幅が不明のときは 0.0。
+    """
+    if not bar_seconds or bar_seconds <= 0 or len(bar_open_equity) < 3:
+        return 0.0
+    e = np.asarray(bar_open_equity, dtype=float)
+    a, b = e[:-1], e[1:]
+    use = (b != a) & (a > 0) & (b > 0)
+    if int(use.sum()) < 2:
+        return 0.0
+    r = np.log(b[use] / a[use])
+    sd = float(r.std())
+    if sd == 0.0:
+        return 0.0
+    factor = math.sqrt(_SECONDS_PER_DAY / bar_seconds * _TRADING_DAYS_PER_YEAR)
+    return max(SHARPE_FLOOR, float(r.mean()) / sd * factor)

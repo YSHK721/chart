@@ -36,6 +36,7 @@ from simulator.domain.account import Account
 from simulator.usecase._execution import admit_orders
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
+from simulator.usecase.mt5_parity import bar_period_seconds
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
 from simulator.usecase.evaluation_point import TICK_GRANULARITY
 from simulator.usecase.margin_guard import MarginGuard
@@ -99,6 +100,8 @@ class _RunState:
     deals: list
     balance_curve: list
     equity_curve: list
+    # 各足の最初の評価点が equity_curve のどこに記録されたか（Sharpe Ratio の系列・ISSUE-545）。
+    bar_open_equity_index: list
     open_trades: list
     halted: bool
     trading_start: Any
@@ -286,6 +289,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             deals=deals,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
+            bar_open_equity_index=[],
             # 保有玉（走査順＝反映順が byte 依存）。
             open_trades=[],
             # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
@@ -480,6 +484,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             # H → 建玉変更 → ペンディング → I を評価点ごとに行う。「どこで評価するか」は
             #   スケジュールが決め、「評価点で何をするか」は _evaluate_point が持つ。
+            # 足の最初の評価点の equity の位置（評価点 1 つにつき equity ちょうど 1 点＝
+            #   margin_guard の不変条件なので、足に点が 1 つでもあれば先頭の位置はここ）。
+            first_equity_at = len(state.equity_curve)
             for point in points:
                 open_trades, halted = self._evaluate_point(
                     state, point, open_trades, halted
@@ -490,6 +497,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   早期 return 3 経路ぶんの写しが必要になる（複製）。
                 if state.tracer is not None:
                     state.tracer.observe(point, state.account, open_trades, halted)
+            if len(state.equity_curve) > first_equity_at:
+                state.bar_open_equity_index.append(first_equity_at)
 
             prev_close = bar.close
 
@@ -513,6 +522,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             balance_curve=state.balance_curve,
             equity_curve=state.equity_curve,
             initial_deposit=request.account.initial_deposit,
+            bar_open_equity=[state.equity_curve[i] for i in state.bar_open_equity_index],
+            bar_seconds=bar_period_seconds(bars),
         )
 
     def _evaluate_point(
@@ -600,6 +611,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         balance_curve: list,
         equity_curve: list,
         initial_deposit: float,
+        bar_open_equity: "list | None" = None,
+        bar_seconds: "float | None" = None,
     ) -> BacktestResult:
         """OnDeinit 集計段（両実行経路で完全一致していた終了処理の単一化）。
 
@@ -617,6 +630,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             balance_curve=balance_curve,
             equity_curve=equity_curve,
             initial_deposit=initial_deposit,
+            bar_open_equity=bar_open_equity or [],
+            bar_seconds=bar_seconds,
         )
         return BacktestResult(
             trades=trades,
@@ -624,4 +639,6 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             balance_curve=balance_curve,
             stats=stats,
+            bar_open_equity=bar_open_equity or [],
+            bar_seconds=bar_seconds,
         )

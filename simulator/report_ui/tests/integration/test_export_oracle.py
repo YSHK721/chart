@@ -190,10 +190,10 @@ class TestSegmentReportOnRealRun:
     @pytest.mark.parametrize("seg, expected", [
         # MT5 実レポートの表示値（IS: ReportTester-900005560_2604_03.xlsx・
         #   OOS: ReportTester-900005560_forword_01.xlsx）。2026-09-27 に追加した 5 項目。
-        ("is", {"GHPR": "1.0001 (0.01%)", "LR Correlation": "0.97",
+        ("is", {"Sharpe Ratio": "23.32", "GHPR": "1.0001 (0.01%)", "LR Correlation": "0.97",
                 "LR Standard Error": "1159", "Equity Drawdown Relative": "11.59% (1620)",
                 "Total Deals": "10448"}),
-        ("oos", {"GHPR": "0.9998 (-0.02%)", "LR Correlation": "-0.90",
+        ("oos", {"Sharpe Ratio": "-5.00", "GHPR": "0.9998 (-0.02%)", "LR Correlation": "-0.90",
                  "LR Standard Error": "499", "Equity Drawdown Relative": "41.66% (4270)",
                  "Total Deals": "4876"}),
     ])

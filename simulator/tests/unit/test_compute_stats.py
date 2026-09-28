@@ -334,7 +334,9 @@ def test_compute_stats_returns_backteststats_matching_metrics_12_6():
     # 校正と同方針の正当更新）。旧 HPR 版 0.1862（METRICS §1.2）から per-trade 版へ差し替え:
     #   per-trade pnl 系列の (mean/std(ddof=0))×√N = 0.560523（[-5,5] 内のためクランプなし）。
     # HPR 版の値は sharpe_ratio()（残置関数）が引き続き提供する（test_*_sharpe で別途固定）。
-    assert stats.sharpe_ratio == pytest.approx(0.560523, abs=1e-5)
+    # ISSUE-545（2026-09-28）: Sharpe は足ごとの有効証拠金から MT5 の定義で算出する。足の系列を
+    #   渡さない本検定では 0.0（取引列からは MT5 の値を作れない・実測）。旧 per-trade 値 0.560523 は廃止。
+    assert stats.sharpe_ratio == 0.0
     assert stats.balance_min == pytest.approx(10000.0)
     assert stats.balance_dd == pytest.approx(350.0)
     assert stats.balance_dd_percent == pytest.approx(3.38, abs=1e-2)
@@ -565,20 +567,27 @@ def test_compute_stats_populates_equity_dd_fields_from_equity_curve():
     assert stats.equity_dd_max_percent == pytest.approx(14.9758, abs=1e-3)
 
 
-def test_compute_stats_sharpe_is_per_trade_clamped_when_wired():
-    # Arrange/Act: sharpe_ratio フィールドが per-trade 版（clamp[-5,5]）へ差し替わる。
-    from simulator.usecase.compute_stats import compute_stats, sharpe_ratio_per_trade
+def test_compute_stats_sharpe_comes_from_the_bar_equity_series():
+    # ISSUE-545（2026-09-28）: sharpe_ratio は足ごとの有効証拠金の MT5 定義（sharpe_ratio_bar_equity）。
+    from simulator.usecase.compute_stats import compute_stats, sharpe_ratio_bar_equity
 
+    bars = [B0, B0 + 10.0, B0 + 5.0, B0 + 30.0, B0 + 40.0]
     stats = compute_stats(
         trades=_trades(),
         balance_curve=_balance_curve(),
         equity_curve=_equity_curve_distinct(),
         initial_deposit=B0,
+        bar_open_equity=bars,
+        bar_seconds=60.0,
     )
-    # Assert: HPR 版(0.1862)ではなく per-trade 版（実 MT5 整合・clamp[-5,5]）の値。
-    assert stats.sharpe_ratio == pytest.approx(sharpe_ratio_per_trade(_trades()))
-    # 旧 HPR 版の値(0.1862)とは異なる（差し替えが行われたことの実証）。
-    assert stats.sharpe_ratio != pytest.approx(0.1862, abs=1e-4)
+    assert stats.sharpe_ratio == pytest.approx(sharpe_ratio_bar_equity(bars, 60.0))
+    assert stats.sharpe_ratio != 0.0
+    # 足の系列が無ければ 0.0（取引列から MT5 の値は作れない）。
+    no_bars = compute_stats(
+        trades=_trades(), balance_curve=_balance_curve(),
+        equity_curve=_equity_curve_distinct(), initial_deposit=B0,
+    )
+    assert no_bars.sharpe_ratio == 0.0
 
 
 def test_compute_stats_recovery_is_equity_based_when_curve_supplied():

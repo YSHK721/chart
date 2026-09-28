@@ -66,12 +66,15 @@ _TRADING_START = np.datetime64("2025-01-02T01:00:00")
 
 # --- ケース A: `trading_start` なし（本番の全呼出がこの形） -------------------
 # 是正前後で一致することを実走で確認した値（ISSUE-398 の byte 等価ゲート）。
-_A_STATS_SHA256 = "2d696eb1539203f7a5141799a560aaab95588e7e4272b5a8820306805815ae6f"
+#: 2026-09-28 ISSUE-545 で取り直した（Sharpe の定義変更）。取り直す前に、新しい run の Sharpe だけを
+#:   旧い式（取引ごとの式）の値へ差し戻した指紋が旧値と一致することを A・B・C すべてで確かめた
+#:   ＝Sharpe 以外の列は動いていない。旧値: A 2d696eb1… / B 767255a5… / C aef4322e…。
+_A_STATS_SHA256 = "59d46a929d0ac35689cb3f321cdc3bc9fbf402eeeb85782034322e83f713736f"
 _A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610517c"
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
-_B_STATS_SHA256 = "767255a5620d3ead33a64b50dacd539858099322c4d8b4d18ca0f56c6b2ef520"
+_B_STATS_SHA256 = "2a4d4f935357bf866b58d20059234ccd3f94ee0b839bf75c89a235ce510ca0f3"
 _B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
 _B_TRADE_COUNT = 1164
 
@@ -124,12 +127,20 @@ _STATS_FIELDS_ADDED_AFTER_PIN = frozenset({
 })
 
 
+#: 指紋の採取後に**定義を変えた**列（理由と日付つきで宣言する）。値の正しさは定義の側の検定が
+#:   MT5 実レポートと突き合わせて固定する（指紋は「定義を変えていない列が動かない」を表明する）。
+_STATS_FIELDS_REDEFINED_AFTER_PIN = frozenset({
+    # 2026-09-28 ISSUE-545: Sharpe を取引ごとの損益の式から、MT5 の定義（足ごとの有効証拠金）へ。
+    #   MT5 との一致は test_sharpe_bar_equity.py と report_ui の test_export_oracle.py が固定。
+    "sharpe_ratio",
+})
+
+
 def _digest(result, stats_json: Path) -> "dict[str, object]":
     """`stats.json` 全フィールドと全確定トレードを 2 つの sha256 へ畳む。"""
     payload = json.loads(stats_json.read_text(encoding="utf-8"))
-    payload["stats"] = {
-        k: v for k, v in payload["stats"].items() if k not in _STATS_FIELDS_ADDED_AFTER_PIN
-    }
+    excluded = _STATS_FIELDS_ADDED_AFTER_PIN | _STATS_FIELDS_REDEFINED_AFTER_PIN
+    payload["stats"] = {k: v for k, v in payload["stats"].items() if k not in excluded}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     trades = "\n".join(
         json.dumps(asdict(t), sort_keys=True, default=str) for t in result.trades
@@ -318,7 +329,7 @@ _C_BARS = [
 #: つまり動いたのは建値基準ただ 1 つであり、他の経路は 1 ビットも動いていない。
 #: 旧ピン（退行との識別用）: stats 542d86738cc00654d9d6c1044dbc42d9796e82d7c9b93f5f41775b562882b173 /
 #: trades 75b3a5207dd3d53fddef072cc67326b9a05146e5be7d27e89da533c0beb04827（trade_count は 5 のまま）。
-_C_STATS_SHA256 = "aef4322ef6069502d3edd7ed2e08e04d335b1be7453383e79e6b93d0c80b244e"
+_C_STATS_SHA256 = "c340180fb5fd08f8f27e9b40ee5e13d2e5b319ec582f4bed62f5ab5abfa18c5d"
 _C_TRADES_SHA256 = "5c419318a859e21161b86037f3f2dc4399857f1a504d6c9002d1cede5c40e01a"
 _C_TRADE_COUNT = 5
 
