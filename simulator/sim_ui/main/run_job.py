@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.main import run_backtest
 from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
 
@@ -646,6 +647,10 @@ def _run_with_settings(
     return exit_code, run_kwargs
 
 
+# 1 ジョブの読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。実体が実行中に
+#   追記されても（MT5 常駐が毎分書く）、run 本体・表示・接点・売買履歴チャートが同じ行を
+#   読む。区間はジョブ全体（run と成果物の書出し）＝本関数の全体である。
+@ohlc_frame_cache.pinned_entities()
 def main(argv: "list[str] | None" = None) -> int:
     """1 ジョブを実行して終了コードを返す。"""
     parser = argparse.ArgumentParser(

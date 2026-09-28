@@ -14,6 +14,11 @@
       astype・reset_index・rolling はいずれも新しいオブジェクトを返す）。
     * 鍵は (実パス, mtime_ns, サイズ, sep)。実体が書き換われば鍵が変わり読み直す。
       run の子プロセスは 1 ジョブで死ぬため、キャッシュの寿命は 1 ジョブである。
+    * `pinned_entities` の区間では、実体ごとに**最初の読みの内容に固定する**（ISSUE-551）。
+      1 ジョブは同じ実体を registry 用・Bar 列用・行の時刻用に読む。実体が追記され続ける
+      （MT5 常駐が毎分書く）と、(mtime, サイズ) の鍵は読みのたびに変わり、読みごとに行数が
+      違って run が失敗した（実測 2026-09-28）。1 ジョブの読みはすべて同じ 1 回の読みから
+      導く。区間の外（sim core のような常駐プロセス）は従来どおり書き換えを読み直す。
     * `usecols` は**射影**であり parse ではない——全列の parse 1 回から選ぶ
       （usecols だけのために 2 回目の parse を発行しない）。
     * 上記以外の読みオプションは受けない（`ConfigError` で止める）。黙って素通しすると、
@@ -29,7 +34,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 import pandas as pd
 
@@ -51,6 +57,9 @@ _reader: "Callable[..., pd.DataFrame]" = pd.read_csv
 #: (実パス, mtime_ns, サイズ, sep) → parse 済み DataFrame。
 _frames: "dict[tuple, pd.DataFrame]" = {}
 
+#: `pinned_entities` の区間で固定した (実パス, sep) → 最初の読みの鍵。区間の外では None。
+_pinned: "dict[tuple, tuple] | None" = None
+
 #: 発行した parse の鍵の列（観測境界。検定は「発行 − 相異なる実体 = 0」を表明する）。
 parse_log: "list[tuple]" = []
 
@@ -69,6 +78,8 @@ def set_reader(reader: "Callable[..., pd.DataFrame] | None") -> None:
 def clear() -> None:
     """キャッシュと発行記録を空にする（テストが run を独立に測るための後始末）。"""
     _frames.clear()
+    if _pinned is not None:
+        _pinned.clear()
     parse_log.clear()
     _derived.clear()
 
@@ -95,10 +106,31 @@ def memo_on(frame: pd.DataFrame, name: str, fn: "Callable[[pd.DataFrame], Any]")
     return value
 
 
+@contextmanager
+def pinned_entities() -> Iterator[None]:
+    """区間内の読みを、実体ごとに最初の読みの内容へ固定する（1 ジョブ＝1 区間・ISSUE-551）。
+
+    事後条件: 区間内で同じ (実体, sep) を読むと、2 回目以降は実体が書き換わっていても
+        最初の読みと同じ DataFrame 実体を返す。区間を出ると従来の鍵（書き換えで読み直す）へ戻る。
+    """
+    global _pinned
+    outer = _pinned
+    _pinned = {} if outer is None else outer
+    try:
+        yield
+    finally:
+        _pinned = outer
+
+
 def _key_of(source_ref: Any, sep: "str | None") -> tuple:
     path = os.path.realpath(str(source_ref))
+    if _pinned is not None and (path, sep) in _pinned:
+        return _pinned[(path, sep)]
     stat = os.stat(path)
-    return (path, stat.st_mtime_ns, stat.st_size, sep)
+    key = (path, stat.st_mtime_ns, stat.st_size, sep)
+    if _pinned is not None:
+        _pinned[(path, sep)] = key
+    return key
 
 
 def read_frame(

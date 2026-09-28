@@ -140,3 +140,57 @@ def test_parse_engine_values_match_the_default_parser(tmp_path):
     via_cache = cache.read_frame(path)
     plain = pd.read_csv(path)
     assert via_cache.equals(plain), (via_cache.dtypes, plain.dtypes)
+
+
+# --- 読みの固定区間（pinned_entities・ISSUE-551） ------------------------------
+
+def test_pinned_region_keeps_the_first_read_while_the_source_grows(tmp_path):
+    # Arrange
+    path = _write(tmp_path / "a.csv", rows=3)
+    counts = []
+    cache.set_reader(_counting_reader(counts))
+
+    # Act: 区間内で読む → 実体が伸びる → もう一度読む（全列と射影）
+    with cache.pinned_entities():
+        first = cache.read_frame(path)
+        _write(path, rows=5)
+        second = cache.read_frame(path)
+        times = cache.read_frame(path, usecols=["time"])
+
+    # Assert: 2 回目以降も最初の読みの内容（行数 3）で、発行 − 相異なる実体 = 0
+    assert second is first
+    assert len(times) == 3
+    assert len(counts) - 1 == 0
+
+
+def test_outside_the_pinned_region_a_rewritten_source_is_read_again(tmp_path):
+    # Arrange: 区間で 1 回読んだあと、区間の外で実体が伸びる
+    path = _write(tmp_path / "a.csv", rows=3)
+    with cache.pinned_entities():
+        cache.read_frame(path)
+    _write(path, rows=5)
+
+    # Act
+    after = cache.read_frame(path)
+
+    # Assert: 区間の外は書き換えを読み直す（常駐プロセスの従来挙動）
+    assert len(after) == 5
+
+
+@pytest.mark.parametrize("rewrites", [1, 4])
+def test_pinned_region_issues_one_parse_per_source_regardless_of_rewrites(tmp_path, rewrites):
+    # Arrange
+    path = _write(tmp_path / "a.csv", rows=3)
+    counts = []
+    cache.set_reader(_counting_reader(counts))
+
+    # Act: 書き換えの回数だけ読む
+    with cache.pinned_entities():
+        for index in range(rewrites):
+            cache.read_frame(path)
+            _write(path, rows=4 + index)
+        cache.read_frame(path)
+
+    # Assert: 発行 − 相異なる実体 = 0（書き換えの回数に依らない）
+    distinct = {(p, sep) for (p, _m, _s, sep) in cache.parse_log}
+    assert len(counts) - len(distinct) == 0
