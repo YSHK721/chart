@@ -54,7 +54,7 @@ from common.writer_lock import WriterLockHeld, acquire_writer_lock  # noqa: E402
 from marketdata import dataset_registry  # noqa: E402
 from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
-from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
+from marketdata.mt5_ticks import http_source, ingest, journal, rebuild, usecases, wire  # noqa: E402
 from marketdata.mt5_ticks import server_clock  # noqa: E402
 from marketdata.mt5_ticks.cursor import Cursor  # noqa: E402
 from marketdata.mt5_ticks.port import Mt5SupplyError, SupplyUnavailable  # noqa: E402
@@ -80,8 +80,10 @@ BACKOFF_CAP_SECONDS = 60.0
 BREAKER_AFTER_FAILURES = 8
 BREAKER_SECONDS = 600.0
 
-#: 再開点を探すときに遡るジャーナルの日数。これを超える中断は ``--from`` で明示させる
-#: （黙って何日でも遡ると、欠測を埋めたのか飛ばしたのかが運用者に見えない）。
+#: 起動時に必ず見る日数（今日と昨日）。再開点はこの窓に限らず、今日から遡って**最初に見つかった
+#: ジャーナル**の最後のティックから決める（2026-09-28・固定 2 日の窓では週末をまたぐ停止のたびに
+#: ``--from`` の手入力が要った＝依頼者指摘「こんなふざけた設計があるか」）。どこから取り直したかは
+#: 起動時のログに出す（黙って遡らない）。
 RESTORE_LOOKBACK_DAYS = 2
 
 #: トークン解決の探り窓（1 ms・1 行）。応答ヘッダのサーバ名だけが目的である。
@@ -357,14 +359,38 @@ def build_cycle(
     )
 
 
-def lookback_days(clock: Any) -> "List[dt.date]":
+def lookback_days(clock: Any, *, token: str, data_dir: Any) -> "List[dt.date]":
     """起動時に見にいく日（**再開点の復元と未確定日の種付けで同じ窓を使う**）。
 
     2 つが別の窓を持つと、片方だけが遡れる日ができる（再開はできるのに確定は落ちる、
     あるいはその逆）。窓は 1 箇所で決める。
+
+    窓 = 「最後にジャーナルが在る日」から今日まで（最低でも今日と昨日の
+    :data:`RESTORE_LOOKBACK_DAYS` 日）。今日から 1 日ずつ遡って最初のジャーナルで止まるので、
+    探索は**止まっていた日数**に比例し、保存済みの日数には比例しない。ジャーナルが 1 つも無い
+    ときは遡る下限（ティックの木の最も古い年の 1 月 1 日）で止まり、最低窓を返す＝コールドスタート
+    （``--from`` が要る）。
     """
     today = clock.now().date()
-    return [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
+    window = [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
+    if any(journal.has_journal(d, symbol=token, data_dir=data_dir) for d in window):
+        return window
+    floor = _oldest_tick_day(data_dir)
+    day = window[-1] - dt.timedelta(days=1)
+    while floor is not None and day >= floor:
+        if journal.has_journal(day, symbol=token, data_dir=data_dir):
+            gap = [today - dt.timedelta(days=i) for i in range((today - day).days + 1)]
+            _stderr(f"ジャーナルの最後の日 {day} から再開します（今日まで {len(gap)} 日を窓にする）。")
+            return gap
+        day -= dt.timedelta(days=1)
+    return window
+
+
+def _oldest_tick_day(data_dir: Any) -> "Optional[dt.date]":
+    """ティックの木（``<data_dir>/ticks/YYYY/...``）の最も古い年の 1 月 1 日。木が無ければ None。"""
+    root = tick_m1.tick_root(data_dir)
+    years = [int(p.name) for p in root.iterdir() if p.is_dir() and p.name.isdigit()] if root.is_dir() else []
+    return dt.date(min(years), 1, 1) if years else None
 
 
 def restore_or_start(
@@ -491,7 +517,7 @@ def _supply(
         _stderr(f"供給元の応答が契約を満たしません: {exc}")
         return EXIT_FAIL_STOP
 
-    window = lookback_days(clock)
+    window = lookback_days(clock, token=token, data_dir=settings.data_dir)
     start = restore_or_start(settings, token=token, days=window)
     if start is None:
         _stderr(
