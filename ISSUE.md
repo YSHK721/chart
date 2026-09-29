@@ -16580,3 +16580,18 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **塞いだ作業**: 接点スキャン全指標化の設計（ブランチ design/contact-scan-all-indicators）の段 3 の通過条件
   「PRO_fit_Band_EA の接点が変更前と一致」を確かめられない（変更前の run が成立しない）。
 - **対策案（根本・未実施・要承認）**: 未着手。戦略が config を読む口（dict か属性か）の契約を確かめてから決める。
+
+
+## ISSUE-557: sim で待機注文（指値・逆指値）を出す EA の注文が、すべて足の境界の成行として約定する
+- **ステータス**: OPEN
+- **重大度**: 高（EA の注文方式が結果に反映されない・実測）
+- **事象（実測 2026-09-29）**: run_job で MA_Slope_Pending_EA と MA_Slope_EA を同じ設定（jp225_mt5_spread・M1・2026.08.01〜08.31）で
+  実行すると、取引 943 件どうしで約定時刻・約定価格が完全一致した（待機注文の EA が成行の EA と同じ結果になる）。
+- **原因（コード・実測で確認）**: 待機注文を足の途中で評価するのは `pending_lifecycle` が真の run だけ
+  （`simulator/usecase/schedule_selection.py`）。偽のときエンジンは「すべて足境界の成行として扱う」
+  （`simulator/usecase/run_backtest.py:466-469`）。sim の Settings 経路で組まれる `config_overrides` は
+  `{'tick_model': 'every_tick', 'stop_out_action': 'close_and_halt'}` だけで、EA が `pending_lifecycle` を宣言する口が無い。
+- **塞いだ作業**: 線に触れたら約定させる仕組み（ブランチ design/contact-scan-all-indicators）は待機注文を足の途中で
+  評価することが前提であり、sim で成立しない。
+- **対策案（根本・未実施・要承認）**: 注文方式（待機注文を使うか・持続させるか）を戦略が宣言し、合流点（`build_interactor`）が
+  宣言から `pending_lifecycle` / `pending_persistent` を導く（建値基準を戦略が宣言する ISSUE-533 と同じ形）。
