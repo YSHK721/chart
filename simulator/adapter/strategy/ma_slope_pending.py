@@ -50,6 +50,7 @@ from simulator.adapter.strategy.mql5_runtime import (
     spec_value,
 )
 from simulator.domain.order import Order
+from simulator.usecase.pending_order_use import PendingOrderUse
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
@@ -60,6 +61,10 @@ class MaSlopePending(StrategyPort, EntryPriceBasisPort):
     #: open・spread である。いずれも足の**始まり**に確定している値なので、判定は足の
     #: 始まりに成立する。
     entry_price_basis = "current_open"
+
+    #: 待機注文の使い方（ISSUE-557）。本 EA は毎足、未約定の注文を取り消して置き直す（1 足寿命・
+    #: 原典 ea.mq5 の毎足再設置）。宣言が無いと sim は待機注文を足境界の成行として約定させていた。
+    pending_order_use = PendingOrderUse(persistent=False, oco=False)
 
     def __init__(self) -> None:
         self._config: dict | None = None

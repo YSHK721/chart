@@ -32,6 +32,7 @@ from typing import Any, Callable
 from simulator.adapter.sizing.account_margin_sizing import AccountMarginSizing
 from simulator.domain.order import Order
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
+from simulator.usecase.pending_order_use import PendingOrderUse, declared_pending_order_use
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 from simulator.usecase.sizing_models import (
     BLOCK_NO_RISK_DISTANCE,
@@ -78,6 +79,15 @@ class SizingDecorator(StrategyPort, EntryPriceBasisPort):
         場合は `declared_entry_price_basis` がそのまま落とす（包んで隠さない）。
         """
         return declared_entry_price_basis(self._inner)
+
+    @property
+    def pending_order_use(self) -> "PendingOrderUse | None":
+        """内側の待機注文の使い方をそのまま名乗る（ISSUE-557）。
+
+        注文の種類を決めるのは内側の戦略であり、量だけを差し替える本 Decorator が変えてよい
+        理由は無い。ここで名乗らないと、サイジングを掛けただけで待機注文が成行に戻る。
+        """
+        return declared_pending_order_use(self._inner)
 
     # ---- StrategyPort（4 点すべてを透過・LSP）----
 

@@ -79,6 +79,7 @@ from simulator.main.unsupported_run_scope import (
     run_scope_inputs_for,
 )
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
+from simulator.usecase.pending_order_use import apply_pending_order_use
 from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
@@ -509,7 +510,6 @@ def build_interactor(
     #   たびに本ファイルを開いていた（EA 追加の 8 編集点のうち 1 つ・OCP 違反）。配る集合は
     #   従来どおり**全 EA 宣言の和**であり（EA ごとに絞らない）、並びも従来と同じである。
     strategy_params = {name: job[name] for name in strategy_param_names()}
-    run_config = RunConfig(determinism, strategy_params)
 
     # ea_name で戦略・指標・入力フォーマットを選択（config gated・既定は従来 TC 経路）。
     #   選択規則（未登録 ea_name → 既定 TC 経路 / データを消費しない modelling → 読まない
@@ -545,6 +545,12 @@ def build_interactor(
     #   `strategy_decorator` を通った後にしか確定しないからである。宣言が無ければ run を
     #   **始めない**——エンジン側の読み取り点まで遅らせると、走り出してから落ちる。
     declared_entry_price_basis(strategy)
+    # ISSUE-557: 待機注文（指値・逆指値）の使い方も戦略が名乗る。呼び出し側が渡さなくても、
+    #   待機注文を出す戦略の run は足の途中で注文を評価する（是正前は sim の Settings 経路が
+    #   「`pending_lifecycle`」 を渡さず、待機注文がすべて足境界の成行として約定していた）。
+    #   建値基準と同じく、エンジンへ渡る実体が確定するここで 1 回だけ読む。
+    determinism = apply_pending_order_use(strategy, determinism)
+    run_config = RunConfig(determinism, strategy_params)
 
     # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
