@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.domain.exceptions import BacktestError
 from simulator.framework.tester_settings import LOGGER
 from simulator.main import build_interactor
@@ -58,6 +59,9 @@ from simulator.main.tester_settings.window import resolve_data_window, verify_wi
 from simulator.usecase.tester_settings import EffectiveSettings, TesterSettings
 
 
+# 1 run の読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551・main の run_backtest と同じ）。
+#   Settings 経路の唯一の実行段なので、`run_from_settings` と `run_settings_job` の両方に効く。
+@ohlc_frame_cache.pinned_entities()
 def execute_interactor_kwargs(
     kwargs: "dict[str, Any]", effective: EffectiveSettings
 ) -> "tuple[Any, Any]":

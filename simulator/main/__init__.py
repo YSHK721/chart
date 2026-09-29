@@ -34,6 +34,7 @@ from simulator.adapter.execution.tick_model_registry import (
     consumes_market_data,
 )
 from simulator.adapter.indicator.bar_aligned_registry import align_to_bars
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.main.ea_bindings.sources import row_times_for
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
@@ -684,6 +685,9 @@ def _present_outputs(result: Any, output_dir: Path, *, ea_name: str, symbol: str
 present_outputs = _present_outputs
 
 
+# 1 run の読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。追記され続ける実体
+#   （MT5 常駐・export の常駐が毎分書く）を読む run で、run 内の読みごとに行数がずれない。
+@ohlc_frame_cache.pinned_entities()
 def run_backtest(
     *,
     output_dir: Any = None,
