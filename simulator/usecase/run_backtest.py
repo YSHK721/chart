@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from simulator.domain.account import Account
+from simulator.domain.exceptions import ConfigError
 from simulator.usecase._execution import admit_orders
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
@@ -313,6 +314,20 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         schedule = self._schedule or self._make_schedule(request, features)
         return self._run(request, features, schedule)
 
+    def _refuse_pending_orders(self, orders: "list[Any]") -> None:
+        """足の途中の評価点が無い run に来た待機注文を止める（ISSUE-557）。
+
+        例外: kind が market 以外の注文が 1 件でもあれば `ConfigError`（理由に戦略名と種類）。
+        """
+        kinds = sorted({o.kind for o in orders if o.kind != "market"})
+        if kinds:
+            name = type(self._strategy).__name__
+            raise ConfigError(
+                f"戦略 {name} が待機注文（{', '.join(kinds)}）を出しましたが、この run には"
+                " 足の途中の評価点がありません。戦略に待機注文の使い方を宣言してください",
+                context={"strategy": name, "kinds": kinds},
+            )
+
     def _make_schedule(
         self, request: RunBacktestRequest, features: RunFeatures
     ) -> Any:
@@ -361,8 +376,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         ペンディング注文がティック粒度だけの概念である理由:
             指値・逆指値は「足の途中で価格が水準に触れたら約定する」注文であり、引く機会
-            （評価点）が足の途中に無ければ意味を持たない。バー粒度の run では発注方式で
-            分けず、すべて足境界の成行として扱う（現状の契約）。
+            （評価点）が足の途中に無ければ意味を持たない。バー粒度の run に待機注文が
+            来たら成行へ変えず `ConfigError` で止める（ISSUE-557・`_refuse_pending_orders`）。
         """
         state = self._begin_run(request, features)
         bars = state.bars
@@ -465,7 +480,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 pending_orders = [o for o in orders if o.kind != "market"]
             else:
                 # バー粒度は足途中の評価点を持たないのでペンディングを引く機会が無い。
-                #   発注方式で分けず、すべて足境界の成行として扱う（現状の契約）。
+                #   待機注文を成行へ変えると、書いた条件と違う条件で走った結果が成功として
+                #   出る（ISSUE-557）。宣言（「`pending_order_use`」）の書き忘れはここで止める。
+                self._refuse_pending_orders(orders)
                 market_orders, pending_orders = orders, []
 
             # F 発注（成行約定）。反対玉の reverse 決済 → 建玉 → 口座反映を注文ごとに
