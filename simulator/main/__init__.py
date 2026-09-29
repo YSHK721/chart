@@ -355,7 +355,7 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     return registry
 
 
-def build_run_indicators(**spec: Any) -> IndicatorPort:
+def build_run_indicators(*, run_bars: Any = None, **spec: Any) -> IndicatorPort:
     """その run が**実際に読んだ値**の指標系列を返す（系列の位置 i ＝ run の Bar 列の i 本目）。
 
     `build_ea_indicators` との違い（ISP・用途で口を分ける）: あちらは「その EA が何の系列を
@@ -365,15 +365,20 @@ def build_run_indicators(**spec: Any) -> IndicatorPort:
     掛けないと、期間を指定した run で値の利用者が実行と別の足の値を読む。
 
     ``spec``: `build_interactor` と同じジョブ仕様。
+    ``run_bars``: その run が**実行した** Bar 列（`build_interactor` の request.bars）。渡すと
+        それへ対応づけ、Bar 列を組み立て直さない（ISSUE-553 項目 2: 組み立て直すと 215 万本で
+        変換と時刻の対応づけがもう 1 回ずつ走る）。省略時は同じ窓で読み直す（従来どおり）。
     """
     _strategy, registry, reader = _ea_components(**spec)
     data_path = spec.get("data_path")
     tick_model = _tick_model_of(spec.get("config_overrides"))
     if data_path is None or not consumes_market_data(tick_model):
         return registry
-    bars = _windowed_reader(reader, data_path, spec.get("marketdata_window")).load(
-        data_path, None, None
-    )
+    bars = run_bars
+    if bars is None:
+        bars = _windowed_reader(reader, data_path, spec.get("marketdata_window")).load(
+            data_path, None, None
+        )
     return _aligned_to_run_bars(registry, reader, data_path, bars, tick_model=tick_model)
 
 

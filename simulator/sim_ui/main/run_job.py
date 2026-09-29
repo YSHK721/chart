@@ -284,11 +284,14 @@ def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
     return request.bars, request.symbol_spec
 
 
-def _build_run_indicators(backtest: "dict[str, Any]") -> Any:
-    """run と同じ窓・時刻合わせの指標系列を組む（`_write_report_payload` が 1 回だけ呼ぶ）。"""
+def _build_run_indicators(backtest: "dict[str, Any]", run_bars: Any = None) -> Any:
+    """run と同じ窓・時刻合わせの指標系列を組む（`_write_report_payload` が 1 回だけ呼ぶ）。
+
+    ``run_bars`` はその run が実行した Bar 列（渡せば組み立て直さない・ISSUE-553 項目 2）。
+    """
     from simulator.main import build_run_indicators
 
-    return build_run_indicators(**backtest)
+    return build_run_indicators(run_bars=run_bars, **backtest)
 
 
 def _supply_contacts(bars: "list", backtest: "dict[str, Any]", indicators: Any) -> "list[dict]":
@@ -641,7 +644,7 @@ def _run_with_settings(
         _write_report_payload(
             job_dir, result,
             load_run_inputs=lambda _backtest: (request.bars, request.symbol_spec),
-            load_indicators=lambda: _build_run_indicators(run_kwargs),
+            load_indicators=lambda: _build_run_indicators(run_kwargs, request.bars),
             run_kwargs=run_kwargs, account=account,
         )
     return exit_code, run_kwargs
