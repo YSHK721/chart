@@ -16584,7 +16584,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 
 
 ## ISSUE-556: PRO_fit_Band_EA が sim で実行できない（'BacktestConfig' object has no attribute 'get'）
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-29・3c7dc4c9）
 - **重大度**: 高（EA が 1 本も走らない・実測）
 - **事象（実測 2026-09-29）**: run_job で PRO_fit_Band_EA（jp225_mt5_spread・M1・2026.08.01〜08.31・adx_period=14・adx_min=20）を
   実行すると exit 3「バックテストの実行に失敗しました: 'BacktestConfig' object has no attribute 'get'」。
@@ -16600,6 +16600,15 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **対策案（根本・未実施・要承認）**: 参照実装どおり warmup を固定値 60 にし、`min_bars` の読み取りを消す。
   単体テストの `min_bars=2`（条件式の検証用）と `test_min_bars_is_configurable_via_config_get`（参照実装に無い可変性の固定）は
   条件式の検証を 60 本以降の足で行う形へ書き換える。
+- **実施（3c7dc4c9）**: warmup を原典どおり固定 60（`_MIN_BARS`）にし、`min_bars` の読み取りと、ゲートに含まれる
+  `bar_index < 2` の検査を消した。条件式のテストは 3 点系列の前に先頭値を 59 本足し、ゲートの外で検証する形へ変えた。
+  `test_min_bars_is_configurable_via_config_get` は「config の min_bars を読まない」検査へ置き換えた。
+- **検証**: 再現 spec（run_job・2026-08・adx_period=14・adx_min=20）が exit 0・取引 7,870 件（探針と同数）・12.8 秒。
+  get を持たない config で走る検査を追加。計算量検定: warmup 内の足の指標の読み − 0 = 0・1 足あたりの読みの最大は
+  系列長 70 / 140 で同じ。変異（`.get` へ戻す／ゲート削除／ゲート前に読む）でそれぞれ 2 / 4 / 2 件落ちる。
+  simulator 全件 6,878 passed・1 failed（下記・本件と無関係）。
+- **記録（本件と無関係の既存失敗）**: `test_run_backtest_responsibility_split.py::…test_the_interactor_class_defines_only_lifecycle_methods`
+  が 9274ad6e（ISSUE-557 追補）で足した `_refuse_pending_orders` をメソッド集合のリテラルに持たず赤。
 
 
 ## ISSUE-557: sim で待機注文（指値・逆指値）を出す EA の注文が、すべて足の境界の成行として約定する
