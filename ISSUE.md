@@ -16583,7 +16583,7 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 
 
 ## ISSUE-557: sim で待機注文（指値・逆指値）を出す EA の注文が、すべて足の境界の成行として約定する
-- **ステータス**: OPEN
+- **ステータス**: RESOLVED（2026-09-29）
 - **重大度**: 高（EA の注文方式が結果に反映されない・実測）
 - **事象（実測 2026-09-29）**: run_job で MA_Slope_Pending_EA と MA_Slope_EA を同じ設定（jp225_mt5_spread・M1・2026.08.01〜08.31）で
   実行すると、取引 943 件どうしで約定時刻・約定価格が完全一致した（待機注文の EA が成行の EA と同じ結果になる）。
@@ -16595,3 +16595,15 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   評価することが前提であり、sim で成立しない。
 - **対策案（根本・未実施・要承認）**: 注文方式（待機注文を使うか・持続させるか）を戦略が宣言し、合流点（`build_interactor`）が
   宣言から `pending_lifecycle` / `pending_persistent` を導く（建値基準を戦略が宣言する ISSUE-533 と同じ形）。
+- **依頼者の判断（依頼者の言葉）**: 「指値と書いているのに成行... 単なるバグである。」→ 明示バグとして即時是正。
+- **実施（c430a280）**: `simulator/usecase/pending_order_use.py`（宣言の型と合流点での写し）を新設。MaSlopePending は
+  毎足置き直し（persistent=False・oco=False）、StopEntryProbe は持続・OCO（persistent=True・oco=True）を宣言
+  （どちらも MT5 照合済みの構成と同じ値）。`build_interactor` が宣言を 1 回読み run の設定へ写し、呼び出し側の値が
+  宣言と食い違えば実行前に ConfigError。SizingDecorator は内側の宣言を透過する。
+- **検証**: 宣言だけで MT5 照合済みの構成（「`pending_lifecycle`」=True 明示）と取引が一致し、成行 EA とは一致しない。
+  宣言の読み取り − 1 = 0（足 60 / 240 本）。是正の 1 行を外すと 4 件とも落ちる。実データ（run_job・2026-08）:
+  待機注文 EA 986 件・成行 EA 943 件（是正前は同一 943 件）。建値 − 始値は +5.0（559 件）/ 0.0（401 件）で EA の指値価格と整合。
+- **記録（発生未実測）**: StopEntryProbe の MT5 照合構成は口座設定 hedged_margin=True も渡しているが、これは注文の使い方では
+  なく口座の性質のため本件では扱わない。sim の粒度ゲート（`simulator/sim_ui/usecase/job_models.py` の granularity_of）は
+  config_overrides だけを読み、宣言を見ない（戦略項目の投入口は画面から撤去済み）。
+
