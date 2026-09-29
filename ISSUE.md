@@ -16528,6 +16528,16 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   trade_markers / metrics_steps）が byte 一致。Python 全件 6,839 passed。実 UI（フォーム入力→スタート）で同じ設定の
   ジョブが 151 秒 → 45.6 秒（実行 103 → 21.8 秒・report.json 書出し 35 → 15 秒・chart_overlay 書出し 10.5 → 6.5 秒）。
 - **残り**: 項目 4（足ごとの系列の JSON 2 ファイル計 500MB）は画面の設計の判断のため別途裁定（ISSUE-552 と同時）。
+- **追補（事後レビュー 3・テストの穴）**: 足ごとに「`epoch_seconds`」へ足の時刻を渡す形を AST で禁じるゲートを足した
+  （`simulator/tests/unit/test_bar_time_conversion_not_per_bar.py`・例外は (ファイル, 関数) 単位で理由と ISSUE 番号つき）。
+  chart_overlay_writer を `[epoch_seconds(b.time) for b in bars]` に戻すとゲートが赤になる（実測）。
+  窓つき読み手（WindowedMarketDataRepository.load）は実測で 1 run に 1 回・内側の足 28,097 本ぶん＋窓の端 2 回を足ごとに
+  変換していた（窓 3 日でも同数・0.143 秒）→ 一括変換へ是正（観測 (28097, 一括) 1 回・0.015 秒・残る足 1,378 本は同一）。
+  計算量検定: 変換数 − 内側の足の本数 = 0・変換の呼び出し数は窓の幅 2 点で同じ。
+  例外として宣言したもの: Jp225SessionCalendar.closed_bar_indices（sim の既定は NullCalendar で通らない・照合／最適化／
+  walk-forward だけ。実測 1 run に 1 回・28,097 本で 0.165 秒）。是正は触れてよい範囲の外のため未実施。
+- **記録（発生未実測）**: TickModel の「`ticks_of`」は足ごとに呼ばれ、中で `epoch_seconds(bar.time)` を 1 本ずつ変換する
+  （ループの外の形なのでゲートの対象外）。ohlc_csv は列 `df["time"]` を 1 本ずつ変換する（`.time` 属性ではない）。
 
 
 
