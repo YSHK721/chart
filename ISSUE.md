@@ -16538,6 +16538,10 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   walk-forward だけ。実測 1 run に 1 回・28,097 本で 0.165 秒）。是正は触れてよい範囲の外のため未実施。
 - **記録（発生未実測）**: TickModel の「`ticks_of`」は足ごとに呼ばれ、中で `epoch_seconds(bar.time)` を 1 本ずつ変換する
   （ループの外の形なのでゲートの対象外）。ohlc_csv は列 `df["time"]` を 1 本ずつ変換する（`.time` 属性ではない）。
+- **追補（事後レビュー 4・手書き複製）**: `usecase/bar_times` の型名比較（`numpy.datetime64` の判定の写し）を消し、
+  domain の判定を公開名「`is_numpy_datetime64`」にして呼ぶ（domain は numpy を import しないまま）。型名比較が
+  `domain/bar_time.py` の外に現れたら落ちる AST ゲートを足した（`simulator/tests/unit/test_datetime64_check_single_source.py`）。
+  写しを戻すとゲートが赤になる（実測）。値は `test_bar_times_batch.py` で不変（全件通過）。
 
 
 

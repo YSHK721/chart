@@ -94,8 +94,12 @@ def _is_datetime(value: Any) -> bool:
     return isinstance(value, datetime)
 
 
-def _is_numpy_datetime64(value: Any) -> bool:
-    """``numpy.datetime64``（numpy を import せず duck typing で判定する）。"""
+def is_numpy_datetime64(value: Any) -> bool:
+    """``numpy.datetime64``（numpy を import せず duck typing で判定する）。
+
+    公開する理由: 足の時刻の一括変換（`simulator/usecase/bar_times.py`）が「一括にしてよい表現か」を
+    同じ判定で決める必要がある。写しを持つと受理する表現が 2 か所で食い違う（ISSUE-553）。
+    """
     return hasattr(value, "astype") and type(value).__name__ == "datetime64"
 
 
@@ -182,7 +186,7 @@ EPOCH_CONVERTERS: (
     "tuple[tuple[Callable[[Any], bool], Callable[[Any], int], str], ...]"
 ) = (
     (is_epoch_integer, _from_integer, BAR),
-    (_is_numpy_datetime64, _from_numpy_datetime64, BAR),
+    (is_numpy_datetime64, _from_numpy_datetime64, BAR),
     # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
     (_is_datetime, epoch_seconds_of_datetime, WINDOW),
 )
@@ -205,7 +209,7 @@ EPOCH_CONVERTERS: (
 #: `simulator/tests/unit/test_bar_time_millis.py` の網羅ゲートが機械的に赤にする。
 _MILLIS_CONVERTERS: "dict[Callable[[Any], bool], Callable[[Any], int]]" = {
     is_epoch_integer: _millis_from_integer,
-    _is_numpy_datetime64: _millis_from_numpy_datetime64,
+    is_numpy_datetime64: _millis_from_numpy_datetime64,
     _is_datetime: _millis_from_datetime,
 }
 

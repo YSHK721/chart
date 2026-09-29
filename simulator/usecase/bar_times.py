@@ -19,7 +19,11 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from simulator.domain.bar_time import epoch_seconds, epoch_seconds_of_datetime64_array
+from simulator.domain.bar_time import (
+    epoch_seconds,
+    epoch_seconds_of_datetime64_array,
+    is_numpy_datetime64,
+)
 
 _observer: "Callable[[int, bool], None] | None" = None
 
@@ -32,7 +36,7 @@ def set_observer(observer: "Callable[[int, bool], None] | None") -> None:
 
 def epoch_seconds_of(times: Sequence[Any]) -> "list[int]":
     """時刻の列を epoch 秒（int）の列へ（各値は `epoch_seconds(t)` と同じ）。"""
-    batched = len(times) > 0 and all(type(t).__name__ == "datetime64" for t in times)
+    batched = len(times) > 0 and all(is_numpy_datetime64(t) for t in times)
     if _observer is not None:
         _observer(len(times), batched)
     if batched:
