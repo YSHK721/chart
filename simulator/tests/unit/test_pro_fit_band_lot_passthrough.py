@@ -34,7 +34,6 @@ _CONFIG_WITH_TRUE_VOLUME_SPEC = {
     "adx_min": 22.0,
     "point_size": 0.0001,
     "digits": 5,
-    "min_bars": 2,
     # 供給元スナップショット marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json の真値。
     "volume_min": 1.0,
     "volume_max": 10000.0,
@@ -47,17 +46,26 @@ class _Account:
         self.open_positions = [type("P", (), {"side": s})() for s in sides]
 
 
+# 原典の warmup は固定 60（Bars<60・ISSUE-556）。3 点系列の前に先頭値を 59 本足し、現足を _NOW に置く。
+_PAD = 59
+_NOW = 2 + _PAD
+
+
+def _pad(xs):
+    return [xs[0]] * _PAD + xs
+
+
 def _registry():
     from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 
     # 買い条件 AND 充足（既存 test_strategy_pro_fit_band.py と同一の系列）。
     return PandasIndicatorRegistry(
         {
-            "ema": pd.Series([1.0, 1.1, 1.2]),
-            "adx": pd.Series([25.0, 25.0, 25.0]),
-            "plus_di": pd.Series([30.0, 30.0, 30.0]),
-            "minus_di": pd.Series([10.0, 10.0, 10.0]),
-            "close": pd.Series([1.05, 1.15, 1.25]),
+            "ema": pd.Series(_pad([1.0, 1.1, 1.2])),
+            "adx": pd.Series(_pad([25.0, 25.0, 25.0])),
+            "plus_di": pd.Series(_pad([30.0, 30.0, 30.0])),
+            "minus_di": pd.Series(_pad([10.0, 10.0, 10.0])),
+            "close": pd.Series(_pad([1.05, 1.15, 1.25])),
         }
     )
 
@@ -72,7 +80,7 @@ def test_lot_is_passed_through_unnormalized_even_under_true_symbol_spec():
     strat.on_init(_CONFIG_WITH_TRUE_VOLUME_SPEC, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account())
+    orders = strat.on_new_bar(_NOW, ind, _Account())
 
     # Assert: 入力 Lot がそのまま volume になる（厳密一致）
     assert len(orders) == 1
@@ -116,7 +124,7 @@ def test_volume_is_independent_of_supplied_symbol_volume_spec(volume_min, volume
     strat.on_init(cfg, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account())
+    orders = strat.on_new_bar(_NOW, ind, _Account())
 
     # Assert
     assert orders[0].volume == 0.1
