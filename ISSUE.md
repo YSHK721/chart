@@ -16529,3 +16529,21 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   ジョブが 151 秒 → 45.6 秒（実行 103 → 21.8 秒・report.json 書出し 35 → 15 秒・chart_overlay 書出し 10.5 → 6.5 秒）。
 - **残り**: 項目 4（足ごとの系列の JSON 2 ファイル計 500MB）は画面の設計の判断のため別途裁定（ISSUE-552 と同時）。
 
+
+
+## ISSUE-554: 1 ジョブの成果物が足ごとの系列を JSON 2 ファイル計約 476MB で書き、画面が丸ごと取得する
+- **ステータス**: OPEN
+- **重大度**: 中（書出し 21.5 秒・実測。ブラウザ側の取得・描画時間は未実測）
+- **事象（実測 2026-09-29・ジョブ 458ca166…・CalcProbe_EA・jp225_mt5_spread・M1・全履歴 2,149,747 本）**:
+  - report.json 172.4MB: ほぼ全量が足の OHLC 列 `segments.single.bars`（172.0MB）。
+  - chart_overlay.json 304.0MB（ファイル 327.6MB）: 足ごとの口座 `account` 258.2MB（time 23.6・balance 40.8・equity 40.8・
+    drawdown 40.8・drawdown_pct 40.8・realized_pnl 43.0・floating_pnl 8.7・margin 8.7・margin_level 10.9MB）、指標 `indicators` 45.8MB。
+  - 足の時刻は 2 ファイルの両方に書かれている（同じ列の重複）。
+  - 書出し: report.json 15 秒・chart_overlay.json 6.5 秒（ISSUE-553 項目 1〜3 の是正後・実 UI）。
+- **数え方**: 各キーを `json.dumps(separators=(',',':'))` した文字数（ASCII のため byte と同じ）。書出し時間は成果物の書込み時刻の差。
+- **読み手（コードで確認）**: 結果画面が `/sim/data/{job}/report.json`（`sim_ui/web/js/adapter/front/report_source_client.js`）と
+  `/sim/data/{job}/chart_overlay.json`（`sim_ui/web/js/adapter/front/sim_result_chart_view.js`）をそれぞれ丸ごと取得する。
+- **関連**: ジョブ自身の足の OHLC は report.json に在るが、売買履歴チャートはそれを使わずライブの `/candles`（末尾 5 万本）へ
+  取りに行き不一致になる（ISSUE-552）。ISSUE-553 項目 4 は本件へ移す。
+- **対策案（根本・未実施・要承認）**: 足の列はジョブの成果物の 1 か所にだけ持ち、画面へは表示に使う範囲だけを渡す。
+  ISSUE-552 と同じ設計判断（足の列をどこに持ち、画面へどう渡すか）としてまとめて裁定する。
