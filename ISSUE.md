@@ -16547,3 +16547,23 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   取りに行き不一致になる（ISSUE-552）。ISSUE-553 項目 4 は本件へ移す。
 - **対策案（根本・未実施・要承認）**: 足の列はジョブの成果物の 1 か所にだけ持ち、画面へは表示に使う範囲だけを渡す。
   ISSUE-552 と同じ設計判断（足の列をどこに持ち、画面へどう渡すか）としてまとめて裁定する。
+
+
+## ISSUE-555: 「全ティック」が近似実行（N-06）である事実が sim の画面に出ず、全ティックで走ったと誤解される
+- **ステータス**: OPEN
+- **重大度**: 中（誤解が実際に起きた・2026-09-29）
+- **事象**: 実行速度の計測を「全ティック」（Model=0）の設定で行い「全ティックで 45〜50 秒」と報告したが、エンジンは
+  足 1 本につき 1 回しか評価していなかった（依頼者の問い「全ティックで計測しての結果か？」で判明）。
+- **事実（コード・実測で確認）**:
+  - Model=0 → `tick_model=every_tick`。実体 `EveryTickModel` は「every-tick を OHLC のみの入力で近似する（常に O→H→L→C）」
+    （`simulator/adapter/execution/tick_model.py`）。足の中にティックを生成しない。
+  - 非対象の宣言 N-06「Model=0 は近似実行（例外なし）。近似である事実は TesterRunMetadata に記録する」
+    （`simulator/main/tester_settings/unsupported.py`）。`build_run_metadata` が reasons に N-06 を載せる。
+  - sim の子プロセスはその実行メタ情報を受け取って捨てる（`simulator/sim_ui/main/run_job.py` の
+    `exit_code, result, _metadata, request = run_settings_job(...)`）。sim の web・adapter に N-06・近似の表示は無い（grep 0 件）。
+  - 足の途中の評価点を使うのは実ティック（`real_ticks`）かペンディング注文の run だけ（`simulator/usecase/schedule_selection.py`）。
+    全履歴 2,149,610 本の CalcProbe_EA run で評価点の観測は 2,149,610 回（足の本数と同じ・cProfile）。
+  - MT5 の「全ティック」レポートはリポジトリに 0 本。実レポート 10 本はすべて 1 足あたり 3.75〜3.96 ティック
+    （MT5 の 1分足OHLC の形）で、照合用データの README も 1分OHLC をオラクルとする。一致の検証は不可能。
+- **対策案（根本・未実施・要承認）**: 実行メタ情報（近似の理由 N-06 など）をジョブの成果物に残し、結果画面が宣言から
+  告知する（捨てない）。MT5 の「全ティック」との一致は、MT5 で全ティックを指定したレポートを取得してから判断する。
