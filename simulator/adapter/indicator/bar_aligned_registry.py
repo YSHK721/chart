@@ -29,9 +29,9 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import DataError
 from simulator.usecase.indicator_catalog_ports import IndicatorSeriesNamesPort
+from simulator.usecase.bar_times import bar_epoch_seconds
 from simulator.usecase.ports import IndicatorPort
 
 
@@ -41,7 +41,7 @@ def bar_span(row_times: np.ndarray, bars: Sequence[Any]) -> "tuple[int, int]":
     事前条件: ``row_times`` は行の並びのままの epoch 秒、``bars`` は非空。
     事後条件: ``row_times[start + i] == epoch_seconds(bars[i].time)`` が全 i で成り立つ。
     """
-    bar_times = np.fromiter((epoch_seconds(b.time) for b in bars), dtype=np.int64, count=len(bars))
+    bar_times = np.asarray(bar_epoch_seconds(bars), dtype=np.int64)
     start = int(np.searchsorted(row_times, bar_times[0]))
     end = start + len(bar_times)
     if end > len(row_times) or not np.array_equal(row_times[start:end], bar_times):

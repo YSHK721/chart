@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
-from simulator.domain.bar_time import epoch_seconds
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 売買マークのファイル名（sim core の `/data/{job_id}/{file}` が配信する名前）。
 TRADE_MARKERS_FILENAME = "trade_markers.json"
@@ -98,7 +98,7 @@ def write(
         timeframe=RUN_TIMEFRAME,
     )
 
-    bar_times = [epoch_seconds(bar.time) for bar in bars]
+    bar_times = bar_epoch_seconds(bars)
     series = []
     for plot in plots:
         values = indicators.get(plot.series)

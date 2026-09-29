@@ -99,8 +99,23 @@ def _is_numpy_datetime64(value: Any) -> bool:
     return hasattr(value, "astype") and type(value).__name__ == "datetime64"
 
 
+def _datetime64_to_epoch_second_ints(value: Any) -> Any:
+    """``numpy.datetime64``（スカラでも配列でも）を epoch 秒の int64 へ。**秒への cast の唯一の式**。"""
+    return value.astype("datetime64[s]").astype("int64")
+
+
 def _from_numpy_datetime64(value: Any) -> int:
-    return int(value.astype("datetime64[s]").astype("int64"))
+    return int(_datetime64_to_epoch_second_ints(value))
+
+
+def epoch_seconds_of_datetime64_array(values: Any) -> "list[int]":
+    """``numpy.datetime64`` の配列を epoch 秒（int）の list へ（ISSUE-553 項目 3）。
+
+    各要素の値は `epoch_seconds` と同じ（同じ式 `_datetime64_to_epoch_second_ints` を配列へ掛ける）。
+    足ごとに `epoch_seconds` を呼ぶと 215 万本で 5.4 秒、配列へ一括で掛けると 0.62 秒（実測 2026-09-28）。
+    本モジュールは numpy を import しないので、配列は呼び出し側が組んで渡す（duck typing）。
+    """
+    return _datetime64_to_epoch_second_ints(values).tolist()
 
 
 #: 1 秒あたりのミリ秒。**この関係の所有者は本モジュールただ 1 つ**である。

@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from simulator.domain.bar_time import epoch_seconds
+from simulator.usecase.bar_times import epoch_seconds_of
 from simulator.usecase.run_trace_ports import RunTracePort
 
 
@@ -36,7 +36,10 @@ class AccountCurveRecorder(RunTracePort):
 
     def __init__(self) -> None:
         self._bar_index: "int | None" = None
-        self.times: "list[int]" = []
+        # 足の時刻は受け取った表現のまま溜め、読むときに列ごと一括で epoch 秒へ変換する
+        #   （ISSUE-553 項目 3: 足ごとに変換すると 215 万本で 5.4 秒）。
+        self._bar_times: "list[Any]" = []
+        self._times: "list[int] | None" = None
         self.balance: "list[float]" = []
         self.equity: "list[float]" = []
         self.margin: "list[float]" = []
@@ -58,16 +61,24 @@ class AccountCurveRecorder(RunTracePort):
         )
         if bar_index != self._bar_index:
             self._bar_index = bar_index
-            self.times.append(epoch_seconds(bar.time))
+            self._bar_times.append(bar.time)
+            self._times = None
             for column in self._columns():
                 column.append(None)
         for column, value in zip(self._columns(), row):
             column[-1] = value
 
     @property
+    def times(self) -> "list[int]":
+        """各行の足の時刻（epoch 秒）。変換は列ごとに 1 回（記録が増えたら次に読むとき変換し直す）。"""
+        if self._times is None:
+            self._times = epoch_seconds_of(self._bar_times)
+        return self._times
+
+    @property
     def rows(self) -> int:
         """記録行数（＝観測した足の数。列はすべて同じ長さである）。"""
-        return len(self.times)
+        return len(self._bar_times)
 
     def _columns(self) -> "tuple[list, ...]":
         return (self.balance, self.equity, self.margin, self.margin_level)

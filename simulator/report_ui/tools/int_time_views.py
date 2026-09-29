@@ -53,8 +53,9 @@ class IntTimeBar:
 
     __slots__ = ("time", "high", "low", "open", "close")
 
-    def __init__(self, bar: Any) -> None:
-        self.time = unix_seconds(bar.time)
+    def __init__(self, bar: Any, time: "int | None" = None) -> None:
+        # ``time`` は呼び出し側が列ごと一括で変換した値（ISSUE-553 項目 3）。省略時は 1 本ずつ変換する。
+        self.time = unix_seconds(bar.time) if time is None else time
         self.high = bar.high
         self.low = bar.low
         self.open = bar.open

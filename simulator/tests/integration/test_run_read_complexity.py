@@ -17,6 +17,8 @@
     4. Bar 列の組み立て（DataFrame → Bar 列の変換）も 1 ジョブ 1 回（ISSUE-553 項目 2）。表示用の
        指標の対応づけは run が実行した Bar 列を受け取り、組み立て直さない。観測は変換の
        観測口（`_ohlc_frame.set_observer`）で行う。
+    5. 足の時刻の epoch 秒への変換は、呼び出しごとに Bar 列全体を一括で扱う（ISSUE-553 項目 3）。
+       呼び出しの数は窓の長さ（＝足の本数）で増えない。観測は `usecase.bar_times.set_observer`。
     **回数そのものを窓の長さから導かない**（どの窓でも「実体 1 つ＝parse 1 回」）。
 """
 from __future__ import annotations
@@ -33,6 +35,7 @@ from simulator.adapter.trace.account_curve import AccountCurveRecorder
 from simulator.main.tester_settings.kwargs_mapper import effective_to_interactor_kwargs
 from simulator.main.tester_settings.run_settings_job import run_settings_job
 from simulator.sim_ui.main import run_job
+from simulator.usecase import bar_times
 from simulator.tests.tester_settings_engine_fixtures import (
     custom_range_settings,
     daily_epochs,
@@ -165,3 +168,35 @@ def test_one_job_builds_the_bars_once_regardless_of_window(tmp_path, conversions
     # Assert: 成果物まで書けている（正の対照）・Bar 列の組み立て − 1 = 0（窓の長さに依らない）
     assert (job_dir / "chart_overlay.json").is_file()
     assert len(conversions) - 1 == 0, conversions
+
+
+@pytest.mark.parametrize("days", [2, 3])
+def test_bar_times_are_converted_whole_run_at_a_time(tmp_path, days) -> None:
+    # Arrange
+    calls: "list[tuple[int, bool]]" = []
+    bar_times.set_observer(lambda count, batched: calls.append((count, batched)))
+    try:
+        # Act
+        job_dir = _run_marketdata(tmp_path, days=days)
+    finally:
+        bar_times.set_observer(None)
+
+    # Assert: 変換は行われ（空振りしない）、各呼び出しが run の Bar 列全体を一括で扱う
+    bars = len(json.loads((job_dir / "chart_overlay.json").read_text(encoding="utf-8"))["account"]["time"])
+    assert calls, "足の時刻の変換が観測口を通っていない"
+    assert all(count == bars and batched for count, batched in calls), calls
+
+
+def test_bar_time_conversions_do_not_grow_with_the_window(tmp_path) -> None:
+    counts = []
+    for days in (2, 3):
+        calls: "list[tuple[int, bool]]" = []
+        bar_times.set_observer(lambda count, batched: calls.append((count, batched)))
+        try:
+            (tmp_path / f"d{days}").mkdir()
+            _run_marketdata(tmp_path / f"d{days}", days=days)
+        finally:
+            bar_times.set_observer(None)
+        counts.append(len(calls))
+    # 呼び出しの数は足の本数で増えない（2 日と 3 日で同じ）
+    assert counts[1] - counts[0] == 0, counts

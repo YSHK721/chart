@@ -31,8 +31,8 @@ from typing import Sequence
 
 import numpy as np
 
-from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.trade_record import TradeRecord
+from simulator.usecase.bar_times import bar_epoch_seconds
 from simulator.usecase.metrics_spec import (
     _dd_arrays,
     _full_balance,
@@ -273,10 +273,11 @@ def bar_period_seconds(bars: Sequence) -> "float | None":
     """
     if len(bars) < 2:
         return None
+    # 時刻の変換は列ごとに一括（ISSUE-553 項目 3・値は 1 本ずつの epoch_seconds と同じ）。
+    times = bar_epoch_seconds(bars)
     best = None
-    prev = epoch_seconds(bars[0].time)
-    for bar in bars[1:]:
-        cur = epoch_seconds(bar.time)
+    prev = times[0]
+    for cur in times[1:]:
         diff = cur - prev
         if diff > 0 and (best is None or diff < best):
             best = diff

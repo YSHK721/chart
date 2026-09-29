@@ -36,6 +36,7 @@ from simulator.report_ui.tools.int_time_views import (
     ResultView,
 )
 from simulator.report_ui.usecase.report_meta import ReportMeta
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 結果ペイロードのファイル名（sim core の `/data/{job_id}/{file}` が配信する名前）。
 REPORT_FILENAME = "report.json"
@@ -110,7 +111,8 @@ def write(
     backtest = dict(spec.get("backtest") or {})
 
     raw_bars, symbol_spec = load_run_inputs(backtest)
-    bars = [IntTimeBar(b) for b in raw_bars]
+    # 足の時刻は列ごとに一括で変換する（ISSUE-553 項目 3・値は 1 本ずつの変換と同じ）。
+    bars = [IntTimeBar(b, t) for b, t in zip(raw_bars, bar_epoch_seconds(raw_bars))]
     contacts = contacts_supply(bars, backtest) if contacts_supply is not None else None
 
     # SL/TP は job 仕様の値のみ。未指定は 0 ＝ UC 側で空文字になる（価格を捏造しない）。
