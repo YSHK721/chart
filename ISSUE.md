@@ -16567,3 +16567,16 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
     （MT5 の 1分足OHLC の形）で、照合用データの README も 1分OHLC をオラクルとする。一致の検証は不可能。
 - **対策案（根本・未実施・要承認）**: 実行メタ情報（近似の理由 N-06 など）をジョブの成果物に残し、結果画面が宣言から
   告知する（捨てない）。MT5 の「全ティック」との一致は、MT5 で全ティックを指定したレポートを取得してから判断する。
+
+
+## ISSUE-556: PRO_fit_Band_EA が sim で実行できない（'BacktestConfig' object has no attribute 'get'）
+- **ステータス**: OPEN
+- **重大度**: 高（EA が 1 本も走らない・実測）
+- **事象（実測 2026-09-29）**: run_job で PRO_fit_Band_EA（jp225_mt5_spread・M1・2026.08.01〜08.31・adx_period=14・adx_min=20）を
+  実行すると exit 3「バックテストの実行に失敗しました: 'BacktestConfig' object has no attribute 'get'」。
+- **発生箇所（traceback）**: `simulator/adapter/strategy/pro_fit_band.py:63` の `self._config.get("min_bars", 60)`。
+  戦略は config を dict として読むが、渡されるのは `simulator/main/run_config.py` の config オブジェクト
+  （`__getattr__` で `BacktestConfig` へ委譲し、`get` を持たない）。
+- **塞いだ作業**: 接点スキャン全指標化の設計（ブランチ design/contact-scan-all-indicators）の段 3 の通過条件
+  「PRO_fit_Band_EA の接点が変更前と一致」を確かめられない（変更前の run が成立しない）。
+- **対策案（根本・未実施・要承認）**: 未着手。戦略が config を読む口（dict か属性か）の契約を確かめてから決める。
