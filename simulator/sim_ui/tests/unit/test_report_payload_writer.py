@@ -180,7 +180,7 @@ def test_missing_stop_levels_yield_empty_strings_not_invented_prices(tmp_path: P
 def test_the_report_carries_no_bars(tmp_path: Path) -> None:
     """足は report.json に書かない（ISSUE-552/554 段階 2-1）。
 
-    足はジョブの成果物の 1 か所（`chart_overlay_writer` が書く chart_bars.parquet）にだけ在る。
+    足はジョブの成果物の 1 か所（「`chart_overlay_writer`」 が書く chart_bars.parquet）にだけ在る。
     report.json に足を書くと同じ列が 2 か所になり、全履歴の 1 分足で 172MB を画面が丸ごと取得する。
     区間のキーは残す（report_ui の契約の形を変えない）。本数は ``meta.bars`` が名乗る。
     """
