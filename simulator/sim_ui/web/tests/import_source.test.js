@@ -72,6 +72,8 @@ const TRACE_CLIENT = "trace_analysis_client.js";
 const ANALYSIS_ROOT = "composition_root_analysis.js";
 // ジョブ結果を売買履歴チャートへ描く View（2026-09-26 依頼者指示）。
 const RESULT_CHART = "sim_result_chart_view.js";
+// ISSUE-552/554 段階 2-2: 足の成果物の取得（HTTP だけ・位置の区間で読む）。売買履歴チャートが使う。
+const CHART_BARS_CLIENT = "chart_bars_client.js";
 // ISSUE-540: 実行中のジョブを開いたときの完了待ち（掲示・監視・読み直し。DOM は view 経由）。
 const COMPLETION_WAIT = "job_completion_wait.js";
 // 結果待ちの進み具合（バーと％・DOM だけ・依存 0）。M6 と完了待ちが同じ部品を使う（2026-09-27）。
@@ -96,8 +98,16 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
     TRACE_PANEL, TRACE_VIEW, TRACE_CLIENT, ANALYSIS_ROOT,
-    RESULT_CHART, COMPLETION_WAIT, PROGRESS_VIEW,
+    RESULT_CHART, CHART_BARS_CLIENT, COMPLETION_WAIT, PROGRESS_VIEW,
   ].sort());
+});
+
+test("the chart bars client is HTTP only (no imports) and the result chart view never fetches by itself", () => {
+  // 「どう取るか」（chart_bars_client）と「何を描くか」（売買履歴チャートの View）を混ぜない。
+  //   View が自分で取りに行くと、読みの回数を注入した口で数えられなくなる（計算量検定が空振りする）。
+  assert.deepEqual(importSpecifiers(read(CHART_BARS_CLIENT)), []);
+  assert.ok(!/\bfetch\s*\(/.test(read(RESULT_CHART)), "売買履歴チャートの View が fetch を直接呼んでいます");
+  assert.ok(!read(RESULT_CHART).includes("/sim/chart-bars"), "売買履歴チャートの View が足の API の URL を持っています");
 });
 
 // --- 1g. 分析タブは面と通信を分ける（ISSUE-508 段階 4・§9.3）-------------------------

@@ -1,9 +1,10 @@
 // result_chart_model.js — 売買履歴チャートの「何をどのパネルへ描くか」（純ロジック）。
 //
-// 入力はジョブの成果物 2 つ（ISSUE-552/554 段階 1: 足の列は成果物の 1 か所だけに持つ）:
-//   足の時刻 … `report.json` の先頭の区間の足（run が実行した Bar 列）。View が渡す。
-//   値の列   … `chart_overlay.json`（サーバ `sim_ui/adapter/chart_overlay_writer.py` が書く）。時刻を持たず、
-//              位置 i の値は足 i の値。長さが足の本数と違えば描かない（`overlayLengthMismatch`）。
+// 入力はジョブの足の成果物（ISSUE-552/554 段階 2-2: 画面が持つのは表示する範囲だけ）:
+//   宣言 … `GET /sim/chart-bars/{job}/extent`（列・指標と列の対応）。
+//   列   … `GET /sim/chart-bars/{job}/rows/{start}/{end}` の `columns`（列名 → 並び。位置の区間ぶん。
+//          値なしは null）。足（time・open・high・low・close）・口座・指標が同じ行に並ぶ。
+//   返った列の長さが行数と違う・区間が問うた区間と違うなら描かない（`rowsMismatch`）。
 // DOM・lwc に触れない。描画はライブチャートの ChartRenderer が行い、View は本モジュールの
 // 出力（`resultChartInstances`）をそのまま渡す（系列はすべて線・ChartRenderer に面の塗りの種類は無い）。
 //
@@ -48,53 +49,90 @@ export function toPoints(times, values) {
   return out;
 }
 
+/** 足の列（成果物の列名。ローソク足 1 本を作る 5 列）。 */
+const CANDLE_COLUMNS = Object.freeze(['time', 'open', 'high', 'low', 'close']);
+
 /** 描く口座の列（`resultChartPanes` が読む列。長さの照合もこの列すべてに行う）。 */
 const ACCOUNT_COLUMNS = Object.freeze(
   ['balance', 'equity', 'drawdown', 'realized_pnl', 'floating_pnl', 'margin_level'],
 );
 
-function lengthOf(column) {
-  return Array.isArray(column) ? column.length : 0;
+function indicatorsOf(declared) {
+  return Array.isArray(declared && declared.indicators) ? declared.indicators : [];
 }
 
 /**
- * 値の列の長さが足の本数と一致するか。一致すれば null、しなければ最初に食い違った列の説明。
- * 長さが違う列を描くと、別の足の上に値を置くことになる（黙ってずらさない）。欠けた列は長さ 0。
- * @param {object} overlay   chart_overlay.json
- * @param {number} barCount  report.json の足の本数
+ * 描画に使う列の名前（位置の列・足・描く口座の列・宣言された指標の列）。
+ * 画面が持ち続けるのはこの列だけ（成果物には描かない列も在る）。
+ * @param {object} declared 足の成果物の宣言（extent の応答）
+ * @returns {Array<string>}
+ */
+export function drawnColumns(declared) {
+  return [
+    declared.index_column, ...CANDLE_COLUMNS, ...ACCOUNT_COLUMNS,
+    ...indicatorsOf(declared).map((ind) => ind.column),
+  ];
+}
+
+/**
+ * 返った区間が問うた区間そのもので、描く列がすべて行数と同じ長さか。一致すれば null、
+ * しなければ最初に食い違った点の説明。長さや位置が違う列を描くと、別の足の上に値を置くことになる
+ * （黙ってずらさない）。欠けた列は長さ 0。
+ * @param {object} declared 足の成果物の宣言（extent の応答）
+ * @param {{start: number, end: number, rows: number, columns: object}} answer rows の応答
+ * @param {{start: number, end: number}} asked 問うた区間
  * @returns {string|null}
  */
-export function overlayLengthMismatch(overlay, barCount) {
-  const account = (overlay && overlay.account) || {};
-  for (const key of ACCOUNT_COLUMNS) {
-    const n = lengthOf(account[key]);
-    if (n !== barCount) return `account.${key} の長さ ${n} が足の本数 ${barCount} と一致しません`;
+export function rowsMismatch(declared, answer, asked) {
+  if (!answer || answer.start !== asked.start || answer.end !== asked.end) {
+    return `返った区間 [${answer && answer.start}, ${answer && answer.end}) が問うた区間 [${asked.start}, ${asked.end}) と一致しません`;
   }
-  const indicators = Array.isArray(overlay && overlay.indicators) ? overlay.indicators : [];
-  for (const ind of indicators) {
-    const n = lengthOf(ind.value);
-    if (n !== barCount) return `indicators[${ind.series}].value の長さ ${n} が足の本数 ${barCount} と一致しません`;
+  const expected = asked.end - asked.start;
+  if (answer.rows !== expected) {
+    return `返った行数 ${answer.rows} が区間の本数 ${expected} と一致しません`;
+  }
+  const columns = answer.columns || {};
+  const seriesOf = new Map(indicatorsOf(declared).map((ind) => [ind.column, ind.series]));
+  for (const name of drawnColumns(declared)) {
+    const n = Array.isArray(columns[name]) ? columns[name].length : 0;
+    if (n !== answer.rows) {
+      const label = seriesOf.has(name) ? `${name}（${seriesOf.get(name)}）` : name;
+      return `列 ${label} の長さ ${n} が行数 ${answer.rows} と一致しません`;
+    }
+  }
+  if (answer.rows > 0 && columns[declared.index_column][0] !== asked.start) {
+    return `返った先頭の位置 ${columns[declared.index_column][0]} が問うた位置 ${asked.start} と一致しません`;
   }
   return null;
 }
 
+/** 列からローソク足の列を作る（ChartRenderer へ渡す形）。 */
+export function candlesOf(columns) {
+  const { time, open, high, low, close } = columns;
+  const out = new Array(time.length);
+  for (let i = 0; i < time.length; i += 1) {
+    out[i] = { time: time[i], open: open[i], high: high[i], low: low[i], close: close[i] };
+  }
+  return out;
+}
+
 /**
  * パネルの並びと各パネルの系列を返す。
- * @param {object} overlay    chart_overlay.json（足ごとの値・時刻を持たない）
- * @param {Array<number>} times 足の時刻（report.json の足・値の列と同じ長さ）
- * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（report_ui の tradeCloseCurves の出力。
+ * @param {object} declared   足の成果物の宣言（extent の応答。指標と列の対応を持つ）
+ * @param {object} columns    持っている区間の列（列名 → 並び。時刻は列 time）
+ * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（`windowTradeClose` の出力。
  *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
  * @returns {Array<{title: string, series: Array<{name: string, color: string, width?: number, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(overlay, times, tradeClose) {
+export function resultChartPanes(declared, columns, tradeClose) {
+  const times = columns.time;
   const panes = [{ title: '価格', series: [] }];
-  const indicators = Array.isArray(overlay.indicators) ? overlay.indicators : [];
-  indicators.forEach((ind, i) => {
+  indicatorsOf(declared).forEach((ind, i) => {
     const series = {
       name: ind.series,
       color: RESULT_CHART_COLORS.indicator[i % RESULT_CHART_COLORS.indicator.length],
-      points: toPoints(times, ind.value),
+      points: toPoints(times, columns[ind.column]),
     };
     if (ind.placement === 'price') {
       panes[0].series.push(series);
@@ -102,7 +140,7 @@ export function resultChartPanes(overlay, times, tradeClose) {
       panes.push({ title: ind.series, series: [series] });
     }
   });
-  const a = overlay.account;
+  const a = columns;
   const t = times;
   panes.push({
     title: '残高・有効証拠金',
@@ -118,7 +156,7 @@ export function resultChartPanes(overlay, times, tradeClose) {
     series: [
       // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。
       { name: 'DD（足ごと）', color: RESULT_CHART_COLORS.drawdown,
-        points: toPoints(t, a.drawdown.map((v) => -v)) },
+        points: toPoints(t, a.drawdown.map((v) => (v === null ? null : -v))) },
       // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
       { name: 'DD（取引終了時）', color: RESULT_CHART_COLORS.drawdownClose, width: TRADE_CLOSE_LINE_WIDTH,
         points: tradeClose.ddData },
@@ -148,10 +186,10 @@ export function resultChartPanes(overlay, times, tradeClose) {
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
  *   payloads: Array<{name: string, color: string, width: number, style: string, data: Array}>}>}
  */
-export function resultChartInstances(overlay, times, tradeClose) {
+export function resultChartInstances(declared, columns, tradeClose) {
   const payload = (s) => ({ name: s.name, color: s.color, width: s.width || 1, style: 'solid', data: s.points });
   const out = [];
-  resultChartPanes(overlay, times, tradeClose).forEach((pane, paneIndex) => {
+  resultChartPanes(declared, columns, tradeClose).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });
@@ -165,19 +203,47 @@ export function resultChartInstances(overlay, times, tradeClose) {
   return out;
 }
 
-/** LightweightCharts の足 1 本の最小幅の既定（px・timeScale.minBarSpacing）。 */
-export const LWC_DEFAULT_MIN_BAR_SPACING = 0.5;
+/**
+ * balance_curve の時刻（昇順・重複なし）。区間ごとの前置きに使う。1 ジョブにつき 1 回作る。
+ * @param {object|null} segment report.json の先頭の区間
+ * @returns {Array<number>}
+ */
+export function balanceCurveTimes(segment) {
+  const curve = (segment && segment.agg && segment.agg.balance_curve) || [];
+  return [...new Set(curve.map((p) => p.time))].sort((x, y) => x - y);
+}
+
+/** 昇順の列 sorted で、value 未満の要素の数（二分探索）。 */
+function countBelow(sorted, value) {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 /**
- * run の全期間を 1 画面に収められる「足 1 本の最小幅」（px）。
+ * 持っている区間の足の時刻で、取引終了時の残高・DD を作る。**全期間の足で作った値の同じ区間と一致する**。
  *
- * 実測（2026-09-27・実 UI）: 既定 0.5px のままだと描画幅 1514px に 3027 本までしか入らず、
- *   25,498 本の run で「全期間を見せる」指定（setVisibleRange）が最後の 3027 本で止まった。
- *   最小幅を 描画幅 ÷ 足の本数 以下にすると 0〜25,497 の全期間が入る。
- * 既定より大きくはしない（足が少ない run の縮小の限界はライブチャートと同じまま）。
- * 幅か本数が分からないときは既定を返す（推測で値を作らない）。
+ * なぜ前置きするか: 作る関数（report_ui の tradeCloseCurves・単一ソース）は、渡した足の先頭で
+ *   最高値を初期資金へ戻す。区間の足だけを渡すと、区間より前に付けた最高値を知らないまま DD を出す。
+ *   区間より前の balance_curve の時刻を足の時刻の前に置いて計算し、前置き分を切り落とす。
+ * 前提（実測 2026-09-30・実ジョブ）: balance_curve の時刻 ⊆ 足の時刻。全期間の計算が残高の更新を
+ *   見るのは balance_curve の時刻の足だけなので、その時刻を前に置けば最高値の推移が同じになる。
+ *
+ * @param {function} tradeCloseCurves (segment, barTimes, deposit) => {balData, ddData}
+ * @param {object}   segment     report.json の先頭の区間
+ * @param {number}   deposit     payload の初期証拠金
+ * @param {Array<number>} curveTimes `balanceCurveTimes(segment)`
+ * @param {Array<number>} times  持っている区間の足の時刻
+ * @returns {{balData: Array, ddData: Array}}
  */
-export function wholeRunMinBarSpacing(plotWidth, barCount) {
-  if (!(plotWidth > 0) || !(barCount > 0)) return LWC_DEFAULT_MIN_BAR_SPACING;
-  return Math.min(LWC_DEFAULT_MIN_BAR_SPACING, plotWidth / barCount);
+export function windowTradeClose({ tradeCloseCurves, segment, deposit, curveTimes, times }) {
+  const before = times.length > 0 ? countBelow(curveTimes, times[0]) : 0;
+  if (before === 0) return tradeCloseCurves(segment, times, deposit);
+  const whole = tradeCloseCurves(segment, curveTimes.slice(0, before).concat(times), deposit);
+  return { balData: whole.balData.slice(before), ddData: whole.ddData.slice(before) };
 }

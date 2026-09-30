@@ -39,6 +39,7 @@ import { buildGraphs } from "/sim/report-js/graphs.js";
 import { nextLayoutMode } from "/sim/report-js/layout.js";
 
 import { createReportSourceClient, firstSegment, readJobId } from "./report_source_client.js";
+import { createChartBarsClient } from "./chart_bars_client.js";
 import { createSimDisplayView } from "./sim_display_view.js";
 import { createSimFrameView, waitForContent, whenChildReady } from "./sim_frame_view.js";
 import { createJobStatusClient } from "./job_status_client.js";
@@ -92,26 +93,21 @@ export async function setupSimDisplay({
   const frame = createSimFrameView({ doc });
   // ジョブ結果を売買履歴チャートへ描く（2026-09-26 依頼者指示）。売買履歴チャートの器（`resultChart`）・部品
   //   （`chartKit`）は統合層が注入する。どれかが無い宿主（スタンドアロン等）では描かない＝従来どおり
-  //   下の結果ビューアだけ。足はジョブ自身の report.json から描く（ISSUE-552/554 段階 1・ライブの
-  //   `/candles` は読まない）。
+  //   下の結果ビューアだけ。足・口座・指標はジョブ自身の足の成果物から、表示する範囲だけを
+  //   位置の区間で読む（ISSUE-552/554 段階 2-2・ライブの `/candles` は読まない）。
   const reportSource = createReportSourceClient({});
+  const chartBars = createChartBarsClient({});
   const resultView = resultChart && chartKit && lwc
     ? createSimResultChartView({
       doc,
       host: resultChart.host(),
       lwc,
       chartKit,
-      fetchJson: async (url) => {
-        const res = await fetch(url);
-        if (!res.ok) {
-          const err = new Error(`${url}: ${res.status}`);
-          err.status = res.status;   // 409＝未完了を見分ける材料（ISSUE-540）
-          throw err;
-        }
-        return res.json();
-      },
-      // report.json（シミュレーション結果と同じ成果物）。足と取引終了時の残高・DD を同じ 1 回の
-      //   取得から作る。取引終了時の残高・DD は同じ関数（tradeCloseCurves）で作る。
+      // 足の成果物の宣言と、位置の区間の列。失敗は状態つき（409＝未完了・404＝足の成果物が無い）。
+      loadExtent: (jobId) => chartBars.extent(jobId),
+      fetchRows: (jobId, start, end) => chartBars.rows(jobId, start, end),
+      // report.json（シミュレーション結果と同じ成果物・足は持たない）。取引終了時の残高・DD の材料と
+      //   銘柄名を 1 回の取得から作る。取引終了時の残高・DD は同じ関数（tradeCloseCurves）で作る。
       loadReport: (jobId) => reportSource.load(jobId),
       tradeCloseCurves,
     })
