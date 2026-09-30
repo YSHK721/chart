@@ -10,8 +10,8 @@ report_ui と突き合わせていた。3 窓チャートは撤去済み（2026-
          S3  行 hover → 該当行 .hl ＋ hSel 連動ラベル（table.js / linkage の流用）
     2. 撤去の実測（R1）: チャートの器（#chartWrap / #price-chart / #paneBal / #paneDD /
          #chartBadge / #toggleContacts）と、比較タブ外の canvas が子文書に**無い**
-    3. 計算量（R2・無駄の不在）: チャート材料（lightweight-charts / chart_overlay /
-         candles）へのリクエスト発行が 0。**取引数を増やしても発行リクエスト数が増えない**
+    3. 計算量（R2・無駄の不在）: チャート材料（lightweight-charts / chart-bars /
+         trade_markers / candles）へのリクエスト発行が 0。**取引数を増やしても発行リクエスト数が増えない**
          （2 点でオーダーを固定する。回数そのものは期待値に焼き込まない）。
          「作ってから捨てる」欠陥は出力が正しいままなので状態検証では落ちない——
          発行そのものを観測境界（ブラウザの resource timing＝公開面）で数える。
@@ -159,6 +159,17 @@ _CHART_ABSENCE = """() => ({
 _RESOURCES = """() => performance.getEntriesByType('resource').map((e) => e.name)"""
 
 
+def _chart_materials() -> "tuple[str, ...]":
+    """チャート材料の名前（描画ライブラリ・足の API・売買マーク・ライブの足）。
+
+    足の API と売買マークの名前は配信側・書き手の宣言から引く（書き写さない）。
+    """
+    from simulator.sim_ui.adapter.chart_bars_api_controller import CHART_BARS_PATH_PREFIX
+    from simulator.sim_ui.adapter.chart_overlay_writer import TRADE_MARKERS_FILENAME
+
+    return ("lightweight-charts", CHART_BARS_PATH_PREFIX, TRADE_MARKERS_FILENAME, "/candles")
+
+
 def _report_ui_page(tmp_path: Path):
     """移植元 report_ui の画面（同一 payload）を立てる。"""
     p, browser, page, httpd = _harness.launch(verify_parity._build_web_root, tmp_path / "ref")
@@ -232,7 +243,7 @@ def test_sim_display_without_chart(tmp_path: Path) -> None:
         # R2a: チャート材料への発行が 0（発行した計算 − 出力に使った計算 = 0 の資材面）。
         resources = sim.evaluate(_RESOURCES)
         wasted = [r for r in resources
-                  if "lightweight-charts" in r or "chart_overlay" in r or "/candles" in r]
+                  if any(material in r for material in _chart_materials())]
         assert wasted == [], f"R2 チャート材料を読んでいます（描く先が無い＝浪費）: {wasted}"
 
         # R2b: 入力（取引数）を {SCALE} 倍にしても発行リクエスト数が増えない（オーダーの表明）。

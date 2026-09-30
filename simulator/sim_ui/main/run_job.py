@@ -535,7 +535,11 @@ def _write_report_payload(
             indicators=indicators_once(),
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
-        message = f"chart_overlay.json の書出しに失敗しました: {exc}"
+        message = (
+            "売買履歴チャートへ描く成果物"
+            f"（{chart_overlay_writer.TRADE_MARKERS_FILENAME}・{chart_overlay_writer.CHART_BARS_FILENAME}）"
+            f"の書出しに失敗しました: {exc}"
+        )
         print(message, file=sys.stderr)
         _record_chart_overlay_error(job_dir, message)
 
@@ -544,7 +548,7 @@ def _write_chart_overlay(
     job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
     run_kwargs: "dict[str, Any]", account: Any, *, indicators: Any,
 ) -> None:
-    """売買マーク・トリガー指標・足ごとの口座を書く（束縛は Composition Root が持つ）。
+    """売買マークと足の成果物（足・足ごとの口座・トリガー指標）を書く（束縛は Composition Root が持つ）。
 
     ``indicators`` は呼び出し側が 1 回だけ組んだ実体（run と同じ対応づけ・ISSUE-509 を
     経た系列で、系列の位置 i が ``bars[i]`` の時刻になる）。描く系列は EA が宣言した

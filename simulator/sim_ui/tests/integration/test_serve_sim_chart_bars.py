@@ -204,12 +204,15 @@ class TestTheBarsApiIsWiredEndToEnd:
         expected = [sum(closes[i + 1 - _PERIOD : i + 1]) / _PERIOD for i in range(4, 9)]
         column = _strict(extent)["indicators"][0]["column"]
         assert columns[column] == pytest.approx(expected)
-        # 口座の列は chart_overlay.json の同じ位置と同じ値。
-        overlay = json.loads(
-            (_root / jobs["real"] / "chart_overlay.json").read_text(encoding="utf-8")
+        # 口座の列は足の成果物の同じ位置と同じ値（配信を通さず store から直接読んで照合）。
+        stored = parquet_trace_store.read_columns(
+            _root / jobs["real"] / chart_overlay_writer.CHART_BARS_FILENAME,
+            columns=list(chart_overlay_writer.ACCOUNT_COLUMNS), start=4, end=9,
+            time_column=chart_overlay_writer.INDEX_COLUMN,
         )
         for name in chart_overlay_writer.ACCOUNT_COLUMNS:
-            assert columns[name] == overlay["account"][name][4:9], name
+            expected = [None if isinstance(v, float) and v != v else v for v in stored[name]]
+            assert columns[name] == expected, name
 
     def test_the_whole_short_run_is_strict_json(self, wired):
         """保有の無い足の維持率（値なし）を含む全区間が、ブラウザの読める JSON で返る。"""

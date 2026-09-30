@@ -34,6 +34,7 @@ from simulator.adapter.repository import ohlc_frame_cache as cache
 from simulator.adapter.trace.account_curve import AccountCurveRecorder
 from simulator.main.tester_settings.kwargs_mapper import effective_to_interactor_kwargs
 from simulator.main.tester_settings.run_settings_job import run_settings_job
+from simulator.sim_ui.adapter import chart_overlay_writer
 from simulator.sim_ui.main import run_job
 from simulator.usecase import bar_times
 from simulator.tests.tester_settings_engine_fixtures import (
@@ -104,11 +105,11 @@ def test_one_job_parses_the_series_exactly_once_regardless_of_window(tmp_path, d
     # Act
     job_dir = _run(tmp_path, days=days)
 
-    # Assert: 成果物（stats / report.json / chart_overlay.json）まで書けている＝
+    # Assert: 成果物（stats / report.json / 足の成果物）まで書けている＝
     #   parse を削っても出力は欠けない（正の対照）。
     assert (job_dir / "stats.json").is_file()
     assert (job_dir / "report.json").is_file()
-    assert (job_dir / "chart_overlay.json").is_file()
+    assert (job_dir / chart_overlay_writer.CHART_BARS_FILENAME).is_file()
     # 発行 − 相異なる (実体, sep) = 0（全実体）。
     distinct = {(path, sep) for (path, _m, _s, sep) in cache.parse_log}
     assert len(cache.parse_log) - len(distinct) == 0, cache.parse_log
@@ -166,7 +167,7 @@ def test_one_job_builds_the_bars_once_regardless_of_window(tmp_path, conversions
     job_dir = _run_marketdata(tmp_path, days=days)
 
     # Assert: 成果物まで書けている（正の対照）・Bar 列の組み立て − 1 = 0（窓の長さに依らない）
-    assert (job_dir / "chart_overlay.json").is_file()
+    assert (job_dir / chart_overlay_writer.CHART_BARS_FILENAME).is_file()
     assert len(conversions) - 1 == 0, conversions
 
 

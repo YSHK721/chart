@@ -2,15 +2,19 @@
 
 `run_job.main` を spec.json 経由で実際に回し、job-dir の成果物を独立計算と照合する:
     「`trade_markers.json`」: 全トレードの建て・決済のマーク（件数＝トレード数×2・時間足 1m）。
-    「`chart_overlay.json`」:
+    「`chart_bars.parquet`」＋「`chart_bars.json`」（ISSUE-552/554 段階 2-1）:
+        足     … run が読んだ CSV の足。ジョブの成果物のここ 1 か所にだけ在る（report.json は足を持たない）。
         指標   … EA が宣言した系列（CalcProbe は SMA）。値は終値の単純平均を独立に計算して照合。
         口座   … 足ごと。損益（確定の累計・含み）・DD（有効証拠金の最高値からの下落）を
                  独立に計算して照合。保有中は有効証拠金が残高と異なる足が在ること。
-        時刻   … 持たない（ISSUE-552/554 段階 1）。位置 i の値は足 i の値。
-    「`chart_bars.parquet`」＋「`chart_bars.json`」（ISSUE-552/554 段階 2-1）:
-        足     … run が読んだ CSV の足。ジョブの成果物のここ 1 か所にだけ在る（report.json は足を持たない）。
-        口座・指標 … chart_overlay.json と同じ値。
     実行トレースを有効にした run でも同じ成果物が出る（観測口の合成）。
+
+計算量（絶対命令 2026-08-28・ISSUE-554）:
+    足ごとの値を持つ成果物は足の成果物（chart_bars.parquet）だけである。取引数が同じで足の本数だけが
+    違う 2 つの run を回し、ジョブが書いたファイルごとに大きさの増分を比べる（時間は測らない）。
+    足ごとの列を文字で書くと 1 本あたり 2 byte 以上（値と区切り）増えるので、増分が足の増分より
+    小さければ足ごとの値を持たない。ファイル名も個数も検定に書き写さない（実ジョブの 1 分足の全履歴では
+    誰も読まない足ごとの JSON が 276MB・書出し 6.5 秒になっていた）。
 """
 from __future__ import annotations
 
@@ -32,13 +36,14 @@ _PERIOD = 3
 _OPENS = [100, 102, 104, 103, 99, 97, 98, 101, 105, 104, 100, 96, 95, 99, 103, 106, 102, 98]
 
 
-def _closes() -> "list[float]":
-    return [o + (0.5 if i % 2 else -0.5) for i, o in enumerate(_OPENS)]
+def _closes(opens: "list[float] | None" = None) -> "list[float]":
+    return [o + (0.5 if i % 2 else -0.5) for i, o in enumerate(_OPENS if opens is None else opens)]
 
 
-def _write_csv(path: Path) -> Path:
+def _write_csv(path: Path, opens: "list[float] | None" = None) -> Path:
+    opens = _OPENS if opens is None else opens
     rows = []
-    for i, (o, c) in enumerate(zip(_OPENS, _closes())):
+    for i, (o, c) in enumerate(zip(opens, _closes(opens))):
         rows.append(
             {
                 "time": _EPOCH + 60 * i, "open": float(o), "high": max(o, c) + 1.0,
@@ -51,7 +56,7 @@ def _write_csv(path: Path) -> Path:
 
 def _run(tmp: Path, csv: Path, *, trace=None) -> Path:
     job_dir = tmp / "0123456789abcdef0123456789abcdef"
-    job_dir.mkdir()
+    job_dir.mkdir(parents=True)
     backtest = {
         "ea_name": "CalcProbe_EA", "symbol": "SYNTH", "period": "M1", "data_path": str(csv),
         "initial_deposit": _DEPOSIT, "contract_size": 10.0, "volume_min": 0.1,
@@ -93,18 +98,24 @@ def test_markers_cover_every_trade_on_the_run_timeframe(job_dir: Path) -> None:
     assert len(markers["pairs"]) == len(trades)
 
 
-def test_the_declared_trigger_indicator_is_the_independent_sma(job_dir: Path) -> None:
-    overlay = _load(job_dir, "chart_overlay.json")
-    (sma,) = overlay["indicators"]
-    assert (sma["series"], sma["placement"]) == ("sma", "price")
-    assert "time" not in sma
-    assert sma["value"] == pytest.approx(_sma(_closes(), _PERIOD))
+def _chart_bars(job_dir: Path) -> "tuple[dict, dict[str, list]]":
+    declared = _load(job_dir, chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME)
+    columns = parquet_trace_store.read_columns(
+        job_dir / chart_overlay_writer.CHART_BARS_FILENAME, columns=declared["columns"],
+        time_column=chart_overlay_writer.INDEX_COLUMN,
+    )
+    return declared, columns
+
+
+def _values(column: list) -> list:
+    """parquet は値なしを NaN で持つ（配信の出口が null にする）。値なしを None に揃える。"""
+    return [None if isinstance(v, float) and math.isnan(v) else v for v in column]
 
 
 def test_account_rows_are_per_bar_and_the_derived_series_match(job_dir: Path) -> None:
-    account = _load(job_dir, "chart_overlay.json")["account"]
+    _declared, columns = _chart_bars(job_dir)
+    account = {name: _values(columns[name]) for name in chart_overlay_writer.ACCOUNT_COLUMNS}
     balance, equity = account["balance"], account["equity"]
-    assert "time" not in account
     assert len(balance) == len(_OPENS)
     # 損益: 確定の累計＝残高−初期資金 / 含み＝有効証拠金−残高。
     assert account["realized_pnl"] == pytest.approx([b - _DEPOSIT for b in balance])
@@ -129,24 +140,14 @@ def test_account_rows_are_per_bar_and_the_derived_series_match(job_dir: Path) ->
 def test_the_same_outputs_are_written_with_the_run_trace_enabled(tmp_path: Path) -> None:
     csv = _write_csv(tmp_path / "d.csv")
     job_dir = _run(tmp_path, csv, trace={"enabled": True, "start": None, "end": None})
-    account = _load(job_dir, "chart_overlay.json")["account"]
-    assert len(account["balance"]) == len(_OPENS)
+    declared, columns = _chart_bars(job_dir)
+    assert declared["rows"] == len(columns["balance"]) == len(_OPENS)
     assert (job_dir / "trade_markers.json").exists()
 
 
-def _chart_bars(job_dir: Path) -> "tuple[dict, dict[str, list]]":
-    declared = _load(job_dir, chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME)
-    columns = parquet_trace_store.read_columns(
-        job_dir / chart_overlay_writer.CHART_BARS_FILENAME, columns=declared["columns"],
-        time_column=chart_overlay_writer.INDEX_COLUMN,
-    )
-    return declared, columns
-
-
 def test_the_bars_live_only_in_the_bars_artefact(job_dir: Path) -> None:
-    """足はジョブの成果物の 1 か所（chart_bars.parquet）だけ。report.json にも chart_overlay.json にも無い。"""
+    """足はジョブの成果物の 1 か所（chart_bars.parquet）だけ。report.json には無い。"""
     declared, columns = _chart_bars(job_dir)
-    overlay = _load(job_dir, "chart_overlay.json")
     segment = _load(job_dir, "report.json")["segments"]["single"]
     # 足は run が読んだ CSV そのもの。
     assert columns["time"] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
@@ -156,21 +157,39 @@ def test_the_bars_live_only_in_the_bars_artefact(job_dir: Path) -> None:
     # 他の成果物は足を持たない（本数だけを名乗る）。
     assert segment["bars"] == []
     assert segment["meta"]["bars"] == len(_OPENS)
-    assert "time" not in overlay["account"]
-    assert {len(v) for v in overlay["account"].values()} == {len(_OPENS)}
 
 
-def test_the_bars_artefact_carries_the_account_and_the_indicator_of_the_same_run(job_dir: Path) -> None:
+def test_the_declared_trigger_indicator_is_the_independent_sma(job_dir: Path) -> None:
     declared, columns = _chart_bars(job_dir)
-    overlay = _load(job_dir, "chart_overlay.json")
-    for name in chart_overlay_writer.ACCOUNT_COLUMNS:
-        # parquet は値なしを NaN で持つ（配信の出口が null にする）。値なしの位置と値の両方を照合する。
-        got = [None if isinstance(v, float) and math.isnan(v) else v for v in columns[name]]
-        assert got == overlay["account"][name], name
     (indicator,) = declared["indicators"]
     assert (indicator["series"], indicator["placement"]) == ("sma", "price")
-    got = [None if isinstance(v, float) and math.isnan(v) else v for v in columns[indicator["column"]]]
-    assert got == pytest.approx(_sma(_closes(), _PERIOD))
+    assert _values(columns[indicator["column"]]) == pytest.approx(_sma(_closes(), _PERIOD))
+
+
+def _sizes_of_a_job(tmp: Path, tail: int) -> "tuple[dict[str, int], int, int]":
+    """途転の並びの後ろへ、始値が SMA を跨がない足を ``tail`` 本足した run の (ファイルごとの大きさ, 足, 取引)。"""
+    opens = [*_OPENS, *(200.0 + i for i in range(tail))]
+    job_dir = _run(tmp / str(tail), _write_csv(tmp / f"{tail}.csv", opens))
+    trades = _load(job_dir, "report.json")["segments"]["single"]["trades"]
+    sizes = {path.name: path.stat().st_size for path in job_dir.iterdir()}
+    return sizes, len(opens), len(trades)
+
+
+def test_only_the_bars_artefact_grows_with_the_bars(tmp_path: Path) -> None:
+    # Arrange / Act: 取引数が同じで、足の本数だけが違う 2 つの run。
+    small, small_bars, small_trades = _sizes_of_a_job(tmp_path, 200)
+    large, large_bars, large_trades = _sizes_of_a_job(tmp_path, 2000)
+    added = large_bars - small_bars
+
+    # Assert: 前提（足だけが増えた・書いたファイルの顔ぶれは足の本数で変わらない）。
+    assert small_trades == large_trades > 0
+    assert set(small) == set(large)
+    # 足の本数で大きくなった成果物 − 足の成果物 = 0。
+    per_bar = {name for name in small if large[name] - small[name] >= added}
+    assert chart_overlay_writer.CHART_BARS_FILENAME in per_bar, "足の成果物が足の本数で増えていない（検定が空虚）"
+    assert per_bar - {chart_overlay_writer.CHART_BARS_FILENAME} == set(), {
+        name: (small[name], large[name]) for name in per_bar
+    }
 
 
 def test_the_balance_curve_times_are_bar_times(job_dir: Path) -> None:
@@ -183,7 +202,7 @@ def test_the_balance_curve_times_are_bar_times(job_dir: Path) -> None:
 
 def test_a_csv_outside_the_ledger_has_no_dataset_ref(job_dir: Path) -> None:
     """台帳外の CSV は系列名を推測しない（チャート側は描かずに理由を出す）。"""
-    assert _load(job_dir, "chart_overlay.json")["dataset_ref"] is None
+    assert _load(job_dir, chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME)["dataset_ref"] is None
 
 
 def test_a_ledger_path_resolves_to_exactly_its_ref() -> None:
