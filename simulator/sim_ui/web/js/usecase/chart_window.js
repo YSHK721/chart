@@ -49,6 +49,7 @@ const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
  * 守る範囲: 見えている範囲と、その両側の余白（`margin`）。余白は見えている幅（1 画面ぶん）。
  *   ただし守る範囲は上限に収める（幅 + 余白 × 2 ≤ 上限）ので、幅が上限の 1/3 を超えると余白は
  *   `(上限 − 幅) / 2` へ縮み、幅が上限以上なら 0。
+ *   両端は外側の整数の位置へ丸める（位置は整数。読む条件と捨てる足が同じ境界を見る）。
  * 読む条件（「近づいた」）: 持っている区間が、その側で守る範囲を覆っていない。run の端に
  *   着いている側は読まない。見えている範囲が読めなければ読まない。
  * 捨てる足: 上限を超える分だけ、読む側と反対の端の、**守る範囲の外**の足。見えている足は捨てない。
@@ -69,9 +70,14 @@ export function planReads({ held, totalRows, readRows, cap, visible, sides = SID
   if (!visible || !Number.isFinite(visible.from) || !Number.isFinite(visible.to)) return [];
   const width = visible.to - visible.from;
   const margin = clamp((cap - width) / 2, 0, width);
-  // 守る範囲（Bar 列の中の位置・両端を含む）。
-  const keepFrom = held.start + visible.from - margin;
-  const keepTo = held.start + visible.to + margin;
+  // 守る範囲（Bar 列の中の**整数の位置**・両端を含む）。見えている範囲は小数で来る（lwc の論理範囲）
+  //   ので、外側の整数の位置へ丸めてから使う。下の「覆っているか」と「捨てられる足」は、この同じ
+  //   整数の境界だけを見る。小数のまま比べると、捨てられる足は `floor(keepTo)` まで数えるのに
+  //   覆っているかは小数の `keepTo` と比べるので、前を読んで後を `floor(keepTo)` まで捨てた直後に
+  //   「後を覆っていない」となり、後を読んで、いま読んだ前の一部を捨てた（独立レビュー 推奨 1・2・
+  //   本番値で 1 操作 525 行・同じ位置の操作のたびに繰り返した）。
+  const keepFrom = Math.floor(held.start + visible.from - margin);
+  const keepTo = Math.ceil(held.start + visible.to + margin);
   const reads = [];
   let now = held;
   for (const side of sides) {
@@ -83,7 +89,7 @@ export function planReads({ held, totalRows, readRows, cap, visible, sides = SID
     if (!uncovered) continue;
     const wanted = Math.min(readRows, before ? now.start : totalRows - now.end);
     // 読む側と反対の端にある、守る範囲の外の足（捨てられる足）。
-    const spare = clamp(before ? now.end - 1 - Math.floor(keepTo) : Math.ceil(keepFrom) - now.start, 0, rows);
+    const spare = clamp(before ? now.end - 1 - keepTo : keepFrom - now.start, 0, rows);
     const room = cap - rows;
     const length = Math.min(wanted, room + spare);
     if (length <= 0) continue;

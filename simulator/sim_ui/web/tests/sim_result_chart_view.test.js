@@ -834,14 +834,15 @@ async function fillToCap(h) {
 }
 
 /**
- * 操作 1 回（表示範囲を `rangeOf(持っている本数)` にして止まる）を行い、数える。
- * @returns {{read: number, kept: number, seenLost: number}}
+ * 操作 1 回（表示範囲を `rangeOf(持っている本数, 今の表示範囲)` にして止まる）を行い、数える。
+ * @returns {{read: number, kept: number, reread: number, seenLost: number, sizes: number[]}}
  *   read＝この操作で読んだ行・kept＝そのうち操作の後も持っている行・
+ *   reread＝読んだ行のうち、その読みの前から持っていた行（読み直し）・
  *   seenLost＝操作の時点で見えていた足のうち、操作の後に持っていない行
  */
 async function operate(h, rangeOf) {
   const heldBefore = drawnWindow(h.c.draws.at(-1).candles);
-  const range = rangeOf(heldBefore.end - heldBefore.start);
+  const range = rangeOf(heldBefore.end - heldBefore.start, h.c.range);
   const readsBefore = h.c.reads.length;
   await h.scrollTo(range);
   const heldAfter = drawnWindow(h.c.draws.at(-1).candles);
@@ -854,52 +855,114 @@ async function operate(h, rangeOf) {
   return {
     read: reads.reduce((n, r) => n + (r.end - r.start), 0),
     kept: reads.reduce((n, r) => n + overlapRows(r, heldAfter), 0),
+    // その読みの前から持っていた区間＝その読みの直前の描画（Test Spy が覚えた描画の数から引く）。
+    reread: reads.reduce((n, r) => n + overlapRows(r, drawnWindow(h.c.draws[r.drawsBefore - 1].candles)), 0),
     seenLost: seenRows - overlapRows(seen, heldAfter),
     sizes: reads.map((r) => r.end - r.start),
   };
 }
 
-/** 同じ操作の台本: 見えている幅 `width` で、持っている左端の近く・右端の近くを交互に見る。 */
-async function wideScript(h, width) {
+// 見えている幅の 4 点（整数の本数）: 上限の 1/4・上限の 1/3 の直下・上限の 3/5・上限の 3/2。
+//   上限の 1/3 の直下は、守る範囲（幅 × 3）が上限にわずかに足りない帯（独立レビュー 推奨 1・2）。
+const WIDTHS = [CAP / 4, Math.ceil(CAP / 3) - 1, (CAP * 3) / 5, (CAP * 3) / 2];
+// 端数の有無: 見えている範囲の両端へ足す端数（lwc の論理範囲は小数で来る・実測）。
+const FRACTIONS = [{ from: 0, to: 0 }, { from: 0.14, to: 0.23 }];
+const RUNS = [3_000, 3_000_000];
+/** 幅（整数の本数）× 端数の有無。 */
+const SHAPES = WIDTHS.flatMap((width) => FRACTIONS.map((fraction) => ({ width, fraction })));
+const label = ({ width, fraction }) => `幅 ${width}・端数 ${fraction.from}/${fraction.to}`;
+
+/** 持っている区間の先頭からの整数の位置 `at` から幅 `width` の見えている範囲（端数を足す）。 */
+const rangeAt = (at, { width, fraction }) => ({ from: at + fraction.from, to: at + width + fraction.to });
+
+test('検定の前提: 幅の 4 点は整数の本数で、上限の 1/3 の両側と上限の外を通り、端数つきでも帯を出ない', () => {
+  const [quarter, third, wide, wider] = WIDTHS;
+  assert.ok(WIDTHS.every(Number.isInteger));
+  const grown = Math.max(...FRACTIONS.map((f) => f.to - f.from));
+  assert.ok(quarter + grown < third && third + grown < CAP / 3 && CAP / 3 - third - grown < 1);
+  assert.ok(wide > CAP / 2 && wide < CAP && wider > CAP);
+  assert.ok(FRACTIONS.some((f) => f.from === 0 && f.to === 0));
+  assert.ok(FRACTIONS.some((f) => !Number.isInteger(f.from) && !Number.isInteger(f.to)));
+});
+
+/** 同じ操作の台本: 見えている幅 `shape.width` で、持っている左端の近く・右端の近くを交互に見る。 */
+async function wideScript(h, shape) {
   const results = [];
   for (let i = 0; i < 3; i += 1) {
-    results.push(await operate(h, () => ({ from: 5, to: 5 + width })));
-    results.push(await operate(h, (heldRows) => ({ from: heldRows - 5 - width, to: heldRows - 5 })));
+    results.push(await operate(h, () => rangeAt(5, shape)));
+    results.push(await operate(h, (heldRows) => rangeAt(heldRows - 5 - shape.width, shape)));
   }
   return results;
 }
 
-// 見えている幅の 3 点: 上限の 1/3 未満・上限の 1/2 超・上限より広い（持てる量より広く見ている）。
-const WIDTHS = [CAP / 4, (CAP * 3) / 5, (CAP * 3) / 2];
-
-test('計算量: 読んだ行 − 操作の後も持ち続けた行 = 0（見えている幅 3 点 × run の長さ 2 点）', async () => {
-  assert.ok(WIDTHS[0] < CAP / 3 && WIDTHS[1] > CAP / 2 && WIDTHS[2] > CAP);
-  for (const width of WIDTHS) {
+test('計算量: 読んだ行 − 操作の後も持ち続けた行 = 0・読んだ行のうち読む前から持っていた行 = 0（見えている幅 4 点 × 端数の有無 × run の長さ 2 点）', async () => {
+  for (const shape of SHAPES) {
     const perRun = [];
-    for (const rows of [3_000, 3_000_000]) {
+    for (const rows of RUNS) {
       const h = view({ ext: extent({ rows }) });
       await h.v.render('job1');
       await fillToCap(h);
-      const results = await wideScript(h, width);
+      const results = await wideScript(h, shape);
       const read = results.reduce((n, r) => n + r.read, 0);
       const kept = results.reduce((n, r) => n + r.kept, 0);
-      assert.ok(read > 0, `幅 ${width}: 読み足しが起きていない（検定が空虚）`);
-      assert.equal(read - kept, 0, `幅 ${width}・run ${rows} 本: 読んだ ${read} 行のうち ${read - kept} 行を捨てた`);
+      const reread = results.reduce((n, r) => n + r.reread, 0);
+      assert.ok(read > 0, `${label(shape)}: 読み足しが起きていない（検定が空虚）`);
+      assert.equal(read - kept, 0, `${label(shape)}・run ${rows} 本: 読んだ ${read} 行のうち ${read - kept} 行を捨てた`);
+      assert.equal(reread, 0, `${label(shape)}・run ${rows} 本: 読んだ ${read} 行のうち ${reread} 行は読む前から持っていた`);
       assert.ok(h.c.draws.every((d) => d.candles.length <= CAP));
       perRun.push(results.map((r) => r.sizes));
     }
     // 読みの本数と回数は run の長さに依らない。
-    assert.deepEqual(perRun[0], perRun[1], `幅 ${width}`);
+    assert.deepEqual(perRun[0], perRun[1], label(shape));
   }
 });
 
-test('広い表示範囲で読み足しても、見えていた足を捨てない（見えている幅 3 点）', async () => {
-  for (const width of WIDTHS) {
+test('広い表示範囲で読み足しても、見えていた足を捨てない（見えている幅 4 点 × 端数の有無）', async () => {
+  for (const shape of SHAPES) {
     const h = view();
     await h.v.render('job1');
     await fillToCap(h);
-    for (const r of await wideScript(h, width)) {
-      assert.equal(r.seenLost, 0, `幅 ${width}: 見えていた足を ${r.seenLost} 本捨てた`);
+    for (const r of await wideScript(h, shape)) {
+      assert.equal(r.seenLost, 0, `${label(shape)}: 見えていた足を ${r.seenLost} 本捨てた`);
     }
+  }
+});
+
+test('計算量: 同じ位置で操作を繰り返すと読みは止まり、読んだ行はすべて持ち続け、読み直さない（見えている幅 4 点 × 端数の有無 × run の長さ 2 点・持っている左端の近くと右端の近く）', async () => {
+  for (const shape of SHAPES) {
+    const perRun = [];
+    for (const rows of RUNS) {
+      const sizes = [];
+      // 持っている左端の近く・右端の近く。
+      for (const atOf of [() => 5, (heldRows) => heldRows - 5 - shape.width]) {
+        const h = view({ ext: extent({ rows }) });
+        await h.v.render('job1');
+        await fillToCap(h);
+        const origin = drawnWindow(h.c.draws.at(-1).candles);
+        const where = `${label(shape)}・run ${rows} 本・位置 ${atOf(CAP)}`;
+        const results = [await operate(h, (heldRows) => rangeAt(atOf(heldRows), shape))];
+        // 同じ位置のまま操作する（表示範囲は動かさない。Fake の描画の口は本物と同じく、差し替えで
+        //   同じ足を同じ画面位置に留める）。守る範囲は上限に収まるので「上限 / 1 回の本数」回までに
+        //   覆える。そこから先の操作は、読みが止まっていることを確かめるぶん。
+        for (let i = 0; i < 2 * (CAP / READ_ROWS); i += 1) results.push(await operate(h, (_, range) => range));
+        const settled = results.slice(CAP / READ_ROWS + 1);
+        assert.ok(settled.length > 0);
+        const late = settled.reduce((n, r) => n + r.read, 0);
+        assert.equal(late, 0, `${where}: 同じ位置で読みが止まらない（覆えた後に ${late} 行を読んだ）`);
+        const read = results.reduce((n, r) => n + r.read, 0);
+        const kept = results.reduce((n, r) => n + r.kept, 0);
+        const reread = results.reduce((n, r) => n + r.reread, 0);
+        assert.equal(read - kept, 0, `${where}: 読んだ ${read} 行のうち ${read - kept} 行を同じ操作で捨てた`);
+        assert.equal(reread, 0, `${where}: 読んだ ${read} 行のうち ${reread} 行は読む前から持っていた`);
+        // 読んだ行 − 最後に持っている行のうち新しく持った行 = 0（前を読んで後を捨て、次に後を読んで
+        //   前を捨てる往復が無い）。
+        const held = drawnWindow(h.c.draws.at(-1).candles);
+        const gained = (held.end - held.start) - overlapRows(held, origin);
+        assert.equal(read - gained, 0, `${where}: 読んだ ${read} 行のうち ${read - gained} 行を持っていない`);
+        sizes.push(results.map((r) => r.sizes));
+      }
+      perRun.push(sizes);
+    }
+    assert.deepEqual(perRun[0], perRun[1], label(shape));
   }
 });

@@ -213,66 +213,128 @@ function operate({ held, totalRows, view }) {
   };
 }
 
-// 見えている幅の 3 点: 上限の 1/3 未満・上限の 1/2 超・上限より広い（持てる量より広く見ている）。
-const WIDTHS = [Math.floor(cap / 4), Math.floor((cap * 3) / 5), Math.floor((cap * 3) / 2)];
+// 見えている幅の 4 点（整数の本数）: 上限の 1/4・上限の 1/3 の直下・上限の 3/5・上限の 3/2。
+//   上限の 1/3 の直下は、守る範囲（幅 × 3）が上限にわずかに足りない帯。ここで見えている範囲が
+//   小数だと、「覆っているか」と「捨てられる足」が別の境界を見ていた頃は、1 操作で前を読み、
+//   その一部を後の読みで捨てた（独立レビュー 推奨 1・2）。
+const WIDTHS = [
+  Math.floor(cap / 4), Math.ceil(cap / 3) - 1, Math.floor((cap * 3) / 5), Math.floor((cap * 3) / 2),
+];
+// 端数の有無: 見えている範囲の両端へ足す端数（lwc の論理範囲は小数で来る・実測）。
+const FRACTIONS = [{ from: 0, to: 0 }, { from: 0.14, to: 0.23 }];
+const RUNS = [10 * cap, 3_000_000];
+/** 幅（整数の本数）× 端数の有無。 */
+const SHAPES = WIDTHS.flatMap((width) => FRACTIONS.map((fraction) => ({ width, fraction })));
+const label = ({ width, fraction }) => `幅 ${width}・端数 ${fraction.from}/${fraction.to}`;
+
+/** 整数の位置 `at` から幅 `width` の見えている範囲（端数を足す）。 */
+const viewAt = (at, { width, fraction }) => ({ from: at + fraction.from, to: at + width + fraction.to });
+
+test('検定の前提: 幅の 4 点は上限の 1/3 の両側と上限の外を通り、端数つきでも帯を出ない', () => {
+  const [quarter, third, wide, wider] = WIDTHS;
+  const grown = Math.max(...FRACTIONS.map((f) => f.to - f.from));
+  assert.ok(quarter + grown < third && third + grown < cap / 3 && cap / 3 - third - grown < 1);
+  assert.ok(wide > cap / 2 && wide < cap && wider > cap);
+  assert.ok(FRACTIONS.some((f) => f.from === 0 && f.to === 0));
+  assert.ok(FRACTIONS.some((f) => !Number.isInteger(f.from) && !Number.isInteger(f.to)));
+});
 
 /** 台本: 上限まで持った状態から、見えている幅の 1/4 ずつ左へ、続けて右へ動かす。 */
-function panScript({ totalRows, width }) {
+function panScript({ totalRows, shape }) {
   // run の中ほど（run の長さに依らず端から同じ距離）で上限まで持つ。
   let held = { start: totalRows - 3 * cap, end: totalRows - 2 * cap };
-  let from = held.start + (cap - width) / 2;
+  let at = held.start + Math.floor((cap - shape.width) / 2);
   const results = [];
-  const step = width / 4;
+  const step = Math.floor(shape.width / 4);
   const moves = [...Array(12).fill(-step), ...Array(24).fill(step)];
   for (const move of [0, ...moves]) {
-    from += move;
-    const r = operate({ held, totalRows, view: { from, to: from + width } });
+    at += move;
+    const r = operate({ held, totalRows, view: viewAt(at, shape) });
     held = r.held;
     results.push(r);
   }
   return results;
 }
 
-test('計算量: 読んだ行 − つないだ後に持ち続けた行 = 0（見えている幅 3 点 × run の長さ 2 点）', () => {
-  assert.ok(WIDTHS[0] < cap / 3 && WIDTHS[1] > cap / 2 && WIDTHS[2] > cap);
-  for (const width of WIDTHS) {
+test('計算量: 読んだ行 − つないだ後に持ち続けた行 = 0（見えている幅 4 点 × 端数の有無 × run の長さ 2 点）', () => {
+  for (const shape of SHAPES) {
     const perRun = [];
-    for (const totalRows of [10 * cap, 3_000_000]) {
-      const results = panScript({ totalRows, width });
+    for (const totalRows of RUNS) {
+      const results = panScript({ totalRows, shape });
       const read = results.reduce((n, r) => n + r.read, 0);
       const kept = results.reduce((n, r) => n + r.kept, 0);
-      assert.ok(read > 0, `幅 ${width}: 読み足しが起きていない（検定が空虚）`);
-      assert.equal(read - kept, 0, `幅 ${width}・run ${totalRows} 本: 読んだ ${read} 行のうち ${read - kept} 行を捨てた`);
+      assert.ok(read > 0, `${label(shape)}: 読み足しが起きていない（検定が空虚）`);
+      assert.equal(read - kept, 0, `${label(shape)}・run ${totalRows} 本: 読んだ ${read} 行のうち ${read - kept} 行を捨てた`);
       perRun.push(results.map((r) => r.sizes));
     }
     // 発行は run の長さに依らない（同じ台本なら同じ本数・同じ回数）。
-    assert.deepEqual(perRun[0], perRun[1], `幅 ${width}`);
+    assert.deepEqual(perRun[0], perRun[1], label(shape));
   }
 });
 
-test('読み足しで、見えていた足を捨てない（見えている幅 3 点）', () => {
-  for (const width of WIDTHS) {
-    for (const r of panScript({ totalRows: 3_000_000, width })) {
-      assert.equal(r.seenLost, 0, `幅 ${width}: 見えていた足を ${r.seenLost} 本捨てた`);
+test('読み足しで、見えていた足を捨てない（見えている幅 4 点 × 端数の有無）', () => {
+  for (const shape of SHAPES) {
+    for (const r of panScript({ totalRows: RUNS[1], shape })) {
+      assert.equal(r.seenLost, 0, `${label(shape)}: 見えていた足を ${r.seenLost} 本捨てた`);
     }
   }
 });
 
-test('同じ位置で操作を繰り返すと読みは止まり、読んだ行はすべて持ち続ける（前を読んで後を捨て、次に後を読んで前を捨てる往復が無い）', () => {
-  for (const width of WIDTHS) {
-    const origin = { start: 1_000_000, end: 1_000_000 + cap };
-    const view = { from: origin.start + 10, to: origin.start + 10 + width };
-    let held = origin;
-    const results = [];
-    // 守る範囲は上限に収まるので、1 操作 1 回ぶんずつ読んでも「上限 / 1 回の本数」回までに覆える。
-    for (let i = 0; i < cap / readRows + 1; i += 1) {
-      results.push(operate({ held, totalRows: 3_000_000, view }));
-      held = results.at(-1).held;
+/**
+ * 同じ位置で操作を繰り返す。
+ * @returns {{results: object[], held: object}}
+ */
+function repeatAt({ origin, totalRows, view }) {
+  let held = origin;
+  const results = [];
+  // 守る範囲は上限に収まるので、1 操作 1 回ぶんずつ読んでも「上限 / 1 回の本数」回までに覆える。
+  //   そこから先の操作は、読みが止まっていることを確かめるぶん。
+  for (let i = 0; i < 2 * (cap / readRows) + 1; i += 1) {
+    results.push(operate({ held, totalRows, view }));
+    held = results.at(-1).held;
+  }
+  return { results, held };
+}
+
+test('再現（独立レビュー 推奨 1・2）: 見えている範囲が小数でも、1 操作で読んだ行を同じ操作で捨てず、同じ位置の次の操作は読まない', () => {
+  // 本番値（1 回の本数 1500・上限 19500）で、上限まで持ち、幅が上限の 1/3 の少し下の小数。
+  const origin = { start: 68_249, end: 68_249 + cap };
+  const view = { from: 73_698.14, to: 80_023.23 };
+  const { results } = repeatAt({ origin, totalRows: 2_150_000, view });
+  const [first, ...rest] = results;
+  assert.ok(first.read > 0, '読み足しが起きていない（検定が空虚）');
+  assert.equal(first.read - first.kept, 0, `操作 1: 読んだ ${first.read} 行のうち ${first.read - first.kept} 行を捨てた`);
+  const again = rest.reduce((n, r) => n + r.read, 0);
+  assert.equal(again, 0, `同じ位置の操作 ${rest.length} 回で ${again} 行を読んだ（読みが止まらない）`);
+});
+
+test('同じ位置で操作を繰り返すと読みは止まり、読んだ行はすべて持ち続ける（幅 4 点 × 端数の有無 × run の長さ 2 点・持っている左端の近くと右端の近く）', () => {
+  for (const shape of SHAPES) {
+    const perRun = [];
+    for (const totalRows of RUNS) {
+      const origin = { start: totalRows - 3 * cap, end: totalRows - 2 * cap };
+      const sizes = [];
+      // 持っている左端の近く・右端の近く（run の長さに依らず持っている区間からの距離は同じ）。
+      for (const at of [origin.start + 10, origin.end - 10 - shape.width]) {
+        const where = `${label(shape)}・run ${totalRows} 本・位置 ${at - origin.start}`;
+        const { results, held } = repeatAt({ origin, totalRows, view: viewAt(at, shape) });
+        // 読みは止まる（覆えた後の操作は 1 行も読まない）。
+        const settled = results.slice(cap / readRows + 1);
+        assert.ok(settled.length > 0);
+        const late = settled.reduce((n, r) => n + r.read, 0);
+        assert.equal(late, 0, `${where}: 同じ位置で読みが止まらない（覆えた後に ${late} 行を読んだ）`);
+        // 読んだ行 − 操作の後も持ち続けた行 = 0（操作ごと）。
+        const read = results.reduce((n, r) => n + r.read, 0);
+        const kept = results.reduce((n, r) => n + r.kept, 0);
+        assert.equal(read - kept, 0, `${where}: 読んだ ${read} 行のうち ${read - kept} 行を同じ操作で捨てた`);
+        // 読んだ行 − 最後に持っている行のうち新しく持った行 = 0（前を読んで後を捨て、次に後を
+        //   読んで前を捨てる往復が無い・同じ行を読み直していない）。
+        const gained = (held.end - held.start) - overlapRows(held, origin);
+        assert.equal(read - gained, 0, `${where}: 読んだ ${read} 行のうち ${read - gained} 行を持っていない`);
+        sizes.push(results.map((r) => r.sizes));
+      }
+      perRun.push(sizes);
     }
-    assert.equal(results.at(-1).read, 0, `幅 ${width}: 同じ位置で読みが止まらない`);
-    // 読んだ行 − 最後に持っている行のうち新しく持った行 = 0（同じ行を読み直していない）。
-    const read = results.reduce((n, r) => n + r.read, 0);
-    const gained = (held.end - held.start) - overlapRows(held, origin);
-    assert.equal(read - gained, 0, `幅 ${width}: 読んだ ${read} 行のうち ${read - gained} 行を持っていない`);
+    assert.deepEqual(perRun[0], perRun[1], label(shape));
   }
 });
