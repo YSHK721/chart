@@ -139,6 +139,36 @@ class TestFailuresAreStates:
         assert response.status == 400 and query.asked == []
 
     @pytest.mark.parametrize(
+        "token",
+        [
+            "-1", "+1", "1_0", " 1", "1 ", "\t1", "1\n",
+            "\uff11\uff10",  # 全角数字
+            "\u0663",  # アラビア・インド数字
+            "\u00b2",  # 上付き数字
+            "0x10", "1e3", "9" * 5_000,
+        ],
+    )
+    @pytest.mark.parametrize("side", ["start", "end"])
+    def test_only_ascii_decimal_digits_are_a_position(self, token, side):
+        """受理する位置の表現は ASCII の 10 進数字だけ。ほかは usecase へ届かない。"""
+        # Arrange
+        query = _Query()
+        tail = f"rows/{token}/10" if side == "start" else f"rows/0/{token}"
+
+        # Act
+        response = ChartBarsApiController(bars=query).get(f"{CHART_BARS_PATH_PREFIX}/{_JOB}/{tail}")
+
+        # Assert: 失敗の翻訳と同じ形（error つきの JSON）・usecase への問い 0。
+        assert response.status == 400 and query.asked == []
+        payload = _strict(response)
+        assert set(payload) == {"error"} and payload["error"]
+
+    def test_leading_zeros_are_the_same_position(self):
+        query = _Query()
+        ChartBarsApiController(bars=query).get(f"{CHART_BARS_PATH_PREFIX}/{_JOB}/rows/003/05")
+        assert query.asked == [(3, 5)]
+
+    @pytest.mark.parametrize(
         "path",
         [
             f"{CHART_BARS_PATH_PREFIX}/{_JOB}",

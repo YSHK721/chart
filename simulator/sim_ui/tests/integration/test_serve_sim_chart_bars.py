@@ -11,6 +11,7 @@
     観測口は読み口が宣言する `parquet_trace_store.set_read_observer` だけを使う。
     実 HTTP の経路で、IO 段が組み立てた行 − 応答が運ぶ行 = 0・組み立てた列 − 応答の列 = 0・
     413 のとき IO 段の読み 0・run の長さ 2 点で同じ区間の読む行数が一致、を表明する。
+    位置の列の型に入らない位置は 400 で、IO 段の読み 0（run の長さ 2 点で同じ）。
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from simulator.sim_ui.framework.serve_sim_display import make_server
 from simulator.sim_ui.main import run_job
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 from simulator.sim_ui.tests.app_chain import inside
+from simulator.sim_ui.usecase import query_chart_bars
 from simulator.sim_ui.usecase.query_chart_bars import MAX_RETURNED_BARS
 
 _ROOT = Path(__file__).resolve().parents[4]
@@ -128,6 +130,15 @@ def _strict(body: bytes) -> dict:
     def refuse(token):
         raise AssertionError(f"JSON に無い綴り: {token}")
     return json.loads(body.decode("utf-8"), parse_constant=refuse)
+
+
+def _stored_position_ceiling(path: Path) -> int:
+    """成果物の位置の列の型が表せる最大の整数（footer のスキーマから導く）。"""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    stored = pq.ParquetFile(path).schema_arrow.field(chart_overlay_writer.INDEX_COLUMN).type
+    return int(np.iinfo(stored.to_pandas_dtype()).max)
 
 
 @pytest.fixture(scope="module")
@@ -267,6 +278,53 @@ class TestTheFailuresAreDistinguishable:
         base, _before, jobs, _root = wired
         status, _body = _request(base, f"{CHART_BARS_PATH_PREFIX}/{jobs['real']}/{tail}")
         assert status == 400
+
+
+class TestAPositionTheArtefactCannotHoldIsABadRequest:
+    """位置の列の型に入らない位置は、読み口へ届く前に 400 になる（独立レビュー 🟡-2）。"""
+
+    def test_the_declared_bound_is_the_ceiling_of_the_stored_position_type(self, wired):
+        """上界の宣言は、書き手が書いた成果物の位置の列の型と一致する（値を書き写さない）。"""
+        _base, _before, jobs, root = wired
+        ceiling = _stored_position_ceiling(
+            root / jobs["real"] / chart_overlay_writer.CHART_BARS_FILENAME
+        )
+        assert query_chart_bars.MAX_POSITION == ceiling
+
+    @pytest.mark.parametrize("over_start, over_end", [(None, 1), (1, 2), (None, 10**30)])
+    @pytest.mark.parametrize("key", ["short", "long"])
+    def test_it_is_refused_with_the_reason_and_without_reading(
+        self, wired, io_reads, key, over_start, over_end
+    ):
+        # Arrange: 成果物の型の天井からの超過ぶんで区間を作る。
+        base, _before, jobs, root = wired
+        ceiling = _stored_position_ceiling(
+            root / jobs[key] / chart_overlay_writer.CHART_BARS_FILENAME
+        )
+        start = 0 if over_start is None else ceiling + over_start
+
+        # Act
+        status, body = _request(
+            base, f"{CHART_BARS_PATH_PREFIX}/{jobs[key]}/rows/{start}/{ceiling + over_end}"
+        )
+
+        # Assert: 既存の失敗翻訳と同じ形（error つきの JSON）・IO 段の読み 0。
+        payload = _strict(body)
+        assert status == 400 and set(payload) == {"error"} and payload["error"]
+        assert io_reads == []
+
+    def test_the_ceiling_itself_returns_the_rows_that_exist(self, wired, io_reads):
+        """正の対照: 天井ちょうどは受理し、run の末尾で切る（既存仕様を狭めない）。"""
+        base, _before, jobs, root = wired
+        ceiling = _stored_position_ceiling(
+            root / jobs["real"] / chart_overlay_writer.CHART_BARS_FILENAME
+        )
+        status, body = _request(
+            base, f"{CHART_BARS_PATH_PREFIX}/{jobs['real']}/rows/{len(_OPENS) - 3}/{ceiling}"
+        )
+        payload = _strict(body)
+        assert status == 200 and payload["rows"] == 3
+        assert sum(rows for rows, _columns in io_reads) - payload["rows"] == 0
 
 
 class TestTheReadCostIsTheReturnedRange:

@@ -6,7 +6,7 @@
 エンドポイント（sim core は prefix 除去後のパスを受ける）:
     GET /chart-bars/{job_id}/extent               行数・列・指標・1 回の上限（宣言）
     GET /chart-bars/{job_id}/rows/{start}/{end}   位置の半開区間 `[start, end)` の列
-`start` / `end` は Bar 列の中の位置（0 始まりの整数）。
+`start` / `end` は Bar 列の中の位置（0 始まりの整数・ASCII の 10 進数字だけの表現）。
 
 **なぜクエリ文字列でなくパスセグメントか**: sim core の GET はハンドラでクエリを落とす
 （`simulator/sim_ui/adapter/trace_api_controller.py` の docstring に実測の記録）。既存の面が
@@ -129,11 +129,20 @@ class ChartBarsApiController:
 
 
 def _position(token: str) -> int:
-    """区間の片側を解く。Bar 列の中の位置（整数）だけを受ける。
+    """区間の片側を解く。**ASCII の 10 進数字だけ**の表現を位置（0 以上の整数）として受ける。
+
+    受理する表現の定義はここ 1 か所である。`int` の受理（符号・前後の空白・桁区切りの
+    下線・全角やほかの文字体系の数字）に任せない——同じ位置に複数の綴りができる。
+    位置の上界の検査は usecase（「`QueryChartBarsInteractor.rows`」）が持つ。ここには写さない。
 
     解けない字は既定値で埋めない——埋めると「指定していない範囲まで見えた」が静かに起きる。
     """
     try:
+        if not (token.isascii() and token.isdigit()):
+            raise ValueError(token)
+        # 桁数が `int` の変換上限を超える表現も `ValueError` になる（同じ文言へ揃える）。
         return int(token)
     except ValueError:
-        raise ValueError(f"足の区間の境界は Bar 列の中の位置（整数）です: {token!r}") from None
+        raise ValueError(
+            f"足の区間の境界は Bar 列の中の位置（0 以上の整数・ASCII の 10 進数字）です: {token[:40]!r}"
+        ) from None

@@ -33,6 +33,19 @@ from simulator.sim_ui.usecase.chart_bars_ports import ChartBarsDeclaration, Char
 #: （「`query_trace.MAX_RETURNED_ROWS`」）とは別の量（評価点ではなく足）なので別に宣言する。
 MAX_RETURNED_BARS = 20_000
 
+#: 位置を保持する符号つき整数の幅（bit）。足の成果物は位置の列を符号つき 64 bit 整数で持つ
+#: （書き手 `simulator/sim_ui/adapter/chart_overlay_writer.py` が書いた実物の型と一致することを
+#: `simulator/sim_ui/tests/integration/test_serve_sim_chart_bars.py` が固定する）。
+_POSITION_BITS = 64
+
+#: 位置の上界（含む）。これを超える位置は、どの run のどの成果物にも存在し得ない。
+#:
+#: run の行数を上界にしない理由: run の末尾を越えた区間は「在る行だけ返す」仕様であり、
+#: 行数で断ると その仕様を狭める。ここで断るのは「位置として表せない値」だけである。
+#: 実測（2026-09-30）: 上界 + 1 を読み口へ渡すと述語の組み立てで `OverflowError` になり、
+#: 失敗の翻訳（400）を通らずに接続が切れた。上界ちょうどは在る行だけ返る。
+MAX_POSITION = 2 ** (_POSITION_BITS - 1) - 1
+
 
 class ChartBarsRangeTooWideError(Exception):
     """区間に入る足の本数が上限を超えた。黙って間引かず、上限を添えて断る。"""
@@ -66,7 +79,7 @@ class QueryChartBarsInteractor:
     def rows(self, job_id: str, *, start: int, end: int) -> ChartBarsRows:
         """位置の半開区間 `[start, end)` の行を**間引かず全部**返す。
 
-        事前条件: ``0 <= start <= end``。
+        事前条件: ``0 <= start <= end <= MAX_POSITION``。
         例外:
             `ValueError`                   — 区間の形が不正（数えも読みもしない）。
             `ChartBarsRangeTooWideError`   — 区間に入る行数が `MAX_RETURNED_BARS` を超える。
@@ -75,6 +88,11 @@ class QueryChartBarsInteractor:
         if start < 0 or end < 0 or start > end:
             raise ValueError(
                 f"足の区間は 0 以上の位置で開始 <= 終了です: start={start} end={end}"
+            )
+        # ``start <= end`` なので終了だけを見れば両端が上界の内側に入る。
+        if end > MAX_POSITION:
+            raise ValueError(
+                f"足の区間の位置は {MAX_POSITION} 以下です: start={start} end={end}"
             )
         # 上限判定は読みの**前**に置く。
         rows = self._source.count(job_id, start=start, end=end)

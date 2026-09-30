@@ -3,7 +3,7 @@
 固定する契約:
     1. 位置の半開区間 `[start, end)` の行を、宣言された列で**間引かず**返す。
     2. 上限を超える区間は**読まずに**断る（数えるのが先・読みは通ったときだけ）。
-    3. 区間の形が不正なら数えも読みもしない。
+    3. 区間の形が不正なら数えも読みもしない。位置の上界（`MAX_POSITION`）を超える区間も同じ。
     4. 宣言（行数・列・指標）は読み口からそのまま返す（行を読まない）。
 
 計算量（絶対命令 2026-08-28）: Port の代役が発行を記録する（Port は宣言された境界である）。
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from simulator.sim_ui.usecase import query_chart_bars
 from simulator.sim_ui.usecase.chart_bars_ports import ChartBarsDeclaration, ChartBarsPort
 from simulator.sim_ui.usecase.query_chart_bars import (
     MAX_RETURNED_BARS,
@@ -109,6 +110,33 @@ class TestAMalformedRangeIsRefusedBeforeAnyQuestion:
         with pytest.raises(ValueError):
             query.rows(_JOB, start=start, end=end)
         assert (source.counts, source.reads) == ([], [])
+
+
+class TestAPositionPastTheBoundIsRefusedBeforeAnyQuestion:
+    """位置の上界は `MAX_POSITION` の宣言から導く（値を検定へ書き写さない）。"""
+
+    @pytest.mark.parametrize("over_start, over_end", [(None, 1), (1, 2), (None, 10**30)])
+    @pytest.mark.parametrize("run_rows", [100, 1_000_000])
+    def test_it_neither_counts_nor_reads(self, over_start, over_end, run_rows):
+        # Arrange: 上界からの超過ぶんで区間を作る（``None`` は上界の内側の 0）。
+        bound = query_chart_bars.MAX_POSITION
+        start = 0 if over_start is None else bound + over_start
+        end = bound + over_end
+        query, source = _query(run_rows)
+
+        # Act / Assert
+        with pytest.raises(ValueError, match=str(bound)):
+            query.rows(_JOB, start=start, end=end)
+        # 発行した問い（数え・読み）= 0。run の長さ 2 点で変わらない。
+        assert len(source.counts) + len(source.reads) == 0
+
+    def test_the_bound_itself_is_accepted_and_clipped_to_the_run(self):
+        """上界は「run の末尾を越えた区間は在る行だけ返す」を狭めない（正の対照）。"""
+        bound = query_chart_bars.MAX_POSITION
+        query, source = _query(100)
+        got = query.rows(_JOB, start=95, end=bound)
+        assert got.rows == 5 and source.rows_read - got.rows == 0
+        assert query.rows(_JOB, start=bound, end=bound).rows == 0
 
 
 class TestTheExtentIsTheDeclaration:
