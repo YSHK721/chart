@@ -18,6 +18,7 @@ import json
 
 import pytest
 
+from simulator.sim_ui.adapter import json_api_translation as _shared
 from simulator.sim_ui.adapter.trace_api_controller import (
     TRACE_PATH_PREFIX,
     UNBOUNDED_TOKEN,
@@ -664,7 +665,8 @@ class TestTheSanitiserWalksTheWholeTree:
 class _SanitiserSpy:
     """応答の出口（`_json_safe`）が歩いた list を記録する Test Spy。
 
-    再帰呼出も module 大域を引くため、木の全段が観測できる。
+    再帰呼出も module 大域を引くため、木の全段が観測できる。本体は共有モジュール
+    （`simulator/sim_ui/adapter/json_api_translation.py`）に在るので、据える先はそちらの大域である。
     """
 
     def __init__(self, real):
@@ -711,6 +713,8 @@ class TestNothingIsMaterialisedAndDiscardedWhenBuildingTheResponse:
         query = _ColumnCarryingQuery()
         spy = _SanitiserSpy(mod._json_safe)
         monkeypatch.setattr(mod, "_json_safe", spy)
+        # 消毒器の本体は共有モジュールに在り、再帰はそちらの大域を引く（ISSUE-552/554 段階 2-1）。
+        monkeypatch.setattr(_shared, "json_safe", spy)
         response = mod.TraceApiController(trace=query).get(
             f"{TRACE_PATH_PREFIX}/{_JOB}/points/{_T0}/{_T0 + 10_000}"
         )
@@ -782,6 +786,7 @@ class TestNothingIsMaterialisedAndDiscardedWhenBuildingTheResponse:
         def build(with_copy):
             spy = _SanitiserSpy(real)
             monkeypatch.setattr(mod, "_json_safe", spy)
+            monkeypatch.setattr(_shared, "json_safe", spy)
             spy(
                 {
                     "columns": {

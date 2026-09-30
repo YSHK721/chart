@@ -27,15 +27,15 @@ JSON 直列化は既存 `job_api_controller.ApiResponse` を再利用する（�
 """
 from __future__ import annotations
 
-import math
-from typing import Any, Mapping
+from typing import Any
 
 from simulator.sim_ui.adapter.job_api_controller import ApiResponse
-from simulator.sim_ui.usecase.derive_trace_events import EVENT_KINDS
-from simulator.sim_ui.usecase.job_models import (
-    JobNotFoundError,
-    ResultNotAvailableError,
+# 出口の消毒と失敗の翻訳は共有の実体を使う（足の API `/chart-bars` と同じもの・写さない）。
+from simulator.sim_ui.adapter.json_api_translation import (
+    guarded,
+    json_safe as _json_safe,
 )
+from simulator.sim_ui.usecase.derive_trace_events import EVENT_KINDS
 from simulator.sim_ui.usecase.query_trace import (
     ANALYSIS_COLUMNS,
     MAX_RETURNED_ROWS,
@@ -155,68 +155,19 @@ class TraceApiController:
         """UC の失敗を HTTP の状態へ翻訳する。
 
         状態の割り当ては既存の `/data/{job_id}/{filename}` と揃える（同じ問いに
-        2 つの答えを作らない）:
+        2 つの答えを作らない）。翻訳表の実体は
+        `simulator/sim_ui/adapter/json_api_translation.py` の 「`guarded`」 ただ 1 つであり、
+        ここは本 API の 2 つの例外型を表へ渡すだけである:
             404 ジョブが無い / 成果物が無い / 識別子が受理形でない（存在を漏らさない）
             409 ジョブが完了していない（部分結果の非公開）
             413 窓に入る量が上限を超える（間引かずに断る）
             400 窓の指定そのものが不正
         """
-        try:
-            return call()
-        except JobNotFoundError as exc:
-            return 404, {"error": str(exc)}
-        except TraceArtefactMissingError as exc:
-            return 404, {"error": str(exc)}
-        except ResultNotAvailableError as exc:
-            return 409, {"error": str(exc)}
-        except TraceWindowTooWideError as exc:
-            return 413, {"error": str(exc)}
-        except ValueError as exc:
-            # 台帳が受理しない識別子・ファイル名（CWE-22 防御）もここへ来る。
-            return 400, {"error": str(exc)}
-
-
-def _json_safe(value: Any) -> Any:
-    """payload 木を再帰的に通し、**JSON に存在しない綴りになる値を `None` にする**。
-
-    なぜ木を通すか（拡張点の確保・工程 5 レビュー 🔴-4）:
-        工程 3 はフィールドごとに変換を手書きし、`_points` の 4 群へは撒いたが
-        `/extent` に忘れた。front が最初に叩くのは `/extent` なので、分析タブは実 run で
-        全面が掲示のみになる。**手書き適用は「足したフィールドを通し忘れる」という
-        欠陥を構造的に許す**——出口で木ごと通せば、忘れる場所が存在しない。
-
-    何を `None` にするか（実測・2026-09-10／09-11）:
-        非有限の実数（`inf` / `-inf` / nan）。`Account.margin_level()` は建玉 0 の点で
-        無限大を返し、実ティック 1 ヶ月 run の 1,036,394 点のうち **405,941 点（39.2%）**
-        がそれに当たる。`initial_deposit` / `margin_level_floor` も run 設定次第で
-        非有限になり得る（実測で `/extent` の直列化が壊れることを確認）。
-        Python の `json.dumps` は既定でこれを `Infinity` / `NaN` と書くが、**どちらも JSON の
-        文法に無い**——ブラウザの JSON.parse は `SyntaxError` で落ちる（node 実測）。
-        Python の json.loads は非標準拡張として受理するため、Python 側だけで測ると
-        欠陥が緑のまま通る（検定は `parse_constant` で厳格に読む）。
-
-    なぜ `None` か:
-        JSON は無限大を表現できない。値を発明する（極大の数で代用する）と front が
-        それを実在の維持率として描き、軸が壊れる。「有限の数値ではない」ことをそのまま
-        運ぶ唯一の綴りが null である。front の系列描画は `Number.isFinite` で弾く。
-
-    なぜ `ApiResponse.to_bytes` 側を直さないか:
-        同型は既存の全 API 応答が共有しており、そこへ手を入れると既存応答の byte が
-        変わり得る（本段階の「既存面は 1 バイトも変えない」制約に反する）。非有限値が
-        出るのは本 API の列（維持率・DD・run 設定）に固有の事実なので、翻訳の責務を
-        持つこのモジュールの出口で直す。
-
-    `bool` を数値として扱わない: `isinstance(True, float)` は偽なので素通りするが、
-    halted 列が壊れると事象導出の突合ができなくなるため検定で固定している。
-    """
-    if isinstance(value, float):
-        return None if not math.isfinite(value) else value
-    if isinstance(value, Mapping):
-        return {key: _json_safe(item) for key, item in value.items()}
-    # `str` / `bytes` は列ではない（1 文字ずつ分解すると payload が壊れる）。
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
+        return guarded(
+            call,
+            missing=(TraceArtefactMissingError,),
+            too_wide=(TraceWindowTooWideError,),
+        )
 
 
 def _bound(token: str) -> "int | None":
