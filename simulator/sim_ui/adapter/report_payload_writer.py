@@ -24,12 +24,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
-from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
+from simulator.report_ui.usecase.build_report_payload import BuildReportPayload, no_bar_rows
 # int 時刻ビューは report_ui の単一ソースを使う（H-D1/H-D4）。ここへ写すと、同じ
 #   payload を作る 2 経路（IS/OOS 実 run と sim ジョブ）が静かに食い違う。
 from simulator.report_ui.tools.int_time_views import (
@@ -37,6 +36,7 @@ from simulator.report_ui.tools.int_time_views import (
     ResultView,
 )
 from simulator.report_ui.usecase.report_meta import ReportMeta
+from simulator.report_ui.usecase.report_models import ReportPayloadModel
 from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 結果ペイロードのファイル名（sim core の `/data/{job_id}/{file}` が配信する名前）。
@@ -96,10 +96,38 @@ def write(
 ) -> Path:
     """`job_dir` へ `report.json` を書き、そのパスを返す。
 
+    組み立ては `build_payload`、書出しは report_ui の presenter。引数の意味は `build_payload` と同じ。
+    """
+    job_dir = Path(job_dir)
+    payload = build_payload(
+        job_dir, result, load_run_inputs=load_run_inputs, contacts_supply=contacts_supply)
+    out = job_dir / REPORT_FILENAME
+    ReportUiPresenter().present_report_payload(payload, out)
+    return out
+
+
+def build_payload(
+    job_dir: Any,
+    result: Any,
+    *,
+    load_run_inputs: "Callable[[dict], tuple[Any, Any]]",
+    contacts_supply: "Callable[[list, dict], list] | None" = None,
+) -> ReportPayloadModel:
+    """ジョブ仕様と結果から、report.json に書く `ReportPayloadModel` を組み立てて返す（書かない）。
+
+    区間の足の並びは組み立てない（`no_bar_rows`・ISSUE-552/554 段階 2-1）。足はジョブの成果物の
+    1 か所（`simulator/sim_ui/adapter/chart_overlay_writer.py` が書く chart_bars.parquet）にだけ
+    持つ。report.json へも書くと同じ列が 2 か所になり、1 分足の全履歴（2,152,183 本）で 172MB を
+    画面が丸ごと取得する。キー（``bars``）は空の並びで残る（出力の形は report_ui の presenter が
+    決める共有の契約）。本数は区間の ``meta.bars`` が名乗る。
+
+    計算量の検定の観測口でもある: ここが返す区間の足の数（組み立てた足）と、`write` が
+    report.json に書いた足の数を比べる。
+
     ``result``: `run_backtest` が返した `BacktestResult`（成功 run のみ渡すこと）。
     ``load_run_inputs``: (bars, symbol_spec) の供給（**必須**）。`BacktestResult` は bars を
       保持しないため、建値推定（MFE/MAE）・期間の表示・バー数に要る bars を取り直す口。
-      足そのものは report.json へ書かない（`_without_bars`）。
+      足そのものは report.json へ書かない（`no_bar_rows`）。
       実体（EA 別 MarketDataPort の選択・CSV 解析）は `simulator.main` の単一ソースにあり、
       その束縛は **Composition Root（`main/run_job.py`）が持つ**（R-4）。adapter が
       `simulator.main` を既定値として掴むと依存が外向き（adapter→main）になる。
@@ -126,7 +154,7 @@ def write(
     timeframe = backtest.get("period", "")
     strategy = backtest.get("ea_name", "")
 
-    payload = BuildReportPayload().execute_single(
+    return BuildReportPayload(bar_rows=no_bar_rows).execute_single(
         result=ResultView(result),
         bars=bars,
         spec=symbol_spec,
@@ -153,27 +181,4 @@ def write(
         ),
         segment_key=SINGLE_SEGMENT_KEY,
         contract_notes_extra=[SINGLE_SEGMENT_NOTE],
-    )
-
-    out = job_dir / REPORT_FILENAME
-    ReportUiPresenter().present_report_payload(_without_bars(payload), out)
-    return out
-
-
-def _without_bars(payload: Any) -> Any:
-    """区間の足の列を空にした payload を返す（ISSUE-552/554 段階 2-1）。
-
-    足はジョブの成果物の 1 か所（`simulator/sim_ui/adapter/chart_overlay_writer.py` が書く
-    chart_bars.parquet）にだけ持つ。report.json へも書くと同じ列が 2 か所になり、1 分足の
-    全履歴（2,152,183 本）で 172MB を画面が丸ごと取得する。
-
-    キー（``bars``）は残し、空の並びにする: 出力の形は report_ui の presenter が決めており
-    （共有の契約）、sim 側でキーを消すには presenter を写すことになる。本数は区間の
-    ``meta.bars`` が名乗る（UC が足から数えた値・ここでは触らない）。
-    """
-    return replace(
-        payload,
-        segments={
-            key: replace(segment, bars=[]) for key, segment in payload.segments.items()
-        },
     )

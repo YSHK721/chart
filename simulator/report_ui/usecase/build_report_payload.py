@@ -15,7 +15,7 @@ int 化は上流 tools が担う）。
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
 
 from simulator.domain.trade_record import trade_number
 from simulator.report_ui.usecase import derive
@@ -40,15 +40,42 @@ _EXIT_REASON_COMMENT = {
 }
 
 
+def all_bar_rows(bars: Any) -> list:
+    """足 1 本ごとの dict（time/open/high/low/close）を組む。区間の ``bars`` の既定の組み立て。"""
+    return [
+        {"time": int(b.time), "open": b.open, "high": b.high,
+         "low": b.low, "close": b.close}
+        for b in bars
+    ]
+
+
+def no_bar_rows(bars: Any) -> list:
+    """足 1 本ごとの dict を組まない（区間の ``bars`` は空の並び）。
+
+    足を payload 以外の場所に持つ呼び出し側が使う（sim のジョブは足を chart_bars.parquet に持つ）。
+    組み立ててから捨てる無駄を作らないために、組み立てそのものを行わない。
+    本数は区間の ``meta.bars`` が名乗る（足の並びの長さ・この指定でも変わらない）。
+    """
+    return []
+
+
 class BuildReportPayload:
     """BacktestResult(IS/OOS)→ReportPayloadModel（表示形状の写像）。
 
     合否方法論は ``policy``（AssessmentPolicy）へ委譲し、特定実験の所与は execute の
     ``report_meta``（ReportMeta）引数で受け取る。いずれも未指定なら現行既定で byte 不変。
+
+    ``bar_rows``: 区間の ``bars`` の組み立て（足の並び → dict の並び）。未指定なら `all_bar_rows`
+    （足 1 本ごとに dict を組む＝現行の挙動）。足を載せない呼び出し側は `no_bar_rows` を渡す。
     """
 
-    def __init__(self, policy: "AssessmentPolicy | None" = None) -> None:
+    def __init__(
+        self,
+        policy: "AssessmentPolicy | None" = None,
+        bar_rows: "Callable[[Any], list] | None" = None,
+    ) -> None:
         self._policy = policy or AssessmentPolicy()
+        self._bar_rows = bar_rows or all_bar_rows
 
     def execute(
         self,
@@ -173,17 +200,13 @@ class BuildReportPayload:
         # 致命-3: 1:1 で balance_curve 再構成（len 不一致は ValueError）。
         balance_curve = derive.reconstruct_balance_curve(exit_times, balance_curve_src)
 
-        bars_out = [
-            {"time": int(b.time), "open": b.open, "high": b.high,
-             "low": b.low, "close": b.close}
-            for b in bars
-        ]
+        bars_out = self._bar_rows(bars)
 
         seg_meta = {
             "symbol": meta.get("symbol", report_meta.symbol),
             "timeframe": meta.get("timeframe", report_meta.timeframe),
             "strategy": meta.get("strategy", report_meta.expert),
-            "bars": len(bars_out),
+            "bars": len(bars),
             "trades": len(trade_rows),
             "period": meta.get("period", ""),
         }

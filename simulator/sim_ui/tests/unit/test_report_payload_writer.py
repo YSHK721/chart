@@ -373,3 +373,33 @@ def test_meta_initial_deposit_is_the_runs_value(tmp_path: Path) -> None:
     r = dataclasses.replace(r, stats=dataclasses.replace(r.stats, initial_deposit=100000.0))
     data = _write_with(tmp_path, result=r)
     assert data["meta"]["initial_deposit"] == 100000.0  # 定数 10000 ではない（ISSUE-544）
+
+
+# --- 9. 計算量: 書かない足を組み立てない（ISSUE-552/554 段階 2-1）---------------------
+# 観測口は writer の公開の 2 つだけ: 「`build_payload`」 が返す payload（組み立てた足）と
+# 「`write`」 が書いた report.json（書いた足）。report_ui の内部の名前は差し替えない。
+
+def test_組み立てた足と書いた足の差は0で足の本数を増やしても組み立ては生えない(tmp_path: Path) -> None:
+    """足を組み立ててから書く前に捨てない（出力は同じなので、出力の検定では落ちない）。
+
+    回数そのものは期待値に書かない。固定するのは「組み立てた足 − 書いた足 = 0」と、
+    足の本数の 2 点で組み立てた足の数が変わらないこと。
+    """
+    built_by_count = {}
+    for n in (40, 4000):
+        directory = tmp_path / str(n)
+        directory.mkdir()
+        times = sorted({1000, 2000, 3000, 4000, *range(5000, 5000 + n - 4)})
+        job_dir = _job_dir(directory)
+        loader = _loader(_bars(times))
+
+        payload = report_payload_writer.build_payload(job_dir, _result(), load_run_inputs=loader)
+        out = report_payload_writer.write(job_dir, _result(), load_run_inputs=loader)
+
+        built = sum(len(segment.bars) for segment in payload.segments.values())
+        written = sum(
+            len(segment["bars"])
+            for segment in json.loads(out.read_text(encoding="utf-8"))["segments"].values())
+        assert built - written == 0, (n, built, written)
+        built_by_count[n] = built
+    assert len(set(built_by_count.values())) == 1, built_by_count
