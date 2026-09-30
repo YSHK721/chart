@@ -322,11 +322,17 @@ class TestTheWiringHasExactlyOneWriteCallSite:
         # Assert: トレース実装は関数内でだけ読まれる。
         assert any("trace" in m for m in lazy), sorted(lazy)
 
-    def test_an_untraced_run_never_loads_the_parquet_store(self, tmp_path):
-        """実際に走らせて、OFF の run が技術ドライバの実装を読まないこと。
+    def test_an_untraced_run_never_loads_the_trace_implementation(self, tmp_path):
+        """実際に走らせて、OFF の run がトレースの実装（記録・書出し）を読まないこと。
 
         構文木の検査だけでは、間接的な巻き込み（`__init__.py` の再輸出など）を
         見逃す。子プロセスで実測する。
+
+        測る対象（ISSUE-552/554 段階 2-1 で改めた）: 以前は parquet の読み書き口
+        （`simulator/adapter/trace/parquet_trace_store.py`）が読まれないことで測っていた。
+        いまは足の成果物（chart_bars.parquet）を**全ジョブ**が同じ口で書くので、その口は
+        OFF にできる拡張ではなくなった。是正 D-5 が守るのは「OFF にできる拡張の実装を
+        OFF の run が読まない」ことであり、その対象はトレースの記録・書出しの実装である。
         """
         # Arrange
         import subprocess
@@ -348,7 +354,12 @@ class TestTheWiringHasExactlyOneWriteCallSite:
             "import sys;"
             "from simulator.sim_ui.main import run_job;"
             f"rc = run_job.main(['--job-dir', {str(job_dir)!r}]);"
-            "print(rc, int('simulator.adapter.trace.parquet_trace_store' in sys.modules))"
+            "loaded = [m for m in ("
+            "'simulator.sim_ui.adapter.trace_writer',"
+            "'simulator.adapter.trace.columnar_run_trace',"
+            "'simulator.adapter.trace.indicator_trace',"
+            "'simulator.adapter.trace.trace_window') if m in sys.modules];"
+            "print(rc, len(loaded), loaded)"
         )
 
         # Act
@@ -359,7 +370,7 @@ class TestTheWiringHasExactlyOneWriteCallSite:
 
         # Assert
         assert out.returncode == 0, out.stderr[-2000:]
-        assert out.stdout.strip().splitlines()[-1] == "0 0", out.stdout
+        assert out.stdout.strip().splitlines()[-1] == "0 0 []", out.stdout
 
 
 # ---- 5: 書出し失敗は run の成否を変えない ----

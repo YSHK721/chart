@@ -183,7 +183,9 @@ def test_bar_times_are_converted_whole_run_at_a_time(tmp_path, days) -> None:
 
     # Assert: 変換は行われ（空振りしない）、各呼び出しが run の Bar 列全体を一括で扱う
     report = json.loads((job_dir / "report.json").read_text(encoding="utf-8"))
-    bars = len(report["segments"]["single"]["bars"])
+    # 足の本数は区間の meta が名乗る（report.json は足そのものを持たない・ISSUE-552/554 段階 2-1）。
+    bars = report["segments"]["single"]["meta"]["bars"]
+    assert bars > 0, "足の本数が 0（下の全称が空虚になる）"
     assert calls, "足の時刻の変換が観測口を通っていない"
     assert all(count == bars and batched for count, batched in calls), calls
 
