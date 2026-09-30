@@ -1,6 +1,9 @@
 // result_chart_model.js — 売買履歴チャートの「何をどのパネルへ描くか」（純ロジック）。
 //
-// 入力はジョブの成果物 `chart_overlay.json`（サーバ `sim_ui/adapter/chart_overlay_writer.py` が書く）。
+// 入力はジョブの成果物 2 つ（ISSUE-552/554 段階 1: 足の列は成果物の 1 か所だけに持つ）:
+//   足の時刻 … `report.json` の先頭の区間の足（run が実行した Bar 列）。View が渡す。
+//   値の列   … `chart_overlay.json`（サーバ `sim_ui/adapter/chart_overlay_writer.py` が書く）。時刻を持たず、
+//              位置 i の値は足 i の値。長さが足の本数と違えば描かない（`overlayLengthMismatch`）。
 // DOM・lwc に触れない。描画はライブチャートの ChartRenderer が行い、View は本モジュールの
 // 出力（`resultChartInstances`）をそのまま渡す（系列はすべて線・ChartRenderer に面の塗りの種類は無い）。
 //
@@ -45,22 +48,53 @@ export function toPoints(times, values) {
   return out;
 }
 
+/** 描く口座の列（`resultChartPanes` が読む列。長さの照合もこの列すべてに行う）。 */
+const ACCOUNT_COLUMNS = Object.freeze(
+  ['balance', 'equity', 'drawdown', 'realized_pnl', 'floating_pnl', 'margin_level'],
+);
+
+function lengthOf(column) {
+  return Array.isArray(column) ? column.length : 0;
+}
+
+/**
+ * 値の列の長さが足の本数と一致するか。一致すれば null、しなければ最初に食い違った列の説明。
+ * 長さが違う列を描くと、別の足の上に値を置くことになる（黙ってずらさない）。欠けた列は長さ 0。
+ * @param {object} overlay   chart_overlay.json
+ * @param {number} barCount  report.json の足の本数
+ * @returns {string|null}
+ */
+export function overlayLengthMismatch(overlay, barCount) {
+  const account = (overlay && overlay.account) || {};
+  for (const key of ACCOUNT_COLUMNS) {
+    const n = lengthOf(account[key]);
+    if (n !== barCount) return `account.${key} の長さ ${n} が足の本数 ${barCount} と一致しません`;
+  }
+  const indicators = Array.isArray(overlay && overlay.indicators) ? overlay.indicators : [];
+  for (const ind of indicators) {
+    const n = lengthOf(ind.value);
+    if (n !== barCount) return `indicators[${ind.series}].value の長さ ${n} が足の本数 ${barCount} と一致しません`;
+  }
+  return null;
+}
+
 /**
  * パネルの並びと各パネルの系列を返す。
- * @param {object} overlay    chart_overlay.json（足ごとの値）
+ * @param {object} overlay    chart_overlay.json（足ごとの値・時刻を持たない）
+ * @param {Array<number>} times 足の時刻（report.json の足・値の列と同じ長さ）
  * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（report_ui の tradeCloseCurves の出力。
  *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
  * @returns {Array<{title: string, series: Array<{name: string, color: string, width?: number, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(overlay, tradeClose) {
+export function resultChartPanes(overlay, times, tradeClose) {
   const panes = [{ title: '価格', series: [] }];
   const indicators = Array.isArray(overlay.indicators) ? overlay.indicators : [];
   indicators.forEach((ind, i) => {
     const series = {
       name: ind.series,
       color: RESULT_CHART_COLORS.indicator[i % RESULT_CHART_COLORS.indicator.length],
-      points: toPoints(ind.time, ind.value),
+      points: toPoints(times, ind.value),
     };
     if (ind.placement === 'price') {
       panes[0].series.push(series);
@@ -69,7 +103,7 @@ export function resultChartPanes(overlay, tradeClose) {
     }
   });
   const a = overlay.account;
-  const t = a.time;
+  const t = times;
   panes.push({
     title: '残高・有効証拠金',
     series: [
@@ -114,10 +148,10 @@ export function resultChartPanes(overlay, tradeClose) {
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
  *   payloads: Array<{name: string, color: string, width: number, style: string, data: Array}>}>}
  */
-export function resultChartInstances(overlay, tradeClose) {
+export function resultChartInstances(overlay, times, tradeClose) {
   const payload = (s) => ({ name: s.name, color: s.color, width: s.width || 1, style: 'solid', data: s.points });
   const out = [];
-  resultChartPanes(overlay, tradeClose).forEach((pane, paneIndex) => {
+  resultChartPanes(overlay, times, tradeClose).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });
@@ -146,37 +180,4 @@ export const LWC_DEFAULT_MIN_BAR_SPACING = 0.5;
 export function wholeRunMinBarSpacing(plotWidth, barCount) {
   if (!(plotWidth > 0) || !(barCount > 0)) return LWC_DEFAULT_MIN_BAR_SPACING;
   return Math.min(LWC_DEFAULT_MIN_BAR_SPACING, plotWidth / barCount);
-}
-
-/**
- * 売買履歴チャートが読む足の範囲（`/candles` のクエリ材料）。台帳の系列でなければ null。
- * 範囲は run の足の最初と最後（両端含む・`/candles` の from/to と同じ規約）。
- */
-export function candleRequestOf(overlay) {
-  const times = overlay.account && overlay.account.time;
-  if (!overlay.dataset_ref || !Array.isArray(times) || times.length === 0) {
-    return null;
-  }
-  return {
-    datasetRef: overlay.dataset_ref,
-    timeframe: overlay.timeframe,
-    from: times[0],
-    to: times[times.length - 1],
-  };
-}
-
-/**
- * 読んだ足が run の足と**同じ時刻の並び**か（1 本でも違えば false）。
- * 違う足へ売買マークや指標を重ねると、別の足の上に描くことになる（黙ってずらさない）。
- */
-export function candlesMatchRunBars(candles, runTimes) {
-  if (!Array.isArray(candles) || candles.length !== runTimes.length) {
-    return false;
-  }
-  for (let i = 0; i < runTimes.length; i += 1) {
-    if (candles[i].time !== runTimes[i]) {
-      return false;
-    }
-  }
-  return true;
 }

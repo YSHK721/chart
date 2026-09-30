@@ -1,7 +1,7 @@
 // sim_result_chart_view.js — ジョブ結果を売買履歴チャートへ描く View（2026-09-26 依頼者指示）。
 //
 // 何を描くか（「何をどのパネルへ」は usecase/result_chart_model.js が決め、ここは描くだけ）:
-//   価格パネル … run が読んだ系列と同じ足（`/candles` の範囲読み）・売買マーク・トリガー指標
+//   価格パネル … ジョブ自身の足（report.json の先頭の区間の足＝run が実行した Bar 列）・売買マーク・トリガー指標
 //   別パネル  … 別窓指標・残高/有効証拠金・DD・損益・証拠金維持率（いずれも足ごと）
 //
 // 組み立てはライブチャートと**同じ関数**で行う（`chartKit`＝live core の公開面 `live_chart_kit_api.js`
@@ -11,17 +11,24 @@
 //   ここで部品を new し直すと、ライブチャートの修正が売買履歴チャートへ届かない第 2 実装になる。
 //   本ファイルは lwc の API を直接呼ばない（系列の追加・表示範囲はすべて ChartRenderer 経由）。
 //
+// 足の出所（ISSUE-552/554 段階 1）: 足はライブの `/candles` からではなく、ジョブ自身の成果物 report.json
+//   から描く。ライブは 1 分足を末尾 5 万本しか持たないため、それを超える run では足を読めなかった。
+//   report.json は取引終了時の残高・DD の材料でもあり、**1 ジョブにつき 1 回だけ**取得して両方に使う。
+//
 // 描かない条件（黙ってずらさない）:
-//   - 系列が台帳外（`/candles` で同じ足を読めない）
-//   - 読んだ足の時刻の並びが run の足と 1 本でも違う
+//   - report.json に足が無い
+//   - chart_overlay.json の値の列の長さが足の本数と違う
 //   どちらも理由を host に出して終わる。
 
 import {
-  candleRequestOf,
-  candlesMatchRunBars,
+  overlayLengthMismatch,
   resultChartInstances,
   wholeRunMinBarSpacing,
 } from '../../usecase/result_chart_model.js';
+import { firstSegment } from './report_source_client.js';
+
+/** 成果物が 409（ジョブ未完了）のときの掲示（chart_overlay.json・report.json で共通・ISSUE-540）。 */
+const NOT_READY_MESSAGE = "ジョブが完了していないため、売買履歴チャートはまだ表示できません。完了すると表示します。";
 
 /** チャートを生成する要素（器 host の中に置く。読み取り欄・凡例は host 直下に並ぶ）。 */
 const CANVAS_CLASS = 'sim-result-chart-canvas';
@@ -34,13 +41,14 @@ const CANVAS_CLASS = 'sim-result-chart-canvas';
  * @param {object}   deps.chartKit      live core の公開面（composeChartViewer・installPaneGeometry・
  *                                      installChartOperations・ChartToastView・TradeMarkersRenderer）
  * @param {function} deps.fetchJson     (url) => Promise<object>（sim の成果物を読む）
- * @param {function} deps.fetchCandles  ({datasetRef, timeframe, from, to}) => Promise<Array>
- * @param {function} deps.loadTradeClose (jobId, barTimes) => Promise<{balData, ddData}>（取引終了時の残高・DD。
- *                                      シミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ系列）
+ * @param {function} deps.loadReport    (jobId) => Promise<object>（report.json の取得。1 ジョブにつき 1 回呼ぶ）
+ * @param {function} deps.tradeCloseCurves (segment, barTimes, payloadDeposit) => {balData, ddData}
+ *                                      （取引終了時の残高・DD。シミュレーション結果の資産曲線 balChart・
+ *                                      ドローダウン ddChart と同じ系列を作る report_ui の単一ソース）
  * @param {function} [deps.fetchImpl]   売買マークの読み込みに使う fetch
  */
 export function createSimResultChartView({
-  doc, host, lwc, chartKit, fetchJson, fetchCandles, loadTradeClose, fetchImpl,
+  doc, host, lwc, chartKit, fetchJson, loadReport, tradeCloseCurves, fetchImpl,
 }) {
   let built = null;
   let message = null;
@@ -75,7 +83,7 @@ export function createSimResultChartView({
   }
 
   /** ライブチャートと同じ関数でチャートと操作性を組み、描いたものを片付ける関数を返す。 */
-  function build(overlay, candles, tradeClose) {
+  function build(overlay, candles, times, tradeClose) {
     const container = doc.createElement('div');
     container.className = CANVAS_CLASS;
     host.appendChild(container);
@@ -85,7 +93,7 @@ export function createSimResultChartView({
     const { renderer } = viewer;
     const geometry = chartKit.installPaneGeometry({ container, chart: viewer.chart, renderer });
 
-    const instances = resultChartInstances(overlay, tradeClose);
+    const instances = resultChartInstances(overlay, times, tradeClose);
     const visible = new Map(instances.map((inst) => [inst.instanceId, true]));
     const labels = new Map(instances.map((inst) => [inst.instanceId, inst.label]));
     const operations = chartKit.installChartOperations({
@@ -173,29 +181,34 @@ export function createSimResultChartView({
         //   覚えたままだと「同じジョブなら描き直さない」の早期 return が再試行を塞ぐ（ISSUE-540）。
         shownJob = null;
         showMessage(err && err.status === 409
-          ? "ジョブが完了していないため、売買履歴チャートはまだ表示できません。完了すると表示します。"
+          ? NOT_READY_MESSAGE
           : `売買履歴チャートの材料を読めません（${err && err.message ? err.message : err}）。`);
         return false;
       }
-      const request = candleRequestOf(overlay);
-      if (!request) {
-        showMessage('このジョブの価格系列はデータ台帳に無いため、売買履歴チャートには表示できません。');
-        return false;
-      }
-      const candles = await fetchCandles(request);
-      if (!candlesMatchRunBars(candles, overlay.account.time)) {
-        showMessage('売買履歴チャートの足がジョブの足と一致しないため表示しません。');
-        return false;
-      }
-      let tradeClose;
+      let payload;
       try {
-        tradeClose = await loadTradeClose(jobId, overlay.account.time);
+        payload = await loadReport(jobId);
       } catch (err) {
         shownJob = null;   // 次の load イベントで再試行できるように（上の 409 と同じ理由）
-        showMessage(`取引終了時の残高・DD を読めないため表示しません（${err && err.message ? err.message : err}）。`);
+        showMessage(err && err.status === 409
+          ? NOT_READY_MESSAGE
+          : `ジョブの足と取引終了時の残高・DD（report.json）を読めないため表示しません（${err && err.message ? err.message : err}）。`);
         return false;
       }
-      built = build(overlay, candles, tradeClose);
+      const segment = firstSegment(payload);
+      const candles = segment && Array.isArray(segment.bars) ? segment.bars : [];
+      if (candles.length === 0) {
+        showMessage('ジョブの成果物（report.json）に足が無いため、売買履歴チャートには表示できません。');
+        return false;
+      }
+      const mismatch = overlayLengthMismatch(overlay, candles.length);
+      if (mismatch) {
+        showMessage(`売買履歴チャートの値がジョブの足と一致しないため表示しません（${mismatch}）。`);
+        return false;
+      }
+      const times = candles.map((bar) => bar.time);
+      const tradeClose = tradeCloseCurves(segment, times, payload.meta && payload.meta.initial_deposit);
+      built = build(overlay, candles, times, tradeClose);
       const { viewer } = built;
       const markers = new chartKit.TradeMarkersRenderer({
         lwc, mainSeries: viewer.mainSeries, chart: viewer.chart, chartRenderer: viewer.renderer,

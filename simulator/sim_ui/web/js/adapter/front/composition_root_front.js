@@ -87,19 +87,20 @@ function resolveJobId({ jobId, search }) {
  */
 export async function setupSimDisplay({
   doc, host, jobId, search, onContentHeight, raf,
-  lwc, resultChart = null, chartKit = null, fetchCandles = null,
+  lwc, resultChart = null, chartKit = null,
 } = {}) {
   const frame = createSimFrameView({ doc });
   // ジョブ結果を売買履歴チャートへ描く（2026-09-26 依頼者指示）。売買履歴チャートの器（`resultChart`）・部品
-  //   （`chartKit`）・足の読み手（`fetchCandles`）は統合層が注入する。どれかが無い宿主
-  //   （スタンドアロン等）では描かない＝従来どおり下の結果ビューアだけ。
-  const resultView = resultChart && chartKit && fetchCandles && lwc
+  //   （`chartKit`）は統合層が注入する。どれかが無い宿主（スタンドアロン等）では描かない＝従来どおり
+  //   下の結果ビューアだけ。足はジョブ自身の report.json から描く（ISSUE-552/554 段階 1・ライブの
+  //   `/candles` は読まない）。
+  const reportSource = createReportSourceClient({});
+  const resultView = resultChart && chartKit && lwc
     ? createSimResultChartView({
       doc,
       host: resultChart.host(),
       lwc,
       chartKit,
-      fetchCandles,
       fetchJson: async (url) => {
         const res = await fetch(url);
         if (!res.ok) {
@@ -109,12 +110,10 @@ export async function setupSimDisplay({
         }
         return res.json();
       },
-      // 取引終了時の残高・DD は、シミュレーション結果と同じ report.json の先頭の区間から、同じ関数
-      //   （tradeCloseCurves）で作る。売買履歴チャートの足（run の足）の時刻で持つ。
-      loadTradeClose: async (jobId, barTimes) => {
-        const payload = await createReportSourceClient({}).load(jobId);
-        return tradeCloseCurves(firstSegment(payload), barTimes, payload.meta && payload.meta.initial_deposit);
-      },
+      // report.json（シミュレーション結果と同じ成果物）。足と取引終了時の残高・DD を同じ 1 回の
+      //   取得から作る。取引終了時の残高・DD は同じ関数（tradeCloseCurves）で作る。
+      loadReport: (jobId) => reportSource.load(jobId),
+      tradeCloseCurves,
     })
     : null;
   // 版面の最大化（参照 report_ui layout.js の 3 状態・2026-09-27）。状態遷移は参照の純関数
