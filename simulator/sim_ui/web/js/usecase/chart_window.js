@@ -3,7 +3,7 @@
 // なぜ在るか（ISSUE-552/554 段階 2-2）: 1 分足の全履歴 run は 215 万本あり、足と値を丸ごと持つと
 //   タブが落ちた（実測 2026-09-30）。画面が持つのは表示する範囲だけにし、利用者が端へ近づいたら
 //   前後の区間をジョブの成果物から読み足す。本モジュールは「どこを読むか」「どこを捨てるか」
-//   だけを決める。取得・描画・時計は持たない（View が行う）。DOM・lwc・fetch に触れない。
+//   だけを決める（2 つは同じ規則で一緒に決める＝`planReads`）。取得・描画・時計は持たない（View が行う）。DOM・lwc・fetch に触れない。
 //
 // 用語:
 //   位置           … Bar 列の中の位置（0 始まり）。区間は半開 [start, end)。
@@ -34,45 +34,69 @@ export function tailWindow({ totalRows, readRows }) {
   return { start: Math.max(0, totalRows - readRows), end: totalRows };
 }
 
+/** 読む側の順（前・後）。 */
+const SIDES = ['before', 'after'];
+
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
 /**
- * 読み足す区間を決める（前と後それぞれ高々 1 回）。
+ * 読み足す区間と、つないだ後に持つ区間を**一緒に**決める（前と後それぞれ高々 1 回）。
  *
- * 「近づいた」の定義: 見えている端から持っている端までに残る足が、**見えている幅（1 画面ぶん）
- * より少ない**。run の端に着いている側は読まない。見えている範囲が読めなければ読まない。
+ * 規則はここ 1 か所に置く。発行を決める段と捨てる段を分けると、読んだ区間そのものを捨てる
+ * （読んでから捨てる）。分けていた頃は、上限まで持った後に広い表示範囲で操作すると、1 操作で
+ * 前と後を読んで両方捨てた（独立レビュー 🟡-1・本番値で 3,000 行）。
+ *
+ * 守る範囲: 見えている範囲と、その両側の余白（`margin`）。余白は見えている幅（1 画面ぶん）。
+ *   ただし守る範囲は上限に収める（幅 + 余白 × 2 ≤ 上限）ので、幅が上限の 1/3 を超えると余白は
+ *   `(上限 − 幅) / 2` へ縮み、幅が上限以上なら 0。
+ * 読む条件（「近づいた」）: 持っている区間が、その側で守る範囲を覆っていない。run の端に
+ *   着いている側は読まない。見えている範囲が読めなければ読まない。
+ * 捨てる足: 上限を超える分だけ、読む側と反対の端の、**守る範囲の外**の足。見えている足は捨てない。
+ * 読む本数: 1 回の本数。ただし「上限までの空き + 捨てられる足」を超えない（超える分は、
+ *   つないだ後に残らないので発行しない）。0 なら発行しない。
  *
  * @param {{start: number, end: number}} held  持っている区間
  * @param {number} totalRows                   run の足の本数
  * @param {number} readRows                    1 回の本数
+ * @param {number} cap                         上限
  * @param {{from: number, to: number}|null} visible 見えている範囲
- * @returns {Array<{side: 'before'|'after', start: number, end: number}>}
+ * @param {Array<'before'|'after'>} [sides]    読む側（既定は前と後）
+ * @returns {Array<{side: 'before'|'after', start: number, end: number,
+ *                  next: {start: number, end: number}}>}
+ *   `next` はその区間をつないだ後に持つ区間（並びの順につないだときの値）。
  */
-export function planReads({ held, totalRows, readRows, visible }) {
+export function planReads({ held, totalRows, readRows, cap, visible, sides = SIDES }) {
   if (!visible || !Number.isFinite(visible.from) || !Number.isFinite(visible.to)) return [];
   const width = visible.to - visible.from;
-  const heldRows = held.end - held.start;
+  const margin = clamp((cap - width) / 2, 0, width);
+  // 守る範囲（Bar 列の中の位置・両端を含む）。
+  const keepFrom = held.start + visible.from - margin;
+  const keepTo = held.start + visible.to + margin;
   const reads = [];
-  if (held.start > 0 && visible.from < width) {
-    reads.push({ side: 'before', start: Math.max(0, held.start - readRows), end: held.start });
-  }
-  if (held.end < totalRows && (heldRows - 1) - visible.to < width) {
-    reads.push({ side: 'after', start: held.end, end: Math.min(totalRows, held.end + readRows) });
+  let now = held;
+  for (const side of sides) {
+    const rows = now.end - now.start;
+    const before = side === 'before';
+    const uncovered = before
+      ? now.start > 0 && now.start > keepFrom
+      : now.end < totalRows && now.end - 1 < keepTo;
+    if (!uncovered) continue;
+    const wanted = Math.min(readRows, before ? now.start : totalRows - now.end);
+    // 読む側と反対の端にある、守る範囲の外の足（捨てられる足）。
+    const spare = clamp(before ? now.end - 1 - Math.floor(keepTo) : Math.ceil(keepFrom) - now.start, 0, rows);
+    const room = cap - rows;
+    const length = Math.min(wanted, room + spare);
+    if (length <= 0) continue;
+    const dropped = Math.max(0, length - room);
+    const next = before
+      ? { start: now.start - length, end: now.end - dropped }
+      : { start: now.start + dropped, end: now.end + length };
+    reads.push(before
+      ? { side, start: next.start, end: now.start, next }
+      : { side, start: now.end, end: next.end, next });
+    now = next;
   }
   return reads;
-}
-
-/**
- * 読んだ区間をつないだ後に持つ区間。上限を超えた分は、見ている位置（`viewCenter`・Bar 列の中の
- * 位置）から遠い側を捨てる。
- */
-export function mergeWindow({ held, read, cap, viewCenter }) {
-  const next = { start: Math.min(held.start, read.start), end: Math.max(held.end, read.end) };
-  const over = (next.end - next.start) - cap;
-  if (over <= 0) return next;
-  const roomBefore = viewCenter - next.start;
-  const roomAfter = next.end - viewCenter;
-  return roomAfter >= roomBefore
-    ? { start: next.start, end: next.end - over }
-    : { start: next.start + over, end: next.end };
 }
 
 /**

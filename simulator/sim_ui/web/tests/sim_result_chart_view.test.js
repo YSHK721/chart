@@ -94,6 +94,10 @@ function kit() {
           setCandles(c) { calls.draws.push({ via: 'setCandles', candles: c, instances: null }); calls.last = c; },
           renderLine(id, payloads, opts) { calls.renderLine.push({ id, payloads, opts }); },
           replaceDataKeepingView(c, instances) {
+            // 本物（ChartRenderer.replaceDataKeepingView）と同じく、同じ時刻の足を同じ画面位置に
+            //   留める＝先頭に増えた（減った）足の本数だけ、見えている論理範囲がずれる。
+            const shift = (calls.last[0].time - c[0].time) / 60;
+            calls.range = { from: calls.range.from + shift, to: calls.range.to + shift };
             calls.draws.push({ via: 'replaceDataKeepingView', candles: c, instances });
             calls.last = c;
             return true;
@@ -813,4 +817,89 @@ test('取引終了時の残高・DD は読み足した区間でも全期間の�
   const dd = draw.instances.find((inst) => inst.instanceId === 'pane:DD').payloads
     .find((p) => p.name === 'DD（取引終了時）').data;
   assert.deepEqual(dd, whole.ddData.slice(w.start, w.end));
+});
+
+// ---- 計算量: 広い表示範囲でも「読んでから捨てる」が無い（独立レビュー 🟡-1） ----
+//   上の「取得した行 − 描画へ渡した点 = 0」は読みの直後の描画しか見ない。前を読んで後を捨て、
+//   続けて後を読んで前を捨てると、読みの直後にはどちらも描かれているので落ちない。
+//   ここは操作 1 回の終わりに持っている区間で数える。観測は注入した fetchRows と chartKit だけ。
+
+/** 半開区間 a と b の重なりの行数。 */
+const overlapRows = (a, b) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+
+/** 狭い表示範囲で左へ進み、上限まで持たせる。 */
+async function fillToCap(h) {
+  for (let i = 0; i < CAP / READ_ROWS; i += 1) await h.scrollTo({ from: 2, to: 20 });
+  assert.equal(h.c.draws.at(-1).candles.length, CAP, '上限まで持てていない（検定の前提が崩れた）');
+}
+
+/**
+ * 操作 1 回（表示範囲を `rangeOf(持っている本数)` にして止まる）を行い、数える。
+ * @returns {{read: number, kept: number, seenLost: number}}
+ *   read＝この操作で読んだ行・kept＝そのうち操作の後も持っている行・
+ *   seenLost＝操作の時点で見えていた足のうち、操作の後に持っていない行
+ */
+async function operate(h, rangeOf) {
+  const heldBefore = drawnWindow(h.c.draws.at(-1).candles);
+  const range = rangeOf(heldBefore.end - heldBefore.start);
+  const readsBefore = h.c.reads.length;
+  await h.scrollTo(range);
+  const heldAfter = drawnWindow(h.c.draws.at(-1).candles);
+  const reads = h.c.reads.slice(readsBefore);
+  const seen = {
+    start: Math.max(heldBefore.start, heldBefore.start + Math.ceil(range.from)),
+    end: Math.min(heldBefore.end, heldBefore.start + Math.floor(range.to) + 1),
+  };
+  const seenRows = Math.max(0, seen.end - seen.start);
+  return {
+    read: reads.reduce((n, r) => n + (r.end - r.start), 0),
+    kept: reads.reduce((n, r) => n + overlapRows(r, heldAfter), 0),
+    seenLost: seenRows - overlapRows(seen, heldAfter),
+    sizes: reads.map((r) => r.end - r.start),
+  };
+}
+
+/** 同じ操作の台本: 見えている幅 `width` で、持っている左端の近く・右端の近くを交互に見る。 */
+async function wideScript(h, width) {
+  const results = [];
+  for (let i = 0; i < 3; i += 1) {
+    results.push(await operate(h, () => ({ from: 5, to: 5 + width })));
+    results.push(await operate(h, (heldRows) => ({ from: heldRows - 5 - width, to: heldRows - 5 })));
+  }
+  return results;
+}
+
+// 見えている幅の 3 点: 上限の 1/3 未満・上限の 1/2 超・上限より広い（持てる量より広く見ている）。
+const WIDTHS = [CAP / 4, (CAP * 3) / 5, (CAP * 3) / 2];
+
+test('計算量: 読んだ行 − 操作の後も持ち続けた行 = 0（見えている幅 3 点 × run の長さ 2 点）', async () => {
+  assert.ok(WIDTHS[0] < CAP / 3 && WIDTHS[1] > CAP / 2 && WIDTHS[2] > CAP);
+  for (const width of WIDTHS) {
+    const perRun = [];
+    for (const rows of [3_000, 3_000_000]) {
+      const h = view({ ext: extent({ rows }) });
+      await h.v.render('job1');
+      await fillToCap(h);
+      const results = await wideScript(h, width);
+      const read = results.reduce((n, r) => n + r.read, 0);
+      const kept = results.reduce((n, r) => n + r.kept, 0);
+      assert.ok(read > 0, `幅 ${width}: 読み足しが起きていない（検定が空虚）`);
+      assert.equal(read - kept, 0, `幅 ${width}・run ${rows} 本: 読んだ ${read} 行のうち ${read - kept} 行を捨てた`);
+      assert.ok(h.c.draws.every((d) => d.candles.length <= CAP));
+      perRun.push(results.map((r) => r.sizes));
+    }
+    // 読みの本数と回数は run の長さに依らない。
+    assert.deepEqual(perRun[0], perRun[1], `幅 ${width}`);
+  }
+});
+
+test('広い表示範囲で読み足しても、見えていた足を捨てない（見えている幅 3 点）', async () => {
+  for (const width of WIDTHS) {
+    const h = view();
+    await h.v.render('job1');
+    await fillToCap(h);
+    for (const r of await wideScript(h, width)) {
+      assert.equal(r.seenLost, 0, `幅 ${width}: 見えていた足を ${r.seenLost} 本捨てた`);
+    }
+  }
 });

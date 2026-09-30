@@ -19,8 +19,10 @@
 //   - 読み足し: 利用者の操作の後に来た表示範囲の変化が止まったら、見えている端が持っている端へ
 //     近づいた側の区間を 1 回読む。読んだ結果では表示範囲を動かさない（ChartRenderer の
 //     表示を保つ差し替えの口を使う・ビュー自動介入の禁止）。
-//   - 持つ総量には上限がある。超えた分は見ている位置から遠い側を捨て、戻ったら読み直す。
-//   どこを読み、どこを捨てるかは usecase/chart_window.js が決める。
+//   - 持つ総量には上限がある。超える分は、読む側と反対の端の、見えている範囲とその余白の外の足を
+//     捨て、戻ったら読み直す。捨てられる足が無ければ読まない（読んでから捨てない・見えている足を
+//     捨てない）。
+//   どこを読み、どこを捨てるかは usecase/chart_window.js が一緒に決める（`planReads`）。
 //
 // report.json は足を持たない。取引終了時の残高・DD の材料と銘柄名のために**1 ジョブにつき 1 回だけ**
 //   取得する。
@@ -40,7 +42,6 @@ import {
 import {
   heldRowsCap,
   mergeColumns,
-  mergeWindow,
   planReads,
   readRowsOf,
   tailWindow,
@@ -203,22 +204,20 @@ export function createSimResultChartView({
 
     /** 見えている端が持っている端へ近づいた側を読み足す（前と後それぞれ高々 1 回）。 */
     async function readMore() {
-      const done = new Set();
-      for (;;) {
+      let sides = ['before', 'after'];
+      while (sides.length > 0) {
         // 1 回読むたびに、その時点の持っている区間と見えている範囲で決め直す。
-        const next = planReads({ held, totalRows, readRows, visible: renderer.visibleLogicalRange() })
-          .find((plan) => !done.has(plan.side));
-        if (!next) return;
-        done.add(next.side);
-        const readColumns = await read(next);
+        //   読む区間と、つないだ後に持つ区間（`plan.next`）は planReads が一緒に決める。
+        //   つないだ後に残らない区間は発行されない（読んでから捨てない）。
+        const [plan] = planReads({
+          held, totalRows, readRows, cap, visible: renderer.visibleLogicalRange(), sides,
+        });
+        if (!plan) return;
+        sides = sides.filter((side) => side !== plan.side);
+        const readColumns = await read(plan);
         if (!alive) return;
-        const visible = renderer.visibleLogicalRange();
-        const viewCenter = held.start + (visible
-          ? (visible.from + visible.to) / 2
-          : (held.end - held.start) / 2);
-        const merged = mergeWindow({ held, read: next, cap, viewCenter });
-        columns = mergeColumns({ names, held, heldColumns: columns, read: next, readColumns, next: merged });
-        held = merged;
+        columns = mergeColumns({ names, held, heldColumns: columns, read: plan, readColumns, next: plan.next });
+        held = plan.next;
         const { candles, instances } = drawing();
         // 表示を保つ差し替え。読んだ結果で表示範囲を動かさない。
         renderer.replaceDataKeepingView(candles, instances);
