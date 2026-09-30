@@ -156,7 +156,7 @@ function view({ k = kit(), ext = extent(), rep = () => report(), answer = rowsAn
     // Test Spy: 足の成果物の読み（区間と、返した足の時刻）を覚える。
     fetchRows: async (jobId, start, end) => {
       if (k.failRows) throw k.failRows;
-      const a = answer(start, end);
+      const a = await answer(start, end);
       c.reads.push({ jobId, start, end, times: a.columns.time, drawsBefore: c.draws.length });
       return a;
     },
@@ -573,15 +573,25 @@ test('別のジョブへ替えるときは前のチャート・購読・待ち�
 });
 
 test('読みの途中で片付けたら、届いた結果を描かない', async () => {
-  const { v, c, userActs, rangeChanges } = view();
+  // 2 回目の読み（読み足し）を保留にし、発行されたのを確かめてから片付け、その後で結果を届ける。
+  let asked = 0;
+  let deliver;
+  const answer = (start, end) => {
+    asked += 1;
+    if (asked === 1) return rowsAnswer(start, end);
+    return new Promise((resolve) => { deliver = () => resolve(rowsAnswer(start, end)); });
+  };
+  const { v, c, userActs, rangeChanges, settle } = view({ answer });
   await v.render('job1');
   userActs();
   rangeChanges({ from: 2, to: 20 });
-  const due = c.timers; c.timers = [];
-  for (const t of due) t.fn();     // 読みを発行した直後に
-  v.clear();                       // 片付ける
-  for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+  await settle();
+  assert.equal(asked, 2, '読み足しが発行されていない（検定の前提が崩れた）');
+  v.clear();
+  deliver();
+  await settle();
   assert.equal(c.draws.length, 1);
+  assert.deepEqual(c.toasts, []);
 });
 
 // ---- ISSUE-538: 取引明細・priceChart との hover の連動 ----

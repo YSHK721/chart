@@ -110,6 +110,29 @@ test("the chart bars client is HTTP only (no imports) and the result chart view 
   assert.ok(!read(RESULT_CHART).includes("/sim/chart-bars"), "売買履歴チャートの View が足の API の URL を持っています");
 });
 
+test("the composition root wires the result chart to the chart bars client end to end", () => {
+  // 受け口（View の loadExtent / fetchRows）を作っても、合成根が結ばなければ無言で死ぬ（ISSUE-291）。
+  const src = read(ROOT);
+  assert.ok(importSpecifiers(src).includes(`./${CHART_BARS_CLIENT}`), "合成根が足の取得クライアントを import していません");
+  assert.match(src, /const\s+chartBars\s*=\s*createChartBarsClient\(/);
+  assert.match(src, /loadExtent:\s*\(jobId\)\s*=>\s*chartBars\.extent\(jobId\)/);
+  assert.match(src, /fetchRows:\s*\(jobId,\s*start,\s*end\)\s*=>\s*chartBars\.rows\(jobId,\s*start,\s*end\)/);
+});
+
+test("no front module reads chart_overlay.json any more (足と値は足の成果物から範囲で読む)", () => {
+  // 丸ごと読む口が戻ると、215 万本の run でタブが落ちる（ISSUE-552 実測）。
+  const usecaseDir = join(FRONT_DIR, "..", "..", "usecase");
+  const sources = [
+    ...FRONT_FILES.map((name) => [name, read(name)]),
+    ...readdirSync(usecaseDir).filter((f) => f.endsWith(".js"))
+      .map((name) => [`usecase/${name}`, stripComments(readFileSync(join(usecaseDir, name), "utf8"))]),
+  ];
+  assert.ok(sources.length > FRONT_FILES.length, "usecase の走査が空振りしています");
+  for (const [name, src] of sources) {
+    assert.ok(!src.includes("chart_overlay"), `${name} が chart_overlay を参照しています`);
+  }
+});
+
 // --- 1g. 分析タブは面と通信を分ける（ISSUE-508 段階 4・§9.3）-------------------------
 // 「見せ方」と「どう取るか」は別の理由で変わる。混ぜると、描画を確かめるのに通信の
 // ダブルが要る（逆も同じ）。M6/M7 と同じ分け方で保つ。
