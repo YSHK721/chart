@@ -1,12 +1,15 @@
 """run_job が売買履歴チャートへ描く成果物を書く（2026-09-26 依頼者指示）。
 
-`run_job.main` を spec.json 経由で実際に回し、job-dir の 2 ファイルを独立計算と照合する:
+`run_job.main` を spec.json 経由で実際に回し、job-dir の成果物を独立計算と照合する:
     「`trade_markers.json`」: 全トレードの建て・決済のマーク（件数＝トレード数×2・時間足 1m）。
     「`chart_overlay.json`」:
         指標   … EA が宣言した系列（CalcProbe は SMA）。値は終値の単純平均を独立に計算して照合。
         口座   … 足ごと。損益（確定の累計・含み）・DD（有効証拠金の最高値からの下落）を
                  独立に計算して照合。保有中は有効証拠金が残高と異なる足が在ること。
-        時刻   … 持たない（ISSUE-552/554 段階 1）。位置 i の値は report.json の足 i の値。
+        時刻   … 持たない（ISSUE-552/554 段階 1）。位置 i の値は足 i の値。
+    「`chart_bars.parquet`」＋「`chart_bars.json`」（ISSUE-552/554 段階 2-1）:
+        足     … run が読んだ CSV の足。ジョブの成果物のここ 1 か所にだけ在る（report.json は足を持たない）。
+        口座・指標 … chart_overlay.json と同じ値。
     実行トレースを有効にした run でも同じ成果物が出る（観測口の合成）。
 """
 from __future__ import annotations
@@ -18,6 +21,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from simulator.adapter.trace import parquet_trace_store
+from simulator.sim_ui.adapter import chart_overlay_writer
 from simulator.sim_ui.main import run_job
 
 _EPOCH = 1_704_067_200
@@ -129,13 +134,51 @@ def test_the_same_outputs_are_written_with_the_run_trace_enabled(tmp_path: Path)
     assert (job_dir / "trade_markers.json").exists()
 
 
-def test_the_bar_times_live_only_in_the_report(job_dir: Path) -> None:
-    """足の時刻は report.json の足の 1 か所だけ。chart_overlay.json の値の列はその足と同じ本数。"""
-    bars = _load(job_dir, "report.json")["segments"]["single"]["bars"]
+def _chart_bars(job_dir: Path) -> "tuple[dict, dict[str, list]]":
+    declared = _load(job_dir, chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME)
+    columns = parquet_trace_store.read_columns(
+        job_dir / chart_overlay_writer.CHART_BARS_FILENAME, columns=declared["columns"],
+        time_column=chart_overlay_writer.INDEX_COLUMN,
+    )
+    return declared, columns
+
+
+def test_the_bars_live_only_in_the_bars_artefact(job_dir: Path) -> None:
+    """足はジョブの成果物の 1 か所（chart_bars.parquet）だけ。report.json にも chart_overlay.json にも無い。"""
+    declared, columns = _chart_bars(job_dir)
     overlay = _load(job_dir, "chart_overlay.json")
-    assert [b["time"] for b in bars] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
-    assert {len(v) for v in overlay["account"].values()} == {len(bars)}
-    assert [len(ind["value"]) for ind in overlay["indicators"]] == [len(bars)]
+    segment = _load(job_dir, "report.json")["segments"]["single"]
+    # 足は run が読んだ CSV そのもの。
+    assert columns["time"] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
+    assert columns["open"] == [float(o) for o in _OPENS]
+    assert columns["close"] == _closes()
+    assert declared["rows"] == len(_OPENS)
+    # 他の成果物は足を持たない（本数だけを名乗る）。
+    assert segment["bars"] == []
+    assert segment["meta"]["bars"] == len(_OPENS)
+    assert "time" not in overlay["account"]
+    assert {len(v) for v in overlay["account"].values()} == {len(_OPENS)}
+
+
+def test_the_bars_artefact_carries_the_account_and_the_indicator_of_the_same_run(job_dir: Path) -> None:
+    declared, columns = _chart_bars(job_dir)
+    overlay = _load(job_dir, "chart_overlay.json")
+    for name in chart_overlay_writer.ACCOUNT_COLUMNS:
+        # parquet は値なしを NaN で持つ（配信の出口が null にする）。値なしの位置と値の両方を照合する。
+        got = [None if isinstance(v, float) and math.isnan(v) else v for v in columns[name]]
+        assert got == overlay["account"][name], name
+    (indicator,) = declared["indicators"]
+    assert (indicator["series"], indicator["placement"]) == ("sma", "price")
+    got = [None if isinstance(v, float) and math.isnan(v) else v for v in columns[indicator["column"]]]
+    assert got == pytest.approx(_sma(_closes(), _PERIOD))
+
+
+def test_the_balance_curve_times_are_bar_times(job_dir: Path) -> None:
+    """取引終了時の残高の時刻は足の時刻に含まれる（画面は足の範囲へ前方補完する）。"""
+    _declared, columns = _chart_bars(job_dir)
+    curve = _load(job_dir, "report.json")["segments"]["single"]["agg"]["balance_curve"]
+    assert curve, "残高の列が空（検定が空虚）"
+    assert {point["time"] for point in curve} <= set(columns["time"])
 
 
 def test_a_csv_outside_the_ledger_has_no_dataset_ref(job_dir: Path) -> None:

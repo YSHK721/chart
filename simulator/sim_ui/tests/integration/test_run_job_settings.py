@@ -195,8 +195,14 @@ def test_settings有りで成果物が生成される(tmp_path: Path) -> None:
 # --- 3. 期間窓の適用（N-15）-------------------------------------------------
 
 def _bar_times(job_dir: Path) -> "list[int]":
-    payload = json.loads((job_dir / "report.json").read_text(encoding="utf-8"))
-    return [int(bar["time"]) for bar in payload["segments"]["single"]["bars"]]
+    """run が使った足の時刻。足はジョブの成果物の 1 か所（chart_bars.parquet）にだけ在る。"""
+    from simulator.adapter.trace import parquet_trace_store
+    from simulator.sim_ui.adapter import chart_overlay_writer
+
+    return parquet_trace_store.read_columns(
+        job_dir / chart_overlay_writer.CHART_BARS_FILENAME, columns=["time"],
+        time_column=chart_overlay_writer.INDEX_COLUMN,
+    )["time"]
 
 
 def _midnight(text: str) -> int:

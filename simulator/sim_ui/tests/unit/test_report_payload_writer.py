@@ -177,20 +177,43 @@ def test_missing_stop_levels_yield_empty_strings_not_invented_prices(tmp_path: P
 
 # --- 5. 時刻の int 正規化 --------------------------------------------------------
 
-def test_bar_times_are_normalised_to_unix_seconds(tmp_path: Path) -> None:
+def test_the_report_carries_no_bars(tmp_path: Path) -> None:
+    """足は report.json に書かない（ISSUE-552/554 段階 2-1）。
+
+    足はジョブの成果物の 1 か所（`chart_overlay_writer` が書く chart_bars.parquet）にだけ在る。
+    report.json に足を書くと同じ列が 2 か所になり、全履歴の 1 分足で 172MB を画面が丸ごと取得する。
+    区間のキーは残す（report_ui の契約の形を変えない）。本数は ``meta.bars`` が名乗る。
+    """
     import pandas as pd
-    bars = _bars([pd.Timestamp("2026-04-01 00:00:00", tz="UTC"),
-                  pd.Timestamp("2026-04-01 00:05:00", tz="UTC")])
-    seg = _payload(tmp_path, bars=bars)["segments"]["single"]
-    # 期待値は stdlib datetime で独立に確認した値（実装の出力を写していない）:
-    #   datetime(2026,4,1,0,0,tzinfo=utc).timestamp() == 1775001600
-    assert [b["time"] for b in seg["bars"]] == [1775001600, 1775001900]
-    assert all(isinstance(b["time"], int) for b in seg["bars"])
+    for bars in (
+        None,  # int 時刻の 4 本
+        _bars([pd.Timestamp("2026-04-01 00:00:00", tz="UTC"),
+               pd.Timestamp("2026-04-01 00:05:00", tz="UTC")]),
+    ):
+        directory = tmp_path / str(0 if bars is None else 1)
+        directory.mkdir()
+        seg = _payload(directory, bars=bars)["segments"]["single"]
+        assert seg["bars"] == []
+        assert seg["meta"]["bars"] == (4 if bars is None else 2)
 
 
-def test_integer_bar_times_pass_through_unchanged(tmp_path: Path) -> None:
-    seg = _payload(tmp_path)["segments"]["single"]
-    assert [b["time"] for b in seg["bars"]] == [1000, 2000, 3000, 4000]
+def test_the_report_size_does_not_grow_with_the_bars(tmp_path: Path) -> None:
+    """足を 100 倍にしても report.json は足の本数ぶん大きくならない（足ごとの値を書かない）。
+
+    変わるのは本数を名乗る数字の桁（``meta.bars`` と ``report.Bars``）と期間の表示だけである。
+    取引は同じ 3 件なので、足ごとの値を書いていれば大きさは本数に比例して増える。
+    """
+    sizes = []
+    for n in (40, 4000):
+        directory = tmp_path / str(n)
+        directory.mkdir()
+        # 既定の 4 本（1000〜4000）を含む並び（取引の時刻がこの中に在る）。
+        times = sorted({1000, 2000, 3000, 4000, *range(5000, 5000 + n - 4)})
+        out = _write(directory, bars=_bars(times))
+        sizes.append(out.stat().st_size)
+        assert json.loads(out.read_text(encoding="utf-8"))["segments"]["single"]["meta"]["bars"] == n
+    # 本数の桁が 2 桁増えるぶん（2 箇所）＋期間表示の差だけを許す。足 1 本は 50 byte 以上ある。
+    assert sizes[1] - sizes[0] < 50, sizes
 
 
 def test_trade_times_are_integers(tmp_path: Path) -> None:

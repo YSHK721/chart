@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -97,7 +98,8 @@ def write(
 
     ``result``: `run_backtest` が返した `BacktestResult`（成功 run のみ渡すこと）。
     ``load_run_inputs``: (bars, symbol_spec) の供給（**必須**）。`BacktestResult` は bars を
-      保持しないため、表示用のローソク足と建値推定（MFE/MAE）に要る bars を取り直す口。
+      保持しないため、建値推定（MFE/MAE）・期間の表示・バー数に要る bars を取り直す口。
+      足そのものは report.json へ書かない（`_without_bars`）。
       実体（EA 別 MarketDataPort の選択・CSV 解析）は `simulator.main` の単一ソースにあり、
       その束縛は **Composition Root（`main/run_job.py`）が持つ**（R-4）。adapter が
       `simulator.main` を既定値として掴むと依存が外向き（adapter→main）になる。
@@ -154,5 +156,24 @@ def write(
     )
 
     out = job_dir / REPORT_FILENAME
-    ReportUiPresenter().present_report_payload(payload, out)
+    ReportUiPresenter().present_report_payload(_without_bars(payload), out)
     return out
+
+
+def _without_bars(payload: Any) -> Any:
+    """区間の足の列を空にした payload を返す（ISSUE-552/554 段階 2-1）。
+
+    足はジョブの成果物の 1 か所（`simulator/sim_ui/adapter/chart_overlay_writer.py` が書く
+    chart_bars.parquet）にだけ持つ。report.json へも書くと同じ列が 2 か所になり、1 分足の
+    全履歴（2,152,183 本）で 172MB を画面が丸ごと取得する。
+
+    キー（``bars``）は残し、空の並びにする: 出力の形は report_ui の presenter が決めており
+    （共有の契約）、sim 側でキーを消すには presenter を写すことになる。本数は区間の
+    ``meta.bars`` が名乗る（UC が足から数えた値・ここでは触らない）。
+    """
+    return replace(
+        payload,
+        segments={
+            key: replace(segment, bars=[]) for key, segment in payload.segments.items()
+        },
+    )
