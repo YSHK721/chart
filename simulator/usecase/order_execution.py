@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.account import Account
+from simulator.domain.exceptions import ConfigError
 from simulator.usecase._execution import (
     close_price_for,
     derive_quotes,
@@ -28,6 +29,33 @@ from simulator.usecase._execution import (
 from simulator.usecase.open_trade import OpenTrade
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.trade_ledger import TradeLedger
+
+
+def route_orders(
+    orders: "list[Any]", *, tick_granularity: bool, strategy_name: str
+) -> "tuple[list[Any], list[Any]]":
+    """注文を（成行, 待機注文）へ振り分ける。待機注文を引く機会は足の途中の評価点だけである。
+
+    ティック粒度: 指値・逆指値は足途中の評価点でトリガを引く別経路へ回す。
+    バー粒度: 足途中の評価点が無いので待機注文を引く機会が無い。成行へ変えると、書いた条件と
+        違う条件で走った結果が成功として出る（ISSUE-557）。宣言（「`pending_order_use`」）の
+        書き忘れはここで止める。
+
+    例外: バー粒度で kind が market 以外の注文が 1 件でもあれば `ConfigError`（理由に戦略名と種類）。
+    """
+    if tick_granularity:
+        return (
+            [o for o in orders if o.kind == "market"],
+            [o for o in orders if o.kind != "market"],
+        )
+    kinds = sorted({o.kind for o in orders if o.kind != "market"})
+    if kinds:
+        raise ConfigError(
+            f"戦略 {strategy_name} が待機注文（{', '.join(kinds)}）を出しましたが、この run には"
+            " 足の途中の評価点がありません。戦略に待機注文の使い方を宣言してください",
+            context={"strategy": strategy_name, "kinds": kinds},
+        )
+    return orders, []
 
 
 class OrderExecutor:
