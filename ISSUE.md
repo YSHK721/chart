@@ -16507,6 +16507,8 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
 - **段階 1 後の実 UI 実測（2026-09-30・ジョブ 66b108e1…・CalcProbe_EA・jp225_mt5_spread・M1・全履歴 2,152,183 本）**:
   - 「一致しない」の掲示は出なくなったが、**タブ（統合ページ全体）が約 56 秒でクラッシュする**（Playwright の crash 事象）。
   - 同じジョブの結果ビューア単体（report_view.html?job=）は 5.4 秒で描画・JS ヒープ 392MB で安定。
+    **訂正（2026-09-30）**: 結果ビューアは足を描かない（子文書は lwc に触らない・composition_root_front.js:15-16、
+    import_source.test.js:257）。描いたのは足以外の表示。「結果ビューアで全期間の足が見える」と報告したのは誤り。
   - 同じ origin の空ページで report.json と chart_overlay.json を取得・解析するだけなら 3.2 秒・ヒープ 820MB で完走。
   - 数え方: ローカルの chromium-1246（headless）で 8000 の実 UI を開き、シミュレーションへ切替え、子文書をジョブへ遷移。
     ヒープは performance.memory.usedJSHeapSize。本体コードには触れていない。
