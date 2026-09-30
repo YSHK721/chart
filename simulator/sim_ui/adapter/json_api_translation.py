@@ -59,7 +59,7 @@ def json_safe(value: Any) -> Any:
     """payload 木を再帰的に通し、**JSON に存在しない綴りになる値を `None` にする**。
 
     なぜ木を通すか（拡張点の確保・工程 5 レビュー 🔴-4）:
-        工程 3 はフィールドごとに変換を手書きし、`_points` の 4 群へは撒いたが
+        工程 3 はフィールドごとに変換を手書きし、「`_points`」 の 4 群へは撒いたが
         `/extent` に忘れた。front が最初に叩くのは `/extent` なので、分析タブは実 run で
         全面が掲示のみになる。**手書き適用は「足したフィールドを通し忘れる」という
         欠陥を構造的に許す**——出口で木ごと通せば、忘れる場所が存在しない。
@@ -67,7 +67,7 @@ def json_safe(value: Any) -> Any:
     何を `None` にするか（実測・2026-09-10／09-11）:
         非有限の実数（`inf` / `-inf` / nan）。`Account.margin_level()` は建玉 0 の点で
         無限大を返し、実ティック 1 ヶ月 run の 1,036,394 点のうち **405,941 点（39.2%）**
-        がそれに当たる。`initial_deposit` / `margin_level_floor` も run 設定次第で
+        がそれに当たる。「`initial_deposit`」 / `margin_level_floor` も run 設定次第で
         非有限になり得る（実測で `/extent` の直列化が壊れることを確認）。
         Python の `json.dumps` は既定でこれを `Infinity` / `NaN` と書くが、**どちらも JSON の
         文法に無い**——ブラウザの JSON.parse は `SyntaxError` で落ちる（node 実測）。
@@ -79,7 +79,7 @@ def json_safe(value: Any) -> Any:
         それを実在の維持率として描き、軸が壊れる。「有限の数値ではない」ことをそのまま
         運ぶ唯一の綴りが null である。front の系列描画は `Number.isFinite` で弾く。
 
-    なぜ `ApiResponse.to_bytes` 側を直さないか:
+    なぜ 「`ApiResponse.to_bytes`」 側を直さないか:
         同型は既存の全 API 応答が共有しており、そこへ手を入れると既存応答の byte が
         変わり得る（本段階の「既存面は 1 バイトも変えない」制約に反する）。非有限値が
         出るのは足ごと・評価点ごとの列（維持率・DD・run 設定）に固有の事実なので、

@@ -186,14 +186,14 @@ def write(
     }
     overlay_path = directory / CHART_OVERLAY_FILENAME
     overlay_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    _write_chart_bars(
+    write_chart_bars(
         directory, bars=bars, bar_times=bar_times, account_columns=account_columns,
         series=series, ea_name=ea_name, dataset_ref=dataset_ref,
     )
     return markers_path, overlay_path
 
 
-def _write_chart_bars(
+def write_chart_bars(
     directory: Path,
     *,
     bars: Sequence[Any],
