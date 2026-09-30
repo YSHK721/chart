@@ -280,8 +280,8 @@ const LAYER_EXTRAS = Object.freeze({
   [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit }) => ({
     lwc,
     // ジョブ結果を売買履歴チャートへ描くための売買履歴チャートの器・部品（2026-09-26 依頼者指示）。
-    //   器の所有者は統合層、部品は live core の公開面。足は sim がジョブ自身の report.json から読む
-    //   （ISSUE-552/554 段階 1）ので、統合層は足の読み手を渡さない。
+    //   器の所有者は統合層、部品は live core の公開面。足は sim がジョブ自身の足の成果物から
+    //   位置の区間で読む（ISSUE-552/554 段階 2-2）ので、統合層は足の読み手を渡さない。
     resultChart,
     chartKit,
     // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
