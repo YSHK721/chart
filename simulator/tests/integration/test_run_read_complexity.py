@@ -182,7 +182,8 @@ def test_bar_times_are_converted_whole_run_at_a_time(tmp_path, days) -> None:
         bar_times.set_observer(None)
 
     # Assert: 変換は行われ（空振りしない）、各呼び出しが run の Bar 列全体を一括で扱う
-    bars = len(json.loads((job_dir / "chart_overlay.json").read_text(encoding="utf-8"))["account"]["time"])
+    report = json.loads((job_dir / "report.json").read_text(encoding="utf-8"))
+    bars = len(report["segments"]["single"]["bars"])
     assert calls, "足の時刻の変換が観測口を通っていない"
     assert all(count == bars and batched for count, batched in calls), calls
 

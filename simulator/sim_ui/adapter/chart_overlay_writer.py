@@ -12,9 +12,12 @@
     時間足台帳 「`marketdata.tf_ledger`」 の「1m」を引いて前提にしている）、チャート側の台帳コードも
     「1m」である。MT5 の Period ラベル（「`M1`」）はチャートの語彙ではないので載せない。
 
-指標の時刻:
-    ``indicators`` は run と同じ対応づけ（ISSUE-509: Bar 列へ時刻で合わせた系列）を受け取る。
-    したがって系列の位置 i は ``bars[i]`` の時刻である。未成立（NaN）の位置は 「`null`」。
+時刻（ISSUE-552/554 段階 1）:
+    足の時刻は**書かない**。足の列はジョブの成果物の 1 か所（report.json の足）にだけ持ち、画面は
+    そこから時刻を得る。本ファイルの値の列は位置 i が ``bars[i]`` の値である。
+    ``indicators`` は run と同じ対応づけ（ISSUE-509: Bar 列へ時刻で合わせた系列）を受け取り、
+    長さが Bar 列と違えば書かない。口座の行も Bar 列と同じ時刻の並びでなければ書かない
+    （時刻を捨てた後は画面がずれを検出できない＝ここが最後の照合点）。未成立（NaN）の位置は 「`null`」。
 """
 from __future__ import annotations
 
@@ -112,9 +115,13 @@ def write(
             {
                 "series": plot.series,
                 "placement": plot.placement,
-                "time": bar_times,
                 "value": [_finite_or_none(v) for v in values],
             }
+        )
+    if list(account.times) != list(bar_times):
+        # 口座の行が run の Bar 列と別の足に付いている。値の列だけを書くと別の足の値を見せる。
+        raise ValueError(
+            f"口座の行の時刻（{len(account.times)} 行）が Bar 列（{len(bar_times)} 本）の時刻と一致しません"
         )
     dd_amount, dd_percent = drawdown(account.equity)
     realized, floating = profit_and_loss(account.balance, account.equity, initial_deposit)
@@ -124,7 +131,6 @@ def write(
         "dataset_ref": dataset_ref,
         "indicators": series,
         "account": {
-            "time": list(account.times),
             "balance": list(account.balance),
             "equity": list(account.equity),
             "drawdown": dd_amount,

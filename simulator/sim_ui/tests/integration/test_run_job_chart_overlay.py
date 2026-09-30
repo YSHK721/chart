@@ -6,6 +6,7 @@
         指標   … EA が宣言した系列（CalcProbe は SMA）。値は終値の単純平均を独立に計算して照合。
         口座   … 足ごと。損益（確定の累計・含み）・DD（有効証拠金の最高値からの下落）を
                  独立に計算して照合。保有中は有効証拠金が残高と異なる足が在ること。
+        時刻   … 持たない（ISSUE-552/554 段階 1）。位置 i の値は report.json の足 i の値。
     実行トレースを有効にした run でも同じ成果物が出る（観測口の合成）。
 """
 from __future__ import annotations
@@ -91,14 +92,15 @@ def test_the_declared_trigger_indicator_is_the_independent_sma(job_dir: Path) ->
     overlay = _load(job_dir, "chart_overlay.json")
     (sma,) = overlay["indicators"]
     assert (sma["series"], sma["placement"]) == ("sma", "price")
-    assert sma["time"] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
+    assert "time" not in sma
     assert sma["value"] == pytest.approx(_sma(_closes(), _PERIOD))
 
 
 def test_account_rows_are_per_bar_and_the_derived_series_match(job_dir: Path) -> None:
     account = _load(job_dir, "chart_overlay.json")["account"]
     balance, equity = account["balance"], account["equity"]
-    assert account["time"] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
+    assert "time" not in account
+    assert len(balance) == len(_OPENS)
     # 損益: 確定の累計＝残高−初期資金 / 含み＝有効証拠金−残高。
     assert account["realized_pnl"] == pytest.approx([b - _DEPOSIT for b in balance])
     assert account["floating_pnl"] == pytest.approx([e - b for b, e in zip(balance, equity)])
@@ -123,8 +125,17 @@ def test_the_same_outputs_are_written_with_the_run_trace_enabled(tmp_path: Path)
     csv = _write_csv(tmp_path / "d.csv")
     job_dir = _run(tmp_path, csv, trace={"enabled": True, "start": None, "end": None})
     account = _load(job_dir, "chart_overlay.json")["account"]
-    assert len(account["time"]) == len(_OPENS)
+    assert len(account["balance"]) == len(_OPENS)
     assert (job_dir / "trade_markers.json").exists()
+
+
+def test_the_bar_times_live_only_in_the_report(job_dir: Path) -> None:
+    """足の時刻は report.json の足の 1 か所だけ。chart_overlay.json の値の列はその足と同じ本数。"""
+    bars = _load(job_dir, "report.json")["segments"]["single"]["bars"]
+    overlay = _load(job_dir, "chart_overlay.json")
+    assert [b["time"] for b in bars] == [_EPOCH + 60 * i for i in range(len(_OPENS))]
+    assert {len(v) for v in overlay["account"].values()} == {len(bars)}
+    assert [len(ind["value"]) for ind in overlay["indicators"]] == [len(bars)]
 
 
 def test_a_csv_outside_the_ledger_has_no_dataset_ref(job_dir: Path) -> None:
