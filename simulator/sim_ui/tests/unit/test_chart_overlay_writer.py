@@ -41,7 +41,7 @@ class _Indicators:
 
 @dataclass
 class _Account:
-    """`AccountCurveRecorder` と同じ属性（時刻は epoch 秒の列）。"""
+    """「`AccountCurveRecorder`」 と同じ属性（時刻は epoch 秒の列）。"""
 
     times: "list[int]"
     balance: "list[float]" = field(default_factory=list)
@@ -87,8 +87,8 @@ def test_the_overlay_has_no_time_columns_and_the_value_columns_follow_the_bars(t
     overlay = json.loads(_write(tmp_path, _bars(4), _account(_times(4))).read_text(encoding="utf-8"))
 
     # Assert
-    assert "time" not in overlay["account"]
-    assert all("time" not in ind for ind in overlay["indicators"])
+    assert overlay["account"].keys().isdisjoint({"time"})
+    assert all(ind.keys().isdisjoint({"time"}) for ind in overlay["indicators"])
     assert {len(v) for v in overlay["account"].values()} == {4}
     assert [len(ind["value"]) for ind in overlay["indicators"]] == [4]
 
