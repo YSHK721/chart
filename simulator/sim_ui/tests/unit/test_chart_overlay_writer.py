@@ -4,9 +4,13 @@
 持ち、位置 i の値は足 i の値である。時刻を捨てた後は front が口座の列のずれを検出できないので、
 書き手が口座の行の時刻と Bar 列の時刻の一致を確かめ、違えば書かない（黙ってずらさない）。
 
-計算量（絶対命令 2026-08-28）: 観測口 `usecase.bar_times.set_observer` だけを使う（内部名を差し替えない）。
+計算量（絶対命令 2026-08-28）: 宣言された観測口だけを使う（内部名を差し替えない）。
+    観測口は `usecase.bar_times.set_observer`（変換の数と一括か）・`usecase.bar_times.set_result_observer`
+    （変換が返した列の実体）・`chart_overlay_writer.set_observer`（照合に使った足の時刻の列の実体）。
     - 変換はどれも Bar 列全体を一括で扱う（足ごとに変換しない）
     - 変換の呼び出しの数は足の本数（2 点）で変わらない
+    - 変換で作った列のうち照合に使われなかった列は 0（作って捨てない・2 点）。時刻は出力に書かないので、
+      出力に使う列は無く、使い道は照合だけである
     - 書く時刻の列は 0（時刻を 2 ファイルに書かない）
 """
 from __future__ import annotations
@@ -125,3 +129,24 @@ def test_time_conversions_are_whole_run_and_do_not_grow_with_the_bars(tmp_path: 
         calls_per_size.append(len(calls))
     # 足の本数を 100 倍にしても変換の呼び出しは増えない。
     assert calls_per_size[0] == calls_per_size[1]
+
+
+def test_every_converted_time_column_is_used_for_matching(tmp_path: Path) -> None:
+    for n in (3, 300):
+        # Arrange: 変換が返した列（発行）と、書き手が照合に使った列（使用）を実体で集める。
+        made: "list[list[int]]" = []
+        used: "list[list[int]]" = []
+        bar_times.set_result_observer(made.append)
+        chart_overlay_writer.set_observer(used.append)
+        try:
+            (tmp_path / str(n)).mkdir()
+            # Act
+            _write(tmp_path / str(n), _bars(n), _account(_times(n)))
+        finally:
+            bar_times.set_result_observer(None)
+            chart_overlay_writer.set_observer(None)
+
+        # Assert: 発行 − 使用 = 0（作ったのに照合にも出力にも使わない列が無い）。
+        assert made, "足の時刻の変換が観測口を通っていない"
+        unused = [column for column in made if not any(column is u for u in used)]
+        assert unused == [], f"足 {n} 本: 使われなかった変換 {len(unused)} 列"

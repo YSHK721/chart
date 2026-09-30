@@ -18,6 +18,11 @@
     ``indicators`` は run と同じ対応づけ（ISSUE-509: Bar 列へ時刻で合わせた系列）を受け取り、
     長さが Bar 列と違えば書かない。口座の行も Bar 列と同じ時刻の並びでなければ書かない
     （時刻を捨てた後は画面がずれを検出できない＝ここが最後の照合点）。未成立（NaN）の位置は 「`null`」。
+
+観測の境界（検査側の設計・絶対命令 2026-09-25）:
+    `set_observer` は照合に使った足の時刻の列の実体を知らせる。変換が返した列の実体
+    （「`simulator.usecase.bar_times.set_result_observer`」）と同一性で突き合わせ、作って使わない変換が
+    無いことを検定する注入点であり、既定なし。
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
 from simulator.usecase.bar_times import bar_epoch_seconds
@@ -36,6 +41,14 @@ TRADE_MARKERS_FILENAME = "trade_markers.json"
 CHART_OVERLAY_FILENAME = "chart_overlay.json"
 #: run の Bar 列の時間足（チャート側の台帳コード）。
 RUN_TIMEFRAME = "1m"
+
+_observer: "Callable[[list[int]], None] | None" = None
+
+
+def set_observer(observer: "Callable[[list[int]], None] | None") -> None:
+    """照合に使った足の時刻の列の観測口を差し替える（``None`` で外す）。検定の注入点。"""
+    global _observer
+    _observer = observer
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,8 @@ def write(
                 "value": [_finite_or_none(v) for v in values],
             }
         )
+    if _observer is not None:
+        _observer(bar_times)
     if list(account.times) != list(bar_times):
         # 口座の行が run の Bar 列と別の足に付いている。値の列だけを書くと別の足の値を見せる。
         raise ValueError(
