@@ -12,6 +12,8 @@ domain は numpy を import しない規律なので、配列を組むのは本�
 
 観測の境界（検査側の設計・絶対命令 2026-09-25）: `set_observer` は変換 1 回ごとに
 (変換した時刻の数, 一括だったか) を知らせる。検定の注入点であり、既定なし。
+`set_result_observer` は変換 1 回ごとに返した列の実体そのものを知らせる（呼び手が作った列を
+使ったかを同一性で突き合わせるため・「発行した計算 − 使った計算 = 0」の検定）。検定の注入点であり、既定なし。
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from simulator.domain.bar_time import (
 )
 
 _observer: "Callable[[int, bool], None] | None" = None
+_result_observer: "Callable[[list[int]], None] | None" = None
 
 
 def set_observer(observer: "Callable[[int, bool], None] | None") -> None:
@@ -34,14 +37,24 @@ def set_observer(observer: "Callable[[int, bool], None] | None") -> None:
     _observer = observer
 
 
+def set_result_observer(observer: "Callable[[list[int]], None] | None") -> None:
+    """返した列の観測口を差し替える（``None`` で外す）。検定の注入点。"""
+    global _result_observer
+    _result_observer = observer
+
+
 def epoch_seconds_of(times: Sequence[Any]) -> "list[int]":
     """時刻の列を epoch 秒（int）の列へ（各値は `epoch_seconds(t)` と同じ）。"""
     batched = len(times) > 0 and all(is_numpy_datetime64(t) for t in times)
     if _observer is not None:
         _observer(len(times), batched)
     if batched:
-        return epoch_seconds_of_datetime64_array(np.array(times))
-    return [epoch_seconds(t) for t in times]
+        column = epoch_seconds_of_datetime64_array(np.array(times))
+    else:
+        column = [epoch_seconds(t) for t in times]
+    if _result_observer is not None:
+        _result_observer(column)
+    return column
 
 
 def bar_epoch_seconds(bars: Sequence[Any]) -> "list[int]":

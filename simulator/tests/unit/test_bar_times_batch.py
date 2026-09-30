@@ -76,3 +76,26 @@ def test_one_batched_call_covers_the_whole_sequence(calls, length) -> None:
     # 発行 − 1 = 0（列の長さに依らない）・一括で列全体を扱う
     assert len(calls) - 1 == 0
     assert calls == [(length, True)]
+
+
+@pytest.mark.parametrize("length", [0, 10, 100])
+def test_the_result_observer_sees_each_returned_column_itself(length) -> None:
+    # Arrange: 返した列の実体を観測する口（2 引数の「`set_observer`」とは別の口）。
+    times = [np.datetime64("2024-01-01T00:00:00", "s") + np.timedelta64(i, "m") for i in range(length)]
+    seen: "list[list[int]]" = []
+    bar_times.set_result_observer(seen.append)
+    try:
+        # Act
+        returned = [bar_times.epoch_seconds_of(times), bar_times.bar_epoch_seconds([])]
+    finally:
+        bar_times.set_result_observer(None)
+
+    # Assert: 変換 1 回ごとに、返した列そのもの（同一の実体）を知らせる。
+    assert len(seen) == len(returned)
+    assert all(s is r for s, r in zip(seen, returned))
+
+
+def test_the_result_observer_is_off_by_default_and_after_removal() -> None:
+    bar_times.set_result_observer(lambda column: pytest.fail("外した観測口が呼ばれた"))
+    bar_times.set_result_observer(None)
+    assert bar_times.epoch_seconds_of([_T0]) == [_T0]
