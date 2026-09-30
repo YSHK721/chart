@@ -338,3 +338,81 @@ test('同じ位置で操作を繰り返すと読みは止まり、読んだ行�
     assert.deepEqual(perRun[0], perRun[1], label(shape));
   }
 });
+
+// ---- 計算量: 不変条件は状態に依らない（上限まで持ったか否かで例外を作らない） ----
+//   どの状態でも「読んだ行 − 操作の後も持ち続けた行 = 0」。上限未満で両側を読むとき、片側が
+//   守る範囲を覆うのに必要な本数より多く読むと、その超過分を反対側の読みが捨てた（実測:
+//   本番値・上限未満から約 100 万点のうち同じ操作で 15,909 件・操作をまたいで 218,718 件）。
+
+/** 同じ位置で操作を繰り返した結果を数える。 */
+function tally({ origin, totalRows, view }) {
+  const { results, held } = repeatAt({ origin, totalRows, view });
+  const read = results.reduce((n, r) => n + r.read, 0);
+  return {
+    read,
+    // 同じ操作で捨てた行。
+    droppedWithin: read - results.reduce((n, r) => n + r.kept, 0),
+    // 操作をまたいで捨てた行（読んだ行 − 最後に持っている行のうち新しく持った行）。
+    droppedAcross: read - ((held.end - held.start) - overlapRows(held, origin)),
+    // 覆えた後の操作で読んだ行（止まらない）。
+    late: results.slice(cap / readRows + 1).reduce((n, r) => n + r.read, 0),
+    seenLost: results.reduce((n, r) => n + r.seenLost, 0),
+    // 読みが止まった後、run の中の見えている足のうち持っていない足と、上限までの空き。
+    //   どちらも残っていれば、空きがあるのに見えている足を読んでいない。
+    unseen: (() => {
+      const seen = { start: Math.max(0, Math.ceil(view.from)), end: Math.min(totalRows, Math.floor(view.to) + 1) };
+      return Math.max(0, seen.end - seen.start) - overlapRows(seen, held);
+    })(),
+    room: cap - (held.end - held.start),
+  };
+}
+
+test('再現: 上限未満で両側を読むとき、片側が読みすぎた分を反対側の読みが捨てない', () => {
+  // 本番値。18,000 行を持ち（上限まで 1 回ぶんの空き）、持っている区間より広く見ている。
+  const origin = { start: 263_556, end: 281_556 };
+  assert.ok(origin.end - origin.start < cap);
+  const t = tally({ origin, totalRows: 2_150_000, view: { from: 262_921, to: 289_814 } });
+  assert.ok(t.read > 0, '読み足しが起きていない（検定が空虚）');
+  assert.equal(t.droppedWithin, 0, `読んだ ${t.read} 行のうち ${t.droppedWithin} 行を同じ操作で捨てた`);
+  assert.equal(t.droppedAcross, 0, `読んだ ${t.read} 行のうち ${t.droppedAcross} 行を持っていない`);
+});
+
+/** 決定的な乱数（線形合同法・種は固定）。 */
+function seeded(seed) {
+  let state = seed;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+test('計算量: どの状態からでも 読んだ行 − 持ち続けた行 = 0・読みは止まる（決定的な乱数・上限未満からと上限まで持った状態から × run の長さ 2 点）', () => {
+  const POINTS = 3000;
+  for (const totalRows of RUNS) {
+    for (const full of [true, false]) {
+      const random = seeded(20260930);
+      let readAll = 0;
+      let shapes = 0;
+      for (let i = 0; i < POINTS; i += 1) {
+        // 持っている本数: 上限、または 1 回の本数の整数倍で上限未満。
+        const rows = full ? cap : readRows * (1 + Math.floor(random() * (cap / readRows - 1)));
+        const start = Math.floor(random() * (totalRows - rows + 1));
+        const origin = { start, end: start + rows };
+        // 見えている幅: 上限の 0〜0.4 倍と 0〜1.6 倍を半々。位置: 持っている区間に重なる範囲。
+        let width = random() * cap * (random() < 0.5 ? 0.4 : 1.6);
+        let from = start - width + random() * (rows + width);
+        if (random() < 0.2) { width = Math.floor(width); from = Math.floor(from); shapes += 1; }
+        const where = `run ${totalRows} 本・持っている [${origin.start}, ${origin.end})・見えている ${from}〜${from + width}`;
+        const t = tally({ origin, totalRows, view: { from, to: from + width } });
+        assert.equal(t.droppedWithin, 0, `${where}: 読んだ ${t.read} 行のうち ${t.droppedWithin} 行を同じ操作で捨てた`);
+        assert.equal(t.droppedAcross, 0, `${where}: 読んだ ${t.read} 行のうち ${t.droppedAcross} 行を操作をまたいで捨てた`);
+        assert.equal(t.late, 0, `${where}: 同じ位置で読みが止まらない（覆えた後に ${t.late} 行を読んだ）`);
+        assert.equal(t.seenLost, 0, `${where}: 見えていた足を ${t.seenLost} 本捨てた`);
+        assert.equal(Math.min(t.unseen, t.room), 0, `${where}: 空きが ${t.room} 行あるのに、見えている足 ${t.unseen} 本を読んでいない`);
+        readAll += t.read;
+      }
+      // 上限超えは operate が読みのたびに表明する。
+      assert.ok(readAll > 0 && shapes > 0 && shapes < POINTS, '読み足し・端数の有無のどちらかを通っていない（検定が空虚）');
+    }
+  }
+});

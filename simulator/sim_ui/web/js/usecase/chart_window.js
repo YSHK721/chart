@@ -52,6 +52,9 @@ const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
  *   両端は外側の整数の位置へ丸める（位置は整数。読む条件と捨てる足が同じ境界を見る）。
  * 読む条件（「近づいた」）: 持っている区間が、その側で守る範囲を覆っていない。run の端に
  *   着いている側は読まない。見えている範囲が読めなければ読まない。
+ * 両側を一緒に決める: 反対側も覆っていない間は、その側は覆うのに足りない本数までしか読まない
+ *   （1 回の本数まで読むのは、反対側が覆っているときだけ）。不変条件は、どの状態でも
+ *   「読んだ行 − 操作の後も持ち続けた行 = 0」（上限まで持ったか否かで例外を作らない）。
  * 捨てる足: 上限を超える分だけ、読む側と反対の端の、**守る範囲の外**の足。見えている足は捨てない。
  * 読む本数: 1 回の本数。ただし「上限までの空き + 捨てられる足」を超えない（超える分は、
  *   つないだ後に残らないので発行しない）。0 なら発行しない。
@@ -80,18 +83,23 @@ export function planReads({ held, totalRows, readRows, cap, visible, sides = SID
   const keepTo = Math.ceil(held.start + visible.to + margin);
   const reads = [];
   let now = held;
+  // その側で守る範囲を覆うのに足りない本数（run の端より先は数えない。0 なら覆っている）。
+  const needOf = (side) => (side === 'before'
+    ? clamp(now.start - keepFrom, 0, now.start)
+    : clamp(keepTo - (now.end - 1), 0, totalRows - now.end));
   for (const side of sides) {
     const rows = now.end - now.start;
     const before = side === 'before';
-    const uncovered = before
-      ? now.start > 0 && now.start > keepFrom
-      : now.end < totalRows && now.end - 1 < keepTo;
-    if (!uncovered) continue;
+    const need = needOf(side);
+    if (need <= 0) continue;
     const wanted = Math.min(readRows, before ? now.start : totalRows - now.end);
     // 読む側と反対の端にある、守る範囲の外の足（捨てられる足）。
     const spare = clamp(before ? now.end - 1 - keepTo : keepFrom - now.start, 0, rows);
     const room = cap - rows;
-    const length = Math.min(wanted, room + spare);
+    // 反対側も覆っていない間は、覆うのに足りない本数までしか読まない。その先まで読むと、反対側が
+    //   覆うための読みがそれを捨てる（その先の足は守る範囲の外＝捨てられる足になる）。
+    //   両側とも覆っていない間は捨てられる足が無い（両端とも守る範囲の中）ので、読みは空きだけを使う。
+    const length = Math.min(wanted, room + spare, needOf(before ? 'after' : 'before') > 0 ? need : wanted);
     if (length <= 0) continue;
     const dropped = Math.max(0, length - room);
     const next = before
