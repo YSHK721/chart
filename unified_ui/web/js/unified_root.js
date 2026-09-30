@@ -277,13 +277,13 @@ export function createModeController({
 //   公開しない: 借り手は `loadDisplayLayers` だけで、外から差し替える口を作る理由が無い
 //   （使われない公開面は、消えたことに誰も気付けない依存を育てる）。
 const LAYER_EXTRAS = Object.freeze({
-  [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit, fetchCandles }) => ({
+  [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit }) => ({
     lwc,
-    // ジョブ結果を売買履歴チャートへ描くための売買履歴チャートの器・部品・足の読み手（2026-09-26 依頼者指示）。
-    //   器の所有者は統合層、部品は live core の公開面、足は live core の `/candles`（範囲読み）。
+    // ジョブ結果を売買履歴チャートへ描くための売買履歴チャートの器・部品（2026-09-26 依頼者指示）。
+    //   器の所有者は統合層、部品は live core の公開面。足は sim がジョブ自身の report.json から読む
+    //   （ISSUE-552/554 段階 1）ので、統合層は足の読み手を渡さない。
     resultChart,
     chartKit,
-    fetchCandles,
     // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
     //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
     //   削られ、指標ペインが狭くなって手で広げる作業が要った。
@@ -360,11 +360,6 @@ async function main() {
   const routedFetch = createRoutedFetch({
     baseFetch: globalThis.fetch.bind(globalThis),
     getMode: () => (modeController ? modeController.getMode() : MODE.LIVE),
-  });
-  // 常に live core へ届く fetch（売買履歴チャートの足の読み込み用）。規則は routedFetch と同じ 1 つ。
-  const liveFetch = createRoutedFetch({
-    baseFetch: globalThis.fetch.bind(globalThis),
-    getMode: () => MODE.LIVE,
   });
 
   const vendorOk = await loadVendor(MODE.LIVE);
@@ -487,7 +482,7 @@ async function main() {
   //   sim の job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
   let layers;
   try {
-    // live core のチャート部品の公開面（売買履歴チャートの組み立て・足の読み込み）。
+    // live core のチャート部品の公開面（売買履歴チャートの組み立て）。
     const chartKit = await import(LIVE_CHART_KIT_API);
     layers = await loadDisplayLayers({
       context: {
@@ -498,10 +493,6 @@ async function main() {
         liveStorage,
         resultChart,
         chartKit,
-        // 売買履歴チャートの足は live core の `/candles` から読む。問い合わせの組み立ては live core の
-        //   fetchCandleRange（ライブチャートの fetchCandles と同じ処理）、行き先はモードの振り分け規則を
-        //   ライブ固定で使う（sim モード中でも live core へ届く・`/live` を手で書かない）。
-        fetchCandles: (range) => chartKit.fetchCandleRange(liveFetch, range),
       },
     });
   } catch (err) {

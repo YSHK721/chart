@@ -4,6 +4,8 @@
 //   同じ問い合わせは live core の chart_app_wiring.js（fetchCandles）が持っており、片方だけ直ると
 //   食い違う。問い合わせは live core の公開面（fetchCandleRange）から借り、行き先は routedFetch の
 //   規則で決める。
+// 2026-09-30（ISSUE-552/554 段階 1）: 売買履歴チャートの足はジョブ自身の report.json から sim が読む。
+//   統合層は足の読み手を持たない（`/candles` の問い合わせも、その借用も、live 固定の fetch も無い）。
 //
 // 散文の引用は別扱い: コメントを取り除いたコードだけを見る（コメントで名前に触れても赤にしない）。
 //
@@ -30,7 +32,17 @@ test('unified_root_code_has_no_candles_query', () => {
 
   // Assert
   expect(code).not.toMatch(/\/candles\?/);
-  expect(code).toMatch(/fetchCandleRange\(/);
+});
+
+test('unified_root_code_injects_no_candle_reader_into_sim', () => {
+  // Arrange
+  const src = readFileSync(fileURLToPath(new URL('../js/unified_root.js', import.meta.url)), 'utf8');
+
+  // Act
+  const code = codeOnly(src);
+
+  // Assert: sim は足を自分の成果物から読む。使われない読み手を注入しない。
+  expect(code).not.toMatch(/fetchCandles|fetchCandleRange|liveFetch/);
 });
 
 test('code_only_strips_prose_but_keeps_code', () => {
