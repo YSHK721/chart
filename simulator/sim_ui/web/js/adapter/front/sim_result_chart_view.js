@@ -30,6 +30,12 @@ import { firstSegment } from './report_source_client.js';
 /** 成果物が 409（ジョブ未完了）のときの掲示（chart_overlay.json・report.json で共通・ISSUE-540）。 */
 const NOT_READY_MESSAGE = "ジョブが完了していないため、売買履歴チャートはまだ表示できません。完了すると表示します。";
 
+/** report.json の meta.symbol（空・非文字列は無い扱い＝null）。 */
+function reportSymbolOf(payload) {
+  const symbol = payload && payload.meta ? payload.meta.symbol : null;
+  return typeof symbol === 'string' && symbol !== '' ? symbol : null;
+}
+
 /** チャートを生成する要素（器 host の中に置く。読み取り欄・凡例は host 直下に並ぶ）。 */
 const CANVAS_CLASS = 'sim-result-chart-canvas';
 
@@ -83,7 +89,10 @@ export function createSimResultChartView({
   }
 
   /** ライブチャートと同じ関数でチャートと操作性を組み、描いたものを片付ける関数を返す。 */
-  function build(overlay, candles, times, tradeClose) {
+  /**
+   * @param {string|null} reportSymbol report.json の meta.symbol（台帳の銘柄仕様が引けない系列の銘柄名の出所）
+   */
+  function build(overlay, candles, times, tradeClose, reportSymbol) {
     const container = doc.createElement('div');
     container.className = CANVAS_CLASS;
     host.appendChild(container);
@@ -101,7 +110,8 @@ export function createSimResultChartView({
       updatePaneHeight: geometry.updatePaneHeight,
       toast: new chartKit.ChartToastView({ document: doc, anchor: host }),
       getMenuContext: () => ({
-        symbol: viewer.symbolSpec ? viewer.symbolSpec.symbol : overlay.dataset_ref,
+        // 台帳の銘柄仕様を優先し、引けなければジョブ自身の report.json の銘柄名（台帳外の系列でも在る）。
+        symbol: viewer.symbolSpec ? viewer.symbolSpec.symbol : reportSymbol,
         timeframe: overlay.timeframe,
         labels,
         priceDigits: viewer.symbolSpec ? viewer.symbolSpec.digits : null,
@@ -208,7 +218,7 @@ export function createSimResultChartView({
       }
       const times = candles.map((bar) => bar.time);
       const tradeClose = tradeCloseCurves(segment, times, payload.meta && payload.meta.initial_deposit);
-      built = build(overlay, candles, times, tradeClose);
+      built = build(overlay, candles, times, tradeClose, reportSymbolOf(payload));
       const { viewer } = built;
       const markers = new chartKit.TradeMarkersRenderer({
         lwc, mainSeries: viewer.mainSeries, chart: viewer.chart, chartRenderer: viewer.renderer,

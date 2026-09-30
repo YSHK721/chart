@@ -35,9 +35,9 @@ function overlay(datasetRef = 'jp225_mt5_spread', n = T.length) {
 }
 
 /** report.json（sim の単一区間 "single"・足は run が実行した Bar 列）。 */
-function report(times = T) {
+function report(times = T, symbol = 'JP225') {
   return {
-    meta: { initial_deposit: 1000 },
+    meta: { initial_deposit: 1000, symbol },
     segments: {
       single: {
         meta: {},
@@ -57,7 +57,7 @@ function kit() {
     composeChartViewer(args) {
       calls.viewer.push(args);
       return {
-        symbolSpec: null,
+        symbolSpec: calls.kit.symbolSpec ?? null,
         chart: {
           remove() { calls.removed += 1; },
           timeScale() {
@@ -101,7 +101,9 @@ function kit() {
       onHighlightChange(fn) { this.notify = fn; }
     },
   };
-  return { calls, chartKit };
+  const k = { calls, chartKit };
+  calls.kit = k;
+  return k;
 }
 
 /**
@@ -214,6 +216,23 @@ test('取引終了時の残高・DD は report.json の先頭の区間と payloa
   const bal = k.calls.renderLine.find((c) => c.id === 'pane:残高・有効証拠金').payloads
     .find((p) => p.name === '残高（取引終了時）').data;
   assert.deepEqual(bal, tradeCloseCurves(seg, T, 1000).balData);
+});
+
+test('右クリックのコピーの銘柄は、台帳で引けない系列でも report.json の meta.symbol（同じ 1 回の取得から）', async () => {
+  const k = kit();
+  const { v } = view({ ov: overlay(null), k });
+  assert.equal(await v.render('job1'), true);
+  assert.equal(k.calls.operations[0].getMenuContext().symbol, 'JP225');
+  // 計算量: 銘柄のために report.json を取り直さない（取得 − 使った取得 = 0）。
+  assert.equal(k.calls.reports.length - usedReports(k).length, 0);
+});
+
+test('右クリックのコピーの銘柄は、台帳の銘柄仕様が引ければそれを優先する', async () => {
+  const k = kit();
+  k.symbolSpec = { symbol: 'LEDGER', digits: 1 };
+  const { v } = view({ ov: overlay(), rep: () => report(T, 'JP225'), k });
+  assert.equal(await v.render('job1'), true);
+  assert.equal(k.calls.operations[0].getMenuContext().symbol, 'LEDGER');
 });
 
 test('ペイン別凡例の行は描いた instance と一致し、設定・削除の処理を持たない', async () => {
