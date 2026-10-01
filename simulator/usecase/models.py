@@ -183,6 +183,13 @@ class BacktestStats:
     equity_dd_abs: float = 0.0          # initial_deposit - min(equity)
     equity_dd_max: float = 0.0          # equity peak-to-trough の最大金額 DD
     equity_dd_max_percent: float = 0.0  # 金額 DD 最大点での % DD
+    # 実 MT5 レポートとの突き合わせで追加（2026-09-27・サマリー (Report) タブの欠落項目）。
+    ghpr: float = 0.0                        # 幾何平均 HPR（metrics_spec.ghpr）
+    lr_correlation: float = 0.0              # 残高曲線の線形回帰の相関
+    lr_standard_error: float = 0.0           # 同・標準誤差
+    equity_ddrel_percent: float = 0.0        # equity の % DD 最大値
+    equity_dd_relative: float = 0.0          # その点の金額 DD
+    deals: int = 0                           # 総ディール数（in + out）
 
 
 @dataclass
@@ -195,3 +202,7 @@ class BacktestResult:
     balance_curve: Any
     stats: BacktestStats
     indicator_values: dict[str, Any] = field(default_factory=dict)
+    #: 各足の最初の評価点の有効証拠金と足の秒数（Sharpe Ratio の入力・ISSUE-545）。
+    #: 計算ステップのログ（metrics_steps）が統計と同じ入力を読むために保持する。
+    bar_open_equity: list = field(default_factory=list)
+    bar_seconds: "float | None" = None

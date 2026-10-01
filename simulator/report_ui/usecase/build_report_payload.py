@@ -14,8 +14,10 @@ int 化は上流 tools が担う）。
 """
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, Callable
 
+from simulator.domain.trade_record import trade_number
 from simulator.report_ui.usecase import derive
 from simulator.report_ui.usecase.assessment_policy import AssessmentPolicy
 from simulator.report_ui.usecase.report_meta import ReportMeta
@@ -25,8 +27,6 @@ from simulator.report_ui.usecase.report_models import (
     SummaryModel,
     TradeRow,
 )
-
-INITIAL = 10000.0
 
 # exit_reason → comment 正規化値（詳細設計 §4.2.4）。
 _EXIT_REASON_COMMENT = {
@@ -40,15 +40,42 @@ _EXIT_REASON_COMMENT = {
 }
 
 
+def all_bar_rows(bars: Any) -> list:
+    """足 1 本ごとの dict（time/open/high/low/close）を組む。区間の ``bars`` の既定の組み立て。"""
+    return [
+        {"time": int(b.time), "open": b.open, "high": b.high,
+         "low": b.low, "close": b.close}
+        for b in bars
+    ]
+
+
+def no_bar_rows(bars: Any) -> list:
+    """足 1 本ごとの dict を組まない（区間の ``bars`` は空の並び）。
+
+    足を payload 以外の場所に持つ呼び出し側が使う（sim のジョブは足を chart_bars.parquet に持つ）。
+    組み立ててから捨てる無駄を作らないために、組み立てそのものを行わない。
+    本数は区間の ``meta.bars`` が名乗る（足の並びの長さ・この指定でも変わらない）。
+    """
+    return []
+
+
 class BuildReportPayload:
     """BacktestResult(IS/OOS)→ReportPayloadModel（表示形状の写像）。
 
     合否方法論は ``policy``（AssessmentPolicy）へ委譲し、特定実験の所与は execute の
     ``report_meta``（ReportMeta）引数で受け取る。いずれも未指定なら現行既定で byte 不変。
+
+    ``bar_rows``: 区間の ``bars`` の組み立て（足の並び → dict の並び）。未指定なら `all_bar_rows`
+    （足 1 本ごとに dict を組む＝現行の挙動）。足を載せない呼び出し側は `no_bar_rows` を渡す。
     """
 
-    def __init__(self, policy: "AssessmentPolicy | None" = None) -> None:
+    def __init__(
+        self,
+        policy: "AssessmentPolicy | None" = None,
+        bar_rows: "Callable[[Any], list] | None" = None,
+    ) -> None:
         self._policy = policy or AssessmentPolicy()
+        self._bar_rows = bar_rows or all_bar_rows
 
     def execute(
         self,
@@ -76,7 +103,7 @@ class BuildReportPayload:
         verdict = self._policy.verdict(sum_is, sum_oos, degradation)
 
         return ReportPayloadModel(
-            meta=self._payload_meta(meta_is, report_meta),
+            meta=self._payload_meta(meta_is, report_meta, result_is.stats.initial_deposit),
             segments={"is": seg_is, "oos": seg_oos},
             summary=summary,
             degradation=degradation,
@@ -121,7 +148,7 @@ class BuildReportPayload:
         notes = self._contract_notes(ea_params) + list(contract_notes_extra or [])
 
         return ReportPayloadModel(
-            meta=self._payload_meta(meta, report_meta),
+            meta=self._payload_meta(meta, report_meta, result.stats.initial_deposit),
             segments={segment_key: segment},
             summary={segment_key: summary},
             degradation={},
@@ -133,19 +160,21 @@ class BuildReportPayload:
 
     # --- meta ---------------------------------------------------------------
 
-    def _payload_meta(self, meta_seg: dict, report_meta: ReportMeta) -> dict:
+    def _payload_meta(self, meta_seg: dict, report_meta: ReportMeta, initial_deposit: float) -> dict:
         """全体 meta を組む（区間数に依存しない写像・キー順は JSON のキー順を規定する）。
 
         `execute`（IS/OOS）と `execute_single`（単一区間）の**共通**の写像。ここを 2 か所に
         書けば、片方だけ直る／片方だけ腐るという形で必ず食い違う。
         ``meta_seg`` は代表区間の meta dict（IS/OOS では IS を代表とする＝従来と不変）。
+        ``initial_deposit`` は run の初期証拠金（統計の値）。定数 10000 を書いていた
+        （ISSUE-544・実測で 100000 の run に 10000）のを run の値へ（ISSUE-547 で同じ原因を除去）。
         """
         return {
             "symbol": meta_seg.get("symbol", report_meta.symbol),
             "timeframe": meta_seg.get("timeframe", report_meta.timeframe),
             "strategy": meta_seg.get("strategy", report_meta.expert),
             "params": report_meta.params,
-            "initial_deposit": INITIAL,
+            "initial_deposit": float(initial_deposit),
             "split": report_meta.split,
             "note": report_meta.note,
         }
@@ -171,17 +200,13 @@ class BuildReportPayload:
         # 致命-3: 1:1 で balance_curve 再構成（len 不一致は ValueError）。
         balance_curve = derive.reconstruct_balance_curve(exit_times, balance_curve_src)
 
-        bars_out = [
-            {"time": int(b.time), "open": b.open, "high": b.high,
-             "low": b.low, "close": b.close}
-            for b in bars
-        ]
+        bars_out = self._bar_rows(bars)
 
         seg_meta = {
             "symbol": meta.get("symbol", report_meta.symbol),
             "timeframe": meta.get("timeframe", report_meta.timeframe),
             "strategy": meta.get("strategy", report_meta.expert),
-            "bars": len(bars_out),
+            "bars": len(bars),
             "trades": len(trade_rows),
             "period": meta.get("period", ""),
         }
@@ -192,13 +217,13 @@ class BuildReportPayload:
             label=meta.get("label", ""),
             meta=seg_meta,
             # §4.5 BacktestStats→report 写像
-            report=self._report(result.stats, seg_meta, report_meta),
+            report=self._report(result.stats, seg_meta, report_meta, meta),
             bars=bars_out,
             trades=trade_rows,
             orders=[],          # 遅延（空配列・キー確保）
             agg=agg,
         )
-        summary = self._summary(trade_rows, balance_curve)
+        summary = self._summary(trade_rows, balance_curve, result.stats)
         return segment, summary
 
     def _build_trade_rows(self, trades_src, balance_curve_src, bars, spec, ea_params):
@@ -225,7 +250,7 @@ class BuildReportPayload:
                     tr.entry_time, tr.exit_time, spec.point_size,
                 )
             trade_rows.append(TradeRow(
-                id=i + 1,
+                id=trade_number(i),
                 side=side,
                 entry_time=int(tr.entry_time),
                 exit_time=int(tr.exit_time),
@@ -235,7 +260,7 @@ class BuildReportPayload:
                 volume=str(tr.volume),
                 sl=sl,
                 tp=tp,
-                order=i + 1,
+                order=trade_number(i),
                 comment=_EXIT_REASON_COMMENT.get(tr.exit_reason, tr.exit_reason),
                 balance=balance_curve_src[i],
                 hold_sec=int(tr.exit_time) - int(tr.entry_time),
@@ -285,43 +310,59 @@ class BuildReportPayload:
 
     # --- summary（§4.8・試作 summarize 準拠） --------------------------------
 
-    def _summary(self, trade_rows, balance_curve) -> SummaryModel:
+    def _summary(self, trade_rows, balance_curve, stats) -> SummaryModel:
+        """比較・判定タブの要約（§4.8）。
+
+        勝率・ペイオフ比はサマリー（report）と**同じ統計**から取る（ISSUE-547）。以前は取引行から
+        「勝ち＝profit > 0」で数え直しており、MT5 規則（pnl ≥ 0）のサマリーと同じ run で値が
+        食い違った（実測: 勝率 19.37% 対 Profit Trades 21.71%・損益 0 の取引 29 件）。
+        初期証拠金も定数ではなく run の値（ISSUE-544 と同じ原因）。
+        """
         n = len(trade_rows)
         profits = [t.profit for t in trade_rows]
-        wins = [p for p in profits if p > 0]
-        losses = [p for p in profits if p < 0]
-        gp = sum(wins)
-        gl = sum(losses)
+        gp = sum(p for p in profits if p > 0)
+        gl = sum(p for p in profits if p < 0)
         net = sum(profits)
-        avg_win = gp / len(wins) if wins else 0.0
-        avg_loss = gl / len(losses) if losses else 0.0
-        final_balance = balance_curve[-1]["value"] if balance_curve else INITIAL
+        initial = float(stats.initial_deposit)
+        avg_loss = stats.average_loss_trade
+        final_balance = balance_curve[-1]["value"] if balance_curve else initial
         return SummaryModel(
             trades=n,
             net=round(net, 1),
             final_balance=round(final_balance, 1),
-            win_rate=round(len(wins) / n * 100, 2) if n else 0.0,
+            win_rate=round(stats.profit_trades / n * 100, 2) if n else 0.0,
             profit_factor=round(gp / abs(gl), 3) if gl else float("inf"),
             expectancy=round(net / n, 2) if n else 0.0,
-            payoff=round(avg_win / abs(avg_loss), 3) if avg_loss else float("inf"),
-            return_pct=round((final_balance - INITIAL) / INITIAL * 100, 2)
-            if balance_curve else 0.0,
+            payoff=round(stats.average_profit_trade / abs(avg_loss), 3) if avg_loss else float("inf"),
+            return_pct=round((final_balance - initial) / initial * 100, 2)
+            if balance_curve and initial else 0.0,
             max_dd_pct=derive.max_drawdown_pct(balance_curve),
         )
 
     # --- report（§4.5 BacktestStats→report ラベル dict 写像） -----------------
 
-    def _report(self, stats: Any, seg_meta: dict, report_meta: ReportMeta) -> dict:
+    def _report(
+        self, stats: Any, seg_meta: dict, report_meta: ReportMeta, meta: "dict | None" = None,
+    ) -> dict:
         """BacktestStats を §4.5 写像で report ラベル dict（全値 str）へ写す。
 
         stats 直引き＋文字列整形の組立のみ（derive 化しない）。BacktestStats が保持する
-        指標のみ set し、非保持（GHPR/Correlation/LR/Margin/保有時間統計/Ticks 等）は
+        指標のみ set し、非保持（相関係数 3 種・Margin Level・保有時間統計・Ticks 等）は
         出力しない（§4.5 確定方針＝欠落キーは出さない）。inf は `f"{inf:.2f}"` が "inf" を
         返すため文字列 "inf" として出力される（report 値は文字列・presenter 素通し）。
+
+        run の事実（meta の通貨・レバレッジ・銘柄数・テスト期間の足の本数）は
+        呼び出し側が渡したものだけを写す（§4.5 改訂 2026-09-27）。渡されないキーは出さない
+        ——表示足が取引開始前の足を含む経路（report_ui export）で ``len(bars)`` を
+        「バー数」と名乗らせないため。
         """
-        def pct_n(num, den):
-            p = (num / den * 100) if den else 0.0
-            return f"{p:.2f}% ({num})"
+        # 書式は MT5 レポートと同じ（ISSUE-548・MT5 xlsx 9 本と突き合わせ）: 件数 (割合%)。
+        def n_pct(num, pct_num, den):
+            p = (pct_num / den * 100) if den else 0.0
+            return f"{num} ({p:.2f}%)"
+
+        def hpr(v):
+            return f"{v:.4f} ({(v - 1) * 100:.2f}%)"
 
         return {
             "Expert": report_meta.expert,
@@ -335,14 +376,14 @@ class BuildReportPayload:
             "Recovery Factor": f"{stats.recovery_factor:.2f}",
             "Sharpe Ratio": f"{stats.sharpe_ratio:.2f}",
             "Expected Payoff": f"{stats.expected_payoff:.2f}",
-            "AHPR": f"{stats.ahpr:.4f}",
+            "AHPR": hpr(stats.ahpr),
             "Total Trades": f"{stats.trades}",
-            "Profit Trades (% of total)": pct_n(stats.profit_trades, stats.trades),
-            "Loss Trades (% of total)": pct_n(stats.loss_trades, stats.trades),
+            "Profit Trades (% of total)": n_pct(stats.profit_trades, stats.profit_trades, stats.trades),
+            "Loss Trades (% of total)": n_pct(stats.loss_trades, stats.loss_trades, stats.trades),
             "Short Trades (won %)":
-                f"{(stats.profit_short_trades / stats.short_trades * 100) if stats.short_trades else 0.0:.2f}% ({stats.short_trades})",
+                n_pct(stats.short_trades, stats.profit_short_trades, stats.short_trades),
             "Long Trades (won %)":
-                f"{(stats.profit_long_trades / stats.long_trades * 100) if stats.long_trades else 0.0:.2f}% ({stats.long_trades})",
+                n_pct(stats.long_trades, stats.profit_long_trades, stats.long_trades),
             "Largest profit trade": f"{stats.max_profit_trade:.0f}",
             "Average profit trade": f"{stats.average_profit_trade:.2f}",
             "Largest loss trade": f"{stats.max_loss_trade:.0f}",
@@ -365,8 +406,32 @@ class BuildReportPayload:
             "Equity Drawdown Absolute": f"{stats.equity_dd_abs:.0f}",
             "Equity Drawdown Maximal":
                 f"{stats.equity_dd_max:.0f} ({stats.equity_dd_max_percent:.2f}%)",
-            "Z-Score": f"{stats.z_score:.2f}",
+            # 確率は 表示と同じ 2 桁に丸めた z の erf(|z|/√2)（MT5 10 本中 9 本が 2 桁一致・
+            #   z=−3.02 だけ 99.75 対 MT5 99.74 ＝MT5 の正規分布の近似式は未特定・ISSUE-548 に記録）。
+            "Z-Score": f"{stats.z_score:.2f} ({math.erf(abs(round(stats.z_score, 2)) / math.sqrt(2)) * 100:.2f}%)",
+            # 実 MT5 レポートとの突き合わせで追加（2026-09-27・書式は MT5 レポートと同じ）。
+            "GHPR": hpr(stats.ghpr),
+            "Total Deals": f"{stats.deals}",
+            "Equity Drawdown Relative":
+                f"{stats.equity_ddrel_percent:.2f}% ({stats.equity_dd_relative:.0f})",
+            "LR Correlation": f"{stats.lr_correlation:.2f}",
+            "LR Standard Error": f"{stats.lr_standard_error:.0f}",
+            **self._run_facts(meta or {}),
         }
+
+    @staticmethod
+    def _run_facts(meta: dict) -> dict:
+        """run の事実を report ラベルへ写す（渡されたキーだけ・値は加工しない）。"""
+        out = {}
+        if "currency" in meta:
+            out["Currency"] = str(meta["currency"])
+        if "leverage" in meta:
+            out["Leverage"] = f"1:{float(meta['leverage']):g}"
+        if "symbols" in meta:
+            out["Symbols"] = f"{meta['symbols']}"
+        if "tested_bars" in meta:
+            out["Bars"] = f"{meta['tested_bars']}"
+        return out
 
     # --- degradation / verdict は AssessmentPolicy へ委譲（ISSUE-094 🟡-5）------
     # 劣化率算出・合否判定木・閾値は self._policy（AssessmentPolicy）が担う。

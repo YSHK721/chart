@@ -104,10 +104,16 @@ def _kwargs(csv_path: Path) -> dict:
 _IS_TRADES = 5
 _IS_PROFIT = -150.29999999999563
 _IS_BALANCE_MIN = 9843.700000000004
-#: `BacktestStats` 全 39 列を畳んだ指紋（先例:
+#: `BacktestStats` 全列を畳んだ指紋（先例:
 #: `simulator/tests/integration/test_run_backtest_fingerprint.py` の `_digest`）。
 #: 列を名指しする assert だけだと、名指ししなかった列の退行を通す。
-_IS_STATS_SHA256 = "7fd0b3c9a58cb5b468d5e0971245d75837cb608ae55b29cf0730b63fa5222920"
+#: 2026-09-27 に 6 列（ghpr / lr_correlation / lr_standard_error / equity_ddrel_percent /
+#: equity_dd_relative / deals）を追加して取り直した。追加前からある列だけで畳んだ指紋が
+#: 旧値 7fd0b3c9… と一致することを確かめてから置き換えた（既存列は動いていない）。
+#: 2026-09-28 ISSUE-545（Sharpe の定義変更）で取り直した。コミット済みの版（HEAD）を別の作業ツリーで
+#: 走らせた統計と全列を突き合わせ、違うのは sharpe_ratio（−3.4455 → −5.0）だけであること、HEAD の
+#: 統計の指紋が旧値 6e4f086d… と一致することを確かめてから置き換えた。
+_IS_STATS_SHA256 = "9edbf8d06f41016f315de9edba8ea8f67c0f2179b351ae56e3ca732141b30271"
 _OOS_TRADES = 3
 _OOS_PROFIT = -72.0
 
@@ -223,5 +229,5 @@ def test_the_symbol_spec_reaches_the_is_and_oos_numbers(tmp_path):
     assert result.is_stats.profit == pytest.approx(_IS_PROFIT)
     assert result.is_stats.balance_min == pytest.approx(_IS_BALANCE_MIN)
     assert result.oos_stats.profit == pytest.approx(_OOS_PROFIT)
-    # Assert: 名指ししなかった列の退行も通さない（全 39 列の指紋）。
+    # Assert: 名指ししなかった列の退行も通さない（全列の指紋）。
     assert _stats_digest(result.is_stats) == _IS_STATS_SHA256

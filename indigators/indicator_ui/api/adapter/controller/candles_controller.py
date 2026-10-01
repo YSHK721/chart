@@ -59,12 +59,38 @@ def _present_forming_bar(result: FormingBarResult) -> "tuple[int, dict]":
     return 200, {"ok": True, "bar": result.bar}
 
 
-def handle_candles(ref: Any, timeframe: Any, limit_raw: Any) -> "tuple[int, dict]":
-    """ローソク配信（§6.3）: datasetRef/timeframe を whitelist 検証し candles を返す。"""
+def handle_candles(
+    ref: Any, timeframe: Any, limit_raw: Any, from_raw: Any = None, to_raw: Any = None
+) -> "tuple[int, dict]":
+    """ローソク配信（§6.3）: datasetRef/timeframe を whitelist 検証し candles を返す。
+
+    ``from_raw`` / ``to_raw``: 足の時刻の範囲（UNIX 秒の整数文字列・両端含む）。整数でない値は
+    範囲なしへ倒さず 400 で拒否する（黙って全期間・直近 N 本を返すと、要求した期間とは別の
+    足が「その期間の足」として描かれる）。
+    """
     limit = int(limit_raw) if (limit_raw and str(limit_raw).isdigit()) else None
+    try:
+        start = _unix_seconds_or_none(from_raw, "from")
+        end = _unix_seconds_or_none(to_raw, "to")
+    except ValueError as exc:
+        return _error("validation", str(exc))
     return _present_candles(
-        serve_candles(CandlesRequest(dataset_ref=ref, timeframe=timeframe, limit=limit))
+        serve_candles(
+            CandlesRequest(
+                dataset_ref=ref, timeframe=timeframe, limit=limit, start=start, end=end
+            )
+        )
     )
+
+
+def _unix_seconds_or_none(raw: Any, name: str) -> "int | None":
+    """クエリの UNIX 秒（整数文字列）を int へ。未指定は None、整数でなければ ValueError。"""
+    if raw is None or raw == "":
+        return None
+    text = str(raw)
+    if not text.lstrip("-").isdigit():
+        raise ValueError(f"{name} は UNIX 秒の整数で指定してください: {text!r}")
+    return int(text)
 
 
 def handle_forming_bar(ref: Any, timeframe: Any, now_raw: Any, buffer: Any = None) -> "tuple[int, dict]":

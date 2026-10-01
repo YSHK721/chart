@@ -51,6 +51,8 @@ from simulator.usecase.tester_settings.models import (
     INERT_FIELDS,
     SUBJECT_SUFFIX,
     DateRange,
+    custom_range_end_exclusive_utc,
+    custom_range_start_utc,
     EffectiveSettings,
     IniDocument,
     IniLine,
@@ -85,6 +87,8 @@ __all__ = [
     "IniLineKind",
     # 設定 DTO
     "DateRange",
+    "custom_range_end_exclusive_utc",
+    "custom_range_start_utc",
     "EffectiveSettings",
     "INERT_FIELDS",
     "SUBJECT_SUFFIX",

@@ -12,36 +12,54 @@ adapter 層は usecase + domain + 技術ドライバ（pandas）のみに依存�
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
+import numpy as np
 import pandas as pd
 
 from simulator.adapter.repository._ohlc_frame import (
     ColumnSpec,
+    cell_values,
+    float_values,
     frame_to_bars,
+    int_values,
     read_csv_or_data_error,
 )
 from simulator.domain.bar import Bar
+from simulator.domain.bar_time import epoch_seconds
 from simulator.usecase.ports import MarketDataPort
 
 _REQUIRED = ("time", "open", "high", "low", "close", "volume", "spread")
 
 
-def _extract(df: pd.DataFrame, i: int) -> "dict[str, Any]":
-    """comma 形式 1 行を domain.Bar 引数へマッピングする（time はそのまま採用）。"""
+def _columns(df: pd.DataFrame) -> "dict[str, Sequence[Any]]":
+    """comma 形式の全行を domain.Bar 引数ごとの値の列へマッピングする（time はそのまま採用）。"""
     return {
-        "time": df["time"].iat[i],
-        "open": float(df["open"].iat[i]),
-        "high": float(df["high"].iat[i]),
-        "low": float(df["low"].iat[i]),
-        "close": float(df["close"].iat[i]),
-        "volume": float(df["volume"].iat[i]),
-        "spread": int(df["spread"].iat[i]),
+        "time": cell_values(df["time"]),
+        "open": float_values(df["open"]),
+        "high": float_values(df["high"]),
+        "low": float_values(df["low"]),
+        "close": float_values(df["close"]),
+        "volume": float_values(df["volume"]),
+        "spread": int_values(df["spread"]),
     }
 
 
+#: 行の時刻を読むのに要る列（`row_epoch_seconds` が読む列の宣言）。
+TIME_COLUMNS = ("time",)
+
+
+def row_epoch_seconds(df: pd.DataFrame) -> np.ndarray:
+    """各行が Bar になったときの時刻を epoch 秒で返す（全行・行の並びのまま・ISSUE-509）。
+
+    本形式は 「`time`」 列の値をそのまま Bar.time にする（`_columns`）ので、その値を
+    Bar と同じ正規化（`epoch_seconds`）に通す。
+    """
+    return np.array([epoch_seconds(v) for v in df["time"]], dtype=np.int64)
+
+
 # comma 形式（time/open/.../spread）の列マッピング。parquet ローダも同形式を共有する。
-COMMA_SPEC = ColumnSpec(required=_REQUIRED, extract=_extract)
+COMMA_SPEC = ColumnSpec(required=_REQUIRED, columns=_columns)
 
 
 class CsvOHLCRepository(MarketDataPort):

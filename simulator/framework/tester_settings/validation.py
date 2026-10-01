@@ -57,7 +57,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any, Literal, NoReturn
 
 from pydantic import (
@@ -98,6 +98,8 @@ from simulator.usecase.tester_settings import enums
 from simulator.usecase.tester_settings.models import (
     SUBJECT_SUFFIX,
     DateRange,
+    custom_range_end_exclusive_utc,
+    custom_range_start_utc,
     IniDocument,
     TesterInput,
     TesterSettings,
@@ -120,6 +122,10 @@ _SUBJECT_PATTERN: str = re.escape(SUBJECT_SUFFIX) + "$"
 _INT_PATTERN = re.compile(r"[+-]?[0-9]+")
 _DECIMAL_PATTERN = re.compile(r"[+-]?[0-9]+(\.[0-9]+)?")
 _DATE_PATTERN = re.compile(r"([0-9]{4})\.([0-9]{2})\.([0-9]{2})")
+#: 分単位の期間指定（依頼者指示 2026-09-27）。時刻部は任意（無ければ日付＝従来）。
+_DATE_MINUTE_PATTERN = re.compile(
+    r"([0-9]{4})\.([0-9]{2})\.([0-9]{2})(?: ([0-9]{2}):([0-9]{2}))?"
+)
 
 #: `[TesterInputs]` の入力名の長さ上限（基本設計 §4.2.2）。
 MAX_INPUT_NAME_CHARS: int = 63
@@ -229,6 +235,30 @@ def _strict_date(value: Any, info: ValidationInfo) -> Any:
         _reject(value, info, "実在する日付（YYYY.MM.DD）")
 
 
+def _strict_date_minute(value: Any, info: ValidationInfo) -> Any:
+    """`YYYY.MM.DD` または `YYYY.MM.DD HH:MM`（分単位・依頼者指示 2026-09-27）。
+
+    時刻部が無ければ従来どおり ``date``（日単位の意味を保つ）。在れば naive ``datetime``
+    （UTC 解釈は窓境界の単一ソース `custom_range_start_utc` が持つ）。数字は ASCII のみ・
+    区切りは ASCII の `.` / ` ` / `:` のみ（`_strict_date` と同じ是正 3 の方針）。
+    """
+    if value is None:
+        return None
+    matched = _DATE_MINUTE_PATTERN.fullmatch(value) if isinstance(value, str) else None
+    if matched is None:
+        _reject(value, info, "YYYY.MM.DD または YYYY.MM.DD HH:MM 形式の文字列")
+    try:
+        day = date(int(matched.group(1)), int(matched.group(2)), int(matched.group(3)))
+    except ValueError:
+        _reject(value, info, "実在する日付（YYYY.MM.DD）")
+    if matched.group(4) is None:
+        return day
+    hour, minute = int(matched.group(4)), int(matched.group(5))
+    if hour > 23 or minute > 59:
+        _reject(value, info, "実在する時刻（HH:MM・00:00〜23:59）")
+    return datetime(day.year, day.month, day.day, hour, minute)
+
+
 def _timeframe_label(value: Any, info: ValidationInfo) -> Any:
     """`Period` のラベルを ``Timeframe`` へ写像する（未知ラベルは E-05・規則 O）。"""
     if value is None or isinstance(value, enums.Timeframe):
@@ -251,6 +281,7 @@ def _timeframe_label(value: Any, info: ValidationInfo) -> Any:
 _StrictInt = BeforeValidator(_strict_int)
 _StrictDecimal = BeforeValidator(_strict_decimal)
 _StrictDate = BeforeValidator(_strict_date)
+_StrictDateMinute = BeforeValidator(_strict_date_minute)
 _TimeframeLabel = BeforeValidator(_timeframe_label)
 
 
@@ -388,8 +419,8 @@ class _TesterIniModel(BaseModel):
     Optimization: Annotated[enums.OptimizationMode | None, _StrictInt] = None
     Model: Annotated[enums.TickModel, _StrictInt]
     Dates: Annotated[enums.DatesPreset | None, _StrictInt] = None
-    FromDate: Annotated[date | None, _StrictDate] = None
-    ToDate: Annotated[date | None, _StrictDate] = None
+    FromDate: Annotated[datetime | date | None, _StrictDateMinute] = None
+    ToDate: Annotated[datetime | date | None, _StrictDateMinute] = None
     ForwardMode: Annotated[enums.ForwardMode | None, _StrictInt] = None
     ForwardDate: Annotated[date | None, _StrictDate] = None
     Deposit: Annotated[float | None, _StrictDecimal, Field(gt=0, le=1e12)] = None
@@ -414,7 +445,7 @@ class _TesterIniModel(BaseModel):
 DATE_VALUE_KEYS: tuple[str, ...] = tuple(
     name
     for name, field in _TesterIniModel.model_fields.items()
-    if field.annotation == (date | None)
+    if field.annotation in ((date | None), (datetime | date | None))
 )
 
 #: 値が 0/1 の旗である `[Tester]` キー（宣言順）。導出方針は ``DATE_VALUE_KEYS`` と同じ。
@@ -462,7 +493,10 @@ def _rule_k_date_order(model: _TesterIniModel) -> None:
     """`FromDate <= ToDate`（規則 K）。"""
     if model.FromDate is None or model.ToDate is None:
         return
-    if model.FromDate > model.ToDate:
+    # 比較は窓境界の単一ソースで行う（分単位・依頼者指示 2026-09-27）。date と datetime は
+    # Python では直接比較できず、素の比較を残すと混在指定（例: From=分・To=日）が TypeError
+    # で落ちる。「From の開始が To の半開終端以上」が違反＝日単位の従来判定と同値。
+    if custom_range_start_utc(model.FromDate) >= custom_range_end_exclusive_utc(model.ToDate):
         # ``value`` は載せない: 生トークンは翻訳器が ``key`` から引く（R7）。
         _raise_rule(
             "settings_value",

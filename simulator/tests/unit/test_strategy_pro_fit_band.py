@@ -41,11 +41,9 @@ from simulator.usecase.ports import StrategyPort
 
 # SPEC §3.5 入力: StopLoss=30, TakeProfit=100, ADX_Period=8, MA_Period=8,
 # Adx_Min=22.0, Lot=0.1. point_size と digits は決定論固定（PROCESS §7-#7）.
-# min_bars=2: 本 _CONFIG を共有する条件ロジック検証テスト（buy/sell/各不成立/重複/桁補正）は
-#   EMA[2] 境界（bar_index<2）のみを warmup とし、Bars<60 ゲートと独立に「条件式」を検証する
-#   意図のため、warmup を 2 本に下げて短系列(bar_index=2)を許容する。Bars<60 ゲート自体の
-#   検証は専用テスト（test_within_warmup_* / test_exactly_60th_bar_* / test_min_bars_*）が
-#   既定 60・任意値で別途固定する（レビュー 🟡-2・依頼の「bar_index を warmup 経過後へ修正」相当）。
+# warmup は原典どおり固定 60（`Bars<60`・input 無し・ISSUE-556）。条件式の検証は、3 点の系列の前に
+# 先頭値を _PAD 本足して現足を _NOW（=60 本目より後）に置き、Bars<60 ゲートの外で行う。
+# 条件式が読むのは [0]/[1]/[2] だけなので、前に足した本は結果に関わらない。
 _CONFIG = {
     "lot_size": 0.1,
     "stop_loss_points": 30,
@@ -53,8 +51,13 @@ _CONFIG = {
     "adx_min": 22.0,
     "point_size": 0.0001,
     "digits": 5,  # 5 桁 → STP/TKP ×10（SPEC §3.5 桁補正）
-    "min_bars": 2,
 }
+_PAD = 59
+_NOW = 2 + _PAD  # 3 点系列の末尾（元の bar_index=2）
+
+
+def _padded(xs):
+    return [xs[0]] * _PAD + list(xs)
 
 
 class _Account:
@@ -63,6 +66,13 @@ class _Account:
 
 
 def _registry(ema, adx, plus_di, minus_di, close):
+    """3 点系列の前に _PAD 本足した registry（現足は _NOW）。"""
+    return _raw_registry(
+        _padded(ema), _padded(adx), _padded(plus_di), _padded(minus_di), _padded(close)
+    )
+
+
+def _raw_registry(ema, adx, plus_di, minus_di, close):
     from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 
     return PandasIndicatorRegistry(
@@ -106,7 +116,7 @@ def test_uptrend_all_conditions_met_opens_buy_with_digit_corrected_sltp():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert: 買い成行・桁補正(×10) 後の SL/TP（price=close[2]=1.2020）
     assert len(orders) == 1
@@ -135,7 +145,7 @@ def test_downtrend_all_conditions_met_opens_sell_with_digit_corrected_sltp():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert: 売り成行・桁補正後 SL/TP（price=close[2]=1.2990）
     assert len(orders) == 1
@@ -162,7 +172,7 @@ def test_uptrend_but_adx_not_above_min_returns_no_order():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert
     assert orders == []
@@ -185,7 +195,7 @@ def test_uptrend_but_plus_di_not_above_minus_di_returns_no_order():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert
     assert orders == []
@@ -208,7 +218,7 @@ def test_ema_not_monotonic_up_returns_no_order():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert
     assert orders == []
@@ -231,20 +241,21 @@ def test_uptrend_but_prev_close_not_above_ema1_returns_no_order():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert
     assert orders == []
 
 
-# --- TD.2 境界値: bar_index<2 は EMA[2] 不在 → 発注なし -----------------------
+# --- TD.2 境界値: EMA[2] 不在の足も Bars<60 ゲートが含む → 発注なし ------------
 
-def test_first_two_bars_have_no_two_prior_ema_returns_no_order():
-    # Arrange: 境界 bar_index=1 は [2]（2 本前）が無い → 傾き判定不可で発注なし
+def test_bars_gate_covers_missing_two_prior_ema():
+    # Arrange: 2 点だけの系列で bar_index=1 は [2]（2 本前）が無い。専用の検査は無く、
+    #          Bars<60 ゲート（原典 L129）がこの足を含む（ISSUE-556）。
     from simulator.adapter.strategy.pro_fit_band import ProFitBand
 
     strat = ProFitBand()
-    ind = _registry(
+    ind = _raw_registry(
         ema=[1.0, 1.1],
         adx=[10.0, 25.0],
         plus_di=[10.0, 30.0],
@@ -277,7 +288,7 @@ def test_same_side_position_blocks_duplicate_buy():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account(["buy"]))
+    orders = strat.on_new_bar(_NOW, ind, _Account(["buy"]))
 
     # Assert
     assert orders == []
@@ -301,7 +312,7 @@ def test_non_3_5_digits_uses_uncorrected_sltp():
     strat.on_init(cfg, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert: 補正なし（×1）
     o = orders[0]
@@ -310,9 +321,9 @@ def test_non_3_5_digits_uses_uncorrected_sltp():
 
 
 # --- TD.2 境界値: Bars<60 warmup ゲート（SPEC §3.5 / PROCESS §2-A・§3.4 step1）----
-# レビュー 🟡-2: SPEC「Bars<60 は処理しない」未実装（現状 bar_index<2 のみ）。
+# 原典 L129 の固定 60（input 無し・ISSUE-556）。
 # MQL `Bars` は現足[0]を含む総本数 → 現足が bar_index のとき総本数 = bar_index+1。
-# Bars<60 ⟺ bar_index+1<60 ⟺ bar_index<59（= min_bars-1）。ちょうど60本目(bar_index=59)で発注可。
+# Bars<60 ⟺ bar_index+1<60 ⟺ bar_index<59。ちょうど60本目(bar_index=59)で発注可。
 
 
 def _long_buy_registry(n=70):
@@ -326,20 +337,16 @@ def _long_buy_registry(n=70):
     minus_di = [10.0] * n
     # p_close = close[bar_index-1] を EMA[bar_index-1] より十分上に置く（buy 位置条件）
     close = [e + 1.0 for e in ema]
-    return _registry(ema=ema, adx=adx, plus_di=plus_di, minus_di=minus_di, close=close)
-
-
-# SPEC 既定の Bars<60 ゲート検証用 config（min_bars を与えず既定 60 を使う）。
-_CONFIG_DEFAULT_WARMUP = {k: v for k, v in _CONFIG.items() if k != "min_bars"}
+    return _raw_registry(ema=ema, adx=adx, plus_di=plus_di, minus_di=minus_di, close=close)
 
 
 def test_within_warmup_returns_no_order_even_when_buy_conditions_met():
-    # Arrange: 買い条件成立だが warmup 内（bar_index=58 < 59 = min_bars-1）→ 発注禁止
+    # Arrange: 買い条件成立だが warmup 内（bar_index=58 → Bars=59<60）→ 発注禁止
     from simulator.adapter.strategy.pro_fit_band import ProFitBand
 
     strat = ProFitBand()
     ind = _long_buy_registry(70)
-    strat.on_init(_CONFIG_DEFAULT_WARMUP, ind)  # 既定 min_bars=60
+    strat.on_init(_CONFIG, ind)
 
     # Act
     orders = strat.on_new_bar(58, ind, _Account([]))
@@ -354,7 +361,7 @@ def test_exactly_60th_bar_allows_order_when_buy_conditions_met():
 
     strat = ProFitBand()
     ind = _long_buy_registry(70)
-    strat.on_init(_CONFIG_DEFAULT_WARMUP, ind)  # 既定 min_bars=60
+    strat.on_init(_CONFIG, ind)
 
     # Act
     orders = strat.on_new_bar(59, ind, _Account([]))
@@ -364,22 +371,83 @@ def test_exactly_60th_bar_allows_order_when_buy_conditions_met():
     assert orders[0].side == "buy"
 
 
-def test_min_bars_is_configurable_via_config_get():
-    # Arrange: config に min_bars=5 を与えると既定 60 でなくそのゲートで判定される
+def test_warmup_is_fixed_60_and_config_min_bars_is_not_read():
+    # Arrange: 原典に min_bars の input は無い（ISSUE-556）。config に min_bars=5 を載せても
+    #          ゲートは 60 のまま。config は subscript だけで読む（.get を持たない型でも走る）。
     from simulator.adapter.strategy.pro_fit_band import ProFitBand
 
     cfg = dict(_CONFIG, min_bars=5)
     strat = ProFitBand()
-    ind = _long_buy_registry(10)
+    ind = _long_buy_registry(70)
     strat.on_init(cfg, ind)
 
-    # Act: bar_index=3 (<min_bars-1=4) は禁止 / bar_index=4 (=min_bars-1) は発注可
-    blocked = strat.on_new_bar(3, ind, _Account([]))
-    allowed = strat.on_new_bar(4, ind, _Account([]))
+    # Act
+    blocked = strat.on_new_bar(4, ind, _Account([]))
 
     # Assert
     assert blocked == []
-    assert len(allowed) == 1 and allowed[0].side == "buy"
+
+
+class _SubscriptOnlyConfig:
+    """RunConfig と同じ契約: 戦略パラメータは subscript だけで公開し、get を持たない。"""
+
+    def __init__(self, data):
+        self._data = data
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+
+def test_runs_with_subscript_only_config():
+    # Arrange: ISSUE-556 の再現形（config が get を持たない）
+    from simulator.adapter.strategy.pro_fit_band import ProFitBand
+
+    strat = ProFitBand()
+    ind = _long_buy_registry(70)
+    strat.on_init(_SubscriptOnlyConfig(_CONFIG), ind)
+
+    # Act
+    orders = strat.on_new_bar(59, ind, _Account([]))
+
+    # Assert
+    assert len(orders) == 1 and orders[0].side == "buy"
+
+
+class _CountingIndicators:
+    """on_new_bar へ渡す indicators（ポートの注入点）を包み、get の発行を数える Test Spy。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.gets_by_bar: dict[int, int] = {}
+        self.bar = -1
+
+    def get(self, name):
+        self.gets_by_bar[self.bar] = self.gets_by_bar.get(self.bar, 0) + 1
+        return self._inner.get(name)
+
+
+def _reads_per_bar(n):
+    from simulator.adapter.strategy.pro_fit_band import ProFitBand
+
+    spy = _CountingIndicators(_long_buy_registry(n))
+    strat = ProFitBand()
+    strat.on_init(_CONFIG, spy)
+    for i in range(n):
+        spy.bar = i
+        strat.on_new_bar(i, spy, _Account([]))
+    return spy.gets_by_bar
+
+
+def test_warmup_bars_read_no_indicator_and_reads_per_bar_do_not_grow_with_length():
+    # Arrange / Act: 系列長 70 / 140 の 2 点で全足を評価する。
+    short, long_ = _reads_per_bar(70), _reads_per_bar(140)
+
+    # Assert: warmup 内（bar_index<59）の足は判定しない → 指標の読み − 0 = 0（出力に使わない読みを発行しない）。
+    for reads in (short, long_):
+        assert sum(c for b, c in reads.items() if b < 59) == 0
+        assert reads.get(59, 0) > 0  # 対照: warmup 後は読む（spy が空振りしていない）
+    # Assert: warmup 後の 1 足あたりの読みは系列長で増えない（回数は焼き込まない）。
+    assert max(long_.values()) == max(short.values())
 
 
 # --- 決済方針: on_position_check は固定 SL/TP のみ → 常に hold -----------------
@@ -399,7 +467,7 @@ def test_on_position_check_always_holds():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    decision = strat.on_position_check(None, 2, ind)
+    decision = strat.on_position_check(None, _NOW, ind)
 
     # Assert
     assert decision == "hold"
@@ -416,7 +484,7 @@ _ORACLE_CFG = {
 }
 
 
-def _oracle_order(ema, adx, plus_di, minus_di, close, bar_index, held_sides, digits, min_bars=2):
+def _oracle_order(ema, adx, plus_di, minus_di, close, bar_index, held_sides, digits):
     """原典 PRO!fit_Band.mq5 の OnTick 判定を production 非依存で再計算する独立オラクル.
 
     参照規約（PROCESS §0.3 / 原典 ArraySetAsSeries(true)）:
@@ -431,9 +499,7 @@ def _oracle_order(ema, adx, plus_di, minus_di, close, bar_index, held_sides, dig
     Returns:
         ``(side, sl, tp, volume)`` または発注なしの ``None``.
     """
-    if bar_index < min_bars - 1:   # 原典 Bars<60 ゲート（現足含む総本数 = bar_index+1）
-        return None
-    if bar_index < 2:              # EMA[2] 不在境界
+    if bar_index + 1 < 60:         # 原典 Bars<60 ゲート（現足含む総本数 = bar_index+1・原典 L129）
         return None
     cfg = _ORACLE_CFG
     ma0, ma1, ma2 = ema[bar_index], ema[bar_index - 1], ema[bar_index - 2]
@@ -496,10 +562,13 @@ def test_order_matches_mql5_source_oracle(case_id, ema, adx, plus_di, minus_di, 
     strat = ProFitBand()
     ind = _registry(ema=ema, adx=adx, plus_di=plus_di, minus_di=minus_di, close=close)
     strat.on_init(cfg, ind)
-    expected = _oracle_order(ema, adx, plus_di, minus_di, close, 2, set(held), digits, min_bars=2)
+    expected = _oracle_order(
+        _padded(ema), _padded(adx), _padded(plus_di), _padded(minus_di), _padded(close),
+        _NOW, set(held), digits,
+    )
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account(held))
+    orders = strat.on_new_bar(_NOW, ind, _Account(held))
 
     # Assert: 発注有無・side/sl/tp/volume が原典オラクルと一致（SL/TP は厳密一致＝手計算固定）.
     if expected is None:
@@ -530,7 +599,7 @@ def test_oracle_buy_sltp_absolute_values_are_hand_computed_for_digits5():
     strat.on_init(_CONFIG, ind)
 
     # Act
-    orders = strat.on_new_bar(2, ind, _Account([]))
+    orders = strat.on_new_bar(_NOW, ind, _Account([]))
 
     # Assert: 手計算（digits=5 → STP=300, TKP=1000, _Point=0.0001）.
     #   sl = 1.2020 − 300*0.0001 = 1.1720 ／ tp = 1.2020 + 1000*0.0001 = 1.3020.

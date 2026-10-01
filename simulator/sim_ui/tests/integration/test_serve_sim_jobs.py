@@ -194,6 +194,65 @@ def test_状態を照会できる(server) -> None:
     assert got["failure_reason"] is None
 
 
+def test_保留照会は完了まで応答を保留する(server) -> None:
+    """NFR-04 改訂（2026-09-27）: wait_ms 付きの状態照会は terminal まで応答を保留する。
+
+    別スレッドで 0.2 秒後に子プロセスを完了へ倒し、保留照会が「完了の直後」に返ることを
+    実測する（1 秒周期のポーリングなら平均 0.5 秒の待ちが乗る）。
+    """
+    import time as _time
+
+    base, _ledger, launcher = server
+    _status, body = _submit(base)
+    job_id = body["job_id"]
+
+    def _finish_soon():
+        _time.sleep(0.2)
+        launcher.finish(job_id, 0)
+
+    t = threading.Thread(target=_finish_soon, daemon=True)
+    started = _time.monotonic()
+    t.start()
+    status, payload = _json(base, f"/jobs/{job_id}?wait_ms=5000")
+    elapsed = _time.monotonic() - started
+    t.join(timeout=2)
+    assert (status, payload["terminal"]) == (200, True)
+    assert payload["status"] == "completed"
+    assert 0.2 <= elapsed < 1.0, f"保留照会が完了の直後に返っていません: {elapsed:.3f}s"
+
+
+def test_保留照会は締め切りで現在の状態を返す(server) -> None:
+    import time as _time
+
+    base, _ledger, _launcher = server
+    _status, body = _submit(base)
+    started = _time.monotonic()
+    status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=150")
+    elapsed = _time.monotonic() - started
+    assert (status, payload["status"], payload["terminal"]) == (200, "running", False)
+    assert 0.15 <= elapsed < 1.0
+
+
+def test_終端済みへの保留照会は即応答(server) -> None:
+    import time as _time
+
+    base, _ledger, launcher = server
+    _status, body = _submit(base)
+    launcher.finish(body["job_id"], 0)
+    started = _time.monotonic()
+    status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=5000")
+    assert (status, payload["terminal"]) == (200, True)
+    assert _time.monotonic() - started < 0.5, "終端済みなのに保留しています"
+
+
+def test_不正なwait_msは400(server) -> None:
+    base, _ledger, _launcher = server
+    _status, body = _submit(base)
+    for bad in ("abc", "-1"):
+        status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms={bad}")
+        assert status == 400, (bad, payload)
+
+
 def test_未知のジョブ照会は404(server) -> None:
     base, _, _ = server
     status, _ = _json(base, "/jobs/" + "f" * 32)
@@ -570,3 +629,75 @@ def test_未知キーの投入は400で理由が返る(tmp_path: Path) -> None:
         srv.shutdown()
         srv.server_close()
         t.join(timeout=2)
+
+
+# --- 進み具合（2026-09-27 依頼者指示「結果待ちの終わりが分からない」）-------------------
+
+def test_実行中の照会は子の残した進み具合を返す(server) -> None:
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+
+    base, ledger, _launcher = server
+    _status, body = _submit(base)
+    job_id = body["job_id"]
+    _s, before = _json(base, f"/jobs/{job_id}")
+    write_progress(ledger.job_dir(job_id), 37)
+    _s, after = _json(base, f"/jobs/{job_id}")
+    # 記録が無い間は null（0% を名乗らない）、記録後はその値。
+    assert (before["progress"], after["progress"]) == (None, 37)
+
+
+def test_終端のジョブは進み具合を返さない(server) -> None:
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+
+    base, ledger, launcher = server
+    _status, body = _submit(base)
+    write_progress(ledger.job_dir(body["job_id"]), 100)
+    launcher.finish(body["job_id"], 0)
+    _s, payload = _json(base, f"/jobs/{body['job_id']}")
+    assert (payload["terminal"], payload["progress"]) == (True, None)
+
+
+def test_保留照会は進み具合が変わった直後に返る(server) -> None:
+    import time as _time
+
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+
+    base, ledger, _launcher = server
+    _status, body = _submit(base)
+    job_id = body["job_id"]
+
+    def _advance_soon():
+        _time.sleep(0.2)
+        write_progress(ledger.job_dir(job_id), 5)
+
+    t = threading.Thread(target=_advance_soon, daemon=True)
+    started = _time.monotonic()
+    t.start()
+    status, payload = _json(base, f"/jobs/{job_id}?wait_ms=5000&seen_progress=none")
+    elapsed = _time.monotonic() - started
+    t.join(timeout=2)
+    assert (status, payload["terminal"], payload["progress"]) == (200, False, 5)
+    assert 0.2 <= elapsed < 1.0, f"進み具合の変化の直後に返っていません: {elapsed:.3f}s"
+
+
+def test_保留照会は同じ進み具合の間は保留する(server) -> None:
+    import time as _time
+
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+
+    base, ledger, _launcher = server
+    _status, body = _submit(base)
+    write_progress(ledger.job_dir(body["job_id"]), 5)
+    started = _time.monotonic()
+    _s, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=150&seen_progress=5")
+    # 値が同じなら締め切りまで返さない＝応答の回数は％の変化の回数で抑えられる。
+    assert payload["progress"] == 5
+    assert _time.monotonic() - started >= 0.15
+
+
+def test_不正なseen_progressは400(server) -> None:
+    base, _ledger, _launcher = server
+    _status, body = _submit(base)
+    for bad in ("abc", "-1", "101"):
+        status, payload = _json(base, f"/jobs/{body['job_id']}?wait_ms=10&seen_progress={bad}")
+        assert status == 400, (bad, payload)

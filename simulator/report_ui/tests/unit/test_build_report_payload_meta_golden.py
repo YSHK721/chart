@@ -56,10 +56,41 @@ def _payload():
     )
 
 
+#: golden 採取後に**振る舞いとして**足した report キー（理由と日付つきで宣言する）。
+#:   golden は取り直さない（上記の禁止）。これらを外した出力が golden と 1 バイトも
+#:   違わないことで、「足した以外は何も変えていない」を表明する。
+_REPORT_KEYS_ADDED_AFTER_GOLDEN = {
+    # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本との突き合わせで式を確定）。
+    "GHPR", "Total Deals", "Equity Drawdown Relative", "LR Correlation", "LR Standard Error",
+}
+
+#: golden 採取後に**値の形を変えた**キーと、採取時の値（両区間で同じ）。比べる前に採取時の値へ戻す。
+#:   2026-09-28 ISSUE-548: 書式を MT5 と同じ形へ（件数 (割合%)・AHPR の増減%・Z-Score の確率%）。
+#:   2026-09-28 ISSUE-547: 検査用の偽の統計を取引から作るようにした（Average profit/loss が 0 でなくなる）。
+#:   差し戻す前に、HEAD の出力と新しい出力を中身で比べ、違いがこの 8 キーだけ（meta・summary・取引行・
+#:   集計は不変）であることを確かめた。
+_REPORT_VALUES_AS_OF_GOLDEN = {
+    "Profit Trades (% of total)": "0.00% (0)", "Loss Trades (% of total)": "0.00% (0)",
+    "Short Trades (won %)": "0.00% (0)", "Long Trades (won %)": "0.00% (0)",
+    "AHPR": "0.0000", "Z-Score": "0.00",
+    "Average profit trade": "0.00", "Average loss trade": "0.00",
+}
+
+
+def _payload_as_of_golden():
+    payload = _payload()
+    for seg in payload.segments.values():
+        for key in _REPORT_KEYS_ADDED_AFTER_GOLDEN:
+            seg.report.pop(key, None)
+        for key, value in _REPORT_VALUES_AS_OF_GOLDEN.items():
+            seg.report[key] = value
+    return payload
+
+
 def test_execute_output_is_byte_identical_to_the_golden(tmp_path: Path) -> None:
-    """G-1 の抽出が report.json を 1 バイトも変えないこと。"""
+    """G-1 の抽出が report.json を 1 バイトも変えないこと（後から足したキーを除いて）。"""
     out = tmp_path / "report.json"
-    ReportUiPresenter().present_report_payload(_payload(), out)
+    ReportUiPresenter().present_report_payload(_payload_as_of_golden(), out)
     raw = out.read_bytes()
     assert len(raw) == _GOLDEN_LEN
     assert hashlib.sha256(raw).hexdigest() == _GOLDEN_SHA256

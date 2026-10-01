@@ -201,12 +201,28 @@ def runnable_settings(*, inputs: Sequence[str] = (), **overrides: Any) -> Tester
     return tester_settings_from_mapping(runnable_expert_mapping(**overrides), inputs)
 
 
-def custom_range_settings(from_date: date, to_date: date, **overrides: Any) -> TesterSettings:
-    """`FromDate` / `ToDate` 形式（`DateRangeKind.CUSTOM`）の設定（規則 E）。"""
+def _range_token(value: "date | datetime") -> str:
+    """期間トークンの表記（唯一の宣言は ini_codec）。date=日単位／datetime=分単位。"""
+    from simulator.adapter.tester_settings.ini_codec import (
+        format_date_minute_token,
+        format_date_token,
+    )
+    if isinstance(value, datetime):
+        return format_date_minute_token(value)
+    return format_date_token(value)
+
+
+def custom_range_settings(
+    from_date: "date | datetime", to_date: "date | datetime", **overrides: Any
+) -> TesterSettings:
+    """`FromDate` / `ToDate` 形式（`DateRangeKind.CUSTOM`）の設定（規則 E）。
+
+    ``datetime`` を渡すと分単位トークン（依頼者指示 2026-09-27）になる。
+    """
     return runnable_settings(
         Dates=OMIT,
-        FromDate=from_date.strftime("%Y.%m.%d"),
-        ToDate=to_date.strftime("%Y.%m.%d"),
+        FromDate=_range_token(from_date),
+        ToDate=_range_token(to_date),
         **overrides,
     )
 

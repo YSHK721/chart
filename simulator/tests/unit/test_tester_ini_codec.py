@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 from simulator.adapter.tester_settings import ini_codec
+from simulator.framework.tester_settings.loader import tester_settings_from_mapping
 from simulator.domain.tester_settings_exceptions import IniFormatError, SettingsValueError
 
 # corpus 直読の補助（内部設計 §9.3 D-06）は共有補助モジュールが唯一の宣言を持つ。
@@ -628,6 +629,27 @@ class TestBuildDocument:
         assert keys[5:7] == ("FromDate", "ToDate")
         assert doc.entry(TESTER_SECTION, "FromDate") == "2020.03.30"
         assert doc.entry(TESTER_SECTION, "ToDate") == "2024.05.18"
+
+    def test_minute_range_round_trips_through_the_ini_tokens(self):
+        """分単位の期間（依頼者指示 2026-09-27）: 書き出し → 読み戻しで型と値が保たれる。
+
+        日付（date）は従来トークンのまま・分指定（datetime）だけが `YYYY.MM.DD HH:MM` になる
+        （型が表記を決める＝時刻 00:00 の指定も黙って日付へ落ちない）。
+        """
+        doc = ini_codec.build_document(
+            _expert_settings(
+                date_range=DateRange(
+                    kind=DateRangeKind.CUSTOM,
+                    from_date=datetime(2020, 3, 30, 0, 0),
+                    to_date=datetime(2020, 3, 30, 1, 34),
+                )
+            )
+        )
+        assert doc.entry(TESTER_SECTION, "FromDate") == "2020.03.30 00:00"
+        assert doc.entry(TESTER_SECTION, "ToDate") == "2020.03.30 01:34"
+        reread = tester_settings_from_mapping(dict(doc.entries(TESTER_SECTION)))
+        assert reread.date_range.from_date == datetime(2020, 3, 30, 0, 0)
+        assert reread.date_range.to_date == datetime(2020, 3, 30, 1, 34)
 
     def test_forward_date_is_emitted_only_for_custom_date_mode(self):
         doc = ini_codec.build_document(

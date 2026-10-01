@@ -1,14 +1,13 @@
 """パリティ 周辺点の二画面突合（Playwright・Phase 5 F-7）。
 
-Phase 4 の `verify_sim_display_parity.py`（骨格 12 点）の続きで、Phase 5 で移植した
-**周辺の表示**（タブ・区間トグル・抽出ピル・ヒートマップ・比較グラフ・判定バナー・用語集・
-接点マーカー）を、移植元 report_ui の画面と sim 表示層の画面へ**同一 payload**を与えて
-同じ観測点で突き合わせる。移植元は vendor v4.1.3・sim は v5.2.0 で、series 生成と
-マーカー API だけが違う——その主張を周辺点でも観測値で固定する。
+Phase 5 で移植した**周辺の表示**（タブ・区間トグル・抽出ピル・ヒートマップ・比較グラフ・
+判定バナー・用語集）を、移植元 report_ui の画面と sim 表示層の画面へ**同一 payload**を
+与えて同じ観測点で突き合わせる。
 
-fixture は移植元 `report_ui/tests/e2e/verify_parity.py` の 2 区間 payload を源にし、
-**接点（agg.contacts）を各区間へ足す**（移植元の payload は接点キーを持たないため）。
-verify_parity.py 自体は 1 文字も変えない（別テストが自分用に payload を augment する）。
+3 窓チャート撤去（2026-09-27 依頼者指示）に伴い、チャート依存の点は分母から外れた:
+    P3 の #chartBadge 観測（バッジはチャートの器・sim には無い）
+    P4 / P5 / U-1（接点マーカー規則。sim はチャート表示規則を読まなくなった——
+    撤去そのものの実測は `verify_sim_display_parity.py` R1/R2 が持つ）
 
 採用点（一致率 100% の分母・基本設計書 §13 パリティ点）:
     P1  タブ帯が宣言（`SIM_TAB_NAMES`）と過不足なく一致し、移植元から流用すべきタブを
@@ -18,20 +17,18 @@ verify_parity.py 自体は 1 文字も変えない（別テストが自分用に
         ISSUE-291 型「受け口はあるのに呼ばれない」を捕らえる唯一の検査（静的検査では
         到達可能性を証明できない・工程 5 実測）
     P2  ヒートマップ 5 ビュー全セル（2 区間なので IS/OOS 損益差ビューも出る）
-    P3  セルクリック → 抽出連動（activeFilter・#tradeTable dim・#chartBadge）
-    P4  contactsToMarkers 戻り値突合（両画面で同一実体を import して呼ぶ）
-    P5  接点トグル独立性（setContactsVisible が売買マーカーを変えない）
+    P3  セルクリック → 抽出連動（activeFilter・#tradeTable dim）
     P6  判定バナー（#cmpVerdict の文言）
     P7  7 指標カード（#cmpBasic）
     P8  劣化比較表（#cmpTable 行）
+    8   サマリー (Report) タブ（#reportGrid の章立て行が移植元と同値。2026-09-27 依頼者指示
+        「シャープレシオ・取引回数・勝率などのレポートを確認したい」で流用に加えた——
+        従来の点 17「report タブ非存在」はこの指示で反転した）
     9   用語集 + tip（gcard/gitem 数・data-gg hover の #tip 発火）
     12/13/14  比較グラフ 3 種（window.__cmpCharts 経由のデータ突合）
     15  区間トグル（#segSel・segbtn 2 個・is/oos）
-    17  サマリーカード非存在（sim は report タブを持たない）
     18  抽出ピル（#clearFilter 可視・#detailCount 件数）
-    U-1 接点グリフ y アンカー（両画面とも透明 LineSeries value=close＋position で一致）
 
-Phase 4 の 12 点は同一セッションで回帰 0 件（表示規則の実体突合を再掲）。
 chromium / playwright 不在環境では skip（移植元 verify.py の規約準拠）。
 """
 from __future__ import annotations
@@ -56,7 +53,6 @@ pytestmark = pytest.mark.e2e
 
 REPORT_WEB = _REPO / "simulator" / "report_ui" / "web"
 SIM_WEB = _REPO / "simulator" / "sim_ui" / "web"
-SHARED_VENDOR = _REPO / "indigators" / "indicator_ui" / "web" / "vendor" / "lightweight-charts.js"
 
 JOB_ID = "parityperi"
 _TS = verify_parity._TS
@@ -65,9 +61,9 @@ _TS = verify_parity._TS
 def _payload_with_contacts() -> dict:
     """移植元 2 区間 payload に接点（agg.contacts）を各区間へ足したもの。
 
-    接点は区間の bars 範囲（``_TS`` .. ``_TS+180``）内・close(=105) 近傍に置く。両画面とも
-    透明 LineSeries(value=close) へ position(aboveBar/belowBar) で描くので、price 値は
-    アンカーに使われない（U-1: グリフ y は close に対する上下位置で一意）。
+    実運用の report.json は接点キーを持つため、fixture にも残す——sim は接点を描かなく
+    なった（3 窓チャート撤去・2026-09-27）が、接点入りの payload を受けて壊れないことが
+    実運用条件である。移植元画面は従来どおり接点を描く。
     """
     payload = copy.deepcopy(verify_parity._payload())
     payload["segments"]["is"]["agg"]["contacts"] = [
@@ -100,10 +96,12 @@ def _build_sim_web_root(tmp_path: Path) -> Path:
     shutil.copytree(REPORT_WEB / "js", sim / "report-js")
     shutil.copytree(REPORT_WEB / "css", sim / "report-css")
     shutil.copytree(SIM_WEB / "js" / "adapter" / "front", sim / "js" / "adapter" / "front")
+    # 親の売買履歴チャート用モデル（sim_result_chart_view が import する）。子文書の module
+    #   graph に含まれるため、配信面に無いと合成根ごと読み込みが落ちる。
+    shutil.copytree(SIM_WEB / "js" / "usecase", sim / "js" / "usecase")
     shutil.copytree(SIM_WEB / "css", sim / "css")
     shutil.copy(SIM_WEB / "report_view.html", sim / "report_view.html")
-    (sim / "vendor").mkdir()
-    shutil.copy(SHARED_VENDOR, sim / "vendor" / "lightweight-charts.js")
+    # lightweight-charts は置かない——3 窓チャート撤去（2026-09-27）で子文書は読まない。
     # Chart.js（比較グラフ用・移植元 vendor 無改変）を sim の report-vendor へ 1 ファイルだけ置く。
     (sim / "report-vendor").mkdir()
     shutil.copy(REPORT_WEB / "vendor" / "chart.umd.js", sim / "report-vendor" / "chart.umd.js")
@@ -155,7 +153,7 @@ _ANALYSIS_PANE = """(name) => {
 }"""
 
 #: 移植元から**流用しない**タブ（YAGNI・doc §流用）。宣言はこの 1 箇所だけが持つ。
-_NOT_PORTED = {"graph", "report"}
+_NOT_PORTED = {"graph"}
 
 _HEAT_VIEWS = """() => ({
   views: document.querySelectorAll('#heatHost .heatBlock').length,
@@ -193,30 +191,6 @@ _GLOSS = """() => ({
   cards: document.querySelectorAll('#glossHost .gcard').length,
   items: document.querySelectorAll('#glossHost .gitem').length,
 })"""
-
-# 接点変換を**その画面が読んでいる実体**から呼ぶ（URL だけ違う同一ファイル）。
-_CONTACT_RULES = """async (chartUrl) => {
-  const m = await import(chartUrl);
-  const contacts = [
-    {time: 100, price: 105, dir: 'up'},
-    {time: 200, price: 105, dir: 'down'},
-    {time: 150, price: 105, dir: 'up'},
-  ];
-  const trades = [
-    {id: 1, side: 'buy', profit: 50, entry_time: 100, exit_time: 300, entry_price: 10, exit_price: 12},
-  ];
-  return {
-    CONTACT_UP_COLOR: m.CONTACT_UP_COLOR,
-    CONTACT_DOWN_COLOR: m.CONTACT_DOWN_COLOR,
-    CONTACT_MARKER_CAP: m.CONTACT_MARKER_CAP,
-    markersVisible: m.contactsToMarkers(contacts, {visible: true}),
-    markersHidden: m.contactsToMarkers(contacts, {visible: false}),
-    inRange: m.contactsInRange(contacts, {from: 120, to: 260}).map((c) => c.time),
-    // P5: 接点トグルは売買マーカー（buildTradeMarkers）に触れない＝接点入力に依らず不変。
-    tradeMarkers: m.buildTradeMarkers(trades, null),
-  };
-}"""
-
 
 def _ref_page(tmp_path: Path):
     root = _build_ref_web_root(tmp_path / "ref")
@@ -307,11 +281,25 @@ def test_sim_display_parity_peripheral(tmp_path: Path) -> None:
         assert analysis_tab not in set(ref_tabs), f"P19 reference に {analysis_tab}"
         passed.append("P19")
 
-        # 17: サマリーカード（report タブ・#summaryCard）は sim に無い。
-        assert sim.query_selector('[data-tab="report"]') is None, "17 sim に report タブ"
-        assert sim.query_selector("#summaryCard") is None, "17 sim に #summaryCard"
-        assert ref.query_selector('[data-tab="report"]') is not None, "17 reference に report タブが無い"
-        passed.append("17")
+        # 8: サマリー (Report) タブ（2026-09-27 依頼者指示で流用）。同一 payload・同一区間の
+        #    章立て行（項目×値）が移植元と同値であること。行の実体は両画面とも移植元
+        #    report.js の buildReport が描く（写しではなく同一実装の直接証拠）。
+        ref.click('.mv-tab[data-tab="report"]')
+        sim.click('.mv-tab[data-tab="report"]')
+        ref.wait_for_timeout(200)
+        sim.wait_for_timeout(200)
+        _report_rows = """() => [...document.querySelectorAll('#reportGrid .rtbl tr')]
+          .map((tr) => tr.textContent.replace(/\\s+/g, ' ').trim())"""
+        ref_rows = ref.evaluate(_report_rows)
+        sim_rows = sim.evaluate(_report_rows)
+        assert sim_rows, "8 sim のサマリーが空（検定が空虚）"
+        joined = " ".join(sim_rows)
+        # fixture の report が持つ代表キーで空虚を塞ぐ（勝率キーは実 run の payload 側で実測済み。
+        #   fixture に無いキーを針にすると検定がデータの都合で赤になる）。
+        for needle in ("Sharpe Ratio", "Total Trades"):
+            assert needle in joined, f"8 sim のサマリーに {needle} が無い: {sim_rows[:6]}"
+        assert ref_rows == sim_rows, f"8 サマリー行: ref {len(ref_rows)} 行 vs sim {len(sim_rows)} 行"
+        passed.append("8")
 
         # 15: 区間トグル（2 区間 → #segSel・segbtn 2 個・is/oos）。
         ref_seg = ref.evaluate(_SEG)
@@ -333,38 +321,28 @@ def test_sim_display_parity_peripheral(tmp_path: Path) -> None:
         assert ref_heat == sim_heat, f"P2 ヒートマップ: {ref_heat} vs {sim_heat}"
         passed.append("P2")
 
-        # P3: セルクリック → 抽出連動（activeFilter・#tradeTable dim・#chartBadge）。
+        # P3: セルクリック → 抽出連動（activeFilter・#tradeTable dim）。#chartBadge の観測は
+        #   3 窓チャート撤去（2026-09-27）でバッジごと外れた（バッジはチャートの器）。
         ref.eval_on_selector("#heatHost td.cell", "el => el.click()")
         sim.eval_on_selector("#heatHost td.cell", "el => el.click()")
         ref.wait_for_timeout(250)
         sim.wait_for_timeout(250)
         _linked = """() => ({
-          badge: document.querySelector('#chartBadge').textContent,
           dim: document.querySelectorAll('#tradeTable tbody tr.dim').length,
           rows: document.querySelectorAll('#tradeTable tbody tr').length,
         })"""
         ref_link = ref.evaluate(_linked)
         sim_link = sim.evaluate(_linked)
+        # 抽出が実際に立ったことは linkage の状態で観測する（この fixture は区間の全取引が
+        #   同一セルに入るため dim は 0 が正しい＝dim>0 では観測できない）。
+        assert sim.evaluate("() => window.__simLinkage.activeFilter !== null") is True, (
+            "P3 sim でセルクリックしても抽出フィルタが立たない"
+        )
         assert ref_link == sim_link, f"P3 セルクリック連動: {ref_link} vs {sim_link}"
         passed.append("P3")
         # 連動解除
         ref.evaluate("() => window.__linkage && window.__linkage.applyFilter(null,'')")
         sim.evaluate("() => window.__simLinkage.applyFilter(null,'')")
-
-        # P4 / P5 / U-1: 接点変換規則を両画面の実体から呼んで突き合わせる。
-        ref_c = ref.evaluate(_CONTACT_RULES, "/js/chart.js")
-        sim_c = sim.evaluate(_CONTACT_RULES, "/sim/report-js/chart.js")
-        assert ref_c["CONTACT_MARKER_CAP"] == 700, f"P4 CAP: {ref_c['CONTACT_MARKER_CAP']}"
-        ids = [m["id"] for m in ref_c["markersVisible"]]
-        assert ids == ["c0", "c1", "c2"], f"P4 接点 id: {ids}"
-        # U-1: グリフ y アンカーは position で決まる（time 昇順 sort 後）。
-        positions = [(m["position"], m["shape"]) for m in ref_c["markersVisible"]]
-        assert positions == [("belowBar", "arrowUp"), ("belowBar", "arrowUp"), ("aboveBar", "arrowDown")], (
-            f"U-1 接点 position/shape: {positions}"
-        )
-        assert ref_c["markersHidden"] == [], "P5 接点 OFF で [] にならない"
-        assert ref_c == sim_c, "P4/P5/U-1 接点規則が両画面で一致しない"
-        passed.extend(["P4", "P5", "U-1"])
 
         # 比較・判定タブ（P6/P7/P8/12/13/14）。
         ref.click('.mv-tab[data-tab="compare"]')

@@ -47,6 +47,7 @@ export function fakeEl(tag = "div") {
       return child;
     },
     addEventListener(ev, fn) { (this._listeners[ev] ||= []).push(fn); },
+    removeEventListener(ev, fn) { this._listeners[ev] = (this._listeners[ev] || []).filter((f) => f !== fn); },
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };

@@ -749,3 +749,59 @@ class _FlakySource(fakes.FakeTickSource):
             self._left -= 1
             raise SupplyUnavailable("端末が一時的に応答しません")
         return super().fetch(**kwargs)
+
+
+# =====================================================================
+# 週末をまたぐ停止からの再開（2026-09-28・固定 2 日の窓で --from の手入力が要った欠陥）
+# =====================================================================
+
+def _restart_after_a_gap(root: Path, *, gap_days: int, stored_days: int, monkeypatch):
+    """最後のジャーナルの日から ``gap_days`` 日後に、``--from`` 無しで 1 周期だけ再起動する。"""
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    root.mkdir(parents=True, exist_ok=True)
+    last = dt.date(2026, 8, 21)
+    for offset in range(stored_days):
+        day = last - dt.timedelta(days=offset)
+        journal.append(day, _tape(dt.datetime(day.year, day.month, day.day, 9, 0), minutes=1),
+                       symbol=token, data_dir=root)
+    restart = last + dt.timedelta(days=gap_days)
+    tape = (_tape(dt.datetime(last.year, last.month, last.day, 9, 0), minutes=1)
+            + _tape(dt.datetime(restart.year, restart.month, restart.day, 9, 0), minutes=2))
+    probes = fakes.CallSpy(journal.journal_path)
+    monkeypatch.setattr(journal, "journal_path", probes)
+    code = watch.main(
+        ["--data-dir", str(root), "--once", "--no-publish"],
+        source=fakes.FakeTickSource(tape),
+        clock=fakes.FixedClock(dt.datetime(restart.year, restart.month, restart.day, 9, 2,
+                                           tzinfo=dt.timezone.utc)),
+    )
+    monkeypatch.undo()
+    resumed = journal.has_journal(restart, symbol=token, data_dir=root)
+    return code, resumed, probes.count
+
+
+def test_a_restart_after_a_weekend_resumes_from_the_journal_without_from(tmp_path, secret, monkeypatch):
+    """金曜で止まり月曜に起動し直しても（3 日後）、--from 無しでジャーナルから再開する。"""
+    code, resumed, _ = _restart_after_a_gap(tmp_path, gap_days=3, stored_days=1, monkeypatch=monkeypatch)
+    assert code == 0
+    assert resumed
+
+
+def test_the_resume_search_grows_with_the_gap_not_with_the_stored_days(tmp_path, secret, monkeypatch):
+    """CX: 再開点の探索は止まっていた日数に比例し、保存済みの日数には比例しない（2 点ずつ）。"""
+    _, _, small = _restart_after_a_gap(tmp_path / "s5", gap_days=3, stored_days=5, monkeypatch=monkeypatch)
+    _, _, large = _restart_after_a_gap(tmp_path / "s50", gap_days=3, stored_days=50, monkeypatch=monkeypatch)
+    assert small == large
+    _, _, longer = _restart_after_a_gap(tmp_path / "g10", gap_days=10, stored_days=5, monkeypatch=monkeypatch)
+    assert longer > small
+
+
+def test_without_any_journal_the_cold_start_still_requires_from(tmp_path, secret):
+    """ジャーナルが 1 つも無いとき（初回）だけは再開点を推測しない（--from を求める）。"""
+    tick_m1.tick_root(tmp_path).joinpath("2020").mkdir(parents=True)  # 別系列の古い木だけが在る
+    code = watch.main(
+        ["--data-dir", str(tmp_path), "--once", "--no-publish"],
+        source=fakes.FakeTickSource(_tape(dt.datetime(2026, 8, 25, 9, 0), minutes=1)),
+        clock=fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc)),
+    )
+    assert code == watch.EXIT_USAGE

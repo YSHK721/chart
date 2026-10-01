@@ -241,10 +241,8 @@ def test_stitch_classification_covers_all_fields():
     assert additive & recomputed == set()
     assert additive & nonstitch == set()
     assert recomputed & nonstitch == set()
-    # 件数（10+4+26=40）
-    assert len(additive) == 10
-    assert len(recomputed) == 4
-    assert len(nonstitch) == 26
+    # 件数はリテラルで固定しない（列を足すたびに赤になる・CLAUDE.md「検査側の設計」）。
+    #   網羅と互いに素の 2 つで、全列がちょうど 1 区分に入ることは表明済み。
 
 
 # --- U-14: 空列で WalkForwardError -------------------------------------------

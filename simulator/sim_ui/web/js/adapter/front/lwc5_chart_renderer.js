@@ -269,11 +269,7 @@ export function createLwc5ChartRenderer({ lwc, hosts, logic }) {
     });
     contactSeries.setData(barsNormal.map((b) => ({ time: b.time, value: b.close })));
 
-    const initialDeposit = (opts && opts.initialDeposit)
-      || (segment.meta && segment.meta.initial_deposit)
-      || logic.DEFAULT_DEPOSIT;
-    const curve = (segment.agg && segment.agg.balance_curve) || [];
-    const { balData, ddData } = logic.balanceForwardFill(barTimes, curve, initialDeposit);
+    const { balData, ddData } = logic.tradeCloseCurves(segment, barTimes, opts && opts.initialDeposit);
 
     if (balChart) {
       // 点1 Balance: エリア系列（フィル＋縦グラデ・低不透明度）。

@@ -26,12 +26,30 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from typing import Callable
 
 import pandas as pd
 
 #: 圧縮方式。既定（snappy）を明示して、pandas / pyarrow の既定が変わっても
 #: 成果物の形が黙って変わらないようにする。
 COMPRESSION = "snappy"
+
+#: 読みの観測口（検査側の設計・絶対命令 2026-09-25）。`set_read_observer` が差し替える。
+_read_observer: "Callable[[int, tuple[str, ...]], None] | None" = None
+
+
+def set_read_observer(
+    observer: "Callable[[int, tuple[str, ...]], None] | None",
+) -> None:
+    """`read_columns` の IO 段が組み立てた**行数と列名**の観測口を差し替える（``None`` で外す）。
+
+    計算量検定の注入点であり、既定なし。検定は「組み立てた行 − 返した行 = 0」
+    「組み立てた列 − 返した列 = 0」「断るときは 1 回も届かない」をここだけで測る
+    （内部名を差し替えて測らない）。行を読まない問い（`time_bounds` /
+    `count_rows_in_window`）は届けない——届かないことが「読んでいない」の表明になる。
+    """
+    global _read_observer
+    _read_observer = observer
 
 
 def write_columns(path: Any, columns: Mapping[str, list]) -> int:
@@ -111,6 +129,8 @@ def read_columns(
     # したがって呼出側が time を要求しなければ読まない＝余分な列を作らない。
     filters = _window_filters(time_column, start, end)
     frame = pd.read_parquet(path, columns=requested, filters=filters)
+    if _read_observer is not None:
+        _read_observer(len(frame), tuple(frame.columns))
     # `to_list()` は numpy スカラーを素の int / float / bool へ戻す（D-5 の隔離）。
     return {name: frame[name].to_list() for name in requested}
 

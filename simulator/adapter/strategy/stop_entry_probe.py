@@ -45,6 +45,7 @@ from simulator.adapter.strategy.mql5_runtime import (
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
 from simulator.usecase.entry_price_basis import NO_BAR_BOUNDARY_DECISION
+from simulator.usecase.pending_order_use import PendingOrderUse
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
@@ -56,6 +57,10 @@ class StopEntryProbe(StrategyPort, EntryPriceBasisPort):
     #: `NO_BAR_BOUNDARY_DECISION` を名乗る。**既定値ではない**——この宣言のまま足境界で
     #: 約定しようとすれば 「`derive_quotes`」 が落ちる。
     entry_price_basis = NO_BAR_BOUNDARY_DECISION
+
+    #: 待機注文の使い方（ISSUE-557）。両建ての逆指値を約定まで持続させ（on_tick で再アーム）、
+    #: 1 本が約定したら残りを取り消す（OCO）。MT5 照合済みの構成（confirmation/2026-04_stop-probe）と同じ。
+    pending_order_use = PendingOrderUse(persistent=True, oco=True)
 
     def __init__(self) -> None:
         self._config: dict | None = None

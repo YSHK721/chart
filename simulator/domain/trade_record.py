@@ -78,3 +78,13 @@ class TradeRecord:
 
     def is_long(self) -> bool:
         return self.side == "buy"
+
+
+def trade_number(index: int) -> int:
+    """確定トレード列の位置（0 始まり）から、画面に出す取引番号（1 始まり）を返す。
+
+    取引明細（report の id 列と order 列）と売買マーク（trade_markers.json の pairs の id）が
+    同じ取引を同じ番号で出すための単一の定義（ISSUE-539: 片方が 0 始まりの位置を番号として
+    出していたため、同じ取引が 1 つずれた番号で出ていた）。
+    """
+    return index + 1

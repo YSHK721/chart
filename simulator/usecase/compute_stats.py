@@ -19,7 +19,7 @@
 判断点（doc 不整合・upstream-input-validation で実証・据え置き）:
     * Sharpe / σ(HPR): METRICS §1.2/§11 の式（ddof=0 母分散）を採用（metrics_spec.sharpe_ratio）。
       §12.2/§12.6 記載の σ=0.020019・Sharpe=0.17 は式から再現不能のため不採用。
-      実 MT5 の Sharpe=-5.0 は per-trade クランプ版（mt5_parity.sharpe_ratio_per_trade）を結線。
+      Sharpe は足ごとの有効証拠金の MT5 定義（mt5_parity.sharpe_ratio_bar_equity・ISSUE-545）。
 """
 from __future__ import annotations
 
@@ -67,16 +67,20 @@ from simulator.usecase.metrics_spec import (  # noqa: F401
 from simulator.usecase.mt5_parity import (  # noqa: F401
     average_loss_trade,
     average_profit_trade,
+    balance_linear_regression,
     equity_dd_absolute,
     equity_dd_maximal,
     equity_dd_maximal_percent,
+    equity_dd_relative,
     is_count_win,
     loss_trades,
     profit_long_trades,
     profit_short_trades,
     profit_trades,
     recovery_factor_equity,
+    sharpe_ratio_bar_equity,
     sharpe_ratio_per_trade,
+    total_deals,
     z_score,
 )
 
@@ -89,21 +93,30 @@ def compute_stats(
     balance_curve: Sequence[float],
     equity_curve: Sequence[float],
     initial_deposit: float,
+    bar_open_equity: Sequence[float] = (),
+    bar_seconds: "float | None" = None,
 ) -> BacktestStats:
     """確定トレード列・balance/equity 系列から BacktestStats を算出する。
 
     実 MT5 整合（第2サイクルで結線・ISSUE-013）:
-      * sharpe_ratio は per-trade profit 系列の Sharpe を [-5,5] にクランプした値
-        （mt5_parity.sharpe_ratio_per_trade）。HPR 版 metrics_spec.sharpe_ratio() は残置
-        （METRICS §1.2 用途）。
+      * sharpe_ratio は足ごとの有効証拠金（足の最初の評価点）の対数収益から MT5 の定義で
+        算出する（mt5_parity.sharpe_ratio_bar_equity・ISSUE-545 で per-trade クランプ版から
+        置き換え）。足の系列（``bar_open_equity``）と足の秒数（``bar_seconds``）はエンジンが渡す。
+        渡されないときは 0.0（取引列からは MT5 の値を作れない・実測）。
       * recovery_factor は equity DD 基準・符号付き net（mt5_parity.recovery_factor_equity）。
         equity_curve 未供給（空列）時は balance 基準 metrics_spec.recovery_factor() へ
         フォールバック（後方互換）。
       * equity 系 DD（equity_dd_abs / max / max_percent）は equity_curve から算出。
         equity_curve 未供給時は 0（後方互換）。
+      * ghpr / lr_correlation / lr_standard_error / equity_ddrel_percent / equity_dd_relative /
+        deals は実 MT5 レポートとの突き合わせで追加（2026-09-27・mt5_parity 参照）。
     balance 系 STAT_*（balance_dd 等）は不変（metrics_spec）。
     """
     has_equity = len(equity_curve) > 0
+    lr_corr, lr_se = balance_linear_regression(balance_curve, initial_deposit)
+    eq_rel_pct, eq_rel_amount = (
+        equity_dd_relative(equity_curve, initial_deposit) if has_equity else (0.0, 0.0)
+    )
     recovery = (
         recovery_factor_equity(trades, equity_curve, initial_deposit)
         if has_equity
@@ -117,7 +130,7 @@ def compute_stats(
         profit_factor=profit_factor(trades),
         recovery_factor=recovery,
         expected_payoff=expected_payoff(trades),
-        sharpe_ratio=sharpe_ratio_per_trade(trades),
+        sharpe_ratio=sharpe_ratio_bar_equity(bar_open_equity, bar_seconds),
         trades=total_trades(trades),
         profit_trades=profit_trades(trades),
         loss_trades=loss_trades(trades),
@@ -158,4 +171,10 @@ def compute_stats(
             if has_equity
             else 0.0
         ),
+        ghpr=ghpr(balance_curve, initial_deposit),
+        lr_correlation=lr_corr,
+        lr_standard_error=lr_se,
+        equity_ddrel_percent=eq_rel_pct,
+        equity_dd_relative=eq_rel_amount,
+        deals=total_deals(trades),
     )

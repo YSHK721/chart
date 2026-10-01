@@ -67,15 +67,16 @@ def run_settings_job(
     *,
     output_dir: Any,
     extensions: "Mapping[str, Any] | None" = None,
-) -> "tuple[int, Any, TesterRunMetadata]":
+) -> "tuple[int, Any, TesterRunMetadata, Any]":
     """実効設定の内容で 1 run を実行し、成果物を ``output_dir`` へ出す。
 
     事前条件: ``binding`` の各値が供給済み（決済通貨・EA 固有引数は必須注入）。
         ``extensions`` は `build_interactor` の**拡張点**（`strategy_override` /
         `position_manager` / `strategy_decorator`）への注入物。JSON スカラーで表せない
         実体であるため写像層（`.ini` 由来の値）は供給できず、呼出側が組んで渡す。
-    事後条件: 成功時は ``(0, 結果, メタ)`` を返し、``output_dir`` に `stats.json` と
-        `report.md` が出ている。
+    事後条件: 成功時は ``(0, 結果, メタ, 実行した request)`` を返し、``output_dir`` に
+        stats.json と report.md のファイルが出ている。request は表示・成果物の書き手が bars /
+        symbol_spec を再構築（＝同じ CSV の読み直し）せずに使うための値である（ISSUE-541 段 1）。
     例外: 設定・実行・出力の失敗（`BacktestError` 系）を**そのまま送出する**
         （モジュール docstring「なぜ例外を握らないのか」）。
 
@@ -96,9 +97,9 @@ def run_settings_job(
             context={"conflicting": conflicting},
         )
     kwargs.update(injected)
-    result = execute_interactor_kwargs(kwargs, effective)
+    result, request = execute_interactor_kwargs(kwargs, effective)
     # 出力段は `run_backtest` と**同一実体**（T-1 で公開名にした `present_outputs`）。
     # 診断メタ（EA 名・銘柄）は写像層が実際に `build_interactor` へ渡した値を使う
     # ——別経路で導き直すと「実行した対象」と「レポートに載る対象」がずれ得る。
     present_outputs(result, Path(output_dir), ea_name=kwargs["ea_name"], symbol=kwargs["symbol"])
-    return SUCCESS_EXIT_CODE, result, build_run_metadata(effective)
+    return SUCCESS_EXIT_CODE, result, build_run_metadata(effective), request

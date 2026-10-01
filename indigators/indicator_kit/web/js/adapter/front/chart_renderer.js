@@ -170,6 +170,55 @@ export class ChartRenderer {
     this._candleFeed.setCandles(candles);
   }
 
+  // 表示を保つ差し替え（ISSUE-552/554 段階 2-2・売買履歴チャートの読み足し）。
+  //   足と、描画済みの値の系列のデータを入れ替え、同じ時刻の足を同じ画面位置に留める
+  //   （実体と実測の記録は CandleFeed.replaceCandlesKeepingView）。setCandles と違い
+  //   fitContent・scrollToRealTime を呼ばない。
+  //   instances: renderLine 等へ渡したのと同じ形（[{instanceId, payloads: [{name, data}]}]）。
+  //     系列は作り直さず、系列キー {instanceId}::{name} の既存の系列へ入れる
+  //     （表示/非表示・スタイル・ペインはそのまま）。描いていない系列キーは何もしない。
+  //   戻り値: 表示を保てたか（新旧に同じ足が無ければ false＝呼び手が移動先を決める）。
+  replaceDataKeepingView(candles, instances = []) {
+    const kept = this._candleFeed.replaceCandlesKeepingView(candles, () => {
+      for (const inst of instances ?? []) {
+        for (const p of inst.payloads ?? []) {
+          this.setData(`${inst.instanceId}::${p.name}`, p.data);
+        }
+      }
+    });
+    // 凡例の「クロスヘア無しの表示値」（末尾の値）が変わるので描き直す。
+    this._emitPaneLegend(null);
+    return kept;
+  }
+
+  // 見えている論理範囲（{from, to}・足の列の中の位置。端の外は範囲外の値）。読めなければ null。
+  visibleLogicalRange() {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (!ts || typeof ts.getVisibleLogicalRange !== 'function') {
+      return null;
+    }
+    return ts.getVisibleLogicalRange();
+  }
+
+  // 見えている論理範囲の変化を購読する（cb へ {from, to} | null を渡す）。戻り値は解除関数。
+  //   既存の subscribeVisibleRange は「右端に居るか」だけを渡し解除も無いため、範囲そのものを
+  //   必要とする読み手（売買履歴チャートの読み足し）向けに別の口として足す。
+  //   購読 API が無い環境（Fake・旧版）では何もしない（解除関数は何もしない関数）。
+  subscribeVisibleLogicalRange(cb) {
+    const ts = typeof this._chart.timeScale === 'function' ? this._chart.timeScale() : null;
+    if (typeof cb !== 'function' || !ts
+        || typeof ts.subscribeVisibleLogicalRangeChange !== 'function') {
+      return () => {};
+    }
+    const handler = (range) => cb(range);
+    ts.subscribeVisibleLogicalRangeChange(handler);
+    return () => {
+      if (typeof ts.unsubscribeVisibleLogicalRangeChange === 'function') {
+        ts.unsubscribeVisibleLogicalRangeChange(handler);
+      }
+    };
+  }
+
   // ISSUE-163: 全 pane 価格軸の手動スケールを破棄し自動スケールへ戻す（時間足切替用）。
   //   ISSUE-150 の手動スケール保持（keepPane 退避/復元）は「同一時間足での再計算」を守るための
   //   機構であり、値域が変わる時間足切替で旧レンジを持ち越すと系列がクリップして全高ブロック化する

@@ -16099,3 +16099,586 @@ MT5 突合ケース（`ma_slope_jp225_202501`）は `current_open` を明示宣�
 **未実施として閉じたもの**: 段階 8-D-5 の**実ブラウザでの目視 2 点**（銘柄行の折り返し・縮退面の配置）。
 機能は JS 検定 587 件と sim_ui の e2e 1230 件で実証済みだが、**実 UI の目視は行っていない**。
 P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構造的にできない。
+
+## ISSUE-536: 上のチャートの口座パネルが期末清算を含まない（最終残高がレポートと食い違う）
+
+- **ステータス**: RESOLVED（2026-09-27・simulator/tests 4686 passed）
+- **重大度**: 中（口座パネルの最終値が誤った値を名乗る）
+- **起票日**: 2026-09-27
+- **実測（ジョブ `91291405477e41549c818dcc4176ef2d`・実 UI と成果物の突合）**: `chart_overlay.json` の最終足は
+  残高 8775・有効証拠金 8770・含み損益 −5。`report.json` は Net −1235・`balance_curve` 末尾 8765。
+  差 −10 は期末清算 trade 168（`exit_reason=end_of_test`・profit −10）。
+- **原因（コードで確認・テストで再現）**: `RunTracePort.observe` は評価点ループ内だけで呼ばれ
+  （`simulator/usecase/run_backtest.py`）、期末清算 `close_all_at_final_bar` はループの後。清算後の口座を
+  観測器が受け取る口が無かった。加えて清算後に含み損益を値洗いする者が無かった。
+- **対策（根本）**: Port に `observe_final_settlement(bar_index, bar, account)` を追加（既定は何もしない＝
+  評価点単位の記録器は不変）。エンジンは清算後、観測器が在るときだけ値洗いして 1 回呼ぶ。
+  `AccountCurveRecorder` は最終足の行を上書きする。
+- **検査**: `simulator/tests/unit/test_account_curve_final_settlement.py`（最終残高＝balance_curve 末尾・
+  含み損益 0・計算量: 通知は清算 1 回につき 1 回で足の数に非比例・行数は観測した足の数から増えない）。
+  値洗いを外す変異で赤になることを確認。値洗いを常時発行した版は既存の計算量検定
+  `TestTheSettlementDoesNotWasteWork` が赤にした（観測器が無い run で捨てる計算）ため、観測器在りに限定。
+
+## ISSUE-537: sim 結果チャートの上にライブの凡例・読み取り欄が重なる
+
+- **ステータス**: RESOLVED（2026-09-27）
+- **重大度**: 中（結果のペインに別のもの（ライブ指標）の名前と値が載り、読み違える）
+- **起票日**: 2026-09-27
+- **実測（依頼者のスクリーンショット 2026-09-26 と実 UI）**: 結果の器 `#um-result-chart` は z-index 5、
+  ライブの `.pane-legends` は 7・`#chart-overlay-tl` は 6（`unified_ui/web/index.html:75`・
+  `indigators/indicator_ui/web/css/app.css:104,182`）。結果表示中も左上にライブの日足 OHLC が出る。
+- **対策（根本）**: simチャートをライブチャートと同じ組み立て関数で作る（`chart_app_wiring.js` から
+  `composeChartViewer`・`installPaneGeometry`・`installChartOperations` を切り出し、公開面
+  `live_chart_kit_api.js` から注入）。simチャートの読み取り欄・ペイン別凡例は器の中に出る。
+  simチャートの表示中は版面の器以外を隠す規則（`body.um-result-chart-shown .chart-wrap > :not(#um-result-chart)`）。
+- **実 UI の実測（2026-09-27・同じ座標・同じ操作）**: 読み取り欄の更新・価格軸ダブルクリックでの復帰・
+  縦ドラッグ・右クリックのメニューがライブチャートと同じ結果。ライブチャートの表示は simチャート上に 0 件。
+  最新足ボタンは simチャートで出る。
+- **変わった見た目**: DD は面の塗りではなく線（ChartRenderer に面の塗りの種類が無い）。
+
+## ISSUE-538: 取引明細の hover と売買履歴チャートが連動しない
+
+- **ステータス**: RESOLVED（2026-09-27）
+- **重大度**: 中（取引明細で選んだ取引を売買履歴チャートで追えない。売買履歴チャートで選んだ取引を取引明細で探せない）
+- **起票日**: 2026-09-27（依頼者指示「ISSUEに起票」）
+- **実測（2026-09-27・ジョブ af66486f7c624293ae410cdb7b9e0865・実 UI）**:
+
+  | 操作 | 価格ローソク足priceChart | 売買履歴チャート |
+  |---|---|---|
+  | 取引明細の行（#10）に hover | 区間の外 1254 本が不透明度 0.15、区間内 2 本は元の色 | 変化なし（色のついた明るい画素 13504 → 13504） |
+  | 売買マークに hover | 区間の外 1228 本が暗くなり、取引明細の該当行（#7）が明るくなる | 区間の外の足と他のマークが暗くなる（13504 → 1285）。取引明細は変化なし |
+
+- **数え方**: priceChart は iframe の `__candlesDimmed` と `__simCandleSeries.data()` の `color` 付きの足を数えた。
+  売買履歴チャートは外から触れる窓口が無いため、`#trade-detail-popup` が出る座標を走査してマーカーを見つけ、
+  価格ペインのうち十字線を避けた範囲（x 400〜1500）の色のついた明るい画素を数えた（PIL）。コードは変更していない。
+- **機構（コードで確認・未実測の部分を含む）**: priceChart と取引明細は `linkage`（`/sim/report-js/linkage.js`・
+  iframe が `__simLinkage` として出している）で結ばれている。売買履歴チャートの明暗は `TradeMarkersRenderer` の
+  マーカー hover（`hoveredObjectId`）→ `ChartRenderer.dimCandlesOutsidePair` だけが起点で、`linkage` を購読も発行もしない。
+- **対策（根本・未着手）**: 売買履歴チャートを同じ `linkage` へ結線する（取引明細・priceChart と同じ hover の状態を共有する）。
+  `TradeMarkersRenderer` に外から取引を指定して強調する口があるかは未確認。
+- **対策（実施 2026-09-27）**: 売買履歴チャートを子文書の `linkage` へ双方向に結線した。子が `window[SIM_LINKAGE_GLOBAL]` で出し、
+  親は子の完了（`whenChildReady`・高さの測定と同じ待ち方）を待って `bindLinkage` する。売買マークは取引番号
+  （`pairs[].id`・ISSUE-539）で強調する（`TradeMarkersRenderer.highlightTrade` / `onHighlightChange` を追加）。
+- **実測（2026-09-27・実 UI）**: 取引明細の行 #10 の hover で売買履歴チャートが暗くなる（13504 → 1630）。
+  売買履歴チャートのマーカー hover で取引明細の行 7 が明るくなり priceChart も暗くなる。
+
+## ISSUE-539: 同じ取引が取引明細と売買履歴チャートのポップアップで違う番号・時刻で出る
+
+- **ステータス**: RESOLVED（2026-09-27）
+- **重大度**: 中（取引を突き合わせるときに別の取引と取り違える）
+- **起票日**: 2026-09-27（依頼者指示「ISSUEに起票」）
+- **実測（2026-09-27・ジョブ af66486f7c624293ae410cdb7b9e0865・実 UI）**: 売り 66185 → 66235・損益 −50 の取引が、
+  取引明細では「10・2026.09.25 01:36:00（決済 01:37:00）」、売買履歴チャートのポップアップ（`#trade-detail-popup`）では
+  「#9 SELL・2026/09/25 10:36:00（決済 10:37:00）」と出る。番号が 1 つ、時刻が 9 時間ずれる。
+  同じ画面の読み取り欄は「2026-09-25 01:39」（足の時刻）で、取引明細と同じ時刻系で出ている。
+- **原因**: 未確認（番号の数え始め・時刻の表示に使う時刻系を、`trade_markers.json` と `TradeMarkersRenderer` で確認する）。
+- **原因（コードで確認）**: 番号は、取引明細が `id = i + 1`、ポップアップが位置 `i` を出していた（定義が 2 か所）。
+  時刻は、ポップアップだけ JST（ISSUE-026 の旧決定）で、時間軸・読み取り欄・取引明細は UTC。
+- **対策（実施 2026-09-27）**: 取引番号の定義を `simulator/domain/trade_record.trade_number` 1 か所にし、report と
+  presenter（`pairs[].id`）が使う。ポップアップは `pairs[].id` を出し、時刻は UTC（依頼者裁定 2026-09-27「UTC に揃える」）。
+- **実測（2026-09-27・実 UI）**: ポップアップ「#7 BUY … 01:05:00」＝取引明細の行 7（2026.09.25 01:05:00）と一致。
+- **残**: ライブの `indigators/indicator_ui/web/data/trade_markers.json`（663 ペア）は `id` を持たないため、ライブチャートの
+  ポップアップは番号を出さない。作り直すと番号が出る（`simulator/tools/export_trade_markers.py`）。
+
+## ISSUE-540: 投入直後に「結果を見る」を押すと、完了しても取引明細と売買履歴チャートが表示されない
+
+- **ステータス**: RESOLVED（2026-09-27）
+- **重大度**: 中（結果が出ているのに画面が空のまま残り、利用者は失敗と区別できない）
+- **起票日**: 2026-09-27（依頼者が実 UI で遭遇。コンソールの 409 を提示）
+- **実測（2026-09-27・実 UI・フォームから投入）**: 「スタート」→ 受付直後に「結果を見る」→
+  report.json / chart_overlay.json が 409（未完了）。取引明細 0 行・売買履歴チャート空のまま、完了後も更新されない。
+  完了（約 24 秒）を待ってから押すと正常表示＝押す時機だけで結果が変わる。依頼者提示のジョブ fcb3653c… も
+  要求時刻（01:46:05）が成果物の書き終わり（01:46:07）より前で同型。
+- **原因（コードで確認）**: 結果ビューアの組み立ては読み込み時に 1 回だけで、`not_ready`（409）は理由の掲示で
+  終わり誰も読み直さない。売買履歴チャートは失敗時に `shownJob` を覚えたままにするため、後続の load イベントでも
+  「同じジョブ」の早期 return で再試行が塞がれていた。
+- **対策（根本）**: `job_completion_wait.js`（新設）が「実行中」を掲示し、M7 `job_status_client` の watch で完了を
+  待って**文書を読み直す**（組み立ての第 2 経路を作らない・親の売買履歴チャートも load イベントで従う＝監視は
+  文書につき 1 本）。失敗・取消は理由を掲示。売買履歴チャートは読めなかったジョブを覚えない（再試行可能）＋
+  409 は「完了していない」と掲示。`mountSimReportView` の戻り値にあったスコープ外参照 `resultChartJob()`
+  （呼ぶと ReferenceError・参照 0 件）も除去。
+- **検査**: `sim_report_view_wait.test.js`（掲示・完了で reload 1 回・失敗は掲示のみ・破棄で監視停止・
+  計算量: 監視は 1 本、実行中の更新を何度受けても増えない）。売買履歴チャート側は 409 の掲示と再試行を固定。
+- **実測（是正後・実 UI・利用者経路）**: 投入直後に押すと上下とも「実行中」系の掲示。24 秒後に自動で
+  取引明細 200 行・売買履歴チャート（描画 23・ペイン別凡例 5）が表示された。
+
+## ISSUE-541: 1 回の run が同じ系列 CSV を 12 回読む（投入→表示の固定費 24 秒の主因）
+
+- **ステータス**: RESOLVED（段 1・段 2 実施 2026-09-27。段 3 は下の記録＝別承認）
+- **重大度**: 中（動作確認の every run に定額 24 秒。分単位の期間指定（0f460ec6）で run 自体を
+  10 本へ縮めても所要時間が変わらない＝固定費が支配していることを実測）
+- **起票日**: 2026-09-27（依頼者指示「固定費の削減を調査しろ」）
+- **実測（2026-09-27・10 本の run・cProfile）**: 子プロセス単体 24.0 秒。内訳:
+  - `pandas read_csv` 累計 **18.8 秒・12 回**（`jp225_mt5_spread_m1.csv`＝147MB・2,148,667 行。1 回 ≈ 1.6 秒）
+  - インタープリタ起動＋import ≈ 0.5〜0.9 秒／エンジン実行（10 本）≈ 0 秒／残りは書き出し等
+- **12 回の構造（コードで確認・呼び出し元は cProfile の callers で実測）**:
+  - 横の重複＝**同じ組み立てを 1 run で 4 回**: (1) run 本体（`run_settings_job` → `build_interactor`）
+    (2) 表示用の足の取り直し（`_load_run_inputs` → `build_interactor`。report.json と chart_overlay の間は
+    `load_once` で共有済みだが run 本体とは共有しない） (3) 接点（`_supply_contacts` → `build_run_indicators`）
+    (4) 売買履歴チャートの指標（`_write_chart_overlay` → `build_run_indicators`）
+  - 縦の重複＝**1 回の組み立ての内部で同じ CSV を 3 回 parse**（`sources.py` の frame・`row_times_for`・
+    OHLC の `load`）。4 × 3 = 12
+- **なぜ検査で落ちなかったか**: 出力は正しいままなので状態検証では原理的に落ちない
+  （ISSUE-450/257 と同型。読み込みの回数を数える計算量検定が無かった）
+- **対策（根本・段階分割）**:
+  - 段 1（横の単一化・sim_ui 内）: run が使った材料（bars・symbol_spec・indicators）を実行段で 1 回だけ
+    組み、書き出し群へ値として配る。通過条件: Test Spy で「1 run の build_interactor /
+    build_run_indicators 発行 − 1 = 0」。見込み 24 → ≈10 秒
+  - 段 2（縦の単一化・simulator/main 内）: 1 組み立て内の 3 parse を 1 parse に（読みの単一点から
+    派生ビューを配る）。通過条件: 「1 run の read_csv 発行 − 1 = 0」（窓 2 種で不変）。見込み ≈7 秒
+  - 段 3（全量読みの解消・別承認）: 窓を読み込みへ押し下げられる供給形式（月分割・Parquet 等）。
+    データ実体・技術スタックに触れるため別途 y/n。見込み ≈5 秒＋
+- **実施（段 1・横の単一化）**: 唯一の実行段 `execute_interactor_kwargs` が実行した request も返し、
+  `run_settings_job` がそれを 4 要素目で配る。run_job は表示用の足・銘柄仕様を request の値で受け
+  （`build_interactor` の取り直しを廃止）、指標は `_write_report_payload` の `load_indicators` が
+  1 回だけ組んで report.json（接点）と売買履歴チャートが共有する。
+- **実施（段 2・縦の単一化）**: 読みの単一点 `simulator/adapter/repository/ohlc_frame_cache.py` を
+  新設（鍵＝実パス・mtime_ns・サイズ・sep。usecols は射影＝parse しない。返す DataFrame は
+  読むだけの契約）。2 つの読み口（`sources._read_or_data_error`・`_ohlc_frame.read_csv_or_data_error`）
+  が同じ実体を 2 度 parse しない。
+- **検査**: 観測の境界は cache が宣言する `set_reader` / `parse_log`（内部名の monkeypatch なし）。
+  起票時の通過条件は「build_* の発行を Spy で 1 回」だったが、組み立ての回数は CSV を読まなければ
+  無害な CPU 量なので、**測るのは parse の発行**に改めた（発行 − 相異なる実体 = 0・1 ジョブの系列
+  parse ちょうど 1 回・窓 2 点で不変）。`test_ohlc_frame_cache.py`・`test_run_read_complexity.py`。
+- **実測（是正後・同じ 10 分 spec）**: 子プロセス 24.1 秒 → **4.2 秒**。成果物 5 ファイル
+  （report.json / stats.json / chart_overlay.json / trade_markers.json / report.md）は是正前と byte 一致。
+  Python 全件 7122 passed。
+- **実施（段 3・2026-09-27 依頼者承認「段3も着手しろ」）**: 是正後の再実測で、残る固定費は
+  parse 1.22 秒＋**時刻列の全列 to_datetime ×4 で 1.36 秒**（run 本体と指標の組み立てが各 2 回・
+  出力不変の重複）だった。供給形式には触れず、読みの単一点で 2 つを除去:
+  - parse を pyarrow エンジンで行う（`PARSE_ENGINE`・import 時に 1 回判定。pyarrow 24.0.0 は
+    tick-store が既に依存＝新ライブラリなし。無い環境は pandas 既定の C パーサ＝値は同じ）
+  - 派生値の memo `memo_on`（同じ frame・同じ名前の導出は 1 回。id 再利用は保持 frame との
+    同一性照合で防ぐ）。marketdata 形式の時刻解釈 `_utc_times` が経由する
+  供給形式の変更（月分割・Parquet 正本化）は**不要になったため行わない**——毎分追記される
+  系列実体に対して Parquet 副本は毎 run 陳腐化し、逆に遅くなることを設計段階で棄却した。
+- **実測（段 3 後・同じ 10 分 spec）**: 子プロセス 4.2 秒 → **1.1 秒**（累計 24.1 → 1.1 秒）。
+  成果物 5 ファイルは段 1 以前の基準と byte 一致。Python 全件 7125 passed。
+  実 UI（利用者経路）: 投入から表示まで 6 秒 →（サーバ再起動後に再実測予定）。
+
+## ISSUE-542: 完了検知が 1 秒周期のポーリングで、平均 0.5 秒の待ちを足していた
+
+- **ステータス**: RESOLVED（2026-09-27）
+- **重大度**: 低〜中（run が約 1 秒になった後は、投入→表示の残り時間の最大項）
+- **起票日**: 2026-09-27（依頼者「周期短縮について結論のみ述べよ」→ 周期短縮は応急処置として棄却、
+  long-poll を提案し承認）
+- **実測（是正前）**: 利用者経路 2.16 秒のうち、サーバ terminal → 表示が 0.91 秒。うち完了検知の
+  待ち（1 秒周期の次の照会まで）が平均約 0.5 秒。
+- **対策（根本・NFR-04 改訂）**: 状態照会 `GET /sim/jobs/{id}` に `wait_ms`（上限 25 秒）を追加し、
+  **terminal まで応答を保留**する（long-poll）。ThreadingHTTPServer は要求ごとに 1 スレッドなので
+  保留中も他の要求を塞がない。クライアント（M7 job_status_client）は周期タイマーを廃止し、
+  保留照会を直列に張る（タイマーは失敗時の再試行 1 秒だけ）。`stop()` は保留中の接続を
+  AbortController で切る（再投入の繰り返しで接続が溜まらない）。
+- **検査**: 実 HTTP で「0.2 秒後に完了へ倒すと保留照会が 1 秒未満で返る」「締め切りで現在の状態を
+  返す」「終端済みは即応答」「不正な wait_ms は 400」。クライアントは「成功応答の間はタイマー 0」
+  「発行した照会 − 受けた応答 = 0（周期に比例しない）」「stop で保留接続を切る・切れた保留を失敗と
+  数えない」。基本設計書 NFR-04 の 2 行を改訂。
+
+## ISSUE-543: 静的品質検定の違反キーが Python 版依存で、環境の版差だけで既存違反が「新規」再報告される
+- **ステータス**: RESOLVED（2026-09-27 依頼者指示「止めろ」により根本対策を実施）
+- **重大度**: 中（実測: 本セッション〔クラウドコンテナ・Python 3.11.15〕で Stop フックが毎ターン exit 2 → 再喚起。作業を実際に塞いだ）
+- **事象（実測 2026-09-27）**: Stop フックの静的品質検定が「新規違反 22 件（＋T1 ほか 141 件）」を報告。
+  列挙されたファイルはいずれも本セッションの変更対象外（変更 8 ファイルとの一致 0 件を突合で確認）。
+- **数え方（実測手順）**:
+  1. `di.run` / `tq.run` を直接呼び、baseline との差分を採取 → 3.11 で tq 新規 151 件。
+  2. ident のハッシュ部（12 hex）を `H` に正規化して baseline と突合 → 151 件中 149 件が
+     「同一ファイル・同一テスト名・ハッシュのみ相違」（例: `test_ols_fit...:700c63b2b109`〔baseline〕
+     vs `:6ae6951528f4`〔3.11 実測〕）。該当ファイル群と baseline は同一コミット fbbc86a が最終更新
+     ＝凍結時点では一致していた。
+  3. `uv run --python 3.14` で同じ検定を再実行 → tq 新規 151 件 → **4 件**に消滅。
+     ゲート全体（run_quality_gate.py）でも 3.11: 新規 163 件 → 3.14: 新規 4 件（T8 のみ）。
+- **原因**: `violation_key.node_digest` が `sha1(ast.dump(node))`。`ast.dump` の出力は Python の
+  版で変わるため、キーが「違反ノードの内容」ではなく「内容 × インタープリタ版」に依存する。
+  プロジェクト規定の実行系は python:3.14（Dockerfile:31）、本コンテナは 3.11.15。
+- **対策（実施 2026-09-27・依頼者指示「止めろ」を承認として実施）**:
+  1. `violation_key.node_digest` の材料を `sha1(ast.dump(node))` から**違反ノードのソース断片**
+     （`ast.get_source_segment` の空白正規化テキスト）の sha1 へ変更。ソーステキストは版に依らず
+     同一なので、キーは内容だけに依存する。全 digest 呼出点（C2/C3/T1/T4/T5/T7/T8-syspath）へ
+     src を明示注入（観測境界の宣言）。
+  2. T8 の代表パス `nopkg[0]` を `sorted(nopkg)[0]` に決定化（挿入順＝`rglob` 走査順は 3.13 の
+     実装変更で版依存だった。同型の版依存）。
+  3. 「違反集合」の定義を `run_quality_gate.SUITES` へ単一ソース化。`test_static_quality.py` と
+     `test_declaration_integrity.py` が生の `di.run`/`tq.run` で第 2 定義を持ち、gate が落とす
+     C1（散文引用・実在パス）をテストだけが数えて恒常的に赤だった（実測: HEAD を worktree ＋
+     3.14 で走らせて 4 件赤＝本セッション以前からの既存債務）。
+  4. baseline を再凍結（di 1662 件・tq 439 件。ratchet 上限 1859/450 以内）。
+  5. 検定追加: `test_ident_stability.py` に「別版の python3 で同一木を走査して ident 集合一致」を
+     機械的に強制する性質 5 を追加（宣言でなく検査で強制）。
+- **実測（対策後）**: ident 全集合が 3.11 と 3.14 で完全一致（declaration 1662 / test_quality 439・
+  差分 0）。`run_quality_gate.py` は 3.11 で exit 0・3.14 で exit 0。ゲート自己検定 26 件（3.11）＋
+  10 件（3.14）全緑。
+- **記録（発生未実測・調査せず）**: T8（`__init__.py` の無いディレクトリでのテスト basename 重複・
+  代表パス決定化後 5 件: test_module_loader.py ×2 / test_core.py ×19 / test_lwc_chart.py ×21 /
+  test_rolling_span_freeze_last.py ×2 / test_levels.py ×2）は本セッション以前から存在し、再凍結で
+  baseline へ凍結した。pytest の import 衝突は未観測。解消は別作業（ファイル改名 or パッケージ化）。
+
+## ISSUE-544: report.json の meta.initial_deposit が run 設定に依らず定数 10000 で書かれる
+- **ステータス**: RESOLVED（2026-09-28・ISSUE-547 と同じ原因の除去）
+- **重大度**: 低〜中（payload の誤値は実測。表示面への波及は機構確認のみ・発生未実測）
+- **事象（実測 2026-09-27・MarginProbe_EA の動作確認中に発見）**: ジョブ経路
+  （`run_job.py --job-dir`）で `spec.json` の `backtest.initial_deposit=100000.0` を指定して
+  実行したところ、書き出された `report.json` の `meta.initial_deposit` が `10000.0` だった
+  （`stats.json` の `initial_deposit` は 100000.0 で正しい）。
+- **原因（機構は確認）**: `simulator/report_ui/usecase/build_report_payload.py:30` の定数
+  `INITIAL = 10000.0` が `_meta()`（同 :149）で run 設定を読まずそのまま書かれる。
+- **記録（発生未実測）**: 親ページの売買履歴チャートは `payload.meta.initial_deposit` を
+  `tradeCloseCurves` の基準に使う（`composition_root_front.js` loadTradeClose）ため、
+  初期資金 10000 以外の run では残高・DD 系列の基準がずれる機構になっている。表示のずれ
+  自体は未実測（実測した時点で本文へ追記する）。
+- **数え方**: MarginProbe_EA・合成データ 20 本・initial_deposit=100000 の 1 run。触ったのは
+  spec.json の値のみ。修正は未実施（report_ui 共有 UC のため承認後に着手）。
+- **実施（2026-09-28）**: 定数 `INITIAL = 10000.0` を廃止し、meta.initial_deposit と summary の return_pct・
+  final_balance の既定値を run の統計の初期証拠金から取る。検定 `test_meta_initial_deposit_is_the_runs_value`（100000 の run）。
+
+## ISSUE-545: サマリーの Sharpe Ratio が MT5 と別の定義で計算され、値が大きく食い違う
+- **ステータス**: RESOLVED（2026-09-28・結果は本節末尾）
+- **重大度**: 高（表示値の誤り・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: report_ui export の実 run（取引 5,224 件・純損益 11,370 が MT5 と完全一致する run）で、
+  Sharpe Ratio の表示が IS **4.83**（MT5 **23.318715**）・OOS **−2.64**（MT5 **−5.00**）。
+  sim ジョブ（CalcProbe_EA 2026.09.01〜09.25）でも同じ式の値（−3.50）が表示される。
+- **原因（コードと出典で確認）**: `simulator/usecase/mt5_parity.py` の `sharpe_ratio_per_trade`
+  は「取引ごとの損益の平均 ÷ 標準偏差 × √N を [−5, 5] で切る」。docstring 自身が「クランプは仮説・出典 TBD」。
+  MT5 の定義（MetaQuotes の回答 https://www.mql5.com/en/forum/492425 ・build 3210 で改訂・記事
+  https://www.mql5.com/en/articles/9171 ）は「足ごとの有効証拠金の対数収益（変化の無い足は除く・Rf=0・
+  母標準偏差）× √(1 日の足数) × √252」。
+- **実測（数え方）**: MT5 xlsx 9 本の Deals 表から取引ごとの式・HPR の式・日次の式を計算 → どれも不一致
+  （正の MT5 値 7.61 / 11.81 / 23.32 は上限で切られておらず、[−5,5] 仮説は否定）。
+  export の実 run に `AccountCurveRecorder` を注入して足ごとの有効証拠金を取り、MT5 の定義で計算 →
+  IS **22.66**（MT5 23.32・差 2.8%）、OOS **−13.67**（MT5 −5.00。負の MT5 値は 6 本すべて −5.00 で、
+  下限 −5 で切る形と整合＝推論）。
+- **未確定（着手前に実測で確定させる）**: IS の 2.8% の差の原因（ティックの作り方の差か＝推論）、
+  下限 −5 の有無と上限の有無。
+- **関連**: ISSUE-013（クランプ仮説の起点）
+- **結果（2026-09-28・実測）**: 足の値を「足の**最初の**評価点の有効証拠金」にすると、MT5 の定義
+  （対数収益・変化の無い足を除く・母標準偏差・√(86400÷足の秒数×252)）で完全に一致した。
+  stop-probe IS 23.318957（MT5 23.318715）・4 月全体 11.812502（MT5 11.812356）。
+  負の側は下限 −5 で切る: OOS −13.62→−5.00・ma_slope 固定データ −30.10→−5.0（MT5 どちらも −5.0）。
+  足の最後の点・最大・最小・平均、単純収益、ティックごとの系列は 1〜60% 不一致（同じ実測で否定）。
+- **実施**: `mt5_parity.sharpe_ratio_bar_equity` / `bar_period_seconds` を追加し、エンジンが各足の
+  最初の評価点の equity の位置を記録して `compute_stats` へ渡す。検定: 定義・下限・足の秒数・
+  系列を 1 回だけ読むこと（`test_sharpe_bar_equity.py`）、実 run で MT5 の表示値
+  （`test_export_oracle.py`）。エンジンの指紋は、Sharpe だけを旧い式へ差し戻すと旧値と一致する
+  ことを A・B・C で確かめてから取り直した。
+- **未検証（記録）**: −5〜0 の値を持つ MT5 参照は未入手。「−5 で切る」と「負は −5 に揃える」の
+  区別はその範囲でしか付かない。残高・有効証拠金が 0 以下の足を含む組は使わない（ISSUE-546 と同じ未定義域）。
+
+## ISSUE-546: 残高が 0 以下になった run でサマリーの GHPR が「nan (nan%)」と表示される
+- **ステータス**: OPEN
+- **重大度**: 中（表示値の欠損・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: sim ジョブ（CalcProbe_EA・jp225_mt5_spread・2026.09.01〜09.25・フォーム投入）で、
+  最終残高が −55.2 になり、サマリーの GHPR が `nan (nan%)`。同じ run の AHPR は 0.9923 と数値を出すが、
+  負の残高を含む比から作った値で意味を持たない。
+- **原因（コードで確認）**: `metrics_spec.ghpr` は HPR（残高の比）の積の 1/N 乗。負の比が入ると
+  負数の分数乗で NaN。残高が 0 以下になる run の扱いが定義されていない。
+- **記録（発生未実測）**: 残高が 0 以下になるまで取引が続くこと自体（証拠金維持率 0.23%）が
+  ロスカットの規則として正しいかは未調査（2026-09-27 に 1 行記録済みの件と同じ run）。
+
+## ISSUE-547: 同じ run の「勝率」が 比較・判定 と サマリー で違う定義になっている
+- **ステータス**: RESOLVED（2026-09-28）
+- **重大度**: 中（同じ語に 2 つの値・実測）
+- **起票日**: 2026-09-28
+- **事象（実測）**: 上記 sim ジョブで、summary.win_rate（比較・判定タブの「勝率」）が **19.37%**、
+  サマリーの Profit Trades が **21.71% (269)**。損益 0 の取引 29 件（profit>0 が 240 件・>=0 が 269 件）の扱いが違う。
+- **原因（コードで確認）**: `build_report_payload._summary` は `profit > 0` を勝ちに数え、
+  サマリー（`mt5_parity.profit_trades`）は MT5 規則の `pnl >= 0` を勝ちに数える。
+  summary の `return_pct` と final_balance の既定値も定数 `INITIAL = 10000.0`（ISSUE-544 と同じ原因）。
+- **実施（2026-09-28）**: summary の勝率・ペイオフ比をサマリーと同じ統計（profit_trades＝pnl ≥ 0・
+  average_profit/loss_trade）から取る。検定: 損益 0 を含む run で 比較・判定の勝率 と Profit Trades の割合が一致。
+
+## ISSUE-548: サマリーの書式が MT5 と違う（件数と％の順・％の欠落）・sim の Period が空
+- **ステータス**: RESOLVED（2026-09-28・Z-Score の確率 1 件の差は下に記録）
+- **重大度**: 低（値は正しい・表示の形の違い・実測）
+- **起票日**: 2026-09-28
+- **事象（実測・MT5 xlsx と並べて比較）**:
+  - Profit / Loss Trades・Short / Long Trades: 表示 `31.68% (1655)`、MT5 `1655 (31.68%)`（順が逆）。
+  - AHPR: 表示 `1.0001`、MT5 `1.0001 (0.01%)`。Z-Score: 表示 `-0.09`、MT5 `-0.09 (7.17%)`。
+  - sim ジョブの Period が空（writer が「期間の表示文字列は job 仕様に無い」として空文字を渡す。
+    実際には `.ini` の FromDate/ToDate が spec にある）。
+- **照合済みで一致した項目（同じ実測）**: Initial Deposit・Total Net Profit・Gross Profit/Loss・
+  Profit Factor・Recovery Factor・Expected Payoff・件数 4 種・Largest/Average profit/loss・連勝連敗 6 種・
+  Balance DD 3 種・Equity DD 3 種・Z-Score の値・GHPR・Total Deals・LR 2 種（IS/OOS の 2 区間）。
+- **実施（2026-09-28）**: 件数 4 種を「件数 (割合%)」、AHPR/GHPR を「値 (増減%)」、Z-Score を「z (確率%)」に。
+  確率は 2 桁に丸めた z の erf(|z|/√2)（MT5 実レポート 10 本中 9 本が小数 2 桁一致・z=−3.02 だけ 99.75 対 MT5 99.74＝
+  MT5 の正規分布の近似式は未特定）。sim の Period は `.ini` の FromDate/ToDate をそのまま、無ければ run の足の
+  最初と最後の日付で「時間足 (開始 - 終了)」。実 UI で確認（M1 (2026.09.25 01:30 - 2026.09.25 01:39) など）。
+- **記録**: Sharpe などが「-5」と出る（MT5 は -5.00）のは移植元 report_ui の表示整形（fmtReportVal が小数 0 を整数に
+  する）で、プロトタイプも同じ表示だった（参照実装どおり）。
+
+## ISSUE-549: 連勝・連敗の指標が、損益 0 の取引を含む run で MT5 と食い違う
+- **ステータス**: RESOLVED（2026-09-28・結果は本節末尾）
+- **重大度**: 中（表示値の誤り・実測）
+- **起票日**: 2026-09-28（metrics_steps.txt の精査・依頼者指示）
+- **事象（実測）**: MT5 実レポートの Deals 表の損益を本番と同じ関数へ入れ、MT5 の表示値と突き合わせた
+  （xlsx 9 本＋固定データ golden＋HTML の 11 本・1 本あたり 33 項目）。食い違いは
+  Maximum consecutive wins（件数・金額）だけで、**損益 0 の取引を含む run でだけ**出る:
+  2026-01_ma-market（0 損益 72 件）件数 4 / 金額 130 対 MT5 5 / 155、
+  2026-03_ma-market（10 件）金額 120 対 MT5 400、golden ma_slope_202501（75 件）金額 67 対 MT5 85。
+  損益 0 が無い stop-probe 3 本・0 損益が少ない run は全件一致。
+- **原因（実測で特定）**: `metrics_spec._runs` は「損益 0 はランに属さず前後を区切る」、最長ランが
+  複数あると「最初のもの」を採る。規則の組み合わせ 12 通り（0 の扱い: 区切る／飛ばす／勝ち／負け ×
+  同長の選び方: 最初／最後／金額の絶対値が最大）を 11 本へ当てた結果、**全件一致は 1 通りだけ**:
+  「損益 0 は勝ちに数える（件数と同じ pnl ≥ 0）・同じ長さのランが複数なら金額の絶対値が最大のもの」。
+- **なぜ検査で落ちなかったか**: golden の検定は連勝の**件数**（4＝一致）だけを比べ、**金額**（85）を
+  比べていない（`test_compute_stats_golden_mt5.py:188-196`）。
+- **精査で確認した一致（同じ実測）**: 損益 4 種・件数 4 種・勝率 2 種・Largest/Average 4 種・
+  Maximal consecutive profit/loss・Average consecutive（四捨五入で 11 本一致）・Balance DD 5 種・
+  Z-Score・AHPR・GHPR・LR 2 種・Total Deals。
+- **記録（精査で見つけた小さな点・損害未実測）**: 旧 Sharpe の関数 `sharpe_ratio_per_trade` は本番から
+  呼ばれないのに「MT5 一致」と注記が残る。ログの件数の行は割合が出ていない。Z-Score の確率（%）は
+  ログにもサマリーにも無い（ISSUE-548）。ログの「一致」は同じ関数・同じ入力の照合であり、式の正しさは
+  示さない（式の正しさの根拠は MT5 との突き合わせ）。
+- **実施（2026-09-28）**: `metrics_spec.is_run_win` を pnl ≥ 0 に、`_runs` を 2 値分割（損益 0 で区切らない）に、
+  最長ランの選び方を `_longest`（長さ→金額の絶対値）に置き換えた。ログ（metrics_steps）の説明も同じ規則へ。
+- **検証**: `test_consecutive_runs_mt5.py` が MT5 xlsx 9 本と golden で連勝・連敗 8 項目を MT5 の表示値に固定
+  （旧規則へ差し戻すと予想どおり 2026-01×2・2026-03・golden の 4 本が落ちる＝空振りしない）。計算量:
+  区切りは各取引の pnl を 1 回だけ読む（長さ 50 / 5000）。エンジンの指紋 A・B は、HEAD の指紋が旧値と
+  一致し新旧の差が連勝の列だけであることを確かめて取り直した（B の max_con_profit_trades 67.4→85.0 は
+  MT5 golden の 85 と一致）。Python 全件 6,792 件の残り 2 件（この指紋）を解消。実 UI で 44 項目一致。
+
+
+## ISSUE-550: MT5 常駐が「今日と昨日」のジャーナルしか見ず、週末をまたぐ停止のたびに --from の手入力が要った
+- **ステータス**: RESOLVED（2026-09-28）
+- **重大度**: 高（ライブの MT5 系列が止まった・実測）
+- **事象（実測 2026-09-28）**: `jp225_mt5` / `jp225_mt5_spread` の最新の足が 09-25（金）20:58 UTC のまま。
+  VM（172.16.162.50:8771）が TCP 不達（5.01 秒でタイムアウト）で、12:44 の常駐は「供給元へ到達できません」で
+  終了。VM 復旧後の 13:02 の起動は「コールドスタートには --from が要ります」で終了した。
+- **原因（コードで確認）**: 再開点の探索窓が固定 2 日（`RESTORE_LOOKBACK_DAYS = 2`＝今日と昨日）。
+  最後のジャーナルは 09-25 で、月曜 09-28 の窓 [09-28, 09-27] の外。週末をまたぐ停止のたびに手入力が要る設計だった。
+- **対策（根本）**: 窓を「今日から遡って最初に見つかったジャーナルの日から今日まで」に変更（最低 2 日は従来どおり）。
+  探索は止まっていた日数に比例し、保存済みの日数に比例しない。ジャーナルが 1 つも無いときだけ --from を求める。
+  どの日から再開したかを起動時のログに出す。
+- **検証**: 3 日後の再起動が --from 無しで再開する／探索回数は保存日数 5・50 で同じ・空白 3 日より 10 日で多い
+  （計算量）／ジャーナル無しは --from を求める。旧い窓へ差し戻すと前 2 件が落ちる（空振りしない）。
+  実データ（読むだけ）で窓と再開点を確認。
+- **今回の復旧**: 依頼者が 13:08 に `MT5_TICK_WATCH_FROM=1790380717202` で起動し直し、追いついた
+  （月曜の取引開始 09-27 22:01 UTC 〜 12:53 の 891 本・5 分超の欠けなし・13:09 まで追随）。
+- **残る前提（依頼者側）**: VM 再起動で供給が止まる根（ISSUE-524・対話ログオン限定の起動）は VM 側の自動ログオン構成で解消する。
+
+
+## ISSUE-551: 追記中のデータ実体を 1 つの run が複数回読み、行数がずれて run が失敗する（「準備中」のまま約 3.5 分後に失敗）
+- **ステータス**: RESOLVED（2026-09-28）
+- **重大度**: 高（実 UI で run が失敗・実測）
+- **事象（実測 2026-09-28・依頼者報告「準備中から進まない」）**: CalcProbe_EA・JP225 M1・Model=0・Dates=0（全期間）・
+  data_path=`data/marketdata/jp225_mt5_spread_m1.csv` のジョブ `0a327aeb…` が 13:40:59 開始→約 3.5 分「準備中」→
+  13:44:36 に failed「指標系列の長さがデータ実体の行数と一致しません（時刻で対応させられない）」
+  （`adapter/indicator/bar_aligned_registry.py` の `_slice`）。
+- **原因（実測）**: data_path は MT5 常駐が毎分追記している（13:45→13:46 で 2149609→2149610 行・mtime 更新を実測）。
+  1 つの run が同じ実体を別々に読む: registry 用 frame（`sources._frame_of`）・Bar 列（`market_data.load`）・
+  行の時刻（`row_times_for`）。`ohlc_frame_cache` の鍵は (mtime, size) なので、追記があると読み直す。
+  読みの間に Bar 列の組み立てが約 3.5 分かかるため、その間に行が増えて系列長と行数が食い違う。
+- **対照実験**: 同じ spec の data_path だけを静止コピー（scratchpad・2149611 行）へ差し替えると失敗せず進む
+  （286 秒で 15%）。変えたのは data_path のみ。
+- **準備中が長い原因（実測）**: `_ohlc_frame.frame_to_bars` が 1 行ずつ pandas の `.iat` で 7 列を取り出す。
+  10 万行で 10.4 秒（全 215 万行で推定 3〜4 分）。この間は `observe_start` の前なので進み具合が出ない。
+- **対策（根本・依頼者承認 2026-09-28）**:
+  - 段 1（e6c80d07）: `ohlc_frame_cache.pinned_entities` を追加し、`run_job.main` 全体をその区間で包む。区間内は
+    実体ごとに最初の読みの内容を返す（区間外＝常駐の sim core は従来どおり書き換えを読み直す）。
+  - 段 2（3f21022e）: `ColumnSpec.extract`（1 行ごと）を `columns`（列ごとに 1 回）へ置換。値・型は従来の `.iat` と同じ
+    （datetime64 列は Timestamp に包む）。
+- **検証**:
+  - 段 1: 読むたびに行を追記する reader（`set_reader`）で run_job が成功し、発行 − 相異なる実体 = 0（追記 1 行 / 3 行）。
+    区間の判定を外すと 7 件が落ちる（空振りしない）。
+  - 段 2: 列の取り出し − 使った列 = 0（行数 10 / 100 で不変・4 形式）。変更前後の Bar 列を追記されない複製で照合し
+    4 形式すべて値・型一致。所要: marketdata 215 万行 199.7s→10.9s・462 万行 381.6s→28.9s・mt5 4.5s→0.5s・comma 20 万行 15.4s→0.5s。
+    spread の検定は私有関数 `_spread_of` の差し替えをやめ、`_ohlc_frame.set_observer`（宣言した観測口）で数える。
+  - Python 全件 6,814 passed。
+  - 実 UI（8000 → シミュレーション → フォーム入力 → スタート）: 失敗したジョブと同じ設定（jp225_mt5_spread・全履歴・
+    全ティック・ロット 1）で、進み具合が 30 秒以内に出て（従来は約 3.5 分「準備中」）、約 2.5 分で completed。
+- **追補（2026-09-29）**: 固定区間を公開の run 入口（`run_backtest`・Settings 経路の実行段 `execute_interactor_kwargs`）にも掛けた
+  （621d3c70）。全件テストで全期間実データの run が追記と重なり exit=1（単独再実行は通過）となったため。追記する reader で
+  `run_backtest` が 3 回 parse して失敗することを再現し、是正後は 1 回・成功（追記 1 行 / 3 行）。
+
+## ISSUE-552: 1 分足で 5 万本を超える run の売買履歴チャートが「足がジョブの足と一致しない」で出ない
+- **ステータス**: RESOLVED（2026-10-01・段階 2 を実 UI で確認）
+- **重大度**: 高（実 UI で表示されない・実測）
+- **事象（依頼者報告 2026-09-28）**: 「売買履歴チャートの足がジョブの足と一致しないため表示しません。」
+  （ジョブ 388daac0…・CalcProbe_EA・jp225_mt5_spread・M1・全履歴）。
+- **原因（実測）**: run の足は 2,149,747 本（chart_overlay.json の account.time）。売買履歴チャートはライブの
+  `/candles`（8001）へ run の範囲を問い合わせるが、返ったのは末尾 50,000 本（1785516960〜1790611380）だけ。
+  ライブ側は 1 分足を末尾 `tail_reader.SERVING_TAIL_ROWS` 行に限って保持する（メモリ上限 D-2・`marketdata/dataset.py`）。
+  そのため `candlesMatchRunBars` の本数照合で必ず不一致になる。本日の ISSUE-551 の変更とは無関係（範囲読みの設計時点から）。
+- **対策案（根本・未実施・要承認）**: 売買履歴チャートの足を、ライブの配信ではなく**ジョブ自身の足**（run が実行した
+  Bar 列＝ジョブの成果物）から描く。ジョブの足と表示の足が同じ 1 つの出所になり、照合そのものが不要になる。
+
+- **段階 1 の実装（2026-09-30・コミット d885ce77〜84f5f2da・独立レビュー 2 回・🔴 0）**: 売買履歴チャートは足をジョブの
+  report.json から描く。chart_overlay.json から時刻の重複を除いた（実ジョブで 327.6→276.3MB）。
+- **段階 1 後の実 UI 実測（2026-09-30・ジョブ 66b108e1…・CalcProbe_EA・jp225_mt5_spread・M1・全履歴 2,152,183 本）**:
+  - 「一致しない」の掲示は出なくなったが、**タブ（統合ページ全体）が約 56 秒でクラッシュする**（Playwright の crash 事象）。
+  - 同じジョブの結果ビューア単体（report_view.html?job=）は 5.4 秒で描画・JS ヒープ 392MB で安定。
+    **訂正（2026-09-30）**: 結果ビューアは足を描かない（子文書は lwc に触らない・composition_root_front.js:15-16、
+    import_source.test.js:257）。描いたのは足以外の表示。「結果ビューアで全期間の足が見える」と報告したのは誤り。
+  - 同じ origin の空ページで report.json と chart_overlay.json を取得・解析するだけなら 3.2 秒・ヒープ 820MB で完走。
+  - 数え方: ローカルの chromium-1246（headless）で 8000 の実 UI を開き、シミュレーションへ切替え、子文書をジョブへ遷移。
+    ヒープは performance.memory.usedJSHeapSize。本体コードには触れていない。
+  - 推論（未実測）: 落ちるのは描画用の展開（系列 10 本 × 215 万点を点オブジェクトにし lwc へ渡す段）。どの段かは未計測。
+- **段階 2 承認（2026-09-30・案 A）**: 売買履歴チャートが持つ足と値を表示する範囲だけにする。初期表示は run の末尾の範囲、左へ動かすとジョブの成果物から前の範囲を読み足す（初期表示「全期間」を変更）。
+- **段階 2 の実装（2026-09-30・コミット 8a65e79e〜d4ee43ee・独立レビュー 2 回・🔴 0・🟡 はすべて是正）**:
+  - 足・口座・指標は範囲で読める 1 か所（chart_bars.parquet と宣言 chart_bars.json）にだけ書く。sim のジョブの report.json から
+    足を外し（組み立てもしない）、chart_overlay.json は書かない。配信は `GET /chart-bars/{job}/extent`・`/rows/{start}/{end}`
+    （位置の半開区間・1 回の上限 20,000 行・413/409/404/400）。
+  - 売買履歴チャートは run の末尾からライブと同じ本数を読み、利用者の操作の後の表示範囲の変化だけを起点に前後を読み足す。
+    持つ量は宣言から導く上限まで（本番値 19,500 本）。読む区間とつないだ後に持つ区間は planReads の 1 か所で決める。
+  - 実測（実ジョブ規模 2,152,352 本・scratchpad での再実行）: report.json 172.6MB→0.41MB・chart_bars.parquet 45.3MB・
+    末尾 1,500 行の読み 40.9ms。chart_overlay.json 276MB は無くなった。
+  - 計算量テスト: 読み込んだ行 − 返した行 = 0（サーバ）、読んだ行 − 操作の後も持ち続けた行 = 0（画面・上限未満/上限の両状態・
+    小数の表示範囲を含む）、組み立てた足 − 書いた足 = 0、書いた成果物 − 読み手のある成果物 = 0。
+  - テスト: Python 7,950 passed・web 全 8 スイート緑・静的品質検定 exit 0。
+  - **未実施**: 実 UI（フォーム投入→表示）での 215 万本の確認。稼働中の sim core が変更前のコードのため
+    `/sim/chart-bars` が 404。serve.sh の再起動後に行う。RESOLVED にするのはその確認の後。
+  - 記録（発生未実測）: 足の成果物の書出しに失敗したジョブ・台帳に無いジョブも「変更前に実行された」の掲示になる。
+    名前と実体の不一致（chart_overlay_writer ほか）。e2e verify_sim_display_parity.py は R1（canvas 9 個）で落ちる（段階 2 の前から）。
+    段階 1 後のクラッシュがどの段で起きたかは未計測のまま（全足×全系列を持つ経路そのものを無くした）。
+- **実 UI 確認（2026-10-01・利用者の操作経路）**: 8000 の統合ページでシミュレーションへ切替え→フォーム（CalcProbe_EA・JP225・M1・
+  jp225_mt5_spread・全履歴）でスタート→「結果を見る」。ジョブ 94aadcb4…（足 2,153,128 本・取引 1,016）。
+  - 実行中は 409 で「完了していないため…」を掲示。完了後 extent→末尾 1,500 本（rows/2151628/2153128）を 1 回読み、約 2 秒で描画。
+    クラッシュ 0・ページエラー 0・JS ヒープ 25MB（段階 1 は約 56 秒でタブがクラッシュ）。
+  - 左へのドラッグ 6 回で読み足し 4 回（各 1,500 本・連続する区間）、その後 3 秒の無操作で読み 0。ヒープ 39MB。
+  - 数え方: ローカル chromium-1246（headless）で実 UI を操作し、/sim/chart-bars の応答とヒープ（performance.memory）を記録。
+    sim core は依頼者の許可（2026-10-01）を得て sim core だけを新しいコードで起動し直した（router・他 core は無停止）。
+
+## ISSUE-553: 1 run の実行時間の内訳（CalcProbe_EA・jp225_mt5_spread・M1・全履歴 215 万本）
+- **ステータス**: RESOLVED（2026-09-29・項目 1〜3 実施・項目 4 は ISSUE-554 へ移管）
+- **重大度**: 中（1 run 151 秒・実測）
+- **数え方**: 実 UI のジョブ b836ae06…（14:56:39 投入→14:59:10 完了）の成果物の書込み時刻で段を分け、同じ spec を追記されない
+  複製で cProfile（326 秒・計測負荷込み）にかけて段の中を分けた。個別の実測は cProfile 無しで取り直した値。
+- **段（実 UI・壁時計）**: 実行 103 秒（読込・準備を含む）／report.json 書出し 35 秒（172MB）／chart_overlay.json 書出し 10.5 秒（327MB）。
+- **無駄（実測）**:
+  1. 指標の NaN 検査（`PandasIndicatorRegistry.get` → `_raise_if_invalid_nan`）が `get` のたびに系列全体（215 万行）を走査する。
+     系列は事前計算で不変なので結果は毎回同じ。1 回 4.0ms × 15,602 回 = 62.6 秒（実行 103 秒の約 6 割）。足ごとに `get` する EA では
+     215 万回 × 4.0ms ≈ 144 分になる（推定）。
+  2. Bar 列を 2 回組み立てる: run 本体と、表示用の指標の組み立て（`build_run_indicators` が窓つき読み手で `load` し直す）。
+     `frame_to_bars` 2 回・時刻の対応づけ（`bar_span`）2 回（cProfile で計 29.4 秒）。
+  3. 足の時刻の epoch 変換（`epoch_seconds`）を足ごとに 4 箇所で別々に行う（計 1,290 万回・cProfile 65 秒）。
+  4. 足ごとの系列を JSON で 2 ファイル計 500MB 書く（report.json・chart_overlay.json）。書出し 45.5 秒。
+- **実施（2026-09-29・依頼者承認「承認する」＝項目 1〜3）**:
+  - 項目 1（25030816）: NaN 検査を系列ごとに 1 回（通った系列だけ覚える・失敗は毎回拒否）。
+  - 項目 2（3d6d1a50）: `build_run_indicators` に run が実行した Bar 列（`run_bars`）を渡し、組み立て直さない。
+  - 項目 3（5a2cfe68）: `usecase/bar_times` で Bar 列の時刻を一括変換。秒への cast の式は `domain/bar_time` の 1 式を
+    スカラと配列で共有（epoch 換算の単一ソース検定を満たす）。
+  - 計算量検定: NaN 走査 − 読んだ系列 = 0（get 10 / 100 回）・1 ジョブの Bar 列組み立て − 1 = 0（窓 2 / 3 日）・
+    時刻変換はどの呼び出しも Bar 列全体を一括（呼び出し数は窓 2 / 3 日で同じ）。いずれも差し戻すと落ちる。
+- **検証**: 変更前の run（追記されない複製・同じ spec）と成果物 6 本（stats / report.md / report.json / chart_overlay /
+  trade_markers / metrics_steps）が byte 一致。Python 全件 6,839 passed。実 UI（フォーム入力→スタート）で同じ設定の
+  ジョブが 151 秒 → 45.6 秒（実行 103 → 21.8 秒・report.json 書出し 35 → 15 秒・chart_overlay 書出し 10.5 → 6.5 秒）。
+- **残り**: 項目 4（足ごとの系列の JSON 2 ファイル計 500MB）は画面の設計の判断のため別途裁定（ISSUE-552 と同時）。
+- **追補（事後レビュー 3・テストの穴）**: 足ごとに「`epoch_seconds`」へ足の時刻を渡す形を AST で禁じるゲートを足した
+  （`simulator/tests/unit/test_bar_time_conversion_not_per_bar.py`・例外は (ファイル, 関数) 単位で理由と ISSUE 番号つき）。
+  chart_overlay_writer を `[epoch_seconds(b.time) for b in bars]` に戻すとゲートが赤になる（実測）。
+  窓つき読み手（WindowedMarketDataRepository.load）は実測で 1 run に 1 回・内側の足 28,097 本ぶん＋窓の端 2 回を足ごとに
+  変換していた（窓 3 日でも同数・0.143 秒）→ 一括変換へ是正（観測 (28097, 一括) 1 回・0.015 秒・残る足 1,378 本は同一）。
+  計算量検定: 変換数 − 内側の足の本数 = 0・変換の呼び出し数は窓の幅 2 点で同じ。
+  例外として宣言したもの: Jp225SessionCalendar.closed_bar_indices（sim の既定は NullCalendar で通らない・照合／最適化／
+  walk-forward だけ。実測 1 run に 1 回・28,097 本で 0.165 秒）。是正は触れてよい範囲の外のため未実施。
+- **記録（発生未実測）**: TickModel の「`ticks_of`」は足ごとに呼ばれ、中で `epoch_seconds(bar.time)` を 1 本ずつ変換する
+  （ループの外の形なのでゲートの対象外）。ohlc_csv は列 `df["time"]` を 1 本ずつ変換する（`.time` 属性ではない）。
+- **追補（事後レビュー 4・手書き複製）**: `usecase/bar_times` の型名比較（`numpy.datetime64` の判定の写し）を消し、
+  domain の判定を公開名「`is_numpy_datetime64`」にして呼ぶ（domain は numpy を import しないまま）。型名比較が
+  `domain/bar_time.py` の外に現れたら落ちる AST ゲートを足した（`simulator/tests/unit/test_datetime64_check_single_source.py`）。
+  写しを戻すとゲートが赤になる（実測）。値は `test_bar_times_batch.py` で不変（全件通過）。
+
+
+
+## ISSUE-554: 1 ジョブの成果物が足ごとの系列を JSON 2 ファイル計約 476MB で書き、画面が丸ごと取得する
+- **ステータス**: RESOLVED（2026-10-01・段階 2 を実 UI で確認）
+- **重大度**: 中（書出し 21.5 秒・実測。ブラウザ側の取得・描画時間は未実測）
+- **事象（実測 2026-09-29・ジョブ 458ca166…・CalcProbe_EA・jp225_mt5_spread・M1・全履歴 2,149,747 本）**:
+  - report.json 172.4MB: ほぼ全量が足の OHLC 列 `segments.single.bars`（172.0MB）。
+  - chart_overlay.json 304.0MB（ファイル 327.6MB）: 足ごとの口座 `account` 258.2MB（time 23.6・balance 40.8・equity 40.8・
+    drawdown 40.8・drawdown_pct 40.8・realized_pnl 43.0・floating_pnl 8.7・margin 8.7・margin_level 10.9MB）、指標 `indicators` 45.8MB。
+  - 足の時刻は 2 ファイルの両方に書かれている（同じ列の重複）。
+  - 書出し: report.json 15 秒・chart_overlay.json 6.5 秒（ISSUE-553 項目 1〜3 の是正後・実 UI）。
+- **数え方**: 各キーを `json.dumps(separators=(',',':'))` した文字数（ASCII のため byte と同じ）。書出し時間は成果物の書込み時刻の差。
+- **読み手（コードで確認）**: 結果画面が `/sim/data/{job}/report.json`（`sim_ui/web/js/adapter/front/report_source_client.js`）と
+  `/sim/data/{job}/chart_overlay.json`（`sim_ui/web/js/adapter/front/sim_result_chart_view.js`）をそれぞれ丸ごと取得する。
+- **関連**: ジョブ自身の足の OHLC は report.json に在るが、売買履歴チャートはそれを使わずライブの `/candles`（末尾 5 万本）へ
+  取りに行き不一致になる（ISSUE-552）。ISSUE-553 項目 4 は本件へ移す。
+- **対策案（根本・未実施・要承認）**: 足の列はジョブの成果物の 1 か所にだけ持ち、画面へは表示に使う範囲だけを渡す。
+  ISSUE-552 と同じ設計判断（足の列をどこに持ち、画面へどう渡すか）としてまとめて裁定する。
+
+
+## ISSUE-555: 「全ティック」が近似実行（N-06）である事実が sim の画面に出ず、全ティックで走ったと誤解される
+- **ステータス**: OPEN
+- **重大度**: 中（誤解が実際に起きた・2026-09-29）
+- **事象**: 実行速度の計測を「全ティック」（Model=0）の設定で行い「全ティックで 45〜50 秒」と報告したが、エンジンは
+  足 1 本につき 1 回しか評価していなかった（依頼者の問い「全ティックで計測しての結果か？」で判明）。
+- **事実（コード・実測で確認）**:
+  - Model=0 → `tick_model=every_tick`。実体 `EveryTickModel` は「every-tick を OHLC のみの入力で近似する（常に O→H→L→C）」
+    （`simulator/adapter/execution/tick_model.py`）。足の中にティックを生成しない。
+  - 非対象の宣言 N-06「Model=0 は近似実行（例外なし）。近似である事実は TesterRunMetadata に記録する」
+    （`simulator/main/tester_settings/unsupported.py`）。`build_run_metadata` が reasons に N-06 を載せる。
+  - sim の子プロセスはその実行メタ情報を受け取って捨てる（`simulator/sim_ui/main/run_job.py` の
+    `exit_code, result, _metadata, request = run_settings_job(...)`）。sim の web・adapter に N-06・近似の表示は無い（grep 0 件）。
+  - 足の途中の評価点を使うのは実ティック（`real_ticks`）かペンディング注文の run だけ（`simulator/usecase/schedule_selection.py`）。
+    全履歴 2,149,610 本の CalcProbe_EA run で評価点の観測は 2,149,610 回（足の本数と同じ・cProfile）。
+  - MT5 の「全ティック」レポートはリポジトリに 0 本。実レポート 10 本はすべて 1 足あたり 3.75〜3.96 ティック
+    （MT5 の 1分足OHLC の形）で、照合用データの README も 1分OHLC をオラクルとする。一致の検証は不可能。
+- **対策案（根本・未実施・要承認）**: 実行メタ情報（近似の理由 N-06 など）をジョブの成果物に残し、結果画面が宣言から
+  告知する（捨てない）。MT5 の「全ティック」との一致は、MT5 で全ティックを指定したレポートを取得してから判断する。
+
+
+## ISSUE-556: PRO_fit_Band_EA が sim で実行できない（'BacktestConfig' object has no attribute 'get'）
+- **ステータス**: RESOLVED（2026-09-29・3c7dc4c9）
+- **重大度**: 高（EA が 1 本も走らない・実測）
+- **事象（実測 2026-09-29）**: run_job で PRO_fit_Band_EA（jp225_mt5_spread・M1・2026.08.01〜08.31・adx_period=14・adx_min=20）を
+  実行すると exit 3「バックテストの実行に失敗しました: 'BacktestConfig' object has no attribute 'get'」。
+- **発生箇所（traceback）**: `simulator/adapter/strategy/pro_fit_band.py:63` の `self._config.get("min_bars", 60)`。
+  戦略は config を dict として読むが、渡されるのは `simulator/main/run_config.py` の config オブジェクト
+  （`__getattr__` で `BacktestConfig` へ委譲し、`get` を持たない）。
+- **塞いだ作業**: 接点スキャン全指標化の設計（ブランチ design/contact-scan-all-indicators）の段 3 の通過条件
+  「PRO_fit_Band_EA の接点が変更前と一致」を確かめられない（変更前の run が成立しない）。
+- **原因（コード・実測で確認 2026-09-29）**: 参照実装 `simulator/experts/PRO!fit_Band.mq5:129` は `Bars<60` の固定値で、
+  input に min_bars は無い。Python 側が参照実装に無い可変パラメータ `min_bars` を足し、config の契約（`RunConfig` は
+  戦略パラメータを subscript だけで公開し、欠落は例外で止める）の外にある `.get(既定値)` で読んでいた。
+  run_job で再現（exit 3・同じ文言）。探針で `get` だけを補うと run は完走する（取引 7,870 件）＝止める箇所はこの 1 行だけ。
+- **対策案（根本・未実施・要承認）**: 参照実装どおり warmup を固定値 60 にし、`min_bars` の読み取りを消す。
+  単体テストの `min_bars=2`（条件式の検証用）と `test_min_bars_is_configurable_via_config_get`（参照実装に無い可変性の固定）は
+  条件式の検証を 60 本以降の足で行う形へ書き換える。
+- **実施（3c7dc4c9）**: warmup を原典どおり固定 60（`_MIN_BARS`）にし、`min_bars` の読み取りと、ゲートに含まれる
+  `bar_index < 2` の検査を消した。条件式のテストは 3 点系列の前に先頭値を 59 本足し、ゲートの外で検証する形へ変えた。
+  `test_min_bars_is_configurable_via_config_get` は「config の min_bars を読まない」検査へ置き換えた。
+- **検証**: 再現 spec（run_job・2026-08・adx_period=14・adx_min=20）が exit 0・取引 7,870 件（探針と同数）・12.8 秒。
+  get を持たない config で走る検査を追加。計算量検定: warmup 内の足の指標の読み − 0 = 0・1 足あたりの読みの最大は
+  系列長 70 / 140 で同じ。変異（`.get` へ戻す／ゲート削除／ゲート前に読む）でそれぞれ 2 / 4 / 2 件落ちる。
+  simulator 全件 6,878 passed・1 failed（下記・本件と無関係）。
+- **記録（本件と無関係の既存失敗）**: `test_run_backtest_responsibility_split.py::…test_the_interactor_class_defines_only_lifecycle_methods`
+  が 9274ad6e（ISSUE-557 追補）で足した `_refuse_pending_orders` をメソッド集合のリテラルに持たず赤。
+
+
+## ISSUE-557: sim で待機注文（指値・逆指値）を出す EA の注文が、すべて足の境界の成行として約定する
+- **ステータス**: RESOLVED（2026-09-29）
+- **重大度**: 高（EA の注文方式が結果に反映されない・実測）
+- **事象（実測 2026-09-29）**: run_job で MA_Slope_Pending_EA と MA_Slope_EA を同じ設定（jp225_mt5_spread・M1・2026.08.01〜08.31）で
+  実行すると、取引 943 件どうしで約定時刻・約定価格が完全一致した（待機注文の EA が成行の EA と同じ結果になる）。
+- **原因（コード・実測で確認）**: 待機注文を足の途中で評価するのは `pending_lifecycle` が真の run だけ
+  （`simulator/usecase/schedule_selection.py`）。偽のときエンジンは「すべて足境界の成行として扱う」
+  （`simulator/usecase/run_backtest.py:466-469`）。sim の Settings 経路で組まれる `config_overrides` は
+  `{'tick_model': 'every_tick', 'stop_out_action': 'close_and_halt'}` だけで、EA が `pending_lifecycle` を宣言する口が無い。
+- **塞いだ作業**: 線に触れたら約定させる仕組み（ブランチ design/contact-scan-all-indicators）は待機注文を足の途中で
+  評価することが前提であり、sim で成立しない。
+- **対策案（根本・未実施・要承認）**: 注文方式（待機注文を使うか・持続させるか）を戦略が宣言し、合流点（`build_interactor`）が
+  宣言から `pending_lifecycle` / `pending_persistent` を導く（建値基準を戦略が宣言する ISSUE-533 と同じ形）。
+- **依頼者の判断（依頼者の言葉）**: 「指値と書いているのに成行... 単なるバグである。」→ 明示バグとして即時是正。
+- **実施（c430a280）**: `simulator/usecase/pending_order_use.py`（宣言の型と合流点での写し）を新設。MaSlopePending は
+  毎足置き直し（persistent=False・oco=False）、StopEntryProbe は持続・OCO（persistent=True・oco=True）を宣言
+  （どちらも MT5 照合済みの構成と同じ値）。`build_interactor` が宣言を 1 回読み run の設定へ写し、呼び出し側の値が
+  宣言と食い違えば実行前に ConfigError。SizingDecorator は内側の宣言を透過する。
+- **検証**: 宣言だけで MT5 照合済みの構成（「`pending_lifecycle`」=True 明示）と取引が一致し、成行 EA とは一致しない。
+  宣言の読み取り − 1 = 0（足 60 / 240 本）。是正の 1 行を外すと 4 件とも落ちる。実データ（run_job・2026-08）:
+  待機注文 EA 986 件・成行 EA 943 件（是正前は同一 943 件）。建値 − 始値は +5.0（559 件）/ 0.0（401 件）で EA の指値価格と整合。
+- **記録（発生未実測）**: StopEntryProbe の MT5 照合構成は口座設定 hedged_margin=True も渡しているが、これは注文の使い方では
+  なく口座の性質のため本件では扱わない。sim の粒度ゲート（`simulator/sim_ui/usecase/job_models.py` の granularity_of）は
+  config_overrides だけを読み、宣言を見ない（戦略項目の投入口は画面から撤去済み）。
+
+- **追補（事後レビュー 1・原因の残り）**: 足の途中の評価点が無い run に待機注文が来たとき、成行へ変える扱いを廃止し
+  `ConfigError` で止める（理由に戦略名と注文の種類）。宣言を書き忘れた戦略が黙って成行になる経路が消えた。
+  着手前に変換への依存を確かめた: 待機注文を出す本番の戦略は MaSlopePending・StopEntryProbe の 2 本だけで両方宣言済み。
+  変換位置で送出する探針を入れ、待機注文の語を含むテスト 58 ファイル（1378 件）を実行して全通過＝依存なし。
+  検証: 新テスト 4 件（止まる・理由・対照・止めた後に足を評価しない＝呼出数 − 発注序数 = 0 を足 60 / 240 本で）。
+  止める 1 行を外すと 3 件落ちる。
+- **追補（事後レビュー 2・テストの穴）**: SizingDecorator の宣言の透過を検査するテストを足した
+  （`simulator/tests/integration/test_pending_order_use_through_sizing_decorator.py`）。包んだ MA_Slope_Pending_EA は
+  何も渡さなくても、包んだうえで「`pending_lifecycle`」=True を明示した run と取引 158 件が発注量まで一致。
+  包んだ run でも内側の宣言の読み取り − 1 = 0（足 60 / 240 本）。透過の 1 行を None にすると 3 件とも落ちる。
+  成行 EA との対照は置かない（サイジングは SL 必須・MA_Slope_EA は SL を受け付けない）。

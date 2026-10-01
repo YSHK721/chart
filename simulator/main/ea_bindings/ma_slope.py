@@ -4,7 +4,7 @@ from __future__ import annotations
 from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.strategy.ma_slope import MaSlope
-from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext
+from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext, PlotDecl
 from simulator.main.ea_bindings.sources import source_for
 
 
@@ -40,4 +40,6 @@ BINDING = EaBinding(
         "volume_max",
         "volume_step",
     ),
+    # 売買のトリガー: EMA の傾き（EMA は価格と同じ尺度）。
+    plots=(PlotDecl("ema", "price"),),
 )

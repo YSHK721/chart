@@ -334,7 +334,9 @@ def test_compute_stats_returns_backteststats_matching_metrics_12_6():
     # 校正と同方針の正当更新）。旧 HPR 版 0.1862（METRICS §1.2）から per-trade 版へ差し替え:
     #   per-trade pnl 系列の (mean/std(ddof=0))×√N = 0.560523（[-5,5] 内のためクランプなし）。
     # HPR 版の値は sharpe_ratio()（残置関数）が引き続き提供する（test_*_sharpe で別途固定）。
-    assert stats.sharpe_ratio == pytest.approx(0.560523, abs=1e-5)
+    # ISSUE-545（2026-09-28）: Sharpe は足ごとの有効証拠金から MT5 の定義で算出する。足の系列を
+    #   渡さない本検定では 0.0（取引列からは MT5 の値を作れない・実測）。旧 per-trade 値 0.560523 は廃止。
+    assert stats.sharpe_ratio == 0.0
     assert stats.balance_min == pytest.approx(10000.0)
     assert stats.balance_dd == pytest.approx(350.0)
     assert stats.balance_dd_percent == pytest.approx(3.38, abs=1e-2)
@@ -421,18 +423,15 @@ def test_zero_pnl_trade_breaks_loss_run_no_phantom_run():
 # 分子(件数) > 分母由来の実件数 となり §4.3 (AvgConWins=N_w/K_w) と乖離する。
 
 def test_average_consecutive_wins_uses_run_member_count_not_count_win():
-    # Arrange: [win(+10), zero(0), win(+20)]。
-    #   win ラン = {[+10]}, {[+20]}（ゼロが区切る） → K_w=2, N_w=2（ラン内件数）。
-    #   profit_trades(pnl>=0) = 3（+10, 0, +20）を分子に流用すると 3/2=1.5 となり誤り。
-    #   正: N_w/K_w = 2/2 = 1.0。
+    # ISSUE-549（2026-09-28・MT5 実レポート 11 本で実測）: 損益 0 は勝ちに数え、ランを区切らない。
+    # Arrange: [win(+10), zero(0), win(+20), loss(-5), win(+30)]。
+    #   勝ちラン = [+10, 0, +20], [+30] → K_w=2, N_w=4 → 4/2 = 2.0。
     from simulator.usecase.compute_stats import average_consecutive_wins
 
-    trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(20.0)]
-    # Act
-    result = average_consecutive_wins(trades)
-    # Assert: ゼロ込み件数(3) 流用なら 1.5、ラン内件数(2) なら 1.0
-    assert result == pytest.approx(1.0)
-
+    trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(20.0),
+              _trade_with_pnl(-5.0), _trade_with_pnl(30.0)]
+    # Act / Assert
+    assert average_consecutive_wins(trades) == pytest.approx(2.0)
 
 def test_average_consecutive_losses_uses_run_member_count_not_count_loss():
     # Arrange: [loss(-10), zero(0), loss(-20), loss(-30)]。
@@ -467,45 +466,48 @@ def test_is_count_win_counts_zero_pnl_as_win():
     assert is_count_win(_trade_with_pnl(-10.0)) is False
 
 
-def test_is_run_win_excludes_zero_pnl():
-    # 連勝ラン基準: pnl>0 のみ勝ち（ゼロはラン中立。METRICS §6.1/§4.3）。
+def test_is_run_win_counts_zero_pnl_as_win():
+    # 連勝ラン基準: pnl>=0 が勝ち（ISSUE-549・MT5 実レポート 11 本で全件一致した規則）。
     from simulator.usecase.compute_stats import is_run_win
 
     assert is_run_win(_trade_with_pnl(10.0)) is True
-    assert is_run_win(_trade_with_pnl(0.0)) is False
+    assert is_run_win(_trade_with_pnl(0.0)) is True
     assert is_run_win(_trade_with_pnl(-10.0)) is False
 
-
-def test_zero_pnl_trade_breaks_win_run_no_phantom_run():
-    # Arrange: [win(+40), zero(0), win(+60)]。同値が連勝ランを途切れさせるので
-    # 連勝ランは {[+40]}, {[+60]} の 2 本（最長 1）。
+def test_zero_pnl_trade_extends_the_win_run():
+    # Arrange: [win(+40), zero(0), win(+60)]。損益 0 は勝ちに数える＝1 本の連勝ラン（ISSUE-549）。
     from simulator.usecase.compute_stats import (
         max_consecutive_wins_count,
         max_consecutive_wins_profit,
     )
 
     trades = [_trade_with_pnl(40.0), _trade_with_pnl(0.0), _trade_with_pnl(60.0)]
-    # Act
-    count = max_consecutive_wins_count(trades)
-    best = max_consecutive_wins_profit(trades)
-    # Assert: (a) zero が区切るので最長連勝は 1（2 にならない）
-    assert count == 1
-    # (c) 最長連勝ランの利益は単一の +40（先頭ラン）
-    assert best == pytest.approx(40.0)
+    assert max_consecutive_wins_count(trades) == 3
+    assert max_consecutive_wins_profit(trades) == pytest.approx(100.0)
 
 
-def test_zero_pnl_excluded_from_win_and_loss_runs():
-    # Arrange: [win(+10), zero(0), loss(-10)]。zero は勝ち/負けどちらのランにも属さない。
+def test_equal_length_runs_pick_the_largest_amount():
+    # 同じ長さの最長ランが複数なら金額の絶対値が最大のもの（ISSUE-549・MT5 実測。
+    #   2026-03_ma-market: 最初のランを採ると 120、MT5 は 400）。
+    from simulator.usecase.compute_stats import (
+        max_consecutive_losses_loss,
+        max_consecutive_wins_profit,
+    )
+
+    trades = [_trade_with_pnl(p) for p in (10.0, 20.0, -5.0, 100.0, 300.0, -40.0, -50.0, 1.0, -10.0, -10.0)]
+    assert max_consecutive_wins_profit(trades) == pytest.approx(400.0)
+    assert max_consecutive_losses_loss(trades) == pytest.approx(-90.0)
+
+def test_zero_pnl_belongs_to_the_win_side():
+    # Arrange: [win(+10), zero(0), loss(-10)]。0 は勝ち側＝勝ちラン [+10, 0]・負けラン [-10]。
     from simulator.usecase.compute_stats import (
         max_consecutive_losses_count,
         max_consecutive_wins_count,
     )
 
     trades = [_trade_with_pnl(10.0), _trade_with_pnl(0.0), _trade_with_pnl(-10.0)]
-    # Act / Assert: 連勝・連敗とも最長 1（zero は両ランから除外され区切りとなる）
-    assert max_consecutive_wins_count(trades) == 1
+    assert max_consecutive_wins_count(trades) == 2
     assert max_consecutive_losses_count(trades) == 1
-
 
 def test_compute_stats_does_not_import_pandas_at_module_level_for_purity():
     # 純粋関数群であることの確認（domain 以外の usecase 外層を import しない）
@@ -565,20 +567,27 @@ def test_compute_stats_populates_equity_dd_fields_from_equity_curve():
     assert stats.equity_dd_max_percent == pytest.approx(14.9758, abs=1e-3)
 
 
-def test_compute_stats_sharpe_is_per_trade_clamped_when_wired():
-    # Arrange/Act: sharpe_ratio フィールドが per-trade 版（clamp[-5,5]）へ差し替わる。
-    from simulator.usecase.compute_stats import compute_stats, sharpe_ratio_per_trade
+def test_compute_stats_sharpe_comes_from_the_bar_equity_series():
+    # ISSUE-545（2026-09-28）: sharpe_ratio は足ごとの有効証拠金の MT5 定義（sharpe_ratio_bar_equity）。
+    from simulator.usecase.compute_stats import compute_stats, sharpe_ratio_bar_equity
 
+    bars = [B0, B0 + 10.0, B0 + 5.0, B0 + 30.0, B0 + 40.0]
     stats = compute_stats(
         trades=_trades(),
         balance_curve=_balance_curve(),
         equity_curve=_equity_curve_distinct(),
         initial_deposit=B0,
+        bar_open_equity=bars,
+        bar_seconds=60.0,
     )
-    # Assert: HPR 版(0.1862)ではなく per-trade 版（実 MT5 整合・clamp[-5,5]）の値。
-    assert stats.sharpe_ratio == pytest.approx(sharpe_ratio_per_trade(_trades()))
-    # 旧 HPR 版の値(0.1862)とは異なる（差し替えが行われたことの実証）。
-    assert stats.sharpe_ratio != pytest.approx(0.1862, abs=1e-4)
+    assert stats.sharpe_ratio == pytest.approx(sharpe_ratio_bar_equity(bars, 60.0))
+    assert stats.sharpe_ratio != 0.0
+    # 足の系列が無ければ 0.0（取引列から MT5 の値は作れない）。
+    no_bars = compute_stats(
+        trades=_trades(), balance_curve=_balance_curve(),
+        equity_curve=_equity_curve_distinct(), initial_deposit=B0,
+    )
+    assert no_bars.sharpe_ratio == 0.0
 
 
 def test_compute_stats_recovery_is_equity_based_when_curve_supplied():

@@ -177,20 +177,43 @@ def test_missing_stop_levels_yield_empty_strings_not_invented_prices(tmp_path: P
 
 # --- 5. 時刻の int 正規化 --------------------------------------------------------
 
-def test_bar_times_are_normalised_to_unix_seconds(tmp_path: Path) -> None:
+def test_the_report_carries_no_bars(tmp_path: Path) -> None:
+    """足は report.json に書かない（ISSUE-552/554 段階 2-1）。
+
+    足はジョブの成果物の 1 か所（「`chart_overlay_writer`」 が書く chart_bars.parquet）にだけ在る。
+    report.json に足を書くと同じ列が 2 か所になり、全履歴の 1 分足で 172MB を画面が丸ごと取得する。
+    区間のキーは残す（report_ui の契約の形を変えない）。本数は ``meta.bars`` が名乗る。
+    """
     import pandas as pd
-    bars = _bars([pd.Timestamp("2026-04-01 00:00:00", tz="UTC"),
-                  pd.Timestamp("2026-04-01 00:05:00", tz="UTC")])
-    seg = _payload(tmp_path, bars=bars)["segments"]["single"]
-    # 期待値は stdlib datetime で独立に確認した値（実装の出力を写していない）:
-    #   datetime(2026,4,1,0,0,tzinfo=utc).timestamp() == 1775001600
-    assert [b["time"] for b in seg["bars"]] == [1775001600, 1775001900]
-    assert all(isinstance(b["time"], int) for b in seg["bars"])
+    for bars in (
+        None,  # int 時刻の 4 本
+        _bars([pd.Timestamp("2026-04-01 00:00:00", tz="UTC"),
+               pd.Timestamp("2026-04-01 00:05:00", tz="UTC")]),
+    ):
+        directory = tmp_path / str(0 if bars is None else 1)
+        directory.mkdir()
+        seg = _payload(directory, bars=bars)["segments"]["single"]
+        assert seg["bars"] == []
+        assert seg["meta"]["bars"] == (4 if bars is None else 2)
 
 
-def test_integer_bar_times_pass_through_unchanged(tmp_path: Path) -> None:
-    seg = _payload(tmp_path)["segments"]["single"]
-    assert [b["time"] for b in seg["bars"]] == [1000, 2000, 3000, 4000]
+def test_the_report_size_does_not_grow_with_the_bars(tmp_path: Path) -> None:
+    """足を 100 倍にしても report.json は足の本数ぶん大きくならない（足ごとの値を書かない）。
+
+    変わるのは本数を名乗る数字の桁（``meta.bars`` と ``report.Bars``）と期間の表示だけである。
+    取引は同じ 3 件なので、足ごとの値を書いていれば大きさは本数に比例して増える。
+    """
+    sizes = []
+    for n in (40, 4000):
+        directory = tmp_path / str(n)
+        directory.mkdir()
+        # 既定の 4 本（1000〜4000）を含む並び（取引の時刻がこの中に在る）。
+        times = sorted({1000, 2000, 3000, 4000, *range(5000, 5000 + n - 4)})
+        out = _write(directory, bars=_bars(times))
+        sizes.append(out.stat().st_size)
+        assert json.loads(out.read_text(encoding="utf-8"))["segments"]["single"]["meta"]["bars"] == n
+    # 本数の桁が 2 桁増えるぶん（2 箇所）＋期間表示の差だけを許す。足 1 本は 50 byte 以上ある。
+    assert sizes[1] - sizes[0] < 50, sizes
 
 
 def test_trade_times_are_integers(tmp_path: Path) -> None:
@@ -291,3 +314,92 @@ def test_writerはmain層をimportしない() -> None:
     source = Path(report_payload_writer.__file__).read_text(encoding="utf-8")
     assert "from simulator.main import" not in source
     assert "import simulator.main" not in source
+
+
+# --- 7. サマリーの run の事実（2026-09-27・§4.5 改訂）------------------------------
+
+def _report_of(job_dir: Path) -> dict:
+    out = report_payload_writer.write(job_dir, _result(), load_run_inputs=_loader())
+    return json.loads(out.read_text(encoding="utf-8"))["segments"]["single"]["report"]
+
+
+def test_run_facts_come_from_the_job(tmp_path: Path) -> None:
+    job_dir = _job_dir(tmp_path, leverage=10)
+    spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
+    spec["settings"] = {"tester": {"Currency": "JPY"}, "inputs": []}
+    (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    report = _report_of(job_dir)
+    assert report["Currency"] == "JPY"
+    assert report["Leverage"] == "1:10"
+    assert report["Symbols"] == "1"
+    # バー数は表示用の足の本数（sim の経路は取引開始の境界を持たない）。
+    assert report["Bars"] == str(len(_bars([1000, 2000, 3000, 4000])))
+
+
+def test_absent_run_facts_are_not_invented(tmp_path: Path) -> None:
+    report = _report_of(_job_dir(tmp_path))  # settings も leverage も無い job
+    assert "Currency" not in report
+    assert "Leverage" not in report
+
+
+# --- 8. Period と初期証拠金（2026-09-28・ISSUE-548 / ISSUE-544）-----------------------
+
+def _write_with(tmp_path, *, settings=None, result=None, bars=None):
+    job_dir = _job_dir(tmp_path)
+    spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
+    if settings is not None:
+        spec["settings"] = settings
+    (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    out = report_payload_writer.write(job_dir, result or _result(), load_run_inputs=_loader(bars))
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_period_uses_the_ini_range_verbatim(tmp_path: Path) -> None:
+    data = _write_with(tmp_path, settings={"tester": {
+        "FromDate": "2026.09.25 01:30", "ToDate": "2026.09.25 01:39"}, "inputs": []})
+    assert data["segments"]["single"]["report"]["Period"] == "M5 (2026.09.25 01:30 - 2026.09.25 01:39)"
+
+
+def test_period_falls_back_to_the_bars_actually_used(tmp_path: Path) -> None:
+    # 全期間（Dates=0）は FromDate/ToDate が無い → run が使った足の最初と最後の日付（UTC）。
+    bars = _bars([1788220800, 1790369880])  # 2026-09-01 00:00 / 2026-09-25 20:58 UTC
+    data = _write_with(tmp_path, settings={"tester": {"Dates": "0"}, "inputs": []}, bars=bars)
+    assert data["segments"]["single"]["report"]["Period"] == "M5 (2026.09.01 - 2026.09.25)"
+
+
+def test_meta_initial_deposit_is_the_runs_value(tmp_path: Path) -> None:
+    import dataclasses
+    r = _result()
+    r = dataclasses.replace(r, stats=dataclasses.replace(r.stats, initial_deposit=100000.0))
+    data = _write_with(tmp_path, result=r)
+    assert data["meta"]["initial_deposit"] == 100000.0  # 定数 10000 ではない（ISSUE-544）
+
+
+# --- 9. 計算量: 書かない足を組み立てない（ISSUE-552/554 段階 2-1）---------------------
+# 観測口は writer の公開の 2 つだけ: 「`build_payload`」 が返す payload（組み立てた足）と
+# 「`write`」 が書いた report.json（書いた足）。report_ui の内部の名前は差し替えない。
+
+def test_組み立てた足と書いた足の差は0で足の本数を増やしても組み立ては生えない(tmp_path: Path) -> None:
+    """足を組み立ててから書く前に捨てない（出力は同じなので、出力の検定では落ちない）。
+
+    回数そのものは期待値に書かない。固定するのは「組み立てた足 − 書いた足 = 0」と、
+    足の本数の 2 点で組み立てた足の数が変わらないこと。
+    """
+    built_by_count = {}
+    for n in (40, 4000):
+        directory = tmp_path / str(n)
+        directory.mkdir()
+        times = sorted({1000, 2000, 3000, 4000, *range(5000, 5000 + n - 4)})
+        job_dir = _job_dir(directory)
+        loader = _loader(_bars(times))
+
+        payload = report_payload_writer.build_payload(job_dir, _result(), load_run_inputs=loader)
+        out = report_payload_writer.write(job_dir, _result(), load_run_inputs=loader)
+
+        built = sum(len(segment.bars) for segment in payload.segments.values())
+        written = sum(
+            len(segment["bars"])
+            for segment in json.loads(out.read_text(encoding="utf-8"))["segments"].values())
+        assert built - written == 0, (n, built, written)
+        built_by_count[n] = built
+    assert len(set(built_by_count.values())) == 1, built_by_count

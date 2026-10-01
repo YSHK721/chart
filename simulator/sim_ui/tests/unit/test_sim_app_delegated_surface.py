@@ -42,6 +42,7 @@ from typing import Any
 import pytest
 
 from simulator.sim_ui.framework import (
+    serve_sim_chart_bars,
     serve_sim_display,
     serve_sim_ea_series,
     serve_sim_indicators,
@@ -71,6 +72,10 @@ from simulator.sim_ui.framework.serve_sim_settings_schema import (
     SimSettingsSchemaApp,
 )
 from simulator.sim_ui.framework.serve_sim_trace import SIM_TRACE_SURFACE, SimTraceApp
+from simulator.sim_ui.framework.serve_sim_chart_bars import (
+    SIM_CHART_BARS_SURFACE,
+    SimChartBarsApp,
+)
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 
 #: 包み手 5 本（モジュール, クラス, 内側へ要求する宣言面）。層を足したらここへ 1 行足す。
@@ -81,7 +86,9 @@ _WRAPPERS = (
     (serve_sim_settings_schema, SimSettingsSchemaApp, SIM_RUN_OPTIONS_SURFACE),
     # ISSUE-508 段階 4（§9.2）: 実行トレース分析 API の層。
     (serve_sim_trace, SimTraceApp, SIM_SETTINGS_SCHEMA_SURFACE),
-    (serve_sim_display, SimDisplayApp, SIM_TRACE_SURFACE),
+    # ISSUE-552/554 段階 2-1: 売買履歴チャートの足の API の層。
+    (serve_sim_chart_bars, SimChartBarsApp, SIM_TRACE_SURFACE),
+    (serve_sim_display, SimDisplayApp, SIM_CHART_BARS_SURFACE),
 )
 
 #: 外側ほど面が広くなる順（規則 5 の突き合わせ対象）。
@@ -92,6 +99,7 @@ _SURFACE_CHAIN = (
     ("SIM_RUN_OPTIONS_SURFACE", SIM_RUN_OPTIONS_SURFACE),
     ("SIM_SETTINGS_SCHEMA_SURFACE", SIM_SETTINGS_SCHEMA_SURFACE),
     ("SIM_TRACE_SURFACE", SIM_TRACE_SURFACE),
+    ("SIM_CHART_BARS_SURFACE", SIM_CHART_BARS_SURFACE),
     ("SIM_DISPLAY_SURFACE", SIM_DISPLAY_SURFACE),
 )
 

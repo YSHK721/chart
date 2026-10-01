@@ -34,8 +34,11 @@
   /* 行の高さと入力欄の幅の単一ソース（ISSUE-443）。控えの種類（select / 入力 /
    * チェックボックス）でも、面（Tester / Inputs / 縮退面）でも割れないよう、
    * 全面がこの 2 つの値を使う＝群をまたいでも欄の位置と大きさが同じ規則で決まる。 */
-  --sim-field-row-h: 24px;
-  --sim-field-input-w: 150px;
+  --sim-field-row-h: 32px;
+  --sim-field-input-w: 160px;
+  /* 期間の時刻欄（時間入力専用のテキストボックス）の幅。欄の寸法はこのブロックだけが持つ
+   * （規則は上と同じ＝リテラルを規則側に書くと寸法の宣言が 2 箇所になる）。 */
+  --sim-field-time-w: 66px;   /* 46→56→66px（依頼者指摘 2026-09-27・タイトなので +10px×2 回） */
   display: grid;
   /* 設定は群が 4 つ、入力は 3 欄＋スタート。2:1 で割り当てると、広い版面では設定側に
    * 群が 3 つ並び（340px×3）、縦の消費がさらに減る。 */
@@ -112,7 +115,12 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  max-width: 640px;
+  /* 一番幅を要する行＝日付行（ラベル 136 ＋ 間隔 6×3 ＋ プリセット 160 ＋ 時刻欄つきの
+   * 日付箱 216×2 ＝ 746px）が 1 段で収まる幅。640px 固定だった頃は日付行だけ折り返して
+   * 2 段になっていた（依頼者指摘 2026-09-27・実測: 行の使える幅 498px に対し中身 610px）。
+   * 変数から導出する＝時刻欄や欄幅を変えてもここが追随する。 */
+  max-width: calc(136px + 3 * 6px + var(--sim-field-input-w)
+    + 2 * (var(--sim-field-input-w) + var(--sim-field-time-w)));
 }
 #simTesterPanel .tester-row {
   display: flex;
@@ -140,6 +148,12 @@
  * なければ折り返す——横あふれで系列が列の外へ出ると、出したのに選べない状態になる。
  * 折り返しをこの行だけに閉じるのは、他の行の並びを 1 つも動かさないためである。 */
 #simTesterPanel .tester-row[data-row="symbol"] .tester-row-controls { flex-wrap: wrap; }
+/* 日付行の配分（依頼者指摘 2026-09-27「2 段になっている」）。実測: 行の使える幅 498px に
+ * 対し 160+216+216+間隔 12=610px で 112px あふれて折り返していた。1 段に収める配分:
+ *   - 期間プリセットの select は内容幅（「期間指定」が読める幅・全行一律 160px の例外）
+ *   - 時刻欄つきの日付箱 2 つは残り幅を等分（上限は日付欄＋時刻欄・下限 170px）
+ * 下限を割るほど狭い版面だけ折り返す（潰して読めなくするより折り返す）。 */
+#simTesterPanel .tester-row[data-row="dates"] .tester-row-controls { flex-wrap: wrap; }
 /* 不活性の欄は MT5 と同じくグレーアウト（値は残す・投入本文には載らない）。 */
 #simTesterPanel .tester-input:disabled,
 #simTesterPanel [data-inactive="1"] {
@@ -263,6 +277,28 @@
   border: 0;
   background: transparent;
 }
+/* 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）。日付箱の右端に置く。
+ * 未入力なら日単位（規則はホバーの title が示す）。不活性の見た目は既存の
+ * `.tester-input:disabled` / `[data-inactive="1"]` と同じ機構（opacity）に乗る。 */
+/* 時刻欄を持つ日付箱は「日付欄＋時刻欄」の幅にする。1 つの枠（--sim-field-input-w）へ
+ * 押し込むと日付部が時刻欄のぶん潰れる（依頼者指摘 2026-09-27「バランスを調整して
+ * ユーザビリティを確保しろ」）。日付部は時刻欄の追加前と同じ広さに戻る。 */
+#simTesterPanel .tester-date-wrap--with-time {
+  width: calc(var(--sim-field-input-w) + var(--sim-field-time-w));
+}
+#simTesterPanel .tester-time {
+  flex: 0 0 auto;
+  width: var(--sim-field-time-w);
+  height: 100%;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  text-align: center;
+}
+#simTesterPanel .tester-time:disabled { opacity: .45; }
+#simTesterPanel .tester-time::placeholder { color: var(--fg-dim, #787b86); opacity: .6; }
+
 #simTesterPanel .tester-cal-btn,
 #simTracePanel .trace-cal-btn {
   flex: 0 0 auto;
@@ -489,6 +525,22 @@
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--accent);
+}
+/* 「設定をコピー」（デバッグ用の補助）: 主操作より目立たせない。スタートと結果導線の左に置く。 */
+#simRunActionPanel .run-copy-settings {
+  order: -2;
+  padding: 0.6em 12px;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+#simRunActionPanel .run-copy-note {
+  order: -3;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* --- 実行状態の掲示面（M6・§19.6 段階 3）------------------------------------------- */

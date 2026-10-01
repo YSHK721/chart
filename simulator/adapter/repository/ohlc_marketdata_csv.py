@@ -18,14 +18,18 @@ Bar を全件組み立ててから捨てる後段フィルタは、4,604,080 行
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
+import numpy as np
 import pandas as pd
 
 from marketdata.csv_schema import SPREAD_COLUMN
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.adapter.repository._ohlc_frame import (
     ColumnSpec,
+    float_values,
     frame_to_bars,
+    int_values,
     read_csv_or_data_error,
 )
 from simulator.domain.bar import Bar
@@ -39,40 +43,64 @@ _REQUIRED = ("date", "open", "high", "low", "close", "volume")
 _TIME_COLUMN = "_marketdata_time"
 
 
-def _ohlcv(df: pd.DataFrame, i: int) -> "dict[str, Any]":
-    """marketdata 形式 1 行の time..volume を domain.Bar 引数へマッピングする。
+def _ohlcv(df: pd.DataFrame) -> "dict[str, Sequence[Any]]":
+    """marketdata 形式の全行の time..volume を domain.Bar 引数ごとの値の列へマッピングする。
 
     時刻は前計算済みの ``_TIME_COLUMN``（datetime64・UTC naive＝MT5 リーダと同じ表現）を
     使う（行ごとの文字列パースをしない）。
     """
     return {
-        "time": df[_TIME_COLUMN].iat[i].to_datetime64(),
-        "open": float(df["open"].iat[i]),
-        "high": float(df["high"].iat[i]),
-        "low": float(df["low"].iat[i]),
-        "close": float(df["close"].iat[i]),
-        "volume": float(df["volume"].iat[i]),
+        "time": df[_TIME_COLUMN].to_numpy(),
+        "open": float_values(df["open"]),
+        "high": float_values(df["high"]),
+        "low": float_values(df["low"]),
+        "close": float_values(df["close"]),
+        "volume": float_values(df["volume"]),
     }
 
 
-def _extract(df: pd.DataFrame, i: int) -> "dict[str, Any]":
-    """spread 列の無い marketdata 形式 1 行（spread=0）。"""
-    return {**_ohlcv(df, i), "spread": 0}
+def _columns(df: pd.DataFrame) -> "dict[str, Sequence[Any]]":
+    """spread 列の無い marketdata 形式（spread=0）。"""
+    return {**_ohlcv(df), "spread": [0] * len(df)}
 
 
-def _spread_of(df: pd.DataFrame, i: int) -> int:
-    """位置 ``i`` の spread（整数 points）。"""
-    return int(df[SPREAD_COLUMN].iat[i])
+def _columns_with_spread(df: pd.DataFrame) -> "dict[str, Sequence[Any]]":
+    """spread 列を持つ marketdata 形式（spread は列の値・整数 points）。"""
+    return {**_ohlcv(df), "spread": int_values(df[SPREAD_COLUMN])}
 
 
-def _extract_with_spread(df: pd.DataFrame, i: int) -> "dict[str, Any]":
-    """spread 列を持つ marketdata 形式 1 行（spread は列の値）。"""
-    return {**_ohlcv(df, i), "spread": _spread_of(df, i)}
+def _utc_times(df: pd.DataFrame) -> pd.Series:
+    """「`date`」 列を UTC aware の時刻へ解釈する（本形式の時刻の唯一の解釈）。
+
+    導出は同じ frame につき 1 回（ISSUE-541 段 3）。run 本体と指標の組み立てが同じ共有
+    frame から各 2 回（load と行時刻）呼ぶため、memo が無いと全列の to_datetime を
+    4 回発行していた（実測 1.36 秒・出力は不変＝状態検証では落ちない形）。
+    戻り値は共有実体＝読むだけ（呼び出し側は slice・演算で新しいオブジェクトを作る）。
+    """
+    return ohlc_frame_cache.memo_on(
+        df, "marketdata:utc_times", lambda frame: pd.to_datetime(frame["date"], utc=True)
+    )
 
 
-_SPEC = ColumnSpec(required=_REQUIRED, extract=_extract)
+#: 行の時刻を読むのに要る列（`row_epoch_seconds` が読む列の宣言）。
+TIME_COLUMNS = ("date",)
+
+
+def row_epoch_seconds(df: pd.DataFrame) -> np.ndarray:
+    """各行が Bar になったときの時刻を epoch 秒で返す（窓を掛けない全行・行の並びのまま）。
+
+    なぜ在るか（ISSUE-509）: 指標は全行から作られ、Bar は窓で絞られる。両者を**時刻で**
+    対応させるには指標の各行の時刻が要り、その解釈は Bar を組む本モジュールにしか無い
+    （写すと片方だけが改訂される）。`load` と同じ `_utc_times` を通す。
+    """
+    return ((_utc_times(df) - _EPOCH_UTC) // pd.Timedelta(seconds=1)).to_numpy(dtype=np.int64)
+
+
+_EPOCH_UTC = pd.Timestamp(0, tz="UTC")
+
+_SPEC = ColumnSpec(required=_REQUIRED, columns=_columns)
 _SPEC_WITH_SPREAD = ColumnSpec(
-    required=(*_REQUIRED, SPREAD_COLUMN), extract=_extract_with_spread
+    required=(*_REQUIRED, SPREAD_COLUMN), columns=_columns_with_spread
 )
 
 
@@ -254,7 +282,7 @@ class MarketdataCsvOHLCRepository(MarketDataPort):
         df = read_csv_or_data_error(source_ref)
         if "date" in df.columns:
             # UTC aware で 1 回だけベクトルパース（date 列の時刻系は UTC＝裁定 2026-08-18）
-            times = pd.to_datetime(df["date"], utc=True)
+            times = _utc_times(df)
             if self._window is not None:
                 start, end = self._window
                 df = df.loc[(times >= start) & (times < end)]

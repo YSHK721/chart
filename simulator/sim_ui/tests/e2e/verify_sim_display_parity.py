@@ -1,36 +1,30 @@
-"""パリティ 12 点の二画面突合（Playwright・Phase 4 F-11）。
+"""シミュレーション結果（子文書）の実測検定（Playwright）。
 
-**同一 payload を移植元 report_ui の画面と sim 表示層の画面へ与え、同じ観測点で
-同じ値が出ることを実証する**。移植元は vendor v4.1.3・sim は v5.2.0 で、series の作り方と
-マーカー API が違う（`addSeries` / `createSeriesMarkers`）。違うのは**その 2 つだけ**である、
-というのが Phase 4 の主張であり、本検定はその主張を観測値で固定する。
+Phase 4 では 3 窓チャート（ローソク足 / Balance / Drawdown）のパリティ 12 点を移植元
+report_ui と突き合わせていた。3 窓チャートは撤去済み（2026-09-27 依頼者指示・チャートは
+親ページの売買履歴チャートだけが持つ）ため、本検定は次の 3 つを実測で固定する。
+
+    1. 残るパリティ点（移植元 report_ui と同値であるべきもの）
+         A1  ヘッダ #topbar 規則の当たり方（display/padding/h1・hSel が同一行）
+         S1  取引履歴 12 列（順序・キー・ラベル・行数）
+         S3  行 hover → 該当行 .hl ＋ hSel 連動ラベル（table.js / linkage の流用）
+    2. 撤去の実測（R1）: チャートの器（#chartWrap / #price-chart / #paneBal / #paneDD /
+         #chartBadge / #toggleContacts）と、比較タブ外の canvas が子文書に**無い**
+    3. 計算量（R2・無駄の不在）: チャート材料（lightweight-charts / chart-bars /
+         trade_markers / candles）へのリクエスト発行が 0。**取引数を増やしても発行リクエスト数が増えない**
+         （2 点でオーダーを固定する。回数そのものは期待値に焼き込まない）。
+         「作ってから捨てる」欠陥は出力が正しいままなので状態検証では落ちない——
+         発行そのものを観測境界（ブラウザの resource timing＝公開面）で数える。
 
 fixture は移植元 `report_ui/tests/e2e/verify_parity.py` の 2 区間ペイロードを import する
-（sim 用に別のダミーを作らない＝ずれの余地を残さない）。sim 側の初期区間は
-`Object.keys(segments)[0]`＝"is" で、移植元の `selectSegment("is")` と同じ区間になる。
-
-観測点（骨格 12 点）:
-    1  Balance 窓          #paneBal に canvas
-    2  Drawdown 窓         #paneDD に canvas
-    3  3 窓の論理レンジ同期  3 つの独立チャート枠（同期の規則は node:test が被覆）
-    4  クロスヘア同期       同上（移植元 verify_parity.py:158-162 と同じ観測の当て方）
-    7  chartBadge          "N trades in view"
-    16 hSel 連動ラベル      マーカー hover 起動後のラベル文字列
-    S1 取引履歴 12 列       th[data-k] の順序・キー・ラベル
-    S2 マーカー hover→行 .hl  chart→table 方向
-    S3 行 hover→マーカー強調   table→chart 方向（size=1.4 / text="#id" / 他 α=DIM_ALPHA）
-    S4 区間外ローソク減光     window.__candlesDimmed ＋ 区間 [entry_time, exit_time]
-    S5 マーカー id           "e"+id / "x"+id
-    S6 MARKER_CAP            700
-
-点 3 / 4 は移植元 E2E と同じく**枠の存在**で当てる（同期そのものは DOM に出ないため）。
-点 S3 / S5 / S6 は両画面で表示規則モジュールを実際に import して呼び、戻り値を突き合わせる
-（両者が同一実体を読んでいることの直接証拠）。
+（sim 用に別のダミーを作らない＝ずれの余地を残さない）。開くのは**製品そのもの**の
+子文書 `/sim/report_view.html` である（裁定 B）。
 
 chromium / playwright 不在環境では skip（移植元 verify.py の規約準拠）。
 """
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import sys
@@ -52,17 +46,42 @@ pytestmark = pytest.mark.e2e
 
 REPORT_WEB = _REPO / "simulator" / "report_ui" / "web"
 SIM_WEB = _REPO / "simulator" / "sim_ui" / "web"
-SHARED_VENDOR = _REPO / "indigators" / "indicator_ui" / "web" / "vendor" / "lightweight-charts.js"
 
 JOB_ID = "parityjob"
+#: R2 の 2 点目（取引数を増やした入力）。増やしても発行リクエスト数が増えないことを固定する。
+JOB_ID_SCALED = "parityjob3"
+_SCALE = 3
+
+
+def _payload_scaled(k: int) -> dict:
+    """2 区間 payload の trades を k 倍にしたもの（R2 の「入力を増やす」side）。
+
+    id と時刻をずらしたクローンで増やす。集計（agg 等）は据え置き——本検定で増やした入力を
+    読むのは取引明細（行数）とリクエスト数の突合だけである。
+    """
+    payload = copy.deepcopy(verify_parity._payload())
+    for seg in payload["segments"].values():
+        base_trades = list(seg["trades"])
+        for j in range(1, k):
+            for t in base_trades:
+                clone = dict(t)
+                clone["id"] = t["id"] + 1000 * j
+                clone["order"] = clone["id"]
+                clone["entry_time"] = t["entry_time"] + 3600 * j
+                clone["exit_time"] = t["exit_time"] + 3600 * j
+                seg["trades"].append(clone)
+    return payload
 
 
 def _build_sim_web_root(tmp_path: Path) -> Path:
-    """sim 表示層の配信面（/sim/report-js・/sim/report-css・/sim/js・/sim/vendor・/sim/data）を再現する。
+    """sim 表示層の配信面（/sim/report-js・/sim/report-css・/sim/js・/sim/data）を再現する。
 
     実運用の経路は `composition_root_display.build_sim_display_app` の prefix ルートだが、
     ここでは静的ハーネスで同じ**URL 構造**を用意する（front の絶対パス import は URL に
     しか依存しない）。配信面そのものの検定は `tests/integration/test_serve_sim_display.py`。
+
+    lightweight-charts の vendor は**置かない**——子文書はもう読まない（R2）。置かずに
+    ページが組み上がることが、依存が消えたことの直接証拠になる。
 
     開くのは**製品そのもの**の子文書 `/sim/report_view.html` である（裁定 B）。検定用の
     ページを別に書かない——書けば「fixture では動くが製品では動かない」を作れてしまう。
@@ -73,35 +92,28 @@ def _build_sim_web_root(tmp_path: Path) -> Path:
     shutil.copytree(REPORT_WEB / "js", sim / "report-js")
     shutil.copytree(REPORT_WEB / "css", sim / "report-css")
     shutil.copytree(SIM_WEB / "js" / "adapter" / "front", sim / "js" / "adapter" / "front")
+    # 親の売買履歴チャート用モデル（sim_result_chart_view が import する）。子文書の module
+    #   graph に含まれるため、配信面に無いと合成根ごと読み込みが落ちる。
+    shutil.copytree(SIM_WEB / "js" / "usecase", sim / "js" / "usecase")
     shutil.copytree(SIM_WEB / "css", sim / "css")
     shutil.copy(SIM_WEB / "report_view.html", sim / "report_view.html")
-    (sim / "vendor").mkdir()
-    shutil.copy(SHARED_VENDOR, sim / "vendor" / "lightweight-charts.js")
-    data_dir = sim / "data" / JOB_ID
-    data_dir.mkdir(parents=True)
-    (data_dir / "report.json").write_text(
-        json.dumps(verify_parity._payload(), ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    # Chart.js（比較グラフ用・移植元 vendor 無改変）は子文書が読む＝使う読込なので置く。
+    (sim / "report-vendor").mkdir()
+    shutil.copy(REPORT_WEB / "vendor" / "chart.umd.js", sim / "report-vendor" / "chart.umd.js")
+    for job_id, payload in (
+        (JOB_ID, verify_parity._payload()),
+        (JOB_ID_SCALED, _payload_scaled(_SCALE)),
+    ):
+        data_dir = sim / "data" / job_id
+        data_dir.mkdir(parents=True)
+        (data_dir / "report.json").write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
     return root
 
 
-# --- 観測（両画面で同じ問いを投げる）-------------------------------------------
-
-_PANES = """() => ({
-  price: document.querySelectorAll('#price-chart canvas').length > 0,
-  bal: document.querySelectorAll('#paneBal canvas').length > 0,
-  dd: document.querySelectorAll('#paneDD canvas').length > 0,
-  frames: ['#price-chart', '#paneBal', '#paneDD'].filter((s) => document.querySelector(s)).length,
-})"""
-
-# 窓が「在る」だけでは足りない（実測 2026-08-12: 器の高さが決まらず 3 窓が 2px に潰れても
-# canvas は存在し、件数だけ見る検定は素通りした。その状態ではマーカーを hover できない）。
-_PANE_HEIGHTS = """() => {
-  const h = (s) => { const e = document.querySelector(s);
-    return e ? Math.round(e.getBoundingClientRect().height) : 0; };
-  return {price: h('#price-chart'), bal: h('#paneBal'), dd: h('#paneDD')};
-}"""
+# --- 観測（残るパリティ点は両画面で同じ問いを投げる）------------------------------
 
 _COLUMNS = """() => ({
   keys: [...document.querySelectorAll('#tradeTable thead th')].map((t) => t.dataset.k),
@@ -125,9 +137,6 @@ _HEADER_STYLE = """() => {
     height: Math.round(h.getBoundingClientRect().height),
     h1FontSize: h1cs ? h1cs.fontSize : null,
     h1Margin: h1cs ? h1cs.margin : null,
-    // hSel が h1 と**同じ行に居るか**（2 行目へ落ちていないか）を、両者の縦位置の
-    //   重なりで判定する。行位置の絶対値はヘッダの高さ（＝載っている部品の数）で変わる
-    //   ので、画面間で等値にはならない。
     sameRow: (() => {
       const s = document.querySelector('#hSel');
       if (!s || !h1) return null;
@@ -137,76 +146,61 @@ _HEADER_STYLE = """() => {
   };
 }"""
 
-# 表示規則を**その画面が読んでいる実体**から呼ぶ。URL だけが違う（同一ファイル）。
-_RULES = """async (chartUrl) => {
-  const m = await import(chartUrl);
-  const trades = [
-    {id: 1, side: 'buy', profit: 50, entry_time: 100, exit_time: 300, entry_price: 10, exit_price: 12},
-    {id: 2, side: 'sell', profit: -20, entry_time: 200, exit_time: 400, entry_price: 12, exit_price: 13},
-  ];
-  const bars = [100, 200, 300, 400, 500].map((t) => ({time: t, open: 1, high: 2, low: 0, close: 2}));
-  const barTimes = bars.map((b) => b.time);
-  const normal = bars.map((b) => ({...b, tag: 'n'}));
-  const dim = m.buildDimBars(bars);
-  const merged = m.mergeDimBarsForTrade(barTimes, normal, dim, trades[0]);
-  return {
-    MARKER_CAP: m.MARKER_CAP,
-    DIM_ALPHA: m.DIM_ALPHA,
-    markersPlain: m.buildTradeMarkers(trades, null),
-    markersHovered: m.buildTradeMarkers(trades, 1),
-    dimColors: dim.map((b) => b.color),
-    mergedTags: merged.map((b) => b.tag || 'dim'),
-    badge: [m.chartBadgeText(3), m.chartBadgeText(m.MARKER_CAP + 1)],
-  };
-}"""
+# R1: チャートの器と canvas の不在（比較タブ＝Chart.js の canvas だけを許す）。
+_CHART_ABSENCE = """() => ({
+  receptacles: ['#chartWrap', '#price-chart', '#paneBal', '#paneDD', '#chartBadge', '#toggleContacts']
+    .filter((s) => document.querySelector(s)),
+  canvasesOutsideCompare: [...document.querySelectorAll('canvas')]
+    .filter((c) => !c.closest('.mv-pane[data-pane="compare"]')).length,
+})"""
+
+# R2: 発行したリクエスト（観測境界＝ブラウザの resource timing・公開面）。
+#   ドキュメント自身は含まれない。名前は URL（クエリ含む）。
+_RESOURCES = """() => performance.getEntriesByType('resource').map((e) => e.name)"""
+
+
+def _chart_materials() -> "tuple[str, ...]":
+    """チャート材料の名前（描画ライブラリ・足の API・売買マーク・ライブの足）。
+
+    足の API と売買マークの名前は配信側・書き手の宣言から引く（書き写さない）。
+    """
+    from simulator.sim_ui.adapter.chart_bars_api_controller import CHART_BARS_PATH_PREFIX
+    from simulator.sim_ui.adapter.chart_overlay_writer import TRADE_MARKERS_FILENAME
+
+    return ("lightweight-charts", CHART_BARS_PATH_PREFIX, TRADE_MARKERS_FILENAME, "/candles")
 
 
 def _report_ui_page(tmp_path: Path):
-    """移植元 report_ui の画面（vendor v4.1.3）を立てる。"""
+    """移植元 report_ui の画面（同一 payload）を立てる。"""
     p, browser, page, httpd = _harness.launch(verify_parity._build_web_root, tmp_path / "ref")
     return p, browser, page, httpd
 
 
-def _sim_page(playwright, browser, tmp_path: Path):
-    """sim 表示層の画面（vendor v5.2.0・製品の子文書そのもの）を同一 payload で立てる。"""
-    root = _build_sim_web_root(tmp_path / "sim")
-    port = _harness.free_port()
-    httpd = _harness.serve(str(root), port)
+def _open_sim(browser, port: int, job_id: str):
     page = browser.new_page(viewport={"width": 1600, "height": 1000})
     errors: list = []
     page.on("pageerror", lambda e: errors.append(str(e)))
-    page.goto(f"http://127.0.0.1:{port}/sim/report_view.html?job={JOB_ID}")
+    page.goto(f"http://127.0.0.1:{port}/sim/report_view.html?job={job_id}")
     page.wait_for_function("window.__simReportViewReady === true", timeout=15000)
     page.wait_for_function(
         "() => document.querySelectorAll('#tradeTable tbody tr').length > 0", timeout=15000
     )
-    return page, httpd, errors
+    return page, errors
 
 
-def test_sim_display_parity_12_points(tmp_path: Path) -> None:
-    """12 点を 1 セッションで突き合わせる（点番号 → 同値 assertion）。"""
+def test_sim_display_without_chart(tmp_path: Path) -> None:
+    """残るパリティ点（A1/S1/S3）＋撤去の実測（R1）＋計算量（R2）を 1 セッションで固定する。"""
     p, browser, ref, ref_httpd = _report_ui_page(tmp_path)
-    sim = sim_httpd = None
+    sim = sim_httpd = sim_scaled = None
     sim_errors: list = []
     try:
         ref.set_viewport_size({"width": 1600, "height": 1000})
-        sim, sim_httpd, sim_errors = _sim_page(p, browser, tmp_path)
+        root = _build_sim_web_root(tmp_path / "sim")
+        port = _harness.free_port()
+        sim_httpd = _harness.serve(str(root), port)
+        sim, sim_errors = _open_sim(browser, port, JOB_ID)
 
-        # 点1 / 点2 / 点3 / 点4: 3 窓の枠と canvas。
-        ref_panes = ref.evaluate(_PANES)
-        sim_panes = sim.evaluate(_PANES)
-        assert ref_panes["bal"] and sim_panes["bal"], f"点1 Balance 窓: {ref_panes} vs {sim_panes}"
-        assert ref_panes["dd"] and sim_panes["dd"], f"点2 Drawdown 窓: {ref_panes} vs {sim_panes}"
-        assert ref_panes == sim_panes, f"点3/4 3 窓の枠: {ref_panes} vs {sim_panes}"
-
-        # 点1/2: 窓は**操作できる高さ**を持つ（潰れていれば hover もズームもできない）。
-        ref_h = ref.evaluate(_PANE_HEIGHTS)
-        sim_h = sim.evaluate(_PANE_HEIGHTS)
-        for pane in ("price", "bal", "dd"):
-            assert ref_h[pane] > 20, f"点1/2 移植元の {pane} 窓が潰れています: {ref_h}"
-            assert sim_h[pane] > 20, f"点1/2 sim の {pane} 窓が潰れています: {sim_h}"
-
-        # ヘッダ: 移植元の #topbar 規則が両画面に同じく当たっている（見た目のパリティ）。
+        # A1: ヘッダ #topbar 規則が両画面で同じく当たっている（見た目のパリティ）。
         ref_head = ref.evaluate(_HEADER_STYLE)
         sim_head = sim.evaluate(_HEADER_STYLE)
         assert ref_head is not None and sim_head is not None, "ヘッダ #topbar が無い"
@@ -215,61 +209,20 @@ def test_sim_display_parity_12_points(tmp_path: Path) -> None:
             assert ref_head[key] == sim_head[key], (
                 f"ヘッダ {key}: {ref_head[key]!r} vs {sim_head[key]!r}（#topbar 規則の当たり方が違う）"
             )
-        assert ref_head["sameRow"] is True, "移植元で hSel が h1 と同じ行に無い"
         assert sim_head["sameRow"] is True, "sim で hSel が 2 行目へ落ちている（#topbar の flex 未適用）"
-        # 高さは**等値にしない**: 移植元のヘッダは区間トグル・判定バッジ・meta-line を持ち、
-        #   sim は持たない（Phase 5 の範囲・YAGNI）。中身が違えば高さは違って当然である。
-        #   規則が当たっていれば「部品の少ない sim が移植元より高くなることはない」。
-        #   id を取り違えていた実測では sim 66px > 移植元 38px だった（本 assertion で捕まる）。
         assert sim_head["height"] <= ref_head["height"], (
             f"ヘッダ高: sim {sim_head['height']} > 移植元 {ref_head['height']}"
             "（#topbar 規則が当たっていない疑い）"
         )
 
-        # 点S1: 取引履歴 12 列（順序・キー・ラベル）＋ 行数。
+        # S1: 取引履歴 12 列（順序・キー・ラベル）＋ 行数。
         ref_cols = ref.evaluate(_COLUMNS)
         sim_cols = sim.evaluate(_COLUMNS)
         assert len(ref_cols["keys"]) == 12, f"点S1 列数: {ref_cols['keys']}"
         assert ref_cols == sim_cols, f"点S1 明細 12 列: {ref_cols} vs {sim_cols}"
 
-        # 点7: chartBadge の可視件数 readout。
-        ref_badge = ref.inner_text("#chartBadge")
-        sim_badge = sim.inner_text("#chartBadge")
-        assert "trades in view" in ref_badge, f"点7 badge 文言: {ref_badge!r}"
-        assert ref_badge == sim_badge, f"点7 chartBadge: {ref_badge!r} vs {sim_badge!r}"
-
-        # 点S2: マーカー hover（chart→table）→ 該当行 .hl。
-        #   グリフ画素の hover は移植元 E2E と同じく hover 起動フックで代理する。
-        ref.evaluate("() => window.__chartEmitMarkerHover(1)")
-        sim.evaluate("() => window.__simEmitMarkerHover(1)")
-        ref.wait_for_timeout(150)
-        sim.wait_for_timeout(150)
-        ref_hl = ref.evaluate(_HL_ROWS)
-        sim_hl = sim.evaluate(_HL_ROWS)
-        assert ref_hl == [1], f"点S2 移植元の .hl: {ref_hl}"
-        assert ref_hl == sim_hl, f"点S2 マーカー hover→行 .hl: {ref_hl} vs {sim_hl}"
-
-        # 点16: 連動選択ラベル（hover 中の trade を 1 行で示す）。
-        ref_hsel = ref.inner_text("#hSel")
-        sim_hsel = sim.inner_text("#hSel")
-        assert "#1" in ref_hsel, f"点16 移植元 hSel: {ref_hsel!r}"
-        assert ref_hsel == sim_hsel, f"点16 hSel ラベル: {ref_hsel!r} vs {sim_hsel!r}"
-
-        # 点S4: 区間外ローソクの減光（hover 中は減光・解除で戻る）。
-        assert ref.evaluate("() => window.__candlesDimmed") is True, "点S4 移植元が減光していない"
-        assert sim.evaluate("() => window.__candlesDimmed") is True, "点S4 sim が減光していない"
-        ref.evaluate("() => window.__chartEmitMarkerHover(null)")
-        sim.evaluate("() => window.__simEmitMarkerHover(null)")
-        ref.wait_for_timeout(150)
-        sim.wait_for_timeout(150)
-        assert ref.evaluate("() => window.__candlesDimmed") is False, "点S4 移植元が復帰しない"
-        assert sim.evaluate("() => window.__candlesDimmed") is False, "点S4 sim が復帰しない"
-        assert ref.evaluate(_HL_ROWS) == sim.evaluate(_HL_ROWS) == [], "点S2 hover 解除で .hl が残る"
-
-        # 点S3: 行 hover（table→chart）→ 該当行 .hl ＋ 選択ラベル ＋ 減光。
+        # S3: 行 hover（table→linkage）→ 該当行 .hl ＋ hSel 連動ラベル。
         #   移植元は明細をタブの裏に置く（既定は「比較・判定」）ので、実 hover の前にタブを開く。
-        #   sim にタブは無い（Phase 5 の範囲・YAGNI）＝開く操作そのものが無い。
-        #   タブは**表示の器**であって表示規則ではないため、突合対象は開いた後の観測値である。
         ref.click('.mv-tab[data-tab="detail"]')
         ref.wait_for_timeout(150)
         ref.hover('#tradeTable tbody tr[data-id="2"]')
@@ -279,28 +232,41 @@ def test_sim_display_parity_12_points(tmp_path: Path) -> None:
         assert ref.evaluate(_HL_ROWS) == [2], "点S3 移植元の行 hover が効かない"
         assert ref.evaluate(_HL_ROWS) == sim.evaluate(_HL_ROWS), "点S3 行 hover→強調"
         assert ref.inner_text("#hSel") == sim.inner_text("#hSel"), "点S3 行 hover のラベル"
-        assert ref.evaluate("() => window.__candlesDimmed") is True
-        assert sim.evaluate("() => window.__candlesDimmed") is True
 
-        # 点S3 / S5 / S6: 表示規則そのものを両画面で呼んで突き合わせる。
-        #   （size=1.4・text="#id"・他ペア α=DIM_ALPHA・id "e"+id/"x"+id・cap 700）
-        ref_rules = ref.evaluate(_RULES, "/js/chart.js")
-        sim_rules = sim.evaluate(_RULES, "/sim/report-js/chart.js")
-        assert ref_rules["MARKER_CAP"] == 700, f"点S6 MARKER_CAP: {ref_rules['MARKER_CAP']}"
-        assert ref_rules["DIM_ALPHA"] == 0.15, f"点S4 DIM_ALPHA: {ref_rules['DIM_ALPHA']}"
-        ids = [m["id"] for m in ref_rules["markersPlain"]]
-        assert ids == ["e1", "e2", "x1", "x2"], f"点S5 マーカー id: {ids}"
-        hot = [m for m in ref_rules["markersHovered"] if m["id"] in ("e1", "x1")]
-        assert all(m["size"] == 1.4 for m in hot), f"点S3 hover サイズ: {hot}"
-        assert ref_rules["markersHovered"][0]["text"] == "#1", "点S3 hover ラベル"
-        assert ref_rules["mergedTags"] == ["n", "n", "n", "dim", "dim"], (
-            f"点S4 区間 [entry,exit]（hi=bisectLeft(exit+1)）: {ref_rules['mergedTags']}"
+        # R1: チャートの器と canvas の不在（撤去の実測・2026-09-27 依頼者指示）。
+        absence = sim.evaluate(_CHART_ABSENCE)
+        assert absence["receptacles"] == [], f"R1 チャートの器が残っています: {absence}"
+        assert absence["canvasesOutsideCompare"] == 0, (
+            f"R1 比較タブ外に canvas があります（チャートの第 2 実装の疑い）: {absence}"
         )
-        assert ref_rules == sim_rules, "点S3/S5/S6 表示規則が両画面で一致しない"
 
-        # 全体: どちらの画面でも JS エラーが出ていない。
+        # R2a: チャート材料への発行が 0（発行した計算 − 出力に使った計算 = 0 の資材面）。
+        resources = sim.evaluate(_RESOURCES)
+        wasted = [r for r in resources
+                  if any(material in r for material in _chart_materials())]
+        assert wasted == [], f"R2 チャート材料を読んでいます（描く先が無い＝浪費）: {wasted}"
+
+        # R2b: 入力（取引数）を {SCALE} 倍にしても発行リクエスト数が増えない（オーダーの表明）。
+        #   回数そのものは焼き込まない——固定するのは「入力に比例して発行が増えない」こと。
+        sim_scaled, scaled_errors = _open_sim(browser, port, JOB_ID_SCALED)
+        rows_base = sim.evaluate("() => document.querySelectorAll('#tradeTable tbody tr').length")
+        rows_scaled = sim_scaled.evaluate(
+            "() => document.querySelectorAll('#tradeTable tbody tr').length")
+        assert rows_scaled > rows_base, (
+            f"R2 の前提が破れている（入力が実際に増えていない）: {rows_base} → {rows_scaled}"
+        )
+        n_base = len(resources)
+        n_scaled = len(sim_scaled.evaluate(_RESOURCES))
+        assert n_scaled <= n_base, (
+            f"R2 取引数 {_SCALE} 倍で発行リクエストが増えました: {n_base} → {n_scaled}"
+        )
+        assert scaled_errors == [], f"scaled 画面の JS エラー: {scaled_errors}"
+
+        # 全体: sim 画面で JS エラーが出ていない（lwc 不在の配信面でも 0＝依存が消えた証拠）。
         assert sim_errors == [], f"sim 画面の JS エラー: {sim_errors}"
     finally:
+        if sim_scaled is not None:
+            sim_scaled.close()
         if sim is not None:
             sim.close()
         if sim_httpd is not None:

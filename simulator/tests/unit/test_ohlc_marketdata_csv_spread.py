@@ -5,8 +5,11 @@
        列が無いときは 0（既存契約・``test_ohlc_marketdata_csv.py``）。
     2. 窓はフレーム段で先に効く（窓外の行の spread を読まない）。
     3. 負の spread は domain.Bar が OHLCInvalidError で拒否する。
-    4. 計算量: spread の読取数 − 採用 Bar 数 = 0（Test Spy）。読取数はファイル総行数に
-       依存しない（2 ファイル比較）。列が無ければ読取 0。
+    4. 計算量: Bar にした行数 − 採用 Bar 数 = 0（窓外の行の spread を読まない）。行数は
+       ファイル総行数に依存しない（2 ファイル比較）。列が無ければ spread 列を読む形式を選ばない。
+       観測は `_ohlc_frame` が宣言する観測口（`set_observer`）だけを使う（内部名の
+       monkeypatch はしない・絶対命令 2026-09-25。旧版は私有関数 `_spread_of` を差し替えて
+       数えており、列ごとの一括変換（ISSUE-551 段 2）で張り付く先を失った）。
 """
 from __future__ import annotations
 
@@ -14,7 +17,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from simulator.adapter.repository import ohlc_marketdata_csv
+from marketdata.csv_schema import SPREAD_COLUMN
+from simulator.adapter.repository import _ohlc_frame
 from simulator.adapter.repository.ohlc_marketdata_csv import MarketdataCsvOHLCRepository
 from simulator.domain.exceptions import OHLCInvalidError
 
@@ -88,35 +92,35 @@ def test_a_negative_spread_is_refused(tmp_path):
 # --- 2. 計算量テスト（規約: 読んだ spread − 採用 Bar = 0・ファイル総行数に非依存）------
 
 
-def _count_spread_reads(monkeypatch):
-    real = ohlc_marketdata_csv._spread_of
-    calls = {"read": 0}
-
-    def counting(df, i):
-        calls["read"] += 1
-        return real(df, i)
-
-    monkeypatch.setattr(ohlc_marketdata_csv, "_spread_of", counting)
-    return calls
+@pytest.fixture
+def conversions():
+    """DataFrame → Bar 列の変換の観測口へ繋いだ記録（(Bar にした行数, 宣言した必須列) の列）。"""
+    seen: "list[tuple[int, tuple[str, ...]]]" = []
+    _ohlc_frame.set_observer(lambda rows, required: seen.append((rows, required)))
+    yield seen
+    _ohlc_frame.set_observer(None)
 
 
-def test_no_spread_is_read_outside_the_window(monkeypatch, tmp_path):
-    calls = _count_spread_reads(monkeypatch)
+def _spread_reads(seen) -> int:
+    return sum(rows for rows, required in seen if SPREAD_COLUMN in required)
+
+
+def test_no_spread_is_read_outside_the_window(conversions, tmp_path):
     bars = MarketdataCsvOHLCRepository(
         window=(_utc(2024, 1, 9), _utc(2024, 1, 11))
     ).load(_write(tmp_path, "s.csv", _CSV))
     assert len(bars) > 0  # 空振り防止
-    assert calls["read"] - len(bars) == 0
+    assert _spread_reads(conversions) - len(bars) == 0
 
 
-def test_spread_reads_scale_with_the_window_not_the_file(monkeypatch, tmp_path):
+def test_spread_reads_scale_with_the_window_not_the_file(conversions, tmp_path):
     # 2 点で固定: 同じ窓に対し、窓外 45 行を足しても読取は増えない。
     window = (_utc(2024, 1, 8), _utc(2024, 1, 12))
     results = []
     for name, text in (("five.csv", _CSV), ("fifty.csv", _with_rows_outside_the_window(45))):
-        calls = _count_spread_reads(monkeypatch)
+        conversions.clear()
         bars = MarketdataCsvOHLCRepository(window=window).load(_write(tmp_path, name, text))
-        results.append((calls["read"], len(bars)))
+        results.append((_spread_reads(conversions), len(bars)))
     (small_read, small_used), (large_read, large_used) = results
     assert small_used > 0 and large_used > 0  # 空振り防止
     assert small_read - small_used == 0
@@ -124,9 +128,9 @@ def test_spread_reads_scale_with_the_window_not_the_file(monkeypatch, tmp_path):
     assert large_read == small_read
 
 
-def test_no_spread_is_read_when_the_column_is_absent(monkeypatch, tmp_path):
-    calls = _count_spread_reads(monkeypatch)
+def test_no_spread_is_read_when_the_column_is_absent(conversions, tmp_path):
     bars = MarketdataCsvOHLCRepository().load(_write(tmp_path, "n.csv", _CSV_NO_SPREAD))
     used = 0  # 列が無い＝spread は 0 固定で、読み取った値は 1 つも使わない
+    assert len(conversions) > 0  # 空振り防止（観測口が繋がっている）
     assert all(b.spread == 0 for b in bars)
-    assert calls["read"] - used == 0
+    assert _spread_reads(conversions) - used == 0

@@ -14,12 +14,24 @@
 // 依存 0（import しない）: 通信と時計だけの面を、器も本文も無しで素のまま確かめられる状態に
 //   保つ（`import_source.test.js` が機械強制する）。
 
-/** ジョブ状態の照会先（sim core のジョブ面）。 */
-export function jobStatusUrl(jobId) {
-  return `/sim/jobs/${encodeURIComponent(jobId)}`;
+/** ジョブ状態の照会先（sim core のジョブ面）。``waitMs`` を渡すと保留照会（long-poll）。
+ *  ``seenProgress``（最後に見た進み具合・null＝まだ見ていない）を渡すと、サーバは進み具合が
+ *  それと違えば終端を待たずに応答する（結果待ちのバーと％を動かす・2026-09-27）。 */
+export function jobStatusUrl(jobId, waitMs = null, seenProgress = undefined) {
+  const base = `/sim/jobs/${encodeURIComponent(jobId)}`;
+  if (waitMs == null) return base;
+  const wait = `${base}?wait_ms=${encodeURIComponent(waitMs)}`;
+  if (seenProgress === undefined) return wait;
+  return `${wait}&seen_progress=${seenProgress === null ? "none" : encodeURIComponent(seenProgress)}`;
 }
 
-/** 照会の周期（ms）。権威は基本設計書 NFR-04「ポーリング間隔 1 秒」。 */
+/** 保留照会の保留上限（ms）。サーバ側の上限（serve_sim_jobs の _WAIT_MS_MAX）と同値。
+ *  権威は基本設計書 NFR-04（2026-09-27 改訂: 状態照会は完了まで応答を保留できる）。 */
+export const WAIT_MS = 25000;
+
+/** **失敗時の再試行**間隔（ms）。NFR-04 改訂（2026-09-27）で周期ポーリングは廃止し、
+ *  成功応答の間は保留照会を直列に張る（タイマーを使わない）。タイマーを使うのは
+ *  照会が失敗したときの再試行だけである。 */
 export const POLL_INTERVAL_MS = 1000;
 
 /** 連続で照会に失敗したときに監視を諦める回数。
@@ -67,8 +79,8 @@ export function createJobStatusClient({
    * ジョブ状態（{job_id, status, failure_reason, terminal}）を返す。
    * 応答は**組み替えずそのまま**返す（front で語彙を作らない）。非 2xx は JobStatusError。
    */
-  async function fetchStatus(jobId) {
-    const res = await doFetch(jobStatusUrl(jobId), { cache: "no-store" });
+  async function fetchStatus(jobId, waitMs = null, signal = null, seenProgress = undefined) {
+    const res = await doFetch(jobStatusUrl(jobId, waitMs, seenProgress), { cache: "no-store", signal });
     let payload = null;
     try {
       payload = res && res.json ? await res.json() : null;
@@ -83,7 +95,13 @@ export function createJobStatusClient({
   }
 
   /**
-   * ジョブが終わるまで周期照会する。戻り値は停止関数（`stop()`）。
+   * ジョブが終わるまで**保留照会（long-poll）を直列に張る**（NFR-04 改訂 2026-09-27）。
+   * 戻り値は停止関数（`stop()`）。
+   *
+   * 周期タイマーは持たない: サーバが完了まで（上限 :data:`WAIT_MS`）応答を保留するため、
+   * 成功応答を受けたら**直ちに**次の保留照会を張る。旧 1 秒周期は完了の検知に平均
+   * 0.5 秒の待ちを足していた（ISSUE-541 の実測）。タイマーを使うのは失敗時の再試行
+   * （:data:`POLL_INTERVAL_MS`）だけである。
    *
    * 停止条件は 3 つだけである:
    *   1. 応答の `terminal` が真（**終端判定の権威はサーバ**・§19.6 R1。front は
@@ -98,8 +116,14 @@ export function createJobStatusClient({
     let stopped = false;
     let failures = 0;
     let timerId = null;
+    // 最後に見た進み具合（null＝まだ見ていない）。サーバは違う値になった時点で応答する。
+    let seenProgress = null;
+    // 保留照会は最長 WAIT_MS 接続を握る。stop() で切らないと、再投入を繰り返したときに
+    // 停止済みの監視の接続が溜まる（ブラウザの同時接続上限を食う）。無い環境（テストの
+    // 素の fake fetch / 旧実行系）では従来どおり＝応答が返った時点で stopped ガードが捨てる。
+    const aborter = typeof AbortController !== "undefined" ? new AbortController() : null;
 
-    const schedule = () => {
+    const retryLater = () => {
       if (stopped) return;
       timerId = later(poll, POLL_INTERVAL_MS);
     };
@@ -108,31 +132,34 @@ export function createJobStatusClient({
       if (stopped) return;
       let payload = null;
       try {
-        payload = await fetchStatus(jobId);
+        payload = await fetchStatus(jobId, WAIT_MS, aborter && aborter.signal, seenProgress);
         failures = 0;
       } catch (e) {
+        if (stopped) return;   // 停止後に切れた保留照会を失敗として数えない
         failures += 1;
         if (failures >= MAX_CONSECUTIVE_FAILURES) {
           stopped = true;
           notifySubscriber(onUpdate, { error: (e && e.message) || String(e), status: e && e.status });
           return;
         }
-        schedule();
+        retryLater();
         return;
       }
       if (stopped) return;   // 応答を待っている間に停止されていたら掲示もしない
+      seenProgress = payload && Number.isInteger(payload.progress) ? payload.progress : null;
       notifySubscriber(onUpdate, payload);
       if (payload && payload.terminal === true) {
         stopped = true;
         return;
       }
-      schedule();
+      poll();   // 保留照会の直列（サーバが待つのでタイマーは要らない）
     }
 
-    schedule();
+    poll();
     return function stop() {
       stopped = true;
       if (timerId !== null) cancel(timerId);
+      if (aborter !== null) aborter.abort();
     };
   }
 

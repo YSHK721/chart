@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.domain.exceptions import BacktestError
 from simulator.framework.tester_settings import LOGGER
 from simulator.main import build_interactor
@@ -58,14 +59,20 @@ from simulator.main.tester_settings.window import resolve_data_window, verify_wi
 from simulator.usecase.tester_settings import EffectiveSettings, TesterSettings
 
 
+# 1 run の読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551・main の run_backtest と同じ）。
+#   Settings 経路の唯一の実行段なので、`run_from_settings` と `run_settings_job` の両方に効く。
+@ohlc_frame_cache.pinned_entities()
 def execute_interactor_kwargs(
     kwargs: "dict[str, Any]", effective: EffectiveSettings
-) -> Any:
+) -> "tuple[Any, Any]":
     """検証済みの投入引数で 1 run を実行する（窓の事後検証込み・**唯一の実行段**）。
 
     事前条件: ``kwargs`` は `effective_to_interactor_kwargs` の像（＋呼出側が足した
         拡張点の注入物）。
-    事後条件: `build_interactor` が組んだ request を**そのまま**実行した結果を返す。
+    事後条件: ``(結果, 実行した request)`` を返す。request は `build_interactor` が組み
+        **そのまま実行した**もの（ISSUE-541 段 1: 表示・成果物の書き手が bars /
+        symbol_spec を要るとき、`build_interactor` をもう一度呼んで同じ CSV を読み直す
+        のではなく、この request を値として配る）。
     例外: `BacktestError` 系をそのまま送出する（終了コードへの翻訳は呼出側の責務）。
 
     本関数を切り出しているのは、Settings 経路の実行 facade が 2 本（`run_from_settings`＝
@@ -82,7 +89,7 @@ def execute_interactor_kwargs(
     verify_window_applied(request, resolve_data_window(effective), ea_name=kwargs["ea_name"])
     # ISSUE-398: 公開の実行点 `BacktestController.execute` で、検証した request を
     # そのまま実行する（`controller.run` は検証した request を捨てて組み直すため使えない）。
-    return controller.execute(request)
+    return controller.execute(request), request
 
 
 def run_effective_settings(
@@ -98,7 +105,7 @@ def run_effective_settings(
         （検証だけを行いたい呼出しが終了コードを解釈し直さずに済む）。
     """
     kwargs = effective_to_interactor_kwargs(effective, binding)
-    result = execute_interactor_kwargs(kwargs, effective)
+    result, _request = execute_interactor_kwargs(kwargs, effective)
     return SUCCESS_EXIT_CODE, result, build_run_metadata(effective)
 
 

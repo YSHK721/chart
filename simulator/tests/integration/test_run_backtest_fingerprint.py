@@ -66,12 +66,20 @@ _TRADING_START = np.datetime64("2025-01-02T01:00:00")
 
 # --- ケース A: `trading_start` なし（本番の全呼出がこの形） -------------------
 # 是正前後で一致することを実走で確認した値（ISSUE-398 の byte 等価ゲート）。
-_A_STATS_SHA256 = "2d696eb1539203f7a5141799a560aaab95588e7e4272b5a8820306805815ae6f"
+#: 2026-09-28 ISSUE-545 で取り直した（Sharpe の定義変更）。取り直す前に、新しい run の Sharpe だけを
+#:   旧い式（取引ごとの式）の値へ差し戻した指紋が旧値と一致することを A・B・C すべてで確かめた
+#:   ＝Sharpe 以外の列は動いていない。旧値: A 2d696eb1… / B 767255a5… / C aef4322e…。
+#: 2026-09-28 ISSUE-549 で A・B を取り直した（連勝・連敗の規則を MT5 に合わせた）。コミット済みの版
+#:   （HEAD）を別の作業ツリーで走らせ、その指紋が旧値（A 59d46a92… / B 2a4d4f93…）と一致すること、
+#:   新旧で違う列が連勝・連敗の列だけであることを確かめた: A は profit_trades_avg_con 1.1765→1.2735、
+#:   B は max_con_profit_trades 67.4→85.0（MT5 golden の 85 と一致）・profit_trades_avg_con 1.1667→1.2479。
+#:   C は損益 0 の取引が無く不変。
+_A_STATS_SHA256 = "8d88872b39f97e72a03b259a40ab259667099757bc81d619c9f360357c2a114b"
 _A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610517c"
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
-_B_STATS_SHA256 = "767255a5620d3ead33a64b50dacd539858099322c4d8b4d18ca0f56c6b2ef520"
+_B_STATS_SHA256 = "b31a93be964a05fa10a9ff9d5da508997fedfdee6e1b5bf0705655f54aa7a704"
 _B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
 _B_TRADE_COUNT = 1164
 
@@ -115,9 +123,29 @@ def _meta(case, *, trading_start=None) -> dict:
     return meta
 
 
+#: 指紋の採取後に足した統計の列（理由と日付つきで宣言する）。指紋は取り直さず、
+#:   これらを外した `stats.json` が採取時と一致することで「既存の列は動いていない」を表明する。
+_STATS_FIELDS_ADDED_AFTER_PIN = frozenset({
+    # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本と突き合わせた式）。
+    "ghpr", "lr_correlation", "lr_standard_error",
+    "equity_ddrel_percent", "equity_dd_relative", "deals",
+})
+
+
+#: 指紋の採取後に**定義を変えた**列（理由と日付つきで宣言する）。値の正しさは定義の側の検定が
+#:   MT5 実レポートと突き合わせて固定する（指紋は「定義を変えていない列が動かない」を表明する）。
+_STATS_FIELDS_REDEFINED_AFTER_PIN = frozenset({
+    # 2026-09-28 ISSUE-545: Sharpe を取引ごとの損益の式から、MT5 の定義（足ごとの有効証拠金）へ。
+    #   MT5 との一致は test_sharpe_bar_equity.py と report_ui の test_export_oracle.py が固定。
+    "sharpe_ratio",
+})
+
+
 def _digest(result, stats_json: Path) -> "dict[str, object]":
     """`stats.json` 全フィールドと全確定トレードを 2 つの sha256 へ畳む。"""
     payload = json.loads(stats_json.read_text(encoding="utf-8"))
+    excluded = _STATS_FIELDS_ADDED_AFTER_PIN | _STATS_FIELDS_REDEFINED_AFTER_PIN
+    payload["stats"] = {k: v for k, v in payload["stats"].items() if k not in excluded}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     trades = "\n".join(
         json.dumps(asdict(t), sort_keys=True, default=str) for t in result.trades
@@ -306,7 +334,7 @@ _C_BARS = [
 #: つまり動いたのは建値基準ただ 1 つであり、他の経路は 1 ビットも動いていない。
 #: 旧ピン（退行との識別用）: stats 542d86738cc00654d9d6c1044dbc42d9796e82d7c9b93f5f41775b562882b173 /
 #: trades 75b3a5207dd3d53fddef072cc67326b9a05146e5be7d27e89da533c0beb04827（trade_count は 5 のまま）。
-_C_STATS_SHA256 = "aef4322ef6069502d3edd7ed2e08e04d335b1be7453383e79e6b93d0c80b244e"
+_C_STATS_SHA256 = "c340180fb5fd08f8f27e9b40ee5e13d2e5b319ec582f4bed62f5ab5abfa18c5d"
 _C_TRADES_SHA256 = "5c419318a859e21161b86037f3f2dc4399857f1a504d6c9002d1cede5c40e01a"
 _C_TRADE_COUNT = 5
 

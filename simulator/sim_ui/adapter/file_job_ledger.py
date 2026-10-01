@@ -29,6 +29,7 @@ from simulator.sim_ui.domain.simulation_job import (
     JobTransitionError,
     SimulationJob,
 )
+from simulator.sim_ui.adapter.run_progress_file import read_progress as _read_progress_file
 from simulator.sim_ui.usecase.job_models import JobSubmission
 from simulator.sim_ui.usecase.job_ports import JobLedgerPort
 
@@ -143,6 +144,14 @@ class FileJobLedger(JobLedgerPort):
             return None
         reason = data.get("reason") if isinstance(data, dict) else None
         return str(reason) if reason else None
+
+    def read_progress(self, job_id: str) -> "int | None":
+        """子プロセスが残した進み具合（形式は simulator/sim_ui/adapter/run_progress_file.py）を読む。"""
+        try:
+            job_dir = self.job_dir(job_id)
+        except ValueError:
+            return None
+        return _read_progress_file(job_dir)
 
     def _write_state(self, job: SimulationJob) -> None:
         state_file = self.job_dir(job.job_id) / _STATE_FILE

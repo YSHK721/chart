@@ -220,3 +220,8 @@ class MarginGuard:
                 exit_price=close_price,
                 exit_reason="stop_out",
             )
+        # 決済した玉の含み損益を口座に残さない（決済と同じクォートで評価し直す＝保有 0 なら 0）。
+        #   途転・SL/TP の決済は同じ評価点の `settle` が評価し直すが、強制決済はその後に
+        #   評価し直す段が無く、観測点（「`RunTracePort`」）には「残高＋決済済みの含み損」という
+        #   存在しない有効証拠金が写っていた（実測 2026-09-26: 残高 612.4 に対し −75.2）。
+        account.update_floating_pnl_at(bid=bid, ask=ask)

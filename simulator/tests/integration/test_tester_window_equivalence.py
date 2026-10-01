@@ -199,6 +199,67 @@ class TestWindowAppliedToBars:
         assert len(request.bars) == BAR_DAYS
 
 
+class TestMinuteWindow:
+    """期間の分単位指定（依頼者指示 2026-09-27）が実際の採用バーへ効くこと（結果で測る）。
+
+    材料は 1 分 1 本の合成 CSV。窓は `[From分, To分+1分)`（To の分を含む）。
+    """
+
+    #: 1 分足 18 本（2024-01-01 00:00Z 〜 00:17Z）。
+    MINUTE_BARS = 18
+
+    @pytest.fixture()
+    def minute_csv(self, tmp_path):
+        first = utc_midnight(FIRST_DAY)
+        epochs = tuple(int(first.timestamp()) + 60 * index for index in range(self.MINUTE_BARS))
+        return write_comma_csv(tmp_path / "jp225_minute.csv", epochs)
+
+    def _minute(self, minute):
+        return datetime(2024, 1, 1, 0, minute, tzinfo=timezone.utc)
+
+    def test_the_resolved_window_is_from_minute_to_minute_plus_one(self):
+        window = resolve_data_window(
+            custom_range_settings(
+                datetime(2024, 1, 1, 0, 5), datetime(2024, 1, 1, 0, 9)
+            ).effective()
+        )
+        assert window.marketdata_window == (self._minute(5), self._minute(10))
+        assert (window.tick_start, window.tick_end) == (self._minute(5), self._minute(10))
+
+    def test_only_bars_inside_the_minute_window_are_loaded(self, minute_csv):
+        request = _request_for(
+            custom_range_settings(datetime(2024, 1, 1, 0, 5), datetime(2024, 1, 1, 0, 9)),
+            minute_csv,
+        )
+        assert tuple(bar.time for bar in request.bars) == tuple(
+            int(self._minute(m).timestamp()) for m in range(5, 10)
+        )
+
+    @pytest.mark.parametrize("span_minutes", [3, 5])
+    def test_the_engine_receives_exactly_the_window_no_discarded_bars(
+        self, minute_csv, span_minutes
+    ):
+        """計算量: 供給された足 − 窓内の足 = 0（窓の外の足を作って捨てない）。
+
+        窓の長さ 2 点で固定する——データ全長（18 本）に比例した供給が紛れ込むと、
+        どちらかの点で差が非 0 になる。
+        """
+        request = _request_for(
+            custom_range_settings(
+                datetime(2024, 1, 1, 0, 5), datetime(2024, 1, 1, 0, 5 + span_minutes - 1)
+            ),
+            minute_csv,
+        )
+        assert len(request.bars) - span_minutes == 0
+
+    def test_a_mixed_day_and_minute_range_is_accepted_end_to_end(self, minute_csv):
+        # From は分・To は日（当日を含む）: 00:05 〜 データ末尾（同日）まで全部。
+        request = _request_for(
+            custom_range_settings(datetime(2024, 1, 1, 0, 5), FIRST_DAY), minute_csv
+        )
+        assert len(request.bars) == self.MINUTE_BARS - 5
+
+
 class TestTimezoneIndependence:
     """T-10: `TZ=Asia/Tokyo` と `TZ=UTC` で同一結果（W-3 の原因除去の検証）。"""
 

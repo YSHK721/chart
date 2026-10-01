@@ -50,8 +50,19 @@ class OhlcFramePort(Protocol):
 class CandleSeriesPort(Protocol):
     """配信用 candles 列（lightweight-charts 形）の供給だけを要するクライアント向けの狭いポート（ISP）。"""
 
-    def load_candles(self, ref: str, timeframe: "str | None", limit: "int | None") -> Any:
-        """解決済み datasetRef を candles JSON（§6.3）へ変換して返す。"""
+    def load_candles(
+        self,
+        ref: str,
+        timeframe: "str | None",
+        limit: "int | None",
+        *,
+        start: "int | None" = None,
+        end: "int | None" = None,
+    ) -> Any:
+        """解決済み datasetRef を candles JSON（§6.3）へ変換して返す。
+
+        ``start`` / ``end``: 足の時刻の範囲（UNIX 秒・両端含む）。指定されたときだけ渡される。
+        """
         ...
 
 

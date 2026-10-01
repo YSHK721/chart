@@ -22,12 +22,13 @@ UNIX 秒・Timestamp・datetime64 のいずれにもなる。その吸収は rep
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from pathlib import Path
 from typing import Any, Callable
 
 from simulator.report_ui.adapter.report_presenter import ReportUiPresenter
-from simulator.report_ui.usecase.build_report_payload import BuildReportPayload
+from simulator.report_ui.usecase.build_report_payload import BuildReportPayload, no_bar_rows
 # int 時刻ビューは report_ui の単一ソースを使う（H-D1/H-D4）。ここへ写すと、同じ
 #   payload を作る 2 経路（IS/OOS 実 run と sim ジョブ）が静かに食い違う。
 from simulator.report_ui.tools.int_time_views import (
@@ -35,6 +36,8 @@ from simulator.report_ui.tools.int_time_views import (
     ResultView,
 )
 from simulator.report_ui.usecase.report_meta import ReportMeta
+from simulator.report_ui.usecase.report_models import ReportPayloadModel
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 結果ペイロードのファイル名（sim core の `/data/{job_id}/{file}` が配信する名前）。
 REPORT_FILENAME = "report.json"
@@ -46,6 +49,44 @@ SINGLE_SEGMENT_NOTE = (
 )
 
 
+def _period_label(spec: dict, timeframe: str, bars: list) -> str:
+    """サマリーの Period（MT5 と同じ ``時間足 (開始 - 終了)``・ISSUE-548）。
+
+    `.ini` の FromDate / ToDate があれば**そのまま**使う（分まで指定したときは分まで出る）。
+    全期間（``Dates=0``）で指定が無いときは、run が実際に使った足の最初と最後の日付（UTC）を使う。
+    どちらも無ければ空（捏造しない）。
+    """
+    tester = (spec.get("settings") or {}).get("tester") or {}
+    start, end = tester.get("FromDate"), tester.get("ToDate")
+    if not (start and end) and bars:
+        fmt = lambda t: _dt.datetime.fromtimestamp(int(t), _dt.timezone.utc).strftime("%Y.%m.%d")
+        start, end = fmt(bars[0].time), fmt(bars[-1].time)
+    if not (start and end):
+        return ""
+    return f"{timeframe} ({start} - {end})" if timeframe else f"{start} - {end}"
+
+
+def _run_facts(spec: dict, backtest: dict, bars: list) -> dict:
+    """サマリーの run の事実（通貨・レバレッジ・銘柄数・バー数）を job の値から拾う。
+
+    無い値は入れない（捏造しない）。
+    - 通貨: `.ini` の `Currency`（settings 経路のみ存在）。
+    - レバレッジ: `backtest.leverage`（エンジンへ渡った値）。
+    - 銘柄数: 1。エンジンは 1 run に 1 銘柄だけを取る（エンジン組み立ての銘柄引数は 1 つ）。
+    - バー数: 表示用の足の本数。sim の経路は取引開始の境界を持たない
+      （simulator/main/tester_settings/window.py が取引開始の境界を常に None にする）ので、
+      足はすべてテスト期間の足である。MT5 の Bars と同じ数え方（取引開始以降の足の本数）は
+      report_ui export の IS 区間で MT5 xlsx と一致（13206・2026-09-27）。
+    """
+    facts: dict = {"symbols": 1, "tested_bars": len(bars)}
+    currency = ((spec.get("settings") or {}).get("tester") or {}).get("Currency")
+    if currency:
+        facts["currency"] = currency
+    if backtest.get("leverage") is not None:
+        facts["leverage"] = backtest["leverage"]
+    return facts
+
+
 def write(
     job_dir: Any,
     result: Any,
@@ -55,9 +96,38 @@ def write(
 ) -> Path:
     """`job_dir` へ `report.json` を書き、そのパスを返す。
 
+    組み立ては `build_payload`、書出しは report_ui の presenter。引数の意味は `build_payload` と同じ。
+    """
+    job_dir = Path(job_dir)
+    payload = build_payload(
+        job_dir, result, load_run_inputs=load_run_inputs, contacts_supply=contacts_supply)
+    out = job_dir / REPORT_FILENAME
+    ReportUiPresenter().present_report_payload(payload, out)
+    return out
+
+
+def build_payload(
+    job_dir: Any,
+    result: Any,
+    *,
+    load_run_inputs: "Callable[[dict], tuple[Any, Any]]",
+    contacts_supply: "Callable[[list, dict], list] | None" = None,
+) -> ReportPayloadModel:
+    """ジョブ仕様と結果から、report.json に書く `ReportPayloadModel` を組み立てて返す（書かない）。
+
+    区間の足の並びは組み立てない（`no_bar_rows`・ISSUE-552/554 段階 2-1）。足はジョブの成果物の
+    1 か所（`simulator/sim_ui/adapter/chart_overlay_writer.py` が書く chart_bars.parquet）にだけ
+    持つ。report.json へも書くと同じ列が 2 か所になり、1 分足の全履歴（2,152,183 本）で 172MB を
+    画面が丸ごと取得する。キー（``bars``）は空の並びで残る（出力の形は report_ui の presenter が
+    決める共有の契約）。本数は区間の ``meta.bars`` が名乗る。
+
+    計算量の検定の観測口でもある: ここが返す区間の足の数（組み立てた足）と、`write` が
+    report.json に書いた足の数を比べる。
+
     ``result``: `run_backtest` が返した `BacktestResult`（成功 run のみ渡すこと）。
     ``load_run_inputs``: (bars, symbol_spec) の供給（**必須**）。`BacktestResult` は bars を
-      保持しないため、表示用のローソク足と建値推定（MFE/MAE）に要る bars を取り直す口。
+      保持しないため、建値推定（MFE/MAE）・期間の表示・バー数に要る bars を取り直す口。
+      足そのものは report.json へ書かない（`no_bar_rows`）。
       実体（EA 別 MarketDataPort の選択・CSV 解析）は `simulator.main` の単一ソースにあり、
       その束縛は **Composition Root（`main/run_job.py`）が持つ**（R-4）。adapter が
       `simulator.main` を既定値として掴むと依存が外向き（adapter→main）になる。
@@ -71,7 +141,8 @@ def write(
     backtest = dict(spec.get("backtest") or {})
 
     raw_bars, symbol_spec = load_run_inputs(backtest)
-    bars = [IntTimeBar(b) for b in raw_bars]
+    # 足の時刻は列ごとに一括で変換する（ISSUE-553 項目 3・値は 1 本ずつの変換と同じ）。
+    bars = [IntTimeBar(b, t) for b, t in zip(raw_bars, bar_epoch_seconds(raw_bars))]
     contacts = contacts_supply(bars, backtest) if contacts_supply is not None else None
 
     # SL/TP は job 仕様の値のみ。未指定は 0 ＝ UC 側で空文字になる（価格を捏造しない）。
@@ -83,7 +154,7 @@ def write(
     timeframe = backtest.get("period", "")
     strategy = backtest.get("ea_name", "")
 
-    payload = BuildReportPayload().execute_single(
+    return BuildReportPayload(bar_rows=no_bar_rows).execute_single(
         result=ResultView(result),
         bars=bars,
         spec=symbol_spec,
@@ -94,9 +165,10 @@ def write(
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy": strategy,
-            # 期間の表示文字列は job 仕様に無い（実測していないものを書かない）。
-            "period": "",
+            # 期間の表示（MT5 と同じ「時間足 (開始 - 終了)」・ISSUE-548）。
+            "period": _period_label(spec, timeframe, bars),
             "label": "",
+            **_run_facts(spec, backtest, bars),
         },
         # 別実験の所与（既定値）を持ち込まない。job の事実だけで組む。
         report_meta=ReportMeta(
@@ -110,7 +182,3 @@ def write(
         segment_key=SINGLE_SEGMENT_KEY,
         contract_notes_extra=[SINGLE_SEGMENT_NOTE],
     )
-
-    out = job_dir / REPORT_FILENAME
-    ReportUiPresenter().present_report_payload(payload, out)
-    return out

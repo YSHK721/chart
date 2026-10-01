@@ -36,11 +36,12 @@ from simulator.domain.account import Account
 from simulator.usecase._execution import admit_orders
 from simulator.usecase.bar_schedule import BarSchedule
 from simulator.usecase.compute_stats import compute_stats
+from simulator.usecase.mt5_parity import bar_period_seconds
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
 from simulator.usecase.evaluation_point import TICK_GRANULARITY
 from simulator.usecase.margin_guard import MarginGuard
 from simulator.usecase.models import AccountSpec, BacktestResult
-from simulator.usecase.order_execution import OrderExecutor
+from simulator.usecase.order_execution import OrderExecutor, route_orders
 from simulator.usecase.ports import RunBacktestInputBoundary
 from simulator.usecase.position_directives import PositionDirectiveApplier
 from simulator.usecase.run_features import RunFeatures
@@ -99,6 +100,8 @@ class _RunState:
     deals: list
     balance_curve: list
     equity_curve: list
+    # 各足の最初の評価点が equity_curve のどこに記録されたか（Sharpe Ratio の系列・ISSUE-545）。
+    bar_open_equity_index: list
     open_trades: list
     halted: bool
     trading_start: Any
@@ -286,6 +289,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             deals=deals,
             balance_curve=balance_curve,
             equity_curve=equity_curve,
+            bar_open_equity_index=[],
             # 保有玉（走査順＝反映順が byte 依存）。
             open_trades=[],
             # close_and_halt で stop_out 後に新規発注を抑止するフラグ（cycle4 バグ②）。
@@ -357,8 +361,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
         ペンディング注文がティック粒度だけの概念である理由:
             指値・逆指値は「足の途中で価格が水準に触れたら約定する」注文であり、引く機会
-            （評価点）が足の途中に無ければ意味を持たない。バー粒度の run では発注方式で
-            分けず、すべて足境界の成行として扱う（現状の契約）。
+            （評価点）が足の途中に無ければ意味を持たない。バー粒度の run に待機注文が
+            来たら成行へ変えず 「`ConfigError`」 で止める（ISSUE-557・`route_orders`）。
         """
         state = self._begin_run(request, features)
         bars = state.bars
@@ -380,6 +384,10 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         stop_out_at_open = features.stop_out_at_open and not tick_granularity
         # 前足の終値（ティックを合成する実装が要求する。バー粒度では使われない）。
         prev_close: "float | None" = None
+
+        # 足の総数を観測器へ知らせる（進み具合の分母・1 run 1 回）。
+        if state.tracer is not None:
+            state.tracer.observe_start(len(bars))
 
         for bar_index, bar in enumerate(bars):
             # C 指標値の取得（前計算系列から現足インデックスを引く）
@@ -451,14 +459,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             #   SL/TP(H)・equity/stop-out(I) は閉鎖バーでも従来どおり評価する。
             if bar_closed:
                 orders = []
-            if tick_granularity:
-                # 指値・逆指値は足途中の評価点でトリガを引く別経路へ回す。
-                market_orders = [o for o in orders if o.kind == "market"]
-                pending_orders = [o for o in orders if o.kind != "market"]
-            else:
-                # バー粒度は足途中の評価点を持たないのでペンディングを引く機会が無い。
-                #   発注方式で分けず、すべて足境界の成行として扱う（現状の契約）。
-                market_orders, pending_orders = orders, []
+            # 成行と待機注文の振り分け（バー粒度の待機注文は ConfigError・ISSUE-557）。
+            market_orders, pending_orders = route_orders(
+                orders,
+                tick_granularity=tick_granularity,
+                strategy_name=type(self._strategy).__name__,
+            )
 
             # F 発注（成行約定）。反対玉の reverse 決済 → 建玉 → 口座反映を注文ごとに
             #   完了させる（走査順＝反映順）。建値の導出も約定段が所有する。
@@ -476,6 +482,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             # H → 建玉変更 → ペンディング → I を評価点ごとに行う。「どこで評価するか」は
             #   スケジュールが決め、「評価点で何をするか」は _evaluate_point が持つ。
+            # 足の最初の評価点の equity の位置（評価点 1 つにつき equity ちょうど 1 点＝
+            #   margin_guard の不変条件なので、足に点が 1 つでもあれば先頭の位置はここ）。
+            first_equity_at = len(state.equity_curve)
             for point in points:
                 open_trades, halted = self._evaluate_point(
                     state, point, open_trades, halted
@@ -486,6 +495,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                 #   早期 return 3 経路ぶんの写しが必要になる（複製）。
                 if state.tracer is not None:
                     state.tracer.observe(point, state.account, open_trades, halted)
+            if len(state.equity_curve) > first_equity_at:
+                state.bar_open_equity_index.append(first_equity_at)
 
             prev_close = bar.close
 
@@ -494,6 +505,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         # その後の BacktestResult.trades に反映される（pending_lifecycle 依存の不具合を防ぐ）。
         if open_trades and bars:
             open_trades = executor.close_all_at_final_bar(open_trades, bars[-1])
+            # 清算後の口座を観測器へ渡す（評価点ではないので observe とは別の口・1 run 1 回）。
+            #   値洗いは観測器が在るときだけ行う（結果は清算後の口座を読まないので、無いときに
+            #   行えば作って捨てる計算になる）。保有 0 なので含み損益は 0 になる——しないと最後の
+            #   評価点の含み損益が残り、equity が清算前の値を名乗る（2026-09-26 実測）。
+            if state.tracer is not None:
+                state.account.update_floating_pnl_at(bid=bars[-1].close, ask=bars[-1].close)
+                state.tracer.observe_final_settlement(len(bars) - 1, bars[-1], state.account)
 
         # OnDeinit 集計
         return self._finish_run(
@@ -502,6 +520,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             balance_curve=state.balance_curve,
             equity_curve=state.equity_curve,
             initial_deposit=request.account.initial_deposit,
+            bar_open_equity=[state.equity_curve[i] for i in state.bar_open_equity_index],
+            bar_seconds=bar_period_seconds(bars),
         )
 
     def _evaluate_point(
@@ -589,6 +609,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         balance_curve: list,
         equity_curve: list,
         initial_deposit: float,
+        bar_open_equity: "list | None" = None,
+        bar_seconds: "float | None" = None,
     ) -> BacktestResult:
         """OnDeinit 集計段（両実行経路で完全一致していた終了処理の単一化）。
 
@@ -606,6 +628,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             balance_curve=balance_curve,
             equity_curve=equity_curve,
             initial_deposit=initial_deposit,
+            bar_open_equity=bar_open_equity or [],
+            bar_seconds=bar_seconds,
         )
         return BacktestResult(
             trades=trades,
@@ -613,4 +637,6 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             equity_curve=equity_curve,
             balance_curve=balance_curve,
             stats=stats,
+            bar_open_equity=bar_open_equity or [],
+            bar_seconds=bar_seconds,
         )

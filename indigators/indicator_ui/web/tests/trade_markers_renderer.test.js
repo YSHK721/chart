@@ -905,23 +905,22 @@ test('ISSUE-026 _fmtDate: 既知 UNIX 秒を JST の YYYY/MM/DD に整形する'
   assert.equal(out, '2026/06/16');
 });
 
-test('ISSUE-026 _fmtClock: 既知 UNIX 秒を JST の HH:MM:SS に整形する', () => {
+test('ISSUE-539 _fmtClock: 既知 UNIX 秒を UTC の HH:MM:SS に整形する（時間軸・取引明細と同じ時刻系）', () => {
   // Arrange
   const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
   // Act
   const out = r._fmtClock(1781568840);
-  // Assert: 1781568840 は UTC+9 で 09:14:00。
-  assert.equal(out, '09:14:00');
+  // Assert: 1781568840 は UTC で 00:14:00（旧 ISSUE-026 の JST 表示では 09:14:00 だった）。
+  assert.equal(out, '00:14:00');
 });
 
-test('ISSUE-026 _fmtDate: UTC 当日 15:00 以降は JST で翌日へ繰り上がる（UTC+9 日跨ぎ境界）', () => {
-  // Arrange: 2026-06-16T15:00:00Z は JST で 2026-06-17 00:00:00。
+test('ISSUE-539 _fmtDate: UTC の日付のまま（JST への繰り上がりをしない）', () => {
+  // Arrange: 2026-06-16T15:00:00Z。
   const r = new TradeMarkersRenderer({ lwc: fakeLwc(), mainSeries: {} });
   const unixSec = Date.UTC(2026, 5, 16, 15, 0, 0) / 1000;
-  // Act
-  // Assert: JST 日付は 6/17・時刻は 00:00:00（UTC+9 で日付境界を跨ぐ）。
-  assert.equal(r._fmtDate(unixSec), '2026/06/17');
-  assert.equal(r._fmtClock(unixSec), '00:00:00');
+  // Act / Assert
+  assert.equal(r._fmtDate(unixSec), '2026/06/16');
+  assert.equal(r._fmtClock(unixSec), '15:00:00');
 });
 
 test('ISSUE-026 _fmtDate/_fmtClock: 型不正（非 number）は "-" を返す', () => {
@@ -1025,4 +1024,72 @@ test('ISSUE-026 _ensurePopup: 初回は document.body へ 1 要素 append、2 �
   assert.equal(doc._created.length, 1, 'createElement は 1 回（再生成しない）');
   assert.strictEqual(first, second, '同一要素を再利用');
   assert.equal(first.id, 'trade-detail-popup', 'popup の id が付与される');
+});
+
+
+// ---- ISSUE-538 / 539: 取引番号（pairs[].id）での強調と通知・ポップアップの番号 ----
+
+function markersJsonWithIds(times) {
+  const json = markersJsonV4(times);
+  json.pairs = json.pairs.map((p) => ({ ...p, id: p.i + 1, profit: 1, volume: 1 }));
+  return json;
+}
+
+async function loaded(times, jsonOf = markersJsonWithIds) {
+  const lwc = fakeLwc();
+  const chart = fakeChartV4();
+  const r = new TradeMarkersRenderer({ lwc, mainSeries: fakeSeriesWithPrimitive(), chart, document: null });
+  const m = muteConsole();
+  try {
+    await r.load('/x', async () => ({ ok: true, async json() { return jsonOf(times); } }));
+    chart.emitRange({ from: 0, to: 1000 });
+  } finally { m.restore(); }
+  return { r, lwc, chart };
+}
+
+test('ISSUE-539 ポップアップの番号は取引番号（pairs[].id）で、位置 i ではない', async () => {
+  const { r } = await loaded([10, 20]);
+  const html = r._popupHtml(r._pairs[1]);
+  assert.match(html, /#2 BUY/);
+  assert.doesNotMatch(html, /#1 BUY/);
+});
+
+test('ISSUE-539 取引番号を持たない旧データは番号を出さない（ずれた番号を出さない）', async () => {
+  const { r } = await loaded([10, 20], markersJsonV4);
+  assert.doesNotMatch(r._popupHtml(r._pairs[1]), /#\d+ (BUY|SELL)/);
+  assert.match(r._popupHtml(r._pairs[1]), />BUY</);
+});
+
+test('ISSUE-538 highlightTrade(取引番号) はそのペアを強調し、null で解除する', async () => {
+  const { r, lwc } = await loaded([10, 20, 30]);
+  r.highlightTrade(2);
+  const applied = lwc.calls.setMarkers.at(-1);
+  assert.ok(applied.filter((x) => x.id === 't1:entry').every((x) => x.color === '#26a69a'));
+  assert.ok(applied.filter((x) => x.id !== 't1:entry').every((x) => x.color !== '#26a69a'));
+  r.highlightTrade(null);
+  assert.ok(lwc.calls.setMarkers.at(-1).every((x) => x.color === '#26a69a'));
+});
+
+test('ISSUE-538 グリフ hover で強調が変わると取引番号を知らせる（解除は null）', async () => {
+  const { r, chart } = await loaded([10, 20]);
+  const seen = [];
+  r.onHighlightChange((id) => seen.push(id));
+  chart.emitCross({ hoveredObjectId: 't1:entry' });
+  chart.emitCross({ hoveredObjectId: 't1:exit' });   // 同じ取引＝強調は不変
+  chart.emitCross({});
+  assert.deepEqual(seen, [2, null]);
+});
+
+test('ISSUE-538 計算量: 同じ取引の強調を繰り返しても描き直さない（連動の往復で再描画しない）', async () => {
+  for (const n of [3, 300]) {
+    const { r, lwc } = await loaded(Array.from({ length: n }, (_, i) => 10 * (i + 1)));
+    const seen = [];
+    r.onHighlightChange((id) => { seen.push(id); r.highlightTrade(id); });   // 連動元から戻ってくる形
+    const before = lwc.calls.setMarkers.length;
+    r.highlightTrade(2);
+    for (let k = 0; k < 5; k += 1) r.highlightTrade(2);
+    // 発行した描き直し − 強調の変化 = 0（変化は 1 回）
+    assert.equal(lwc.calls.setMarkers.length - before - 1, 0);
+    assert.deepEqual(seen, []);   // 外からの強調は通知しない（通知はグリフ hover だけ）
+  }
 });

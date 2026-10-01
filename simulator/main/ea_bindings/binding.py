@@ -47,6 +47,31 @@ class EaBuildContext:
             ) from None
 
 
+#: 描画の置き場の語彙。"price"＝価格チャートへ重ねる／"pane"＝別パネルへ描く。
+PLOT_PLACEMENTS = ("price", "pane")
+
+
+@dataclass(frozen=True)
+class PlotDecl:
+    """チャートへ描く指標系列 1 本の宣言（売買のトリガーになる指標を見せる・2026-09-26）。
+
+    ``series``: registry の系列名（`build` が登録する名前）。
+    ``placement``: `PLOT_PLACEMENTS` のいずれか。価格と同じ尺度の系列（SMA・EMA 等）は
+        "price"、尺度の違う系列（差分・オシレータ等）は "pane"。尺度は値から推測せず、
+        EA が名乗る——推測すると、たまたま価格帯に入った系列が価格へ重なる。
+    """
+
+    series: str
+    placement: str
+
+    def __post_init__(self) -> None:
+        if self.placement not in PLOT_PLACEMENTS:
+            raise ConfigError(
+                f"描画の置き場が語彙の外です: {self.placement}",
+                context={"series": self.series, "placement": self.placement},
+            )
+
+
 @dataclass(frozen=True)
 class EaBinding:
     """EA 1 本の宣言。**EA を足すのに書くのはこれ 1 つだけ**である。
@@ -71,3 +96,5 @@ class EaBinding:
     build: "Callable[[EaBuildContext], tuple[Any, Any, Any]]"
     strategy_params: "tuple[str, ...]" = ()
     strategy_type: "type | None" = None
+    #: チャートへ描く指標（`PlotDecl`）。宣言の無い EA は描かない（推測で選ばない）。
+    plots: "tuple[PlotDecl, ...]" = ()

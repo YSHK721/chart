@@ -94,13 +94,32 @@ def _is_datetime(value: Any) -> bool:
     return isinstance(value, datetime)
 
 
-def _is_numpy_datetime64(value: Any) -> bool:
-    """``numpy.datetime64``（numpy を import せず duck typing で判定する）。"""
+def is_numpy_datetime64(value: Any) -> bool:
+    """``numpy.datetime64``（numpy を import せず duck typing で判定する）。
+
+    公開する理由: 足の時刻の一括変換（`simulator/usecase/bar_times.py`）が「一括にしてよい表現か」を
+    同じ判定で決める必要がある。写しを持つと受理する表現が 2 か所で食い違う（ISSUE-553）。
+    """
     return hasattr(value, "astype") and type(value).__name__ == "datetime64"
 
 
+def _datetime64_to_epoch_second_ints(value: Any) -> Any:
+    """``numpy.datetime64``（スカラでも配列でも）を epoch 秒の int64 へ。**秒への cast の唯一の式**。"""
+    return value.astype("datetime64[s]").astype("int64")
+
+
 def _from_numpy_datetime64(value: Any) -> int:
-    return int(value.astype("datetime64[s]").astype("int64"))
+    return int(_datetime64_to_epoch_second_ints(value))
+
+
+def epoch_seconds_of_datetime64_array(values: Any) -> "list[int]":
+    """``numpy.datetime64`` の配列を epoch 秒（int）の list へ（ISSUE-553 項目 3）。
+
+    各要素の値は `epoch_seconds` と同じ（同じ式 `_datetime64_to_epoch_second_ints` を配列へ掛ける）。
+    足ごとに `epoch_seconds` を呼ぶと 215 万本で 5.4 秒、配列へ一括で掛けると 0.62 秒（実測 2026-09-28）。
+    本モジュールは numpy を import しないので、配列は呼び出し側が組んで渡す（duck typing）。
+    """
+    return _datetime64_to_epoch_second_ints(values).tolist()
 
 
 #: 1 秒あたりのミリ秒。**この関係の所有者は本モジュールただ 1 つ**である。
@@ -167,7 +186,7 @@ EPOCH_CONVERTERS: (
     "tuple[tuple[Callable[[Any], bool], Callable[[Any], int], str], ...]"
 ) = (
     (is_epoch_integer, _from_integer, BAR),
-    (_is_numpy_datetime64, _from_numpy_datetime64, BAR),
+    (is_numpy_datetime64, _from_numpy_datetime64, BAR),
     # B-4: 窓境界と同じ関数オブジェクト（複製を持たない）。
     (_is_datetime, epoch_seconds_of_datetime, WINDOW),
 )
@@ -190,7 +209,7 @@ EPOCH_CONVERTERS: (
 #: `simulator/tests/unit/test_bar_time_millis.py` の網羅ゲートが機械的に赤にする。
 _MILLIS_CONVERTERS: "dict[Callable[[Any], bool], Callable[[Any], int]]" = {
     is_epoch_integer: _millis_from_integer,
-    _is_numpy_datetime64: _millis_from_numpy_datetime64,
+    is_numpy_datetime64: _millis_from_numpy_datetime64,
     _is_datetime: _millis_from_datetime,
 }
 

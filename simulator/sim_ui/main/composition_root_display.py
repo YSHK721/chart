@@ -37,6 +37,10 @@ from simulator.sim_ui.framework.serve_sim_display import SimDisplayApp
 from simulator.sim_ui.framework.serve_sim_ea_series import SimEaSeriesApp
 from simulator.sim_ui.framework.serve_sim_run_options import SimRunOptionsApp
 from simulator.sim_ui.framework.serve_sim_settings_schema import SimSettingsSchemaApp
+from simulator.sim_ui.adapter.chart_bars_api_controller import ChartBarsApiController
+from simulator.sim_ui.adapter.chart_bars_source import ChartBarsSource
+from simulator.sim_ui.framework.serve_sim_chart_bars import SimChartBarsApp
+from simulator.sim_ui.usecase.query_chart_bars import QueryChartBarsInteractor
 from simulator.sim_ui.adapter.trace_api_controller import TraceApiController
 from simulator.sim_ui.adapter.trace_query_source import TraceQuerySource
 from simulator.sim_ui.framework.serve_sim_trace import SimTraceApp
@@ -129,6 +133,17 @@ def build_sim_display_app(
                     result_gate=inner.controller.fetch_result
                 ),
                 events=DeriveTraceEventsInteractor(),
+            )
+        ),
+    )
+    # ISSUE-552/554 段階 2-1: 売買履歴チャートの足の API `GET /chart-bars/...` を委譲でもう
+    # 1 本足す。既存の配信面・API 面は素通し（OCP・byte 不変）。公開可否の関門は分析 API と
+    # 同じく内側の実体（`fetch_result`）を借りる（同じ問いに 2 つの答えを作らない）。
+    inner = SimChartBarsApp(
+        inner=inner,
+        controller=ChartBarsApiController(
+            bars=QueryChartBarsInteractor(
+                source=ChartBarsSource(result_gate=inner.controller.fetch_result)
             )
         ),
     )

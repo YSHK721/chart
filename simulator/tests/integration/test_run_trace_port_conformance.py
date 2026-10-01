@@ -43,7 +43,7 @@ from simulator.tests.integration.test_run_backtest_fingerprint import (
 )
 from simulator.tests.fixtures.mt5 import load_case
 from simulator.main import run_backtest
-from simulator.usecase.run_trace_ports import RunTracePort
+from simulator.usecase.run_trace_ports import OBSERVATION_UNITS, RunTracePort
 
 _CASE = "ma_slope_jp225_202501"
 
@@ -104,16 +104,46 @@ def _all_concretes() -> "dict[str, object]":
 
 
 def _make(cls):
-    """具象を既定構成で組む（窓なし＝全区間）。"""
-    if cls is _RecordingSpy:
-        return _RecordingSpy()
+    """具象を既定構成で組む（窓を受ける実装には窓なし＝全区間を渡す）。
+
+    組み方はコンストラクタの引数宣言から導く（「窓を 1 つ受け取る」を全実装に仮定しない。
+    足単位の記録器は窓を持たない・2026-09-26）。
+    """
+    import inspect
+
     from simulator.adapter.trace.trace_window import TraceWindow
 
-    return cls(TraceWindow.of(None, None))
+    parameters = [
+        p for name, p in inspect.signature(cls.__init__).parameters.items() if name != "self"
+    ]
+    if parameters:
+        return cls(TraceWindow.of(None, None))
+    return cls()
 
 
 def _rows_of(tracer) -> int:
     return int(getattr(tracer, "rows", 0))
+
+
+def _ticks_were_observed(tracer, *, bars: int) -> bool:
+    """ティック粒度の run を観測したかを、記録の単位ごとに判定する。
+
+    評価点単位は 1 バー複数ティックなので行がバー数を上回る。足単位はバー数ちょうど。
+    """
+    rows = _rows_of(tracer)
+    if getattr(tracer, "OBSERVATION_UNIT", "point") == "bar":
+        return rows == bars
+    return rows > bars
+
+
+def _expected_rows(tracer, produced) -> int:
+    """記録の単位の宣言から、スケジュールが生んだ評価点に対する期待行数を導く。"""
+    unit = getattr(tracer, "OBSERVATION_UNIT", "point")
+    assert unit in OBSERVATION_UNITS, unit
+    if unit == "bar":
+        # produced の要素は (bar_index, tick_ordinal)（観測スケジュールの Spy が積む鍵）。
+        return len({bar_index for bar_index, _ordinal in produced})
+    return len(produced)
 
 
 _CONCRETES = sorted(_all_concretes())
@@ -175,7 +205,7 @@ class TestTheDiscovererActuallyDiscovers:
             _result, _t, schedule = _run(tracer=tracer, **_fixture_plain())
 
             # Assert
-            assert _rows_of(tracer) == len(schedule.produced), name
+            assert _rows_of(tracer) == _expected_rows(tracer, schedule.produced), name
             assert _rows_of(tracer) > 0, name
 
 
@@ -282,8 +312,9 @@ class TestTheRealTicksFingerprintDoesNotMoveWhenObserved:
             "ticked",
         )
 
-        # Assert: 1 バー 5 ティックの素材なので、記録はバー数を上回る。
-        assert _rows_of(tracer) > len(_C_BARS), (_rows_of(tracer), len(_C_BARS))
+        # Assert: 1 バー 5 ティックの素材なので、評価点単位の記録はバー数を上回る。
+        #   足単位の記録器（名乗りで区別する）はバー数ちょうどである。
+        assert _ticks_were_observed(tracer, bars=len(_C_BARS)), (_rows_of(tracer), len(_C_BARS))
 
 
 # ---- 条件 4: Port 宣言と呼出点の引数並びを構文木で固定 ----
