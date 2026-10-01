@@ -31,6 +31,7 @@ from simulator.adapter.strategy.pro_fit_band import ProFitBand
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.main import build_interactor
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -102,7 +103,7 @@ def _comma_kwargs(csv_path: Path, ea_name: str) -> dict:
     return dict(
         data_path=csv_path, symbol="JP225", period="M1", ea_name=ea_name,
         initial_deposit=10_000.0, contract_size=1.0, volume_min=0.01, volume_max=100.0,
-        volume_step=0.01, stops_level=0, digits=5, point_size=0.0001, leverage=100.0,
+        volume_step=0.01, stops_level=0, digits=5, point_size=0.0001, leverage=100.0, stop_out_level=ledger_stop_out_level(),
         ma_period=8, ma_method="sma", lot_size=0.1, stop_loss_points=30,
         take_profit_points=100, config_overrides={"tick_model": "ohlc_expand"},
     )

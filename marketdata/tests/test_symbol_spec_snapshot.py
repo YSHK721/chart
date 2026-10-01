@@ -63,6 +63,7 @@ def test_spec_fields_keys_are_exactly_the_mapping_table_keys(raw):
 _TABLE_NAMES = (
     "SYMBOL_FIELD_SOURCES",
     "ACCOUNT_FIELD_SOURCES",
+    "ACCOUNT_FIELD_CONDITIONS",
     "SETTLEMENT_CURRENCY_SOURCE",
 )
 
@@ -122,6 +123,7 @@ def test_mt5_field_names_appear_only_inside_the_mapping_table():
 
     mt5_keys = {s.key for s in sss.SPEC_FIELD_SOURCES.values()}
     mt5_keys.add(sss.SETTLEMENT_CURRENCY_SOURCE.key)
+    mt5_keys.update(c.source.key for c in sss.ACCOUNT_FIELD_CONDITIONS.values())
     leaked = sorted(mt5_keys.intersection(outside_literals))
     assert not leaked, f"MT5 フィールド名が対応表の外に現れている: {leaked}（対応表は 1 箇所に限る）"
 
@@ -175,8 +177,60 @@ def test_leverage_is_sourced_from_the_account_section(raw):
 
 
 def test_all_other_fields_are_sourced_from_the_symbol_section():
-    others = {n: s for n, s in sss.SPEC_FIELD_SOURCES.items() if n != "leverage"}
+    others = {
+        n: s for n, s in sss.SPEC_FIELD_SOURCES.items() if n not in sss.ACCOUNT_FIELD_SOURCES
+    }
     assert {s.section for s in others.values()} == {"symbol"}
+
+
+# --- 3b. ストップアウト水準は口座の契約である（ISSUE-546）-------------------------------
+#
+# sim のストップアウト水準は供給元が無く 0.0 が入り、維持率が 100% を割っても取引が続いて
+# 残高が負になった（実測）。水準の出所は口座の ``margin_so_so`` ただ 1 つであり、
+# その単位（``margin_so_mode``）が百分率でなければ黙って百分率として扱わず止める。
+# 期待値は表と実スナップショットから導く（数値・MT5 名をここに書き写さない）。
+
+
+def test_stop_out_level_is_sourced_from_the_account_section(raw):
+    source = sss.ACCOUNT_FIELD_SOURCES["stop_out_level"]
+    assert sss.spec_fields(raw)["stop_out_level"] == float(raw[source.section][source.key])
+    assert isinstance(sss.spec_fields(raw)["stop_out_level"], float)
+
+
+def test_the_committed_snapshot_declares_a_percentage_stop_out(raw):
+    """実スナップショットの単位は表が受け付ける単位である（空振り防止の前提）。"""
+    condition = sss.ACCOUNT_FIELD_CONDITIONS["stop_out_level"]
+    source = condition.source
+    assert raw[source.section][source.key] == condition.required
+
+
+def test_a_stop_out_level_in_another_unit_is_fail_stop(raw):
+    """単位が百分率でなければ値を返さず止める（金額の水準を % として使わない）。"""
+    condition = sss.ACCOUNT_FIELD_CONDITIONS["stop_out_level"]
+    source = condition.source
+    broken = copy.deepcopy(raw)
+    broken[source.section][source.key] = condition.required + 1
+    with pytest.raises(sss.SnapshotError) as exc:
+        sss.spec_fields(broken)
+    assert source.key in str(exc.value)
+
+
+def test_a_stop_out_level_without_its_unit_is_fail_stop(raw):
+    """単位が無ければ推定せず止める。"""
+    source = sss.ACCOUNT_FIELD_CONDITIONS["stop_out_level"].source
+    broken = copy.deepcopy(raw)
+    del broken[source.section][source.key]
+    with pytest.raises(sss.SnapshotError) as exc:
+        sss.spec_fields(broken)
+    assert source.key in str(exc.value)
+
+
+def test_a_missing_stop_out_level_is_fail_stop(raw):
+    source = sss.ACCOUNT_FIELD_SOURCES["stop_out_level"]
+    broken = copy.deepcopy(raw)
+    del broken[source.section][source.key]
+    with pytest.raises(sss.SnapshotError):
+        sss.spec_fields(broken)
 
 
 # --- 4. 捏造しない（Fail-Stop）---------------------------------------------------------

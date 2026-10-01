@@ -45,8 +45,8 @@ def test_jp225_profile_symbol_spec_comes_from_the_supply_snapshot():
     # Act
     profiles = build_run_options_port().datasets()
     jp = [p for p in profiles if p.symbol == "JP225"][0]
-    # Assert: 8 項目すべてが供給元と等値（カタログがリテラルを持たないことの実証）。
-    assert len(expected) == 8
+    # Assert: 全項目が供給元と等値（カタログがリテラルを持たないことの実証）。
+    #   ISSUE-546 でストップアウト水準が加わった（表の項目数を書き写さない）。
     for name, value in expected.items():
         assert getattr(jp, name) == value, f"{name}: カタログ {getattr(jp, name)!r} != 供給元 {value!r}"
     assert jp.symbol == "JP225" and jp.period == "M1"

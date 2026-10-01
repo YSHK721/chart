@@ -59,6 +59,11 @@ _ACCOUNT_FIELDS = {
     "trade_mode": 2,
     "company": "OANDA Corporation",
     "server": "OANDA-Japan MT5 Live",
+    # 含める（ストップアウトの契約・ISSUE-546）。値は検定用の任意値であり、権威は端末の再取得。
+    "margin_so_mode": 0,
+    "margin_so_so": 100.0,
+    # 除外する（ストップアウトに使わない口座設定・許可リスト外）
+    "margin_so_call": 100.0,
     # 除外する（識別子）
     "login": 900005560,
     "name": "Yamada Taro",
@@ -207,7 +212,84 @@ def test_symbol_section_carries_unknown_future_fields():
 
 def test_account_section_contains_only_allowlisted_keys():
     snap = _snapshot()
-    assert set(snap["account"]) == {"company", "currency", "leverage", "server", "trade_mode"}
+    assert set(snap["account"]) == {
+        "company", "currency", "leverage", "server", "trade_mode",
+        "margin_so_mode", "margin_so_so",
+    }
+
+
+def test_account_section_carries_the_stop_out_contract():
+    """ストップアウト水準とその単位を端末の値のまま落とす（ISSUE-546）。
+
+    sim のストップアウト水準は供給元が無く 0.0 が入り、維持率が 100% を割っても取引が
+    続いて残高が負になった（実測）。水準の権威は `mt5.account_info()` の `margin_so_so`、
+    その単位（% か金額か）は `margin_so_mode` である。人が書いた値を台帳へ入れないため、
+    端末から機械取得する口に載せる。
+    """
+    snap = _snapshot()
+    assert snap["account"]["margin_so_so"] == _ACCOUNT_FIELDS["margin_so_so"]
+    assert snap["account"]["margin_so_mode"] == _ACCOUNT_FIELDS["margin_so_mode"]
+
+
+class _SpyAccount(dict):
+    """``account_info()._asdict()`` 相当。値の読み出し・走査の回数を数える（観測境界は引数）。"""
+
+    def __init__(self, fields: dict):
+        super().__init__(fields)
+        self.value_reads = 0
+        self.lookups = 0
+        self.iterated = 0
+
+    def __getitem__(self, key):
+        self.value_reads += 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.value_reads += 1
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        self.lookups += 1
+        return super().__contains__(key)
+
+    def __iter__(self):
+        for key in super().__iter__():
+            self.iterated += 1
+            yield key
+
+    def keys(self):
+        return list(iter(self))
+
+    def items(self):
+        return [(k, super(_SpyAccount, self).__getitem__(k)) for k in iter(self)]
+
+    def values(self):
+        return [v for _, v in self.items()]
+
+
+def _spy_account(extra: int) -> _SpyAccount:
+    fields = dict(_ACCOUNT_FIELDS)
+    fields.update({f"unrelated_field_{i}": i for i in range(extra)})
+    return _SpyAccount(fields)
+
+
+@pytest.mark.parametrize("extra", [10, 1000])
+def test_account_section_reads_only_the_values_it_outputs(extra):
+    """計算量: 読んだ値の数 − 出力した値の数 = 0（許可リスト外の値を読んで捨てない）。"""
+    spy = _spy_account(extra)
+    out = cap.account_section(spy)
+    assert spy.value_reads - len(out) == 0
+    assert spy.iterated == 0
+
+
+def test_account_section_work_does_not_grow_with_unrelated_fields():
+    """計算量: 供給元のフィールドが増えても、読みと照会の数は変わらない（許可リストだけで決まる）。"""
+    small, large = _spy_account(10), _spy_account(1000)
+    cap.account_section(small)
+    cap.account_section(large)
+    assert (small.value_reads, small.lookups, small.iterated) == (
+        large.value_reads, large.lookups, large.iterated,
+    )
 
 
 def test_account_section_excludes_identifier_and_volatile_values():

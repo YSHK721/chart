@@ -29,7 +29,7 @@ def job_dir(tmp_path: Path) -> Path:
 def _full_backtest_spec() -> dict:
     return {
         "ea_name": "TC24051901",
-        "symbol": "EURUSD",
+        "symbol": "JP225",
         "period": "M1",
         "data_path": "/tmp/x.csv",
         "initial_deposit": 100_000.0,

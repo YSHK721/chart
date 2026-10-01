@@ -176,7 +176,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--take-profit-points", type=int, default=0)
     p.add_argument("--entry-offset-points", type=float, default=0.0)
     p.add_argument("--entry-type", default="stop")
-    p.add_argument("--stop-out-level", type=float, default=100.0)
     p.add_argument("--config-override", action="append", default=[])
     # 探索固有
     p.add_argument("--search-param", action="append", default=[], required=False)
@@ -247,7 +246,6 @@ def _build_base_kwargs(args) -> dict:
         entry_offset_points=args.entry_offset_points,
         entry_type=args.entry_type,
         config_overrides=_parse_config_overrides(args.config_override),
-        stop_out_level=args.stop_out_level,
     )
 
 

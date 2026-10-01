@@ -211,7 +211,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--take-profit-points", type=int, default=0)
     p.add_argument("--entry-offset-points", type=float, default=0.0)
     p.add_argument("--entry-type", default="stop")
-    p.add_argument("--stop-out-level", type=float, default=100.0)
     p.add_argument("--config-override", action="append", default=[])
     # 探索固有（SP2 踏襲）
     p.add_argument("--search-param", action="append", default=[], required=False)

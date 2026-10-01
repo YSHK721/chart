@@ -226,7 +226,7 @@ def _full_backtest_spec() -> dict:
     """build_interactor が実際に受け取る形（量制約を含む）。"""
     return {
         "ea_name": "TC24051901",
-        "symbol": "EURUSD",
+        "symbol": "JP225",
         "period": "M1",
         "data_path": "/tmp/x.csv",
         "initial_deposit": 100_000.0,

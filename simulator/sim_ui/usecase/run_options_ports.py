@@ -57,6 +57,12 @@ class RunProfile:
     volume_max: float
     volume_step: float
     stops_level: int
+    #: ストップアウト水準（ISSUE-546・必須・既定値なし）。台帳の口座 ``margin_so_so`` を
+    #: `SymbolSpecCatalog` が 「`spec_fields`」 から配る。``settlement_currency`` と同じく
+    #: **フォーム投入 body には含めない**——水準の出所は台帳ただ 1 つであり、利用者の投入から
+    #: 受け取らない（受付は 「`composition_root_jobs._INJECTED_ONLY_KEYS`」 が拒む）。
+    #: run は投入の実体と一致する profile の値を 「`run_job`」 が注入する。
+    stop_out_level: float
     settlement_currency: str
     config_overrides: "dict | None" = None
     #: データ実体の先頭/末尾の日付（`.ini` トークン形 `YYYY.MM.DD`・**表示専用**）。

@@ -17,11 +17,13 @@
     front は「その run は何も起きなかった」と読む。前者は
     `TraceArtefactMissingError` で表す。
 
-**run の設定値は spec.json から読む**:
+**run の設定値は run の記録から読む**:
     DD の基準（initial_deposit）も維持率の閾値（stop_out_level）も、分析側が
-    発明してよい値ではない——その run が実際に使った値である。spec.json は
-    FileJobLedger が job_dir 直下へ書いた投入仕様そのもの（file_job_ledger._spec_of）
-    であり、run の入力の単一ソースである。
+    発明してよい値ではない——その run が実際に使った値である。initial_deposit は
+    spec.json（FileJobLedger が job_dir 直下へ書いた投入仕様そのもの・
+    file_job_ledger._spec_of）から読む。stop_out_level は投入に現れない（出所は台帳の
+    口座 margin_so_so・ISSUE-546）ため、run が使った値を trace_writer が trace_meta.json に
+    記録し、それを読む。
 
 依存規律: pandas / pyarrow を直接 import しない（store 経由）。素の列だけを usecase へ渡す。
 """
@@ -32,7 +34,11 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from simulator.adapter.trace import parquet_trace_store
-from simulator.sim_ui.adapter.trace_writer import POINTS_FILENAME
+from simulator.sim_ui.adapter.trace_writer import (
+    META_FILENAME,
+    POINTS_FILENAME,
+    STOP_OUT_LEVEL_KEY,
+)
 from simulator.sim_ui.usecase.trace_query_ports import (
     TraceArtefactMissingError,
     TraceExtent,
@@ -41,7 +47,6 @@ from simulator.sim_ui.usecase.trace_query_ports import (
 
 #: spec.json のうち分析が読む鍵（build_interactor の引数名と同じ＝投入 API の面）。
 _DEPOSIT_KEY = "initial_deposit"
-_FLOOR_KEY = "stop_out_level"
 
 #: initial_deposit が spec に無い run の基準。0.0 は mt5_parity の B_0 として
 #: 「基準が無い」を表し、DD は peak-to-trough だけで決まる（値を発明しない）。
@@ -74,7 +79,7 @@ class TraceQuerySource(TracePointsPort):
                 f"ジョブ {job_id} の投入仕様に {_DEPOSIT_KEY} がありません。"
                 "ドローダウンの基準を決められないため分析できません"
             )
-        floor = spec.get(_FLOOR_KEY)
+        floor = self._run_meta(job_id).get(STOP_OUT_LEVEL_KEY)
         return TraceExtent(
             rows=rows,
             first_time=first,
@@ -120,6 +125,15 @@ class TraceQuerySource(TracePointsPort):
                 f"（{POINTS_FILENAME}）。トレースを ON にして実行してください"
             )
         return path
+
+    def _run_meta(self, job_id: str) -> "dict[str, Any]":
+        """trace_meta.json（run が書いた記録）。読めない構成は空 dict（値を発明しない）。"""
+        path = Path(self._gate.execute(job_id, META_FILENAME))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
 
     def _spec(self, job_id: str) -> "dict[str, Any]":
         """spec.json の `backtest` ブロック。読めない構成は空 dict（値を発明しない）。"""

@@ -27,7 +27,7 @@ def job_dir(tmp_path: Path) -> Path:
 
 def _backtest() -> dict:
     return {
-        "ea_name": "TC24051901", "symbol": "EURUSD", "period": "M1",
+        "ea_name": "TC24051901", "symbol": "JP225", "period": "M1",
         "data_path": "/tmp/x.csv", "initial_deposit": 100_000.0, "contract_size": 1.0,
         "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01, "stops_level": 0,
         "digits": 5, "point_size": 0.0001, "leverage": 100.0, "ma_period": 2,

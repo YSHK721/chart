@@ -23,6 +23,7 @@ Phase 1 の `composition_root.build_sim_app`（配信面だけ）を置き換え
 """
 from __future__ import annotations
 
+from marketdata.symbol_spec_snapshot import LEDGER_ONLY_FIELDS
 from pathlib import Path
 from typing import Any, Callable
 
@@ -251,6 +252,13 @@ _INJECTED_ONLY_KEYS = frozenset(
     {"strategy_decorator", "strategy_override", "run_tracer"}
 )
 
+#: 子へ素通しする `backtest` に**載せず**、run_job が台帳（実行プロファイル）から引いて渡す
+#: キー（ISSUE-546）。ストップアウト水準の出所は台帳の口座 margin_so_so ただ 1 つであり、
+#: 投入から受け取ると利用者の値が台帳に優先する入口が生まれる。`build_interactor` の必須
+#: 引数でもあるため、ここで除かないと投入が必須欠落で拒まれる。
+#: 宣言の所有者は marketdata（CLI と同じ宣言を参照する・ここで集合を書かない）。
+LEDGER_SUPPLIED_KEYS = LEDGER_ONLY_FIELDS
+
 
 def allowed_backtest_keys() -> "frozenset[str]":
     """`backtest` に指定してよいキーの集合（🔴-5b）。
@@ -264,7 +272,7 @@ def allowed_backtest_keys() -> "frozenset[str]":
     from simulator.main import build_interactor
 
     params = frozenset(inspect.signature(build_interactor).parameters)
-    return params - _INJECTED_ONLY_KEYS
+    return params - _INJECTED_ONLY_KEYS - LEDGER_SUPPLIED_KEYS
 
 
 def required_backtest_keys() -> "frozenset[str]":
@@ -286,7 +294,7 @@ def required_backtest_keys() -> "frozenset[str]":
         name
         for name, p in params.items()
         if p.default is inspect.Parameter.empty
-    ) - _INJECTED_ONLY_KEYS
+    ) - _INJECTED_ONLY_KEYS - LEDGER_SUPPLIED_KEYS
 
 
 def build_sim_job_app(

@@ -34,12 +34,15 @@ from simulator.sim_ui.tests.app_chain import inside
 from simulator.sim_ui.main.composition_root_display import build_sim_display_app
 from simulator.sim_ui.usecase.query_trace import MAX_RETURNED_ROWS
 from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
+from simulator.sim_ui.main.composition_root_jobs import LEDGER_SUPPLIED_KEYS
 from simulator.tests.fixtures.mt5 import load_case
 
 _ROOT = Path(__file__).resolve().parents[4]
 _SIM_WEB = _ROOT / "simulator" / "sim_ui" / "web"
 #: run の stop-out 水準（維持率の閾値の出所。分析側が発明する値ではない）。
-_STOP_OUT_LEVEL = 99.95
+#: 出所は台帳の口座 margin_so_so ただ 1 つ（ISSUE-546）。run_job が台帳から渡すため、
+#: 投入（「`backtest`」）には載せない。
+_STOP_OUT_LEVEL = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")["stop_out_level"]
 
 
 def _serve(app):
@@ -99,7 +102,11 @@ def _backtest() -> dict:
     return dict(
         data_path=str(case.warmup_csv), symbol=sym["name"], period="M1",
         ea_name="MA_Slope_EA", initial_deposit=float(acc["initial_deposit"]),
-        **load_spec_fields(OANDA_JAPAN_MT5_LIVE, sym["name"]),
+        **{
+            k: v
+            for k, v in load_spec_fields(OANDA_JAPAN_MT5_LIVE, sym["name"]).items()
+            if k not in LEDGER_SUPPLIED_KEYS
+        },
         ma_period=int(ea["ma_period"]), ma_method=ea["ma_method"],
         lot_size=float(ea["lot"]), stop_loss_points=int(ea["stop_loss"]),
         take_profit_points=int(ea["take_profit"]),
@@ -109,7 +116,6 @@ def _backtest() -> dict:
             "tick_model": "open_only", "stop_out_action": "close_and_halt", "prime_first_trading_bar": True,
             "floating_pnl_basis": "bid_ask",
         },
-        stop_out_level=_STOP_OUT_LEVEL,
     )
 
 

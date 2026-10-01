@@ -37,6 +37,7 @@ from simulator.main import run_backtest
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 from simulator.tests.fixtures.mt5 import load_case
 from simulator.tests.fixtures.mt5 import spec_derivation as sd
+from marketdata.symbol_spec_snapshot import SPEC_FIELD_SOURCES
 
 _CASE = "ma_slope_jp225_202501"
 _SYMBOL = "JP225"
@@ -58,7 +59,7 @@ def test_catalog_constants_match_the_supply_snapshot():
     """
     expected = spec_fields(_snapshot())
     jp = _jp225_profile()
-    assert len(expected) == 8
+    assert set(expected) == set(SPEC_FIELD_SOURCES)   # 台帳の表の全項目（ISSUE-546 で水準が加わった）
     for name, value in expected.items():
         assert getattr(jp, name) == value, f"{name}: カタログ {getattr(jp, name)!r} != 供給元 {value!r}"
     assert jp.symbol == _SYMBOL and jp.period == "M1"
@@ -157,6 +158,7 @@ def _meta_from(profile_like, csv: Path) -> dict:
         initial_deposit=10000.0,
         contract_size=p["contract_size"], digits=p["digits"], point_size=p["point_size"],
         leverage=p["leverage"], stops_level=p["stops_level"],
+        stop_out_level=p["stop_out_level"],
         volume_min=0.01, volume_max=100.0, volume_step=0.01,
         ma_period=2, ma_method="sma", lot_size=0.1,
         stop_loss_points=50, take_profit_points=100,
@@ -167,7 +169,7 @@ def test_catalog_spec_reproduces_snapshot_run_bit_exact(tmp_path: Path):
     # (b) カタログ定数で実走 == 供給元スナップショット定数で実走（bit-exact）
     csv = _oscillating_csv(tmp_path / "osc.csv")
     jp = _jp225_profile()
-    keys = ("contract_size", "digits", "point_size", "leverage", "stops_level")
+    keys = ("contract_size", "digits", "point_size", "leverage", "stops_level", "stop_out_level")
     catalog_spec = {k: getattr(jp, k) for k in keys}
     # 期待側は供給元から直に引く（case.yaml は stops_level / volume を持たないため
     # オラクルになれない＝ISSUE-445 段階 2 でオラクルをスナップショットへ移した）。

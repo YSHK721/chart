@@ -17,6 +17,7 @@ from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fiel
 from simulator.adapter.strategy.ma_slope import MaSlope
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.main import build_interactor
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 # MT5 形式の最小 CSV（タブ区切り）。EMA(20) 計算に足りる本数を与える。
 _HEADER = "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>"
@@ -116,6 +117,7 @@ class TestCompositionMaSlope:
             digits=5,
             point_size=0.0001,
             leverage=100.0,
+            stop_out_level=ledger_stop_out_level(),
             ma_period=2,
             ma_method="sma",
             lot_size=1.0,

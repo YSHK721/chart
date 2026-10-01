@@ -69,11 +69,13 @@ def _write_job(tmp_path, *, rows=40, deposit=_DEPOSIT, floor=_FLOOR):
         columns["open_volume_sell"].append(0.0)
         columns["halted"].append(False)
     store.write_columns(job_dir / POINTS_FILENAME, columns)
+    # run が使った水準は trace_meta.json に記録される（投入には現れない・ISSUE-546）。
     (job_dir / META_FILENAME).write_text(
-        json.dumps({"job_id": _JOB, "rows": {"points": rows}}), encoding="utf-8"
+        json.dumps({"job_id": _JOB, "rows": {"points": rows}, "stop_out_level": floor}),
+        encoding="utf-8",
     )
     spec = {
-        "backtest": {"initial_deposit": deposit, "stop_out_level": floor},
+        "backtest": {"initial_deposit": deposit},
         "trace": {"enabled": True},
     }
     (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
@@ -128,9 +130,9 @@ class TestTheExtentComesFromTheArtefactAndTheSpec:
         # Arrange
         job_dir = tmp_path / _JOB
         _write_job(tmp_path)
-        spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
-        del spec["backtest"]["stop_out_level"]
-        (job_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+        meta = json.loads((job_dir / META_FILENAME).read_text(encoding="utf-8"))
+        del meta["stop_out_level"]
+        (job_dir / META_FILENAME).write_text(json.dumps(meta), encoding="utf-8")
         query = TraceQuerySource(result_gate=_Gate(job_dir))
 
         # Act / Assert

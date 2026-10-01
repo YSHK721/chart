@@ -29,6 +29,7 @@ from simulator.main import build_interactor, run_backtest
 from simulator.usecase._execution import derive_quotes
 from simulator.usecase.sizing_models import SizingConfig, SizingContext, SizingRule
 from simulator.usecase.sizing_ports import required_price_series
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 # 合成 OHLC（既存 integration テストと同型）。bar2 に spread=200pts を置き、
 # current_open 基準で Ask=open+spread×point がバー open と判別可能になるようにする。
@@ -79,6 +80,7 @@ def _meta(csv_path: Path, **overrides) -> dict:
         digits=5,
         point_size=_POINT_SIZE,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,
@@ -141,6 +143,7 @@ def _mt5_meta(csv_path: Path, **overrides) -> dict:
         digits=1,
         point_size=1.0,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=5,
         ma_method="ema",
         lot_size=1.0,

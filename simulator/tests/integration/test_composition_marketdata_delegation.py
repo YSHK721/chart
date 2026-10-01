@@ -44,6 +44,7 @@ from simulator.adapter.repository.windowed_market_data import WindowedMarketData
 from simulator.adapter.strategy.stop_entry_probe import StopEntryProbe
 from simulator.adapter.strategy.tc24051901 import TC24051901
 from simulator.main import build_interactor
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 def _epoch(*args) -> int:
@@ -90,6 +91,7 @@ def _tc_kwargs(csv_path: Path, **extra) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,
@@ -116,6 +118,7 @@ def _stop_probe_kwargs(csv_path: Path, **extra) -> dict:
         digits=2,
         point_size=0.01,
         leverage=10.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

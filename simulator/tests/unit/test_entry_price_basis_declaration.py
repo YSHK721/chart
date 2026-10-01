@@ -38,6 +38,7 @@ from simulator.usecase.entry_price_basis import (
     basis_for_reads,
 )
 from simulator.usecase.ports import StrategyPort
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 #: 2024-01-01T00:00:00Z（comma 形式 CSV の 「`time`」 は epoch 秒 int が契約）。
 _EPOCH_2024_01_01 = 1_704_067_200
@@ -77,6 +78,7 @@ def _meta(csv_path: Path, **overrides: Any) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

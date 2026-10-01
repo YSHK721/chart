@@ -19,6 +19,7 @@ import pandas as pd
 
 from simulator.main import run_backtest
 from simulator.sim_ui.main import run_job
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 #: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
@@ -52,7 +53,7 @@ def _write_csv(path: Path) -> Path:
 def _backtest(csv: Path) -> dict:
     return {
         "ea_name": "TC24051901",
-        "symbol": "EURUSD",
+        "symbol": "JP225",
         "period": "M1",
         "data_path": str(csv),
         "initial_deposit": 100_000.0,
@@ -161,7 +162,10 @@ def test_strategy_absent_is_byte_equivalent_to_direct_run(tmp_path: Path) -> Non
     # override 無しの直接実行（strategy 不在の既存経路）
     out = tmp_path / "direct"
     out.mkdir()
-    code, _ = run_backtest(output_dir=out, **_backtest(csv))
+    # 直接実行の側も run_job と同じ出所（台帳）の水準を渡す（ISSUE-546）。
+    code, _ = run_backtest(
+        output_dir=out, **_backtest(csv), stop_out_level=ledger_stop_out_level()
+    )
     assert code == 0
     direct = json.loads((out / "stats.json").read_text(encoding="utf-8"))
     # Assert: OFF は override 無しの既存経路と byte 一致
