@@ -127,5 +127,6 @@ class TestBuildInteractorUnit:
         assert isinstance(controller._interactor, RunBacktestInputBoundary)
         assert isinstance(request, RunBacktestRequest)
         # meta が結線される: 口座の契約（ISSUE-445 段階 3-D3）と銘柄仕様が反映
-        assert request.account.initial_deposit == 10_000.0
-        assert request.symbol_spec.contract_size == 1.0
+        meta = _meta_kwargs(csv_path)
+        assert request.account.initial_deposit == meta["initial_deposit"]
+        assert request.symbol_spec.contract_size == meta["contract_size"]

@@ -23,6 +23,7 @@ Phase 1 の `composition_root.build_sim_app`（配信面だけ）を置き換え
 """
 from __future__ import annotations
 
+from marketdata.symbol_spec_snapshot import LEDGER_ONLY_FIELDS
 from pathlib import Path
 from typing import Any, Callable
 
@@ -255,7 +256,8 @@ _INJECTED_ONLY_KEYS = frozenset(
 #: キー（ISSUE-546）。ストップアウト水準の出所は台帳の口座 margin_so_so ただ 1 つであり、
 #: 投入から受け取ると利用者の値が台帳に優先する入口が生まれる。`build_interactor` の必須
 #: 引数でもあるため、ここで除かないと投入が必須欠落で拒まれる。
-LEDGER_SUPPLIED_KEYS = frozenset({"stop_out_level"})
+#: 宣言の所有者は marketdata（CLI と同じ宣言を参照する・ここで集合を書かない）。
+LEDGER_SUPPLIED_KEYS = LEDGER_ONLY_FIELDS
 
 
 def allowed_backtest_keys() -> "frozenset[str]":

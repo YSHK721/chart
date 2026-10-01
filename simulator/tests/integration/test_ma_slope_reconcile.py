@@ -57,6 +57,9 @@ stop-out 発火時刻の MT5 乖離）を検出する。報告値とテスト固
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -75,10 +78,12 @@ _INITIAL_DEPOSIT = 10_000.0
 #: MT5 が deal の損益を記録する桁（口座通貨 JPY の桁）。report.json の deals[].profit は
 #: すべて整数（実測）。
 _MT5_PROFIT_DIGITS = 0
+#: 2026-01 の MT5 ケース（MA_Slope_EA・every tick・report.json のみ）と、その足の実体（UTC）。
+_CASE_2026 = "ma_slope_jp225_202601"
+_MT5_2026_BARS = (
+    Path(__file__).resolve().parents[3] / "data" / "marketdata" / "jp225_mt5_spread_m1.csv"
+)
 # MT5 report.json results の equity 系オラクル（突合基準）。
-_MT5_EQUITY_DD_ABS = 6174.0       # initial - min(equity)
-_MT5_EQUITY_DD_MAX = 6594.0       # equity peak-to-trough 最大金額 DD
-_MT5_EQUITY_DD_MAX_PCT = 63.28    # 同点での % DD
 _MT5_RECOVERY = -0.935547         # net / equity_dd_max
 _MT5_SHARPE = -5.0                # per-trade Sharpe を [-5,5] にクランプした値
 
@@ -187,6 +192,85 @@ def _mt5_stop_out_pair(deals) -> "tuple[dict, dict]":
     """MT5 の stop-out 決済 deal（comment が "so "）と、その玉を建てた直前の in deal。"""
     index = next(i for i, d in enumerate(deals) if (d.get("comment") or "").startswith("so "))
     return deals[index - 1], deals[index]
+
+
+# --- MT5 の有効証拠金の山と谷を、MT5 の deal と足から導く（ISSUE-546 レビュー 🟡-1）---------
+#
+# 機構（2025-01・2026-01 の 2 ケースで MT5 の表示値と完全一致することを実測）: 玉を持つ
+# 足ごとに、有効証拠金は「建てる前の残高 ＋ 評価価格 − 建値」（売りは逆符号）で、評価価格は
+# 買い＝bid、売り＝ask（bid ＋ 気配幅 × point）。MT5 の Equity Drawdown はこの評価価格の
+# **足の内側の極値**（bid の高値・安値）で測った山と谷から来る。sim は足の**終値**で評価する
+# ので、山と谷は終値の値になる。足の中での順序は「山の側 → 谷の側」で数える。
+
+
+def load_case_report(name: str) -> dict:
+    """report.json だけを持つ MT5 ケースの正解（`load_case` は入力 CSV を要求するため使えない）。"""
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "mt5" / name / "expected" / "report.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _mt5_bars(case) -> "dict":
+    """MT5 突合 fixture の足（サーバ時刻のまま・deal の時刻と同じ時計）。"""
+    import pandas as pd
+
+    frame = pd.read_csv(case.input_csv, sep="\t")
+    frame.columns = [c.strip("<>").lower() for c in frame.columns]
+    index = pd.to_datetime(frame["date"] + " " + frame["time"], format="%Y.%m.%d %H:%M:%S")
+    return frame.set_index(index)
+
+
+def _held_bar_equities(deals, bars, *, point: float, deal_clock=lambda t: t) -> "list[dict]":
+    """玉を持つ足ごとの有効証拠金（足の内側の極値・終値）を時刻順に返す。
+
+    ``deals`` は MT5 の deal（balance を除く）。``deal_clock`` は deal の時刻を足の時計へ写す。
+    """
+    import pandas as pd
+
+    rows = []
+    balance = None
+    held = None
+    for deal in deals:
+        at = deal_clock(pd.Timestamp(deal["time"].replace(".", "-")))
+        if deal["dir"] == "in":
+            held = (deal["type"], float(deal["price"]), at, float(deal["balance"]))
+            continue
+        side, entry, since, balance = held
+        sign = 1.0 if side == "buy" else -1.0
+        for when, bar in bars.loc[since.floor("min"): at.floor("min")].iterrows():
+            ask_add = 0.0 if side == "buy" else bar["spread"] * point
+            best, worst = (bar["high"], bar["low"]) if side == "buy" else (bar["low"], bar["high"])
+            rows.append(
+                {
+                    "time": when, "side": side,
+                    "best": balance + sign * (best + ask_add - entry),
+                    "worst": balance + sign * (worst + ask_add - entry),
+                    "close": balance + sign * (bar["close"] + ask_add - entry),
+                    "low": bar["low"],
+                }
+            )
+        held = None
+    return rows
+
+
+def _drawdowns(rows, initial: float) -> "dict":
+    """山（足の内側の最良）と谷（最悪）から MT5 の Equity Drawdown 2 種と、その山・谷の足を返す。"""
+    peak, peak_row, best_dd, trough_row = initial, None, 0.0, None
+    for row in rows:
+        if row["best"] > peak:
+            peak, peak_row = row["best"], row
+        if peak - row["worst"] > best_dd:
+            best_dd, at_peak, trough_row = peak - row["worst"], peak_row, row
+    low_row = min(rows, key=lambda r: r["worst"])
+    return {
+        "absolute": initial - low_row["worst"], "maximal": best_dd,
+        "peak_row": at_peak, "trough_row": trough_row, "low_row": low_row,
+    }
+
+
+def _mt5_amount_and_percent(text: str) -> "tuple[float, float]":
+    """MT5 の「6 594 (63.28%)」形を (金額, %) へ。"""
+    amount, percent = text.split("(")
+    return float(amount.replace(" ", "")), float(percent.rstrip("%) "))
 
 
 class TestMaSlopeReconcile:
@@ -320,12 +404,12 @@ class TestMaSlopeEquityStatsReconcile:
     """第2サイクル: 結線済 compute_stats() の equity 系 STAT_* を engine 実走 equity_curve
     で突合する（逆算3点 curve のトートロジー解消）。
 
-    期待値は engine 実走の実測値を primary に固定し、MT5 report.json results との残差を
-    トレランス付きで明示する。equity-DD は bar 解像度ゆえ bar 内の含み損ピークを捕捉できず
-    MT5 のティック解像度 DD（6594）に対し ~25 の残差が残る（既知・現実的残差）。
+    equity-DD は MT5 の値（足の内側の極値で測った山と谷）と sim の値（足の終値で測った山と谷）
+    の差が、山の足と谷の足の「極値 − 終値」と損益の丸めだけで説明されることを等式で固定する
+    （許容幅で通さない・ISSUE-546。機構の実測は `TestMt5EquityDrawdownMechanism`）。
 
     退行検出: 結線解除（sharpe/recovery/equity_dd を populate しない）/ equity_curve 経路の
-    破壊 / トレランス外への乖離拡大 を本テストが検出する。
+    破壊 / 機構で説明できない乖離 を本テストが検出する。
     """
 
     def test_stats_carries_equity_curve_for_dd(self, reconcile):
@@ -334,26 +418,46 @@ class TestMaSlopeEquityStatsReconcile:
         assert eq is not None and len(eq) > 0
 
     def test_equity_dd_abs_matches_mt5_tightly(self, reconcile):
-        # equity_dd_abs（init - min(equity)）は engine 実走 = 6168.9。MT5 = 6174.0。
-        # 我々の最安 equity は最終 balance（3831.1）で、足の評価点で測る。MT5 の最安 3826 は
-        # 足の内側のティック（bar 解像度の限界・equity_dd_max の残差と同じ種類）。
-        # 以前の 6173.9（残差 0.1）は 99.95 の水準で MT5 に無い取引を 1 件行い、その損で
-        # 下がった値が偶然近かったもの（ISSUE-546）。
+        # 谷の差は機構だけで決まる（幅で通さない・ISSUE-546 レビュー 🟡-1）。MT5 の谷は強制決済した
+        # 足の安値（bid）での有効証拠金、sim の谷は同じ足の終値で決済した後の残高。差は
+        # 「決済価格 − 足の安値」と、建てる前の残高の差（MT5 は損益を JPY 0 桁で丸めて記録）の和。
         stats = reconcile["result"].stats
-        assert stats.equity_dd_abs == pytest.approx(6168.9, abs=0.1)  # 実走実測固定
-        assert abs(stats.equity_dd_abs - _MT5_EQUITY_DD_ABS) <= 6.0   # tick 粒度残差 5.1
+        case = load_case(_CASE)
+        derived = _drawdowns(
+            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
+                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _INITIAL_DEPOSIT,
+        )
+        so = reconcile["ours"][-1]
+        opened, _closed = _mt5_stop_out_pair(reconcile["deals"])
+        our_balance_before = reconcile["balance"] - so.pnl()
+        explained = (so.exit_price - derived["low_row"]["low"]) * so.volume * so.contract_size + (
+            our_balance_before - float(opened["balance"])
+        )
+        assert derived["low_row"]["time"] == np.datetime64(so.exit_time)   # 谷は強制決済の足
+        assert stats.equity_dd_abs == pytest.approx(_INITIAL_DEPOSIT - reconcile["balance"])
+        assert derived["absolute"] - stats.equity_dd_abs == pytest.approx(explained, abs=1e-9)
 
     def test_equity_dd_max_matches_mt5_within_tick_residual(self, reconcile):
-        # equity_dd_max（peak-to-trough）は engine 実走 = 6563.9。MT5 = 6594.0。
-        # 残差 30.1 は bar 解像度の限界（bar 内含み損ピーク非捕捉）由来の既知残差 25.0 と、
-        # 谷の側の同じ種類の残差 5.1（上の equity_dd_abs）の和。以前の 6568.9 は 99.95 の
-        # 水準で行った MT5 に無い取引 1 件の損 5.0 を含んでいた（ISSUE-546）。
+        # 山と谷の差も同じ機構だけで決まる。sim の山は MT5 の山の足の終値での有効証拠金と一致し、
+        # 残差 =（山の足の内側の極値 − 終値）＋（谷の残差・上の検定）。
         stats = reconcile["result"].stats
-        assert stats.equity_dd_max == pytest.approx(6563.9, abs=0.1)       # 実走実測固定
-        assert abs(stats.equity_dd_max - _MT5_EQUITY_DD_MAX) <= 31.0       # tick 粒度残差 30.1
-        # % DD も同様: 実走 63.14% / MT5 63.28%（残差 ~0.14）。
-        assert stats.equity_dd_max_percent == pytest.approx(63.14, abs=0.05)
-        assert abs(stats.equity_dd_max_percent - _MT5_EQUITY_DD_MAX_PCT) <= 0.2
+        case = load_case(_CASE)
+        derived = _drawdowns(
+            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
+                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _INITIAL_DEPOSIT,
+        )
+        our_peak = stats.equity_dd_max + reconcile["balance"]
+        assert our_peak == pytest.approx(derived["peak_row"]["close"], abs=1e-9)
+        peak_residual = derived["peak_row"]["best"] - derived["peak_row"]["close"]
+        trough_residual = derived["absolute"] - stats.equity_dd_abs
+        assert derived["maximal"] - stats.equity_dd_max == pytest.approx(
+            peak_residual + trough_residual, abs=1e-9
+        )
+        assert stats.equity_dd_max_percent == pytest.approx(
+            stats.equity_dd_max / our_peak * 100.0, abs=1e-9
+        )
 
     def test_recovery_factor_equity_based_matches_mt5_within_residual(self, reconcile):
         # recovery = net / equity_dd_max（符号付き）。engine 実走 = -0.93982（net -6168.9 /
@@ -370,3 +474,53 @@ class TestMaSlopeEquityStatsReconcile:
         # per-trade Sharpe = (mean/std)×√N の素値 ≈ -5.08 を [-5,5] にクランプ → MT5 -5.0 一致。
         stats = reconcile["result"].stats
         assert stats.sharpe_ratio == pytest.approx(_MT5_SHARPE, abs=1e-9)
+
+
+class TestMt5EquityDrawdownMechanism:
+    """MT5 の Equity Drawdown が「足の内側の極値で測った山と谷」から来ることの実測（ISSUE-546）。
+
+    2 ケースで MT5 の表示値と完全一致する。2025-01（1 minute OHLC）は谷の足で「安値」と
+    「終値 − 気配幅」が同じ値（38290.7）になり 2 つの説明を区別できない。2026-01（every tick）
+    の谷の足（サーバ 23:54 = UTC 21:54・O 54019.2 / L 53849.2 / C 53859.2 / 気配幅 50）では
+    安値なら 4659、終値 − 気配幅なら 4654 になり、MT5 は 4659＝安値の側。
+    """
+
+    def test_the_2025_01_case_reproduces_the_mt5_values(self, reconcile):
+        case = load_case(_CASE)
+        derived = _drawdowns(
+            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
+                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _INITIAL_DEPOSIT,
+        )
+        results = case.expected["results"]
+        amount, percent = _mt5_amount_and_percent(results["equity_dd_max"])
+        assert derived["absolute"] == pytest.approx(results["equity_dd_abs"], abs=1e-9)
+        assert derived["maximal"] == pytest.approx(amount, abs=1e-9)
+        assert round(derived["maximal"] / derived["peak_row"]["best"] * 100.0, 2) == percent
+
+    @pytest.mark.skipif(not _MT5_2026_BARS.is_file(), reason="jp225_mt5_spread の実体が無い")
+    def test_the_2026_01_case_reproduces_the_mt5_values_and_rejects_the_spread_reading(self):
+        import pandas as pd
+
+        from marketdata.mt5_ticks.server_clock import to_utc_ms
+
+        expected = load_case_report(_CASE_2026)
+        deals = [d for d in expected["deals"] if d["type"] != "balance"]
+        frame = pd.read_csv(_MT5_2026_BARS, usecols=["date", "high", "low", "close", "spread"])
+        frame = frame.set_index(pd.to_datetime(frame.pop("date")))
+        point = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")["point_size"]
+        to_utc = lambda t: pd.Timestamp(to_utc_ms(int(t.value // 10**6)), unit="ms")  # noqa: E731
+        rows = _held_bar_equities(deals, frame, point=point, deal_clock=to_utc)
+        derived = _drawdowns(rows, float(expected["settings"]["initial_deposit"]))
+        results = expected["results"]
+        amount, _percent = _mt5_amount_and_percent(results["equity_dd_max"])
+        assert derived["absolute"] == pytest.approx(results["equity_dd_abs"], abs=1e-9)
+        assert derived["maximal"] == pytest.approx(amount, abs=1e-9)
+        # 別の説明（谷 = 終値 − 気配幅）はこのケースで MT5 と食い違う（区別できる入力）。
+        low = derived["low_row"]
+        bar = frame.loc[low["time"]]
+        by_spread = low["close"] - bar["spread"] * point * (1.0 if low["side"] == "buy" else -1.0)
+        assert bar["close"] - bar["spread"] * point != bar["low"]
+        assert float(expected["settings"]["initial_deposit"]) - by_spread != pytest.approx(
+            results["equity_dd_abs"]
+        )

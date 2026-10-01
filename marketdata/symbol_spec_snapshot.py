@@ -135,6 +135,13 @@ ACCOUNT_FIELD_CONDITIONS: "Mapping[str, FieldCondition]" = MappingProxyType(
     }
 )
 
+#: **台帳からしか受け取らない項目**（ISSUE-546）。ここが唯一の宣言である。
+#: 銘柄仕様の項目は CLI の明示指定が台帳に優先する（what-if 実行）が、これらは優先させない
+#: ——sim 画面の受付（「`composition_root_jobs.LEDGER_SUPPLIED_KEYS`」）は投入から受け取らず、
+#: CLI（「`symbol_spec_args.add_symbol_spec_arguments`」）はオプションを出さない。
+#: ストップアウト水準を人が書けると、その入口だけ黙って別の水準で走る（以前の既定 0.0 が実例）。
+LEDGER_ONLY_FIELDS: "frozenset[str]" = frozenset({"stop_out_level"})
+
 #: 上 2 表の**合成ビュー**（``SymbolSpec`` の 8 フィールド名 → 供給元）。ここに対応を書かない。
 #: 並びは「銘柄仕様 → 口座属性」であり、``simulator/tools/symbol_spec_args.py:SPEC_KEYS``
 #: （argparse の宣言順）として呼出側に観測される。
@@ -262,6 +269,7 @@ __all__ = [
     "FieldCondition",
     "ACCOUNT_FIELD_CONDITIONS",
     "SPEC_FIELD_SOURCES",
+    "LEDGER_ONLY_FIELDS",
     "SETTLEMENT_CURRENCY_SOURCE",
     "snapshot_path",
     "load_snapshot",

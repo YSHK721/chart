@@ -67,14 +67,19 @@ import sys
 from typing import Any, Mapping
 
 from marketdata.symbol_spec_snapshot import (
+    LEDGER_ONLY_FIELDS,
     OANDA_JAPAN_MT5_LIVE,
     SPEC_FIELD_SOURCES,
     SnapshotError,
     load_spec_fields,
 )
 
-#: 銘柄仕様 8 項目の名前。**列挙をここに書き写さない**（対応表の所有者は供給元ローダ）。
-SPEC_KEYS: "tuple[str, ...]" = tuple(SPEC_FIELD_SOURCES)
+#: CLI で明示指定できる銘柄仕様 8 項目の名前。**列挙をここに書き写さない**（対応表の所有者は
+#: 供給元ローダ）。台帳からしか受け取らない項目（``LEDGER_ONLY_FIELDS``・ストップアウト水準
+#: ISSUE-546）は除く——オプションを出さず、常に台帳から引く。
+SPEC_KEYS: "tuple[str, ...]" = tuple(
+    name for name in SPEC_FIELD_SOURCES if name not in LEDGER_ONLY_FIELDS
+)
 
 #: 供給元（どの台帳を引くか）。値ではないためモジュール定数で束ねる（module docstring）。
 SPEC_SERVER = OANDA_JAPAN_MT5_LIVE
@@ -104,7 +109,8 @@ def add_symbol_spec_arguments(parser: argparse.ArgumentParser) -> argparse.Argum
     型は供給元の対応表（``FieldSource.cast``）から取る。argparse 側に型表を書き写すと、
     供給元が型を変えたとき片方だけが腐る。
     """
-    for name, source in SPEC_FIELD_SOURCES.items():
+    for name in SPEC_KEYS:
+        source = SPEC_FIELD_SOURCES[name]
         parser.add_argument(
             spec_option(name),
             type=source.cast,
@@ -214,7 +220,11 @@ def resolve_symbol_spec(args: argparse.Namespace) -> "dict[str, Any]":
     except SnapshotError as exc:
         if missing:
             raise _unresolved_error(symbol, missing, exc) from exc
-        return dict(explicit)  # 全項目が明示＝供給元を必要としない
+        # 明示できない項目（台帳からしか受け取らない・ISSUE-546）は既定値で作らず止める。
+        raise SymbolSpecArgsError(
+            f"銘柄 {symbol!r} の台帳が引けません。台帳からしか受け取らない項目"
+            f" {sorted(LEDGER_ONLY_FIELDS)} は明示指定できないため実行できません: {exc}"
+        ) from exc
     _warn_on_disagreement(explicit, supplied, symbol)
     return {**supplied, **explicit}
 
