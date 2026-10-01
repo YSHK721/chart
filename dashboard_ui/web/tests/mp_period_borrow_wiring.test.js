@@ -4,7 +4,8 @@
 //   §3.5.2〜§3.5.4 の裁定）:
 //   - 値は live core の `/tf_period_profile` を借りる（URL はライブの buildTfPeriodUrl・
 //     src / va は MP 列と同じ instance の設定を mpTfPeriodSrc で写したもの）。
-//   - 当期＝その足の現在バー（live_tick_players の onBar）の time と列の time が一致する列。
+//   - 当期＝その足の現在バー（/candles の末尾と形成中バー onBar・参照実装と同じ出所）の time と
+//     列の time が一致する列。
 //     取得窓は [time, time + 1)。
 //   - front は 9 値を `/reach_sheet` の要求の欄 `mp_levels` に載せる（合流はサーバ）。
 //   - 現在バーが未着・当期の列が無い足は行を出さず、理由を掲示欄に出す。
@@ -25,6 +26,7 @@ import { fakeDoc, fakeEl, flatten, sheetResponse, ladderRow } from './_fake_dom.
 import { TEMPLATE_STORAGE_KEYS } from '../js/adapter/front/template_binding_reader.js';
 import { setupDashboardDisplay } from '../js/adapter/front/composition_root_front.js';
 import { MP_PERIOD_TIMEFRAMES } from '../js/domain/mp_period_levels.js';
+import { fakeLwc } from './_fake_lwc.js';
 // live core の公開面（合成根が実行時 import するものと同じ面）。
 import * as livePublicApi from '../../../indigators/indicator_ui/web/js/public/live_public_api.js';
 
@@ -95,6 +97,7 @@ function queryOf(url) {
  */
 function harness({
   rows = 1, extraColumns = 0, templates = readOnlyTemplates(), columnFor = null,
+  trailingColumn = null, candlesFor = null, lwc = null,
   loadLiveMpApi = () => Promise.resolve(livePublicApi),
 } = {}) {
   const doc = fakeDoc();
@@ -102,6 +105,7 @@ function harness({
   const players = fakePlayers();
   const issued = [];   // [{url, query, slot, prices}]
   const sheetBodies = [];
+  const candleFetches = [];   // /candles の発行（時間足）
   let nowMs = BAR_TIMES['1m'] * 1000;
 
   const fetchFn = (url, init) => {
@@ -125,6 +129,8 @@ function harness({
           time: query.from - (i + 1) * 86_400, levels: [], poc: 1, va_high: 2, va_low: 0,
         })),
         ...(current ? [current] : []),
+        // 当期の列の後ろに別の time の列（当期の列だけが使われることの固定用）。
+        ...(trailingColumn ? [trailingColumn(query)] : []),
       ];
       return Promise.resolve({
         ok: true, status: 200, json: () => Promise.resolve({ ok: true, tf: query.timeframe, unit: 1, columns }),
@@ -133,7 +139,10 @@ function harness({
     if (text.includes('/market_profile')) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: false, error: { message: 'x' } }) });
     }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, candles: [] }) });
+    const timeframe = new URL(text, 'http://x').searchParams.get('timeframe');
+    candleFetches.push(timeframe);
+    const candles = candlesFor ? candlesFor(timeframe) : [];
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, candles }) });
   };
 
   const setup = setupDashboardDisplay({
@@ -148,12 +157,12 @@ function harness({
     loadLiveMpApi,
     loadLiveTickPlayer: players.load,
     loadPeriodPresets: () => Promise.reject(new Error('none')),
-    lwc: null,
+    lwc,
   });
 
   const flush = async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve(); };
   return {
-    host, issued, sheetBodies, players, setup, flush,
+    host, issued, sheetBodies, candleFetches, players, setup, flush,
     advance: (ms) => { nowMs += ms; },
     /** 1m バー枠の番号と枠内の位置（0..1）で時計を合わせる（枠の進みを操作列に依存させない）。 */
     setNow: (minute, fraction) => {
@@ -166,6 +175,13 @@ function harness({
       }
     },
   };
+}
+
+/** 休場中の /candles（末尾の足の time＝その足の現在バー・その前に確定足が 1 本）。 */
+function closedCandles(timeframe) {
+  const time = BAR_TIMES[timeframe];
+  const bar = (t) => ({ time: t, open: 65_000, high: 65_000, low: 65_000, close: 65_000 });
+  return time === undefined ? [] : [bar(time - 86_400 * 31), bar(time)];
 }
 
 function messageOf(host) {
@@ -269,6 +285,24 @@ describe('MP の期間水準 — 借用と送信', () => {
     assert.match(messageOf(h.host), /MP の期間水準（1W）/);
   });
 
+  test('only_the_column_whose_time_is_the_current_bar_is_used', async () => {
+    // Arrange: 当期の列の後ろに別の time の列（値も別）を足した応答。
+    const { h } = await started({
+      trailingColumn: (query) => ({
+        time: query.from + 86_400, levels: [], poc: 1, va_high: 2, va_low: 0,
+      }),
+    });
+
+    // Assert: 送るのは当期の列の値だけ（後ろの列の値は 1 つも載らない）。
+    const sent = lastLevels(h);
+    assert.equal(sent.length, MP_PERIOD_TIMEFRAMES.length * 3);
+    for (const level of sent) {
+      const current = h.issued.filter((entry) => entry.query.timeframe === level.timeframe)
+        .flatMap((entry) => Object.values(entry.prices));
+      assert.ok(current.includes(level.price), `${level.timeframe} ${level.level} が当期の列の値ではありません`);
+    }
+  });
+
   test('levels_of_a_closed_period_are_not_sent_after_the_bar_moves_on', async () => {
     // Arrange
     const { h, handle } = await started();
@@ -279,6 +313,59 @@ describe('MP の期間水準 — 借用と送信', () => {
     // Assert: 確定済みの期間の値は使わない（§3.5.3）。
     const sent = h.sheetBodies[h.sheetBodies.length - 1].mp_levels;
     assert.ok(sent.every((level) => level.timeframe !== '1D'), '前日の水準を送っています');
+  });
+
+  test('while_the_market_is_closed_the_current_period_comes_from_the_last_candle', async () => {
+    // Arrange: 休場中＝ティックが 1 本も来ない。/candles の最後の足の time が現在バー
+    //   （参照実装 tf_period_profile_actor.js の onLiveTick が candles の末尾の time を使うのと同じ）。
+    const h = harness({ lwc: fakeLwc().lwc, candlesFor: closedCandles });
+    const handle = await h.setup;
+    await handle.enable();
+    await h.flush();
+
+    // Act: ティック無しで契機だけを通す。
+    h.advance(1_100);
+    await handle.refresh();
+    await h.flush();
+    h.advance(1_100);
+    await handle.refresh();
+    await h.flush();
+
+    // Assert: 3 足とも当期の窓で借り、9 値が載る（「現在バーが未着です」にならない）。
+    for (const timeframe of MP_PERIOD_TIMEFRAMES) {
+      const hit = h.issued.find((entry) => entry.query.timeframe === timeframe);
+      assert.ok(hit, `${timeframe} を借りていません`);
+      assert.equal(hit.query.from, BAR_TIMES[timeframe]);
+    }
+    assert.equal(lastLevels(h).length, MP_PERIOD_TIMEFRAMES.length * 3);
+    assert.doesNotMatch(messageOf(h.host), /現在バーが未着/);
+  });
+
+  test('a_bar_older_than_the_last_candle_does_not_move_the_current_period_back', async () => {
+    // Arrange: /candles の末尾で当期が決まった後に、旧周期の遅れたティックが届く
+    //   （参照実装 candle_feed.js の updateLastCandle の後退ガード ISSUE-096 と同じ規則）。
+    const h = harness({ lwc: fakeLwc().lwc, candlesFor: closedCandles });
+    const handle = await h.setup;
+    await handle.enable();
+    await h.flush();
+    h.advance(1_100);
+    await handle.refresh();
+    await h.flush();
+
+    // Act
+    h.players.deliver('1D', BAR_TIMES['1D'] - 86_400);
+    h.advance(1_100);
+    await handle.refresh();
+    await h.flush();
+    h.advance(1_100);
+    await handle.refresh();
+    await h.flush();
+
+    // Assert: 1D は当期の窓でしか借りず、当期の値を送り続ける。
+    const days = h.issued.filter((entry) => entry.query.timeframe === '1D');
+    assert.ok(days.length > 0);
+    assert.deepEqual(days.map((entry) => entry.query.from).filter((t) => t !== BAR_TIMES['1D']), []);
+    assert.ok(lastLevels(h).some((level) => level.timeframe === '1D'), '当期の 1D を送っていません');
   });
 
   test('a_live_face_without_the_tf_period_names_posts_and_issues_nothing', async () => {
@@ -359,5 +446,65 @@ describe('MP の期間水準 — 計算量（発行は時間足ごとに 1 回�
     const one = await run({ extraColumns: 0 });
     const many = await run({ extraColumns: 30 });
     assert.equal(many.issued.length, one.issued.length);
+  });
+});
+
+describe('MP の期間水準 — 計算量（現在バーの出所＝/candles の末尾と形成中バー）', () => {
+  /**
+   * 休場中の初回（ティック無し）からティック到着後までを、同じ 1m バー枠の中で流す。
+   * 観測するのは注入した fetch の発行（/candles と /tf_period_profile）だけ。
+   */
+  async function run({ ticks }) {
+    const h = harness({ lwc: fakeLwc().lwc, candlesFor: closedCandles });
+    const handle = await h.setup;
+    h.setNow(0, 0);
+    await handle.enable();
+    await h.flush();
+    // 休場中の初回: ティック無しで契機だけ。
+    for (let k = 0; k < 2; k += 1) {
+      h.setNow(0, (k + 1) / (ticks + 4));
+      await handle.refresh();
+      await h.flush();
+    }
+    // ティック到着後: 同じ現在バーの値動き。
+    for (let k = 0; k < ticks; k += 1) {
+      h.deliverAll(BAR_TIMES, 65_000 + k);
+      h.setNow(0, (k + 3) / (ticks + 4));
+      await handle.refresh();
+      await h.flush();
+    }
+    return h;
+  }
+
+  test('the_current_bar_source_fetches_each_timeframe_at_most_once_per_trigger', async () => {
+    const h = await run({ ticks: 20 });
+
+    // /tf_period_profile: 同じ契機（足・1m バー枠・現在バー・設定）で同じ足を 2 回借りない。
+    const triggers = h.issued.map((entry) => JSON.stringify([
+      entry.query.timeframe, entry.slot, entry.query.from, entry.query.src, entry.query.va,
+    ]));
+    assert.ok(triggers.length > 0);
+    assert.equal(new Set(triggers).size, triggers.length);
+    // /candles: 同じバー枠の中で同じ足を 2 回取らない（出所のために取り直さない）。
+    assert.equal(new Set(h.candleFetches).size, h.candleFetches.length);
+  });
+
+  test('the_current_bar_source_does_not_fetch_more_with_ticks', async () => {
+    const few = await run({ ticks: 3 });
+    const many = await run({ ticks: 30 });
+
+    assert.equal(many.candleFetches.length, few.candleFetches.length);
+    assert.equal(many.issued.length, few.issued.length);
+  });
+
+  test('every_period_fetch_from_the_candle_source_is_sent', async () => {
+    const h = await run({ ticks: 5 });
+
+    // 発行 − 使用 = 0。
+    const sent = new Set(h.sheetBodies.flatMap((body) => (body.mp_levels ?? []).map(
+      (level) => `${level.timeframe}|${level.price}`,
+    )));
+    const unused = h.issued.filter((entry) => !sent.has(`${entry.query.timeframe}|${entry.prices.poc}`));
+    assert.deepEqual(unused.map((entry) => entry.url), []);
   });
 });

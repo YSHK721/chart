@@ -1,4 +1,4 @@
-# 水準到達シート 基本設計書 v0.9.56
+# 水準到達シート 基本設計書 v0.9.57
 
 - 起票: 2026-08-28（ISSUE-449）／オシレータの価格投影は ISSUE-453
 - 状態: **実装済み（feature/issue-449-price-level-reach-sheet・未マージ）**
@@ -23,6 +23,7 @@
 
 改訂履歴:
 
+- **v0.9.57（2026-10-01）**: **§3.5.3 現在バーの time の出所を参照実装と同じ「ローソクの末尾」へ改訂**。形成中バー（`onBar`）だけでは休場中・起動直後に 3 足とも行が 0 本になる（独立レビュー指摘）。`/candles` の末尾と `onBar`（後退ガード付き）で 1 つの台帳を更新する。実測で `/candles` 末尾＝`/forming_bar`＝当期の列の time（jp225_mt5・3 足）。
 - **v0.9.56（2026-10-01）**: **§3.5 を実装**。サーバ: `mp_levels` の合流（36f34d4b）と、その足は足だけを引き形成中足を引かない是正（f6bb80c7）。live 公開面へ `buildTfPeriodUrl` / `mpTfPeriodSrc` / `mpSourceCapability` を加法で再輸出（d17369fb）。front: 足ごとの `mp_poller` で `/tf_period_profile` を借り、現在バーの期間の値だけを `mp_levels` で送る・`bodyKey` に含める・未着／列なし／失敗を掲示欄へ（e51b6dbf）。計算量テスト: サーバは足の読み出しが足の種類で抑えられる（束に同じ足があれば 0）、front は発行 − 使用 = 0・契機あたり各足 1 本以下・行数／列の本数／ティック数の 2 点で発行不変。
 - **v0.9.55（2026-09-29）**: **§3.5.4 を裁定で確定**（依頼者承認 2026-09-29「y」・推奨案のとおり）。
   (1) front が借りた 9 値を `/reach_sheet` の要求の新しい欄 `mp_levels` に載せ、サーバが
@@ -594,8 +595,17 @@
   選び方はライブの参照実装と同じ規則である: **列の `time` がその足の現在バーの `time` に一致する
   列**（`market_profile_primitive.js` の `tfPeriodLevelAt` が `c.time === t` で列を引き、
   `tf_period_profile_actor.js` の `onLiveTick` が「最新ローソクの time＝現在周期の列」とする）。
-  現在バーの `time` は front が既に受けている形成中バー（`live_tick_players` の `onBar`）の time
-  をそのまま使う（ライブ `/forming_bar` と同じ `marketdata.tf_meta.bar_time_unix`）。取得窓は
+  現在バーの `time` の出所は参照実装と同じ「その足のローソクの末尾の time」である（参照実装は
+  `renderer.getCandles()` の末尾。そのローソクは `/candles` の全置換と形成中バーの `updateLastCandle`
+  で更新される）。front は既に受けている 2 本で 1 つの台帳（`usecase/current_bar_times.js`）を
+  更新する: `/candles` の応答は末尾の time で置き換え（ティックの無い休場中・起動直後も当期が
+  決まる）、形成中バー（`live_tick_players` の `onBar`）は末尾より古い time を捨てる（参照実装
+  `candle_feed.js` の後退ガード ISSUE-096）。どちらも届いた応答を控えるだけで取得は増えない。
+  **実測（2026-10-01 10:09 UTC・`jp225_mt5`・`src=zp`・同じ数え方）**: `/candles`（limit=180）の
+  末尾の time は 1D 2026-10-01・1W 2026-10-02・1M 2026-10-31 で、`/forming_bar` の bar の time と
+  3 足とも一致し、窓 `[t, t+1)` の `/tf_period_profile` は列 `time == t` をちょうど 1 本返した
+  （広い窓の末尾の列とも一致）。`MARKETDATA_DATA_DIR` は本ツリーの data を読み、書き込みが無い
+  ことを `find -newer` で確かめた。取得窓は
   その列だけを含む `[time, time + 1)`。1W / 1M の `time` は期間ラベル（週末金曜・月末の UTC 深夜）で
   現在時刻より後になるが、controller は `from <= 列 time < to` で列を拾うのでこの窓で拾える。
   **実測（2026-09-29 14:14 UTC・`jp225_tick`・`src=zp`）**: `bar_time_unix` の値で窓 `[t, t+1)` を

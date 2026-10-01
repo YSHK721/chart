@@ -8,7 +8,8 @@
 //     MP の va（ライブの getQuery と同じ組）。
 //   - どの instance の設定を借りるかは MP 列と**同じ取得文脈**（mp_fetch_context の setFromBundle）を
 //     読む。規則を 2 か所に書かないため、文脈は mp_borrow から受け取る（ここでは選ばない）。
-//   - 当期＝その足の現在バー（live_tick_players の onBar）の time に一致する列。窓は [time, time + 1)。
+//   - 当期＝その足の現在バーの time（参照実装と同じくローソクの末尾＝/candles の末尾と形成中バー・
+//     usecase/current_bar_times.js）に一致する列。窓は [time, time + 1)。
 //   - 借りた値は `/reach_sheet` の要求の欄 `mp_levels` へ載る（合流はサーバ）。現在バーが未着・
 //     当期の列が無い足は行を出さず、理由を掲示する（無言の縮退の禁止）。
 //

@@ -48,6 +48,7 @@ import { readInstanceBundle, DASHBOARD_TIMEFRAMES } from './template_binding_rea
 import { TIMEFRAME_REFRESH_MS } from './timeframes.js';
 import { createSheetPoller } from '../../usecase/sheet_poller.js';
 import { createCandlePoller } from '../../usecase/candle_poller.js';
+import { createCurrentBarTimes } from '../../usecase/current_bar_times.js';
 import { createSheetPresenter } from '../../usecase/sheet_presenter.js';
 import { createTailSpecLedger, tailInstanceIdOf } from '../../usecase/tail_specs.js';
 import { mpNormAt } from '../../domain/mp_bin.js';
@@ -273,8 +274,12 @@ export async function setupDashboardDisplay({
     presenter.syncKey(target);
   }
 
-  /** 足ごとの現在バーの time（live_tick_players が既に流している形成中バーの time）。 */
-  const currentBarTimes = new Map();
+  /**
+   * 足ごとの現在バーの time（設計書 §3.5.3）。出所は参照実装と同じ「チャートのローソクの末尾」で、
+   * /candles の応答（休場中・起動直後も当期が決まる）と形成中バー（onBar）の 2 本で更新する。
+   * どちらも既にここへ届いている応答を控えるだけ＝取得は増えない。
+   */
+  const currentBarTimes = createCurrentBarTimes();
   /** 直近に版面へ渡した MP の期間水準の掲示文（変わったときだけ描き直す）。 */
   let mpLevelsNote = null;
 
@@ -288,7 +293,7 @@ export async function setupDashboardDisplay({
     datasetRef: DEFAULT_DATASET_REF,
     barMs: TIMEFRAME_REFRESH_MS[CHART_TIMEFRAME],
     now: clock,
-    currentBarTimeOf: (timeframe) => currentBarTimes.get(timeframe) ?? null,
+    currentBarTimeOf: (timeframe) => currentBarTimes.of(timeframe),
     isActive: () => enabled,
     onChange: () => {
       // 行は次のシート応答で届く。ここで描き直すのは掲示文が変わったときだけ
@@ -348,13 +353,13 @@ export async function setupDashboardDisplay({
       // MP の取得文脈（period='day' の窓下限・dispbp→barw）が読む最新足。
       //   既にここへ流れているものを分岐させるだけ＝取得は増えない。
       latestChartCandle = bar;
-      currentBarTimes.set(CHART_TIMEFRAME, bar.time);
+      currentBarTimes.fromBar(CHART_TIMEFRAME, bar);
     },
     onBar: (timeframe, bar) => {
       if (enabled) {
         chartsView.updateLastCandle(timeframe, bar);
         // MP の期間水準の当期（§3.5.3）。既にここへ流れている time を控えるだけ＝取得は増えない。
-        currentBarTimes.set(timeframe, bar.time);
+        currentBarTimes.fromBar(timeframe, bar);
       }
     },
     onTails: (tails) => {
@@ -391,6 +396,8 @@ export async function setupDashboardDisplay({
     }
     if (result.ok) {
       chartsView.setCandles(timeframe, result.candles);
+      // MP の期間水準の当期（§3.5.3）。参照実装と同じくローソクの末尾の time。
+      currentBarTimes.fromCandles(timeframe, result.candles);
     } else {
       chartsView.setCandleError(timeframe, result.error.message);
     }
