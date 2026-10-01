@@ -35,6 +35,43 @@ export function dedupeCandlesByTime(arr) {
   return out;
 }
 
+// 時刻 time の足が arr（時刻昇順）の何番目か。無ければ -1（二分探索・数値の時刻だけを扱う）。
+function indexOfTime(arr, time) {
+  if (typeof time !== 'number') {
+    return -1;
+  }
+  let lo = 0;
+  let hi = arr.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = arr[mid].time;
+    if (t === time) {
+      return mid;
+    }
+    if (t < time) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return -1;
+}
+
+// 旧の足の列と新の足の列で、同じ足が何番目から何番目へ移るか（新の位置 − 旧の位置）。
+//   両方が同じ Bar 列の連続した区間であることが前提（重なっていれば、旧の先頭が新に在るか、
+//   新の先頭が旧に在るかのどちらかが必ず成り立つ）。同じ足が無ければ null。
+export function sharedBarShift(prev, next) {
+  if (!prev || !next || prev.length === 0 || next.length === 0) {
+    return null;
+  }
+  const inNext = indexOfTime(next, prev[0].time);
+  if (inNext >= 0) {
+    return inNext;
+  }
+  const inPrev = indexOfTime(prev, next[0].time);
+  return inPrev >= 0 ? -inPrev : null;
+}
+
 export class CandleFeed {
   // host: ChartRenderer インスタンス（共有状態の所有者）。
   constructor(host) {
@@ -71,6 +108,45 @@ export class CandleFeed {
     }
     // v6: candle 変更を observer へ通知（ChartRenderer 起点同期＝hover 中なら highlight 解除へ）。
     this._h._onCandlesChanged();
+  }
+
+  // 表示を保つ差し替え（ISSUE-552/554 段階 2-2・売買履歴チャートの読み足し）。
+  //   setCandles は fitContent と scrollToRealTime で表示を作り直すため、利用者が見ている位置を
+  //   保ったまま持っている区間だけを入れ替える用途には使えない。本メソッドは足を差し替え、
+  //   **同じ時刻の足が同じ画面位置に留まる**ように見えている論理範囲を指定し直す。
+  //
+  //   なぜ指定し直すか（実測 2026-09-30・lwc の実物）: lwc は末尾の足を基準に表示を保つ。
+  //     前へ足す・前を捨てるだけなら動かないが、後ろへ足す・後ろを捨てると表示が動いた
+  //     （380px に在った足が -2658px / 2277px へ）。差し替えの後に「同じ足が来る位置のぶんだけ
+  //     ずらした論理範囲」を指定すると、6 通りの差し替えすべてで同じ足が同じ位置に留まり、
+  //     足 1 本の幅も変わらなかった。
+  //
+  //   replaceOthers: 足を差し替えた直後・範囲を指定し直す前に呼ぶ（値の系列の差し替え）。
+  //     途中で範囲を指定すると、時間軸が新旧の時刻の和集合になっている間の位置で決めることになる。
+  //   前提: 値の系列の時刻は足の時刻と同じ集合（論理位置＝足の列の中の位置）。
+  //   戻り値: 表示を保てたか。新旧に同じ足が無い（保つ基準が無い）ときは範囲に触れず false。
+  //   売買ペアの外を暗くしている間は、暗くした足を書く（素の足を書いてから塗り直さない）。
+  replaceCandlesKeepingView(candles, replaceOthers = null) {
+    const arr = dedupeCandlesByTime(candles ?? []);
+    const ts = typeof this._h._chart.timeScale === 'function' ? this._h._chart.timeScale() : null;
+    const before = ts && typeof ts.getVisibleLogicalRange === 'function'
+      ? ts.getVisibleLogicalRange() : null;
+    const shift = sharedBarShift(this._h._baseCandles, arr);
+    this._h._baseCandles = arr;
+    this._h._lastTrimIdx = null;
+    this._h._lastBar = arr.length > 0 ? arr[arr.length - 1] : null;
+    this._h._mainSeries.setData(this._h._deriveDimmedCandles() ?? arr);
+    if (typeof replaceOthers === 'function') {
+      replaceOthers();
+    }
+    let kept = false;
+    if (shift !== null && before && typeof ts.setVisibleLogicalRange === 'function') {
+      ts.setVisibleLogicalRange({ from: before.from + shift, to: before.to + shift });
+      kept = true;
+    }
+    this._h._emitReadout(null);
+    this._h._onCandlesChanged();
+    return kept;
   }
 
   // 右端余白の単一権威（ISSUE-115）: 実効比率 = max(常設 5%, MP プロファイル余白率) を px 換算し、

@@ -50,6 +50,10 @@ class SpyIndicatorPort:
 
 class SpyStrategyPort:
     """on_new_bar が orders_by_bar[bar_index] を返すスパイ。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, log, orders_by_bar=None, close_decision="hold"):
         self._log = log
@@ -66,6 +70,17 @@ class SpyStrategyPort:
     def on_position_check(self, position, bar_index, indicators):
         self._log.append(("strategy.on_position_check", bar_index))
         return self._close_decision
+
+
+class _DecidesAtBarOpenSpy(SpyStrategyPort):
+    """足の始まりで判定すると名乗るスパイ（ISSUE-533 段階 1）。
+
+    建値基準の権威は戦略の宣言なので、「バー open クォートで約定する」ことを測る検定は
+    config ではなく**この宣言**で条件を作る。缶詰の注文を返す代役なので固有の判定時点は
+    無く、この宣言が当該検定の条件そのものである。
+    """
+
+    entry_price_basis = "current_open"
 
 
 class StubTickModelPort:
@@ -218,6 +233,12 @@ class TestStatsComputedFromTrades:
         assert isinstance(result, BacktestResult)
         assert result.stats.trades == 1
         assert result.stats.loss_trades == 1
+        assert result.stats.profit == pytest.approx(result.trades[0].pnl())
+        assert result.stats.profit == pytest.approx(-0.005)
+        # 決済 deal が deals 列に記録される（決済明細の追跡可能性）
+        assert len(result.deals) == 1
+        assert result.deals[0].direction == "out"
+        assert result.deals[0].profit == pytest.approx(-0.005)
 
 
 class TestFinalBarClosesOpenPosition:
@@ -329,12 +350,20 @@ class TestReverseClose:
         # Act
         result = interactor.execute(_request(bars))
         # Assert: 買いが reverse 決済される（exit_reason=reverse・bar1 終値で決済）
-        assert len(result.trades) == 1
+        assert len(result.trades) == 2
         trade = result.trades[0]
         assert trade.side == "buy"
         assert trade.exit_reason == "reverse"
         assert trade.entry_time == bars[0].time
         assert trade.exit_time == bars[1].time
+        # Assert: bar1 で建った売りはテスト期間終了時に清算される（MT5 の end of test）。
+        #   建値=Bid=close 1.12・決済=Ask=close+spread0×point=1.12 → pnl 0。
+        end = result.trades[1]
+        assert end.side == "sell"
+        assert end.exit_reason == "end_of_test"
+        assert end.entry_price == pytest.approx(1.12)
+        assert end.exit_price == pytest.approx(1.12)
+        assert end.pnl() == pytest.approx(0.0)
 
 
 # ---- cycle2-2a: account 伝播（Interactor が on_new_bar に実 Account を渡す） ----
@@ -345,16 +374,24 @@ class CapturingStrategyPort:
     既存 SpyStrategyPort（account を捨てる）と独立。account 伝播の結線を
     検証するために account 引数を保持する。
     """
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar=None):
         self._orders_by_bar = orders_by_bar or {}
         self.received_accounts = []  # [(bar_index, account)]
+        # 呼出時点の保有サイド列（account は run の最後まで同一インスタンスで書き換わる
+        # ため、後から読むと期末清算後の状態が見える。呼出時点の値をここへ写し取る）。
+        self.open_sides_at_call = []  # [[side, ...]]（bar_index 順）
 
     def on_init(self, config, indicators):
         pass
 
     def on_new_bar(self, bar_index, indicators, account):
         self.received_accounts.append((bar_index, account))
+        self.open_sides_at_call.append([p.side for p in account.open_positions])
         return list(self._orders_by_bar.get(bar_index, []))
 
     def on_position_check(self, position, bar_index, indicators):
@@ -403,9 +440,9 @@ class TestAccountPropagation:
         # Act
         interactor.execute(_request(bars))
         # Assert: bar1 の on_new_bar 受領時に保有 1 件（買い）が見える
-        bar1_account = strategy.received_accounts[1][1]
-        assert len(bar1_account.open_positions) == 1
-        assert bar1_account.open_positions[0].side == "buy"
+        #   （呼出時点の値で読む。run 終了後の account は期末清算で保有 0 になっている）
+        bar1 = strategy.open_sides_at_call[1]
+        assert bar1 == ["buy"]
 
 
 # ---- cycle2-2b: config駆動 spread + 現バー open 約定 ----
@@ -415,7 +452,12 @@ def _bar_s(t, o, h, l, c, spread):
 
 
 def _config_open_fill():
-    """現バー open 基準 + spread 適用モードの config（cycle2 で追加するフィールド）。"""
+    """現バー open 基準 + spread 適用モードの config。
+
+    ISSUE-533 段階 2 以降、建値基準は config に**無い**（権威は戦略の宣言ただ 1 つ）。
+    現バー open 基準で約定させるのは、この run に渡す戦略が ``current_open`` を宣言して
+    いるからである（`_DecidesAtBarOpenSpy`）。
+    """
     return BacktestConfig(
         tick_model="ohlc_simulate",
         spread_model="fixed",
@@ -426,7 +468,6 @@ def _config_open_fill():
         digits=1,
         legacy_quirks=False,
         return_basis="equity",
-        entry_price_basis="current_open",
     )
 
 
@@ -455,6 +496,15 @@ _JP225_BUY_OPEN_SPREAD_PNL = 28.0    # (39440 - 39412) × 1.0 × 1.0
 _JP225_SELL_OPEN_BID_PNL = -48.0     # (39450 - 39402) × -1 × 1.0 × 1.0
 _JP225_DEFAULT_CLOSE_PNL = 10.0      # (39450 - 39440) × 1.0 × 1.0
 
+# ISSUE-519: bar1 の反対シグナルで建った売りは、テスト期間終了時に最終足（bar1）の
+# Ask=close+spread×point=39450+100×0.1=39460 で清算される（MT5 の end of test）。
+# 期末清算は建値基準によらず spread を掛ける（依頼者裁定 TBD-1・2026-09-14）。
+_JP225_OPEN_BASIS_END_OF_TEST_SELL_PNL = -20.0   # 売り建値 open 39440 → 39460
+_JP225_CLOSE_BASIS_END_OF_TEST_SELL_PNL = -10.0  # 売り建値 close 39450 → 39460
+# 売り先行の検定では bar1 の反対シグナルで買いが建ち、期末に最終足（bar1）の Bid=close 39450 で
+# 清算される。建値は open 基準の Ask=open+spread×point=39440+100×0.1=39450 なので損益は 0。
+_JP225_OPEN_BASIS_END_OF_TEST_BUY_PNL = 0.0      # 買い建値 Ask 39450 → Bid 39450
+
 
 def _jp225_spec():
     """JP225（銘柄仕様 8 項目は供給元スナップショットだけを権威とする）。
@@ -470,7 +520,8 @@ def _jp225_spec():
 
 class TestConfigDrivenSpreadOpenFill:
     # bar0 で建て、bar1 で反対シグナル → reverse 決済で確定トレードを生成し
-    # entry_price を観測する（建玉のままだと result.trades が空になる）。
+    # entry_price を観測する。bar1 で建った反対側の建玉はテスト期間終了時に
+    # end_of_test で清算され、result.trades[1] になる（確定トレードは計 2 件）。
     _BARS = [
         _bar_s(np.datetime64("2025-01-02T01:01"), 39402.0, 39450.0, 39400.0, 39440.0, 100),
         _bar_s(np.datetime64("2025-01-02T01:02"), 39440.0, 39460.0, 39430.0, 39450.0, 100),
@@ -478,10 +529,10 @@ class TestConfigDrivenSpreadOpenFill:
 
     def test_buy_fills_at_open_plus_spread_times_point_when_enabled(self):
         # Arrange: 実 MT5 fixture アンカー（39412 = open 39402 + spread100×point0.1）の小データ再現。
-        # entry_price_basis="current_open" + spread=100 + point_size=0.1。
+        # 戦略が current_open を宣言 + spread=100 + point_size=0.1。
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -495,13 +546,16 @@ class TestConfigDrivenSpreadOpenFill:
         assert result.trades[0].entry_price == pytest.approx(39412.0)
         # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
         assert result.trades[0].pnl() == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
-        assert result.stats.profit == pytest.approx(_JP225_BUY_OPEN_SPREAD_PNL)
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.stats.profit == pytest.approx(
+            _JP225_BUY_OPEN_SPREAD_PNL + _JP225_OPEN_BASIS_END_OF_TEST_SELL_PNL
+        )
 
     def test_sell_fills_at_open_bid_when_enabled(self):
         # Arrange: sell は bid（=現バー open）で約定（spread 寄与 0）。
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [sell], 1: [buy]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -516,6 +570,18 @@ class TestConfigDrivenSpreadOpenFill:
         # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
         assert result.trades[0].pnl() == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
         assert result.stats.profit == pytest.approx(_JP225_SELL_OPEN_BID_PNL)
+        # Assert: bar1 で建った買いは期末清算（end_of_test）。建値 Ask = open 39440 + spread100×point0.1
+        #   = 39450・決済 Bid = bar1.close 39450 → pnl 0。上の stats.profit == -48 は
+        #   この pnl が 0 であることを前提に成り立つ。
+        assert len(result.trades) == 2
+        assert result.trades[1].side == "buy"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(39450.0)
+        assert result.trades[1].exit_price == pytest.approx(39450.0)
+        assert result.trades[1].pnl() == pytest.approx(_JP225_OPEN_BASIS_END_OF_TEST_BUY_PNL)
+        assert result.stats.profit == pytest.approx(
+            _JP225_SELL_OPEN_BID_PNL + _JP225_OPEN_BASIS_END_OF_TEST_BUY_PNL
+        )
 
     def test_default_config_keeps_close_fill_zero_spread(self):
         # 後方互換特性化: 新フィールド既定（"close"）では従来どおり buy=close・spread 無視。
@@ -527,7 +593,7 @@ class TestConfigDrivenSpreadOpenFill:
             indicators=SpyIndicatorPort([]),
             tick_model=StubTickModelPort(),
         )
-        # 既定 config（entry_price_basis 未指定）。spread=100 だが従来は無視。
+        # 戦略が close を宣言（`SpyStrategyPort`）。spread=100 だが close 基準では無視。
         req = _request(self._BARS, symbol_spec=_jp225_spec())
         # Act
         result = interactor.execute(req)
@@ -536,7 +602,10 @@ class TestConfigDrivenSpreadOpenFill:
         assert result.trades[0].entry_price == pytest.approx(39440.0)
         # Assert: 銘柄仕様が損益へ効いている（約定価格は contract_size に依存しない）。
         assert result.trades[0].pnl() == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
-        assert result.stats.profit == pytest.approx(_JP225_DEFAULT_CLOSE_PNL)
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.stats.profit == pytest.approx(
+            _JP225_DEFAULT_CLOSE_PNL + _JP225_CLOSE_BASIS_END_OF_TEST_SELL_PNL
+        )
 
 
 # ---- cycle2-2c: equity カーブが毎バー floating 込みで記録される（特性化・既実装の退行防止） ----
@@ -586,7 +655,6 @@ class TestFloatingPnlBasisWiring:
 
     def _config(self, basis):
         c = _config()
-        c.entry_price_basis = "current_open"
         c.floating_pnl_basis = basis
         return c
 
@@ -654,7 +722,7 @@ class TestReverseShortCloseSpread:
         # bar1: open=39440, spread=100, point=0.1 → 決済 ask = 39440 + 10 = 39450。
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort([], orders_by_bar={0: [sell], 1: [buy]})
+        strategy = _DecidesAtBarOpenSpy([], orders_by_bar={0: [sell], 1: [buy]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort([]),
@@ -678,8 +746,7 @@ class TestReverseShortCloseSpread:
 # ---- cycle4-②: stop_out_action config（fail_stop 既定 / close_and_halt） ----
 
 def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
-                       entry_price_basis=None, floating_pnl_basis=None,
-                       stop_out_at_open=None):
+                       floating_pnl_basis=None, stop_out_at_open=None):
     """margin_level < stop_out を bar1 で発生させる共通セットアップ。
 
     1 lot 買い@1.10、contract=100000、leverage=100 → 必要証拠金=1100。
@@ -688,8 +755,6 @@ def _margin_call_setup(*, stop_out_action=None, orders_by_bar=None, bars=None,
     cfg_kwargs = {}
     if stop_out_action is not None:
         cfg_kwargs["stop_out_action"] = stop_out_action
-    if entry_price_basis is not None:
-        cfg_kwargs["entry_price_basis"] = entry_price_basis
     if floating_pnl_basis is not None:
         cfg_kwargs["floating_pnl_basis"] = floating_pnl_basis
     if stop_out_at_open is not None:
@@ -768,7 +833,7 @@ class TestStopOutActionConfig:
         assert result.trades[0].exit_reason == "stop_out"
 
     def test_stop_out_closes_at_close_mark_price_not_bar_open(self):
-        # 回帰防止（ISSUE-019）: entry_price_basis="current_open" でも stop-out 強制決済は
+        # 回帰防止（ISSUE-019）: 建値基準が何であれ stop-out 強制決済は
         # 「margin 割れを判定した時点の現値」＝bar.close（account.mark_price）で行う。
         # 過ぎ去った始値（bar.open）で決済しない（実 MT5 整合・決済価格と判定価格の整合）。
         bars = [
@@ -778,7 +843,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             bars=bars,
         )
         result = interactor.execute(req)
@@ -823,7 +887,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             stop_out_at_open=True,
             bars=bars,
         )
@@ -843,7 +906,6 @@ class TestStopOutActionConfig:
         ]
         interactor, req = _margin_call_setup(
             stop_out_action="close_and_halt",
-            entry_price_basis="current_open",
             bars=bars,  # stop_out_at_open 未指定＝既定 False
         )
         result = interactor.execute(req)
@@ -859,7 +921,6 @@ class TestStopOutActionConfig:
             _bar(np.datetime64("2024-01-01T00:01"), 0.50, 1.10, 0.50, 1.05),  # open 割れ
         ]
         interactor, req = _margin_call_setup(
-            entry_price_basis="current_open",
             stop_out_at_open=True,
             bars=bars,  # stop_out_action 未指定＝既定 fail_stop
         )
@@ -891,6 +952,10 @@ class _NullAccountStrategy:
     差し替えて委譲することで「account 伝播なし（同方向抑止 OFF）」を再現する。
     open_positions は持たない（duck typing の held_sides が空集合になる）。
     """
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, inner):
         self._inner = inner
@@ -908,7 +973,7 @@ class _NullAccountStrategy:
 class _RunConfigLike:
     """determinism 属性アクセス + 戦略パラメータの subscript を 1 つで満たす config。
 
-    Interactor は config.entry_price_basis 等を属性で、TC24051901 は cfg["point_size"]
+    Interactor は config.tick_model 等を属性で、TC24051901 は cfg["point_size"]
     等を subscript で参照する（main/run_config.RunConfig と同契約）。
     """
 
@@ -1066,9 +1131,14 @@ class TestTradingStartWarmupExclusion:
         )
         # Act
         result = interactor.execute(req)
-        # Assert: 確定トレードは trading 期間の 1 件のみ（warmup の buy は約定しない）。
-        assert len(result.trades) == 1
+        # Assert: warmup の buy は約定しない。trading 期間の買い（bar2）の reverse 決済と、
+        #   bar3 で建った売りのテスト期間終了時清算（1.13→Ask=1.13）の 2 件。
+        assert len(result.trades) == 2
         assert result.trades[0].entry_time == bars[2].time
+        assert result.trades[1].side == "sell"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(1.13)
+        assert result.trades[1].exit_price == pytest.approx(1.13)
         # equity_curve は trading バー(2,3)の 2 件のみ（warmup の 2 バーは除外）。
         assert len(result.equity_curve) == 2
 
@@ -1158,10 +1228,12 @@ class TestPrimeFirstTradingBar:
         )
         # Act
         result = interactor.execute(req)
-        # Assert: 境界バー(2)・取引バー(3)とも買いのみで反対決済が無いため確定トレード 0 件
-        #   （境界バーの発注が約定していれば次バーで何も起きず保有継続＝確定 0 は両解釈で成立）。
+        # Assert: 境界バー(2)の買いは約定せず、取引バー(3)の買いだけが建ってテスト期間終了時に
+        #   清算される（MT5 の end of test）＝確定 1 件・建値時刻は bar3。
         #   本テストの主眼は equity_curve から境界バーが除外されること。
-        assert len(result.trades) == 0
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_time == bars[3].time
+        assert result.trades[0].exit_reason == "end_of_test"
         # equity_curve は取引バー(3)の 1 件のみ（warmup 2 件 + 境界 1 件は除外）。
         assert len(result.equity_curve) == 1
 

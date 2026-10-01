@@ -50,6 +50,9 @@ class Rhs(Protocol):
     def shift_of(self) -> int:
         """warmup 境界に寄与する過去参照量（定数は 0）。"""
 
+    def reads_of(self) -> "tuple[tuple[str, int], ...]":
+        """読む ``(系列名, shift)`` の組（定数は何も読まないので空）。"""
+
     def value(self, sample: "Callable[[str, int], float]") -> float:
         """比較に使う値（定数は自身・指標参照は sample の結果）。"""
 
@@ -66,6 +69,9 @@ class IndicatorRef:
 
     def shift_of(self) -> int:
         return self.shift
+
+    def reads_of(self) -> "tuple[tuple[str, int], ...]":
+        return ((self.indicator, self.shift),)
 
     def value(self, sample: "Callable[[str, int], float]") -> float:
         return sample(self.indicator, self.shift)
@@ -90,6 +96,9 @@ class Constant(float):
     def shift_of(self) -> int:
         return 0
 
+    def reads_of(self) -> "tuple[tuple[str, int], ...]":
+        return ()
+
     def value(self, sample: "Callable[[str, int], float]") -> float:
         return float(self)
 
@@ -113,6 +122,11 @@ class Condition:
     def __post_init__(self) -> None:
         if not isinstance(self.rhs, Rhs):        # 生の数値だけを包む（種別は尋ねない）
             object.__setattr__(self, "rhs", Constant(self.rhs))
+
+    @property
+    def reads(self) -> "tuple[tuple[str, int], ...]":
+        """本条件が読む ``(系列名, shift)`` の組（lhs と rhs の双方）。"""
+        return ((self.indicator, self.shift),) + self.rhs.reads_of()
 
 
 class EntryConditions:
@@ -150,6 +164,16 @@ class EntryConditions:
             shifts.append(c.shift)
             shifts.append(c.rhs.shift_of())
         return max(shifts)
+
+    @property
+    def reads(self) -> "tuple[tuple[str, int], ...]":
+        """全条件が読む ``(系列名, shift)`` の組（重複はそのまま・順序保存）。
+
+        `max_shift` が warmup 境界のために「最も古い参照」だけを要るのに対し、こちらは
+        **どの足のどの系列を読むか**を渡す。判定の瞬間（建値基準）は「当該足の確定値を
+        読むか」で決まり、最大の shift だけでは決まらないためである。
+        """
+        return tuple(read for c in self._conditions for read in c.reads)
 
     def __len__(self) -> int:
         return len(self._conditions)

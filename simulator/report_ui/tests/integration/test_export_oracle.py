@@ -184,8 +184,22 @@ class TestSegmentReportOnRealRun:
     def test_report_omits_non_held_metrics(self, payload):
         # §4.5 確定方針: BacktestStats 非保持の指標は実 run でも出力しない。
         r = payload.segments["is"].report
-        for k in ("GHPR", "Correlation (Profits,MFE)", "Margin Level", "Ticks"):
+        for k in ("Correlation (Profits,MFE)", "Margin Level", "Ticks"):
             assert k not in r
+
+    @pytest.mark.parametrize("seg, expected", [
+        # MT5 実レポートの表示値（IS: ReportTester-900005560_2604_03.xlsx・
+        #   OOS: ReportTester-900005560_forword_01.xlsx）。2026-09-27 に追加した 5 項目。
+        ("is", {"Sharpe Ratio": "23.32", "GHPR": "1.0001 (0.01%)", "LR Correlation": "0.97",
+                "LR Standard Error": "1159", "Equity Drawdown Relative": "11.59% (1620)",
+                "Total Deals": "10448"}),
+        ("oos", {"Sharpe Ratio": "-5.00", "GHPR": "0.9998 (-0.02%)", "LR Correlation": "-0.90",
+                 "LR Standard Error": "499", "Equity Drawdown Relative": "41.66% (4270)",
+                 "Total Deals": "4876"}),
+    ])
+    def test_added_metrics_match_the_mt5_report_on_the_real_run(self, payload, seg, expected):
+        r = payload.segments[seg].report
+        assert {k: r[k] for k in expected} == expected
 
     def test_report_values_all_strings_in_written_json(self, tmp_path, payload):
         # JSON 契約: 書出後の report 値が全て文字列（presenter 経由・inf は文字列 "inf"）。

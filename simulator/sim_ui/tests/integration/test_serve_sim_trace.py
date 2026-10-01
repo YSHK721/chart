@@ -106,8 +106,7 @@ def _backtest() -> dict:
         slope_shift=int(ea["slope_shift"]),
         slope_min_points=float(ea["slope_min_points"]),
         config_overrides={
-            "tick_model": "open_only", "entry_price_basis": "current_open",
-            "stop_out_action": "close_and_halt", "prime_first_trading_bar": True,
+            "tick_model": "open_only", "stop_out_action": "close_and_halt", "prime_first_trading_bar": True,
             "floating_pnl_basis": "bid_ask",
         },
         stop_out_level=_STOP_OUT_LEVEL,

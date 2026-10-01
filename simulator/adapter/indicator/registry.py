@@ -8,6 +8,11 @@
                許容し、有効区間（最初の非 NaN 以降）に NaN がある場合のみ
                IndicatorNaNError を投げる（データ破損検出）。全数 NaN も破損扱い。
     update(bar_index): 事前計算系列では no-op（IF 充足のため呼べる）。
+
+NaN 検査は**系列ごとに 1 回**（ISSUE-553）。系列は事前計算で不変なので、検査の結果は
+何度 ``get`` しても変わらない。``get`` のたびに系列全体を走査すると、215 万行で 1 回 4.0ms・
+1 run 15,602 回で 62.6 秒になっていた（実測 2026-09-28）。通った系列だけを覚え、失敗は
+覚えない（何回目の ``get`` でも IndicatorNaNError）。
 """
 from __future__ import annotations
 
@@ -29,6 +34,8 @@ class PandasIndicatorRegistry(IndicatorPort, IndicatorSeriesNamesPort):
 
     def __init__(self, series: dict[str, pd.Series]) -> None:
         self._series = dict(series)
+        # NaN 検査を通った系列名（検査は系列ごとに 1 回・ISSUE-553）。
+        self._checked: "set[str]" = set()
 
     def names(self) -> "tuple[str, ...]":
         """登録系列名を**登録順**で返す（`IndicatorSeriesNamesPort`）。
@@ -47,7 +54,9 @@ class PandasIndicatorRegistry(IndicatorPort, IndicatorSeriesNamesPort):
                 "未登録の指標参照", context={"name": name, "available": list(self.names())}
             )
         series = self._series[name]
-        self._raise_if_invalid_nan(name, series)
+        if name not in self._checked:
+            self._raise_if_invalid_nan(name, series)
+            self._checked.add(name)
         return series
 
     @staticmethod

@@ -38,11 +38,19 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class ProFitBand(StrategyPort):
+#: 原典 OnTick の `Bars<60` ゲートの 60（原典に input は無い・ISSUE-556）。
+_MIN_BARS = 60
+
+
+class ProFitBand(StrategyPort, EntryPriceBasisPort):
     """EMA 傾き + ADX + DI のトレンド追従戦略（固定 SL/TP・#5 PRO!fit_Band）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の ema・adx・±DI と、発注時の基準価格
+    #: close[bar_index] を読むので、判定は足が**閉じたあと**でしか成立しない。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: dict | None = None
@@ -53,13 +61,10 @@ class ProFitBand(StrategyPort):
         self._indicators = indicators
 
     def on_new_bar(self, bar_index: int, indicators: Any, account: Any) -> "list[Order]":
-        # warmup ゲート（SPEC §3.5「Bars<60 は処理しない」/ PROCESS §2-A・§3.4 step1）。
+        # warmup ゲート（原典 PRO!fit_Band.mq5:129 `Bars(_Symbol,_Period)<60`・固定値・input 無し）。
         # MQL `Bars` は現足[0]含む総本数 → 現足が bar_index のとき総本数=bar_index+1。
-        # Bars<min_bars ⟺ bar_index < min_bars-1（現足含め min_bars 本目未満）で処理しない。
-        min_bars = self._config.get("min_bars", 60)
-        if bar_index < min_bars - 1:
-            return []
-        if bar_index < 2:  # 境界: EMA[2]（2 本前）が無ければ傾き判定不可
+        # Bars<60 ⟺ bar_index < 59 で処理しない（EMA[2] の不在もこのゲートが含む）。
+        if bar_index + 1 < _MIN_BARS:
             return []
         ema = indicators.get("ema")
         adx = indicators.get("adx")

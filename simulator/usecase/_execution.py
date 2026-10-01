@@ -13,6 +13,7 @@ from typing import Callable
 
 from simulator.domain.order import Order
 from simulator.domain.position import Position
+from simulator.usecase.entry_price_basis import EntryPriceBasisDeclarationError
 
 LOGGER = logging.getLogger("simulator.usecase._execution")
 
@@ -108,23 +109,35 @@ def close_price_for(side: str, *, bid: float, ask: float) -> float:
 
 
 def derive_quotes(
-    bar: object, *, entry_price_basis: str, point_size: float
+    bar: object, *, entry_price_basis: "str | None", point_size: float
 ) -> "tuple[float, float, int, float]":
-    """約定価格基準（config）から当該足の (bid, ask, fill_spread, fill_point) を導く。
+    """**戦略が宣言した判定の瞬間**から当該足の (bid, ask, fill_spread, fill_point) を導く。
 
-    config ゲートを 1 箇所へ集約する（PROCESS §4・実 MT5 突合）:
-        "close"（既定・後方互換）:
-            bid=ask=close・spread 無視（fill_spread=0）で従来挙動と完全一致。
-        "current_open"（原典 .mq5・新規バー現値約定）:
+    ``entry_price_basis`` の出所は戦略の宣言である（ISSUE-533 段階 1。是正前は run の設定で
+    あり、戦略の判定時点と一致する保証が無かった）。分岐は 1 箇所（PROCESS §4・実 MT5 突合）:
+        "close"（足の終わりに判定する戦略）:
+            bid=ask=close・spread 無視（fill_spread=0）。
+        "current_open"（足の始まりに判定する戦略・原典 .mq5 の新規バー現値約定）:
             bid=open / ask=open + spread×point（実 MT5 Ask=Bid+spread×point）。
             fill_market_order の spread 引数に bar.spread・point_size を渡し、
             買い建ては open+spread×point、short の reverse 決済（=ask）も対称に
             spread を内包する（cycle4 バグ①）。
+
+    それ以外の値（「`NO_BAR_BOUNDARY_DECISION`」 を含む）は Fail-Stop にする。是正前はここが
+    ``return bar.close, ...`` へ落ちる形で、**語彙の外の値が黙って終値になる**既定だった。
+    その既定があると「足境界で判定しない」と名乗った戦略が足境界で約定できてしまい、宣言を
+    書かないことが通る抜け道になる。
     """
     if entry_price_basis == "current_open":
         bid, ask = mt5_bid_ask(bar.open, spread=bar.spread, point=point_size)
         return bid, ask, bar.spread, point_size
-    return bar.close, bar.close, 0, 0.0
+    if entry_price_basis == "close":
+        return bar.close, bar.close, 0, 0.0
+    raise EntryPriceBasisDeclarationError(
+        "足境界の約定クォートを導けません（戦略が判定の瞬間を名乗っていない、"
+        f"または語彙の外の値です）: {entry_price_basis!r}",
+        context={"entry_price_basis": repr(entry_price_basis)},
+    )
 
 
 def resolve_eval_quote(

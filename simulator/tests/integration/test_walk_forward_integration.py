@@ -42,8 +42,7 @@ def _base_kwargs(csv_path: Path) -> dict:
         stop_loss_points=200, take_profit_points=500, entry_offset_points=100.0,
         entry_type="stop",
         config_overrides={
-            "tick_model": "ohlc_expand", "entry_price_basis": "current_open",
-            "floating_pnl_basis": "bid_ask", "stop_out_action": "close_and_halt",
+            "tick_model": "ohlc_expand", "floating_pnl_basis": "bid_ask", "stop_out_action": "close_and_halt",
             "session_calendar": "jp225", "profit_round_digits": 0,
             "stop_out_at_open": True, "pending_lifecycle": True, "pending_oco": True,
             "pending_persistent": True, "hedged_margin": True,

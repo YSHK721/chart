@@ -43,11 +43,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _fixture_dataset(monkeypatch):
-    from simulator.sim_ui.adapter import symbol_spec_catalog
+    from marketdata.dataset_registry import sim_offered_refs
 
-    monkeypatch.setattr(
-        symbol_spec_catalog,
-        "_JP225_DATA_CSV",
+    from simulator.tests.ledger_entity_fixtures import point_entity_at
+
+    # 台帳が提供すると宣言した先頭の系列（＝本ファイルが引く profile）の実体だけを差し替える。
+    point_entity_at(
+        monkeypatch,
+        sim_offered_refs()[0],
         Path(__file__).resolve().parents[4] / "simulator" / "tests" / "fixtures" / "mt5"
         / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv",
     )
@@ -92,7 +95,9 @@ def _backtest(**overrides) -> dict:
         "lot_size": 0.1,
         "stop_loss_points": _NO_SL_TP,
         "take_profit_points": _NO_SL_TP,
-        "config_overrides": dict(p.config_overrides),
+        # カタログは決定論設定を供給しない（ISSUE-533 段階 2）。front は profile が
+        # 持てば素通しするだけなので、不在は不在のまま空の受け口から始める。
+        "config_overrides": dict(p.config_overrides or {}),
     }
     # 本データセット・本 EA は初期証拠金 10,000 JPY でストップアウトに達する（実測:
     # `MarginCallError`）。エンジン既定 "fail_stop" は部分結果を破棄して落ちるが、実 MT5 は
@@ -190,8 +195,14 @@ def test_settings有りで成果物が生成される(tmp_path: Path) -> None:
 # --- 3. 期間窓の適用（N-15）-------------------------------------------------
 
 def _bar_times(job_dir: Path) -> "list[int]":
-    payload = json.loads((job_dir / "report.json").read_text(encoding="utf-8"))
-    return [int(bar["time"]) for bar in payload["segments"]["single"]["bars"]]
+    """run が使った足の時刻。足はジョブの成果物の 1 か所（chart_bars.parquet）にだけ在る。"""
+    from simulator.adapter.trace import parquet_trace_store
+    from simulator.sim_ui.adapter import chart_overlay_writer
+
+    return parquet_trace_store.read_columns(
+        job_dir / chart_overlay_writer.CHART_BARS_FILENAME, columns=["time"],
+        time_column=chart_overlay_writer.INDEX_COLUMN,
+    )["time"]
 
 
 def _midnight(text: str) -> int:

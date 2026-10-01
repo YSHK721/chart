@@ -59,3 +59,61 @@ class RunTracePort(abc.ABC):
         それらに何も要求しない）。
         """
         raise NotImplementedError
+
+    def observe_start(self, bar_count: int) -> None:
+        """評価点ループに入る直前に 1 回だけ呼ばれる（`bar_count` は run の足の総数）。
+
+        なぜ在るか: 実行中の進み具合（処理した足 ÷ 足の総数）を画面へ出す実装は、分母を
+            ループの前に知る必要がある（2026-09-27 依頼者指示「結果待ちの終わりが分からない」）。
+            足の列はエンジンの組み立ての中で読まれるので、観測器を組む時点では本数が分からない。
+
+        既定は何もしない（評価点・足単位の記録器には要らない）。事後条件は `observe` と同じ
+            （エンジンの状態を変えない・戻り値なし）。
+        """
+        return None
+
+    def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
+        """期末清算（end_of_test）の直後に 1 回だけ呼ばれる（清算が無い run では呼ばれない）。
+
+        なぜ在るか: 期末清算は評価点ループの**後**で行われ、`observe` は清算後の口座を
+            見ない。足ごとの口座を記録する実装は、最終足の値が清算前のまま残り、残高が
+            run の結果（balance_curve）と食い違った（2026-09-26 実測: 8775 対 8765）。
+
+        清算は評価点ではない（新しい価格を持たない）。よって `observe` として呼ばない——
+            評価点単位の実装へ同じ点を 2 度渡すことになる。既定は何もしない（評価点単位の
+            実装には記録するものが無い）。清算後の口座を残す実装だけが上書きする。
+
+        引数: `bar_index` / `bar` は清算した足（最終足）、`account` は清算と値洗いを終えた
+            口座。事後条件と引数の寿命は `observe` と同じ（読むだけ・戻り値なし・値を写す）。
+        """
+        return None
+
+
+#: 観測器の記録の単位の語彙。"point"＝評価点 1 つにつき 1 行／"bar"＝足 1 本につき 1 行
+#: （足の最後の評価点の値）。契約（`RunTracePort`）は単位を要求しない——検定が期待行数を
+#: 導けるよう、各実装が 「`OBSERVATION_UNIT`」 として名乗る。
+OBSERVATION_UNITS = ("point", "bar")
+
+
+class FanOutRunTrace(RunTracePort):
+    """1 つの観測を複数の観測器へ配る合成（エンジンの観測口は 1 つなので合成で束ねる）。
+
+    Port の合成なので Port と同じ層に置く（具象の記録器ではない）。配る順は渡した順。
+    """
+
+    def __init__(self, *tracers: RunTracePort) -> None:
+        self._tracers = tracers
+
+    def observe(
+        self, point: Any, account: Any, open_trades: Any, halted: bool
+    ) -> None:
+        for tracer in self._tracers:
+            tracer.observe(point, account, open_trades, halted)
+
+    def observe_start(self, bar_count: int) -> None:
+        for tracer in self._tracers:
+            tracer.observe_start(bar_count)
+
+    def observe_final_settlement(self, bar_index: int, bar: Any, account: Any) -> None:
+        for tracer in self._tracers:
+            tracer.observe_final_settlement(bar_index, bar, account)

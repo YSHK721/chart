@@ -16,6 +16,7 @@ import json
 from typing import Any
 
 from simulator.domain.bar_time import epoch_seconds
+from simulator.domain.trade_record import trade_number
 from simulator.usecase.marker_ports import TradeMarkerPresenterPort
 
 # H-1 確定配色（presenter 内定数）。
@@ -80,6 +81,7 @@ def _pair_record(tr: Any, i: int) -> dict:
     """売買ペア（建て→決済の線分結合用）DTO（§10.3）。win は pnl>0。時刻は既存 UNIX 秒式。
 
     ISSUE-026: hover 明細ポップアップ用に profit（pnl）と volume（取引/決済数量）を追加する。
+    ISSUE-539: 取引番号 `id`（`trade_number(i)`＝取引明細と同じ定義）を追加する。
       volume は当該トレードの**決済数量**。全量決済は建玉量と一致し、部分決済（Phase 7 FR-08）
       は建玉量未満の決済分（残玉は別トレードとして継続決済される）。各部分 exit は独立した
       TradeRecord＝独立ペアとして描画される（MT5 Strategy Tester と同じく部分決済を独立 exit
@@ -87,6 +89,9 @@ def _pair_record(tr: Any, i: int) -> dict:
     """
     return {
         "i": i,
+        # 画面に出す取引番号（取引明細の `id` と同じ定義・ISSUE-539）。`i` はマーカーの同一性
+        #   （"t{i}:entry"）に使う位置で、番号として画面に出さない。
+        "id": trade_number(i),
         "side": tr.side,
         "win": tr.pnl() > 0,
         "profit": tr.pnl(),

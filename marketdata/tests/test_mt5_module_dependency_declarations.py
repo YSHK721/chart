@@ -48,9 +48,9 @@ _ALLOWED: "dict[str, set[str]]" = {
         # 保存物の名前（series）の唯一源（ISSUE-511 段階 1d）。rollup の ref_prefix に渡す。
         "marketdata.dataset_registry",
     },
-    # 日次確定後の再構築。日次クリーニングの唯一の実装（outlier_policy）を権威と共有する。
+    # 日次確定後の再構築。1 日分の素材化（外れ値除去を含む）は tick_m1 の公開の口へ委ねる。
     "rebuild.py": {
-        "pandas", "marketdata.tick_m1", "marketdata.outlier_policy",
+        "pandas", "marketdata.tick_m1",
         "marketdata.rollup", _SELF,
     },
     # usecase: 同パッケージのみ。

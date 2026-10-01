@@ -27,6 +27,7 @@ def _factory_simple_touch_long(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="SimpleTouchLong_EA",
+    strategy_type=SimpleTouchLong,
     build=_factory_simple_touch_long,
     strategy_params=("lot_size",),
 )

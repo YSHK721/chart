@@ -23,7 +23,7 @@
 ``marketdata.mt5_ticks.ingest``          adapter    tick_m1 / :mod:`marketdata.path_tokens` / 同下位
 ``marketdata.mt5_ticks.archive_ingest``  adapter    :mod:`marketdata.tick_m1` / 同下位（pandas 無し）
 ``marketdata.mt5_ticks.m1_chain``        adapter    pandas / tick_m1 / rollup / 同下位
-``marketdata.mt5_ticks.rebuild``         adapter    pandas / tick_m1 / rollup / 外れ値規約 / 同下位
+``marketdata.mt5_ticks.rebuild``         adapter    pandas / tick_m1 / rollup / 同下位
 ``marketdata.mt5_ticks.usecases``        usecase    同パッケージのみ
 ``marketdata.mt5_ticks.http_source``     framework  stdlib＋wire/port
 ``marketdata.mt5_ticks.fakes``           test 支援  同パッケージのみ（本番から import されない）

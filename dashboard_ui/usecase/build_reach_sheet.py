@@ -41,6 +41,8 @@ from dashboard_ui.usecase.sheet_models import (
     Degradation,
     ElapsedComparison,
     LadderRow,
+    MP_PERIOD_INDICATOR_ID,
+    MpPeriodLevel,
     OscCell,
     OscillatorSpec,
     ProjectedLevel,
@@ -214,6 +216,7 @@ def build_reach_sheet(
     history_cache: "HistoryStripCache | None" = None,
     projected_levels: "Sequence[ProjectedLevel]" = (),
     mp_port=None,
+    mp_period_levels: "Sequence[MpPeriodLevel]" = (),
 ) -> ReachSheetResponse:
     """段 1 のシートを組み立てる。
 
@@ -239,7 +242,7 @@ def build_reach_sheet(
 
     levels: "list[LevelInput]" = []
     reach_by_row: "dict[tuple[str, str], ReachState]" = {}
-    instance_by_row: "dict[tuple[str, str], tuple[str, str, str, str]]" = {}
+    instance_by_row: "dict[tuple[str, str], tuple[str, str, str, str] | None]" = {}
     naming_by_row: "dict[tuple[str, str], dict[str, object]]" = {}
     series_by_row: "dict[tuple[str, str], str | None]" = {}
     cells: "list[OscCell]" = []
@@ -318,6 +321,30 @@ def build_reach_sheet(
                 "level_p": extra.level_p, "period": None, "source": None, "extra": "",
             }
         )
+
+    # MP の期間水準（依頼者裁定 2026-09-29・設計書 §3.5.4）。値は front が live core の
+    #   `/tf_period_profile` から借りたもの（サーバは MP を計算しない）。射影行と同じく
+    #   ladder 構築へ**合流**させるだけ——並び・距離・差・次のターゲット印は build_ladder、
+    #   到達時間は他の行と同じ定義 D（_level_period_touch）。系列が無いので series は None
+    #   （tick のなめらか更新の対象外＝値は借用の更新でだけ動く）。
+    for borrowed in mp_period_levels:
+        level = LevelInput(
+            price=float(borrowed.price),
+            timeframe=borrowed.timeframe,
+            label=f"{MP_PERIOD_INDICATOR_ID} {borrowed.level}",
+        )
+        levels.append(level)
+        period_bars = bars.of(borrowed.timeframe)
+        reach_by_row[level.row_key] = _level_period_touch(
+            level.price, fine_bars=chart_bars,
+            period_start=(int(period_bars[-1].time) if period_bars else None),
+        )
+        instance_by_row[level.row_key] = None
+        series_by_row[level.row_key] = None
+        naming_by_row[level.row_key] = {
+            "name": MP_PERIOD_INDICATOR_ID, "level": borrowed.level, "level_p": None,
+            "period": None, "source": None, "extra": "",
+        }
 
     ladder = build_ladder(levels, current_price=current_price)
     # MP 列（依頼者承認 2026-09-06）。プロファイルはシート共通の 1 本なので、問い合わせも

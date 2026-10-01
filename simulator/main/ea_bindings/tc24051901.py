@@ -31,4 +31,6 @@ def _factory_tc24051901(ctx: EaBuildContext):
     return TC24051901(), registry, ohlc_repository_for(ctx.data_path)
 
 
-BINDING = EaBinding(name="TC24051901", build=_factory_tc24051901)
+BINDING = EaBinding(
+    name="TC24051901", build=_factory_tc24051901, strategy_type=TC24051901
+)

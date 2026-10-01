@@ -12,6 +12,10 @@
 // **自動遷移しない**（ビュー自動介入の禁止・裁定 2026-07-23）: 投入が通っても画面は切り替え
 //   ない。導線を出すだけで、遷移するのは利用者がそれを押したときに限る。
 //
+// 「設定をコピー」（2026-09-28 依頼者指示・デバッグ用）: スタートで投入する内容と同じものを
+//   クリップボードへ写す。何を写すか（本文）は合成根が M5 の同じ関数で組み、この面は押された
+//   ことを知らせ、渡された文字列をクリップボードへ書き、結果を横に出すだけ。
+//
 // fake DOM 前提: querySelector は使わず、要素参照を JS 側で保持する。
 
 export function createSimRunActionView({ doc } = {}) {
@@ -19,6 +23,8 @@ export function createSimRunActionView({ doc } = {}) {
   let startBtn = null;
   let resultLink = null;
   let startCb = null;
+  let copyCb = null;
+  let copyNote = null;
   let viewResultCb = null;
   let currentJobId = null;
 
@@ -42,9 +48,51 @@ export function createSimRunActionView({ doc } = {}) {
       });
       startBtn.addEventListener("click", () => { if (startCb) startCb(); });
       root.appendChild(startBtn);
+      const copyBtn = el("button", {
+        id: "runCopySettings", className: "run-copy-settings", type: "button",
+        textContent: "設定をコピー", title: "スタートで投入する設定（Tester Settings・EA パラメータ・実行トレース・データセット）を JSON でコピー",
+        // 表示側の操作（MT5 に対応物の無い sim の補助・本文に寄与しない＝ui:）。
+        dataset: { mt5: "ui:copy-settings" },
+      });
+      copyBtn.addEventListener("click", () => { if (copyCb) copyCb(); });
+      root.appendChild(copyBtn);
+      copyNote = el("span", { id: "runCopyNote", className: "run-copy-note", textContent: "" });
+      root.appendChild(copyNote);
       host.appendChild(root);
-      this.elements = { root, startBtn };
+      this.elements = { root, startBtn, copyBtn, copyNote };
       return root;
+    },
+
+    /** 「設定をコピー」の購読口（何を写すかはこの面は知らない）。 */
+    onCopySettings(cb) { copyCb = cb; },
+
+    /**
+     * 文字列をクリップボードへ書く。Clipboard API が使えない文脈（安全でない配信元など）では、
+     * 一時的なテキスト欄を選択して copy コマンドで書く。書けなければ例外を投げる（無音にしない）。
+     */
+    async copyText(text) {
+      const nav = doc.defaultView && doc.defaultView.navigator;
+      if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {
+        await nav.clipboard.writeText(text);
+        return;
+      }
+      const area = el("textarea", { value: text });
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      root.appendChild(area);
+      try {
+        area.select();
+        if (typeof doc.execCommand !== "function" || !doc.execCommand("copy")) {
+          throw new Error("このブラウザではクリップボードへ書けません");
+        }
+      } finally {
+        root.removeChild(area);
+      }
+    },
+
+    /** コピーの結果を横に出す（成功・失敗とも文言は合成根が決める）。 */
+    showCopyResult(message) {
+      if (copyNote) copyNote.textContent = message;
     },
 
     /** 実行開始の購読口（この面は何を投入するかを知らない）。 */

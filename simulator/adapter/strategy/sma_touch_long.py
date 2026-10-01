@@ -19,11 +19,16 @@ from simulator.adapter.strategy.mql5_runtime import (
     spec_value,
 )
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class SmaTouchLong(StrategyPort):
+class SmaTouchLong(StrategyPort, EntryPriceBasisPort):
     """M1 で安値が SMA5 に初めてタッチした時に買いを入れる戦略。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の close と sma を読む
+    #: （close[bar_index] / sma[bar_index]）ので、判定は足が**閉じたあと**でしか成立せず、
+    #: そのとき取れる価格は当該足の終値である。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: Any | None = None

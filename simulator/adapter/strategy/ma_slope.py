@@ -41,11 +41,16 @@ from simulator.adapter.strategy.mql5_runtime import (
 )
 from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class MaSlope(StrategyPort):
+class MaSlope(StrategyPort, EntryPriceBasisPort):
     """EMA 傾き戦略（傾き上向き→買い・下向き→売り・反転はドテン）。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。本 EA は確定足の ema 2 点しか読まない
+    #: （ema[bar_index-1] と ema[bar_index-1-slope_shift]）ので、判定は足の**始まり**に
+    #: 成立する。したがって取れる価格は当該足の始値である。
+    entry_price_basis = "current_open"
 
     def __init__(self) -> None:
         self._config: dict | None = None

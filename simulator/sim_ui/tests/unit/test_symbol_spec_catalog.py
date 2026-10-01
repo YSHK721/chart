@@ -9,6 +9,16 @@
        ISSUE-445 段階 2 で権威を供給元へ移した。値の突合の詳細（供給元と独立な report.json
        導出との一致）は `sim_ui/tests/integration/test_run_options_mt5_gate.py` が持つ。
     2. data_path は dataset_registry.whitelist() の単一ソース由来（ハードコードしない）。
+       **本ファイルが持つのは回帰ガードだけである**——`test_data_path_is_the_ledger_declaration_for_the_ref`
+       は、カタログが同じ値のリテラルを持っていても緑である（工程 5 レビューの変異 M1 で実測・
+       2026-09-23）。この主張を拘束するのは
+       `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` の
+       test_the_data_path_follows_the_ledger_declaration_for_the_ref と
+       test_the_data_path_is_not_a_literal_of_the_catalog の 2 件で、同変異で 2 件とも赤になる。
+       **2026-09-23 まで、この主張を確かめる検定は 1 件も無く、主張は現に偽だった**——
+       カタログは実体のパスを自前のリテラルで持っていた（ISSUE-511 段階 8-D-2 で是正）。
+       台帳側の宣言を差し替える変異で落ちること（＝結線の検出力）は
+       `simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py` が測る。
     3. ea_names() は注入元（`simulator.main.known_ea_names`）から導出（ハードコード禁止・
        束縛は Composition Root が持つ・ISSUE-405）。
     4. RunProfile は 11 の backtest プロファイルキー＋dataset ラベルを持つ。
@@ -60,25 +70,31 @@ def test_data_path_points_to_the_full_marketdata_jp225_csv():
     assert detect_ohlc_form(p) == "marketdata"
 
 
-def test_config_overrides_follow_the_data_form():
-    """決定論設定の override はデータ実体の形式から導く（宣言は _config_overrides_for）。
+def test_data_path_is_the_ledger_declaration_for_the_ref():
+    """docstring 2 の機械的検査: data_path は台帳の**同じ ref の宣言**そのものである。
 
-    MT5 TAB 形式のみ current_open（MT5 ローダ EA が close 系列を持たない・実測）。
-    marketdata 形式（現行データセット）は override なし＝既定 close。
+    カタログが持つのは「何を提供するか」（ref 名）であり、「その実体はどこか」は台帳
+    `marketdata/dataset_registry.py` が持つ（ISSUE-511 段階 8-D-2）。ここは 1 点の一致を
+    見る回帰ガードであり、**是正前後のどちらでも緑**である（既定環境では台帳の宣言と
+    是正前のリテラルが文字列として同一だった・実測 2026-09-23）。検出力は台帳側の宣言を
+    差し替える変異で測る（`simulator/tests/unit/test_symbol_spec_catalog_ledger_wiring.py`）。
     """
-    from pathlib import Path
-
-    from simulator.sim_ui.adapter.symbol_spec_catalog import _config_overrides_for
+    from marketdata.dataset_registry import whitelist
 
     jp = [p for p in build_run_options_port().datasets() if p.symbol == "JP225"][0]
-    assert jp.config_overrides is None
-    assert "config_overrides" not in jp.to_dict()
-    mt5_fixture = (
-        Path(jp.data_path).parents[2] / "simulator" / "tests" / "fixtures" / "mt5"
-        / "ma_slope_jp225_202501" / "input" / "JP225_M1_202501.csv"
-    )
-    assert mt5_fixture.is_file(), "MT5 fixture が見つかりません（前提の崩れ）"
-    assert _config_overrides_for(mt5_fixture) == {"entry_price_basis": "current_open"}
+    assert jp.data_path == str(whitelist()[jp.dataset])
+
+
+def test_the_catalog_supplies_no_execution_config():
+    """カタログは決定論設定を 1 項目も供給しない（ISSUE-533 段階 2）。
+
+    かつてここは「その実体が気配幅を供給するか」で建値基準を載せていた。データ実体に
+    判定の瞬間を決めさせる形であり、終値で判定する EA を気配幅つきの実体へ投げると
+    run が始まらなかった。撤去後は**どの実体でもキーごと不在**である。
+    """
+    for profile in build_run_options_port().datasets():
+        assert profile.config_overrides is None
+        assert "config_overrides" not in profile.to_dict()
 
 
 def test_ea_names_come_from_the_engine_accessor():

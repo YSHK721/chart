@@ -42,11 +42,13 @@ import { createTimeframeChartsView, chartsLibUsable } from './timeframe_charts_v
 import { createReachSheetClient, deriveApiPrefix } from './reach_sheet_client.js';
 import { createCandlesClient } from './candles_client.js';
 import { createMpBorrow } from './mp_borrow.js';
+import { createMpPeriodBorrow } from './mp_period_borrow.js';
 import { createLiveTickPlayers } from './live_tick_players.js';
 import { readInstanceBundle, DASHBOARD_TIMEFRAMES } from './template_binding_reader.js';
 import { TIMEFRAME_REFRESH_MS } from './timeframes.js';
 import { createSheetPoller } from '../../usecase/sheet_poller.js';
 import { createCandlePoller } from '../../usecase/candle_poller.js';
+import { createCurrentBarTimes } from '../../usecase/current_bar_times.js';
 import { createSheetPresenter } from '../../usecase/sheet_presenter.js';
 import { createTailSpecLedger, tailInstanceIdOf } from '../../usecase/tail_specs.js';
 import { mpNormAt } from '../../domain/mp_bin.js';
@@ -272,6 +274,40 @@ export async function setupDashboardDisplay({
     presenter.syncKey(target);
   }
 
+  /**
+   * 足ごとの現在バーの time（設計書 §3.5.3）。出所は参照実装と同じ「チャートのローソクの末尾」で、
+   * /candles の応答（休場中・起動直後も当期が決まる）と形成中バー（onBar）の 2 本で更新する。
+   * どちらも既にここへ届いている応答を控えるだけ＝取得は増えない。
+   */
+  const currentBarTimes = createCurrentBarTimes();
+  /** 直近に版面へ渡した MP の期間水準の掲示文（変わったときだけ描き直す）。 */
+  let mpLevelsNote = null;
+
+  /**
+   * MP の期間水準（日・週・月の POC・VAH・VAL・設計書 §3.5）の借用系統。借りた値は次の
+   * `/reach_sheet` の要求の欄 `mp_levels` に載り、合流（並び・距離・到達時間）はサーバが行う。
+   */
+  const mpPeriodBorrow = createMpPeriodBorrow({
+    transport,
+    apiPrefix: candlesApiPrefix,
+    datasetRef: DEFAULT_DATASET_REF,
+    barMs: TIMEFRAME_REFRESH_MS[CHART_TIMEFRAME],
+    now: clock,
+    currentBarTimeOf: (timeframe) => currentBarTimes.of(timeframe),
+    isActive: () => enabled,
+    onChange: () => {
+      // 行は次のシート応答で届く。ここで描き直すのは掲示文が変わったときだけ
+      //   （unchanged の応答では版面が触られず、理由が出ないまま残るため）。
+      const note = mpPeriodBorrow.note();
+      if (note === mpLevelsNote) {
+        return;
+      }
+      mpLevelsNote = note;
+      ladderView.setMpLevelsNote(note);
+      repaintLadderInPlace();
+    },
+  });
+
   /** MP 借用の系統（公開面の検査・失敗文言・発行判定はすべて mp_borrow が持つ）。 */
   const mpBorrow = createMpBorrow({
     transport,
@@ -293,6 +329,7 @@ export async function setupDashboardDisplay({
       }
       repaintLadderInPlace();
     },
+    periodBorrow: mpPeriodBorrow,
   });
 
   /** なめらか tick 再生の台（実装は live の LiveTickPlayer そのもの）。 */
@@ -316,10 +353,13 @@ export async function setupDashboardDisplay({
       // MP の取得文脈（period='day' の窓下限・dispbp→barw）が読む最新足。
       //   既にここへ流れているものを分岐させるだけ＝取得は増えない。
       latestChartCandle = bar;
+      currentBarTimes.fromBar(CHART_TIMEFRAME, bar);
     },
     onBar: (timeframe, bar) => {
       if (enabled) {
         chartsView.updateLastCandle(timeframe, bar);
+        // MP の期間水準の当期（§3.5.3）。既にここへ流れている time を控えるだけ＝取得は増えない。
+        currentBarTimes.fromBar(timeframe, bar);
       }
     },
     onTails: (tails) => {
@@ -356,6 +396,8 @@ export async function setupDashboardDisplay({
     }
     if (result.ok) {
       chartsView.setCandles(timeframe, result.candles);
+      // MP の期間水準の当期（§3.5.3）。参照実装と同じくローソクの末尾の time。
+      currentBarTimes.fromCandles(timeframe, result.candles);
     } else {
       chartsView.setCandleError(timeframe, result.error.message);
     }
@@ -381,6 +423,8 @@ export async function setupDashboardDisplay({
         dataset_ref: DEFAULT_DATASET_REF,
         chart_timeframe: CHART_TIMEFRAME,
         instances: bundle.instances,
+        // MP の期間水準（設計書 §3.5.4）。いまの現在バーの期間に借りた値だけ（合流はサーバ）。
+        mp_levels: mpPeriodBorrow.levels(),
         // 省リソース段階 2: 既知トークン。素材が不変ならサーバは unchanged を返す。
         //   bodyKey（同一周期の畳み込み）はこの欄を見ない＝畳み込みは従来どおり。
         known_state: presenter.stateToken(),
@@ -454,6 +498,9 @@ export async function setupDashboardDisplay({
     mpBorrow.stop();
     mpProfile = null;
     latestChartCandle = null;
+    currentBarTimes.clear();
+    mpLevelsNote = null;
+    ladderView.setMpLevelsNote(null);
     if (typeof stopTimer === 'function') {
       stopTimer();
       stopTimer = null;

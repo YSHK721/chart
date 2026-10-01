@@ -21,11 +21,15 @@ from simulator.adapter.strategy.mql5_runtime import (
     spec_value,
 )
 from simulator.domain.order import Order
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-class SimpleTouchLong(StrategyPort):
+class SimpleTouchLong(StrategyPort, EntryPriceBasisPort):
     """最小限の長押し判定で buy 成行を返す EA。"""
+
+    #: 判定の瞬間（`EntryPriceBasisPort`）。当該足の close と sma を読むので、判定は足が
+    #: **閉じたあと**でしか成立しない（取れる価格は当該足の終値）。
+    entry_price_basis = "close"
 
     def __init__(self) -> None:
         self._config: Any | None = None

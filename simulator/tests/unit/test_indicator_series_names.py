@@ -150,10 +150,12 @@ class TestBothProductionRegistriesEnumerateTheirSeries:
         assert isinstance(registry, IndicatorPort)
 
     def test_the_two_production_registries_are_the_whole_population(self):
-        """`IndicatorPort` を**継承**する生産実装が 2 件だけであること（実測 12）。
+        """`IndicatorPort` を**継承**する生産実装が、1 件残らず `names()` を宣言すること（実測 12）。
 
-        3 件目が生まれたのに `names()` を持たなければ、そのレジストリを使う run の
-        指標トレースが黙って空になる。母集団そのものを固定して気づけるようにする。
+        新しい実装が `names()` を持たなければ、そのレジストリを使う run の指標トレースが
+        黙って空になる。母集団は走査で集め（リテラルで固定しない）、全件に宣言を要求する
+        （ISSUE-509 で 3 件目 BarAlignedIndicators が生まれたときに、名前の集合の固定が
+        正しい追加を赤にした）。
         """
         # Arrange
         import ast
@@ -171,8 +173,10 @@ class TestBothProductionRegistriesEnumerateTheirSeries:
             and any(isinstance(b, ast.Name) and b.id == "IndicatorPort" for b in node.bases)
         }
 
-        # Assert
-        assert set(found) == {"PandasIndicatorRegistry", "NullIndicatorRegistry"}, found
+        # Assert: 母集団は名前のリテラルで固定しない（実装が正しく増えるたびに赤になり、
+        #   承認の往復が定額の税になる・CLAUDE.md「検査側の設計」）。固定するのは
+        #   「既知の 2 件を含む（走査が痩せていない）」ことと、下の「全件が names を宣言する」こと。
+        assert {"PandasIndicatorRegistry", "NullIndicatorRegistry"} <= set(found), found
         # 各実装が `names` を宣言していること（Port だけ足して実装を忘れた形を赤にする）。
         for cls_name in found:
             cls = getattr(

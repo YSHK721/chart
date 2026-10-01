@@ -90,11 +90,13 @@ test("each tab button maps to a pane name (data-tab)", () => {
   assert.deepEqual(tabs.map((t) => t.dataset.tab), [...SIM_TAB_NAMES]);
 });
 
-test("graph and report tabs are not shipped (流用しない・YAGNI)", () => {
+test("the graph tab is shipped before the report tab (移植元の並び・2026-09-27 依頼者指摘)", () => {
+  // 当初は「graph は流用しない（YAGNI）」だった。試作 2 つとも「グラフ」タブに 9〜11 枚の
+  //   グラフを持つことを実測し、流用へ改めた（サマリーは表だけ＝試作・移植元と同じ）。
   const { root } = mounted();
   const names = flatten(root).filter((n) => hasClass(n, "mv-tab")).map((t) => t.dataset.tab);
-  assert.ok(!names.includes("graph"));
-  assert.ok(!names.includes("report"));
+  assert.ok(names.includes("graph"));
+  assert.equal(names.indexOf("graph") + 1, names.indexOf("report"));
 });
 
 // --- 3. タブ切替（クリック）-----------------------------------------------------

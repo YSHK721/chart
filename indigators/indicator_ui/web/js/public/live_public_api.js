@@ -46,3 +46,11 @@ export { DEFAULT_DATASET_REF } from '../domain/dataset_default_generated.js';
 export { buildMarketProfileUrl } from '../adapter/front/market_profile_client.js';
 export { MpFetchParams } from '../adapter/front/mp_fetch_params.js';
 export { MP_DEFAULT_SOURCE } from '../domain/mp_source_capability.js';
+
+// Market Profile の期間水準の借用面（依頼者指示 2026-09-29・水準到達シート基本設計書 §3.5.2）。
+//   価格ラダーの日・週・月の POC（zp では POC*）・VAH・VAL は live core の `/tf_period_profile` を
+//   ライブチャートの tf-period 列と同じ組（src は mpTfPeriodSrc で写す・va はそのまま）で借りる。
+//   URL の唯一源は buildTfPeriodUrl、行の名前（POC* / POC）は mpSourceCapability の poc 様式。
+//   借り手が adapter / domain を直接名指すのは G-3 違反なので、上の MP 列と同じくここへ加法で出す。
+export { buildTfPeriodUrl } from '../adapter/front/tf_period_profile_client.js';
+export { mpSourceCapability, mpTfPeriodSrc } from '../domain/mp_source_capability.js';

@@ -23,6 +23,7 @@ import {
   SIM_REPORT_VIEW_PATH,
   createSimFrameView,
   waitForContent,
+  whenChildReady,
 } from "../js/adapter/front/sim_frame_view.js";
 import { SIM_REPORT_VIEW_PATH as CANONICAL_PATH } from "../js/adapter/front/report_view_url.js";
 
@@ -208,5 +209,31 @@ test("waitForContent は待ち続けない（表明が来なければ諦める�
   while (frames.length && ticks < 1000) { frames.splice(0).forEach((fn) => fn()); ticks += 1; }
   // Assert
   assert.equal(seen.length, 0);
+  assert.ok(ticks < 1000, `予約が尽きない（上限が効いていない）: ${ticks}`);
+});
+
+test("whenChildReady は子の完了を待ってから子の window を 1 回だけ渡す（ISSUE-538 の連動の結線）", () => {
+  // Arrange
+  const frames = [];
+  const raf = (fn) => frames.push(fn);
+  const child = {};
+  const seen = [];
+  const run = () => frames.splice(0).forEach((fn) => fn());
+  // Act
+  whenChildReady({ childWindow: () => child }, raf, (win) => seen.push(win));
+  run(); run();
+  assert.deepEqual(seen, []);
+  child.__simReportViewReady = true;
+  run(); run(); run();
+  // Assert
+  assert.deepEqual(seen, [child]);
+});
+
+test("計算量: whenChildReady は完了しない子へ上限までしか予約しない", () => {
+  const frames = [];
+  const raf = (fn) => frames.push(fn);
+  let ticks = 0;
+  whenChildReady({ childWindow: () => ({}) }, raf, () => assert.fail("完了していないのに呼ばれた"));
+  while (frames.length && ticks < 1000) { frames.splice(0).forEach((fn) => fn()); ticks += 1; }
   assert.ok(ticks < 1000, `予約が尽きない（上限が効いていない）: ${ticks}`);
 });

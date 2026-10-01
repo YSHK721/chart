@@ -45,7 +45,7 @@ _ROWS = [
 
 # MT5 形式（タブ区切り）の最小 CSV。MA_Slope_Pending_EA の registry は
 # {"ema","open","spread"} を持つため（`simulator/main/__init__.py` `_build_ma_slope_pending_registry`）、
-# entry_price_basis="current_open" の推定（"open" 系列）を測れる唯一の経路である。
+# 宣言 "current_open" の推定（"open" 系列）を測れる唯一の経路である。
 _MT5_HEADER = "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>"
 
 _POINT_SIZE = 0.0001
@@ -112,7 +112,7 @@ def _volume(sizing: AccountMarginSizing, price: float, *, side: str,
     ).volume
 
 
-# --- 1. entry_price_basis 別の推定建値差 ----------------------------------
+# --- 1. 判定の瞬間ごとの推定建値差（基準は戦略の宣言から来る）--------------
 
 def _write_mt5_csv(path: Path, n: int = 30, spread: int = 100) -> Path:
     lines = [_MT5_HEADER]
@@ -182,7 +182,7 @@ def test_close基準_推定建値差による発注量差が刻み未満(tmp_pat
     # Arrange
     csv_path = _write_csv(tmp_path / "m1.csv")
     controller, request = build_interactor(
-        **_meta(csv_path, config_overrides={"entry_price_basis": "close"})
+        **_meta(csv_path)
     )
     # Act
     diffs = _measure_diffs(controller, request, "close")
@@ -195,15 +195,16 @@ def test_current_open基準_推定建値差による発注量差が刻み未満(
     """§12.2 合格基準（current_open 基準）。スプレッド由来差が volume_step 未満。
 
     実測に基づく重要な限定（設計への申し送り）: 既定 TC24051901 の registry は
-    {"madiff","close"} であり **"open" 系列を持たない**。したがって
-    entry_price_basis="current_open" × sizing ON は TC 経路では成立せず、
-    E-3（§12.5）の受付時拒否は **(ea_name, entry_price_basis) の組**で判定する必要がある。
+    {"madiff","close"} であり **"open" 系列を持たない**。同 EA は close を宣言するので
+    要る系列は "close" であり噛み合うが、宣言が "current_open" の EA では "open" が要る。
+    E-3（§12.5）の受付時拒否は **ea_name だけ**で判定できる（ISSUE-533 段階 2: 建値基準は
+    投入本文に載らないため、組で判定する必要がない）。
     本ケースは "open" を持つ MA_Slope_Pending_EA の registry で測る。
     """
     # Arrange
     csv_path = _write_mt5_csv(tmp_path / "jp225.csv")
     controller, request = build_interactor(
-        **_mt5_meta(csv_path, config_overrides={"entry_price_basis": "current_open"})
+        **_mt5_meta(csv_path)
     )
     # Act
     diffs = _measure_diffs(controller, request, "current_open")
@@ -236,7 +237,7 @@ def test_close基準では推定建値差がゼロ(tmp_path: Path) -> None:
     # Arrange
     csv_path = _write_csv(tmp_path / "m1.csv")
     controller, request = build_interactor(
-        **_meta(csv_path, config_overrides={"entry_price_basis": "close"})
+        **_meta(csv_path)
     )
     registry = controller._interactor._indicators
     spec = request.symbol_spec
@@ -254,7 +255,7 @@ def test_current_open基準の差はスプレッド由来のみ(tmp_path: Path) 
     # Arrange（"open" を持つ registry が要る＝MA_Slope_Pending_EA 経路）
     csv_path = _write_mt5_csv(tmp_path / "jp225.csv")
     controller, request = build_interactor(
-        **_mt5_meta(csv_path, config_overrides={"entry_price_basis": "current_open"})
+        **_mt5_meta(csv_path)
     )
     registry = controller._interactor._indicators
     spec = request.symbol_spec
@@ -292,6 +293,10 @@ def test_ペンディング発注には推定差が生じない(tmp_path: Path) 
             return SizingDecision(volume=0.5, fraction=0.05)
 
     class _Pending:
+        #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+        #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+        entry_price_basis = "close"
+
         def on_init(self, config, indicators) -> None: ...
         def on_position_check(self, position, bar_index, indicators) -> str:
             return "hold"
@@ -305,7 +310,7 @@ def test_ペンディング発注には推定差が生じない(tmp_path: Path) 
 
     csv_path = _write_mt5_csv(tmp_path / "jp225.csv")
     controller, request = build_interactor(
-        **_mt5_meta(csv_path, config_overrides={"entry_price_basis": "current_open"})
+        **_mt5_meta(csv_path)
     )
     registry = controller._interactor._indicators
 
@@ -313,7 +318,7 @@ def test_ペンディング発注には推定差が生じない(tmp_path: Path) 
         equity = 100_000.0
 
     recorder = _Recorder()
-    dec = SizingDecorator(_Pending(), recorder, price_series="open")
+    dec = SizingDecorator(_Pending(), recorder)
     # Act
     dec.on_new_bar(2, registry, _Account())
     # Assert（系列の値ではなく order.price が使われている＝推定していない）
@@ -345,7 +350,6 @@ def test_sizingONで発注量が戦略の固定値から変わる(tmp_path: Path
     decorator = build_sizing_decorator(
         _SIZING, symbol_spec=request[1].symbol_spec if isinstance(request, tuple)
         else request.symbol_spec,
-        entry_price_basis="close",
     )
     # Act
     code, on = run_backtest(
@@ -370,7 +374,7 @@ def test_sizingONの発注量は刻みの倍数である(tmp_path: Path) -> None
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act
     _, result = run_backtest(
@@ -402,7 +406,7 @@ def test_SL距離0のsizingONは無音の取引ゼロにならない(tmp_path: P
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act / Assert（BacktestController の終了コード翻訳に飲み込まれずに伝播すること）
     with pytest.raises(SizingRequiresStopLossError):
@@ -427,7 +431,7 @@ def test_SL距離が正なら従来どおり完走する(tmp_path: Path) -> None
     csv_path = _write_csv(tmp_path / "m1.csv")
     _, request = build_interactor(**_meta(csv_path))
     decorator = build_sizing_decorator(
-        _SIZING, symbol_spec=request.symbol_spec, entry_price_basis="close"
+        _SIZING, symbol_spec=request.symbol_spec
     )
     # Act
     code, result = run_backtest(

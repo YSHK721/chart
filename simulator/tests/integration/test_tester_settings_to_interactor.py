@@ -31,6 +31,10 @@ from simulator.domain.tester_settings_exceptions import (
 )
 from simulator.framework.tester_settings import tester_settings_from_mapping
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
+from simulator.main.unsupported_run_scope import (
+    apply_run_scope_unsupported_rules,
+    run_scope_inputs_for,
+)
 from simulator.tests.tester_settings_engine_fixtures import (
     DEFAULT_EA_PARAMS,
     SETTLEMENT_CURRENCY,
@@ -49,10 +53,32 @@ DATA_PATH = "/nonexistent/synthetic/jp225.csv"
 
 
 def _kwargs(settings=None, **binding_overrides):
+    """写像層だけを通す（**保証境界の一部はここでは効かない**・ISSUE-525）。"""
     return to_interactor_kwargs(
         settings if settings is not None else runnable_settings(),
         engine_binding(data_path=DATA_PATH, **binding_overrides),
     )
+
+
+def _admitted_kwargs(settings=None, **binding_overrides):
+    """投入を**受け付けるか**を、保証境界の 2 つの適用点を通して測る。
+
+    ISSUE-525 で、run 自身の引数だけで判定できる宣言（N-01 / N-05 / N-10 / N-17）の
+    適用点は合流点（`simulator.main.build_interactor`）へ移った。写像層だけを呼ぶと
+    それらは評価されないので、投入の可否を問う検定はここを使う。
+
+    合流点と同じ組立点（`run_scope_inputs_for`）を使うのは、判定入力の組み立てを
+    検定側へ書き写さないためである（写すと本番の組み立てが変わっても検定は緑のまま残る）。
+    `build_interactor` を呼ばないのは、写像層の検定がデータ実体を持たない
+    （`DATA_PATH` は実在しないパス）ためである。
+    """
+    kwargs = _kwargs(settings=settings, **binding_overrides)
+    apply_run_scope_unsupported_rules(
+        run_scope_inputs_for(
+            kwargs, tick_model_id=kwargs["config_overrides"]["tick_model"]
+        )
+    )
+    return kwargs
 
 
 def _indicator_settings(**overrides):
@@ -136,17 +162,17 @@ class TestEaNameMapping:
         # corpus 実測の EA（`TC24051903`）は `_EA_FACTORIES` に登録が無い
         settings = runnable_settings(Expert="TC24051903.ex5")
         with pytest.raises(ConfigError):
-            _kwargs(settings=settings)
+            _admitted_kwargs(settings=settings)
 
     def test_traversal_style_subject_path_is_rejected_as_unregistered(self):
         # T-15 / K-18: 語幹化しても登録集合に無いので実行されない
         settings = runnable_settings(Expert="..\\..\\etc\\passwd.ex5")
         with pytest.raises(ConfigError):
-            _kwargs(settings=settings)
+            _admitted_kwargs(settings=settings)
 
 
 class TestConfigOverrides:
-    """§8.1: `tick_model` と `entry_price_basis` は `config_overrides` 経由。"""
+    """§8.1: `tick_model` は `config_overrides` 経由（`entry_price_basis` は供給しない）。"""
 
     @pytest.mark.parametrize(
         ("model", "engine_id"),
@@ -156,20 +182,24 @@ class TestConfigOverrides:
         kwargs = _kwargs(settings=runnable_settings(Model=model))
         assert kwargs["config_overrides"]["tick_model"] == engine_id
 
-    def test_entry_price_basis_is_stated_explicitly(self):
-        # §4.5.1: 建値基準を暗黙の既定に委ねない
-        assert _kwargs()["config_overrides"]["entry_price_basis"] == "current_open"
+    def test_the_mapping_layer_supplies_no_entry_price_basis(self):
+        # ISSUE-533 段階 2: 建値基準の権威は**戦略の宣言**であり、設定の語彙から外した。
+        #   写像層が既定を補うと、判定が足の終わりに成立する EA（当該足の終値を読むもの）へ
+        #   足の始まりの気配を押し付け、その EA は判定の瞬間に取得できない価格で約定する
+        #   （ISSUE-533 の実測）。ここが赤くなるのは既定が経路へ戻ったときである。
+        assert "entry_price_basis" not in _kwargs()["config_overrides"]
 
     def test_binding_config_overrides_take_priority(self):
-        # 銘柄仕様の権威（カタログ）が値を持つときはそれを優先する（§8.1）
-        kwargs = _kwargs(config_overrides={"entry_price_basis": "current_close"})
-        assert kwargs["config_overrides"]["entry_price_basis"] == "current_close"
+        # 銘柄仕様の権威（カタログ）が値を持つときはそれを優先する（§8.1）。
+        # 建値基準はもう設定の語彙に無いので、同じ優先順位を別の決定論項目で測る。
+        kwargs = _kwargs(config_overrides={"session_calendar": "jp225"})
+        assert kwargs["config_overrides"]["session_calendar"] == "jp225"
 
     def test_real_ticks_requires_a_tick_store_root(self):
         # N-05: 実ティックを合成で代替しない
         settings = runnable_settings(Model="4")
         with pytest.raises(UnsupportedSettingError) as excinfo:
-            _kwargs(settings=settings, tick_store_root=None)
+            _admitted_kwargs(settings=settings, tick_store_root=None)
         assert excinfo.value.context["unsupported_id"] == "N-05"
 
     def test_real_ticks_passes_when_the_tick_store_is_supplied(self):
@@ -259,7 +289,7 @@ class TestUnsupportedRulesAreDeclarative:
             for key in rule.ui.keys:
                 for token in rule.ui.tokens:
                     with pytest.raises(UnsupportedSettingError) as excinfo:
-                        _kwargs(settings=runnable_settings(**{key: token}))
+                        _admitted_kwargs(settings=runnable_settings(**{key: token}))
                     assert excinfo.value.context["unsupported_id"] == rule_id, (key, token)
                     checked.append((rule_id, key, token))
         assert checked, "`on_tokens` の宣言が 1 件も無い（束縛が空＝UI から発火しない）"
@@ -278,7 +308,7 @@ class TestUnsupportedRulesAreDeclarative:
             for key in rule.ui.keys:
                 for token in rule.ui.tokens:
                     # 例外が出ないこと自体が主張（出れば pytest が失敗させる）
-                    _kwargs(settings=runnable_settings(**{key: token}))
+                    _admitted_kwargs(settings=runnable_settings(**{key: token}))
                     checked.append((rule_id, key, token))
         assert checked, "`except_tokens` の宣言が 1 件も無い"
 
@@ -293,7 +323,9 @@ class TestUnsupportedRulesAreDeclarative:
         assert rule.ui.mode == UI_TRIGGER_OFF_CANDIDATES
         key = rule.ui.keys[0]
         with pytest.raises(ConfigError) as excinfo:
-            _kwargs(settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"}))
+            _admitted_kwargs(
+                settings=runnable_settings(**{key: "Definitely_Not_Registered.ex5"})
+            )
         assert excinfo.value.context["unsupported_id"] == "N-01"
 
     def test_off_profile_binding_matches_the_settlement_currency_check(self):

@@ -56,8 +56,23 @@ def _argv(tmp_path, *extra):
     return ["--data-dir", str(tmp_path), "--once", *extra]
 
 
+def _ledger_files(root: Path) -> "list[Path]":
+    """台帳（ジャーナル・M1・ロールアップ・parquet）のファイル。
+
+    単一書き手ロック（``WRITER_LOCK_FILENAME``・ISSUE-530）は**台帳ではない**ため除く。錠は
+    「誰が書いてよいか」を表す防護であり、受信の記録でも派生物でもない。順序をどう置いても、
+    起動して書ける状態になった常駐は必ず錠を作る（錠を数えると「書込 0」を測れなくなる）。
+    錠そのものの契約（取得の順序・二重起動の拒否・案内の中身）は
+    ``tools/tests/test_mt5_tick_watch_single_writer.py`` が固定する。
+    """
+    return [
+        p for p in root.rglob("*")
+        if p.is_file() and p.name != watch.WRITER_LOCK_FILENAME
+    ]
+
+
 def _wrote_anything(tmp_path: Path) -> bool:
-    return any(p.is_file() for p in tmp_path.rglob("*"))
+    return bool(_ledger_files(tmp_path))
 
 
 class _Restart(NamedTuple):
@@ -112,6 +127,9 @@ def test_the_option_surface_is_exactly_the_designed_one():
     assert opts == {
         "-h", "--help", "--symbol", "--endpoint", "--key-id", "--interval",
         "--data-dir", "--ref", "--from", "--once", "--no-publish", "--quiet",
+        # 引き継ぎ口（ISSUE-530 の錠に対する「次の一手」）。ライブ供給が持つものと対称に
+        #   足した＝集合が 1 つ増えた事実をそのまま反映する（面の固定を緩めない）。
+        "--takeover",
     }
 
 
@@ -358,9 +376,15 @@ def test_crossing_a_utc_day_finalizes_and_rebuilds_the_closed_day(tmp_path, secr
     source = fakes.FakeTickSource(tape)
     clock = fakes.FixedClock(dt.datetime(2026, 8, 26, 0, 10, tzinfo=dt.timezone.utc))
     rebuilt: "list[object]" = []
+    # 観測する継ぎ目は**組**の是正である（ISSUE-511 段階 8-D-2b 段 5・承認 2026-09-24）。常駐は
+    #   台帳が決めた系列の組を 1 回の畳みで是正するため ``rebuild.rebuild_days_for_series`` を
+    #   呼び、``rebuild.rebuild_day`` は段 3 以降 1 要素の薄い包み＝組の経路は通らない。表明
+    #   （どの日が是正されたか）は変えていない。継ぎ目の名前は実装詳細である。
     monkeypatch.setattr(
-        rebuild, "rebuild_day",
-        lambda day, **kw: rebuilt.append(day) or rebuild.UNCHANGED,
+        rebuild, "rebuild_day_for_series",
+        lambda day, *, refs, **kw: (
+            rebuilt.append(day) or {ref: rebuild.UNCHANGED for ref in refs}
+        ),
     )
 
     watch.main(_argv(tmp_path, "--from", "2026-08-26 02:58:00"), source=source, clock=clock)
@@ -368,6 +392,7 @@ def test_crossing_a_utc_day_finalizes_and_rebuilds_the_closed_day(tmp_path, secr
     assert tick_m1.day_parquet_path(
         dt.date(2026, 8, 25), symbol=token, data_dir=tmp_path
     ).is_file()
+    assert rebuilt, "是正が 1 度も呼ばれていない（継ぎ目が張り付く先を失って空振りしている）"
     assert rebuilt == [dt.date(2026, 8, 25)]
 
 
@@ -663,11 +688,11 @@ def test_a_cycle_without_new_rows_writes_nothing(tmp_path, secret):
     journal.append(dt.date(2026, 8, 25), tape, symbol=token, data_dir=tmp_path)
     clock = fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 5, tzinfo=dt.timezone.utc))
     watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
-    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
+    before = {p: p.stat().st_mtime_ns for p in _ledger_files(tmp_path)}
 
     watch.main(_argv(tmp_path), source=fakes.FakeTickSource(tape), clock=clock)
 
-    after = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
+    after = {p: p.stat().st_mtime_ns for p in _ledger_files(tmp_path)}
     assert after == before
 
 
@@ -724,3 +749,59 @@ class _FlakySource(fakes.FakeTickSource):
             self._left -= 1
             raise SupplyUnavailable("端末が一時的に応答しません")
         return super().fetch(**kwargs)
+
+
+# =====================================================================
+# 週末をまたぐ停止からの再開（2026-09-28・固定 2 日の窓で --from の手入力が要った欠陥）
+# =====================================================================
+
+def _restart_after_a_gap(root: Path, *, gap_days: int, stored_days: int, monkeypatch):
+    """最後のジャーナルの日から ``gap_days`` 日後に、``--from`` 無しで 1 周期だけ再起動する。"""
+    token = ingest.token_for("JP225", fakes.DEFAULT_SERVER)
+    root.mkdir(parents=True, exist_ok=True)
+    last = dt.date(2026, 8, 21)
+    for offset in range(stored_days):
+        day = last - dt.timedelta(days=offset)
+        journal.append(day, _tape(dt.datetime(day.year, day.month, day.day, 9, 0), minutes=1),
+                       symbol=token, data_dir=root)
+    restart = last + dt.timedelta(days=gap_days)
+    tape = (_tape(dt.datetime(last.year, last.month, last.day, 9, 0), minutes=1)
+            + _tape(dt.datetime(restart.year, restart.month, restart.day, 9, 0), minutes=2))
+    probes = fakes.CallSpy(journal.journal_path)
+    monkeypatch.setattr(journal, "journal_path", probes)
+    code = watch.main(
+        ["--data-dir", str(root), "--once", "--no-publish"],
+        source=fakes.FakeTickSource(tape),
+        clock=fakes.FixedClock(dt.datetime(restart.year, restart.month, restart.day, 9, 2,
+                                           tzinfo=dt.timezone.utc)),
+    )
+    monkeypatch.undo()
+    resumed = journal.has_journal(restart, symbol=token, data_dir=root)
+    return code, resumed, probes.count
+
+
+def test_a_restart_after_a_weekend_resumes_from_the_journal_without_from(tmp_path, secret, monkeypatch):
+    """金曜で止まり月曜に起動し直しても（3 日後）、--from 無しでジャーナルから再開する。"""
+    code, resumed, _ = _restart_after_a_gap(tmp_path, gap_days=3, stored_days=1, monkeypatch=monkeypatch)
+    assert code == 0
+    assert resumed
+
+
+def test_the_resume_search_grows_with_the_gap_not_with_the_stored_days(tmp_path, secret, monkeypatch):
+    """CX: 再開点の探索は止まっていた日数に比例し、保存済みの日数には比例しない（2 点ずつ）。"""
+    _, _, small = _restart_after_a_gap(tmp_path / "s5", gap_days=3, stored_days=5, monkeypatch=monkeypatch)
+    _, _, large = _restart_after_a_gap(tmp_path / "s50", gap_days=3, stored_days=50, monkeypatch=monkeypatch)
+    assert small == large
+    _, _, longer = _restart_after_a_gap(tmp_path / "g10", gap_days=10, stored_days=5, monkeypatch=monkeypatch)
+    assert longer > small
+
+
+def test_without_any_journal_the_cold_start_still_requires_from(tmp_path, secret):
+    """ジャーナルが 1 つも無いとき（初回）だけは再開点を推測しない（--from を求める）。"""
+    tick_m1.tick_root(tmp_path).joinpath("2020").mkdir(parents=True)  # 別系列の古い木だけが在る
+    code = watch.main(
+        ["--data-dir", str(tmp_path), "--once", "--no-publish"],
+        source=fakes.FakeTickSource(_tape(dt.datetime(2026, 8, 25, 9, 0), minutes=1)),
+        clock=fakes.FixedClock(dt.datetime(2026, 8, 25, 9, 2, tzinfo=dt.timezone.utc)),
+    )
+    assert code == watch.EXIT_USAGE

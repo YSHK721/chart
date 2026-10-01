@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from marketdata import rollup_paths
+from marketdata import dataset_registry, rollup_paths
 from marketdata.paths import DATA_DIR
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -83,35 +83,47 @@ def test_m1_chain_rollup_dir_is_ref_subdir(tmp_path) -> None:
 
 
 def test_build_tick_rollup_context_rollups_dir(tmp_path) -> None:
-    """(4) tools/build_tick_rollup.py ``PipelineContext.rollups_dir``。"""
+    """(4) tools/build_tick_rollup.py ``PipelineContext.rollup_dir_of``（系列ごと）。"""
     from tools import build_tick_rollup as btr
 
     ctx = btr.PipelineContext(data_dir=tmp_path)
-    assert ctx.rollups_dir == tmp_path / "rollups" / "jp225_tick_bid"   # series（ISSUE-511 1d）。
+    got = {ref: ctx.rollup_dir_of(ref) for ref in ctx.refs}
+    assert got == {
+        ref: tmp_path / "rollups" / dataset_registry.series_of(ref) for ref in ctx.refs
+    }
+    assert got[btr.REF] == tmp_path / "rollups" / "jp225_tick_bid"   # series（ISSUE-511 1d）。
 
 
 def test_live_tick_watch_writes_into_the_ref_subdir(tmp_path, monkeypatch) -> None:
-    """(5) tools/live_tick_watch.py — 自己修復と差分更新の出力先が ``rollups/<ref>``。"""
+    """(5) tools/live_tick_watch.py — 自己修復と差分更新の出力先が**組の各系列**の ``rollups/<series>``。
+
+    ISSUE-533 段階 3 の前提工事で常駐は系列の組へ書くようになった。期待値は台帳の組から導く
+    （綴りを書き写さない）。最後の 1 件だけを見ると、組のうち 1 系列しか回さない変異を素通しする。
+    """
     from marketdata import rollup as md_rollup
     from marketdata import tick_m1
     from tools import live_tick_watch as ltw
 
-    seen: "dict[str, object]" = {}
+    seen: "dict[str, list]" = {"heal": [], "update": []}
     monkeypatch.setattr(md_rollup, "heal_tail_gaps",
                         lambda m1, tfs, out_dir, ref_prefix:
-                        seen.update(heal=out_dir, heal_prefix=ref_prefix) or [])
+                        seen["heal"].append((out_dir, ref_prefix)) or [])
     monkeypatch.setattr(md_rollup.RollupState, "load", staticmethod(lambda out_dir: None))
     monkeypatch.setattr(md_rollup, "incremental_update",
                         lambda m1, st, tfs, out_dir, ref_prefix:
-                        seen.update(update=out_dir, update_prefix=ref_prefix))
+                        seen["update"].append((out_dir, ref_prefix)))
     monkeypatch.setattr(tick_m1, "m1_csv_path", lambda **kw: tmp_path / "jp225_tick_bid_m1.csv")
     monkeypatch.setattr(ltw, "_heal_next_monotonic", 0.0, raising=False)
 
     ltw._rollup_update(tmp_path)
     # dir も CSV の接頭辞も series（ISSUE-511 段階 1d）。片方だけ ref 名だと別ファイルを書く。
-    assert seen["heal"] == tmp_path / "rollups" / "jp225_tick_bid"
-    assert seen["update"] == tmp_path / "rollups" / "jp225_tick_bid"
-    assert seen["heal_prefix"] == seen["update_prefix"] == "jp225_tick_bid"
+    expected = [
+        (tmp_path / "rollups" / dataset_registry.series_of(ref), dataset_registry.series_of(ref))
+        for ref in ltw.series_refs(ltw.REF)
+    ]
+    assert len(expected) >= 2   # 空振り防止（組が 2 系列以上ある）
+    assert seen["heal"] == expected
+    assert seen["update"] == expected
 
 
 def _load_module_by_path(name: str, rel: str):

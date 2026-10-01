@@ -23,9 +23,14 @@ class RunProfile:
     フォーム投入 body の profile 由来キー（front はこれらのリテラルを持たない）。
 
     ``config_overrides``（任意）: build_interactor の ``config_overrides`` へ渡す決定論設定。
-    データセットの CSV 形式・EA ローダの組合せで既定の建値基準（``entry_price_basis``）が
-    成立しない場合に、profile が権威値として供給する（front リテラル 0・UI フィールドを増やさない）。
-    ``None`` のときフォーム投入 body に載せない（既存挙動と byte 等価）。
+    載せるかどうかは**データ実体が気配幅を供給するか**だけで決まる（判定は供給側
+    `SymbolSpecCatalog` が持つ・ISSUE-511 段階 8-D-1）。CSV 形式や EA ローダの組合せでは
+    決まらない——形式は気配幅の代理変数にすぎない。
+    **建値基準（``entry_price_basis``）の値の権威は本 DTO にも供給側にも無い**: 値の単一
+    ソースは `sim_ui` の外（設定変換層）にあり、`SymbolSpecCatalog` の Composition Root が
+    注入する。本 DTO はその結果を運ぶだけである（front リテラル 0・UI フィールドを増やさない）。
+    ``None`` のときフォーム投入 body に載せない（``to_dict`` が ``None`` の任意項目を落とす
+    ＝既存挙動と byte 等価）。
 
     ``settlement_currency``（必須・既定値なし）: 銘柄の決済通貨。TESTER_SETTINGS の非対象
     判定 N-11（口座通貨 ≠ 銘柄の決済通貨を拒否）が突き合わせる**判定データ源の権威**であり、

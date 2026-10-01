@@ -80,9 +80,6 @@ def _backtest(csv: Path) -> dict:
         "lot_size": 1.0,
         "stop_loss_points": 100,
         "take_profit_points": 200,
-        # 建値基準系列は TC24051901 の registry にある `close` を使う
-        # （settings 経路の既定 `current_open` は本 EA に系列が無い）。
-        "config_overrides": {"entry_price_basis": "close"},
     }
 
 

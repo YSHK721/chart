@@ -19,14 +19,43 @@ from __future__ import annotations
 from typing import Any
 
 from simulator.domain.account import Account
+from simulator.domain.exceptions import ConfigError
 from simulator.usecase._execution import (
     close_price_for,
     derive_quotes,
     fill_market_order,
+    mt5_bid_ask,
 )
 from simulator.usecase.open_trade import OpenTrade
 from simulator.usecase.pending_lifecycle import PendingLifecycleEngine
 from simulator.usecase.trade_ledger import TradeLedger
+
+
+def route_orders(
+    orders: "list[Any]", *, tick_granularity: bool, strategy_name: str
+) -> "tuple[list[Any], list[Any]]":
+    """注文を（成行, 待機注文）へ振り分ける。待機注文を引く機会は足の途中の評価点だけである。
+
+    ティック粒度: 指値・逆指値は足途中の評価点でトリガを引く別経路へ回す。
+    バー粒度: 足途中の評価点が無いので待機注文を引く機会が無い。成行へ変えると、書いた条件と
+        違う条件で走った結果が成功として出る（ISSUE-557）。宣言（「`pending_order_use`」）の
+        書き忘れはここで止める。
+
+    例外: バー粒度で kind が market 以外の注文が 1 件でもあれば `ConfigError`（理由に戦略名と種類）。
+    """
+    if tick_granularity:
+        return (
+            [o for o in orders if o.kind == "market"],
+            [o for o in orders if o.kind != "market"],
+        )
+    kinds = sorted({o.kind for o in orders if o.kind != "market"})
+    if kinds:
+        raise ConfigError(
+            f"戦略 {strategy_name} が待機注文（{', '.join(kinds)}）を出しましたが、この run には"
+            " 足の途中の評価点がありません。戦略に待機注文の使い方を宣言してください",
+            context={"strategy": strategy_name, "kinds": kinds},
+        )
+    return orders, []
 
 
 class OrderExecutor:
@@ -48,7 +77,9 @@ class OrderExecutor:
         self._spec = spec
         self._leverage = leverage
         self._contract_size = contract_size
-        # 建値クォートの基準（run のあいだ不変）。
+        # 建値クォートの基準（run のあいだ不変）。**出所は戦略の宣言**である
+        #   （ISSUE-533 段階 1。run の設定から与えると判定の瞬間と一致する保証が無い）。
+        #   値を引くのは run につき 1 回で、その 1 回は Interactor が on_init のあとに行う。
         self._entry_price_basis = entry_price_basis
         # 同一評価点で複数トリガしたときに 1 本だけ約定させるか（run のあいだ不変）。
         self._pending_oco = pending_oco
@@ -106,9 +137,12 @@ class OrderExecutor:
         注文へ進む。まとめて約定してから反映すると、2 本目の注文が 1 本目の建玉を
         見られず、起きるべき reverse 決済が起きなくなる（走査順＝反映順）。
 
-        建値は足境界のバー open クォート（`derive_quotes`）で、両経路とも同一である
-        （実 MT5 は新規バーの成行をバー open のクォートで約定する）。注文が 1 本も無い
-        バーではクォートを引かない——引いても捨てるだけの計算だからである。
+        建値は足境界のクォート（`derive_quotes`）で、両経路とも同一である。**どちらの
+        足境界クォートか**は戦略が宣言した判定の瞬間が決める（ISSUE-533 段階 1: 足の
+        始まりに判定する EA はバー open のクォート、足の終わりに判定する EA はバー close の
+        クォート）。是正前ここは「両経路ともバー open クォート」と書いていたが、実装は
+        run の設定を渡していたため設定が "close" のとき宣言が偽になっていた。注文が 1 本も
+        無いバーではクォートを引かない——引いても捨てるだけの計算だからである。
 
         事後条件: 更新後の保有列を返す（呼出側が受け取って進む）。
         """
@@ -225,16 +259,23 @@ class OrderExecutor:
 
         実 MT5 はテスト終了時に未決済ポジションを最終価格で決済する（2603-01: 最終 buy を
         最終足 23:59 の close=51029.8 で決済し profit+20）。買い決済=Bid=close /
-        売り決済=Ask=close+spread×point。
+        売り決済=Ask=close+spread×point（MT5 クォート規約の唯一源 `mt5_bid_ask`・ISSUE-100 🟡-1）。
         """
-        f_bid = final_bar.close
-        f_ask = final_bar.close + final_bar.spread * self._spec.point_size
+        f_bid, f_ask = mt5_bid_ask(
+            final_bar.close, spread=final_bar.spread, point=self._spec.point_size
+        )
+        # 決済価格は玉のサイドだけで決まるため、残っているサイドごとに 1 回だけ解決して
+        # 玉に配る（玉ごとに引き直すと同じ答えを玉の数だけ求める N+1 になる。先例は
+        # position_directives.py の apply_all・ISSUE-519）。
+        close_price_by_side = {
+            side: close_price_for(side, bid=f_bid, ask=f_ask)
+            for side in {ot.position.side for ot in open_trades}
+        }
         for ot in open_trades:
-            close_price = close_price_for(ot.position.side, bid=f_bid, ask=f_ask)
             self._ledger.close(
                 ot,
                 exit_time=final_bar.time,
-                exit_price=close_price,
+                exit_price=close_price_by_side[ot.position.side],
                 exit_reason="end_of_test",
             )
         return []

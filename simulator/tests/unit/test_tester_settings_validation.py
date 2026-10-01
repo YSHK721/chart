@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -642,6 +642,72 @@ class TestRuleIValueRanges:
         assert tester_settings_from_mapping(expert_mapping(Expert=path)).subject_path == path
 
 
+class TestMinuteRange:
+    """期間の分単位指定（依頼者指示 2026-09-27「分単位まで指定可能にしろ」）。
+
+    `YYYY.MM.DD HH:MM` を FromDate / ToDate だけが受け、日単位（date）と分単位（datetime）
+    を型で区別する。ForwardDate は従来どおり日単位のみ。
+    """
+
+    def test_minute_tokens_become_naive_datetimes(self):
+        settings = tester_settings_from_mapping(expert_mapping(
+            Dates=OMIT, FromDate="2020.03.30 01:30", ToDate="2020.03.30 01:34",
+        ))
+        assert settings.date_range.from_date == datetime(2020, 3, 30, 1, 30)
+        assert settings.date_range.to_date == datetime(2020, 3, 30, 1, 34)
+
+    def test_day_tokens_stay_dates(self):
+        settings = tester_settings_from_mapping(expert_mapping(
+            Dates=OMIT, FromDate="2020.03.30", ToDate="2020.03.31",
+        ))
+        assert type(settings.date_range.from_date) is date
+        assert type(settings.date_range.to_date) is date
+
+    @pytest.mark.parametrize(
+        "value",
+        ["2020.03.30 24:00", "2020.03.30 01:60", "2020.03.30 1:30", "2020.03.30  01:30",
+         "2020.03.30 01:30:00", "2020.03.30T01:30"],
+    )
+    def test_broken_minute_tokens_are_rejected(self, value):
+        error = _raises(
+            expert_mapping(Dates=OMIT, FromDate=value, ToDate="2020.03.31"),
+            SettingsValueError,
+        )
+        assert error.context["key"] == "FromDate"
+
+    def test_forward_date_stays_day_only(self):
+        error = _raises(
+            expert_mapping(
+                Dates=OMIT, FromDate="2020.03.30", ToDate="2020.03.31",
+                ForwardMode="4", ForwardDate="2020.03.30 12:00",
+            ),
+            SettingsValueError,
+        )
+        assert error.context["key"] == "ForwardDate"
+
+    def test_rule_k_accepts_a_single_minute_and_rejects_a_reversed_minute_pair(self):
+        ok = tester_settings_from_mapping(expert_mapping(
+            Dates=OMIT, FromDate="2020.03.30 01:30", ToDate="2020.03.30 01:30",
+        ))
+        assert ok.date_range.from_date == ok.date_range.to_date
+        _raises(
+            expert_mapping(Dates=OMIT, FromDate="2020.03.30 01:31", ToDate="2020.03.30 01:30"),
+            SettingsValueError, rule_id="K",
+        )
+
+    def test_rule_k_compares_mixed_day_and_minute_without_a_type_error(self):
+        # From が分単位・To が日単位（当日を含む）: 同日の途中から日末まで＝正当。
+        ok = tester_settings_from_mapping(expert_mapping(
+            Dates=OMIT, FromDate="2020.03.30 01:30", ToDate="2020.03.30",
+        ))
+        assert ok.date_range.to_date == date(2020, 3, 30)
+        # To の日を過ぎた From は違反。
+        _raises(
+            expert_mapping(Dates=OMIT, FromDate="2020.03.31 00:00", ToDate="2020.03.30"),
+            SettingsValueError, rule_id="K",
+        )
+
+
 class TestStrictScalarFormats:
     """書式バリデータ（§4.3.1）: pydantic の緩い強制を使わない（すべて E-04）。"""
 
@@ -668,7 +734,7 @@ class TestStrictScalarFormats:
 
     @pytest.mark.parametrize(
         "value",
-        ["2020.1.1", "2020-03-30", "20200330", "2020.13.01", "2020.02.30", "2020.03.30 00:00"],
+        ["2020.1.1", "2020-03-30", "20200330", "2020.13.01", "2020.02.30"],
     )
     def test_non_strict_date_tokens_are_rejected(self, value):
         # R10: `YYYY.MM.DD` ゼロ埋め 2 桁・実在する日付のみ
@@ -1013,9 +1079,12 @@ class TestDateValueKeysDerivation:
         assert validation.DATE_VALUE_KEYS, "日付キーの導出が空です（注釈照合の空振り）"
 
     def test_every_derived_key_is_annotated_as_a_date(self):
+        # 分単位を受ける期間キー（datetime | date | None・依頼者指示 2026-09-27）も日付キーである
+        # （カレンダーの出し分けを維持する）。
+        allowed = ((date | None), (datetime | date | None))
         for key in validation.DATE_VALUE_KEYS:
             annotation = validation._TesterIniModel.model_fields[key].annotation
-            assert annotation == (date | None), f"{key} の注釈が日付ではありません: {annotation}"
+            assert annotation in allowed, f"{key} の注釈が日付ではありません: {annotation}"
 
     def test_the_custom_range_keys_are_derived(self):
         # 規則 E の期間キー（既存宣言）が導出に含まれる（食い違えば規則と UI がずれる）
@@ -1025,7 +1094,7 @@ class TestDateValueKeysDerivation:
         annotated = {
             name
             for name, field in validation._TesterIniModel.model_fields.items()
-            if field.annotation == (date | None)
+            if field.annotation in ((date | None), (datetime | date | None))
         }
         assert set(validation.DATE_VALUE_KEYS) == annotated
 

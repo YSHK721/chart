@@ -31,7 +31,12 @@ class QueryJobInteractor:
         self._launcher = launcher
 
     def execute(self, job_id: str) -> JobView:
-        return JobView.of(self.resolve(job_id))
+        job = self.resolve(job_id)
+        # 進み具合は実行中のときだけ読む（終端のジョブの記録を「今の進み具合」として出さない）。
+        progress = (
+            self._ledger.read_progress(job_id) if job.status is JobStatus.RUNNING else None
+        )
+        return JobView.of(job, progress=progress)
 
     def resolve(self, job_id: str) -> SimulationJob:
         """照合済みの :class:`SimulationJob` を返す（結果取得の判定でも使う）。"""

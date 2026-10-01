@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from simulator.sim_ui.domain.simulation_job import SimulationJob
+from simulator.sim_ui.domain.simulation_job import JobStatus, SimulationJob
 from simulator.usecase.tester_settings import TICK_MODEL_ENGINE_IDS, TickModel
 
 #: 実効粒度が tick になるエンジン tick_model id。語彙は列挙が単一ソースであり、
@@ -39,7 +39,8 @@ class JobSubmission:
 
     ``backtest``: `simulator.main.run_backtest` へ渡す meta（ea_name / symbol / period /
       data_path / config_overrides ...）。sim コアは中身を解釈せず素通しする（子プロセスが
-      解釈する）。ただし E-3 判定に必要な 2 つだけは読む（ea_name・entry_price_basis）。
+      解釈する）。ただし E-3 判定に必要な ea_name だけは読む（建値基準は読まない——値の
+      出所は戦略の宣言ただ 1 つであり、設定には載らない・ISSUE-533 段階 2）。
     ``sizing``: サイジング設定。``None`` または ``enabled`` が偽なら **OFF**（既定・
       §12.1 で「既定 OFF・OFF は既存挙動と byte 等価」と裁定済み）。
     ``strategy``: 戦略項目（Phase 6 F-8・TBD-11）。``entry_long`` / ``entry_short`` の
@@ -160,12 +161,6 @@ class JobSubmission:
         return strategy.get("trailing"), strategy.get("partial_close")
 
     @property
-    def entry_price_basis(self) -> str:
-        """約定価格基準。既定は config_loader と同じ "close"。"""
-        overrides = self.backtest.get("config_overrides") or {}
-        return str(overrides.get("entry_price_basis", "close"))
-
-    @property
     def sizing_enabled(self) -> bool:
         return bool(self.sizing) and bool(self.sizing.get("enabled", False))
 
@@ -196,9 +191,12 @@ class JobView:
     #: :attr:`JobStatus.is_terminal` ただ 1 つであり、終端集合を写した第 2 実装を
     #: 作らない（front は本フラグを読むだけで監視を止める）。
     terminal: bool = False
+    #: 実行中の進み具合（0〜100 の整数％・2026-09-27）。実行中以外と、まだ記録が無いときは
+    #: ``None``（front は「準備中」と出す。0% を捏造しない）。
+    progress: "int | None" = None
 
     @classmethod
-    def of(cls, job: SimulationJob) -> "JobView":
+    def of(cls, job: SimulationJob, *, progress: "int | None" = None) -> "JobView":
         """domain の :class:`SimulationJob` を照会結果へ写す。
 
         全 Interactor（投入・照会・取消）がこの 1 箇所を通る。写し方を各 Interactor に
@@ -210,6 +208,7 @@ class JobView:
             status=job.status.value,
             failure_reason=job.failure_reason,
             terminal=job.status.is_terminal,
+            progress=progress if job.status is JobStatus.RUNNING else None,
         )
 
 

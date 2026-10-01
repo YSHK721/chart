@@ -66,12 +66,20 @@ _TRADING_START = np.datetime64("2025-01-02T01:00:00")
 
 # --- ケース A: `trading_start` なし（本番の全呼出がこの形） -------------------
 # 是正前後で一致することを実走で確認した値（ISSUE-398 の byte 等価ゲート）。
-_A_STATS_SHA256 = "2d696eb1539203f7a5141799a560aaab95588e7e4272b5a8820306805815ae6f"
+#: 2026-09-28 ISSUE-545 で取り直した（Sharpe の定義変更）。取り直す前に、新しい run の Sharpe だけを
+#:   旧い式（取引ごとの式）の値へ差し戻した指紋が旧値と一致することを A・B・C すべてで確かめた
+#:   ＝Sharpe 以外の列は動いていない。旧値: A 2d696eb1… / B 767255a5… / C aef4322e…。
+#: 2026-09-28 ISSUE-549 で A・B を取り直した（連勝・連敗の規則を MT5 に合わせた）。コミット済みの版
+#:   （HEAD）を別の作業ツリーで走らせ、その指紋が旧値（A 59d46a92… / B 2a4d4f93…）と一致すること、
+#:   新旧で違う列が連勝・連敗の列だけであることを確かめた: A は profit_trades_avg_con 1.1765→1.2735、
+#:   B は max_con_profit_trades 67.4→85.0（MT5 golden の 85 と一致）・profit_trades_avg_con 1.1667→1.2479。
+#:   C は損益 0 の取引が無く不変。
+_A_STATS_SHA256 = "8d88872b39f97e72a03b259a40ab259667099757bc81d619c9f360357c2a114b"
 _A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610517c"
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
-_B_STATS_SHA256 = "767255a5620d3ead33a64b50dacd539858099322c4d8b4d18ca0f56c6b2ef520"
+_B_STATS_SHA256 = "b31a93be964a05fa10a9ff9d5da508997fedfdee6e1b5bf0705655f54aa7a704"
 _B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
 _B_TRADE_COUNT = 1164
 
@@ -104,7 +112,6 @@ def _meta(case, *, trading_start=None) -> dict:
         slope_min_points=float(ea["slope_min_points"]),
         config_overrides={
             "tick_model": "open_only",
-            "entry_price_basis": "current_open",
             "stop_out_action": "close_and_halt",
             "prime_first_trading_bar": True,
             "floating_pnl_basis": "bid_ask",
@@ -116,9 +123,29 @@ def _meta(case, *, trading_start=None) -> dict:
     return meta
 
 
+#: 指紋の採取後に足した統計の列（理由と日付つきで宣言する）。指紋は取り直さず、
+#:   これらを外した `stats.json` が採取時と一致することで「既存の列は動いていない」を表明する。
+_STATS_FIELDS_ADDED_AFTER_PIN = frozenset({
+    # 2026-09-27: サマリー (Report) タブの欠落項目（MT5 レポート 9 本と突き合わせた式）。
+    "ghpr", "lr_correlation", "lr_standard_error",
+    "equity_ddrel_percent", "equity_dd_relative", "deals",
+})
+
+
+#: 指紋の採取後に**定義を変えた**列（理由と日付つきで宣言する）。値の正しさは定義の側の検定が
+#:   MT5 実レポートと突き合わせて固定する（指紋は「定義を変えていない列が動かない」を表明する）。
+_STATS_FIELDS_REDEFINED_AFTER_PIN = frozenset({
+    # 2026-09-28 ISSUE-545: Sharpe を取引ごとの損益の式から、MT5 の定義（足ごとの有効証拠金）へ。
+    #   MT5 との一致は test_sharpe_bar_equity.py と report_ui の test_export_oracle.py が固定。
+    "sharpe_ratio",
+})
+
+
 def _digest(result, stats_json: Path) -> "dict[str, object]":
     """`stats.json` 全フィールドと全確定トレードを 2 つの sha256 へ畳む。"""
     payload = json.loads(stats_json.read_text(encoding="utf-8"))
+    excluded = _STATS_FIELDS_ADDED_AFTER_PIN | _STATS_FIELDS_REDEFINED_AFTER_PIN
+    payload["stats"] = {k: v for k, v in payload["stats"].items() if k not in excluded}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     trades = "\n".join(
         json.dumps(asdict(t), sort_keys=True, default=str) for t in result.trades
@@ -249,11 +276,11 @@ class TestRunBacktestHonoursTradingStart:
 #      変わる**。これが「tick 経路を実際に通った」ことの証拠である。
 #
 # 重要な限定（ピンの射程・誤読を防ぐために明記する）:
-#     `trades_sha256` は `open_only` と **一致する**（実測）。本プロファイルは
-#     `entry_price_basis="current_open"` であり、MT5 の every-tick 意味論では新規バーの
-#     成行はティック価格ではなく**バー open クォート**で約定するため、確定トレードは
-#     バー系列だけで決まりティックに依らない（`test_composition_real_ticks.py` が
-#     「約定がティック価格に**ならない**こと」を値で固定しているのと同じ性質）。
+#     `trades_sha256` は `open_only` と **一致する**（実測）。本プロファイルの EA
+#     （TC24051901）は足の終わりに判定すると宣言しており、新規バーの成行はティック価格
+#     ではなく**バー close クォート**で約定するため、確定トレードはバー系列だけで決まり
+#     ティックに依らない（`test_composition_real_ticks.py` が「約定がティック価格に
+#     **ならない**こと」を値で固定しているのと同じ性質）。
 #     したがって tick モデルを識別しているのは `stats_sha256`（ティックごとに評価される
 #     含み損益・ドローダウン）である。この非対称性を検定自身が主張する
 #     （`test_the_tick_model_actually_changes_the_outcome`）ので、将来ケース C が
@@ -285,9 +312,31 @@ _C_BARS = [
 ]
 
 #: 採取値（2026-09-04 実測・2 回実行一致）。空 trades では**ない**ことを検定が主張する。
-_C_STATS_SHA256 = "6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12"
-_C_TRADES_SHA256 = "d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53"
-_C_TRADE_COUNT = 4
+#:
+#: ISSUE-519 による更新（2026-09-14・依頼者の条件付き承認）: 実 MT5 はテスト期間終了時に
+#: 残る建玉を清算して 1 トレードと数える（b0d13156 で常時化）。本ケースは末尾に買い玉が
+#: 1 本残るため end_of_test が 1 件増えた。条件の実測（b0d13156^ = 97b175f2 の複製と現行を
+#: 同一手順で実走・全列比較）: 新 trades の先頭 4 件が旧列と **bit 一致**・追加は
+#: **end_of_test の 1 件だけ**（buy 1.103→1.108）・`new.profit − old.profit ==
+#: trades[-1].pnl()` が完全一致（+0.0050000000000001155）。A/B の値は不変（末尾に建玉が
+#: 残らない）。旧ピン（退行との識別用）: trade_count 4 /
+#: stats 6aeea6e6eff07fcc2a2e9157e2433f9703f8869061fa79b75352cac7d9832f12 /
+#: trades d1d9b1aa0175d55e3bd739f03615535447133587a7af2d87c2af652df7df6d53。
+#:
+#: ISSUE-533 段階 1 による更新（2026-09-25）: 建値基準の権威が run の設定から**戦略の宣言**へ
+#: 移った。本ケースの EA（TC24051901）は当該足の madiff と close を読む——判定は足が閉じた
+#: あとであり、取れる価格は当該足の終値である。是正前の本ケースは設定で "current_open" を
+#: 指定しており、**判定の瞬間には存在しない足の始値**で約定していた。よって値が動いたのは
+#: 「判定の瞬間との一致」そのものである。
+#: 同値性の実測（2026-09-25・変異を適用→測定→復元をバイト列一致で検証）: 旧エンジン
+#: （設定から建値基準を読む形）へ戻して設定 "close" で同一手順を走らせた結果が、現行の
+#: 採取値と 3 項目すべて一致した（trade_count 5 / stats aef4322e… / trades 5c419318…）。
+#: つまり動いたのは建値基準ただ 1 つであり、他の経路は 1 ビットも動いていない。
+#: 旧ピン（退行との識別用）: stats 542d86738cc00654d9d6c1044dbc42d9796e82d7c9b93f5f41775b562882b173 /
+#: trades 75b3a5207dd3d53fddef072cc67326b9a05146e5be7d27e89da533c0beb04827（trade_count は 5 のまま）。
+_C_STATS_SHA256 = "c340180fb5fd08f8f27e9b40ee5e13d2e5b319ec582f4bed62f5ab5abfa18c5d"
+_C_TRADES_SHA256 = "5c419318a859e21161b86037f3f2dc4399857f1a504d6c9002d1cede5c40e01a"
+_C_TRADE_COUNT = 5
 
 #: 空トレードのダイジェスト（ISSUE-483 が棄却した値）。錨がここへ退化したら赤にする。
 _EMPTY_TRADES_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -354,10 +403,9 @@ def _run_c(tmp_path: Path, *, tick_model: str = "real_ticks", tag: str = "c") ->
         lot_size=1.0,
         stop_loss_points=500,
         take_profit_points=3000,
-        config_overrides={
-            "tick_model": tick_model,
-            "entry_price_basis": "current_open",
-        },
+        # ISSUE-533 段階 1: 建値基準は**渡さない**（戦略 TC24051901 の宣言が権威である。
+        #   同 EA は当該足の madiff と close を読む＝判定は足の終わり）。
+        config_overrides={"tick_model": tick_model},
         tick_store_root=tick_root,
     )
     assert exit_code == 0
@@ -414,9 +462,9 @@ class TestRealTicksFingerprint:
         静かに退化しうる（ISSUE-483 の「偽の被覆」と同型の失敗）。
 
         識別しているのは `stats_sha256` である。`trades_sha256` は open_only と一致する
-        ——本プロファイルは entry_price_basis="current_open" で、新規バーの成行は
-        バー open クォートで約定するため確定トレードがティックに依らないからである
-        （実測。この非対称性ごと固定して、将来どちらが動いても気づけるようにする）。
+        ——本プロファイルの EA は足の終わりに判定するので、新規バーの成行はバー close
+        クォートで約定し、確定トレードがティックに依らないからである（実測。この
+        非対称性ごと固定して、将来どちらが動いても気づけるようにする）。
         """
         assert run_c["stats_sha256"] != run_c_open_only["stats_sha256"], (
             "tick_model を替えても stats が変わりません。real_ticks 経路を実際には"

@@ -2,8 +2,8 @@
 """marketdata.tick_m1 — 生ティック parquet → M1 原子 OHLC CSV（上位足ロールアップの素材）。
 
 Dukascopy 生ティック（日別 parquet）を mid=(bid+ask)/2 基準・UTC で 1 分足へ集計し、
-``<ref>_m1.csv``（``date,open,high,low,close,volume`` 形式・:mod:`marketdata.rollup` 互換）を
-出力する。以降の上位足（5m/1h/1D …）は :mod:`marketdata.rollup`（:mod:`marketdata.resample`
+``<ref>_m1.csv``（``date,open,high,low,close,volume,up,dn`` 形式・spread 列を持つ系列は末尾に spread・
+:mod:`marketdata.rollup` 互換）を出力する。以降の上位足（5m/1h/1D …）は :mod:`marketdata.rollup`（:mod:`marketdata.resample`
 の規則）が本 M1 を素材に生成する。これによりチャートの足も足内更新も「同じティック
 （mid・UTC）」由来となり、書き変わりなく整合する。
 
@@ -31,8 +31,10 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 依存方向: 本モジュールは pandas と marketdata 内の下位部品
 （:mod:`marketdata.paths` / :mod:`marketdata.outlier_policy` / :mod:`marketdata.csv_schema` /
 :mod:`marketdata.tail_reader` / :mod:`marketdata.keep_last` / :mod:`marketdata.tick_tree` /
-:mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d）にのみ
-依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
+:mod:`marketdata.dataset_registry`（M1 の置き場の名前＝series の唯一源・ISSUE-511 段階 1d） /
+:mod:`marketdata.quote_spread`（分内の気配幅＝spread 列の規則の唯一源・ISSUE-511 段階 2） /
+:mod:`marketdata.spread_point`（台帳が point を持つ ref かの照会・spread 列を数える point の遅延
+解決口・宣言そのものの照会（食い違いを報せる文面用）の 3 面・ISSUE-511 段階 3 前提 (a)・段階 1）にのみ依存する（indicator_ui を逆 import しない・marketdata の循環依存禁止）。tick 木レイアウトの唯一源は
 :mod:`marketdata.tick_tree` であり、本モジュールはその 5 関数を**同一オブジェクトのまま再輸出**
 する（ISSUE-479 M-2: 木の形と集計規則は変更理由が違うため分けた。既存参照は無改変）。
 
@@ -44,21 +46,31 @@ CLI: ``python -m marketdata.tools.tick_m1_cli``（合成点は本モジュール
 
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, List, Protocol, Sequence, runtime_checkable
 
 import pandas as pd
 
 from marketdata import dataset_registry as _dataset_registry
 from marketdata import keep_last as _keep_last
 from marketdata import outlier_policy
+# spread 列の規則の唯一源（ISSUE-511 段階 2）。モジュール属性経由で呼ぶ（計算量 Spy の継ぎ目）。
+from marketdata import quote_spread as _quote_spread
+# 登録済み ref の spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。モジュール属性経由で呼ぶ。
+from marketdata import spread_point as _spread_point
 from marketdata import tick_tree as _tick_tree
 from marketdata.paths import DATA_DIR
 
 # ロールアップ互換の M1 CSV 列・date 書式は marketdata.csv_schema が唯一の規則源
 # （旧: rollup._HEADER / _DATE_FMT と手動同期）。旧属性名は import 共有で温存する。
 from marketdata import csv_schema as _csv_schema
+
+#: 自己修復が「何分を直したか」を残す先（無言で直さない・:func:`heal_m1_days_for_series`）。
+#: ロールアップ側の自己修復（:func:`marketdata.rollup.heal_tail_gaps`）と同じ流儀。
+logger = logging.getLogger(__name__)
 
 _HEADER = _csv_schema.HEADER
 _OHLCV_COLUMNS = _csv_schema.OHLCV_COLUMNS  # _HEADER から date を除いた値列。
@@ -89,6 +101,89 @@ _M1_MIN_PLAUSIBLE_DATE = pd.Timestamp("2000-01-01")
 # ref の許容文字（パス区切り・".." を排除し DATA_DIR 外書込／既存データ破壊を防ぐ）。
 _REF_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# 公開面の宣言台帳（ISSUE-532 欠陥 3・2026-09-25）— 名前 -> 「なぜ足したか」と出所の ISSUE 番号。
+#
+# 本モジュールの公開関数は権威（集計規則・書式・パスの唯一源）であり、面が黙って広がると
+# 呼び側が実装詳細に結合していく。かつてこれを検定側の**集合リテラル**で止めていたが、
+# 名前を 1 つ足すたびに人の承認の往復が要り、育っているモジュールでは恒久的な税になった。
+# 手段を替える: 公開名はここに理由と ISSUE 番号つきで宣言する。人の承認は要らないが、
+# **宣言を書かなければ落ちる**（宣言だけあって実体が無い場合も落ちる）。
+# 施行は `marketdata/tests/test_mt5_m1_append_api.py`（AST のみ・import しない）。
+PUBLIC_API_LEDGER: dict[str, str] = {
+    "ts_and_mid":
+        "ISSUE-262: mid=(bid+ask)/2 と tz の規則の公開面（重複の受け皿として新設）。"
+        "呼び側が mid の式を手書き複製しないため",
+    "ts_and_price":
+        "ISSUE-515 対策 1（承認 2026-09-13）: 価格基準つきの公開面。市場プロファイルが "
+        "ref ごとの基準（台帳）で畳むため（mid 固定の ts_and_mid の隣）",
+    "quote_price":
+        "ISSUE-515 対策 2（承認 2026-09-13）: 単一ティック版の価格規則。ライブ tick バッファが "
+        "規則を手書きしないため",
+    "validate_price_basis":
+        "ISSUE-515 対策 2（承認 2026-09-13）: 価格基準を既知の値に限定する fail-fast の口。"
+        "黙って既定へ落ちないため",
+    "ticks_to_m1":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "生ティックを M1 OHLC へ集計する純粋関数＝集計規則の唯一源",
+    "m1_csv_path":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "M1 出力 CSV の解決パスの唯一源（rollup の ref_prefix と整合）。呼び側がパスを組まないため",
+    "build_m1_from_ticks":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "日別ティック parquet から M1 CSV を作る全構築経路の入口",
+    "last_m1_date":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "既存 M1 CSV の最終バー日時をメモリ有界に読む口＝増分追記の開始点の唯一源",
+    "append_m1_from_ticks":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "既存 M1 CSV へ不足分だけを集計して追記する増分経路（メモリ有界・自己修復）",
+    "forming_bar_from_ticks":
+        "ISSUE-532 欠陥 3: 台帳化の時点で既存の公開面（出所の ISSUE は未特定）。"
+        "実ティックから形成中バー 1 本を返す口。足内更新が集計規則を手書きしないため",
+    "append_m1_rows":
+        "ISSUE-447 段階 1 承認 A-5（2026-08-25）: M1 CSV 書式の単一規則源としての追記の口。"
+        "日中追記側が書式の private 関数を import していた依存を恒久解消するため",
+    "forming_bar_from_frame":
+        "ISSUE-512 段階 2（承認 2026-09-13）: 形成中バーの集計規則を読取から切り出した純関数。"
+        "受信ジャーナルから読む側（tick_day_source）と規則を共有し、規則が 2 つに割れないため",
+    "materialize_m1_day":
+        "ISSUE-511 段階 3 前提 (c)（承認 2026-09-15）: rebuild が 1 日分の素材化の手順を"
+        "手書き複製せず呼ぶ公開の口",
+    "check_series_schema":
+        "ISSUE-511 段階 3 の段階 4（依頼者指示 2026-09-17）: 書き手（常駐）が周期を回し始める前に、"
+        "既存 M1 CSV の列形を台帳の宣言と照合する口（読むだけ・書かない）",
+    "fold_ticks_for":
+        "ISSUE-511 段階 3 の段階 5（設計 §3・§7 (4)）: 日中の増分供給が ref を渡して畳む口。"
+        "無いと日中追記が集計を直呼びして台帳照合を迂回し、台帳が spread を宣言した瞬間に"
+        "別の列形を書こうとして落ちる",
+    "series_plan":
+        "ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 複数 ref を 1 つの案内にまとめ、"
+        "各 ref の価格基準と列形の宣言を先に照合する書き手向けの口。素朴に系列ごと畳むと"
+        "同じティックを二度畳むため、案内を先に組んで畳みを 1 回に閉じる",
+    "fold_ticks_for_series":
+        "ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 案内の全系列へ畳む口。畳みは 1 回で、"
+        "気配幅を持たない系列へは列を落とした射影を配る（再計算しない）",
+    "materialize_m1_day_for_series":
+        "ISSUE-511 段階 8-D-2b 段 2（承認 2026-09-24）: 1 日分のティックを案内の全系列の "
+        "M1 行へ素材化する口（畳みは 1 回）",
+    "build_m1_from_ticks_for_series":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 期間の日別 parquet を 1 回だけ"
+        "読んで案内の全系列の M1 CSV を作る口。系列ごとに全構築を呼ぶと同じ parquet を系列の"
+        "数だけ読んで畳む（出力は正しいままなので状態検証では落ちない）",
+    "append_m1_from_ticks_for_series":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 同じ走査で案内の全系列へ"
+        "不足分を追記する口。常駐が周期ごとに系列の数だけ parquet を読み直さないため",
+    "series_write_order":
+        "ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）: 書込を発行する順（列の上位集合が"
+        "先）の唯一源。2 ファイルを原子的に書く手段は無いので、途中で死んだときに遅れる側を"
+        "選ぶ規則であり、MT5 の日中追記と Dukascopy の全構築・追記が同じ規則を使う",
+    "heal_m1_days_for_series":
+        "ISSUE-534 根治（依頼者指示 2026-09-26）: 窓の日について**ティック実体と M1 を突合し、"
+        "食い違う分を素材から書き直す**口。追記のみの規律では一度書いた分が二度と直らず、"
+        "出揃う前に書かれた不完全な足 178 分と欠測 129 分が残った（実測）。既存の自己修復"
+        "（rollup.heal_tail_gaps）はロールアップと M1 のずれだけを見るため、その 1 段下が要る",
+}
+
 
 def _validate_ref(ref: str) -> None:
     """``ref`` を単純なファイル名トークンに限定する（fail-fast・データ保全）。
@@ -100,6 +195,205 @@ def _validate_ref(ref: str) -> None:
         raise ValueError(
             f"ref は [A-Za-z0-9_-] のみ可: {ref!r}（パス区切り・'..' を含めない・データ保全）。"
         )
+
+
+class SpreadSchemaMismatch(RuntimeError):
+    """既存 M1 CSV の spread 列の有無が、系列の宣言と食い違う（ISSUE-511 段階 3 前提 (a)）。
+
+    既存の系列を書き換えずに止める。**RuntimeError の派生であり ValueError の派生ではない**
+    （依頼者裁定 2026-09-15・T1）。:func:`append_m1_from_ticks` はヘッダ不一致の ``ValueError`` を
+    捕まえて全構築へ回す（ISSUE-455 の自己修復）。食い違いがその網に型として掛かると、R-2/Y-2 の
+    とおり既存 CSV が全書換される。是正は系列を書き換えることではなく、台帳の series を新しい名前に
+    して build で新しい置き場へ作ること（旧ファイルは残る＝可逆）。
+    """
+
+
+class SeriesPlanConflict(ValueError):
+    """同じティックから導く系列の組が、1 回の畳みでは満たせない（ISSUE-511 段階 8-D-2b の段 2）。
+
+    畳みを 1 回で済ませられるのは、組の全 ref が **同じ価格基準**で畳まれ、spread 列を持つ ref が
+    **同じ宣言**（どのスナップショットの point で数えるか）を共有するときだけである。どちらかが
+    割れたまま通すと、片方の系列が別の基準・別銘柄の point で作られた値を持つ。値は形式上正しい
+    ので状態検証では検出できない。ここで止める。
+
+    型が :class:`ValueError` の派生であるのは、握り手が「案内が作れない」を他の入力不正
+    （未知の価格基準・未登録 ref）と同じ層で扱うためである。:class:`SpreadSchemaMismatch` が
+    :class:`RuntimeError` の派生なのは、そちらが :func:`append_m1_from_ticks` の
+    ``except ValueError``（ISSUE-455 の自己修復＝既存 CSV の全書換）に掛かってはならないため
+    だが、案内の組み立てはその ``try`` の外（書き手の入口より前）でしか起きない。
+    """
+
+
+@dataclass(frozen=True)
+class SeriesPlan:
+    """同じティックから導く系列の組の案内（畳みは 1 回・spread 付きは列の上位集合）。
+
+    :func:`series_plan` が作り、:func:`fold_ticks_for_series` /
+    :func:`materialize_m1_day_for_series` が消費する。案内を作らずに複数系列を書く経路を
+    作らないために、価格基準と spread の解決口を**組に 1 つずつ**持つ。
+
+    Attributes:
+        price_basis: 組の全 ref が共有する価格基準（食い違いは :class:`SeriesPlanConflict`）。
+        refs: 案内が受けた datasetRef（並びは呼出側が渡した順＝台帳の宣言順を保つ）。
+        spread_refs: そのうち spread 列を**持つ** ref。持たない ref へは列を落とした射影を返す。
+        spread: spread 列を数える point の遅延の呼び口（組に 1 つ。``None``＝spread 列を持つ
+            ref が 1 つも無い）。取得しただけではスナップショットを読まない。
+        paths: ref ごとの M1 CSV の置き場。置き場を解決しない案内（:func:`materialize_m1_day`
+            が作る 1 要素の案内）では空である——素材化はファイルを読み書きしないため。
+    """
+
+    price_basis: str
+    refs: "tuple[str, ...]"
+    spread_refs: "frozenset[str]"
+    spread: "Callable[[], float] | None"
+    paths: "dict[str, Path]"
+
+
+def _plan_for_refs(
+    refs: "Iterable[str]",
+    *,
+    price_basis: "str | None",
+    resolve: "Callable[[str], tuple[Callable[[], float] | None, Path | None]]",
+    default_basis: "str | None" = None,
+) -> SeriesPlan:
+    """``refs`` を 1 つの案内へまとめる（宣言の引き方は ``resolve`` が決める）。
+
+    ``resolve`` を注入で受けるのは、宣言の引き方が入口ごとに違うからである:
+    :func:`series_plan` は :func:`_checked_series`（置き場の解決と既存 CSV の列形の照合を含む）を、
+    :func:`materialize_m1_day` は :func:`_declared_spread` だけ（ファイルを読まない契約）を通す。
+    この差を引数の真偽で切り替えると、照合しない経路が黙って作れてしまう。
+
+    順序は基準 → 宣言（:func:`materialize_m1_day` の従来の評価順と同じ）。
+
+    ``default_basis`` は台帳に無い ref で ``price_basis`` も未指定だったときの基準である。
+    ``None``（既定）は「未指定を許さない」を意味する。書き手の入口（:func:`build_m1_from_ticks` /
+    :func:`append_m1_from_ticks`）だけが :data:`PRICE_BASIS_MID` を渡す——台帳外 ref への既存呼出を
+    1 バイトも変えないためであり、案内を組む他の口（:func:`series_plan`）は既定へ落とさない。
+    """
+    refs = tuple(refs)
+    if not refs:
+        raise SeriesPlanConflict(
+            "系列が 1 つも無い案内は作れません（0 件を正常として受け取ると、何も書かないまま"
+            "走り続けます）。datasetRef を 1 つ以上渡してください。"
+        )
+    if len(set(refs)) != len(refs):
+        raise SeriesPlanConflict(
+            f"同じ datasetRef が案内に 2 度以上あります: {refs}（案内の並びと出力の対応が"
+            " 1 対 1 でなくなり、同じ置き場へ二重に書きます）。"
+        )
+    bases = {ref: _resolved_basis(ref, price_basis, default=default_basis) for ref in refs}
+    if len(set(bases.values())) != 1:
+        raise SeriesPlanConflict(
+            f"同じティックから導く系列の価格基準が食い違います: {bases}。1 回の畳みでは"
+            "満たせないため案内を作りません（台帳の price_basis を揃えてください）。"
+        )
+    spread_refs: "list[str]" = []
+    resolvers: "list[Callable[[], float]]" = []
+    paths: "dict[str, Path]" = {}
+    for ref in refs:
+        spread, path = resolve(ref)
+        if path is not None:
+            paths[ref] = path
+        if spread is not None:
+            spread_refs.append(ref)
+            resolvers.append(spread)
+    # 宣言の突合は spread 列を持つ ref が 2 つ以上あるときだけ発行する。1 つ以下なら比べる相手が
+    #   居らず、引いた宣言は出力に何も足さない（発行 − 使用 ≠ 0）。書き手の入口は 1 要素の案内で
+    #   毎回ここを通るため、無条件に引くと build / append のたびに使わない照会が 1 件出る
+    #   （marketdata/tests/test_spread_point_ownership.py の CX-B が 2026-09-26 に実測した）。
+    declared = (
+        {ref: _spread_point.declared_snapshot_of(ref) for ref in spread_refs}
+        if len(spread_refs) > 1 else {}
+    )
+    if len(set(declared.values())) > 1:
+        raise SeriesPlanConflict(
+            f"spread 列を持つ系列の宣言が食い違います: {declared}。1 つの畳みから数えられる"
+            " spread は 1 通りだけです（片方は別銘柄の point で数えた値になります）。"
+        )
+    return SeriesPlan(
+        price_basis=next(iter(bases.values())),
+        refs=refs,
+        spread_refs=frozenset(spread_refs),
+        spread=resolvers[0] if resolvers else None,
+        paths=paths,
+    )
+
+
+def series_plan(refs: "Iterable[str]", *, data_dir: Any, price_basis: "str | None" = None) -> SeriesPlan:
+    """``refs`` を 1 つの案内（:class:`SeriesPlan`）にする書き手向けの口（ISSUE-511 段階 8-D-2b・D-4）。
+
+    各 ref は書き手の入口と**同じ規則**を通る: 価格基準は :func:`_resolved_basis`（登録済み ref は
+    台帳が唯一の源）、spread の宣言と置き場と既存 CSV の列形の照合は :func:`_checked_series`
+    （IO は対象 CSV の先頭 1 行の読取だけ）。照合を案内の外へ出すと「案内を作らずに書く経路」が
+    でき、起動時の照合は緑のまま周期の中で初めて落ちる。
+
+    ``price_basis`` は台帳に無い ref（検定の合成 ref）のためにあり、登録済み ref へ渡すと
+    :class:`ValueError`（台帳が唯一の源・段階 6・V-3）。
+
+    Raises:
+        SeriesPlanConflict: 組が空・ref の重複・価格基準の食い違い・spread 宣言の食い違い。
+    """
+    return _plan_for_refs(
+        refs,
+        price_basis=price_basis,
+        resolve=lambda ref: _checked_series(ref, data_dir=data_dir, point=None),
+    )
+
+
+def _without_spread(m1: pd.DataFrame) -> pd.DataFrame:
+    """spread 列を落とした射影（列を持たなければ同一オブジェクトのまま）。"""
+    if _csv_schema.SPREAD_COLUMN not in m1.columns:
+        return m1
+    return m1.drop(columns=[_csv_schema.SPREAD_COLUMN])
+
+
+def _project_for_series(m1: pd.DataFrame, plan: SeriesPlan) -> "dict[str, pd.DataFrame]":
+    """1 回の畳みの結果を案内の各 ref へ配る（spread 無しの ref へは列を落とした射影）。
+
+    **再計算しない**。spread 付きは列の上位集合であり、値列（OHLCV・up/dn）は spread 列の
+    有無で変わらない——:func:`_fold_minutes` は bid/ask を読まず、:func:`_with_spread` は末尾へ
+    列を足すだけ、並べ替えは同じキーの安定ソートだからである。**この同値は宣言では守られない**
+    ので、``marketdata/tests/test_tick_m1_series_plan.py`` の L-1 / L-2 が
+    「spread 付きで畳んで列を落とした結果」と「spread 無しで畳んだ結果」を index・列・dtype・
+    全列の値まで突き合わせて固定する（設計 8-D-2b の T-1＝値の一致は設計時点で未実測だった）。
+
+    案内が受けた ref は 1 つも落とさない（落とすと、その系列だけ黙って更新が止まる）。
+    """
+    return {
+        ref: (m1 if ref in plan.spread_refs else _without_spread(m1)) for ref in plan.refs
+    }
+
+
+def series_write_order(plan: SeriesPlan) -> "tuple[str, ...]":
+    """案内の系列へ書込を発行する順（**列の上位集合が先**・ISSUE-511 段階 8-D-2b の設計 D-6 (ii)）。
+
+    2 つ以上のファイルを原子的に書く手段は無いので、途中で死んだときに「どちらが遅れるか」だけが
+    選べる。遅らせるのは最も見られている系列（spread 列を持たない側）である——遅れが観測される側に
+    出れば、運用者は止まったことに気付ける。同じ群の中では案内の並び（＝台帳の宣言順）をそのまま
+    保つ（``sorted`` は安定であり、鍵は「上位集合でない」の真偽だけ）。
+
+    規則を案内の持ち主（本モジュール）に置くのは、同じ選択を MT5 の日中追記
+    （:mod:`marketdata.mt5_ticks.m1_chain`）と Dukascopy の全構築・追記が共有するためである。
+    書き手ごとに写しを持つと、片方だけ順序を変えたときにもう片方が黙って別の系列を遅らせる。
+    """
+    return tuple(sorted(plan.refs, key=lambda ref: ref not in plan.spread_refs))
+
+
+def _plan_subset(plan: SeriesPlan, ref: str) -> SeriesPlan:
+    """案内から ``ref`` だけを取り出した 1 要素の案内（解決済みの宣言・置き場をそのまま使う）。
+
+    用途は、組のうち 1 系列だけを全構築で書き直す自己修復（ISSUE-455）である。台帳と既存 CSV を
+    もう一度引き直さないのは、照合した対象と書く対象がずれる余地を作らないためである。
+    spread 列を持たない ref の部分案内は ``spread`` を持たない（気配幅を計算しない）。
+    """
+    owns_spread = ref in plan.spread_refs
+    return SeriesPlan(
+        price_basis=plan.price_basis,
+        refs=(ref,),
+        spread_refs=frozenset({ref}) if owns_spread else frozenset(),
+        spread=plan.spread if owns_spread else None,
+        paths={ref: plan.paths[ref]},
+    )
 
 
 def ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
@@ -187,7 +481,12 @@ def _ts_and_mid(ticks: pd.DataFrame) -> "tuple[pd.Series, pd.Series]":
     return _ts_and_price(ticks)
 
 
-def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> pd.DataFrame:
+def ticks_to_m1(
+    ticks: pd.DataFrame,
+    *,
+    price_basis: str = PRICE_BASIS_MID,
+    point: "float | None" = None,
+) -> pd.DataFrame:
     """生ティック DataFrame を M1 OHLC（``price_basis`` 基準・UTC 分床）へ集計する純粋関数。
 
     ``price_basis``（既定 :data:`PRICE_BASIS_MID`）が価格の定義を選ぶ**唯一の拡張点**である。
@@ -204,27 +503,100 @@ def ticks_to_m1(ticks: pd.DataFrame, *, price_basis: str = PRICE_BASIS_MID) -> p
     入力が空なら空（列のみ）を返す。必須列を欠く場合は :class:`ValueError`（fail-fast）。
     本関数は**純粋な集計のみ**を担う（外れ分バーの除去は :func:`_clean_m1_day` ＝ CSV 素材化
     経路の責務・本関数は行除去しない）。
+
+    ``point``（既定 ``None``）を注入したときだけ、末尾に気配幅の列（列名の唯一源は
+    :data:`marketdata.csv_schema.SPREAD_COLUMN`・分内最小の気配幅・int64 points・規則は
+    :mod:`marketdata.quote_spread`）を足す（ISSUE-511 段階 2）。``None`` なら出力は従来と
+    1 バイトも変わらず、bid 基準では ask 列を読まない。
+
+    契約（計算量・R-1）: 本関数は**出力する全分に** spread を付ける。集計した行を後で捨てる
+    呼出側（外れ分除去・``until``・既存最終分での絞り込み）は ``point`` を渡さないこと
+    （捨てる分の気配幅を計算することになる）。build / append は :func:`_materialize_m1_day`
+    で行を選んだ後に気配幅を計算する。
     """
+    _validate_tick_frame(ticks, price_basis, point)
+    m1, work = _fold_ticks(ticks, price_basis=price_basis, with_spread=point is not None)
+    if work is None or point is None:
+        return m1
+    return _with_spread(m1, work, point)  # 全分を出力するので作業表の全行が対象。
+
+
+def _fold_ticks(
+    ticks: pd.DataFrame, *, price_basis: str, with_spread: bool
+) -> "tuple[pd.DataFrame, pd.DataFrame | None]":
+    """時刻順の作業表 → 分へ畳む（:func:`ticks_to_m1` と :func:`_materialize_m1_day` の共通前段）。
+
+    入力の検証（:func:`_validate_tick_frame`）は呼出側が済ませる。戻り値は
+    ``(気配幅をまだ付けていない M1, 作業表)``。空入力は ``(_empty_m1(with_spread), None)``。
+    気配幅を付けないのは、どの分に付けるかが行を選んだ後でしか決まらないため（R-1）。
+    ``with_spread`` は spread 列を持つかだけを受ける（point の値は受けない＝値の解決を気配幅を
+    計算する時まで遅らせる・ISSUE-511 段階 3 前提 (a)）。
+    """
+    if ticks.empty:
+        return _empty_m1(with_spread), None
+    work = _minute_ticks(ticks, price_basis=price_basis, with_quotes=with_spread)
+    return _fold_minutes(work), work
+
+
+def _with_spread(m1: pd.DataFrame, minute_ticks: pd.DataFrame, point: float) -> pd.DataFrame:
+    """``m1`` の末尾に気配幅の列（分内最小・int64 points・規則は quote_spread が唯一源）を足す。
+
+    ``minute_ticks`` は ``m1`` に残った分のティックだけ（作業表の部分集合）を渡すこと。
+    渡した行の分の数だけ気配幅を計算するので、余計な行を渡すと捨てる分を計算する（R-1）。
+    """
+    return m1.assign(
+        **{
+            _csv_schema.SPREAD_COLUMN: _quote_spread.minute_spread_points(
+                minute_ticks["bid"], minute_ticks["ask"], minute_ticks["date"], point=point
+            )
+        }
+    )
+
+
+def _validate_tick_frame(
+    ticks: pd.DataFrame, price_basis: str, point: "float | None" = None
+) -> None:
+    """必須列・価格基準・point を検証する（空入力でも不正は通さない・fail-fast）。"""
     missing = [c for c in _TICK_COLUMNS if c not in ticks.columns]
     if missing:
         raise ValueError(
             f"tick frame に必須列がありません: {missing}（必須 {_TICK_COLUMNS}）。"
         )
     validate_price_basis(price_basis)  # 空入力でも未知の基準は通さない（fail-fast）。
-    if ticks.empty:
-        empty_idx = pd.DatetimeIndex([], name="date")
-        return pd.DataFrame(
-            {c: pd.Series(dtype="float64")
-             for c in ("open", "high", "low", "close", "volume", "up", "dn")},
-            index=empty_idx,
-        )
+    if point is not None:
+        _quote_spread.validate_point(point)  # 空入力でも不正な point は通さない（fail-fast）。
 
+
+def _empty_m1(with_spread: bool) -> pd.DataFrame:
+    """空入力の M1（列のみ・``with_spread`` なら末尾に int64 の spread 列）。"""
+    empty_idx = pd.DatetimeIndex([], name="date")
+    # 列名・列順の唯一源は csv_schema（OHLCV → up/dn → spread）。ここで手書きしない。
+    empty = {c: pd.Series(dtype="float64")
+             for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS)}
+    if with_spread:
+        empty[_csv_schema.SPREAD_COLUMN] = pd.Series(dtype="int64")
+    return pd.DataFrame(empty, index=empty_idx)
+
+
+def _minute_ticks(
+    ticks: pd.DataFrame, *, price_basis: str, with_quotes: bool
+) -> pd.DataFrame:
+    """ティックを時刻順に並べ、分床の date 列を付けた作業表（``with_quotes`` のときだけ bid/ask 列）。"""
     ts, price = _ts_and_price(ticks, price_basis=price_basis)
 
     # 時刻順を保証してから分床で groupby（open=最初/close=最終を時刻基準で確定）。
     work = pd.DataFrame({"ts": ts.to_numpy(), "price": price.to_numpy()})
+    if with_quotes:
+        # 気配幅は point 注入時だけ要る（無ければ ask を読まない＝bid 基準の不変条件を保つ）。
+        work["bid"] = ticks["bidPrice"].astype("float64").to_numpy()
+        work["ask"] = ticks["askPrice"].astype("float64").to_numpy()
     work = work.sort_values("ts", kind="stable", ignore_index=True)
     work["date"] = work["ts"].dt.floor("min")
+    return work
+
+
+def _fold_minutes(work: pd.DataFrame) -> pd.DataFrame:
+    """作業表を分ごとの OHLCV・up/dn へ畳む（date index 昇順）。"""
     # 方向内訳（up/dn）: 直前ティックとの価格差の符号を **その分バーの中で** 取る。
     #   価格は ``price_basis`` が選んだ系列そのものである（表示される足が bid なのに方向内訳
     #   だけ mid 由来、という食い違いを作らない）。
@@ -270,7 +642,7 @@ def _clean_m1_day(m1_day: pd.DataFrame) -> pd.DataFrame:
 def _dedupe_minutes(m1: pd.DataFrame) -> pd.DataFrame:
     """同一分（date index の重複）を keep-last で 1 行へ畳む（ISSUE-167・冪等・純粋）。
 
-    ``ticks_to_m1`` は 1 つの日 parquet を分 groupby するため単一 parquet 内は一意だが、
+    日ごとの素材化（:func:`_materialize_m1_day`）は 1 つの日 parquet を分 groupby するため単一 parquet 内は一意だが、
     build/append は日別結果を ``pd.concat`` するため、境界分のティックが複数 parquet に分散
     （日 partition 跨ぎ・再取得の重畳等）していると同一分バーが二重に混じる。この重複が
     素材 CSV → /candles(1m 原子) → フロント series へ伝播すると lightweight-charts が
@@ -312,9 +684,9 @@ def _format_m1_for_csv(m1: pd.DataFrame) -> pd.DataFrame:
     全構築（:func:`_write_m1_csv`）と増分追記（:func:`_append_m1_csv`）の双方がこれを呼び、列射影・
     date 書式・昇順を一致させる（書式の二重定義による drift を防ぐ）。
     """
-    # 方向内訳（up/dn）は tick 由来データだけが持つ任意列。持つときだけ末尾へ足す
-    #   （持たない CSV は従来と 1 バイトも変わらない・列順の規則源は csv_schema.header_for）。
-    cols = [c for c in (*_OHLCV_COLUMNS, *_csv_schema.UPDOWN_COLUMNS) if c in m1.columns]
+    # 任意列（方向内訳 up/dn・気配幅 spread）は持つときだけ足す（持たない CSV は従来と
+    #   1 バイトも変わらない・既知値列の順序の唯一源は csv_schema.VALUE_COLUMNS）。
+    cols = [c for c in _csv_schema.VALUE_COLUMNS if c in m1.columns]
     out = m1[cols].sort_index().copy()
     out.index = pd.DatetimeIndex(out.index).strftime(_DATE_FMT)
     out.index.name = _HEADER[0]
@@ -380,11 +752,314 @@ def _drop_forming_bars(m1: pd.DataFrame, until: Any) -> pd.DataFrame:
 
     ``until=None`` は素通し（従来出力を byte 不変に保つ）。用途は「形成中の分バー
     （``floor(now, "min")`` 以降）を確定値として書き込まない」こと。:func:`build_m1_from_ticks`
-    と :func:`append_m1_from_ticks` の双方が共有し、除外規則の二重定義を避ける。
+    と :func:`append_m1_from_ticks` の双方が :func:`_materialize_m1_day` 経由で共有し、除外規則の
+    二重定義を避ける。
     """
     if until is None:
         return m1
     return m1[m1.index < pd.Timestamp(until)]
+
+
+def _materialize_m1_day(
+    ticks: pd.DataFrame,
+    *,
+    price_basis: str,
+    spread: "Callable[[], float] | None",
+    after: Any = None,
+    until: Any = None,
+) -> pd.DataFrame:
+    """1 日分のティックを CSV に書く M1 行へ素材化する（素材化の順序の唯一源・R-1）。
+
+    順序: 分へ畳む → 外れ分除去（:func:`_clean_m1_day`）→ ``index > after``（追記の既存最終分）
+    → :func:`_drop_forming_bars` → 残った分のティックだけで気配幅（``spread`` 有り時）。
+    行の選択はすべて index だけの条件なので、気配幅を選択の後で計算しても値は変わらず、
+    捨てる分の気配幅は 1 つも計算しない。point の値は気配幅を計算する分が残ったときに初めて
+    解決する（:func:`marketdata.spread_point.declared_point_resolver` が返す遅延の呼び口）。
+    """
+    _validate_tick_frame(ticks, price_basis)
+    m1_day, work = _fold_ticks(ticks, price_basis=price_basis, with_spread=spread is not None)
+    if work is None:
+        return m1_day
+    m1_day = _clean_m1_day(m1_day)
+    if after is not None:
+        m1_day = m1_day[m1_day.index > after]
+    m1_day = _drop_forming_bars(m1_day, until)
+    if spread is None or m1_day.empty:
+        return m1_day
+    # 分キーの照合だけで残った分のティックを選ぶ（ask − bid は選んだ行でだけ計算する）。
+    return _with_spread(m1_day, work[work["date"].isin(m1_day.index)], spread())
+
+
+def _declared_spread(ref: str, point: "float | None") -> "Callable[[], float] | None":
+    """系列が spread 列を持つか（IO なし）と point の解決手段を返す（``None``＝spread 列を持たない）。
+
+    台帳が point を持つ ref かの照会（:func:`marketdata.spread_point.ledger_owns_point`）と、その
+    解決手段（:func:`marketdata.spread_point.declared_point_resolver`）は spread_point が答える。
+    本モジュールは台帳の記述子の表を見ない（ISSUE-511 段階 3 の段階 1・V-1）。表の持ち方は台帳側の
+    変更理由であり、素材化の変更理由ではない。
+
+    台帳が point を持つ ref では呼出側の ``point`` は受けない（依頼者裁定 2026-09-15・T2）。受けると
+    渡し忘れ・渡し違いで系列の spread 列の有無が呼出ごとに変わり、既存 CSV の全書換（R-2/Y-2）へ
+    落ちる。台帳に無い ref（テストの合成 ref）は従来どおり ``point`` を使う。
+    """
+    if _spread_point.ledger_owns_point(ref):
+        if point is not None:
+            raise ValueError(
+                f"datasetRef {ref!r} は台帳に登録済みです。spread の point は台帳"
+                f"（spread_point_snapshot）から引くため、呼出側からは渡せません（point={point!r}）。"
+            )
+        return _spread_point.declared_point_resolver(ref)
+    if point is None:
+        return None
+    _quote_spread.validate_point(point)
+    return lambda: point
+
+
+def _resolved_basis(
+    ref: str, price_basis: "str | None", *, default: "str | None" = None
+) -> str:
+    """系列の価格基準を 1 つに決める（登録済み ref は台帳が唯一の源・段階 6・V-3・TBD-4）。
+
+    台帳が基準を名乗る ref（:func:`marketdata.dataset_registry.tick_price_basis` が値を返す ref）
+    では呼出側の ``price_basis`` を受けない。受けると同じ事実が台帳と引数の 2 源になり、台帳だけ
+    切り替えたときに渡し忘れた経路が旧基準で走る。日次再構築は当日区間を自分の基準で書き戻すため、
+    増分と権威が割れたまま毎日置換が起き、値はどちらも「それらしい」ので状態検証では気付けない。
+    渡された値が宣言と一致するかを照合する形にはしない（照合を通る限り 2 源が残るため）。
+
+    台帳に無い ref（検定の合成 ref）は従来どおり ``price_basis`` を使う。``default`` はその ref で
+    未指定だったときの値であり、``None`` は「未指定を許さない」を意味する。
+
+    :func:`_declared_spread` と形が同じでも 1 つにまとめない（工程 4 の判定 2026-09-17）: 変更理由が
+    違う。こちらは「その系列の価格をどの気配で採るか」で、台帳の ``price_basis`` 欄が変われば変わる。
+    あちらは「その系列が spread 列を持つか・point をどう解決するか」で、宣言欄と
+    :mod:`marketdata.spread_point` の解決手段が変われば変わる。返す型も違い（基準は値、point は遅延の
+    呼び口か ``None``）、台帳に無い ref での既定も違う（基準は必須か既定値、point は「列を持たない」）。
+    共通化すると、この 3 つの差を引数で切り替える口が 1 つでき、どちらの事情で変えたのかが呼出側から
+    見えなくなる。
+    """
+    declared = _dataset_registry.tick_price_basis(ref)
+    if declared is not None:
+        if price_basis is not None:
+            raise ValueError(
+                f"datasetRef {ref!r} は台帳に登録済みです。価格基準は台帳"
+                f"（price_basis={declared!r}）から引くため、呼出側からは渡せません"
+                f"（price_basis={price_basis!r}）。"
+            )
+        return validate_price_basis(declared)
+    if price_basis is not None:
+        return validate_price_basis(price_basis)
+    if default is None:
+        raise ValueError(
+            f"datasetRef {ref!r} は台帳に無いため price_basis が必須です"
+            "（既定に委ねると、確定足と違う基準で畳んでも誰も気付きません）。"
+        )
+    return default
+
+
+def materialize_m1_day(
+    ticks: pd.DataFrame, *, ref: str, price_basis: "str | None" = None
+) -> pd.DataFrame:
+    """1 日分のティックを ``ref`` の宣言どおりに M1 行へ素材化する公開の口（ISSUE-511 段階 3 前提 (c)）。
+
+    順序（畳む → 外れ分除去 → 残った分だけ気配幅）の唯一源 :func:`_materialize_m1_day` へ、台帳の
+    宣言（:func:`_declared_spread`）を渡して委譲するだけである（規則を持たない）。呼出側（日次再構築）が
+    順序を手書き複製しないために在る。
+
+    ``ref`` は必須（既定値なし）: 既定（:data:`_DEFAULT_REF`）にすると別系列の宣言で spread 列の
+    有無を決めてしまう。``price_basis`` は**登録済み ref では受けない**（台帳が唯一の源・
+    :func:`_resolved_basis`・ISSUE-511 段階 3 の段階 6・V-3）。台帳に無い ref では必須である
+    （既定 mid に委ねると増分経路と基準が割れ、日次再構築が当日を mid へ書き戻す）。
+    ``point``・``after``・``until`` は受けない: 台帳に登録済みの ref
+    では台帳が point の唯一の源であり（呼出側からの明示は :func:`_declared_spread` が拒否する）、
+    行選択は現存する呼出側（閉じた UTC 日の作り直し）が使わない（YAGNI）。
+
+    ティック parquet・M1 CSV を読み書きしない（読むのは呼出側）。point の値は、宣言付き ref で気配幅を
+    計算する分が残ったときに初めて :func:`marketdata.spread_point.declared_point_resolver` が返す
+    呼び口で解決する（スナップショットを読むのはこのときだけ）。
+    """
+    return materialize_m1_day_for_series(ticks, plan=_day_plan(ref, price_basis))[ref]
+
+
+def _day_plan(ref: str, price_basis: "str | None") -> SeriesPlan:
+    """1 要素の案内（置き場を解決せず既存 CSV も読まない＝素材化の契約どおり）。
+
+    :func:`series_plan` と分けるのは、素材化がティック parquet も M1 CSV も読み書きしない
+    契約を持つためである（読むのは呼出側）。置き場を知らない口へ照合を足すと、照合した対象と
+    実際に書く対象がずれる余地が生まれる。
+    """
+    return _plan_for_refs(
+        (ref,), price_basis=price_basis, resolve=lambda r: (_declared_spread(r, None), None)
+    )
+
+
+def materialize_m1_day_for_series(
+    ticks: pd.DataFrame, *, plan: SeriesPlan, after: Any = None, until: Any = None
+) -> "dict[str, pd.DataFrame]":
+    """1 日分のティックを案内の**全系列**の M1 行へ素材化する（畳みは 1 回・ISSUE-511 段階 8-D-2b の段 2）。
+
+    順序（畳む → 外れ分除去 → ``index > after`` → 形成中分の除外 → 残った分だけ気配幅）の唯一源
+    :func:`_materialize_m1_day` を **1 回だけ**通し、その結果を :func:`_project_for_series` で
+    各 ref へ配る。系列ごとに素材化を呼ぶと、同じティックを系列の数だけ畳むことになる
+    （出力は正しいままなので状態検証では原理的に落ちない・ISSUE-450 と同型）。その不在は
+    ``marketdata/tests/test_tick_m1_series_plan.py`` の CX-1 が Test Spy で固定する。
+
+    戻り値の鍵は案内の全 ref（``plan.refs``）である。spread 列を持つのは ``plan.spread_refs``
+    の ref だけで、他はその列を落とした射影を受け取る。
+    """
+    return _project_for_series(
+        _materialize_m1_day(
+            ticks, price_basis=plan.price_basis, spread=plan.spread, after=after, until=until
+        ),
+        plan,
+    )
+
+
+def fold_ticks_for(
+    ticks: pd.DataFrame, *, ref: str, price_basis: "str | None" = None, data_dir: Any
+) -> pd.DataFrame:
+    """``ticks`` を ``ref`` の宣言どおりに分へ畳む（**行選択も外れ分除去もしない**・ISSUE-511 段階 3 の段階 5）。
+
+    用途は日中の増分供給（``marketdata.mt5_ticks.m1_chain``）である。渡された行をそのまま畳み、
+    spread 列の有無と point は ``ref`` の台帳宣言が決める。
+
+    :func:`materialize_m1_day` との非対称は意図したものである（設計 §10 の裁定・理由は
+    ``marketdata/mt5_ticks/m1_chain.py`` の docstring が持つ）: 日次クリーニング（日内 close 中央値
+    から ±30% 乖離する分バーの除去・ISSUE-107）は**日単位の統計**を要するため、分単位の増分では
+    同じ判断ができない（数本のバーの中央値は日の中央値ではない）。よって本関数は行を 1 つも
+    落とさない。落とす判断は UTC 日が閉じた後に権威経路（``marketdata.mt5_ticks.rebuild``）が行う。
+
+    台帳照合は書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）と**同じ
+    規則**（:func:`_checked_series`）を通る。日中の追記だけが照合を迂回すると、台帳が spread を
+    宣言した瞬間にこの経路だけが宣言と違う列形を書こうとし、ISSUE-455 のヘッダ不一致
+    :class:`ValueError` で落ちる（常駐の捕捉集合の外＝traceback のまま exit 1・段階 4 で実測）。
+    照合した置き場と実際に書く置き場が同じなのは、どちらも :func:`m1_csv_path` が決めるためである
+    （本関数は畳みだけを返し、置き場は呼出側が同じ口で解決する）。本関数の IO は、その照合のための
+    既存 CSV の**先頭 1 行の読取だけ**である（本文は読まない・:func:`_checked_series`）。
+
+    ``ref``・``data_dir`` は必須（既定値なし）: ``ref`` を既定にすると別系列の宣言で列形を決めて
+    しまう。``data_dir`` を既定にすると、呼出側が置き場を渡していないときだけ「照合した対象
+    （既定 DATA_DIR）と書く対象（呼出側の置き場）」がずれる余地が残る——必須にすればその組み合わせ
+    自体が作れない。``price_basis`` は**登録済み ref では受けない**（台帳が唯一の源・
+    :func:`_resolved_basis`・段階 6・V-3）。台帳に無い ref では必須である（既定 mid に委ねると
+    日次再構築と基準が割れる）。``point`` は受けない（台帳に登録済みの ref では台帳が唯一の源で
+    あり、明示は :func:`_declared_spread` が拒否する）。
+
+    契約（計算量・R-1）: 渡した分は**すべて**出力される。呼出側は畳みの**前に**行を選ぶこと
+    （閉じた分だけを渡す）。畳んでから捨てると、捨てる分の気配幅を計算することになる。point の値は、
+    必須列・価格基準の検証を通り、かつ畳む分が 1 つ以上あるときにだけ解決する（空入力でも、必須列を
+    欠く非空フレームでもスナップショットを読まない＝使わない point を読まない。列形はどちらも宣言
+    どおりのまま）。検証を point の解決より先に置くのは :func:`materialize_m1_day` と同じ順序にする
+    ためである。
+
+    この契約は宣言では守られない: 空入力の分岐を消す変異は、下記の検定を足す**前**には
+    ``marketdata/tests`` の 1,463 件のうち 1 件も落とさなかった（2026-09-17 実測・本コンテナ）。
+    順序と発行数を機械的に固定するのは
+    ``marketdata/tests/test_tick_m1_fold_ticks_for_order.py``（R-16・CX-I）である。
+    """
+    plan = series_plan((ref,), data_dir=data_dir, price_basis=price_basis)
+    return fold_ticks_for_series(ticks, plan=plan)[ref]
+
+
+def fold_ticks_for_series(
+    ticks: pd.DataFrame, *, plan: SeriesPlan
+) -> "dict[str, pd.DataFrame]":
+    """``ticks`` を案内の**全系列**の分へ畳む（畳みは 1 回・行選択も外れ分除去もしない）。
+
+    :func:`fold_ticks_for` の複数系列版であり、契約（渡した分はすべて出力される・呼出側が
+    畳みの前に行を選ぶ）も同じである。畳みは 1 回で、spread 列を持たない ref へは
+    :func:`_project_for_series` の射影を返す（**再計算しない**）。系列ごとに畳む形へ戻す変異は
+    ``marketdata/tests/test_tick_m1_series_plan.py`` の CX-1 が捕まえる。
+
+    戻り値の鍵は案内の全 ref（``plan.refs``）。空入力でも列形は宣言どおり（spread 列の有無は
+    ``plan.spread_refs``）で、point は 1 度も解決しない（使わない読込を発行しない・CX-I-1）。
+    """
+    # 検証は point の解決より先に置く（素材化の唯一源 _materialize_m1_day と同じ順序）。後ろに
+    #   置くと、必須列を欠く非空フレームで「落ちる前にスナップショットを 1 回読む」ことになる
+    #   （出力はどちらも ValueError なので状態検証では落ちない・R-16 が順序を固定する）。
+    #   ticks_to_m1 も内部で同じ検証を通る（規則の実体は _validate_tick_frame 1 つのまま）。
+    _validate_tick_frame(ticks, plan.price_basis)
+    if ticks.empty:
+        return {ref: _empty_m1(ref in plan.spread_refs) for ref in plan.refs}
+    return _project_for_series(
+        ticks_to_m1(
+            ticks,
+            price_basis=plan.price_basis,
+            point=None if plan.spread is None else plan.spread(),
+        ),
+        plan,
+    )
+
+
+def _assert_spread_schema(ref: str, out_path: Path, with_spread: bool) -> None:
+    """既存 CSV の先頭行の spread 列の有無が ``with_spread`` と一致しなければ止める（書かない）。
+
+    ファイル無し・空は照合しない。比べるのは spread 列だけ（up/dn の遅れは ISSUE-455 の全構築を
+    維持する）。書き手の起動時に同じ照合を通す公開の口は :func:`check_series_schema`
+    （ISSUE-511 段階 3 の段階 4）。規則の実体は本関数 1 つで、公開面は同じ規則へ委譲する。
+
+    列形の防御は 2 つあり、**統合しない**（見る入力が違う・ISSUE-511 段階 3 の段階 6 の申し送り）:
+    本関数は「これから書く系列の**宣言**」と「既存 CSV の先頭行」を突き合わせ、spread 列の有無
+    だけを見て :class:`SpreadSchemaMismatch` を送出する（書く前に止める）。もう一方の
+    :func:`marketdata.mt5_ticks.rebuild._refuse_incompatible_columns` は「既に読み込んだ CSV の
+    **全列**」と「権威が組み立てた当日区間の全列」を突き合わせ、過不足があれば
+    :class:`marketdata.mt5_ticks.port.Mt5SupplyError` を送出する（区間置換を中断する）。前者は
+    宣言との食い違い、後者は連結時に NaN が生える食い違いを見ており、片方に寄せるともう片方の
+    入力が手に入らない。
+
+    文面に載せる「何が宣言されているか」は :func:`marketdata.spread_point.declared_snapshot_of` が
+    答える（台帳の宣言欄をどう引くかは本モジュールの変更理由ではない・段階 1・V-1）。
+    """
+    header = _existing_csv_header(out_path)
+    if header is None:
+        return
+    if (_csv_schema.SPREAD_COLUMN in header) == with_spread:
+        return
+    declared = "持つ" if with_spread else "持たない"
+    raise SpreadSchemaMismatch(
+        f"系列 {ref!r} の既存 M1 CSV（{out_path}）の既存ヘッダ {header} は、宣言"
+        f"（spread_point_snapshot={_spread_point.declared_snapshot_of(ref)!r}＝spread 列を"
+        f"{declared}系列）と spread 列の有無が食い違います。既存の系列は書き換えずに止めました。"
+        " spread の有無を変えるときは、台帳の series を新しい名前にして build で新しい置き場へ"
+        "作り直してください（旧ファイルは残る＝可逆）。"
+    )
+
+
+def _checked_series(
+    ref: str, *, data_dir: Any, point: "float | None"
+) -> "tuple[Callable[[], float] | None, Path]":
+    """``ref`` の宣言を引き、既存 CSV の列形を照合して（spread の解決口, 出力パス）を返す。
+
+    書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）と、書き手が周期を
+    回し始める前に通す照合（:func:`check_series_schema`）が、同じ 1 つの手順を通るために在る。
+    ref の検証・宣言の照会・置き場の解決・列形の照合を入口ごとに書き写すと、置き場の決め方
+    （:func:`m1_csv_path`）や宣言の引き方（:func:`_declared_spread`）を変えたときに、**照合した
+    対象と実際に書く対象がずれても気付けない**（起動時の照合は緑のまま、周期の中で初めて落ちる）。
+
+    IO は対象 CSV の先頭 1 行の読取だけである（本文は読まない）。``point`` の値もここでは解決
+    しない（:func:`_declared_spread` が返すのは遅延の呼び口）。
+    """
+    _validate_ref(ref)
+    spread = _declared_spread(ref, point)
+    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    _assert_spread_schema(ref, out_path, spread is not None)
+    return spread, out_path
+
+
+def check_series_schema(ref: str, *, data_dir: Any = DATA_DIR) -> None:
+    """``ref`` の既存 M1 CSV の列形が台帳の宣言と合うかを照合する（読むだけ・書かない）。
+
+    規則は書き手の入口と同じである（:func:`_checked_series` を通る＝ファイル無し・空は照合
+    しない。比べるのは spread 列の有無だけ）。合わなければ :class:`SpreadSchemaMismatch`、
+    合えば何もしない（返り値は無い＝照合だけが目的であることを型で示す）。
+
+    用途は、書き手（常駐）が周期を回し始める前に同じ照合を通すこと（ISSUE-511 段階 3 の段階 4・
+    V-4）。周期の中で初めて検出すると、外側の包括 ``except`` が WARNING へ格下げして同じ失敗を
+    繰り返す経路に入る。照合の対象と例外の型を持つのは本モジュールなので、公開面もここに置く。
+
+    読むのは対象 CSV の先頭 1 行だけである（本文は読まない）。``point`` は解決しないため銘柄仕様
+    スナップショットも読まない（宣言の照会だけ・IO は先頭行の読取のみ）。
+    """
+    _checked_series(ref, data_dir=data_dir, point=None)
 
 
 def build_m1_from_ticks(
@@ -395,8 +1070,9 @@ def build_m1_from_ticks(
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
     until: Any = None,
-    price_basis: str = PRICE_BASIS_MID,
+    price_basis: "str | None" = None,
     writer: "M1Writer | None" = None,
+    point: "float | None" = None,
 ) -> Path:
     """``[start, end]`` の日別ティック parquet を読み、M1 CSV を生成して出力パスを返す。
 
@@ -404,7 +1080,7 @@ def build_m1_from_ticks(
     暗黙の空出力を作らない）。出力は ``<data_dir>/<ref>_m1.csv``。
 
     メモリ有界（marketdata の中核不変条件・rollup と同方針）: 全ティックを一括ロードせず
-    **日別 parquet を 1 ファイルずつ** :func:`ticks_to_m1` で M1（数十〜数百倍に縮約）へ集約し、
+    **日別 parquet を 1 ファイルずつ** :func:`_materialize_m1_day` で M1（数十〜数百倍に縮約）へ集約し、
     小さな日別 M1 のみを連結する。ティック parquet は UTC 日で partition されるため分バーが
     ファイルを跨がず、結果は全件一括集計と**数値同一**（RSS は 1 日分ティックに有界化）。
 
@@ -412,11 +1088,88 @@ def build_m1_from_ticks(
     ``index >= until`` の行を除外する（用途: 形成中の分バー＝``floor(now, "min")`` 以降を確定値
     として書き込まない）。``until=None``（既定）は従来出力と完全一致（byte 不変）。
 
-    ``price_basis``（既定 :data:`PRICE_BASIS_MID`）は :func:`ticks_to_m1` へそのまま渡す。
-    権威（全量）経路も増分経路と同じ基準で回せるようにするためである（片方だけが mid のまま
-    だと、日次再構築が表示中の系列を静かに mid へ戻す）。
+    ``price_basis`` は**登録済み ref では受けない**（台帳が唯一の源・:func:`_resolved_basis`・
+    ISSUE-511 段階 3 の段階 6・V-3）。渡すと IO の前に :class:`ValueError` で止まる。台帳に無い ref
+    は従来どおり呼出側の値を使い、未指定なら :data:`PRICE_BASIS_MID`（既存の台帳外呼出は 1 バイトも
+    変わらない）。かつてここが登録済み ref でも既定 mid のままだったため、台帳が bid を名乗る置き場
+    へ mid の足を書けた（V-6・``marketdata/tests/test_tick_m1_price_basis_single_source.py`` の
+    R-17 が 2026-09-17 に実測）。
+
+    ``point``（ISSUE-511 段階 3 前提 (a)）: 台帳に登録済みの ref は台帳の宣言
+    （``spread_point_snapshot``）が spread 列の有無と point の唯一の源であり、``point`` を渡すと
+    IO の前に :class:`ValueError`。台帳に無い ref は従来どおり ``point`` が spread 列を足す。
+    既存 CSV の spread 列の有無が宣言と食い違えば、置き換えずに :class:`SpreadSchemaMismatch`。
     """
-    _validate_ref(ref)
+    plan = _entry_plan(ref, data_dir=data_dir, price_basis=price_basis, point=point)
+    return _build_whole_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )[ref]
+
+
+def _entry_plan(
+    ref: str, *, data_dir: Any, price_basis: "str | None", point: "float | None"
+) -> SeriesPlan:
+    """書き手の入口（:func:`build_m1_from_ticks` / :func:`append_m1_from_ticks`）が通す 1 要素の案内。
+
+    :func:`series_plan` と分けるのは、この 2 つの入口だけが台帳外 ref への既存契約を持つためである:
+    基準の既定が :data:`PRICE_BASIS_MID`、``point`` の明示が効く（どちらも登録済み ref では拒否
+    される）。案内の組み立てそのものは :func:`_plan_for_refs` 1 箇所を通る（評価順＝基準 → 宣言も
+    従来どおり）。
+    """
+    return _plan_for_refs(
+        (ref,),
+        price_basis=price_basis,
+        default_basis=PRICE_BASIS_MID,
+        resolve=lambda r: _checked_series(r, data_dir=data_dir, point=point),
+    )
+
+
+def build_m1_from_ticks_for_series(
+    start: Any,
+    end: Any,
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+    price_basis: "str | None" = None,
+    writer: "M1Writer | None" = None,
+) -> "dict[str, Path]":
+    """``[start, end]`` の日別ティック parquet を **1 回だけ**読んで組の全系列の M1 CSV を作る。
+
+    ISSUE-533 段階 3 の前提工事（依頼者承認 2026-09-26）。履歴を生成する口であり、畳み方は
+    1 つも持たない: 案内は :func:`series_plan`、素材化は :func:`materialize_m1_day_for_series`
+    （その内側の :func:`_materialize_m1_day` が順序の唯一源）、配り方は :func:`_project_for_series`。
+
+    系列ごとに :func:`build_m1_from_ticks` を呼ぶと、同じ日別 parquet を系列の数だけ読んで
+    畳むことになる。出力はどちらも正しいので状態検証では原理的に落ちない（ISSUE-450 と同型）。
+    その不在は ``marketdata/tests/test_tick_m1_series_fan_out_build.py`` の CX-1 が Test Spy で
+    固定する（系列 1 → 2 で読込・畳みの発行が増えないこと・発行 − 使用 = 0）。
+
+    戻り値は ref → 出力パス（鍵は案内の全 ref）。``price_basis`` は台帳に無い ref（検定の合成 ref）
+    のためにあり、登録済み ref へ渡すと :class:`ValueError`（台帳が唯一の源）。
+    """
+    plan = series_plan(refs, data_dir=data_dir, price_basis=price_basis)
+    return _build_whole_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )
+
+
+def _build_whole_for_series(
+    start: Any,
+    end: Any,
+    *,
+    symbol: str,
+    data_dir: Any,
+    plan: SeriesPlan,
+    until: Any,
+    writer: "M1Writer | None",
+) -> "dict[str, Path]":
+    """全構築の本体（照合は呼出側が済ませる＝追記のフォールバックでヘッダを 2 度読まない）。
+
+    日別 parquet は 1 ファイル 1 回だけ読み、畳みも 1 回で、結果を :func:`_project_for_series` で
+    各系列へ配る（**再計算しない**）。書込の発行順は :func:`series_write_order`。
+    """
     files = day_parquet_files(start, end, symbol=symbol, data_dir=data_dir)
     if not files:
         raise FileNotFoundError(
@@ -425,22 +1178,23 @@ def build_m1_from_ticks(
         )
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(
-            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        # 外れ分除去・形成中分（>= until）の除外は日ごとに済ませ、残った分だけ気配幅を計算する。
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(p, columns=_TICK_COLUMNS),
+            price_basis=plan.price_basis, spread=plan.spread, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
     if daily_m1:
         m1 = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
     else:
-        # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する。
-        m1 = ticks_to_m1(
-            pd.DataFrame({c: [] for c in _TICK_COLUMNS}), price_basis=price_basis
-        )
-    m1 = _drop_forming_bars(m1, until)  # 形成中分バー（>= until）を確定値として書かない。
-    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
-    (writer or CsvM1Writer()).write_whole(m1, out_path)
-    return out_path
+        # parquet は在るが全日空（0 行）。ヘッダのみの空 M1 を出力する（point の値は要らない）。
+        m1 = _empty_m1(plan.spread is not None)
+    projected = _project_for_series(m1, plan)
+    writer = writer or CsvM1Writer()
+    for ref in series_write_order(plan):
+        writer.write_whole(projected[ref], plan.paths[ref])
+    return {ref: plan.paths[ref] for ref in plan.refs}
 
 
 def _read_last_m1_row(out_path: Any) -> "pd.DataFrame | None":
@@ -594,75 +1348,399 @@ def append_m1_from_ticks(
     ref: str = _DEFAULT_REF,
     data_dir: Any = DATA_DIR,
     until: Any = None,
-    price_basis: str = PRICE_BASIS_MID,
+    price_basis: "str | None" = None,
     writer: "M1Writer | None" = None,
+    point: "float | None" = None,
 ) -> Path:
     """既存 M1 CSV に「最終バー日以降の不足分」だけを集計して**追記**する（増分・メモリ有界・自己修復）。
 
-    既存 CSV が不在/空、または末尾行が不健全（torn/部分書込み）なら :func:`build_m1_from_ticks`
-    （原子的全構築）へフォールバックして自己修復する。健全時は **最終バー日（当日）以降**を再読込し、
+    既存 CSV が不在/空、または末尾行が不健全（torn/部分書込み）なら :func:`build_m1_from_ticks` と
+    同じ原子的全構築（入口の照合を済ませた本体 ``_build_whole``）へフォールバックして自己修復する。健全時は **最終バー日（当日）以降**を再読込し、
     ``index > 最終 date`` の行だけ追記する。ティックは UTC 日で partition され分が日を跨がないため、
     完成済みの最終日は空追記（冪等 no-op）、途中までしか書けていない日は欠損分のみ追記され自己修復する。
     結果は全構築と一致する（過去確定日の再計算は不要）。
 
     ``until``（省略可・:class:`pd.Timestamp` 互換）を指定すると、追記する M1 バーのうち
     ``index >= until`` の行を除外する（形成中の分バー＝``floor(now, "min")`` 以降を確定値として
-    書き込まない）。フォールバック先の :func:`build_m1_from_ticks` へも同じ ``until`` を伝播する。
+    書き込まない）。フォールバック先の全構築へも同じ ``until`` を伝播する。
     ``until=None``（既定）は従来出力と完全一致（byte 不変）。
 
     前提（重要）: 取得は前方追記（resume）である。過去日への遡及バックフィル（既存最終日より前の
     欠損日を後から追加）は本増分では取り込めない。その場合は :func:`build_m1_from_ticks` で全再構築する。
+
+    ``point``・``price_basis`` の意味は :func:`build_m1_from_ticks` と同じ（ISSUE-511 段階 3
+    前提 (a)・段階 6）。spread 列の
+    有無の照合は末尾行の読取より前に行う。食い違いは自己修復（全構築）へ回さず
+    :class:`SpreadSchemaMismatch` で止める（末尾破損でも同じ）。
     """
-    _validate_ref(ref)
-    writer = writer or CsvM1Writer()
-    out_path = m1_csv_path(ref=ref, data_dir=data_dir)
+    plan = _entry_plan(ref, data_dir=data_dir, price_basis=price_basis, point=point)
+    return _append_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )[ref]
+
+
+def append_m1_from_ticks_for_series(
+    start: Any,
+    end: Any,
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+    price_basis: "str | None" = None,
+    writer: "M1Writer | None" = None,
+) -> "dict[str, Path]":
+    """組の全系列へ「不足分」だけを **1 回の走査で**追記する（ISSUE-533 段階 3 の前提工事）。
+
+    :func:`append_m1_from_ticks` の複数系列版であり、増分・メモリ有界・自己修復の規約も同じである。
+    違うのは、日別 parquet を読んで畳むのが系列の数に依らず **1 回**であることだけ
+    （``marketdata/tests/test_tick_m1_series_fan_out_build.py`` の CX-2 が固定する）。
+
+    再読込の窓（行選択・設計は MT5 の日中追記 :func:`marketdata.mt5_ticks.m1_chain.append_m1_for_closed_minutes_for_series`
+    と同じ形）: 窓の下限は ``min(先端)`` であり、健全な先端を持たない系列が 1 つでもあれば下限なし
+    （その系列は ``start`` から全構築を要る）。各系列へは ``index > その系列の先端`` の分バーだけを
+    追記する。先端に差があるときに落ちるのは「進んでいる側で既に確定済みの分」だけで、その分は
+    必ず遅れている側が使う——つまり畳んだ分に「どの系列も使わない分」は無い。
+
+    **先端が揃わないことを Fail-Stop にしない**のは MT5 側との意図した非対称である（そちらは
+    :class:`marketdata.mt5_ticks.port.SeriesWriteIncomplete` で止める）: あちらの素材は受信ジャーナルの
+    行であり、周期を過ぎた行は二度と来ないので遅れた系列は永久に追いつけない。こちらの素材は日別
+    parquet として残るので、次の周期でも下限（``min(先端)``）がその系列まで戻り、放っておいても
+    追いつく。止めると、追いつける組の供給を人手が要る停止へ変えてしまう。
+
+    戻り値は ref → 出力パス（鍵は案内の全 ref）。
+    """
+    plan = series_plan(refs, data_dir=data_dir, price_basis=price_basis)
+    return _append_for_series(
+        start, end, symbol=symbol, data_dir=data_dir, plan=plan, until=until, writer=writer,
+    )
+
+
+def _healthy_tail_date(out_path: Any) -> "pd.Timestamp | None":
+    """既存 M1 CSV の**健全な**最終バーの分。不在・空・末尾 torn・構造破損は ``None``。
+
+    ``None`` は「この系列は全構築を要る」を意味する（ISSUE-455 の自己修復）。読取が
+    :class:`ValueError` で Fail-Stop する構造破損（列数超過＝8 列化 tail 等）も同じ側へ倒す——
+    常駐をクラッシュさせず、壊れた素材を正しい素材で置き換えるのが根本修復である。
+    """
     try:
         tail = _read_last_m1_row(out_path)
     except ValueError:
-        # 既存 CSV の tail が構造破損（列数超過＝ISSUE-455 の 8 列化 tail 等）で read_tail が
-        # Fail-Stop した。watch をクラッシュさせず、原子的全構築へフォールバックして自己修復する
-        # （症状回避ではなく、壊れた素材を正しい素材で置き換える根本修復）。
-        tail = None
+        return None
     if tail is None or not _is_healthy_m1_row(tail):
-        # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的全構築で（再）生成し自己修復。
-        return build_m1_from_ticks(
-            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer,
-        )
+        return None
+    return pd.Timestamp(tail.index[-1])
 
-    last_date = pd.Timestamp(tail.index[-1])
-    # 最終バー日（当日）から再読込し index > last_date のみ追記する。完成日は冪等 no-op、
-    # 部分日は欠損分のみ自己修復（要求 start がそれより後ろならそれを尊重）。
-    resume_start = last_date.normalize()
-    eff_start = max(resume_start, pd.Timestamp(start))
+
+def _append_for_series(
+    start: Any,
+    end: Any,
+    *,
+    symbol: str,
+    data_dir: Any,
+    plan: SeriesPlan,
+    until: Any,
+    writer: "M1Writer | None",
+) -> "dict[str, Path]":
+    """追記の本体（照合は呼出側が済ませる＝ヘッダを 2 度読まない）。走査は系列数に依らず 1 回。"""
+    writer = writer or CsvM1Writer()
+    tips = {ref: _healthy_tail_date(plan.paths[ref]) for ref in plan.refs}
+    out = {ref: plan.paths[ref] for ref in plan.refs}
+    # 下限は min(先端)。全構築を要る系列が 1 つでもあれば下限なし（その系列は start から要る）。
+    floor = None if any(tip is None for tip in tips.values()) else min(tips.values())
+    eff_start = (
+        pd.Timestamp(start) if floor is None
+        else max(floor.normalize(), pd.Timestamp(start))
+    )
     files = day_parquet_files(eff_start, end, symbol=symbol, data_dir=data_dir)
     if not files:
-        return out_path  # 追記すべき新しい日は無い。
+        if floor is None:
+            # 全構築を要る系列が居るのに素材が 1 つも無い（全構築と同じ fail-fast）。
+            raise FileNotFoundError(
+                f"ティック parquet が見つかりません（{start}..{end} / {tick_root(data_dir)} / "
+                f"symbol={symbol}）。"
+            )
+        return out  # 追記すべき新しい日は無い。
 
     daily_m1: List[pd.DataFrame] = []
     for p in files:
-        m1_day = _clean_m1_day(
-            ticks_to_m1(pd.read_parquet(p, columns=_TICK_COLUMNS), price_basis=price_basis)
+        # 下限（どの系列でも確定済みの分）より後かつ形成中分（>= until）を除いた分だけを日ごとに
+        # 選び、その分だけ気配幅を計算する。
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(p, columns=_TICK_COLUMNS),
+            price_basis=plan.price_basis, spread=plan.spread, after=floor, until=until,
         )
         if not m1_day.empty:
             daily_m1.append(m1_day)
-    if not daily_m1:
-        return out_path
-    m1_new = _dedupe_minutes(pd.concat(daily_m1).sort_index())  # ISSUE-167: 境界分の二重を畳む。
-    m1_new = m1_new[m1_new.index > last_date]  # 厳密に既存最終 date より後のみ追記（重複防止）。
-    m1_new = _drop_forming_bars(m1_new, until)  # 形成中分バー（>= until）を確定値として書かない。
-    if m1_new.empty:
-        return out_path
+    # daily_m1 は非空の日だけ → 連結は 1 行以上・keep-last は各分を 1 行残す＝非空。
+    folded = (
+        _project_for_series(_dedupe_minutes(pd.concat(daily_m1).sort_index()), plan)
+        if daily_m1 else None
+    )
+    for ref in series_write_order(plan):
+        _write_one_series(
+            ref, plan=plan, folded=folded, tip=tips[ref], writer=writer,
+            start=start, end=end, symbol=symbol, data_dir=data_dir, until=until,
+        )
+    return out
+
+
+def _write_one_series(
+    ref: str,
+    *,
+    plan: SeriesPlan,
+    folded: "dict[str, pd.DataFrame] | None",
+    tip: "pd.Timestamp | None",
+    writer: "M1Writer",
+    start: Any,
+    end: Any,
+    symbol: str,
+    data_dir: Any,
+    until: Any,
+) -> None:
+    """1 系列ぶんの書込（全構築を要る側は置き換え・先端を持つ側は不足分の追記）。
+
+    ``folded`` が ``None`` は「畳んだ結果が 0 行」である。そのとき全構築を要る系列にはヘッダのみの
+    空 M1 を置き（parquet は在るが全日空＝全構築と同じ出力）、先端を持つ系列には何も書かない
+    （冪等 no-op）。
+    """
+    path = plan.paths[ref]
+    if tip is None:
+        # 初回（M1 不在/空）or 末尾 torn 行 or 構造破損 tail → 原子的置換で（再）生成し自己修復。
+        frame = (
+            folded[ref] if folded is not None else _empty_m1(ref in plan.spread_refs)
+        )
+        writer.write_whole(frame, path)
+        return
+    if folded is None:
+        return
+    rows = folded[ref]
+    rows = rows[rows.index > tip]  # 厳密に既存最終 date より後（重複防止）。
+    if rows.empty:
+        return
     try:
-        writer.append(m1_new, out_path)
+        writer.append(rows, path)
     except ValueError:
         # 既存ヘッダと追記行の列が食い違う（旧 6 列 CSV に up/dn 付き 8 列を積もうとした等）。
-        # 黙って乖離を育てず、原子的全構築でヘッダごと正しく書き直して是正する（ISSUE-455）。
-        return build_m1_from_ticks(
-            start, end, symbol=symbol, ref=ref, data_dir=data_dir, until=until,
-            price_basis=price_basis, writer=writer,
+        # 黙って乖離を育てず、**その系列だけ**を原子的全構築で書き直して是正する（ISSUE-455）。
+        # 兄弟の置き場には触らない（既存系列の全書換＝R-2/Y-2 を組の事情で起こさない）。
+        # spread 列の有無の食い違いは入口で止めてある（SpreadSchemaMismatch は ValueError ではない）。
+        _build_whole_for_series(
+            start, end, symbol=symbol, data_dir=data_dir,
+            plan=_plan_subset(plan, ref), until=until, writer=writer,
         )
-    return out_path
+
+
+# --------------------------------------------------------------------------- #
+# ティック実体と M1 の突合・修復（ISSUE-534 根治・一度書いた分を見直す経路）
+# --------------------------------------------------------------------------- #
+# なぜ在るか（実測 2026-09-26・ISSUE-534）: 追記の口（append_m1_from_ticks_for_series）は
+#   ``index > 既存最終 date`` の行しか書かないため、**一度書いた分は二度と直らない**。分の末尾
+#   ティックが書込時点の手元に無かった分（2026-09-14〜09-25 の 178 分）は不完全なまま残り、常駐が
+#   止まっていた間の分（129 分）は欠測のまま残った。どちらも出力は連続して見えるので状態検証では
+#   原理的に落ちず、鮮度監視（ISSUE-526）は先端しか見ないため検出できない。
+#   猶予秒（tools 側の確定待ち）は原因ではない——欠けたティックは分が終わる 11.1 秒前〜ちょうどに
+#   発生しており、猶予 12 秒を 1 件も超えていない（ティックは間に合っていたのに、書いた時点の
+#   手元に無かった）。除くべき原因は「書いた分を見直さないこと」であり、待ち時間ではない。
+#
+# 既存の自己修復（marketdata.rollup.heal_tail_gaps）との関係: あちらは M1 とロールアップのずれを
+#   見る。こちらはその 1 段下（ティック実体と M1）を見る。素材の権威はティック実体であり、
+#   M1 はその派生物である、という向きは両者で同じである。
+
+
+def _heal_window_days(
+    days: "Iterable[Any]", *, symbol: str, data_dir: Any
+) -> "list[pd.Timestamp]":
+    """突合の窓を「素材が実在する末尾の連続並び」へ絞る（有界・破壊しない）。
+
+    ``days`` は UTC 日の**連続した**昇順の並びでなければならない（連続でない並びを受けると、
+    窓の中に素材を読まない日が生まれ、その日の既存 M1 行を書き直しの巻き添えで失う）。
+    連続でない・重複する並びは :class:`ValueError`（fail-fast）。
+
+    素材（日別 parquet）が実在しない日は突合できない（M1 が正しいかを決める権威が無い）。
+    そこで採るのは**末尾から見て素材が揃っている最長の並び**である。休場・未取得の日が窓の
+    先頭に混ざっても、その後ろの日は従来どおり突合できる。
+    """
+    window = [pd.Timestamp(d).normalize() for d in days]
+    if not window:
+        return []
+    if any(b - a != pd.Timedelta(days=1) for a, b in zip(window, window[1:])):
+        raise ValueError(
+            f"突合の窓は連続した昇順の UTC 日であること: {[str(d.date()) for d in window]}"
+            "（間が空くと、素材を読まない日の既存 M1 行を書き直しの巻き添えで失います）。"
+        )
+    kept: "list[pd.Timestamp]" = []
+    for when in reversed(window):
+        if not day_parquet_path(when, symbol=symbol, data_dir=data_dir).is_file():
+            break
+        kept.append(when)
+    return list(reversed(kept))
+
+
+def _heal_frames_for_series(
+    window: "Sequence[pd.Timestamp]", *, plan: SeriesPlan, symbol: str, data_dir: Any, until: Any
+) -> "dict[str, pd.DataFrame]":
+    """窓の日を**ティック実体から**素材化し、案内の各系列へ配る（畳みは日ごとに 1 回）。
+
+    素材化の順序（畳む → 外れ分除去 → 形成中分の除外）は唯一源 :func:`_materialize_m1_day` の
+    ままで、全構築（:func:`_build_whole_for_series`）と同じ手順・同じ書式になる。新しい畳み方を
+    持たないのが要点である——修復が独自に畳むと、修復後の値が全構築の値と食い違いうる。
+    """
+    daily: List[pd.DataFrame] = []
+    for when in window:
+        m1_day = _materialize_m1_day(
+            pd.read_parquet(
+                day_parquet_path(when, symbol=symbol, data_dir=data_dir), columns=_TICK_COLUMNS
+            ),
+            price_basis=plan.price_basis, spread=plan.spread, until=until,
+        )
+        if not m1_day.empty:
+            daily.append(m1_day)
+    m1 = (
+        _dedupe_minutes(pd.concat(daily).sort_index()) if daily
+        else _empty_m1(plan.spread is not None)
+    )
+    return _project_for_series(m1, plan)
+
+
+def _minute_lines(payload: bytes) -> "dict[bytes, bytes]":
+    """CSV 本文のバイト列を ``date 列の値 -> 行`` へ分解する（空行は落とす）。
+
+    突合を**行のバイト列**で行うのは、値を float へ戻して比べると書式（桁・表記）の食い違いを
+    見落とすためである。修復の目的は「全構築と同じ CSV になること」なので、比べる単位も
+    書かれる単位と同じにする。
+    """
+    out: "dict[bytes, bytes]" = {}
+    for line in payload.split(b"\n"):
+        if line.strip():
+            out[line.split(b",", 1)[0]] = line
+    return out
+
+
+def _replace_m1_tail(path: Path, offset: int, payload: bytes) -> None:
+    """``offset`` で切り詰め、``payload`` を書く（末尾だけ書く＝窓に有界・原子的でない）。
+
+    履歴（prefix）は読まず・触らない。原子性は持たない（:func:`marketdata.rollup._truncate_append_bars`
+    と同じ取引）——確定パスを原子的に置き換えるには 300MB を読み直すことになり、それは修復の費用を
+    履歴の長さに比例させる。書込中に死んだ窓では末尾が欠けうるが、次の周期で追記の口
+    （:func:`append_m1_from_ticks_for_series`）が先端から不足分を埋め、さらに本修復が窓を突合し
+    直すので復元できる。
+    """
+    import os
+
+    with open(path, "r+b") as fh:
+        fh.seek(offset)
+        fh.truncate()
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _heal_one_series(ref: str, *, path: Path, rows: pd.DataFrame, since: pd.Timestamp) -> int:
+    """1 系列の窓を突合し、食い違えば素材から書き直す。返り値は書き直した分の数。
+
+    書かない条件（どれも「無言で直さない」の裏側であり、該当時は理由をログに残す）:
+      - 既存 M1 が不在・空: 系列の生成は書き手（:func:`build_m1_from_ticks_for_series` /
+        :func:`append_m1_from_ticks_for_series`）の仕事であり、修復が作ると先端の無い系列を
+        窓の幅だけの CSV にしてしまう。
+      - 窓が既に一致: 1 バイトも書かない（冪等）。
+      - 列形が既存ヘッダと食い違う: 追記側が持つ自己修復（ISSUE-455 の全構築）へ委ねる。
+        ここで書くと 6 列ヘッダの下に 8 列行を積む（ISSUE-455 の再来）。
+      - 既存に在る分が素材に無い: **足を消す判断はしない**。素材が縮んだ状態で消すと、一過性の
+        取得不足がそのまま確定データの欠落になる。どちらが正しいかは突合では決められない。
+    """
+    from marketdata import tail_reader  # 遅延: 逆シークの唯一源（_read_last_m1_row と同じ流儀）
+
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return 0
+    formatted = _format_m1_for_csv(rows)
+    payload = formatted.to_csv(header=False, index_label=_HEADER[0]).encode("utf-8")
+    offset, existing = tail_reader.tail_bytes_since(path, since)
+    if existing == payload:
+        return 0
+    header = _existing_csv_header(path)
+    expected = [_HEADER[0], *list(formatted.columns)]
+    if header is not None and header != expected:
+        logger.warning(
+            "M1 とティック実体の突合を見送りました（%s）: 既存ヘッダ %s と素材の列 %s が"
+            "食い違います。追記側の全構築（ISSUE-455）が列ごと書き直すのを待ちます。",
+            ref, header, expected,
+        )
+        return 0
+    before, after = _minute_lines(existing), _minute_lines(payload)
+    vanished = [m.decode("utf-8", "replace") for m in before if m not in after]
+    if vanished:
+        logger.warning(
+            "M1 とティック実体の突合を見送りました（%s）: M1 に在る %d 分がティック実体に"
+            "ありません（例: %s）。修復は足を消しません（素材が縮んだ状態で消すと、一過性の"
+            "取得不足が確定データの欠落になります）。",
+            ref, len(vanished), ", ".join(vanished[:5]),
+        )
+        return 0
+    fixed = sum(1 for minute, line in after.items() if before.get(minute) != line)
+    _replace_m1_tail(path, offset, payload)
+    logger.warning(
+        "M1 の自己修復を実施（%s）: %s 以降の %d 分をティック実体から書き直しました。",
+        ref, since, fixed,
+    )
+    return fixed
+
+
+def heal_m1_days_for_series(
+    days: "Iterable[Any]",
+    *,
+    refs: "Iterable[str]",
+    symbol: str = _DEFAULT_SYMBOL,
+    data_dir: Any = DATA_DIR,
+    until: Any = None,
+) -> "dict[str, int]":
+    """窓の日について**ティック実体と M1 を突合し、食い違う分を素材から書き直す**（ISSUE-534 根治）。
+
+    追記の口は ``index > 既存最終 date`` の行しか書かないため、一度書いた分は二度と直らない。
+    本関数はその 1 点だけを埋める: 窓の日を素材から作り直し、既存 M1 の同区間と**行のバイト列で**
+    突合して、食い違えばその区間だけを書き直す。値の作り方は全構築と同一（:func:`_materialize_m1_day`）
+    なので、直った CSV は同じ素材から全構築した CSV と byte 一致する。
+
+    有界（費用が履歴の長さで増えない）:
+      - 素材は窓の日別 parquet だけを 1 日 1 回読み、畳みも 1 回である（系列の数に依らない）。
+      - 既存 M1 は窓の区間だけを逆シークで読む（:func:`marketdata.tail_reader.tail_bytes_since`）。
+      - 書くのも窓の区間だけである（履歴の prefix は読まず・触らない＝追記のみの規律を壊さない）。
+      これらは ``marketdata/tests/test_tick_m1_day_heal.py`` の CX-1 / CX-2 が履歴 2 点と
+      系列 1 → 2 で固定する（**回数そのものは期待値に焼き込まない**）。
+
+    Args:
+        days: 突合する UTC 日の**連続した昇順**の並び（窓）。広さを決めるのは周期の持ち主
+            （``tools/live_tick_watch.py``）であり、本関数は渡された窓しか見ない。素材が実在しない
+            日が先頭に混ざる場合は、末尾から見て素材が揃っている並びだけを突合する。
+        refs: 系列の組（台帳が決める・:func:`marketdata.dataset_registry.series_refs_of`）。
+            組の全系列へ効かせる——片方だけ直すと系列間が食い違う。
+        symbol: ティック木の枝名。
+        data_dir: 物理基点。
+        until: ``index >= until`` の分（形成中）を確定値として書かない境界。書き手が同じ周期で
+            使った値を渡すこと（書き手より小さい値を渡すと、書き手が既に書いた分が素材側に
+            現れず「素材に無い分」として突合を見送る）。
+
+    Returns:
+        ref → 書き直した分の数（0 ＝ 既に一致・または見送り。見送りの理由はログに残る）。
+
+    Raises:
+        ValueError: ``days`` が連続した昇順の並びでない（:func:`_heal_window_days`）。
+        SpreadSchemaMismatch: 既存 M1 の spread 列の有無が台帳の宣言と食い違う（:func:`series_plan`）。
+    """
+    plan = series_plan(refs, data_dir=data_dir)
+    window = _heal_window_days(days, symbol=symbol, data_dir=data_dir)
+    if not window:
+        return {ref: 0 for ref in plan.refs}
+    frames = _heal_frames_for_series(
+        window, plan=plan, symbol=symbol, data_dir=data_dir, until=until
+    )
+    return {
+        ref: _heal_one_series(
+            ref, path=plan.paths[ref], rows=frames[ref], since=window[0]
+        )
+        for ref in series_write_order(plan)
+    }
 
 
 def forming_bar_from_ticks(

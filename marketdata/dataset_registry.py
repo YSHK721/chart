@@ -71,6 +71,25 @@ class DatasetDescriptor:
             分けて持つ（旧ファイルを上書きしない＝本欄を戻せば元の置き場へ可逆）。名前の解決は
             :func:`series_of` の 1 箇所で、置き場の組み立て（``marketdata.tick_m1.m1_csv_path`` と
             :mod:`marketdata.rollup_paths`）はそこから名前を受け取る。
+        sim_offered: この ref を sim の実行指示フォームの選択肢として提供するか（ISSUE-533 段階 3）。
+            「sim で走らせる系列か」を**推論させない**ための宣言である。従来この判定は供給側
+            （``simulator/sim_ui/adapter/symbol_spec_catalog.py``）の手書きの並びが持っており、
+            台帳へ系列を足しても選択肢へ届かなかった（実測 2026-09-26: 気配幅つきの新系列と
+            その実体が在るのに ``GET /sim/run-options`` は 2 件しか返さなかった）。列挙は必ず
+            取り残しを生むので、宣言の所有者を台帳ただ 1 つにする。
+            既定は ``None``＝**未宣言**であり、既定で拾わない・既定で落とさない。台帳に居る
+            ref が未宣言のまま選択肢を問われると :func:`sim_offered_refs` が Fail-Stop する
+            （既定値で「提供しない」に倒すと、新しい系列が黙って選択肢から漏れる——本段で
+            是正した欠陥そのものが再発する）。**台帳の全 ref は明示的に名乗る**。
+            並びは宣言順である（:func:`sim_offered_refs`）。
+        spread_point_snapshot: この ref の M1 の spread 列を、どの銘柄仕様スナップショットの point で
+            数えるか（ISSUE-511 段階 3 前提 (a)）。値は ``(サーバ名, 銘柄名)`` ＝
+            ``marketdata.symbol_spec_snapshot.load_snapshot`` の引数そのものであり、point の値は持たない
+            （値の唯一源はスナップショット。読み口は ``marketdata.spread_point.spread_point_of``）。
+            None は spread 列を持たない系列。``symbol`` は流用しない（symbol は呼び値・表示桁の台帳の
+            キーであり、スナップショットの銘柄名とは別概念）。point を呼出ごとの引数にしていた間、渡し
+            忘れ・渡し違いで系列の spread 列の有無が変わり、既存 CSV が全書換されていた（R-2/Y-2）。
+            ``tick`` が True の記述子だけが宣言できる（構築時に拒否）。
     """
 
     path: Path
@@ -83,6 +102,8 @@ class DatasetDescriptor:
     price_basis: "str | None" = None
     vendor: "str | None" = None
     series: "str | None" = None
+    sim_offered: "bool | None" = None
+    spread_point_snapshot: "tuple[str, str] | None" = None
 
     def __post_init__(self) -> None:
         # ISSUE-515 対策 1: ティック ref は価格基準を必ず名乗る。**構築時に**拒否する理由は、
@@ -101,6 +122,29 @@ class DatasetDescriptor:
                 "tick=True の記述子は vendor（'dukascopy' / 'mt5'）を名乗ってください。"
                 " ライブ tick バッファは ref ごとに、このベンダの供給口から作ります。"
             )
+        # ISSUE-511 段階 3 前提 (a): spread の point の所在。構築時に拒否する理由は price_basis と同じ
+        #   （読取時に投げると素材の失敗を握る包括的 except の内側になり、WARNING へ化ける）。
+        if self.spread_point_snapshot is None:
+            return
+        if not self.tick:
+            raise ValueError(
+                "spread_point_snapshot は tick=True の記述子だけが宣言できます"
+                "（spread 列はティックの気配幅から作る）。"
+            )
+        if not _is_snapshot_pair(self.spread_point_snapshot):
+            raise ValueError(
+                "spread_point_snapshot は（サーバ名, 銘柄名）の空でない文字列 2 つの tuple です:"
+                f" {self.spread_point_snapshot!r}"
+            )
+
+
+def _is_snapshot_pair(value: object) -> bool:
+    """``value`` が空でない文字列 2 つの tuple か（スナップショットの所在の形）。"""
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and all(isinstance(part, str) and part for part in value)
+    )
 
 
 # datasetRef 記述子レジストリ（唯一源）。挿入順は従来の DATASET_WHITELIST と一致させる。
@@ -122,14 +166,26 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         / "4_line_indicators"
         / "ohlcv.csv",
         symbol="TSLA",
+        # 同梱の探索用サンプル（日足）。sim の実行対象ではない。
+        sim_offered=False,
     ),
     # JP225 日足（Dukascopy E_N225Jap・外れ値補正済み）。実市場ゆえクランプ対象。
     "jp225": DatasetDescriptor(
-        path=DATA_DIR / "jp225_daily.csv", symbol="JP225", clamp_outliers=True
+        path=DATA_DIR / "jp225_daily.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        # 日足。sim は M1 原子を走らせるので実行対象ではない。
+        sim_offered=False,
     ),
     # JP225 1分足原子（全時間足はこれを resample）。実市場・ロールアップ経路。
     "jp225_m1": DatasetDescriptor(
-        path=DATA_DIR / "jp225_m1.csv", symbol="JP225", clamp_outliers=True, rollup=True
+        path=DATA_DIR / "jp225_m1.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        # sim の従来の実行系列（気配幅なし）。**提供の並びの先頭**であり、共有フィクスチャと
+        # 既存検定はここを「先頭」で引く（理由と実測は sim_offered_refs の注記）。
+        sim_offered=True,
     ),
     # JP225 1分足（ティック由来・原子）。実市場・ロールアップ経路・ティック由来供給。
     # symbol は既存事実の明文化（``tick_m1._DEFAULT_SYMBOL="JP225"`` / ``_DEFAULT_REF="jp225_tick"``）。
@@ -156,6 +212,55 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         # ベンダ（ISSUE-515 対策 2）。既存事実の明文化: ライブ tick バッファはこれまで
         # Dukascopy の配信（marketdata.fetch_ticks_since）だけから作られていた。
         vendor="dukascopy",
+        # 気配幅の列を持たない（spread 依存 EA は N-17 が弾く）。同じ木から作る
+        # jp225_tick_spread が気配幅つきの提供側なので、こちらは選択肢に出さない。
+        sim_offered=False,
+    ),
+    # JP225 1分足（Dukascopy ティック由来・**spread 列つき**）。ISSUE-533 段階 3 の前提工事で
+    # 足した記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
+    #
+    # jp225_tick に倣う（同じ木・同じ基準・同じベンダ・ロールアップ経路・同じ data_start）。違うのは
+    # 置き場（path・series）と宣言だけで、この関係は先例 jp225_mt5 ↔ jp225_mt5_spread と同一である。
+    # 関係そのものは marketdata/tests/test_dukascopy_spread_series_ledger.py の D-2（記述子の全欄の
+    # 差分）・D-3（置き場の名前）・D-4（宣言の所在）が、台帳に在る対**すべて**に対して固定する
+    # （リテラルの対応表は持たない＝欄が 1 つ増えても比較対象に自動で入る）。
+    #
+    # 名前（ref は jp225_tick_spread・series は jp225_tick_bid_spread）の根拠:
+    #   1. ref 名は先例と同じ「<base>_spread」。base は jp225_tick である。
+    #   2. series（保存物の名前）は先例と同じ「<base の series>_spread」。jp225_tick の series は
+    #      ISSUE-511 段階 1d で jp225_tick_bid になっているので、対称形は jp225_tick_bid_spread
+    #      であって jp225_tick_spread ではない。ref 名をそのまま置き場にすると、bid で畳んだ
+    #      保存物だけが基準を名乗らないファイル名になり、旧 mid の jp225_tick_m1.csv と
+    #      並んだときにどちらの基準か読めなくなる。
+    #   3. どちらも台帳の中で一意である（D-5 が機械的に確かめる）。
+    #
+    # 気配幅を数える point の所在（spread_point_snapshot）を MT5 側と**同じ組**にしている理由:
+    #   銘柄仕様スナップショットは marketdata/symbol_specs/ に OANDA-Japan-MT5-Live/JP225 の 1 件
+    #   しか実在せず（Dukascopy の仕様スナップショットは無い）、point の値をここへ綴ることは
+    #   禁じられている（値の唯一源はスナップショット）。加えて spread 列の用途は ISSUE-533 の
+    #   「気配幅を供給元どまたぎで比べる」ことであり、同じ単位（同じ point）で数えなければ
+    #   比較にならない。読み手（simulator の ask = bid + spread × point_size）も同じ組から
+    #   point_size を引く。**別の組を宣言したくなったら、まずそのスナップショットを採取する**
+    #   （既定値へ落ちる経路は無い＝宣言した組が読めなければ SnapshotError で止まる）。
+    #
+    # 実データ（jp225_tick_bid_spread_m1.csv とロールアップ）は**本段では作らない**（生成は依頼者が
+    # 別段で実行する）。既存ファイルの無い置き場では起動時照合 tick_m1.check_series_schema が
+    # 照合せず素通しする（先例の N-6 と同じ規則）。
+    "jp225_tick_spread": DatasetDescriptor(
+        path=DATA_DIR / "jp225_tick_bid_spread_m1.csv",
+        series="jp225_tick_bid_spread",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        tick=True,
+        data_start=dt.date(2012, 6, 14),
+        tick_token="JP225",
+        price_basis="bid",
+        vendor="dukascopy",
+        # ISSUE-533 段階 3（依頼者承認 2026-09-26）: 気配幅を供給元どまたぎで比べるための
+        # 提供側。実体（407 万行・2012-06-14 から）は生成済みである。
+        sim_offered=True,
+        spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
     ),
     # JP225 1分足（MT5 実時間ティック由来・原子）。実市場・ロールアップ経路。
     # 実体は設計 §5: <DATA_DIR>/jp225_mt5_m1.csv と rollups/jp225_mt5/。
@@ -169,12 +274,56 @@ REGISTRY: dict[str, DatasetDescriptor] = {
         clamp_outliers=True,
         rollup=True,
         tick=True,
-        # 木の枝名は marketdata.mt5_ticks.ingest.token_for（JP225 + '@' + サーバ名）の値、基準は
-        # 同 ingest.PRICE_BASIS（bid）と一致させる（両者の一致は
-        # marketdata/tests/test_tick_price_basis_ledger.py が固定する）。
+        # 木の枝名は marketdata.mt5_ticks.ingest.token_for（JP225 + '@' + サーバ名）の値。
+        # 基準の唯一源は本台帳である（ISSUE-511 段階 3 の段階 6・TBD-4 で ingest.PRICE_BASIS を
+        # 廃し、同じ事実の 2 源を解消した）。書き手が台帳から引いていることは
+        # marketdata/tests/test_mt5_price_basis.py が固定する。
         tick_token="JP225@OANDA-Japan-MT5-Live",
         price_basis="bid",
         vendor="mt5",
+        # 気配幅の列を持たない（同じ木から作る jp225_mt5_spread が提供側）。
+        sim_offered=False,
+    ),
+    # JP225 1分足（MT5 ティック由来・**spread 列つき**）。ISSUE-511 段階 3 の段階 7a で足した
+    # 記述子 1 件。**本エントリを消せば可逆**（実データはまだ無いので、消しても孤児は残らない）。
+    #
+    # jp225_mt5 に倣う（同じ木・同じ基準・同じベンダ・ロールアップ経路）。違うのは置き場だけで、
+    # series 欄を持たない＝ ref 名そのもの＝ <DATA_DIR>/jp225_mt5_spread_m1.csv と
+    # rollups/jp225_mt5_spread/。属性が jp225_mt5 と揃っていることは
+    # marketdata/tests/test_spread_series_ledger_new_ref.py の N-2 が、置き場が台帳のどの ref とも
+    # 衝突しないことは同 N-3 が固定する（値は書き写しであり、片方だけ動かせば赤になる）。
+    #
+    # 既存 CSV へ列を足すのではなく**新しい系列へ作る**理由（依頼者裁定 2026-09-17）: 既存 ref へ
+    # 宣言を足すと、宣言（spread あり）と既存 CSV の列形（spread なし）が食い違い、
+    # tick_m1._assert_spread_schema が SpreadSchemaMismatch で書き手を止める。通すには既存 CSV を
+    # 全書換するしかなく、それが前提 (a) で実測された経路（R-2/Y-2）である。新しい系列なら既存
+    # ref の path も series も 1 欄も変えずに済む。
+    #
+    # spread_point_snapshot は spread 列を数える point の **所在**（サーバ名, 銘柄名）であって値では
+    # ない（値の唯一源は銘柄仕様スナップショット・読み口は marketdata.spread_point.spread_point_of）。
+    # サーバ名を綴りで持つ理由: 本モジュールの許可依存は marketdata.paths だけであり
+    # （marketdata/tests/test_module_dependency_declarations.py の許可表が AST で強制する）、
+    # symbol_spec_snapshot.OANDA_JAPAN_MT5_LIVE を import すると台帳が値の供給元を知る向きになる。
+    # 循環は生じない（同モジュールは stdlib しか import しない）が、「所在は台帳・値はスナップ
+    # ショット」の 2 つを繋ぐ唯一点である marketdata/spread_point.py が繋ぎ目でなくなる。
+    # 綴りが実在の組であることは test_spread_series_ledger_new_ref.py の N-1 が、
+    # OANDA_JAPAN_MT5_LIVE との一致とスナップショットファイルの実在の 2 つで固定する。
+    #
+    # 実データ（jp225_mt5_spread_m1.csv とロールアップ）は**本段では作らない**（段階 7b）。既存
+    # ファイルの無い置き場では起動時照合 tick_m1.check_series_schema が照合せず素通しする（同
+    # N-6。食い違う CSV を置けば実際に止まることは N-7 が負の対照で示す）。
+    "jp225_mt5_spread": DatasetDescriptor(
+        path=DATA_DIR / "jp225_mt5_spread_m1.csv",
+        symbol="JP225",
+        clamp_outliers=True,
+        rollup=True,
+        tick=True,
+        tick_token="JP225@OANDA-Japan-MT5-Live",
+        price_basis="bid",
+        vendor="mt5",
+        # 取引している供給（OANDA MT5）の気配幅つき系列。従来から sim の選択肢に在る。
+        sim_offered=True,
+        spread_point_snapshot=("OANDA-Japan-MT5-Live", "JP225"),
     ),
 }
 
@@ -210,6 +359,40 @@ def rollup_refs() -> "tuple[str, ...]":
 #: （ISSUE-515）・リプレイの足内ティックも ref の木と基準で読む。Dukascopy へ切り戻すときは
 #: ``"jp225_tick"`` へ戻す（ISSUE-511 段階 1d で jp225_tick も bid＝同じ基準で並ぶ）。
 DEFAULT_DATASET_REF = "jp225_mt5"
+
+
+def sim_offered_refs() -> "tuple[str, ...]":
+    """sim の実行指示フォームへ提供する datasetRef を**台帳の宣言順**で導く（ISSUE-533 段階 3）。
+
+    「sim で走らせる系列か」の所有者は台帳の宣言（``sim_offered`` 欄）ただ 1 つである。供給側
+    （``simulator/sim_ui/adapter/symbol_spec_catalog.py``）はこの答えを受け取るだけで、手書きの
+    並びを持たない。列挙を供給側に置いていた間、台帳へ足した系列は選択肢へ届かなかった
+    （実測 2026-09-26: 実体つきの新系列が在るのに ``GET /sim/run-options`` は 2 件だけ）。
+
+    Returns:
+        提供する datasetRef のタプル。並びは :data:`REGISTRY` の宣言順（挿入順）をそのまま保つ。
+        名前順にも集合にもしない理由は :func:`refs_of_tick_token` と同じ——並びの出所を台帳の
+        宣言 1 箇所に限るためである。並びには**測られた危険**がある: 共有フィクスチャと既存検定は
+        profile を「先頭」または「銘柄一致の先頭」で引いており、先頭が入れ替わると**赤にならずに
+        別系列で走る**（実測 2026-09-25: 同じ 10 ファイルが 103.67 秒から 29 分超へ伸びたまま
+        終わらない。失敗ではなく実行対象の入替としてのみ現れる）。表明は
+        ``simulator/tests/unit/test_symbol_spec_catalog_ledger_offering.py`` が持つ。
+
+    Raises:
+        ValueError: 台帳に ``sim_offered`` を名乗らない ref が居るとき（Fail-Stop）。**未宣言を
+            「提供しない」へ倒さない**。倒すと、新しく足した系列が黙って選択肢から漏れる——
+            本段で是正した欠陥（宣言と実体が在るのに UI へ届かない）がそのまま再発し、しかも
+            出力は形式上正しいため状態検証では検出できない。
+    """
+    undeclared = [ref for ref, d in REGISTRY.items() if d.sim_offered is None]
+    if undeclared:
+        raise ValueError(
+            f"datasetRef {undeclared} が sim_offered を名乗っていません。"
+            f" {__name__}.REGISTRY の当該記述子へ sim_offered=True（実行指示フォームの選択肢に"
+            " 出す）か sim_offered=False（出さない）を明示してください。未宣言を既定で"
+            "「提供しない」へ倒しません（黙って選択肢から漏れる形を作らないため）。"
+        )
+    return tuple(ref for ref, d in REGISTRY.items() if d.sim_offered)
 
 
 def tick_refs() -> "frozenset[str]":
@@ -302,6 +485,17 @@ def series_of(ref: str) -> str:
     return d.series
 
 
+def spread_point_snapshot_of(ref: "str | None") -> "tuple[str, str] | None":
+    """``ref`` の spread 列を数える point の所在（サーバ名, 銘柄名）を台帳から引く（ISSUE-511 段階 3 前提 (a)）。
+
+    IO なし（照会であって検証ではない）。宣言の無い ref と台帳に無い ref は ``None``。
+    """
+    d = REGISTRY.get(ref)
+    if d is None:
+        return None
+    return d.spread_point_snapshot
+
+
 def price_basis_of_tick_token(token: str) -> str:
     """ティック木の枝名 ``token`` を畳む価格基準を台帳から引く（ISSUE-515 対策 1）。
 
@@ -323,6 +517,70 @@ def price_basis_of_tick_token(token: str) -> str:
     return bases.pop()
 
 
+def refs_of_tick_token(token: "str | None") -> "tuple[str, ...]":
+    """ティック木の枝名 ``token`` を読む datasetRef を台帳から **すべて** 引く（ISSUE-511 段階 8-D-2b・D-3）。
+
+    同じ木から畳んで作る系列がいくつ在るかを決めるのは台帳であり、呼び手ではない。従来この集合は
+    常駐の起動引数で与えられていた（運用者が台帳の事実を再宣言する形）。先例は同じ木から別の属性を
+    引く :func:`price_basis_of_tick_token` で、本関数はその ref 版である。
+
+    Args:
+        token: ティック木の枝名（記述子の ``tick_token`` 欄の値）。
+
+    Returns:
+        その木を読む datasetRef のタプル。並びは **台帳 :data:`REGISTRY` の宣言順**（挿入順）を
+        そのまま保つ。名前順にも集合にもしない理由は、呼び手が複数系列の先端を突き合わせるとき、
+        比較の順序が実行ごとに・台帳の綴り替えごとに変わらないためである（並びの出所を台帳の
+        宣言 1 箇所に限る）。
+
+    Raises:
+        ValueError: その木を読む ref が台帳に 1 件も無いとき（Fail-Stop）。**空のタプルを返さない**。
+            返すと呼び手は「書く系列が 0 件」を正常として受け取り、何も書かないまま走り続ける
+            （出力が形式上正しいため状態検証では検出できない）。``token`` が ``None`` のとき、
+            ティック木を持たない記述子（``tick_token`` が未記入）の群れが返ることもない。
+            型を :class:`TickTokenMissing` にしないのは、同クラスが「``tick`` が True なのに
+            ``tick_token`` が未記入」専用だからである（本関数が止めるのは台帳に無い木の照会）。
+    """
+    refs = tuple(
+        ref
+        for ref, d in REGISTRY.items()
+        if d.tick_token is not None and d.tick_token == token
+    )
+    if not refs:
+        raise ValueError(
+            f"ティック木 {token!r} を読む datasetRef が台帳に 1 件もありません。"
+            " marketdata.dataset_registry.REGISTRY の記述子へ tick_token を記入してください"
+            "（同じ木を読む ref は複数あってよい）。"
+        )
+    return refs
+
+
+def series_refs_of(seed: "str | None") -> "tuple[str, ...]":
+    """種（``seed``）の ref が指すティック木を読む**系列の組**を引く（ISSUE-533 段階 3 の前提工事）。
+
+    :func:`tick_tree_token` と :func:`refs_of_tick_token` の合成であり、新しい規則は持たない。
+    合成をここに置くのは、供給常駐が 2 本（``tools/live_tick_watch.py`` と
+    ``tools/mt5_tick_watch.py``）あり、どちらも「種 → 書く系列の組」を要るからである。合成点
+    （tools）は規則を持たないと宣言している（``tools/__init__.py``）ので、2 本が同じ 2 行を各自に
+    持つと、片方だけ直したときにもう片方が黙って別の集合を書く。
+
+    Args:
+        seed: 種の datasetRef。「どのティック木か」を指すだけであり、集合の決定権は持たない
+            （運用者が台帳の事実を再宣言できる形そのものが、spread 付き系列を 9 日間誰も
+            publish しない凍結を生んだ・依頼者裁定 2026-09-23）。
+
+    Returns:
+        その木を読む datasetRef のタプル（並びは台帳の宣言順）。
+
+    Raises:
+        TickTokenMissing: 種が ``tick`` なのに ``tick_token`` が未記入（:func:`tick_tree_token`）。
+        ValueError: 種がティック木を持たない（``tick`` が False・台帳に無い）ため ``None`` で
+            照会になった場合、およびその木を読む ref が台帳に 1 件も無い場合
+            （:func:`refs_of_tick_token`）。**空のタプルを返さない**。
+    """
+    return refs_of_tick_token(tick_tree_token(seed))
+
+
 __all__ = [
     "DatasetDescriptor",
     "REGISTRY",
@@ -330,11 +588,15 @@ __all__ = [
     "whitelist",
     "clamp_refs",
     "rollup_refs",
+    "sim_offered_refs",
     "tick_refs",
     "tick_tree_token",
     "tick_price_basis",
     "price_basis_of_tick_token",
+    "refs_of_tick_token",
+    "series_refs_of",
     "tick_vendor",
     "series_of",
+    "spread_point_snapshot_of",
     "DEFAULT_DATASET_REF",
 ]

@@ -111,12 +111,13 @@ def submission(
     ea_name: str = "PRO_fit_Band_EA",
     *,
     sizing: "dict[str, Any] | None" = None,
-    entry_price_basis: "str | None" = None,
 ) -> JobSubmission:
-    """検定用の投入要求を組み立てる。"""
+    """検定用の投入要求を組み立てる。
+
+    建値基準は投入本文に載せない（ISSUE-533 段階 2: 値の出所は戦略の宣言ただ 1 つであり、
+    設定へ書けば 「`load_config`」 が拒む）。必要系列は ea_name から決まる。
+    """
     backtest: "dict[str, Any]" = {"ea_name": ea_name, "symbol": "JP225", "period": "M5"}
-    if entry_price_basis is not None:
-        backtest["config_overrides"] = {"entry_price_basis": entry_price_basis}
     return JobSubmission(backtest=backtest, sizing=sizing)
 
 
@@ -142,12 +143,25 @@ class FakeStopLossCatalog(StopLossParamCatalogPort):
         return self._mapping.get(ea_name, frozenset())
 
 
-def required_series(entry_price_basis: str) -> str:
-    """Group B の `simulator.usecase.sizing_ports.required_price_series` と同一契約。
+#: ea_name → 判定の瞬間が足の始まりである EA（実測 2026-09-25・宣言を読み出した結果）。
+#: 他の EA は足の終わりで判定する＝必要系列は "close"。
+_DECIDES_AT_BAR_OPEN = frozenset(
+    {"MA_Slope_EA", "MA_Slope_Pending_EA", "WeeklyVolBand_EA"}
+)
 
-    合成根が実物を注入する（DIP）。検定側は規則だけを固定する。
+#: 足境界で判定しない EA（推定建値を要さない＝E-3 の判定対象外）。
+_NO_BAR_BOUNDARY_DECISION = frozenset({"StopEntryProbe_EA"})
+
+
+def required_series(ea_name: str) -> "str | None":
+    """合成根の 「`_required_series`」 と同一契約（ea_name → 建値推定に要る系列名）。
+
+    合成根が実物を注入する（DIP）。実物は戦略の宣言を読み出すが、検定側は**測った宣言**を
+    表で持つ（ISSUE-533 段階 2）。設定値ではなく ea_name で決まることが契約である。
     """
-    return "open" if entry_price_basis == "current_open" else "close"
+    if ea_name in _NO_BAR_BOUNDARY_DECISION:
+        return None
+    return "open" if ea_name in _DECIDES_AT_BAR_OPEN else "close"
 
 
 def allowed_backtest_keys() -> "frozenset[str]":

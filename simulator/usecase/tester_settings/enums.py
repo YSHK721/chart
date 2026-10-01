@@ -120,6 +120,17 @@ TICK_MODEL_ENGINE_IDS: dict[TickModel, str] = {
     TickModel.REAL_TICKS: "real_ticks",
 }
 
+#: エンジンの tick_model id → `Model`（上の表の逆写像）。**値を書き写さない**
+#: ——写すと片方だけが腐る（ISSUE-525）。
+#:
+#: 逆写像が要るのは、保証境界のうち modelling を読む宣言（N-05）を、`.ini` を持たない
+#: 投入経路でも適用するためである。その経路が持つのはエンジン語彙（決定論設定の
+#: ``tick_model``）だけであり、宣言が読むのは Settings 層の `TickModel` である。
+#: 上の表が全単射であること（写した先が重複しないこと）は検定が固定する。
+TICK_MODELS_BY_ENGINE_ID: dict[str, TickModel] = {
+    engine_id: tick_model for tick_model, engine_id in TICK_MODEL_ENGINE_IDS.items()
+}
+
 
 class DateRangeKind(StrEnum):
     """期間指定の形（`.ini` のキー構成。MQL 由来の数値を持たない）。"""

@@ -13,7 +13,9 @@ import { createSimRunActionView } from "./sim_run_action_view.js";
 import { createSimRunStatusView } from "./sim_run_status_view.js";
 import { createSimRunLayoutView } from "./sim_run_layout_view.js";
 import { createSimSchemaFallbackView } from "./sim_schema_fallback_view.js";
-import { buildSubmission, resolveProfile, symbolCandidatesOf } from "./sim_submission_builder.js";
+import {
+  buildSubmission, resolveProfile, seriesCandidatesOf, symbolCandidatesOf,
+} from "./sim_submission_builder.js";
 import { createSimTesterSettingsPanelView } from "./sim_tester_settings_panel_view.js";
 import { createSimTracePanelView } from "./sim_trace_panel_view.js";
 import { reportViewUrl } from "./report_view_url.js";
@@ -169,14 +171,29 @@ export async function mountSimExecutionPanel({
     // 解決できたときだけ供給元へ渡す: 解決できない銘柄で既定へ戻すと、利用者が打った値が
     // 黙って書き換わる（ビュー自動介入の禁止）。解決できない間は直前の profile を保ち、
     // 不一致は供給元の警告が画面に出す。
+    //
+    // 同じ銘柄に複数のデータセット（系列）が在る場合は、その選び直しが**第 2 の軸**に
+    // なる（ISSUE-511 段階 8-D-5）。軸を出すかどうか・どの系列が選べるかは規則なので M5 が
+    // 決め（`seriesCandidatesOf`）、ここは配って結果を受け取るだけである。系列は銘柄の内側
+    // にあるため、銘柄が動いたら候補を配り直してから profile を引き直す（順序が逆だと、
+    // 前の銘柄の系列で解決を試みて 1 手遅れる）。
     let runProfile = null;
+    function syncSeriesCandidates() {
+      subjectSource.setSeriesCandidates(
+        seriesCandidatesOf(datasets, subjectSource.selectedSymbol()),
+      );
+    }
     function syncRunProfile() {
-      const next = resolveProfile(datasets, subjectSource.selectedSymbol());
+      const next = resolveProfile(
+        datasets, subjectSource.selectedSymbol(), subjectSource.selectedSeries(),
+      );
       if (next === null || next === runProfile) return;
       runProfile = next;
       subjectSource.setRunProfile(runProfile);
     }
-    subjectSource.onSymbolChange(() => { syncRunProfile(); });
+    subjectSource.onSymbolChange(() => { syncSeriesCandidates(); syncRunProfile(); });
+    subjectSource.onSeriesChange(() => { syncRunProfile(); });
+    syncSeriesCandidates();
     syncRunProfile();
 
     // 投入成功時の「結果を見る」導線。**自動遷移しない**（ビュー自動介入禁止）。導線の DOM は
@@ -219,6 +236,38 @@ export async function mountSimExecutionPanel({
     // コールバック**全体**を try で包む（§19.6 B2）。本文の組立（供給元の読み出し・M5 の
     // 純関数）を try の外に置くと、そこで落ちた例外は誰にも捕まらず、画面は押しても何も
     // 起きないまま無音になる（実測済みの欠陥）。失敗は必ず掲示し、開発者コンソールにも残す。
+    // 投入する本文（スタートと「設定をコピー」が**同じ 1 つ**を使う＝コピーした内容と実際に
+    //   送る内容がずれない）。組み立ては純関数 1 箇所（M5）で、ここは 3 つの供給元を渡すだけ。
+    function composeSubmission() {
+      const derived = subjectSource.derivedBacktest();
+      return buildSubmission({
+        profile: runProfile,
+        subject: {
+          ea_name: derived.ea_name,
+          initial_deposit: derived.initial_deposit,
+          settings: subjectSource.buildSettings(),
+        },
+        inputs: eaInputsView.values(),
+        // 実行トレースの指定（面は打たれた値を報告するだけ・解釈は M5 が唯一持つ）。
+        trace: traceView.traceSpec(),
+      });
+    }
+
+    // 「設定をコピー」（2026-09-28 依頼者指示・デバッグ用）: スタートで投入する本文を JSON で写す。
+    //   写した内容は開発者コンソールにも残す（クリップボードが使えない環境でも取り出せる）。
+    view.onCopySettings(async () => {
+      try {
+        const text = JSON.stringify(composeSubmission(), null, 2);
+        console.log(text);
+        await view.copyText(text);
+        view.showCopyResult(`コピーしました（${text.length} 文字）`);
+      } catch (e) {
+        const message = (e && e.message) || String(e);
+        view.showCopyResult(`コピーできません: ${message}`);
+        console.error(`設定をコピーできません: ${message}`);
+      }
+    });
+
     view.onStart(async () => {
       // 押した時点で通番を進める（この 1 行が「現在の run」の定義）。
       submitSeq += 1;
@@ -227,19 +276,7 @@ export async function mountSimExecutionPanel({
         if (stopWatch) { stopWatch(); stopWatch = null; }
         lastStatus = null;
         statusView.showSubmitting();
-        // 本文の組み立ては純関数 1 箇所（M5）。ここは 3 つの供給元を渡すだけである。
-        const derived = subjectSource.derivedBacktest();
-        const body = buildSubmission({
-          profile: runProfile,
-          subject: {
-            ea_name: derived.ea_name,
-            initial_deposit: derived.initial_deposit,
-            settings: subjectSource.buildSettings(),
-          },
-          inputs: eaInputsView.values(),
-          // 実行トレースの指定（面は打たれた値を報告するだけ・解釈は M5 が唯一持つ）。
-          trace: traceView.traceSpec(),
-        });
+        const body = composeSubmission();
         const result = await client.submit(body);
         // 画面へ触れるのは現在の run だけ（遅れて届いた古い応答は掲示も導線も動かさない）。
         // 購読口（onSubmitted / onError）は投入ごとに従来どおり呼ぶ＝外向きの契約は不変。

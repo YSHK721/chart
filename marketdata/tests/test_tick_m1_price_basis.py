@@ -246,3 +246,40 @@ def test_the_whole_day_builder_can_be_driven_on_the_bid_basis(tmp_path) -> None:
     # Assert: close は最終ティックの bid（mid ならこれより 5 大きい）。
     written = pd.read_csv(out)
     assert written["close"].iloc[-1] == 66000.0 + 29 * 0.1
+
+
+# =====================================================================
+# spread 列（ISSUE-511 段階 2・point 注入）との共存
+# =====================================================================
+
+_POINT = 0.1  # テストが注入する point（銘柄仕様は読まない）
+
+
+def test_an_explicit_none_point_still_keeps_the_bid_basis_off_the_ask_column() -> None:
+    """CX: ``point=None`` を明示しても bid 基準は ask 列を読まない（spread 無しでは ask は不要）。"""
+    spy = _ColumnAccessSpy(_minute_of_ticks(120))
+
+    m1 = tick_m1.ticks_to_m1(spy, price_basis=tick_m1.PRICE_BASIS_BID, point=None)
+
+    assert "spread" not in m1.columns
+    assert spy.count_of("askPrice") == 0, (
+        f"point 無しの bid 基準なのに ask 列を {spy.count_of('askPrice')} 回読みました"
+        "（出力に使わない計算＝浪費です）。"
+    )
+    assert spy.count_of("bidPrice") > 0
+
+
+@pytest.mark.parametrize("basis", ["mid", "bid"])
+def test_column_reads_with_a_point_do_not_grow_with_the_number_of_ticks(basis) -> None:
+    """CX（オーダーの表明）: point 有りでも入力行数を 10 倍して列読みが増えない（2 点で固定）。"""
+    small = _ColumnAccessSpy(_minute_of_ticks(12))
+    large = _ColumnAccessSpy(_minute_of_ticks(120))
+
+    m1_small = tick_m1.ticks_to_m1(small, price_basis=basis, point=_POINT)
+    m1_large = tick_m1.ticks_to_m1(large, price_basis=basis, point=_POINT)
+
+    assert "spread" in m1_small.columns and "spread" in m1_large.columns  # 空振り防止
+    assert len(large.reads) == len(small.reads), (
+        f"基準 {basis}・point 有り: 行数 10 倍で列読みが {len(small.reads)} → {len(large.reads)}"
+        " へ増えました（入力量に比例する計算が入り込んでいます）。"
+    )

@@ -50,6 +50,24 @@ _ALLOWED: "dict[str, set[str]]" = {
     # 実測・TBD-5 承認）。ここへ 1 つでも import を足すと tf_meta↔dataset の相互依存や
     # 「台帳が読取側を知る」逆流が入り込む。宣言を検定へ昇格させる。
     "dataset_registry.py": {"marketdata.paths"},
+    # 供給の鮮度判定（ISSUE-526 段 1）。素材の所有者側に置き、暦の権威（simulator / indigators）
+    # へは依存しない。末尾読み・銘柄の台帳・M1 の置き場の権威・物理基点の 4 つだけを参照する。
+    "supply_freshness.py": {
+        "pandas",
+        "marketdata.paths",
+        "marketdata.tail_reader",
+        "marketdata.dataset_registry",
+        "marketdata.tick_m1",
+    },
+    # 供給の健全性の束ね（ISSUE-526 段 3）。鮮度（段 1）と在否（段 2）を突き合わせるだけで、
+    # 書き手の実体である tools へは依存しない（上位層への逆流になる）。在否の読み口は中立核
+    # common.writer_lock が持つ唯一の定義であり、ここへ写しを作らない。
+    "supply_health.py": {
+        "common.writer_lock",
+        "marketdata.paths",
+        "marketdata.dataset_registry",
+        "marketdata.supply_freshness",
+    },
     # tick 木レイアウトの唯一権威。物理基点（paths）と日付解決（pandas）だけに依存し、
     # 素材化モジュール（tick_m1）へは依存しない＝権威が利用者へ逆流しない（ISSUE-479 M-2）。
     "tick_tree.py": {"pandas", "marketdata.paths"},
@@ -74,7 +92,25 @@ _ALLOWED: "dict[str, set[str]]" = {
         # tick 木レイアウトの唯一権威（ISSUE-479 M-2）。この 1 エントリを消すと、木の形を
         # 組む式が本モジュールへ復活し、レイアウト権威が 2 箇所になる。
         "marketdata.tick_tree",
+        # spread 列の規則の唯一源（ISSUE-511 段階 2）。pandas のみに依存する下位部品ゆえ循環しない。
+        # この 1 エントリを消すと、気配幅の丸め規則が本モジュールへ手書きで復活する。
+        "marketdata.quote_spread",
+        # spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。台帳と銘柄仕様スナップショットにのみ
+        # 依存する下位部品ゆえ循環しない。この 1 エントリを消すと、point が呼出ごとの引数へ戻る。
+        "marketdata.spread_point",
     },
+    # spread の point の読み口（ISSUE-511 段階 3 前提 (a)）。台帳（どのスナップショットか）と
+    # スナップショット（point の値）の 2 つだけ。pandas も tick_m1 も知らない。
+    "spread_point.py": {"marketdata.dataset_registry", "marketdata.symbol_spec_snapshot"},
+    # MT5 端末スナップショットの読み口。docstring は依存ゼロを宣言していたが検定表に行が無かった
+    # （ISSUE-511 段階 3 前提 (a) で昇格）。
+    "symbol_spec_snapshot.py": set(),
+    # 分内の気配幅（spread）規則の唯一源（ISSUE-511 段階 2）。pandas のみ。point は呼出側が
+    # 注入する（銘柄仕様 symbol_spec_snapshot を import すると規則が供給元に縛られる）。
+    "quote_spread.py": {"pandas"},
+    # loader 互換 CSV スキーマの唯一源。**依存ゼロ**の定数モジュール（tick_m1 / rollup /
+    # resample が参照する側。ここへ import を足すと循環の入口になる）。
+    "csv_schema.py": set(),
     # 日別ティックの読み元の解決と読取（ISSUE-512 段階 2）。確定 parquet（tick_tree のレイアウト・
     # tick_m1 の列と集計規則）と受信ジャーナル（mt5_ticks の形式とサーバ時刻 → UTC 変換）の
     # **上位** に置く。mt5_ticks は tick_m1 を import するため、tick_m1 側へ置くと循環になる。
@@ -91,7 +127,7 @@ _STDLIB_PREFIXES = {
     "__future__", "typing", "pathlib", "datetime", "os", "sys", "re", "json", "csv",
     "time", "math", "logging", "tempfile", "collections", "dataclasses", "functools",
     "itertools", "hashlib", "zlib", "queue", "threading", "urllib", "shutil", "glob",
-    "zoneinfo",
+    "zoneinfo", "types",
 }
 
 

@@ -42,6 +42,10 @@ _BINDINGS_SOURCE = _EA_BINDINGS_DIR / "__init__.py"
 
 #: 表を**列挙**してよい関数（選択はしない）。選択規則は下の _SELECTOR の 1 箇所のまま。
 _ENUMERATOR = "known_ea_names"
+
+#: 表を**列挙**してよい 2 つ目の関数（ISSUE-525）。気配幅を読む EA 名の列挙であり、
+#: 判定は各束縛が名乗る戦略の宣言から導く（名前を書き写さない）。選択はしない。
+_SPREAD_ENUMERATOR = "spread_dependent_ea_names"
 #: 表を**引く**唯一の関数。
 _SELECTOR = "select_ea_binding"
 #: 表を**宣言の集まりとして読む**関数（戦略へ配るパラメータ名の和を導く）。選択はしない。
@@ -200,7 +204,7 @@ class TestFactorySelectionHasASinglePoint:
         return readers
 
     def test_the_table_is_read_by_the_selector_and_the_enumerator_only(self):
-        """表に触れてよい関数は 3 つだけ、かつ役割が違う。
+        """表に触れてよい関数は 4 つだけ、かつ役割が違う。
 
         選択規則の関数は**選択**（`.get(ea_name, 既定)`）、列挙の関数は**列挙**（キー
         集合）、パラメータ名の関数は**宣言の読み出し**（各宣言の strategy_params の和）
@@ -208,10 +212,13 @@ class TestFactorySelectionHasASinglePoint:
         別途固定する）ため、規則の複製にはならない。
         `known_ea_names` を公開する動機は、外側スライス（`sim_ui`）が登録表のキー集合
         を越境 import して同じ列挙を書き写していたこと（ISSUE-405 実測）である。
-        4 つ目の読み手が入れば本検定が落ちる。
+        「`spread_dependent_ea_names`」 を公開する動機は同型で、保証境界 N-17 が
+        「気配幅を読む EA」の列挙を**手書きで**持っていたこと（ISSUE-525 実測: 宣言が
+        ``current_open`` なのに列挙に無い EA が気配幅なしのデータで完走した）である。
+        5 つ目の読み手が入れば本検定が落ちる。
         """
         assert sorted(self._factory_table_readers()) == sorted(
-            [_SELECTOR, _ENUMERATOR, _PARAM_DERIVER]
+            [_SELECTOR, _ENUMERATOR, _SPREAD_ENUMERATOR, _PARAM_DERIVER]
         )
 
     def test_the_composition_root_never_reads_the_table(self):
@@ -350,10 +357,11 @@ class TestPrivateEaNamesStayInsideTheEngineCompositionRoot:
             # ISSUE-502 段階 4A: 宣言駆動化そのものの検定（編集点数・宣言と実装の一致）。
             "tests/integration/test_ea_bindings_are_declaration_driven.py",
             "tests/unit/test_ea_factory_registry.py",
+            # N-17: 気配幅を読む EA の列挙が**戦略の宣言**から導かれることの検定
+            # （ISSUE-525。2026-09-06 版はデータ形式を代理に使っており、宣言が
+            # ``current_open`` の EA を取り逃していた）。並びは昇順である。
+            "tests/unit/test_spread_dependency_from_declaration.py",
             "tests/unit/test_unsupported_n01_ea_name_source.py",
-            # N-17: spread 依存宣言と「Mt5CsvOHLCRepository を返すファクトリ」の一致を
-            # 機械で結ぶ検定（宣言の写しが腐らないための参照・2026-09-06）。
-            "tests/unit/test_unsupported_spread_dependency.py",
         ]
         assert [
             path

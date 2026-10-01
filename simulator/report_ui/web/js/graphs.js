@@ -63,18 +63,18 @@ export function scatterIdAt(arrA, arrB, datasetIndex, index) {
 // 散布 dataset ソース（🟡-1）: 棒の _pair と同じく dataset0=IS / dataset1=OOS を
 //   seg に依らず返す（cur 依存を排し OOS 区間で IS/OOS が二重表示にならない）。
 //   kind="mfe"|"mae"。{a:IS点列, b:OOS点列}。
-export function scatterPairSources(data, kind) {
+export function scatterPairSources(data, kind, segA = "is", segB = "oos") {
   const key = "scatter_" + kind;
-  const isA = aggOf(data, "is")[key] || [];
-  const oosB = aggOf(data, "oos")[key] || [];
+  const isA = aggOf(data, segA)[key] || [];
+  const oosB = segB == null ? [] : (aggOf(data, segB)[key] || []);
   return { a: isA, b: oosB };
 }
 
 // 保有時間棒 dataset ソース（🟡-1）: dataset0=IS / dataset1=OOS を seg 非依存で返す。
 //   ラベルは IS の hold_pl キー順を基準とし、a/b を同ラベルで並置する（二重表示なし）。
-export function holdPairSources(data) {
-  const isPl = aggOf(data, "is").hold_pl || {};
-  const oosPl = aggOf(data, "oos").hold_pl || {};
+export function holdPairSources(data, segA = "is", segB = "oos") {
+  const isPl = aggOf(data, segA).hold_pl || {};
+  const oosPl = segB == null ? {} : (aggOf(data, segB).hold_pl || {});
   const labels = Object.keys(isPl);
   return {
     labels,
@@ -107,24 +107,32 @@ const IS_COLOR = "#3b82f6", OOS_COLOR = "#f0843b";
 // 散布点色（IS_COLOR/OOS_COLOR と同色相・半透明）。点が重なっても密度が見えるよう alpha を持たせる。
 const IS_DOT = "rgba(59,130,246,0.45)", OOS_DOT = "rgba(240,132,59,0.5)";
 
+/** 並置する系列の既定（dataset0=IS / dataset1=OOS）。区間が 1 つしか無い呼び出し元（sim の
+ *  単一 run・区間 `single`）は `opts.series` に 1 本だけ渡す（2026-09-27・sim の「グラフ」タブ）。
+ *  既定のまま呼ぶ report_ui の挙動は変わらない。 */
+export const DEFAULT_GRAPH_SERIES = Object.freeze([
+  Object.freeze({ seg: "is", label: "IS" }),
+  Object.freeze({ seg: "oos", label: "OOS" }),
+]);
+const _BAR_COLORS = [IS_COLOR, OOS_COLOR];
+const _DOT_COLORS = [IS_DOT, OOS_DOT];
+
 function _card(id, title) {
   return `<div class="card"><h4>${title}</h4><div class="cv"><canvas id="${id}"></canvas></div></div>`;
 }
 
 // IS/OOS 並置棒の dataset ペア（共通化は pair に留める・汎用ファクトリ禁止）。
-function _pair(da, db) {
-  return [
-    { label: "IS", data: da, backgroundColor: (ctx) => _gradBar(ctx, IS_COLOR) },
-    { label: "OOS", data: db, backgroundColor: (ctx) => _gradBar(ctx, OOS_COLOR) },
-  ];
+function _pair(da, db, series = DEFAULT_GRAPH_SERIES) {
+  return [da, db].slice(0, series.length).map((data, i) => (
+    { label: series[i].label, data, backgroundColor: (ctx) => _gradBar(ctx, _BAR_COLORS[i]) }
+  ));
 }
 
 // IS/OOS 散布の dataset ペア（棒の _pair と対をなす・点列専用。汎用ファクトリ禁止）。
-function _scatPair(da, db) {
-  return [
-    { label: "IS", data: da, backgroundColor: IS_DOT, pointRadius: 2 },
-    { label: "OOS", data: db, backgroundColor: OOS_DOT, pointRadius: 2 },
-  ];
+function _scatPair(da, db, series = DEFAULT_GRAPH_SERIES) {
+  return [da, db].slice(0, series.length).map((data, i) => (
+    { label: series[i].label, data, backgroundColor: _DOT_COLORS[i], pointRadius: 2 }
+  ));
 }
 
 function _baseOpt(onClick) {
@@ -164,7 +172,11 @@ function _ctx(id) {
 // グラフ群を host(#graphHost 内 #graphGrid) へ描画し、要素クリック→linkage.applyFilter を結線する。
 // 引数: host=<div id=graphHost>, data=DATA（segments）, seg=選択区間, linkage,
 //        onFocus(optional)=最初の該当 trade へズームするコールバック（main.js が注入）。
-export function buildGraphs(host, data, seg, linkage, onFocus) {
+export function buildGraphs(host, data, seg, linkage, onFocus, opts = {}) {
+  // 並置する系列（既定 IS/OOS）。1 本だけ渡されたら単一系列で描く（sim の単一 run）。
+  const series = (opts && Array.isArray(opts.series) && opts.series.length) ? opts.series : DEFAULT_GRAPH_SERIES;
+  const segA = series[0].seg;
+  const segB = series.length > 1 ? series[1].seg : null;
   if (!host || typeof window === "undefined" || !window.Chart) return;
   // R-3: 既存 Chart を破棄してから再構築（区間切替の二重バインド例外を防ぐ）。
   Object.values(_charts).forEach((c) => c && c.destroy());
@@ -182,8 +194,8 @@ export function buildGraphs(host, data, seg, linkage, onFocus) {
     _card("gCA", "Correlation (Profits, MAE)") +
     _card("gHT", "Position holding time（保有時間別損益）");
 
-  const A = aggOf(data, "is");
-  const B = aggOf(data, "oos");
+  const A = aggOf(data, segA);
+  const B = segB == null ? {} : aggOf(data, segB);
   const cur = aggOf(data, seg);
   const W = cur.weekorder || WEEKORDER;
   const trades = data.segments[seg].trades || [];
@@ -208,14 +220,14 @@ export function buildGraphs(host, data, seg, linkage, onFocus) {
   const onHour = (e, els) => { if (els[0]) emit(filterIdsByHour(trades, els[0].index), `hour ${els[0].index}:00`); };
   const onWday = (e, els) => { if (els[0]) emit(filterIdsByWday(trades, W[els[0].index]), W[els[0].index]); };
 
-  _charts.eh = new Chart(_ctx("gEH"), { type: "bar", data: { labels: hours, datasets: _pair(hours.map((h) => eh[h] || 0), hours.map((h) => ehB[h] || 0)) }, options: _baseOpt(onHour) });
-  _charts.ew = new Chart(_ctx("gEW"), { type: "bar", data: { labels: W, datasets: _pair(W.map((w) => ew[w] || 0), W.map((w) => ewB[w] || 0)) }, options: _baseOpt(onWday) });
+  _charts.eh = new Chart(_ctx("gEH"), { type: "bar", data: { labels: hours, datasets: _pair(hours.map((h) => eh[h] || 0), hours.map((h) => ehB[h] || 0), series) }, options: _baseOpt(onHour) });
+  _charts.ew = new Chart(_ctx("gEW"), { type: "bar", data: { labels: W, datasets: _pair(W.map((w) => ew[w] || 0), W.map((w) => ewB[w] || 0), series) }, options: _baseOpt(onWday) });
   const months = [...new Set([...Object.keys(em), ...Object.keys(emB)])].sort();
-  _charts.em = new Chart(_ctx("gEM"), { type: "bar", data: { labels: months, datasets: _pair(months.map((m) => em[m] || 0), months.map((m) => emB[m] || 0)) }, options: _baseOpt(() => {}) });
-  _charts.ph = new Chart(_ctx("gPH"), { type: "bar", data: { labels: hours, datasets: _pair(hours.map((h) => ph[h] || 0), hours.map((h) => phB[h] || 0)) }, options: _baseOpt(onHour) });
-  _charts.pw = new Chart(_ctx("gPW"), { type: "bar", data: { labels: W, datasets: _pair(W.map((w) => pw[w] || 0), W.map((w) => pwB[w] || 0)) }, options: _baseOpt(onWday) });
+  _charts.em = new Chart(_ctx("gEM"), { type: "bar", data: { labels: months, datasets: _pair(months.map((m) => em[m] || 0), months.map((m) => emB[m] || 0), series) }, options: _baseOpt(() => {}) });
+  _charts.ph = new Chart(_ctx("gPH"), { type: "bar", data: { labels: hours, datasets: _pair(hours.map((h) => ph[h] || 0), hours.map((h) => phB[h] || 0), series) }, options: _baseOpt(onHour) });
+  _charts.pw = new Chart(_ctx("gPW"), { type: "bar", data: { labels: W, datasets: _pair(W.map((w) => pw[w] || 0), W.map((w) => pwB[w] || 0), series) }, options: _baseOpt(onWday) });
   const pmonths = [...new Set([...Object.keys(pm), ...Object.keys(pmB)])].sort();
-  _charts.pm = new Chart(_ctx("gPM"), { type: "bar", data: { labels: pmonths, datasets: _pair(pmonths.map((m) => pm[m] || 0), pmonths.map((m) => pmB[m] || 0)) }, options: _baseOpt(() => {}) });
+  _charts.pm = new Chart(_ctx("gPM"), { type: "bar", data: { labels: pmonths, datasets: _pair(pmonths.map((m) => pm[m] || 0), pmonths.map((m) => pmB[m] || 0), series) }, options: _baseOpt(() => {}) });
 
   // 🟡-2: Chart.js v4 onClick 要素 {datasetIndex,index} で正しい系列の点を解決する
   //   （常に IS 配列を参照する誤りを排し、OOS 点クリックで正しい OOS trade id を抽出）。
@@ -225,24 +237,24 @@ export function buildGraphs(host, data, seg, linkage, onFocus) {
     if (id != null) emit(new Set([id]), `trade #${id}`);
   };
   // 🟡-1: dataset0=IS / dataset1=OOS を seg 非依存で並置（cur 依存の二重表示を排す）。
-  const scf = scatterPairSources(data, "mfe");
-  const sca = scatterPairSources(data, "mae");
+  const scf = scatterPairSources(data, "mfe", segA, segB);
+  const sca = scatterPairSources(data, "mae", segA, segB);
   _charts.cf = new Chart(_ctx("gCF"), {
     type: "scatter",
-    data: { datasets: _scatPair(scf.a, scf.b) },
+    data: { datasets: _scatPair(scf.a, scf.b, series) },
     options: { ..._scatOpt("MFE (JPY)"), onClick: onScatter(scf.a, scf.b) },
   });
   _charts.ca = new Chart(_ctx("gCA"), {
     type: "scatter",
-    data: { datasets: _scatPair(sca.a, sca.b) },
+    data: { datasets: _scatPair(sca.a, sca.b, series) },
     options: { ..._scatOpt("MAE (JPY)"), onClick: onScatter(sca.a, sca.b) },
   });
 
   // 🟡-1: 保有時間棒も dataset0=IS / dataset1=OOS を seg 非依存で並置。
-  const hp = holdPairSources(data);
+  const hp = holdPairSources(data, segA, segB);
   _charts.ht = new Chart(_ctx("gHT"), {
     type: "bar",
-    data: { labels: hp.labels, datasets: _pair(hp.a, hp.b) },
+    data: { labels: hp.labels, datasets: _pair(hp.a, hp.b, series) },
     options: _baseOpt((e, els) => { if (els[0]) emit(filterIdsByHold(trades, hp.labels[els[0].index]), `hold ${hp.labels[els[0].index]}`); }),
   });
 }

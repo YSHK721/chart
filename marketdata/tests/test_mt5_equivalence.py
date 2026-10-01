@@ -13,12 +13,33 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from marketdata import tick_m1
+from marketdata import dataset_registry, tick_m1
+from marketdata.dataset_registry import REGISTRY, DatasetDescriptor
 from marketdata.mt5_ticks import ingest, journal, m1_chain, rebuild
 
 _PKG = Path(tick_m1.__file__).resolve().parent / "mt5_ticks"
 _TOKEN = "JP225@OANDA-Japan-MT5-Live"
 _DAY = dt.date(2026, 8, 25)
+#: 突合に使う価格基準。実在の MT5 系列の台帳値をそのまま使う（綴りを書き写さない）。
+_BASIS = dataset_registry.tick_price_basis("jp225_mt5")
+#: 本ファイルが使う合成 ref（どれも台帳外なので、基準を引けるよう一時登録する）。
+_SYNTHETIC_REFS = ("incremental", "whole", "onego", "stepwise")
+
+
+@pytest.fixture(autouse=True)
+def _registered_synthetic_refs(monkeypatch, tmp_path):
+    """合成 ref を台帳へ一時登録する（価格基準の唯一源は台帳・ISSUE-511 段階 3 の段階 6）。
+
+    経路（``m1_chain`` / ``rebuild``）は基準を渡さず ``ref`` から引くようになったので、登録が
+    無いと「台帳に無い ref では price_basis が必須」で止まる。突合の両側を同じ基準にするため、
+    4 つとも同じ ``_BASIS`` を名乗らせる（揃えずに比べると、測っているのは「経路の一致」では
+    なく「基準の食い違い」になる）。
+    """
+    for ref in _SYNTHETIC_REFS:
+        monkeypatch.setitem(REGISTRY, ref, DatasetDescriptor(
+            path=tmp_path / f"{ref}_m1.csv", symbol="JP225", tick=True,
+            price_basis=_BASIS, vendor="mt5",
+        ))
 
 
 def _label_ms(utc: dt.datetime) -> int:
@@ -110,7 +131,7 @@ def test_the_intraday_fold_equals_the_m1_derived_from_the_finalized_parquet(tmp_
     # 突合相手も **同じ価格基準**で回す（依頼者裁定 2026-09-02 で MT5 系列は bid）。基準を
     #   揃えずに比べると、測っているのは「経路の一致」ではなく「基準の食い違い」になる。
     whole = tick_m1._format_m1_for_csv(
-        tick_m1.ticks_to_m1(parquet, price_basis=ingest.PRICE_BASIS)
+        tick_m1.ticks_to_m1(parquet, price_basis=_BASIS)
     ).reset_index()
 
     # Assert
@@ -133,7 +154,6 @@ def test_the_intraday_csv_is_byte_identical_to_the_whole_day_builder(tmp_path):
     )
     tick_m1.build_m1_from_ticks(
         _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until,
-        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
     )
 
     # Assert
@@ -174,7 +194,6 @@ def test_the_intraday_fold_alone_still_carries_the_phantom_bars(tmp_path):
     )
     tick_m1.build_m1_from_ticks(
         _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path, until=until,
-        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
     )
     incremental = pd.read_csv(tick_m1.m1_csv_path(ref="incremental", data_dir=tmp_path))
     whole = pd.read_csv(tick_m1.m1_csv_path(ref="whole", data_dir=tmp_path))
@@ -209,7 +228,6 @@ def test_the_finalized_record_matches_the_authority_even_on_an_outlier_day(tmp_p
     # Assert
     tick_m1.build_m1_from_ticks(
         _DAY, _DAY, symbol=_TOKEN, ref="whole", data_dir=tmp_path,
-        price_basis=ingest.PRICE_BASIS,  # 突合相手も MT5 系列と同じ基準（bid）で回す。
     )
     incremental = tick_m1.m1_csv_path(ref="incremental", data_dir=tmp_path).read_bytes()
     whole = tick_m1.m1_csv_path(ref="whole", data_dir=tmp_path).read_bytes()

@@ -19,6 +19,7 @@
 import { installOpLog } from './op_log.js';
 // 版面の縦 2 分割（下部ペイン＋分割線）の器。表示層はここへ挿す（裁定 2026-08-21）。
 import { createBottomPaneView } from './bottom_pane_view.js';
+import { createResultChartAreaView } from './result_chart_area_view.js';
 import { mountDashboardArea } from './dashboard_area_view.js';
 import { wrap as wrapTimers } from './timer_registry.js';
 import { scopedStorage } from './mode_storage.js';
@@ -61,6 +62,9 @@ const LIVE_ROOT = '/live/js/public/live_root_api.js';
 // 表示対象 ref の解決規則（ISSUE-447・A-3 案 U1）。実装は live core 側の 1 つだけで、統合層は
 //   それを参照する（手書き複製の禁止）。
 const LIVE_PUBLIC_API = '/live/js/public/live_public_api.js';
+// live のチャート部品（チャート生成・売買マーク描画）の公開面。sim のジョブ結果を売買履歴チャートへ
+//   描く部品として sim の表示層へ注入する（2026-09-26・重さの境界で上の面と分けてある）。
+const LIVE_CHART_KIT_API = '/live/js/public/live_chart_kit_api.js';
 // リプレイ層から借りる 4 点（コントローラ・駆動・MP アクター・操作バー）は replay core の
 //   公開面 1 本から取る（ISSUE-479 Wave2 J-4b）。内部階層を名指すと replay 側の配置換えで
 //   統合層が無言で 404 になる（識別子渡しの動的 import は import 走査に映らない）。
@@ -273,8 +277,13 @@ export function createModeController({
 //   公開しない: 借り手は `loadDisplayLayers` だけで、外から差し替える口を作る理由が無い
 //   （使われない公開面は、消えたことに誰も気付けない依存を育てる）。
 const LAYER_EXTRAS = Object.freeze({
-  [MODE.SIM]: ({ lwc, bottomPane }) => ({
+  [MODE.SIM]: ({ lwc, bottomPane, resultChart, chartKit }) => ({
     lwc,
+    // ジョブ結果を売買履歴チャートへ描くための売買履歴チャートの器・部品（2026-09-26 依頼者指示）。
+    //   器の所有者は統合層、部品は live core の公開面。足は sim がジョブ自身の足の成果物から
+    //   位置の区間で読む（ISSUE-552/554 段階 2-2）ので、統合層は足の読み手を渡さない。
+    resultChart,
+    chartKit,
     // 中身が必要とする高さを受け取り、**既定の高さ**として与える（ISSUE-442・裁定 2026-08-22）。
     //   既定が版面の 45% 固定だと、投入フォームの下に余白が出る一方でチャート側は必要以上に
     //   削られ、指標ペインが狭くなって手で広げる作業が要った。
@@ -453,6 +462,9 @@ async function main() {
   //   計算できない・実測 2026-08-21）。
   const bottomPane = createBottomPaneView({ doc: document });
   bottomPane.mount(document.getElementById('app'), { above: document.querySelector('.chart-wrap') });
+  // 売買履歴チャートの器（売買履歴チャートを出している間だけ版面に出る・普段は隠れている）。
+  const resultChart = createResultChartAreaView({ doc: document });
+  resultChart.mount(document.querySelector('.chart-wrap'));
 
   // 表示層の器を用意する。**置き場所を決めるのは統合層**（器の所有者）であり、各 core は
   //   渡された host へ挿すだけで統合ページの id を知らない（DIP）。
@@ -470,6 +482,8 @@ async function main() {
   //   sim の job_id は `?job=<id>` から sim 側が読む（統合層は選ばない＝ビュー自動介入の禁止）。
   let layers;
   try {
+    // live core のチャート部品の公開面（売買履歴チャートの組み立て）。
+    const chartKit = await import(LIVE_CHART_KIT_API);
     layers = await loadDisplayLayers({
       context: {
         doc: document,
@@ -477,6 +491,8 @@ async function main() {
         lwc: window.LightweightCharts,
         bottomPane,
         liveStorage,
+        resultChart,
+        chartKit,
       },
     });
   } catch (err) {

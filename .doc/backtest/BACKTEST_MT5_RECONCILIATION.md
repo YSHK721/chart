@@ -80,7 +80,9 @@ build_interactor(
     trading_start=pd.Timestamp("<対象月初日>"),  # 2026-01-01 / 2026-02-01 / 2026-03-01
     config_overrides={
         "tick_model": "ohlc_expand",        # 1分OHLC（every-tick 検証時は "real_ticks"）
-        "entry_price_basis": "current_open", # 成行＝バー open クォート（買い=open+spread×point/売り=open）
+        # entry_price_basis はここに書かない（ISSUE-533・2026-09-25）。成行の建値は
+        # 戦略が宣言する判定の瞬間から決まる（MA_Slope は確定足で判定するのでバー open
+        # クォート＝買い open+spread×point / 売り open）。設定に書くと ConfigError になる。
         "floating_pnl_basis": "bid_ask",     # 含み損＝買い Bid/売り Ask
         "stop_out_action": "close_and_halt", # 強制決済して完走
         "session_calendar": "jp225",         # 日次セッション [01:01, 23:58]

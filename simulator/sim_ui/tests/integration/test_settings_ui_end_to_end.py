@@ -73,9 +73,12 @@ _E2E_DATA_CSV = (
 @pytest.fixture
 def stack(tmp_path: Path, monkeypatch):
     """製品 UI の合成経路（ルータ → sim core）を ephemeral port で立てる。"""
-    from simulator.sim_ui.adapter import symbol_spec_catalog
+    from marketdata.dataset_registry import sim_offered_refs
 
-    monkeypatch.setattr(symbol_spec_catalog, "_JP225_DATA_CSV", _E2E_DATA_CSV)
+    from simulator.tests.ledger_entity_fixtures import point_entity_at
+
+    # 台帳が提供すると宣言した先頭の系列（＝合成経路が引く profile）の実体だけを差し替える。
+    point_entity_at(monkeypatch, sim_offered_refs()[0], _E2E_DATA_CSV)
     core = build_sim_display_app(repo_root=_ROOT, web_dir=_SIM_WEB, data_root=tmp_path / "data")
     core_server = make_server(core, "127.0.0.1", None)
     core_base = f"http://127.0.0.1:{core_server.server_address[1]}"

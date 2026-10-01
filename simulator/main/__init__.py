@@ -29,7 +29,13 @@ from simulator.adapter.execution.tick_model import (
     OhlcExpandTickModel,
     RealTickModel,
 )
-from simulator.adapter.execution.tick_model_registry import TICK_MODEL_REGISTRY
+from simulator.adapter.execution.tick_model_registry import (
+    TICK_MODEL_REGISTRY,
+    consumes_market_data,
+)
+from simulator.adapter.indicator.bar_aligned_registry import align_to_bars
+from simulator.adapter.repository import ohlc_frame_cache
+from simulator.main.ea_bindings.sources import row_times_for
 # A-6: 終了コード翻訳の唯一の宣言場所。main 側で表を再宣言せず読むだけにする。
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.adapter.presenter.json import JsonPresenter
@@ -52,6 +58,8 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
     DEFAULT_EA_NAME,
     build_ea_components,
     known_ea_names,
+    plot_declarations,
+    spread_dependent_ea_names,
     strategy_param_names,
 )
 # 規則 S（バー系列の有無と tick_model の整合）の唯一の判定点。ISSUE-502 段階 3 以前は
@@ -63,6 +71,15 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
 # （循環は構造ごと消えた）。
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
+# ISSUE-525: 保証境界のうち run 自身の引数だけで判定できる宣言と、その適用器。規則 S と
+# 同じ「どちらでもない第三の点」に置いてある（親が子パッケージを読むと ISSUE-502 の C-2＝
+# パッケージ間の双方向依存が復活し、`test_package_import_acyclicity.py` が落ちる）。
+from simulator.main.unsupported_run_scope import (
+    apply_run_scope_unsupported_rules,
+    run_scope_inputs_for,
+)
+from simulator.usecase.entry_price_basis import declared_entry_price_basis
+from simulator.usecase.pending_order_use import apply_pending_order_use
 from simulator.usecase.models import AccountSpec, SymbolSpec
 from simulator.usecase.ports import IndicatorPort
 from simulator.usecase.run_backtest import RunBacktestInteractor, RunBacktestRequest
@@ -269,6 +286,59 @@ def _ea_components(
     )
 
 
+def _windowed_reader(market_data: Any, data_path: Any, marketdata_window: Any) -> Any:
+    """EA 束縛が選んだ読み手へ取得窓を効かせた読み手を返す（窓が無ければそのまま）。
+
+    `build_interactor`（run）と `build_ea_indicators`（表示・トレース）が**同じ Bar 列**を
+    得るための唯一の規則（ISSUE-509: 指標を足へ時刻で合わせるには、両者が同じ窓の Bar を
+    見ていなければならない）。
+    """
+    if marketdata_window is None:
+        return market_data
+    if isinstance(market_data, CsvOHLCRepository):
+        from marketdata.csv_source import CsvCandleSource
+
+        # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
+        # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
+        # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
+        return MarketDataSourceRepository(
+            CsvCandleSource(data_path), window=marketdata_window
+        )
+    if isinstance(market_data, MarketdataCsvOHLCRepository):
+        # marketdata 形式は**フレーム段**で窓を適用する（構築時パラメータへ隔離＝
+        # CsvOHLCRepository の委譲と同じ形）。後段の窓デコレータに任せると全行の
+        # Bar を作ってから捨てる（実測 4,604,080 行で構築 442.6 秒）ISSUE-450 型の
+        # 浪費になる。構築数＝採用数は repository の計算量テストが固定する。
+        return MarketdataCsvOHLCRepository(window=marketdata_window)
+    # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
+    # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
+    return WindowedMarketDataRepository(market_data, window=marketdata_window)
+
+
+def _aligned_to_run_bars(
+    registry: Any, reader: Any, data_path: Any, bars: Any, *, tick_model: str
+) -> Any:
+    """指標の行を run の Bar 列へ**時刻で**対応させる（ISSUE-509）。
+
+    戦略は ``iloc[bar_index]`` で指標を位置参照する。registry はデータ実体の全行（期間前の
+    履歴で温まった値）から作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の
+    指標値を読む（実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError`。
+    バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
+    """
+    if bars and consumes_market_data(tick_model):
+        return align_to_bars(registry, row_times_for(reader, data_path), bars)
+    return registry
+
+
+def known_plots(ea_name: str, *, config_overrides: "dict | None" = None) -> "tuple[Any, ...]":
+    """その EA がチャートへ描くと宣言した指標（「`PlotDecl`」 の列）を返す（`known_ea_names` と同じ照会）。
+
+    選択は ea_bindings の唯一の判定点を通す（判定入力 `tick_model` は `build_interactor` と
+    同じ導出）。宣言の無い EA は空（描く系列を推測で選ばない）。
+    """
+    return plot_declarations(ea_name, tick_model=_tick_model_of(config_overrides))
+
+
 def build_ea_indicators(**spec: Any) -> IndicatorPort:
     """その EA が**実行に使う指標系列**（IndicatorPort）を返す（Phase 5 R-3・追加のみ）。
 
@@ -285,6 +355,33 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     """
     _strategy, registry, _market_data = _ea_components(**spec)
     return registry
+
+
+def build_run_indicators(*, run_bars: Any = None, **spec: Any) -> IndicatorPort:
+    """その run が**実際に読んだ値**の指標系列を返す（系列の位置 i ＝ run の Bar 列の i 本目）。
+
+    `build_ea_indicators` との違い（ISP・用途で口を分ける）: あちらは「その EA が何の系列を
+    登録するか」を問う口であり、系列名のカタログは Bar を組めないデータ（気配幅の列が無い
+    探索用データ等）でも呼ぶ。こちらは**値を使う**口（接点・実行トレース・チャートの重ね描き）
+    であり、実行（`build_interactor`）と**同じ**窓と時刻の対応づけを掛ける（ISSUE-509）。
+    掛けないと、期間を指定した run で値の利用者が実行と別の足の値を読む。
+
+    ``spec``: `build_interactor` と同じジョブ仕様。
+    ``run_bars``: その run が**実行した** Bar 列（`build_interactor` の request.bars）。渡すと
+        それへ対応づけ、Bar 列を組み立て直さない（ISSUE-553 項目 2: 組み立て直すと 215 万本で
+        変換と時刻の対応づけがもう 1 回ずつ走る）。省略時は同じ窓で読み直す（従来どおり）。
+    """
+    _strategy, registry, reader = _ea_components(**spec)
+    data_path = spec.get("data_path")
+    tick_model = _tick_model_of(spec.get("config_overrides"))
+    if data_path is None or not consumes_market_data(tick_model):
+        return registry
+    bars = run_bars
+    if bars is None:
+        bars = _windowed_reader(reader, data_path, spec.get("marketdata_window")).load(
+            data_path, None, None
+        )
+    return _aligned_to_run_bars(registry, reader, data_path, bars, tick_model=tick_model)
 
 
 def build_ea_strategy(**spec: Any) -> Any:
@@ -350,6 +447,10 @@ def build_interactor(
     weekly_f_risk: float = 0.01,
     adx_min: float = 22.0,
     adx_period: int = 8,
+    # MarginProbe_EA（証拠金維持率の動作確認・2026-09-27）が読む狙いの維持率（%）。
+    #   注入専用ブロック（strategy_decorator〜run_tracer）は末尾固定なので、ジョブ仕様の
+    #   パラメータはその**前**へ足す（test_run_tracer_injection_path が末尾を固定する）。
+    margin_level_target: float = 95.0,
     marketdata_window: Any = None,
     strategy_decorator: "Callable[[Any], Any] | None" = None,
     strategy_override: "Any | None" = None,
@@ -393,12 +494,22 @@ def build_interactor(
     verify_engine_data_consistency(
         tick_model=determinism.tick_model, has_data=data_path is not None
     )
+    # ISSUE-525: 保証境界のうち **run 自身の引数だけで判定できるもの**を、どの投入経路も
+    #   必ず通るこの合流点で適用する。是正前の適用点は写像層
+    #   （`main/tester_settings/kwargs_mapper.effective_to_interactor_kwargs`）の 1 箇所だけ
+    #   であり、「`settings`」 ブロックを持たない投入（`run_backtest` を直接呼ぶ経路）は保証境界の
+    #   外で完走できた（実測 2026-09-25・実 UI: 同じフォームの既定値で、schema が取れれば
+    #   N-17 で exit 2、取れなければ受理されて 46 秒以上走り続けた）。
+    #   どの規則をここで適用するかは**人手で列挙しない**——宣言（「`UnsupportedRule.reads`」）と
+    #   合流点が解決できる入力（`RUN_SCOPE_INPUTS`）の包含が決める。
+    apply_run_scope_unsupported_rules(
+        run_scope_inputs_for(job, tick_model_id=determinism.tick_model)
+    )
     # 戦略へ配るパラメータ。**名前は EA 側の宣言が持つ**（`EaBinding.strategy_params`）。
     #   是正前はここに 14 行の dict リテラルが在り、EA が参照するパラメータを 1 つ増やす
     #   たびに本ファイルを開いていた（EA 追加の 8 編集点のうち 1 つ・OCP 違反）。配る集合は
     #   従来どおり**全 EA 宣言の和**であり（EA ごとに絞らない）、並びも従来と同じである。
     strategy_params = {name: job[name] for name in strategy_param_names()}
-    run_config = RunConfig(determinism, strategy_params)
 
     # ea_name で戦略・指標・入力フォーマットを選択（config gated・既定は従来 TC 経路）。
     #   選択規則（未登録 ea_name → 既定 TC 経路 / データを消費しない modelling → 読まない
@@ -411,6 +522,9 @@ def build_interactor(
         data_path=data_path,
         params=job,
     )
+    # EA 束縛が形式を判定して選んだ読み手（窓で包む前）。指標の行時刻の解釈はここから引く
+    #   （形式を判定し直さない・ISSUE-509）。
+    reader = market_data
     # Phase 6 F-8（依頼者承認済み・注入方式＝専用 param 新設）: spec 由来の汎用戦略
     # （GenericConditionStrategy）で EA 束縛が選んだ戦略を置き換える拡張点。
     # 既定 None は素通り＝既存挙動と byte 等価（MT5 突合の回帰ゼロ）。registry・
@@ -423,6 +537,20 @@ def build_interactor(
     # 素通り＝既存と byte 等価（MT5 突合の回帰ゼロ）。sim モードのサイジング（F-4）は
     # ここへ SizingDecorator を差し込み、戦略 6 本と run_backtest.py を無改変に保つ。
     strategy = strategy_decorator(strategy) if strategy_decorator else strategy
+
+    # ISSUE-533 段階 1/2: 判定の瞬間を知っているのは戦略だけなので、建値基準は戦略が名乗る。
+    #   段階 2 で設定からの供給を撤去したため、ここで問うのは**宣言があるか**だけになった
+    #   （「設定と宣言が食い違っていないか」は、供給が無くなった時点で原理的に起きない）。
+    #   問える点がここしか無いのは、エンジンへ渡る実体が `strategy_override` と
+    #   `strategy_decorator` を通った後にしか確定しないからである。宣言が無ければ run を
+    #   **始めない**——エンジン側の読み取り点まで遅らせると、走り出してから落ちる。
+    declared_entry_price_basis(strategy)
+    # ISSUE-557: 待機注文（指値・逆指値）の使い方も戦略が名乗る。呼び出し側が渡さなくても、
+    #   待機注文を出す戦略の run は足の途中で注文を評価する（是正前は sim の Settings 経路が
+    #   「`pending_lifecycle`」 を渡さず、待機注文がすべて足境界の成行として約定していた）。
+    #   建値基準と同じく、エンジンへ渡る実体が確定するここで 1 回だけ読む。
+    determinism = apply_pending_order_use(strategy, determinism)
+    run_config = RunConfig(determinism, strategy_params)
 
     # S5 strangler（marketdata 委譲）: marketdata_window=(start,end) 指定時、comma 形式戦略
     # （既定 TC・WeeklyVolBand＝spread 非依存・H-4）の OHLC 取得を marketdata.CandleSource へ
@@ -439,26 +567,7 @@ def build_interactor(
     # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
     # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
     # 素通り＝既存 4 モードと byte 等価。
-    if marketdata_window is not None:
-        if isinstance(market_data, CsvOHLCRepository):
-            from marketdata.csv_source import CsvCandleSource
-
-            # C-2: 取得窓 (start,end) 半開は委譲 repo の構築時パラメータ（window）へ隔離する
-            # （ISSUE-135 LSP: MarketDataPort.load の source_ref を path 系 3 実装と対称化し、
-            # load_source の型別作り分けを除去）。source_ref は全実装で data_path に統一する。
-            market_data = MarketDataSourceRepository(
-                CsvCandleSource(data_path), window=marketdata_window
-            )
-        elif isinstance(market_data, MarketdataCsvOHLCRepository):
-            # marketdata 形式は**フレーム段**で窓を適用する（構築時パラメータへ隔離＝
-            # CsvOHLCRepository の委譲と同じ形）。後段の窓デコレータに任せると全行の
-            # Bar を作ってから捨てる（実測 4,604,080 行で構築 442.6 秒）ISSUE-450 型の
-            # 浪費になる。構築数＝採用数は repository の計算量テストが固定する。
-            market_data = MarketdataCsvOHLCRepository(window=marketdata_window)
-        else:
-            # A-3: comma 形式以外（MT5 タブ形式ほか）の MarketDataPort 実装は型で分岐せず
-            # 一律に窓デコレータで包む（OCP: 実装が増えても本分岐は改変不要）。
-            market_data = WindowedMarketDataRepository(market_data, window=marketdata_window)
+    market_data = _windowed_reader(market_data, data_path, marketdata_window)
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -467,6 +576,15 @@ def build_interactor(
     # 再読み）に起因する。1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り
     # （DESIGN 申し送り）。every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
     bars = market_data.load(data_path, None, None)
+
+    # ISSUE-509: 戦略は ``iloc[bar_index]`` で指標を位置参照するので、指標の行と Bar 列を
+    #   **時刻で**対応させる。registry はデータ実体の全行（期間前の履歴で温まった値）から
+    #   作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の指標値を読む
+    #   （実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError` で止める。
+    #   バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
+    registry = _aligned_to_run_bars(
+        registry, reader, data_path, bars, tick_model=determinism.tick_model
+    )
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
@@ -573,6 +691,9 @@ def _present_outputs(result: Any, output_dir: Path, *, ea_name: str, symbol: str
 present_outputs = _present_outputs
 
 
+# 1 run の読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。追記され続ける実体
+#   （MT5 常駐・export の常駐が毎分書く）を読む run で、run 内の読みごとに行数がずれない。
+@ohlc_frame_cache.pinned_entities()
 def run_backtest(
     *,
     output_dir: Any = None,

@@ -15,6 +15,7 @@
 
 2. 含む構造:
     jp225_symbol_spec / engine_binding          : `EngineBinding`（§6 補助 DTO）の組立
+    run_scope_inputs                            : `RunScopeInputs`（合流点の判定入力）の組立
     runnable_expert_mapping / runnable_settings : 保証境界内（§4.6）の Expert 設定
     custom_range_settings                       : `FromDate` / `ToDate` 形式（規則 E）
     write_comma_csv / daily_epochs / utc_midnight : 期間窓検証用の合成 comma CSV
@@ -107,13 +108,6 @@ def jp225_leverage() -> float:
     return float(build_run_options_port().datasets()[0].leverage)
 
 
-def catalog_ea_names() -> frozenset[str]:
-    """N-01 の判定源（実行可能な EA 名の集合）。カタログが権威。"""
-    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
-
-    return frozenset(build_run_options_port().ea_names())
-
-
 def engine_binding(
     *,
     symbol_spec: SymbolSpec | None = None,
@@ -121,7 +115,6 @@ def engine_binding(
     symbol: str = "JP225",
     period: str = "Daily",
     data_path: Any = None,
-    known_ea_names: Iterable[str] | None = None,
     settlement_currency: str = SETTLEMENT_CURRENCY,
     ea_params: Mapping[str, Any] | None = None,
     **overrides: Any,
@@ -138,12 +131,47 @@ def engine_binding(
         symbol=symbol,
         period=period,
         data_path=data_path,
-        known_ea_names=(
-            frozenset(known_ea_names) if known_ea_names is not None else catalog_ea_names()
-        ),
         settlement_currency=settlement_currency,
         ea_params=dict(DEFAULT_EA_PARAMS if ea_params is None else ea_params),
         **overrides,
+    )
+
+
+def run_scope_inputs(
+    *,
+    ea_name: str | None = None,
+    symbol: str = "JP225",
+    data_path: Any = None,
+    tick_store_root: str | None = None,
+    tick_model: Any = None,
+    known_ea_names: Iterable[str] | None = None,
+    spread_dependent_ea_names: Iterable[str] | None = None,
+):
+    """合流点が運ぶ判定入力の束（`RunScopeInputs`）を組む唯一の関数（ISSUE-525）。
+
+    既定は「保証境界の内側」にある run である（既定 TC 経路の EA・データ非供給）。
+    列挙 2 つ（実行可能な EA 名・気配幅を読む EA 名）の既定は**本番と同じ権威**
+    （`simulator.main` の公開アクセサ）から引く——テスト側で名前を書き写すと、宣言から
+    導く形にした意味が消える。
+    """
+    from simulator.main import known_ea_names as _known
+    from simulator.main import spread_dependent_ea_names as _spread_dependent
+    from simulator.main.tester_settings.unsupported import RunScopeInputs
+
+    return RunScopeInputs(
+        ea_name=DEFAULT_EA_NAME if ea_name is None else ea_name,
+        symbol=symbol,
+        data_path=data_path,
+        tick_store_root=tick_store_root,
+        tick_model=tick_model,
+        known_ea_names=(
+            frozenset(known_ea_names) if known_ea_names is not None else frozenset(_known())
+        ),
+        spread_dependent_ea_names=(
+            frozenset(spread_dependent_ea_names)
+            if spread_dependent_ea_names is not None
+            else frozenset(_spread_dependent())
+        ),
     )
 
 
@@ -173,12 +201,28 @@ def runnable_settings(*, inputs: Sequence[str] = (), **overrides: Any) -> Tester
     return tester_settings_from_mapping(runnable_expert_mapping(**overrides), inputs)
 
 
-def custom_range_settings(from_date: date, to_date: date, **overrides: Any) -> TesterSettings:
-    """`FromDate` / `ToDate` 形式（`DateRangeKind.CUSTOM`）の設定（規則 E）。"""
+def _range_token(value: "date | datetime") -> str:
+    """期間トークンの表記（唯一の宣言は ini_codec）。date=日単位／datetime=分単位。"""
+    from simulator.adapter.tester_settings.ini_codec import (
+        format_date_minute_token,
+        format_date_token,
+    )
+    if isinstance(value, datetime):
+        return format_date_minute_token(value)
+    return format_date_token(value)
+
+
+def custom_range_settings(
+    from_date: "date | datetime", to_date: "date | datetime", **overrides: Any
+) -> TesterSettings:
+    """`FromDate` / `ToDate` 形式（`DateRangeKind.CUSTOM`）の設定（規則 E）。
+
+    ``datetime`` を渡すと分単位トークン（依頼者指示 2026-09-27）になる。
+    """
     return runnable_settings(
         Dates=OMIT,
-        FromDate=from_date.strftime("%Y.%m.%d"),
-        ToDate=to_date.strftime("%Y.%m.%d"),
+        FromDate=_range_token(from_date),
+        ToDate=_range_token(to_date),
         **overrides,
     )
 

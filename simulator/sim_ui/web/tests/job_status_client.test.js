@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  JobStatusError, MAX_CONSECUTIVE_FAILURES, POLL_INTERVAL_MS,
+  JobStatusError, MAX_CONSECUTIVE_FAILURES, POLL_INTERVAL_MS, WAIT_MS,
   createJobStatusClient, jobStatusUrl,
 } from "../js/adapter/front/job_status_client.js";
 
@@ -20,16 +20,24 @@ function fakeFetch(response) {
   return fn;
 }
 
-/** 応答を 1 回ずつ順に返す fetch（監視の遷移を決定的に組む）。 */
+/** 応答を 1 回ずつ順に返す fetch（監視の遷移を決定的に組む）。
+ *  台本が尽きたら**解決しない Promise** を返す（保留照会の直列は成功のたび直ちに次を
+ *  張るため、末尾を繰り返すと非終端の台本がテストの中で無限ループになる）。 */
 function scriptedFetch(responses) {
   const calls = [];
   const fn = async (url, init) => {
     calls.push({ url, init });
-    const next = responses[Math.min(calls.length - 1, responses.length - 1)];
+    if (calls.length > responses.length) return new Promise(() => {});
+    const next = responses[calls.length - 1];
     return typeof next === "function" ? next() : next;
   };
   fn.calls = calls;
   return fn;
+}
+
+/** 直列の保留照会が今回のぶんまで進むのを待つ（マイクロタスクを刻む）。 */
+async function settle(times = 6) {
+  for (let i = 0; i < times; i += 1) await Promise.resolve();
 }
 
 /** 注入 timer のダブル（実時間を待たずに周期を進める）。 */
@@ -134,22 +142,13 @@ const running = () => ({ ok: true, status: 200, json: async () => ({ job_id: "j1
 const completed = () => ({ ok: true, status: 200, json: async () => ({ job_id: "j1", status: "completed", terminal: true }) });
 const boom = () => ({ ok: false, status: 502, json: async () => { throw new Error("no body"); } });
 
-test("POLL_INTERVAL_MS is the single source of the polling period (NFR-04)", () => {
+test("POLL_INTERVAL_MS is the retry interval and WAIT_MS matches the server cap (NFR-04 改訂)", () => {
   // Arrange / Act / Assert
   assert.equal(POLL_INTERVAL_MS, 1000);
+  assert.equal(WAIT_MS, 25000);
 });
 
-test("watch polls on the NFR-04 period", async () => {
-  // Arrange
-  const timer = fakeTimer();
-  const client = createJobStatusClient({ fetch: scriptedFetch([running()]), setTimeout: timer.set, clearTimeout: timer.clear });
-  // Act
-  client.watch("j1", () => {});
-  // Assert
-  assert.deepEqual(timer.delays, [POLL_INTERVAL_MS]);
-});
-
-test("watch stops once the server reports a terminal state (running x2 -> completed)", async () => {
+test("watch issues held queries back to back without a timer (保留照会の直列・NFR-04 改訂)", async () => {
   // Arrange
   const fetchFn = scriptedFetch([running(), running(), completed()]);
   const timer = fakeTimer();
@@ -157,43 +156,85 @@ test("watch stops once the server reports a terminal state (running x2 -> comple
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
   // Act
   client.watch("j1", (u) => seen.push(u));
-  await timer.tick();
-  await timer.tick();
-  await timer.tick();
-  const more = await timer.tick();   // 終端後は予約が残っていない
+  await settle(12);
   // Assert
   assert.deepEqual(seen.map((u) => u.status), ["running", "running", "completed"]);
-  assert.equal(more, false, "終端に達しても監視が続いています");
-  assert.equal(fetchFn.calls.length, 3, "終端後も照会しています");
+  assert.deepEqual(timer.delays, [], "成功応答の間にタイマーを使っています（周期ポーリングの再発）");
+  assert.match(fetchFn.calls[0].url, /\?wait_ms=25000&seen_progress=none$/, "保留を要求していません");
+  // 計算量: 発行した照会 − 受けた応答 = 0（周期に比例しない）。
+  assert.equal(fetchFn.calls.length - seen.length, 0);
 });
 
-test("stop() halts the watch (再投入で前の監視を落とせる)", async () => {
+test("watch stops once the server reports a terminal state (終端後は照会しない)", async () => {
   // Arrange
-  const fetchFn = scriptedFetch([running()]);
+  const fetchFn = scriptedFetch([completed()]);
   const timer = fakeTimer();
+  const seen = [];
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
-  const stop = client.watch("j1", () => {});
+  // Act
+  client.watch("j1", (u) => seen.push(u));
+  await settle();
+  // Assert
+  assert.deepEqual(seen.map((u) => u.status), ["completed"]);
+  assert.equal(fetchFn.calls.length, 1, "終端後も照会しています");
+  assert.equal(timer.pending.size, 0, "終端後に予約が残っています");
+});
+
+test("stop() halts the watch and aborts the held connection (再投入で前の監視を落とせる)", async () => {
+  // Arrange: 解決しない保留照会（サーバが握っている状態）
+  let aborted = false;
+  const fetchFn = async (url, init) => {
+    if (init && init.signal) init.signal.addEventListener("abort", () => { aborted = true; });
+    return new Promise(() => {});
+  };
+  const timer = fakeTimer();
+  const seen = [];
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  const stop = client.watch("j1", (u) => seen.push(u));
+  await settle();
   // Act
   stop();
-  const more = await timer.tick();
   // Assert
-  assert.equal(more, false, "stop() 後も予約が残っています");
-  assert.equal(fetchFn.calls.length, 0);
+  assert.equal(aborted, true, "保留中の接続を切っていません（接続が溜まる）");
+  assert.equal(seen.length, 0);
+  assert.equal(timer.pending.size, 0);
 });
 
-test("watch gives up after consecutive failures and reports why", async () => {
+test("stop() の後に切れた保留照会は失敗として数えない（諦めの誤発火なし）", async () => {
+  // Arrange: stop() で reject する fetch（AbortError 相当）
+  let rejectHeld = null;
+  const fetchFn = async (url, init) => new Promise((_res, rej) => {
+    rejectHeld = rej;
+    if (init && init.signal) init.signal.addEventListener("abort", () => rej(new Error("aborted")));
+  });
+  const timer = fakeTimer();
+  const seen = [];
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  const stop = client.watch("j1", (u) => seen.push(u));
+  await settle();
+  // Act
+  stop();
+  await settle();
+  // Assert: 購読者へは何も届かない（error 掲示もしない）
+  assert.deepEqual(seen, []);
+  assert.equal(typeof rejectHeld, "function");
+});
+
+test("watch retries failures on POLL_INTERVAL_MS and gives up after the cap", async () => {
   // Arrange
-  const fetchFn = scriptedFetch([boom()]);
+  const fetchFn = scriptedFetch([boom(), boom(), boom()]);
   const timer = fakeTimer();
   const seen = [];
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
   client.watch("j1", (u) => seen.push(u));
-  // Act: 上限回数だけ失敗させる
-  for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i += 1) await timer.tick();
-  const more = await timer.tick();
+  await settle();
+  // Act: 失敗の再試行はタイマー経由（保留照会の直列とは違う経路であることも固定）
+  await timer.tick(); await settle();
+  await timer.tick(); await settle();
   // Assert
-  assert.equal(more, false, "上限に達しても監視が続いています");
   assert.equal(fetchFn.calls.length, MAX_CONSECUTIVE_FAILURES);
+  assert.deepEqual(timer.delays, [POLL_INTERVAL_MS, POLL_INTERVAL_MS]);
+  assert.equal(timer.pending.size, 0, "上限に達しても監視が続いています");
   assert.equal(seen.length, 1, "諦めたことを購読者へ伝えていません（無音の停止）");
   assert.match(String(seen[0].error), /502/);
 });
@@ -224,18 +265,15 @@ test("a throwing subscriber does not kill the watch (購読者の例外で無音
   const timer = fakeTimer();
   const seen = [];
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
-  client.watch("j1", (u) => {
-    seen.push(u);
-    if (seen.length === 1) throw new Error("掲示できません");
-  });
   // Act
   const errors = await capturingErrors(async () => {
-    await assert.doesNotReject(() => timer.tick(),
-      "購読者の例外が監視ループへ抜けています（unhandled rejection）");
+    client.watch("j1", (u) => {
+      seen.push(u);
+      if (seen.length === 1) throw new Error("掲示できません");
+    });
+    await settle(12);
   });
-  // Assert: 次の照会が予約されており、監視は続く
-  assert.equal(timer.pending.size, 1, "購読者の例外で次の照会が予約されていません（監視が無音で死んでいます）");
-  await timer.tick();
+  // Assert: 例外の後も保留照会の直列が続く（2 回目の掲示まで届く）
   assert.equal(seen.length, 2, "例外の後に監視が続いていません");
   // 理由は握り潰さない（掲示側の不具合が誰にも見えなくなる）
   assert.ok(errors.some((line) => /掲示できません/.test(line)),
@@ -247,27 +285,29 @@ test("a throwing subscriber does not defeat the terminal stop (終端停止は�
   const fetchFn = scriptedFetch([completed()]);
   const timer = fakeTimer();
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
-  client.watch("j1", () => { throw new Error("掲示できません"); });
   // Act
   await capturingErrors(async () => {
-    await assert.doesNotReject(() => timer.tick());
+    client.watch("j1", () => { throw new Error("掲示できません"); });
+    await settle();
   });
   // Assert: 終端で止まる（購読者が落ちても照会し続けない）
-  assert.equal(await timer.tick(), false, "終端に達しても監視が続いています");
   assert.equal(fetchFn.calls.length, 1, "終端後も照会しています");
+  assert.equal(timer.pending.size, 0, "終端後に予約が残っています");
 });
 
 test("a throwing subscriber on the give-up report does not escape as a rejection", async () => {
   // Arrange: 照会が常に失敗し、諦めの通知でも購読者が例外を投げる
-  const fetchFn = scriptedFetch([boom()]);
+  const fetchFn = scriptedFetch([boom(), boom(), boom()]);
   const timer = fakeTimer();
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
-  client.watch("j1", () => { throw new Error("掲示できません"); });
-  // Act
+  // Act: 初回は即時・以降の再試行はタイマー経由
   const errors = await capturingErrors(async () => {
-    for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i += 1) {
+    client.watch("j1", () => { throw new Error("掲示できません"); });
+    await settle();
+    for (let i = 1; i < MAX_CONSECUTIVE_FAILURES; i += 1) {
       await assert.doesNotReject(() => timer.tick(),
         "諦めの通知で投げられた例外が監視ループへ抜けています");
+      await settle();
     }
   });
   // Assert
@@ -283,11 +323,38 @@ test("a single failure between successes does not stop the watch (境界値: 連
   const seen = [];
   const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
   client.watch("j1", (u) => seen.push(u));
+  await settle();       // 失敗 1 回目（即時の初回照会）→ 再試行をタイマーへ予約
   // Act
-  await timer.tick();   // 失敗 1 回目
-  await timer.tick();   // 成功（連続失敗カウンタが戻る）
-  await timer.tick();   // 成功
+  await timer.tick();   // 成功（連続失敗カウンタが戻る）→ 直列で次の保留照会 → 成功 → 保留
+  await settle(12);
   // Assert
   assert.deepEqual(seen.map((u) => u.status), ["running", "running"]);
-  assert.equal(timer.pending.size, 1, "成功したのに監視が止まっています");
+  assert.deepEqual(timer.delays, [POLL_INTERVAL_MS], "再試行以外でタイマーを使っています");
+  assert.equal(fetchFn.calls.length, 4, "保留照会の直列が続いていません（4 回目が保留中のはず）");
+});
+
+
+test("watch sends the last seen progress so the server answers on each change (2026-09-27)", async () => {
+  // Arrange: 準備中（null）→ 10% → 55% → 完了。
+  const at = (p) => () => ({ ok: true, status: 200, json: async () => ({ job_id: "j1", status: "running", terminal: false, progress: p }) });
+  const fetchFn = scriptedFetch([at(null), at(10), at(55), completed()]);
+  const timer = fakeTimer();
+  const seen = [];
+  const client = createJobStatusClient({ fetch: fetchFn, setTimeout: timer.set, clearTimeout: timer.clear });
+  // Act
+  client.watch("j1", (u) => seen.push(u));
+  await settle(16);
+  // Assert: 各照会は直前の応答の進み具合を添える（最初は none）。
+  const sent = fetchFn.calls.map((c) => new URL(c.url, "http://x").searchParams.get("seen_progress"));
+  assert.deepEqual(sent, ["none", "none", "10", "55"]);
+  assert.deepEqual(seen.map((u) => u.progress ?? null), [null, 10, 55, null]);
+  // 計算量: 発行した照会 − 受けた応答 = 0。
+  assert.equal(fetchFn.calls.length - seen.length, 0);
+});
+
+test("jobStatusUrl keeps the plain and held forms unchanged when no progress is given", () => {
+  assert.equal(jobStatusUrl("a b"), "/sim/jobs/a%20b");
+  assert.equal(jobStatusUrl("j", 100), "/sim/jobs/j?wait_ms=100");
+  assert.equal(jobStatusUrl("j", 100, null), "/sim/jobs/j?wait_ms=100&seen_progress=none");
+  assert.equal(jobStatusUrl("j", 100, 42), "/sim/jobs/j?wait_ms=100&seen_progress=42");
 });

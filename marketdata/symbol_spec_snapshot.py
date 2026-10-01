@@ -187,6 +187,27 @@ def load_settlement_currency(server: str, symbol: str) -> str:
     return settlement_currency(load_snapshot(server, symbol))
 
 
+def load_symbol_field(server: str, symbol: str, name: str) -> Any:
+    """銘柄仕様の表 :data:`SYMBOL_FIELD_SOURCES` の 1 項目だけを読む（ISSUE-511 段階 3 前提 (a)）。
+
+    1 項目だけが要る読み手（M1 の spread 列を数える point_size）のための口である。
+    :func:`load_spec_fields` は口座属性の表 :data:`ACCOUNT_FIELD_SOURCES` まで引くため、口座の
+    節が欠けたスナップショットでは無関係な項目で落ちる。本関数は口座属性の表を引かない。
+    MT5 のフィールド名は表からだけ引く（表の外にフィールド名を書かない）。
+
+    Raises:
+        KeyError: ``name`` が銘柄仕様の表に無い（口座属性を含む）。スナップショットは読まない。
+        SnapshotError: スナップショットが無い・キーが無い・型変換できない（既定値で埋めない）。
+    """
+    source = SYMBOL_FIELD_SOURCES.get(name)
+    if source is None:
+        raise KeyError(
+            f"{name!r} は銘柄仕様の表 SYMBOL_FIELD_SOURCES にありません"
+            f"（候補 {sorted(SYMBOL_FIELD_SOURCES)}）。"
+        )
+    return _pick(load_snapshot(server, symbol), source, name)
+
+
 __all__ = [
     "SNAPSHOT_ROOT",
     "OANDA_JAPAN_MT5_LIVE",
@@ -202,4 +223,5 @@ __all__ = [
     "settlement_currency",
     "load_spec_fields",
     "load_settlement_currency",
+    "load_symbol_field",
 ]

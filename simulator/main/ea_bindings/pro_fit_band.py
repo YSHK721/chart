@@ -44,6 +44,7 @@ def _factory_pro_fit_band(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="PRO_fit_Band_EA",
+    strategy_type=ProFitBand,
     build=_factory_pro_fit_band,
     # ProFitBand が参照する追加パラメータ（他戦略は未参照のため無害）。既定は
     # 原典 .mq5 の Adx_Min=22.0（🟡-3）。既定値の所在は build_interactor の宣言 1 箇所。

@@ -1,0 +1,12 @@
+# MT5 上位足エクスポートの置き場（ISSUE-511 前提 (b)・CRLF の CSV と LF の manifest.json）。
+#
+# 本ディレクトリのファイルは VM（Windows）上の `tools/capture_mt5_bars.py` が書いた
+# バイト列そのものであることが存在意義であり、manifest.json の sha256 と既存エクスポート
+# との byte 一致（段階 2 の受け入れ検定）はチェックアウト後のバイト列に依存する。
+# 持ち帰りは VM のクローンからの git push であり（J-3）、Windows の git は core.autocrlf
+# 次第で改行を変換する。変換されると sha256 が合わず、原因が端末側にあるようにしか見えない。
+#
+# したがって自動判定に頼らず属性で固定する。この設定が効いていることは
+# `tools/tests/test_capture_mt5_bars.py` が git check-attr で検定する。
+*.csv binary
+manifest.json binary

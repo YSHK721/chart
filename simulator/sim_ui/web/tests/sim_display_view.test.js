@@ -2,8 +2,9 @@
 //
 // 固定する不変条件:
 //   1. 器の DOM は **View 自身が生成し所有する**（HTML ページを 1 枚も触らない・ISSUE-278 #16）。
-//   2. id 体系は移植元 report_ui/web/index.html と同一（chart.js / table.js が引く id を
-//      そのまま満たす: price-chart / paneBal / paneDD / chartBadge / tradeTable / hSel）。
+//   2. id 体系は移植元 report_ui/web/index.html と同一（table.js が引く id をそのまま満たす:
+//      tradeTable / hSel）。3 窓チャートの id（price-chart / paneBal / paneDD / chartBadge /
+//      toggleContacts / chartWrap）は撤去済みで**生成されない**（2026-09-27 依頼者指示）。
 //   3. style.css は **/sim/report-css/ の実体を link で読む**（見た目を写さない）。
 //      link は mount 時に head へ挿し、unmount 時に外す（統合ページへ残さない）。
 //   4. mount / unmount は冪等（モード往復で DOM が積み上がらない）。
@@ -31,11 +32,21 @@ test("mount builds the container subtree under the given host", () => {
   assert.equal(view.isMounted(), true);
 });
 
-test("the built DOM carries the report_ui id set (chart.js / table.js の引く id)", () => {
+test("the built DOM carries the report_ui id set (table.js の引く id)", () => {
   const { host } = mounted();
   const root = host.children[0];
-  for (const id of ["price-chart", "paneBal", "paneDD", "chartBadge", "tradeTable", "hSel"]) {
+  for (const id of ["tradeTable", "hSel"]) {
     assert.ok(findById(root, id), `#${id} が生成されていません`);
+  }
+});
+
+// 3 窓チャートの撤去（2026-09-27 依頼者指示）の回帰の壁: チャートの器がひとつでも
+//   生成されたら、描かない DOM（と、それを目当てにした描画計算）が子文書へ戻る。
+test("the built DOM carries no chart receptacle (3 窓チャート撤去の回帰の壁)", () => {
+  const { host } = mounted();
+  const root = host.children[0];
+  for (const id of ["price-chart", "paneBal", "paneDD", "chartBadge", "toggleContacts", "chartWrap"]) {
+    assert.ok(!findById(root, id), `#${id} が生成されています（チャートは撤去済み）`);
   }
 });
 
@@ -60,12 +71,12 @@ test("the header carries the h1 and the hSel label (Phase 5: 区間トグル挿�
 });
 
 test("SIM_DISPLAY_IDS matches the report_ui index.html id names", () => {
-  assert.equal(SIM_DISPLAY_IDS.chart, "price-chart");
-  assert.equal(SIM_DISPLAY_IDS.bal, "paneBal");
-  assert.equal(SIM_DISPLAY_IDS.dd, "paneDD");
-  assert.equal(SIM_DISPLAY_IDS.badge, "chartBadge");
   assert.equal(SIM_DISPLAY_IDS.table, "tradeTable");
   assert.equal(SIM_DISPLAY_IDS.hSel, "hSel");
+  // 3 窓チャートの id 宣言は撤去済み（宣言が戻れば器が戻る芽になる）。
+  for (const key of ["chart", "bal", "dd", "badge", "toggleContacts"]) {
+    assert.equal(key in SIM_DISPLAY_IDS, false, `SIM_DISPLAY_IDS.${key} が復活しています`);
+  }
 });
 
 test("the trade table ships with a thead and a tbody (table.js が querySelector する)", () => {
@@ -93,13 +104,9 @@ test("every .mv-pane sits under a .mv-body ancestor (絶対配置を器へ閉じ
   }
 });
 
-test("elements exposes the live element references for the renderer", () => {
+test("elements exposes the live element references for the composition root", () => {
   const { host, view } = mounted();
   const root = host.children[0];
-  assert.equal(view.elements.chart, findById(root, "price-chart"));
-  assert.equal(view.elements.bal, findById(root, "paneBal"));
-  assert.equal(view.elements.dd, findById(root, "paneDD"));
-  assert.equal(view.elements.badge, findById(root, "chartBadge"));
   assert.equal(view.elements.table, findById(root, "tradeTable"));
   assert.equal(view.elements.hSel, findById(root, "hSel"));
 });
@@ -143,7 +150,7 @@ test("mount after unmount rebuilds the container (往復しても壊れない)",
   view.unmount();
   view.mount(host);
   assert.equal(host.children.length, 1);
-  assert.ok(findById(host.children[0], "price-chart"));
+  assert.ok(findById(host.children[0], "tradeTable"));
 });
 
 // --- 5. 描画できないときはメッセージだけ（部分描画しない）------------------------
@@ -182,7 +189,6 @@ test("showMessage before mount does not throw (呼び出し順に依存しない
 
 test("SIM_DISPLAY_IDS carries the Phase 5 ids (周辺表示の受け皿)", () => {
   assert.equal(SIM_DISPLAY_IDS.metaLine, "meta-line");
-  assert.equal(SIM_DISPLAY_IDS.toggleContacts, "toggleContacts");
   assert.equal(SIM_DISPLAY_IDS.heatHost, "heatHost");
   assert.equal(SIM_DISPLAY_IDS.glossHost, "glossHost");
   assert.equal(SIM_DISPLAY_IDS.clearFilter, "clearFilter");
@@ -202,14 +208,6 @@ function view_segHost(host) {
   const header = findById(host.children[0], "topbar");
   return header.children[1];
 }
-
-test("the contact toggle button sits in chartWrap right after the badge (移植元要素順)", () => {
-  const { host } = mounted();
-  const chartWrap = findById(host.children[0], "chartWrap");
-  const idx = chartWrap.children.findIndex((c) => c.id === "chartBadge");
-  assert.ok(idx >= 0, "#chartBadge が無い");
-  assert.equal(chartWrap.children[idx + 1].id, "toggleContacts", "接点トグルが badge の直後でない");
-});
 
 test("the detail pane holds the trade table plus the filter pill and count (点18)", () => {
   const { host } = mounted();
@@ -235,6 +233,17 @@ test("the filter pill starts hidden (抽出が立つまで非表示・点18)", (
   assert.equal(findById(host.children[0], "clearFilter").style.display, "none");
 });
 
+test("the report pane holds the summary grid (サマリー流用・2026-09-27)", () => {
+  const { host, view } = mounted();
+  const root = host.children[0];
+  const grid = findById(root, "reportGrid");
+  assert.ok(grid, "#reportGrid が無い（buildReport の挿し先が無い）");
+  assert.equal(view.elements.reportGrid, grid);
+  let a = grid.parent, inReport = false;
+  while (a) { if (a.dataset && a.dataset.pane === "report") { inReport = true; break; } a = a.parent; }
+  assert.ok(inReport, "#reportGrid が report ペインの外にある");
+});
+
 test("the heat / glossary hosts live in their panes", () => {
   const { host } = mounted();
   const root = host.children[0];
@@ -251,7 +260,6 @@ test("elements exposes the Phase 5 receptacles for the composition root", () => 
   const { host, view } = mounted();
   const root = host.children[0];
   assert.equal(view.elements.metaLine, findById(root, "meta-line"));
-  assert.equal(view.elements.toggleContacts, findById(root, "toggleContacts"));
   assert.equal(view.elements.heatHost, findById(root, "heatHost"));
   assert.equal(view.elements.glossHost, findById(root, "glossHost"));
   assert.equal(view.elements.clearFilter, findById(root, "clearFilter"));

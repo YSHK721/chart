@@ -95,23 +95,36 @@ def test_update_once_wires_fetch_m1_rollup_with_until(monkeypatch, tmp_path) -> 
     rec: dict = {}
     monkeypatch.setattr(ltw, "refresh_day_parquet", lambda day, root, **k: calls.append(("refresh", day)) or 1)
 
-    def _append(start, end, until, *, data_dir):
+    def _append(start, end, until, *, data_dir, refs):
         calls.append(("m1", start, end))
-        rec.update(start=start, end=end, until=until, data_dir=data_dir)
+        rec.update(start=start, end=end, until=until, data_dir=data_dir, refs=refs)
 
     monkeypatch.setattr(ltw, "_append_m1", _append)
-    monkeypatch.setattr(ltw, "_rollup_update", lambda data_dir: calls.append(("rollup", data_dir)))
+    # ISSUE-534: 差分更新は「この周期で M1 が直ったか」（force_heal）も受ける。替え玉は受けた
+    #   キーワードをそのまま記録する（受け口だけ合わせて中身を捨てると、伝播の欠落が見えない）。
+    monkeypatch.setattr(
+        ltw, "_rollup_update",
+        lambda data_dir, refs, **kw: calls.append(("rollup", data_dir, refs, kw)),
+    )
+    monkeypatch.setattr(
+        ltw, "_heal_m1_if_due",
+        lambda now, data_dir, refs, **kw: calls.append(("heal", now, refs)) or {},
+    )
 
     now = dt.datetime(2026, 7, 6, 12, 0, 30)
     ltw.update_once(now, tmp_path, interval=60)
 
-    # 順序: fetch(refresh) → m1 → rollup。
-    assert [c[0] for c in calls] == ["refresh", "m1", "rollup"]
+    # 順序: fetch(refresh) → m1 → 突合（ISSUE-534）→ rollup。
+    assert [c[0] for c in calls] == ["refresh", "m1", "heal", "rollup"]
     assert rec["until"] == pd.Timestamp("2026-07-06 12:00:00")  # floor(now, "min")。
     # start は full_start（追記窓は append_m1_from_ticks の resume 規則へ委譲）。当日を渡すと
     # 既存 M1 が数日前で停止している初回起動でその間の日が永久欠落する（回帰禁止）。
     assert rec["start"] == "2012-06-14"
     assert rec["end"] == "2026-07-07"  # today+1（半開の m1 集計終端）。
+    # 書く系列の組は台帳が決める（ISSUE-533 段階 3 の前提工事）。周期は起動時に引いた組を受け取り、
+    #   同じタプルを M1 追記とロールアップ更新へ渡す（綴りは書き写さず台帳から導く）。
+    assert rec["refs"] == ltw.series_refs(ltw.REF)
+    assert calls[-1] == ("rollup", tmp_path, rec["refs"], {"force_heal": False})
 
 
 def test_update_once_end_to_end_excludes_forming_and_writes_tick_ref(monkeypatch, tmp_path) -> None:
@@ -380,7 +393,8 @@ def test_heal_runs_on_the_first_call_and_then_waits_for_the_period(
     for _ in range(5):
         ltw._heal_if_due(tmp_path)
 
-    assert after_first == 1
+    # 検査は系列ごと（別の置き場・別の M1）。期待値は台帳の組の大きさから導く＝回数を焼き込まない。
+    assert after_first == len(ltw.series_refs(ltw.REF))
     assert len(calls) == after_first              # 周期内の追加発行は 0
 
 
@@ -394,4 +408,5 @@ def test_heal_force_bypasses_the_period(monkeypatch, tmp_path: Path) -> None:
     ltw._heal_if_due(tmp_path)
     ltw._heal_if_due(tmp_path, force=True)
 
-    assert len(calls) == 2
+    # 周期を跨いだ 2 回ぶん（1 回あたりは組の系列数）。回数は台帳の組の大きさから導く。
+    assert len(calls) == 2 * len(ltw.series_refs(ltw.REF))

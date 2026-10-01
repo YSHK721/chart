@@ -1,0 +1,39 @@
+/* 結果待ちの進み具合（sim_progress_view.js が組む要素）。2026-09-27 依頼者指示。 */
+.sim-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.sim-progress--hidden { display: none; }
+.sim-progress-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 120px;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+.sim-progress-fill {
+  height: 100%;
+  width: 0;
+  background: #3b82f6;
+  transition: width 0.2s linear;
+}
+/* 準備中（値がまだ無い）: 長さを名乗らず、帯が流れるだけ。 */
+.sim-progress--indeterminate .sim-progress-fill {
+  position: absolute;
+  width: 30%;
+  animation: sim-progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes sim-progress-slide {
+  from { left: -30%; }
+  to { left: 100%; }
+}
+.sim-progress-label {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}

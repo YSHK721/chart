@@ -134,4 +134,6 @@ def _view_payload(view: JobView) -> "dict[str, Any]":
         # Phase 9 段階 3（§19.6 R1）: 終端かどうかはサーバが配る。**追加のみ**であり
         # 既存キーは 1 つも変えていない（front の消費者は本キーだけを読んで監視を止める）。
         "terminal": view.terminal,
+        # 実行中の進み具合（0〜100 の整数％・無ければ null）。追加のみ（2026-09-27）。
+        "progress": view.progress,
     }

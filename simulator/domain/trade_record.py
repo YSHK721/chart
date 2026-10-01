@@ -23,7 +23,8 @@ from simulator.domain.exceptions import DataError, TimeOrderError
 
 # exit_reason は TradeRecord 固有の語彙のため当モジュールに留める（YAGNI: 単一利用）。
 # stop_out は cycle4 で追加（close_and_halt 時の強制決済理由）。
-# end_of_test は 2603-01 で追加（ペンディング経路でテスト終了時に残存建玉を清算する理由）。
+# end_of_test は 2603-01 で追加（テスト期間終了時に残る建玉を強制決済した理由。b0d13156・
+#   ISSUE-519 以降は全経路で清算する。実 MT5 はこの決済を "end of test" の deal として記録する）。
 # partial は Phase 7 で追加（FR-08 部分決済の実現 Deal。full-TP-hit の "tp" と区別して
 #   統計・マーカーへ忠実反映する。既定 pm=None 経路では生成されない＝byte 等価不変）。
 _EXIT_REASONS = frozenset(
@@ -77,3 +78,13 @@ class TradeRecord:
 
     def is_long(self) -> bool:
         return self.side == "buy"
+
+
+def trade_number(index: int) -> int:
+    """確定トレード列の位置（0 始まり）から、画面に出す取引番号（1 始まり）を返す。
+
+    取引明細（report の id 列と order 列）と売買マーク（trade_markers.json の pairs の id）が
+    同じ取引を同じ番号で出すための単一の定義（ISSUE-539: 片方が 0 始まりの位置を番号として
+    出していたため、同じ取引が 1 つずれた番号で出ていた）。
+    """
+    return index + 1

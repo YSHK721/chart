@@ -42,7 +42,9 @@ function bodyKey(body) {
   const instances = [...(body.instances ?? [])]
     .map((i) => [i.instance_id, i.indicator_id, i.variant, JSON.stringify(i.params ?? {}), i.timeframe ?? ''])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return JSON.stringify([body.dataset_ref, body.chart_timeframe, instances]);
+  // 借りた MP の期間水準（設計書 §3.5.4 の 5）も鍵に含める。含めないと MP の値だけが変わった
+  //   要求が同一周期の内側で畳まれ、版面が古い値のまま残る。
+  return JSON.stringify([body.dataset_ref, body.chart_timeframe, instances, body.mp_levels ?? []]);
 }
 
 /**

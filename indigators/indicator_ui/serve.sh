@@ -81,10 +81,14 @@ if [ "$NO_UPDATE" -eq 0 ]; then
   #   （端末の壁時計・例 "2026-09-01 12:00:00"）。2 回目以降はジャーナルから再開する。
   if [ -n "${MT5_BRIDGE_SECRET:-}" ]; then
     echo "▶ MT5 ティック供給を開始（増分・ログ: $MT5_WATCH_LOG）"
+    # --takeover: ライブ供給と同じ引き継ぎ規律。先行の常駐（別ツリー・過去セッションの
+    #   取り残し）が単一書き手ロックを握っていると、付けない起動は exit 2 で止まり供給が
+    #   上がらない（ISSUE-530 の錠を結線した後の実測）。正規の起動経路であるここは、
+    #   先行を停止してから引き継ぐ。
     if [ -n "${MT5_TICK_WATCH_FROM:-}" ]; then
-      "$VENV_PY" "$MT5_WATCH_TOOL" --from "$MT5_TICK_WATCH_FROM" >"$MT5_WATCH_LOG" 2>&1 &
+      "$VENV_PY" "$MT5_WATCH_TOOL" --from "$MT5_TICK_WATCH_FROM" --takeover >"$MT5_WATCH_LOG" 2>&1 &
     else
-      "$VENV_PY" "$MT5_WATCH_TOOL" >"$MT5_WATCH_LOG" 2>&1 &
+      "$VENV_PY" "$MT5_WATCH_TOOL" --takeover >"$MT5_WATCH_LOG" 2>&1 &
     fi
     MT5_WATCH_PID=$!
   fi

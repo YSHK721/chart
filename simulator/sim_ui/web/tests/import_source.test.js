@@ -70,6 +70,14 @@ const TRACE_PANEL = "sim_trace_panel_view.js";
 const TRACE_VIEW = "sim_trace_view.js";
 const TRACE_CLIENT = "trace_analysis_client.js";
 const ANALYSIS_ROOT = "composition_root_analysis.js";
+// ジョブ結果を売買履歴チャートへ描く View（2026-09-26 依頼者指示）。
+const RESULT_CHART = "sim_result_chart_view.js";
+// ISSUE-552/554 段階 2-2: 足の成果物の取得（HTTP だけ・位置の区間で読む）。売買履歴チャートが使う。
+const CHART_BARS_CLIENT = "chart_bars_client.js";
+// ISSUE-540: 実行中のジョブを開いたときの完了待ち（掲示・監視・読み直し。DOM は view 経由）。
+const COMPLETION_WAIT = "job_completion_wait.js";
+// 結果待ちの進み具合（バーと％・DOM だけ・依存 0）。M6 と完了待ちが同じ部品を使う（2026-09-27）。
+const PROGRESS_VIEW = "sim_progress_view.js";
 
 const WEB_DIR = join(HERE, "..");
 const REPORT_VIEW_HTML = readFileSync(join(WEB_DIR, "report_view.html"), "utf8");
@@ -90,7 +98,39 @@ test("the front layer ships exactly the Phase 4 + Phase 5 + Phase 6 + Phase 8 + 
     EA_INPUTS_PANEL, SUBMISSION_BUILDER, SCHEMA_FALLBACK,
     RUN_STATUS, STATUS_CLIENT, RUN_LAYOUT, REPORT_VIEW_URL,
     TRACE_PANEL, TRACE_VIEW, TRACE_CLIENT, ANALYSIS_ROOT,
+    RESULT_CHART, CHART_BARS_CLIENT, COMPLETION_WAIT, PROGRESS_VIEW,
   ].sort());
+});
+
+test("the chart bars client is HTTP only (no imports) and the result chart view never fetches by itself", () => {
+  // 「どう取るか」（chart_bars_client）と「何を描くか」（売買履歴チャートの View）を混ぜない。
+  //   View が自分で取りに行くと、読みの回数を注入した口で数えられなくなる（計算量検定が空振りする）。
+  assert.deepEqual(importSpecifiers(read(CHART_BARS_CLIENT)), []);
+  assert.ok(!/\bfetch\s*\(/.test(read(RESULT_CHART)), "売買履歴チャートの View が fetch を直接呼んでいます");
+  assert.ok(!read(RESULT_CHART).includes("/sim/chart-bars"), "売買履歴チャートの View が足の API の URL を持っています");
+});
+
+test("the composition root wires the result chart to the chart bars client end to end", () => {
+  // 受け口（View の loadExtent / fetchRows）を作っても、合成根が結ばなければ無言で死ぬ（ISSUE-291）。
+  const src = read(ROOT);
+  assert.ok(importSpecifiers(src).includes(`./${CHART_BARS_CLIENT}`), "合成根が足の取得クライアントを import していません");
+  assert.match(src, /const\s+chartBars\s*=\s*createChartBarsClient\(/);
+  assert.match(src, /loadExtent:\s*\(jobId\)\s*=>\s*chartBars\.extent\(jobId\)/);
+  assert.match(src, /fetchRows:\s*\(jobId,\s*start,\s*end\)\s*=>\s*chartBars\.rows\(jobId,\s*start,\s*end\)/);
+});
+
+test("no front module reads chart_overlay.json any more (足と値は足の成果物から範囲で読む)", () => {
+  // 丸ごと読む口が戻ると、215 万本の run でタブが落ちる（ISSUE-552 実測）。
+  const usecaseDir = join(FRONT_DIR, "..", "..", "usecase");
+  const sources = [
+    ...FRONT_FILES.map((name) => [name, read(name)]),
+    ...readdirSync(usecaseDir).filter((f) => f.endsWith(".js"))
+      .map((name) => [`usecase/${name}`, stripComments(readFileSync(join(usecaseDir, name), "utf8"))]),
+  ];
+  assert.ok(sources.length > FRONT_FILES.length, "usecase の走査が空振りしています");
+  for (const [name, src] of sources) {
+    assert.ok(!src.includes("chart_overlay"), `${name} が chart_overlay を参照しています`);
+  }
 });
 
 // --- 1g. 分析タブは面と通信を分ける（ISSUE-508 段階 4・§9.3）-------------------------
@@ -151,8 +191,22 @@ test("the run layout view imports nothing (版面は依存 0)", () => {
 // 掲示面が別の面や通信を掴むと、「状態をどう出すか」を確かめるのに器と通信のダブルが要る。
 // M6 は DOM だけ・依存 0 で保つ（M7 job_status_client も同様に DOM を知らない）。
 
-test("the run status view imports nothing (掲示面は依存 0)", () => {
-  assert.deepEqual(importSpecifiers(read(RUN_STATUS)), []);
+// M6 が掴んでよいのは「DOM だけ・依存 0 の部品」だけ（通信・時計・別の面を掴まない）。
+//   名乗る集合（理由つき）: 進み具合の部品（2026-09-27・完了待ちと共有する単一ソース）。
+const RUN_STATUS_ALLOWED_IMPORTS = new Set([`./${PROGRESS_VIEW}`]);
+
+test("the run status view imports only dependency-free DOM parts (掲示面は通信を掴まない)", () => {
+  for (const spec of importSpecifiers(read(RUN_STATUS))) {
+    assert.ok(RUN_STATUS_ALLOWED_IMPORTS.has(spec), `${RUN_STATUS} が ${spec} を import しています`);
+  }
+});
+
+test("the progress view imports nothing and touches no HTTP or timer (部品は依存 0)", () => {
+  const src = read(PROGRESS_VIEW);
+  assert.deepEqual(importSpecifiers(src), []);
+  for (const forbidden of [/\bfetch\b/, /setTimeout/, /setInterval/]) {
+    assert.ok(!forbidden.test(src), `${PROGRESS_VIEW} が ${forbidden} に触れています`);
+  }
 });
 
 test("the job status client imports nothing (通信面は依存 0)", () => {
@@ -215,9 +269,13 @@ test("the child document links the sim-owned frame stylesheet (器の高さ)", (
   assert.ok(REPORT_VIEW_HTML.includes("/sim/css/sim_display.css"));
 });
 
-test("the child document loads the shared v5 vendor (v4 は載せない)", () => {
-  assert.ok(REPORT_VIEW_HTML.includes("/sim/vendor/lightweight-charts.js"));
-  assert.ok(!REPORT_VIEW_HTML.includes("standalone.js"), "v4 バンドルを載せています");
+test("the child document loads no lightweight-charts (3 窓チャート撤去・2026-09-27)", () => {
+  // 3 窓チャート撤去後、子文書にチャートは無い。lwc を載せ続けると、描かないページが
+  //   毎回 vendor 1 本ぶんの読込・評価を発行する（発行した計算 − 出力に使った計算 ≠ 0）。
+  // 判定は**実行される script 読込**に対して行う（散文＝HTML コメントの言及は正当・C1）。
+  assert.ok(!/<script[^>]*lightweight-charts/.test(REPORT_VIEW_HTML),
+    "子文書が lightweight-charts を載せています（チャートは親の売買履歴チャートだけが持つ）");
+  assert.ok(!/<script[^>]*standalone\.js/.test(REPORT_VIEW_HTML), "v4 バンドルを載せています");
 });
 
 test("the child document owns no report DOM (骨格は View が生成する)", () => {
@@ -238,15 +296,33 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
   const shared = specs.filter((s) => s.startsWith("/sim/report-js/"));
   assert.deepEqual(shared.sort(), [
     // Phase 5 で周辺表示（ヒートマップ・比較判定・用語集）の実体を足す。写さず import する。
+    // data.js（aggOf）は接点（3 窓チャート）専用だったため撤去とともに外れた（2026-09-27）。
     "/sim/report-js/chart.js",
     "/sim/report-js/compare.js",
-    "/sim/report-js/data.js",
     "/sim/report-js/format.js",
     "/sim/report-js/glossary.js",
+    // グラフ (Graphs) タブの実体（2026-09-27 依頼者指摘で流用に追加。写さず import する）。
+    "/sim/report-js/graphs.js",
     "/sim/report-js/heatmap.js",
+    // 版面の最大化の状態遷移 nextLayoutMode（2026-09-27・参照 layout.js の点10。写さず import する）。
+    "/sim/report-js/layout.js",
     "/sim/report-js/linkage.js",
+    // サマリー (Report) タブの実体（2026-09-27 依頼者指示で流用に追加。写さず import する）。
+    "/sim/report-js/report.js",
     "/sim/report-js/table.js",
   ]);
+});
+
+test("the composition root reads only tradeCloseCurves from chart.js (3 窓チャート撤去)", () => {
+  // chart.js の表示規則（マーカー・減光・バッジ・接点）を再び import した時点で、
+  //   子文書に描かないチャート計算が戻る芽になる（撤去の回帰の壁）。親の売買履歴チャートの
+  //   残高・DD 系列（tradeCloseCurves）だけを許す。
+  const src = read(ROOT);
+  const m = src.match(/import\s*\{([^}]*)\}\s*from\s*["']\/sim\/report-js\/chart\.js["']/);
+  assert.ok(m, "chart.js の import が見つかりません");
+  const names = m[1].split(",").map((s) => s.trim()).filter(Boolean);
+  assert.deepEqual(names, ["tradeCloseCurves"],
+    `chart.js から表示規則を import しています: ${names}`);
 });
 
 test("the composition root imports nothing but /sim/report-js/ and its own siblings", () => {
@@ -523,10 +599,13 @@ test("view and adapters use the injected doc, not the global document", () => {
 // chart.js（:307）が」公開する。sim も同じ配り方にする。合成根はブラウザ絶対パスを
 // import するため node:test から実行できない（構造検定で固定する唯一の手段）。
 
-test("the composition root publishes the linkage E2E hooks (main.js:182-183 と対称)", () => {
+test("the composition root publishes the linkage E2E hook (main.js:182 と対称)", () => {
   const src = read(ROOT);
   assert.ok(src.includes("__simLinkage"), "window.__simLinkage が無い（双方向連動の実測点）");
-  assert.ok(src.includes("__simEmitMarkerHover"), "window.__simEmitMarkerHover が無い（マーカー hover の代理）");
+  // __simEmitMarkerHover（チャート側 hover の代理）は 3 窓チャート撤去とともに消えた。
+  //   復活はチャート第 2 実装の兆候なので禁じる（チャートは親の売買履歴チャートだけ）。
+  assert.ok(!src.includes("__simEmitMarkerHover"),
+    "__simEmitMarkerHover が復活しています（子文書のチャートは撤去済み）");
 });
 
 test("the chart-side E2E hooks live in the v5 adapter only (chart.js:307 と対称)", () => {
@@ -552,11 +631,11 @@ test("the composition root reads the job id from the injected location search", 
 // 縮退、sim_contacts_toggle_view: renderer 真実源、sim_filter_pill_view: ピル）。ここでは
 // 「合成根がそれらを移植元 main.js:135-190 の順で結線しているか」を構造で固定する。
 
-test("the composition root constructs the four Phase 5 peripheral views", () => {
+test("the composition root constructs the three Phase 5 peripheral views", () => {
+  // 接点トグル（createSimContactsToggleView）は 3 窓チャートとともに撤去（2026-09-27）。
   const src = read(ROOT);
   for (const factory of [
-    "createSimSegmentView", "createSimCompareView",
-    "createSimContactsToggleView", "createSimFilterPillView",
+    "createSimSegmentView", "createSimCompareView", "createSimFilterPillView",
   ]) {
     assert.ok(src.includes(factory), `合成根が ${factory} を組み立てていません（結線の欠落）`);
   }
@@ -565,7 +644,10 @@ test("the composition root constructs the four Phase 5 peripheral views", () => 
 test("the composition root imports the peripheral report_ui builders", () => {
   const src = read(ROOT);
   // ヒートマップ・比較判定・用語集の実体は移植元から import（写さない）。
-  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary", "wireTips", "aggOf"]) {
+  // aggOf（接点の取り出し）は 3 窓チャート撤去とともに外れた（2026-09-27）。
+  // buildReport はサマリー (Report) タブの流用（2026-09-27 依頼者指示）で加わった。
+  for (const sym of ["buildHeatmap", "buildCompare", "renderVerdictBanner", "buildGlossary",
+                     "wireTips", "buildReport"]) {
     assert.ok(src.includes(sym), `合成根が ${sym} を移植元から引いていません`);
   }
 });
@@ -580,16 +662,18 @@ test("the composition root renders compare/glossary once at init, segments per r
   const src = read(ROOT);
   assert.ok(/compareView\b/.test(src), "比較 View が結線されていません");
   assert.ok(/segmentView\b/.test(src), "区間 View が結線されていません");
-  assert.ok(/contactsToggle\b/.test(src), "接点トグル View が結線されていません");
   // wireTips は init で 1 回だけ（多重 #tip 禁止）。selectSegment 内に置くと区間切替で増える。
   const wireTipsCount = (src.match(/wireTips\s*\(/g) || []).length;
   assert.equal(wireTipsCount, 1, "wireTips の呼び出しが 1 回ではありません（多重 #tip の恐れ）");
 });
 
-test("selectSegment feeds contacts and heatmap (移植元 selectSegment と同順)", () => {
+test("selectSegment feeds the heatmap and the report (移植元 selectSegment と同順・チャート撤去後)", () => {
   const src = read(ROOT);
-  assert.ok(/setContacts\s*\(/.test(src), "区間切替で接点を renderer へ渡していません");
   assert.ok(/buildHeatmap\s*\(/.test(src), "区間切替でヒートマップを描いていません");
+  // サマリーは**区間別** report（移植元 renderReport と同じく区間切替で描き直す）。
+  assert.ok(/buildReport\s*\(/.test(src), "区間切替でサマリー (Report) を描いていません");
+  // 接点（setContacts）の届け先＝ 3 窓チャートは撤去済み。呼び出しが戻れば第 2 実装の兆候。
+  assert.ok(!/setContacts\s*\(/.test(src), "setContacts が復活しています（子文書のチャートは撤去済み）");
 });
 
 test("the single-run heatmap drops the IS/OOS diff view (D-3 の opts を渡す)", () => {

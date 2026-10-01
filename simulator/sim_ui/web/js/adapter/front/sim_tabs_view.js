@@ -2,9 +2,12 @@
 //
 // 役割: 移植元 index.html:44-111 の「下部マルチビュー枠」のうち sim が使う分だけを生成し
 //   所有する。移植元 6 タブ（比較・明細・ヒートマップ・グラフ・サマリー・用語）のうち
-//   **graph / report は流用しない**（YAGNI・doc §流用）。共通 4 タブ（明細・ヒートマップ・
-//   比較判定・用語）だけを出す。中身（明細表・ヒートマップ・比較グラフ・用語）は
-//   合成根が各ペインへ挿す（本 View はタブの活性切替とペインの可視だけを持つ）。
+//   6 タブすべてを流用する。サマリー (Report) は 2026-09-27 依頼者指示「シャープレシオ・
+//   取引回数・勝率などのレポートを確認したい」で、グラフ (Graphs) は同日の依頼者指摘
+//   （試作にあったグラフが無い・実測で試作 2 つとも「グラフ」タブに 9〜11 枚）で流用に加えた
+//   （当初は「graph は流用しない（YAGNI）」としていた）。中身
+//   （明細表・ヒートマップ・比較グラフ・サマリー・用語）は合成根が各ペインへ挿す
+//   （本 View はタブの活性切替とペインの可視だけを持つ）。
 //
 // なぜ .mv-body を必ず生成するか（Phase 4 事故と同型・実測 2026-08-11）:
 //   移植元 style.css:86 は `.mv-pane { position:absolute; inset:0 }`。効かせるには
@@ -15,7 +18,7 @@
 //
 // lwc・report.json・CSS には触らない（DOM だけを知る・裁定 B）。
 
-/** タブ名（この順で帯へ並ぶ）。移植元の並びから graph/report を除き、分析タブを 1 枚足す。
+/** タブ名（この順で帯へ並ぶ）。移植元の 6 タブに分析タブを 1 枚足す（graph → report の順は移植元どおり）。
  *
  * `analysis` は段階 4（RUN_TRACE_BASIC_DESIGN §9.1）で加えた。中身は
  * `sim_trace_view.js` が持ち、名前の一致は `sim_trace_view.test.js` が固定する
@@ -26,7 +29,7 @@
  * その取り落としは同検定の「ラベルが空でない」表明が赤にする。
  */
 export const SIM_TAB_NAMES = Object.freeze([
-  "detail", "heat", "compare", "analysis", "glossary",
+  "detail", "heat", "compare", "analysis", "graph", "report", "glossary",
 ]);
 
 /** タブ帯のラベル（移植元 index.html:47-52 の文言＋段階 4 の 1 枚）。 */
@@ -37,6 +40,8 @@ const TAB_LABELS = Object.freeze({
   // 既存の Balance / Drawdown 窓は**残高ベース**であり、こちらは equity（含み損益込み）・
   // 証拠金・維持率・保有玉数という別の量である（§9.1）。名前でその違いが読めるようにする。
   analysis: "口座推移・事象 (Equity / Margin / Events)",
+  graph: "グラフ (Graphs)",
+  report: "サマリー (Report)",
   glossary: "用語説明 (Glossary)",
 });
 
@@ -46,6 +51,7 @@ export function createSimTabsView({ doc } = {}) {
   let host = null;
   const tabs = {};
   const panes = {};
+  let maxDetail = null;
 
   const el = (tag, props) => {
     const node = doc.createElement(tag);
@@ -88,6 +94,13 @@ export function createSimTabsView({ doc } = {}) {
       body.appendChild(pane);
     }
 
+    // 「⛶ 明細最大化」（参照 report_ui #maxDetail と同じくタブ帯の右端・2026-09-27）。
+    //   押したときの処理（版面の切り替え）は合成根が結ぶ。宿主が版面の口を渡すまでは出さない
+    //   （押しても何も起きないボタンを置かない）。
+    maxDetail = el("button", { id: "maxDetail", className: "maxbtn", textContent: "⛶ 明細最大化", type: "button" });
+    maxDetail.hidden = true;
+    bar.appendChild(maxDetail);
+
     bottom.appendChild(bar);
     bottom.appendChild(body);
     return bottom;
@@ -96,6 +109,9 @@ export function createSimTabsView({ doc } = {}) {
   return {
     /** 各ペイン（合成根が中身を挿す先）。 */
     elements: { panes },
+
+    /** 「⛶ 明細最大化」ボタン（mount 前は null）。 */
+    maxDetailButton() { return maxDetail; },
 
     isMounted() { return root !== null; },
 

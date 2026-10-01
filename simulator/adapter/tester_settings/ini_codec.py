@@ -44,7 +44,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import Callable
@@ -159,13 +159,25 @@ def format_date_token(value: date) -> str:
     return f"{value.year:04d}.{value.month:02d}.{value.day:02d}"
 
 
-def _format_date(value: date | None) -> str | None:
+def format_date_minute_token(value: datetime) -> str:
+    """R10 拡張（依頼者指示 2026-09-27）: 分単位の期間トークン `YYYY.MM.DD HH:MM`。
+
+    日付部は `format_date_token`（唯一の宣言）を読む。**分単位表記の唯一の宣言**。
+    """
+    return f"{format_date_token(value)} {value.hour:02d}:{value.minute:02d}"
+
+
+def _format_date(value: "date | datetime | None") -> str | None:
     """書出し用ラッパ（``None`` は「キーを出力しない」を表す）。
 
-    表記そのものは持たない（``format_date_token`` が唯一の宣言）。
+    表記そのものは持たない（``format_date_token`` / ``format_date_minute_token`` が唯一の
+    宣言）。``datetime`` の判定を先に行う——``datetime`` は ``date`` の派生型であり、
+    順序を逆にすると分指定が黙って日付へ落ちる。
     """
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return format_date_minute_token(value)
     return format_date_token(value)
 
 

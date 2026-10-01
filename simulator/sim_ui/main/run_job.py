@@ -42,8 +42,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from simulator.adapter.repository import ohlc_frame_cache
 from simulator.main import run_backtest
-from simulator.sim_ui.adapter import contacts_supply, report_payload_writer
+from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -60,6 +61,9 @@ _FAILURE_FILE = "failure.json"
 # 理由がどこにも残らない（stderr は起動器が DEVNULL に固定している
 # ＝`adapter/subprocess_job_launcher.py:75-76`）。
 _REPORT_PAYLOAD_ERROR_FILE = "report_payload_error.json"
+#: 売買履歴チャートへ描く成果物の書出し失敗の理由（report.json の理由と別に残す——同じ
+#   ファイルへ書くと、後から失敗した方が先の理由を上書きして消す）。
+_CHART_OVERLAY_ERROR_FILE = "chart_overlay_error.json"
 # 実行トレース（ISSUE-508 段階 3・§6.5.3）の書出し失敗の置き場。**`failure.json` とは
 # 別にする**: run 自体は成功しており、同じファイルへ書くと「失敗した run」と区別できなくなる。
 # 終了コードも変えない（観測の失敗で成功した計算を捨てない・`report.json` と同じ扱い）。
@@ -85,6 +89,11 @@ def _record_failure(job_dir: Path, reason: str) -> None:
 def _record_report_payload_error(job_dir: Path, message: str) -> None:
     """表示用ペイロードの書出し失敗を job-dir へ残す（run の成否は変えない）。"""
     _write_note(job_dir, _REPORT_PAYLOAD_ERROR_FILE, {"message": message})
+
+
+def _record_chart_overlay_error(job_dir: Path, message: str) -> None:
+    """売買履歴チャートへ描く成果物の書出し失敗を job-dir へ残す（run の成否は変えない）。"""
+    _write_note(job_dir, _CHART_OVERLAY_ERROR_FILE, {"message": message})
 
 
 def _record_trace_error(job_dir: Path, message: str) -> None:
@@ -131,13 +140,13 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
       同じファイルの `_write_report_payload` が settings 経路で `run_kwargs` を渡して
       いるのと同一の形にそろえる（表示用の足も同じ理由で `backtest` から取り直さない）。
 
-    指標 registry は `build_ea_indicators(**run_kwargs)` から組んで **Callable で注入**する
+    指標 registry は `build_run_indicators(**run_kwargs)`（run と同じ窓・時刻合わせ）から組んで **Callable で注入**する
     （是正 D-4・先例 `_supply_contacts`）——interactor._indicators への到達は
     ISSUE-395/398・ISSUE-405 で 2 度是正済みのカプセル化破りと同型であり、
     エンジン（`simulator/usecase/run_backtest.py`）へプロパティを新設する案は責務分割ゲート
     （`test_run_backtest_responsibility_split.py:275-284` のメソッド集合 8 固定）が赤にする。
     """
-    from simulator.main import build_ea_indicators
+    from simulator.main import build_run_indicators
     from simulator.sim_ui.adapter import trace_writer
 
     backtest = run_kwargs or {}
@@ -148,7 +157,7 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
             # `job_dir.name` は台帳の採番規則そのものである。writer に読み直させると
             #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
             job_id=job_dir.name,
-            indicators_supply=lambda: build_ea_indicators(**backtest),
+            indicators_supply=lambda: build_run_indicators(**backtest),
             marketdata_window=backtest.get("marketdata_window"),
         )
     except Exception as exc:  # 観測の失敗で成功した計算を捨てない
@@ -186,7 +195,6 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
     from simulator.framework.sizing_config_loader import load_sizing_config
 
     backtest = spec.get("backtest") or {}
-    overrides = backtest.get("config_overrides") or {}
     config = load_sizing_config(spec.get("sizing") or {})
     return build_sizing_decorator(
         config,
@@ -197,7 +205,6 @@ def _build_decorator(spec: "dict[str, Any]") -> Any:
         # 欠落キーは KeyError にして明示エラーへ載せる（既定値で黙って埋めない＝
         # 銘柄と違う刻みのロットが静かに出るのを防ぐ）。
         symbol_spec=_VolumeConstraints(backtest),
-        entry_price_basis=overrides.get("entry_price_basis", "close"),
     )
 
 
@@ -206,7 +213,7 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
 
     条件の解釈（未知 op / shift 負値の拒否）は framework の
     `strategy_spec_loader.load_strategy_spec`（sizing_config_loader と対称の単一ソース）へ
-    委譲する。基準価格系列は約定価格基準（config_overrides.entry_price_basis）で決まる。
+    基準価格系列は戦略自身の宣言（判定の瞬間）から決まる（ISSUE-533 段階 1）。
 
     Group（framework loader・adapter 戦略）へは**この関数の中でだけ**依存する。strategy OFF の
     経路が戦略実装の import に巻き込まれないようにするため（OFF は既存挙動と byte 等価）。
@@ -217,7 +224,6 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
     from simulator.framework.strategy_spec_loader import load_strategy_spec
 
     backtest = spec.get("backtest") or {}
-    overrides = backtest.get("config_overrides") or {}
     # trailing/partial_close（Phase 7 の建玉変更サブブロック）は別 loader
     # （position_manager_spec_loader）が担うため、strategy_spec の extra="forbid" に触れない
     # よう**この 2 キーだけ**除外して残りを渡す。entry_long/entry_short 以外の未知キー（タイポ）は
@@ -227,11 +233,9 @@ def _build_strategy_override(spec: "dict[str, Any]") -> Any:
         k: v for k, v in strategy_block.items() if k not in ("trailing", "partial_close")
     }
     entry_long, entry_short = load_strategy_spec(entry_block)
-    return GenericConditionStrategy(
-        entry_long=entry_long,
-        entry_short=entry_short,
-        entry_price_basis=overrides.get("entry_price_basis", "close"),
-    )
+    # ISSUE-533 段階 1: 建値基準は戦略が自分の条件から導いて名乗る。ここから渡さない
+    #   （渡すと値の権威が 2 つになり、判定の瞬間と一致する保証が消える）。
+    return GenericConditionStrategy(entry_long=entry_long, entry_short=entry_short)
 
 
 def _build_position_manager(spec: "dict[str, Any]") -> Any:
@@ -280,19 +284,27 @@ def _load_run_inputs(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
     return request.bars, request.symbol_spec
 
 
-def _supply_contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
+def _build_run_indicators(backtest: "dict[str, Any]", run_bars: Any = None) -> Any:
+    """run と同じ窓・時刻合わせの指標系列を組む（`_write_report_payload` が 1 回だけ呼ぶ）。
+
+    ``run_bars`` はその run が実行した Bar 列（渡せば組み立て直さない・ISSUE-553 項目 2）。
+    """
+    from simulator.main import build_run_indicators
+
+    return build_run_indicators(run_bars=run_bars, **backtest)
+
+
+def _supply_contacts(bars: "list", backtest: "dict[str, Any]", indicators: Any) -> "list[dict]":
     """接点（agg.contacts）を「その run が使った EA の指標系列」から組む（FR-18・R-3）。
 
-    EA→指標の対応は `simulator.main.build_ea_indicators`（simulator/main/ea_bindings の
-    宣言駆動な束縛表を単一ソースにする公開アクセサ）から得る。算出式は adapter
+    ``indicators`` は呼び出し側（`_write_report_payload`）が **1 回だけ**組んだ実体を
+    値で受ける（ISSUE-541 段 1: ここで `build_run_indicators` を呼び直すと、売買履歴
+    チャートの書き手と 2 回目の組み立て＝同じ CSV の読み直しになる）。算出式は adapter
     （contacts_supply）が report_ui の単一ソースを import して持つ。ここは供給の束縛
     （Composition Root）だけを担う。
 
     ``bars`` は writer が読み込み済みの int 時刻ビュー（二重ロードしない）。
     """
-    from simulator.main import build_ea_indicators
-
-    indicators = build_ea_indicators(**backtest)
     return contacts_supply.build_contacts(
         bars=bars, backtest=backtest, indicators=indicators,
     )
@@ -324,6 +336,71 @@ def _settings_supplied_params() -> "frozenset[str]":
     )
 
 
+class SettlementCurrencyDisagreement(ValueError):
+    """投入の実体がどの profile とも一致せず、銘柄一致の profile 群が決済通貨で食い違う。
+
+    決済通貨は非対象判定 N-11（口座通貨 ≠ 銘柄の決済通貨を拒否）の判定データ源である。
+    食い違う候補から 1 つを選ぶ規則は存在しないため、**推定しないで止める**。黙って片方を
+    採ると、通貨不一致の run が N-11 を素通りする（出力は形式上正しいので状態検証では
+    検出できない）。
+
+    ``ValueError`` の派生にしてあるのは、台帳の同型の Fail-Stop（dataset_registry が送る
+    TickTokenMissing）と同じ理由である——``ValueError`` として捕捉している既存の呼び出し側の
+    契約を変えない。
+    """
+
+
+def _settlement_currency_for_submission(
+    profiles: "Any", *, symbol: str, data_path: "Any"
+) -> str:
+    """投入から決済通貨（N-11 の判定データ源）を引く。**profile の並びに依存しない**。
+
+    規則（ISSUE-511 段階 8-D-3 / 設計 D-3・依頼者裁定 2026-09-25）:
+        1. 投入された実体（``data_path``）と一致する profile があれば、その profile の値。
+           **同一性は実体で決まる**——同じ銘柄の系列が複数あるとき、銘柄では決まらない。
+        2. 一致が無ければ、銘柄一致の profile 群が**合意している**ときだけその値。投入の実体は
+           カタログの実体でなくてよい（合成 CSV で経路を確かめる検定群が実際にそうしている）。
+        3. 合意しなければ :class:`SettlementCurrencyDisagreement` で止める（推定しない）。
+
+    是正前は ``next((p for p in datasets() if p.symbol == symbol))`` で**銘柄一致の先頭**を
+    採っていた。銘柄あたり 1 本のうちは答えが一意なので誤りが表に出ないが、同じ銘柄の系列が
+    2 本になった時点で答えが並びで決まる。取り違えても出力は形式上正しいままなので、状態検証
+    では原理的に検出できない（機械的検査は
+    ``simulator/sim_ui/tests/unit/test_run_job_profile_identity.py``）。
+
+    Raises:
+        ValueError: 銘柄一致の profile が 1 件も無い（決済通貨の供給源が無い）。
+        SettlementCurrencyDisagreement: 実体が一致せず、候補が値で食い違う。
+    """
+    submitted = None if data_path is None else str(data_path)
+    if submitted is not None:
+        exact = next((p for p in profiles if p.data_path == submitted), None)
+        if exact is not None:
+            return exact.settlement_currency
+
+    candidates = [p for p in profiles if p.symbol == symbol]
+    if not candidates:
+        raise ValueError(
+            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
+            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
+        )
+    agreed = {p.settlement_currency for p in candidates}
+    if len(agreed) != 1:
+        # 案内には「どの profile 群がどの値で食い違ったか」と「どの投入がどれとも一致しな
+        # かったか」を載せる。綴りは 1 つも書き写さず、渡された profile から導く（書き写すと
+        # 片方だけ動いたときに案内が嘘になる）。
+        disagreement = "・".join(
+            f"{p.dataset}={p.settlement_currency}" for p in candidates
+        )
+        raise SettlementCurrencyDisagreement(
+            f"投入された実体 {submitted!r} はどの実行プロファイルの実体とも一致せず、"
+            f"銘柄 {symbol!r} の実行プロファイル群は決済通貨で食い違っています"
+            f"（{disagreement}）。推定値では N-11 の判定が壊れるため、投入の実体を"
+            "いずれかのプロファイルの実体に合わせてください。"
+        )
+    return agreed.pop()
+
+
 def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     """`backtest` ブロック ＋ カタログから `EngineBinding`（§6 補助 DTO）を組む。
 
@@ -341,6 +418,8 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
                      即座に落ちる（投入 body のキー集合は不変であり、front は従来どおり
                      `leverage` を送る＝実測）。
         決済通貨   — `SymbolSpecCatalog` の profile（A-2 で恒久化された唯一の供給源）。
+                     **どの profile かは投入された実体で決まる**（`data_path` 一致・
+                     `_settlement_currency_for_submission`。ISSUE-511 段階 8-D-3）。
                      登録の無い銘柄は**推定しない**で失敗させる。
         EA 固有引数 — `backtest` のうち写像層が供給しない残余（`_settings_supplied_params`）。
         data_path  — バー系列を消費する modelling のときだけ渡す（規則 S）。要否の宣言は
@@ -349,21 +428,17 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     from dataclasses import fields
 
     from simulator.adapter.execution.tick_model_registry import consumes_market_data
-    from simulator.main import known_ea_names
     from simulator.main.tester_settings.kwargs_mapper import EngineBinding, tick_model_word
     from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
     from simulator.usecase.models import SymbolSpec
 
     backtest = spec.get("backtest") or {}
     symbol = backtest["symbol"]
-    profile = next(
-        (p for p in build_run_options_port().datasets() if p.symbol == symbol), None
+    settlement = _settlement_currency_for_submission(
+        build_run_options_port().datasets(),
+        symbol=symbol,
+        data_path=backtest.get("data_path"),
     )
-    if profile is None:
-        raise ValueError(
-            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
-            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
-        )
     supplied = _settings_supplied_params()
     return EngineBinding(
         symbol_spec=SymbolSpec(**{f.name: backtest[f.name] for f in fields(SymbolSpec)}),
@@ -375,34 +450,142 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
             if consumes_market_data(tick_model_word(effective.tick_model))
             else None
         ),
-        known_ea_names=frozenset(known_ea_names()),
-        settlement_currency=profile.settlement_currency,
+        settlement_currency=settlement,
         ea_params={k: v for k, v in backtest.items() if k not in supplied},
         config_overrides=dict(backtest.get("config_overrides") or {}),
     )
 
 
-def _write_report_payload(job_dir: Path, result: Any, *, load_run_inputs, contacts_supply) -> None:
-    """表示用ペイロード（report.json）を書く。**run の成否は変えない**。
+#: サマリー指標の計算ステップのログ（`/sim/data/{job_id}/metrics_steps.txt` で読める）。
+_METRICS_STEPS_FILE = "metrics_steps.txt"
+_METRICS_STEPS_ERROR_FILE = "metrics_steps_error.json"
+
+
+def _write_metrics_steps(job_dir: Path, result: Any) -> None:
+    """サマリー指標の計算ステップ（入力・途中の値・結果・統計との照合）を job-dir へ書く。
+
+    2026-09-28 依頼者指示「全ての指標の計算ステップを確認したいのでログを出力しろ」。
+    組み立ては usecase の metrics_steps（本番と同じ関数を呼ぶ）で、ここは書くだけ。
+    書けなくても run の成否は変えない（表示と同じ扱い）。理由は job-dir に残す。
+    """
+    from simulator.usecase.metrics_steps import build_metrics_steps, render_metrics_steps
+
+    try:
+        sections = build_metrics_steps(
+            trades=result.trades,
+            balance_curve=result.balance_curve,
+            equity_curve=result.equity_curve,
+            initial_deposit=result.stats.initial_deposit,
+            bar_open_equity=result.bar_open_equity,
+            bar_seconds=result.bar_seconds,
+            stats=result.stats,
+        )
+        (job_dir / _METRICS_STEPS_FILE).write_text(
+            render_metrics_steps(sections), encoding="utf-8")
+    except Exception as exc:  # ログの失敗で成功した計算を捨てない
+        message = f"計算ステップのログの書出しに失敗しました: {exc}"
+        print(message, file=sys.stderr)
+        _write_note(job_dir, _METRICS_STEPS_ERROR_FILE, {"message": message})
+
+
+def _write_report_payload(
+    job_dir: Path, result: Any, *, load_run_inputs, load_indicators,
+    run_kwargs: "dict[str, Any]", account: Any,
+) -> None:
+    """表示用ペイロード（report.json と売買履歴チャートへ描く成果物）を書く。**run の成否は変えない**。
 
     書出しに失敗しても終了コードを変えないのは、バックテスト自体は成功しており、表示の
     失敗で成功した計算を捨てないためである。ただし理由は残す——起動器が stderr を
     DEVNULL に固定するため、print だけでは「完了なのに結果が出ない」の原因が誰にも届かない。
+
+    材料（`load_run_inputs`＝表示用の足・`load_indicators`＝指標）は **1 回だけ**組んで
+    すべての書出しで共有する（ISSUE-541 段 1）。書出しごとに組むと、同じ CSV を
+    もう 1 度 parse して同じ Bar 列・同じ指標を作って捨てることになる（実測: 1 run で
+    12 回 parse・18.8 秒）。
     """
+    _write_metrics_steps(job_dir, result)
+    loaded: "dict[str, Any]" = {}
+
+    def load_once(backtest: "dict[str, Any]") -> "tuple[Any, Any]":
+        if "inputs" not in loaded:
+            loaded["inputs"] = load_run_inputs(backtest)
+        return loaded["inputs"]
+
+    def indicators_once() -> Any:
+        if "indicators" not in loaded:
+            loaded["indicators"] = load_indicators()
+        return loaded["indicators"]
+
     try:
         report_payload_writer.write(
             job_dir, result,
-            load_run_inputs=load_run_inputs,
-            contacts_supply=contacts_supply,
+            load_run_inputs=load_once,
+            contacts_supply=lambda bars, backtest: _supply_contacts(
+                bars, backtest, indicators_once()
+            ),
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"report.json の書出しに失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_report_payload_error(job_dir, message)
+    try:
+        bars, symbol_spec = load_once(run_kwargs)
+        _write_chart_overlay(
+            job_dir, result, bars, symbol_spec, run_kwargs, account,
+            indicators=indicators_once(),
+        )
+    except Exception as exc:  # 表示の失敗で成功した計算を捨てない
+        message = (
+            "売買履歴チャートへ描く成果物"
+            f"（{chart_overlay_writer.TRADE_MARKERS_FILENAME}・{chart_overlay_writer.CHART_BARS_FILENAME}）"
+            f"の書出しに失敗しました: {exc}"
+        )
+        print(message, file=sys.stderr)
+        _record_chart_overlay_error(job_dir, message)
+
+
+def _write_chart_overlay(
+    job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
+    run_kwargs: "dict[str, Any]", account: Any, *, indicators: Any,
+) -> None:
+    """売買マークと足の成果物（足・足ごとの口座・トリガー指標）を書く（束縛は Composition Root が持つ）。
+
+    ``indicators`` は呼び出し側が 1 回だけ組んだ実体（run と同じ対応づけ・ISSUE-509 を
+    経た系列で、系列の位置 i が ``bars[i]`` の時刻になる）。描く系列は EA が宣言した
+    描画宣言（PlotDecl）が決める（ここで系列名を選ばない）。
+    """
+    from simulator.main import known_plots
+
+    chart_overlay_writer.write(
+        job_dir,
+        result=result,
+        bars=bars,
+        symbol=run_kwargs["symbol"],
+        digits=int(run_kwargs["digits"]),
+        ea_name=run_kwargs["ea_name"],
+        indicators=indicators,
+        plots=known_plots(run_kwargs["ea_name"], config_overrides=run_kwargs.get("config_overrides")),
+        account=account,
+        initial_deposit=float(run_kwargs["initial_deposit"]),
+        dataset_ref=_dataset_ref_of(run_kwargs["data_path"]),
+    )
+
+
+def _dataset_ref_of(data_path: Any) -> "str | None":
+    """run が読んだ実体の台帳名（台帳の宣言パスと実体が一致する ref が**ちょうど 1 つ**のとき）。
+
+    所在の権威は台帳（`marketdata/dataset_registry.py` の whitelist）である。一致が 0 件
+    （台帳外の CSV）・複数件（どれか決められない）は推測せず ``None``。
+    """
+    from marketdata.dataset_registry import whitelist
+
+    target = Path(data_path).resolve()
+    matches = [ref for ref, path in whitelist().items() if Path(path).resolve() == target]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _run_with_settings(
-    job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]"
+    job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]", account: Any
 ) -> "tuple[int, dict[str, Any] | None]":
     """Tester Settings 経路（Phase 8 §18.3「実行」）。
 
@@ -439,7 +622,7 @@ def _run_with_settings(
         return _EXIT_SPEC_ERROR, None
 
     try:
-        exit_code, result, _metadata = run_settings_job(
+        exit_code, result, _metadata, request = run_settings_job(
             effective, binding, output_dir=job_dir, extensions=extensions
         )
     except BacktestError as error:
@@ -459,14 +642,22 @@ def _run_with_settings(
         # ブロックから取り直すと、`.ini` の期間窓が効いていない全期間の足が「今の結果の足」
         # として表示される（窓を絞った run ほど食い違いが大きくなる）。
         run_kwargs = effective_to_interactor_kwargs(effective, binding)
+        # 表示用の足・銘柄仕様は **run が実行した request の値**をそのまま配る（ISSUE-541 段 1）。
+        #   `_load_run_inputs`（build_interactor の再構築）で取り直すと、同じ CSV をもう 1 式
+        #   読み直して同じ Bar 列を作って捨てる（実測: 1 build ≈ 3 parse・4.7 秒）。
         _write_report_payload(
             job_dir, result,
-            load_run_inputs=lambda _backtest: _load_run_inputs(run_kwargs),
-            contacts_supply=lambda bars, _backtest: _supply_contacts(bars, run_kwargs),
+            load_run_inputs=lambda _backtest: (request.bars, request.symbol_spec),
+            load_indicators=lambda: _build_run_indicators(run_kwargs, request.bars),
+            run_kwargs=run_kwargs, account=account,
         )
     return exit_code, run_kwargs
 
 
+# 1 ジョブの読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。実体が実行中に
+#   追記されても（MT5 常駐が毎分書く）、run 本体・表示・接点・売買履歴チャートが同じ行を
+#   読む。区間はジョブ全体（run と成果物の書出し）＝本関数の全体である。
+@ohlc_frame_cache.pinned_entities()
 def main(argv: "list[str] | None" = None) -> int:
     """1 ジョブを実行して終了コードを返す。"""
     parser = argparse.ArgumentParser(
@@ -545,6 +736,23 @@ def main(argv: "list[str] | None" = None) -> int:
             return _EXIT_SPEC_ERROR
         extensions["run_tracer"] = tracer
 
+    # 足ごとの口座（残高・有効証拠金・証拠金維持率）の記録器。売買履歴チャートの資産パネルを
+    #   保有中も更新するために**毎回**渡す（2026-09-26 依頼者指示）。エンジンの観測口は
+    #   1 つなので、実行トレースが有効なときは両方へ配る合成で束ねる。
+    #   トレース群（`simulator.adapter.trace`）は他の拡張と同じく関数内で import する（是正 D-5）。
+    from simulator.adapter.trace.account_curve import AccountCurveRecorder
+    from simulator.usecase.run_trace_ports import FanOutRunTrace
+
+    # 進み具合（％）の記録器。結果待ちの画面がバーと％を出す（2026-09-27 依頼者指示）。
+    #   書くのは％が変わったときだけ（最大 101 回・run_progress_recorder）。
+    from simulator.sim_ui.adapter.run_progress_file import write_progress
+    from simulator.sim_ui.adapter.run_progress_recorder import RunProgressRecorder
+
+    account = AccountCurveRecorder()
+    progress = RunProgressRecorder(lambda percent: write_progress(job_dir, percent))
+    observers = (tracer, account, progress) if tracer is not None else (account, progress)
+    extensions["run_tracer"] = FanOutRunTrace(*observers)
+
     # Tester Settings 経路（Phase 8 §18・T-1）。settings 不在は**現行経路**へ落ちる。
     # 分岐の下は拡張点の合流（`meta.update`）と書出しの関数化のみで、`run_backtest` への
     # 引数も出力段も変えていない＝旧 spec の `stats.json` は byte 等価
@@ -554,7 +762,7 @@ def main(argv: "list[str] | None" = None) -> int:
     # 分岐ごとに写すと、`_write_report_payload` が 2 箇所から呼ばれている形が増える
     # ——片方だけ改訂される複製を新しく作らない（§6.5.1）。
     if spec.get("settings"):
-        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions)
+        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions, account)
     else:
         meta.update(extensions)
         # 現行経路が `build_interactor` へ渡す引数は `meta` そのものである
@@ -574,7 +782,8 @@ def main(argv: "list[str] | None" = None) -> int:
             _write_report_payload(
                 job_dir, _result,
                 load_run_inputs=_load_run_inputs,
-                contacts_supply=_supply_contacts,
+                load_indicators=lambda: _build_run_indicators(meta),
+                run_kwargs=meta, account=account,
             )
 
     # 実行トレースの書出し（**唯一の呼出点**）。§12.7 不変: run 完了後に書き出す

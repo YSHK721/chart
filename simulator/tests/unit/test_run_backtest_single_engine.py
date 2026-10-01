@@ -94,6 +94,10 @@ class _NullIndicators:
 
 class _NullStrategy:
     """発注しない戦略（約定の有無は本ファイルの関心ではない）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def on_init(self, config, indicators):
         return None
@@ -600,6 +604,10 @@ def _margin_breach_request(*, config_overrides, bars):
     )
 
     class _BuyOnce(_NullStrategy):
+        #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+        #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+        entry_price_basis = "close"
+
         def on_new_bar(self, bar_index, indicators, account):
             return [Order(side="buy", kind="market", volume=1.0, price=None)] if bar_index == 0 else []
 
@@ -636,7 +644,7 @@ def _open_gap_bars():
 #: 証拠金割れが起こりうる 3 つの評価点（バー open / バー close / ティック）。
 #: 移設前はこの 3 点それぞれに同じ 2 分岐が書き写されていた。
 _BREACH_SITES = [
-    ("bar_open", {"entry_price_basis": "current_open", "stop_out_at_open": True}, _open_gap_bars),
+    ("bar_open", {"stop_out_at_open": True}, _open_gap_bars),
     ("bar_close", {}, _flat_then_crash_bars),
     ("tick", {"tick_model": "real_ticks"}, _flat_then_crash_bars),
 ]
@@ -798,6 +806,10 @@ class TestTheStopOutDecisionDoesNotWasteWork:
 
 class _OrdersPerBar(_NullStrategy):
     """指定バーで指定の成行注文列を返す戦略。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar):
         self._orders_by_bar = orders_by_bar
@@ -870,8 +882,9 @@ class TestBothEnginesShareTheMarketFillStage:
         result = interactor.execute(request)
         # Assert: 発行順・保有列の並び・確定トレードの並びが 1 本の順序で貫かれている。
         assert scanned == ["buy", "buy", "sell"]
-        assert [t.side for t in result.trades] == ["buy", "buy"]
-        assert [t.exit_reason for t in result.trades] == ["reverse", "reverse"]
+        #   末尾の売りは反対玉 2 本を reverse 決済して建ち、テスト期間終了時に清算される。
+        assert [t.side for t in result.trades] == ["buy", "buy", "sell"]
+        assert [t.exit_reason for t in result.trades] == ["reverse", "reverse", "end_of_test"]
 
     @pytest.mark.parametrize("path,overrides", _BOTH_PATHS, ids=lambda v: v if isinstance(v, str) else "")
     def test_each_fill_lands_in_the_account_before_the_next_order_is_scanned(
@@ -888,6 +901,10 @@ class TestBothEnginesShareTheMarketFillStage:
         account_box: list = []
 
         class _Recording(_OrdersPerBar):
+            #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+            #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+            entry_price_basis = "close"
+
             def on_new_bar(self, bar_index, indicators, account):
                 account_box.append(account)
                 return super().on_new_bar(bar_index, indicators, account)
@@ -1075,7 +1092,8 @@ class TestBothEnginesShareThePositionDirectiveStage:
         """既定（未注入）では建玉変更の段を素通りすること（byte 等価の担保）。"""
         interactor, request = _held_positions_scenario(overrides, position_manager=None)
         result = interactor.execute(request)
-        assert [t.exit_reason for t in result.trades] == []
+        # 建玉変更による決済は 1 件も無い（2 玉ともテスト期間終了時の清算だけ）。
+        assert [t.exit_reason for t in result.trades] == ["end_of_test"] * 2
 
 
 class TestThePositionDirectiveStageDoesNotWasteWork:

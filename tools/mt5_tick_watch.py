@@ -21,6 +21,12 @@
     のときだけ ``--from`` を要求する。``now-30 分`` のような既定を作らないのは、「どこから
     取り直したか」が運用者に見えないまま欠測が埋まらない状態を避けるためである（E-10）。
 
+書く系列の組は台帳が決める（ISSUE-511 段階 8-D-2b の段 5）:
+    ``--ref`` は「どのティック木か」を指す**種**であり、書く系列の集合ではない。集合は起動時に
+    1 回だけ台帳から引き（:func:`series_refs`）、同じタプルを列形照合・publish・日次再構築の
+    3 か所へ渡す。運用者が集合を名指せる口は置かない——台帳の事実を運用者が再宣言できる形が、
+    spread 付き系列を 9 日間誰も publish しない凍結を生んだためである（依頼者裁定 2026-09-23）。
+
 ``--from`` はサーバラベル（端末の壁時計）である:
     UTC→ラベルの逆変換は多価であり `marketdata/mt5_ticks/server_clock.py` は実装しない。
     よって運用者が渡すのは端末が見せている時刻そのもの（またはその epoch ms）である。
@@ -44,8 +50,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from common.writer_lock import WriterLockHeld, acquire_writer_lock  # noqa: E402
+from marketdata import dataset_registry  # noqa: E402
+from marketdata import tick_m1  # noqa: E402
 from marketdata.mt5_ticks import cursor as cursor_rules  # noqa: E402
-from marketdata.mt5_ticks import http_source, ingest, rebuild, usecases, wire  # noqa: E402
+from marketdata.mt5_ticks import http_source, ingest, journal, rebuild, usecases, wire  # noqa: E402
 from marketdata.mt5_ticks import server_clock  # noqa: E402
 from marketdata.mt5_ticks.cursor import Cursor  # noqa: E402
 from marketdata.mt5_ticks.port import Mt5SupplyError, SupplyUnavailable  # noqa: E402
@@ -71,17 +80,34 @@ BACKOFF_CAP_SECONDS = 60.0
 BREAKER_AFTER_FAILURES = 8
 BREAKER_SECONDS = 600.0
 
-#: 再開点を探すときに遡るジャーナルの日数。これを超える中断は ``--from`` で明示させる
-#: （黙って何日でも遡ると、欠測を埋めたのか飛ばしたのかが運用者に見えない）。
+#: 起動時に必ず見る日数（今日と昨日）。再開点はこの窓に限らず、今日から遡って**最初に見つかった
+#: ジャーナル**の最後のティックから決める（2026-09-28・固定 2 日の窓では週末をまたぐ停止のたびに
+#: ``--from`` の手入力が要った＝依頼者指摘「こんなふざけた設計があるか」）。どこから取り直したかは
+#: 起動時のログに出す（黙って遡らない）。
 RESTORE_LOOKBACK_DAYS = 2
 
 #: トークン解決の探り窓（1 ms・1 行）。応答ヘッダのサーバ名だけが目的である。
 _TOKEN_PROBE_ROWS = 1
 
-#: 終了コード。
+#: 終了コード。二重起動（:class:`common.writer_lock.WriterLockHeld`）は ``EXIT_USAGE`` で止める
+#: ＝ライブ供給（``tools/live_tick_watch.py``）が同じ意味で返している値と揃える（運用者が 2 本の
+#: 常駐を同じ読み方で扱える）。「待っても直らない」側（``EXIT_FAIL_STOP``）と分けるのは、
+#: 二重起動は先行を止めれば直る＝運用者の一手で解ける状態だからである。
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_FAIL_STOP = 3
+
+#: 単一書き手ロックの名前（``--data-dir`` 直下）。ライブ供給の錠とは**別のファイル**にする。
+#: 止めたいのは同じ系列への 2 本目であって、別系列の常駐ではない（ISSUE-530）。
+WRITER_LOCK_FILENAME = "mt5_tick_watch.lock"
+
+#: 拒否の案内に載せる「次の一手」。本 CLI は引き継ぎ口 ``--takeover`` を持つ＝ライブ供給
+#: （``tools/live_tick_watch.py`` が同じ意味で持つ案内）と揃える（2 本の常駐で「次の一手」が
+#: 違うと、運用者は起動経路ごとに別の手順を覚えることになる）。
+WRITER_LOCK_HINT = (
+    "引き継ぐ場合は --takeover を付けて起動してください"
+    "（二重起動は受信の一次記録＝ジャーナルを壊します・ISSUE-530）。"
+)
 
 
 class SystemClock:
@@ -103,6 +129,7 @@ class WatchSettings(NamedTuple):
     from_label: "Optional[int]"
     publish: bool
     quiet: bool
+    takeover: bool
 
 
 class WatchState(NamedTuple):
@@ -132,7 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
                              f"・下限 {MIN_INTERVAL_SECONDS}）")
     parser.add_argument("--data-dir", default=None,
                         help="データ基点（既定は marketdata の DATA_DIR）")
-    parser.add_argument("--ref", default=DEFAULT_REF, help=f"表示系列の ref（既定 {DEFAULT_REF}）")
+    parser.add_argument(
+        "--ref", default=DEFAULT_REF,
+        help=f"どのティック木から供給するかの**種**（既定 {DEFAULT_REF}）。書く表示系列の組は"
+             "その木を読む ref 全部であり、台帳が決める（ここでは選べない）",
+    )
     parser.add_argument("--from", dest="from_label", default=None,
                         help="コールドスタートの再開点。サーバラベルの壁時計"
                              "（例 '2026-09-01 12:00:00'）か epoch ミリ秒")
@@ -140,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-publish", action="store_true",
                         help="表示系列（M1・上位足）へ書かない（取り込みだけ回す）")
     parser.add_argument("--quiet", action="store_true", help="周期ごとのログを出さない")
+    parser.add_argument(
+        "--takeover", action="store_true",
+        help="先行の mt5_tick_watch が居れば SIGTERM で停止してから引き継ぐ"
+             "（単一書き手ロック・ISSUE-530。既定は二重起動を即時拒否）",
+    )
     return parser
 
 
@@ -237,15 +273,34 @@ def probe_label_ms(settings: WatchSettings, clock: Any) -> int:
 # 1 周期の合成
 # ---------------------------------------------------------------------
 
+def series_refs(seed: str) -> "Tuple[str, ...]":
+    """種（``--ref``）が指すティック木を読む**系列の組**を台帳から引く（段 5・設計 D-3）。
+
+    集合の所有者は台帳であって運用者ではない。かつては ``--ref`` がそのまま書く系列 1 つを
+    決めており、台帳が 2 系列を宣言しても常駐は片方しか書かなかった（実測: spread 付き系列が
+    2026-09-14 で止まり 9 日間凍結）。例外口（運用者が集合を名指せる引数）は作らない——台帳の
+    事実を再宣言できる形そのものが、その凍結を生んだためである（依頼者裁定 2026-09-23）。
+
+    ここには規則は無い（木の照会も集合の導出も台帳の口へ委譲する）。答えは起動時に 1 回だけ
+    引き、同じタプルを列形照合・publish・日次再構築の 3 か所へ渡す。
+
+    合成（種 → 木 → 組）そのものも台帳側の
+    :func:`marketdata.dataset_registry.series_refs_of` が持つ。もう 1 本の供給常駐
+    （``tools/live_tick_watch.py``）が同じ合成を要るようになったとき、2 行を各自に持つと片方だけ
+    直したときにもう片方が黙って別の集合を書く（ISSUE-533 段階 3 の前提工事）。
+    """
+    return dataset_registry.series_refs_of(seed)
+
+
 @dataclass
 class SupplyCycle:
     """1 周期を組み立てる（各段はユースケースが持ち、ここは順序だけを持つ）。"""
 
     poll: usecases.PollOnce
-    publish: "Optional[usecases.PublishDataset]"
+    publish: "Optional[usecases.PublishSeries]"
     finalize: usecases.FinalizeDay
     token: str
-    ref: str
+    refs: "Tuple[str, ...]"
     data_dir: Any
 
     def __call__(self, state: WatchState) -> "Tuple[WatchState, usecases.PollResult]":
@@ -265,8 +320,8 @@ class SupplyCycle:
         # 日が閉じたものだけを確定し、そのうえで権威経路で是正する（設計 §10 の裁定）。
         settled = self.finalize(days=days, latest_observed_day=latest)
         if settled:
-            rebuild.rebuild_days(
-                settled.keys(), symbol=self.token, ref=self.ref, data_dir=self.data_dir,
+            rebuild.rebuild_days_for_series(
+                settled.keys(), symbol=self.token, refs=self.refs, data_dir=self.data_dir,
                 update_rollups=self.publish is not None,
             )
             days -= set(settled)
@@ -274,33 +329,68 @@ class SupplyCycle:
         return WatchState(result.cursor, pending, days, latest), result
 
 
-def build_cycle(settings: WatchSettings, *, source: Any, token: str, clock: Any) -> SupplyCycle:
-    """設定と供給元から 1 周期を組み立てる（依存の向きはここで 1 回だけ決まる）。"""
+def build_cycle(
+    settings: WatchSettings, *, source: Any, token: str, clock: Any,
+    refs: "Optional[Sequence[str]]" = None,
+) -> SupplyCycle:
+    """設定と供給元から 1 周期を組み立てる（依存の向きはここで 1 回だけ決まる）。
+
+    ``refs`` は起動時に 1 回だけ台帳から引いた系列の組（:func:`series_refs`）である。:func:`run`
+    は必ず渡す——同じタプルを列形照合・publish・日次再構築の 3 か所で使うためで、周期ごとに
+    引き直すと「起動時に照合した集合」と「実際に書く集合」が別物になりうる（照合は緑のまま、
+    書く側だけが増える）。省略した呼出でも集合の出所は台帳のままである（既定が
+    :func:`series_refs` の答えであり、**呼出側が組を名指す口ではない**）。
+    """
+    refs = series_refs(settings.ref) if refs is None else tuple(refs)
     return SupplyCycle(
         poll=usecases.PollOnce(
             source=source, symbol=settings.symbol, token=token, data_dir=settings.data_dir
         ),
         publish=(
-            usecases.PublishDataset(ref=settings.ref, data_dir=settings.data_dir, clock=clock)
+            usecases.PublishSeries(refs=refs, data_dir=settings.data_dir, clock=clock)
             if settings.publish else None
         ),
         finalize=usecases.FinalizeDay(
             token=token, data_dir=settings.data_dir, clock=clock
         ),
         token=token,
-        ref=settings.ref,
+        refs=refs,
         data_dir=settings.data_dir,
     )
 
 
-def lookback_days(clock: Any) -> "List[dt.date]":
+def lookback_days(clock: Any, *, token: str, data_dir: Any) -> "List[dt.date]":
     """起動時に見にいく日（**再開点の復元と未確定日の種付けで同じ窓を使う**）。
 
     2 つが別の窓を持つと、片方だけが遡れる日ができる（再開はできるのに確定は落ちる、
     あるいはその逆）。窓は 1 箇所で決める。
+
+    窓 = 「最後にジャーナルが在る日」から今日まで（最低でも今日と昨日の
+    :data:`RESTORE_LOOKBACK_DAYS` 日）。今日から 1 日ずつ遡って最初のジャーナルで止まるので、
+    探索は**止まっていた日数**に比例し、保存済みの日数には比例しない。ジャーナルが 1 つも無い
+    ときは遡る下限（ティックの木の最も古い年の 1 月 1 日）で止まり、最低窓を返す＝コールドスタート
+    （``--from`` が要る）。
     """
     today = clock.now().date()
-    return [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
+    window = [today - dt.timedelta(days=i) for i in range(RESTORE_LOOKBACK_DAYS)]
+    if any(journal.has_journal(d, symbol=token, data_dir=data_dir) for d in window):
+        return window
+    floor = _oldest_tick_day(data_dir)
+    day = window[-1] - dt.timedelta(days=1)
+    while floor is not None and day >= floor:
+        if journal.has_journal(day, symbol=token, data_dir=data_dir):
+            gap = [today - dt.timedelta(days=i) for i in range((today - day).days + 1)]
+            _stderr(f"ジャーナルの最後の日 {day} から再開します（今日まで {len(gap)} 日を窓にする）。")
+            return gap
+        day -= dt.timedelta(days=1)
+    return window
+
+
+def _oldest_tick_day(data_dir: Any) -> "Optional[dt.date]":
+    """ティックの木（``<data_dir>/ticks/YYYY/...``）の最も古い年の 1 月 1 日。木が無ければ None。"""
+    root = tick_m1.tick_root(data_dir)
+    years = [int(p.name) for p in root.iterdir() if p.is_dir() and p.name.isdigit()] if root.is_dir() else []
+    return dt.date(min(years), 1, 1) if years else None
 
 
 def restore_or_start(
@@ -337,10 +427,86 @@ def run(
     cycles: "Optional[int]" = None,
     log: "Callable[[str], Any]" = None,
 ) -> int:
-    """周期を回す。``cycles`` は**成功した**周期の数で数える（失敗は消化しない）。"""
+    """周期を回す。``cycles`` は**成功した**周期の数で数える（失敗は消化しない）。
+
+    起動の順序（ISSUE-530）: **列形照合 → 単一書き手ロック → 端末・台帳へ触るどの経路**。
+    この 2 つの検査はどちらも「どのみち書けない状態で先へ進まない」ためのものであり、
+    ライブ供給（``tools/live_tick_watch.py``・ISSUE-488）と同じ規律に揃えてある。
+
+    - 照合が錠より**前**なのは、照合が読むだけで 1 バイトも書かないからである。順序を逆に
+      すると、``--takeover`` 付きの起動では先行の書き手を退去させたうえで自分も止まることに
+      なり、供給を止めるだけの起動になる。
+    - 錠がトークン解決より**前**なのは、照合を取得より前に置いたのと同じ理由による
+      （ここに既にある「どのみち書けない状態で端末を叩かない」）。2 本目の常駐は、どのみち
+      1 行も書けない相手である。錠を後ろに回すほど、2 本の起動処理が重なる区間が延びる。
+    """
     clock = SystemClock() if clock is None else clock
     say = log if log is not None else (lambda line: None if settings.quiet else _stderr(line))
 
+    # 起動時の列形照合（ISSUE-511 段階 3 の段階 4・V-4）: 周期を回し始める前に、台帳の宣言と
+    #   既存 M1 CSV の列形の食い違いを検出して止める。取得（トークン解決）より**前**に置くのは、
+    #   どのみち書けない状態で端末を叩かないためである（照合は読むだけで 1 バイトも書かない）。
+    #   ``--no-publish`` でも通すのは、日次確定後の再構築（rebuild.rebuild_days）が publish の
+    #   有無に関わらず M1 CSV を書きうるためである（照合を publish 側に寄せると穴が開く）。
+    #   規則の実体は marketdata 側にあり、ここは呼ぶだけである（tools は規則を持たない）。
+    # 書く系列の組は台帳が決める（段 5・設計 D-3）。起動時に 1 回だけ引き、同じタプルを
+    #   列形照合・publish・日次再構築の 3 か所へ渡す。引けない（台帳にその木が無い・記入漏れ）は
+    #   運用者の一手で直る側なので ``EXIT_USAGE`` で止める（待っても直らない側と分ける）。
+    try:
+        refs = series_refs(settings.ref)
+    except ValueError as exc:
+        _stderr(f"書く系列の組を台帳から引けません: {exc}")
+        return EXIT_USAGE
+
+    try:
+        for ref in refs:
+            tick_m1.check_series_schema(ref, data_dir=settings.data_dir)
+    except tick_m1.SpreadSchemaMismatch as exc:
+        _stderr(f"系列の列形が宣言と食い違います（再試行しません）: {exc}")
+        return EXIT_FAIL_STOP
+
+    # 単一書き手ロック（ISSUE-530 根治）: 受信の一次記録（ジャーナル）と派生物へ書くどの経路
+    #   よりも先に獲得する。錠の実体は中立核 common.writer_lock が単一定義で持ち、ライブ供給と
+    #   同じものを使う（手書きで複製すると必ず取り残しが生まれる）。守る対象は別の木・別の
+    #   系列なので、錠の名前だけが違う。
+    try:
+        writer_lock = acquire_writer_lock(
+            settings.data_dir,
+            filename=WRITER_LOCK_FILENAME,
+            name="mt5_tick_watch",
+            hint=WRITER_LOCK_HINT,
+            takeover=settings.takeover,
+        )
+    except WriterLockHeld as exc:
+        _stderr(str(exc))
+        return EXIT_USAGE
+
+    try:
+        return _supply(
+            settings, source=source, clock=clock, sleep=sleep, cycles=cycles, say=say,
+            refs=refs,
+        )
+    finally:
+        # 錠はカーネルが持つ（プロセス死で自動解放される）。ここで閉じるのは「この呼出が
+        #   書き手であった区間」を明示的に終えるためで、後片付けを運用に負わせないためではない。
+        writer_lock.close()
+
+
+def _supply(
+    settings: WatchSettings,
+    *,
+    source: Any,
+    clock: Any,
+    sleep: "Callable[[float], Any]",
+    cycles: "Optional[int]",
+    say: "Callable[[str], Any]",
+    refs: "Sequence[str]",
+) -> int:
+    """錠を握った状態で供給を回す（:func:`run` の本体）。
+
+    :func:`run` から切り出してあるのは、獲得した錠をどの ``return`` でも確実に手放すためである
+    （``try/finally`` を 1 箇所に置く）。順序と防護の判断は :func:`run` が持つ。
+    """
     probe_at = probe_label_ms(settings, clock)
     try:
         token = resolve_token(source, symbol=settings.symbol, at_msc=probe_at)
@@ -351,7 +517,7 @@ def run(
         _stderr(f"供給元の応答が契約を満たしません: {exc}")
         return EXIT_FAIL_STOP
 
-    window = lookback_days(clock)
+    window = lookback_days(clock, token=token, data_dir=settings.data_dir)
     start = restore_or_start(settings, token=token, days=window)
     if start is None:
         _stderr(
@@ -376,7 +542,7 @@ def run(
         if pending:
             _stderr(f"境界分（形成中だった分）のティックを再種付けします: {len(pending)} 行")
 
-    cycle = build_cycle(settings, source=source, token=token, clock=clock)
+    cycle = build_cycle(settings, source=source, token=token, clock=clock, refs=refs)
     state = WatchState(cursor=start, pending=pending, days=set(seeded), latest_day=None)
     done = 0
     failures = 0
@@ -399,10 +565,38 @@ def run(
             _stderr(f"供給が一時的に失敗しました（{failures} 回目・{delay} 秒待ちます）: {exc}")
             sleep(delay)
             continue
-        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError) as exc:
+        except (Mt5SupplyError, wire.WireError, cursor_rules.CursorContractError,
+                tick_m1.SpreadSchemaMismatch) as exc:
             # カーソル規約の破れも「待っても直らない」側である。型集合から漏れると、
             #   常駐はトレースバックを吐いて exit 1 で落ち、運用者には未知のクラッシュに見える。
             #   `cursor.py` は依存ゼロを保つため、繋ぐのは合成点であるここの責務。
+            # 列形の食い違い（SpreadSchemaMismatch）も同じ側である。**日中追記（周期の中）が
+            #   この型を送出する**（ISSUE-511 段階 3 の段階 5 以降）。畳みが m1_chain →
+            #   tick_m1.fold_ticks_for → tick_m1._checked_series を通るようになり、系列（ref）を
+            #   渡さない畳み口が無くなったためである（送出点は tick_m1._assert_spread_schema 1 つ
+            #   のまま）。かつてここには「現行の日中経路はこの型を送出しない（到達不能）」と
+            #   書いてあったが、段階 5 の結線でその記述は偽になった。
+            # 送出される条件と実測（2026-09-17・合成データ・本コンテナ・端末もサーバも起動せず）:
+            #   既存 M1 CSV の先頭行の spread 列の有無が台帳の宣言と食い違うとき。稼働中の台帳投入
+            #   （段階 7）を模した 2 周期の実行——起動時は既存 CSV 無しで照合は素通し → 1 周期目が
+            #   宣言どおり spread 無しの CSV を 2 行で作る → 周期の継ぎ目で台帳が spread を宣言 →
+            #   2 周期目の日中追記が照合に掛かる——で、exit 3（EXIT_FAIL_STOP）・2 周期目の追記は
+            #   0 行（CSV は 1 周期目の 2 行のまま）・stderr に Traceback なし。単発の呼出でも同じ
+            #   型で書込 0 バイトだった（宣言あり＋spread 無しヘッダ / 宣言なし＋spread 付きヘッダ
+            #   の 2 通り）。既存 CSV が無い場合はこの経路に入らない（照合が素通しし、宣言どおりの
+            #   列形で新規作成される）。
+            # 段階 5 **前**のツリー（HEAD 9f598012 を scratchpad へ展開）で同じシナリオを測り直すと、
+            #   迂回していた頃の振る舞いは**既存 CSV の列形で 2 つに分かれた**（2026-09-17・同条件）:
+            #   spread 列を持たない／既存 CSV が無い側は**止まらず**、台帳が宣言しても宣言と違う
+            #   列形で書き続けた（上の 2 周期シナリオは exit 0・例外なし・2 周期目も 2 行追記して
+            #   CSV は 2 → 4 行＝**静かな乖離**）。spread 列を持つ側だけが ISSUE-455 のヘッダ不一致
+            #   ValueError で書込 0 バイトだった。つまり段階 5 で変わったのは「落ち方」ではなく、
+            #   **静かに乖離していた側が止まるようになったこと**である。
+            # その ValueError（tick_m1._assert_append_header_matches）は上の捕捉集合の**外**である
+            #   （SpreadSchemaMismatch は ValueError の派生ではない＝逃げ道にも掛からない）。段階 5 前の
+            #   ツリーでは、宣言あり＋spread 付き既存ヘッダの 1 周期が run からも main からも**未捕捉
+            #   のまま**抜けた（書込 0 バイト・2026-09-17 実測）。プロセスの終了コードそのものは測って
+            #   いない（未捕捉の送出なので traceback を出して非 0 で終わる）。
             _stderr(f"供給の前提が崩れました（再試行しません）: {exc}")
             return EXIT_FAIL_STOP
 
@@ -436,6 +630,7 @@ def settings_from(args: argparse.Namespace) -> WatchSettings:
         from_label=None if args.from_label is None else parse_from_label(args.from_label),
         publish=not args.no_publish,
         quiet=bool(args.quiet),
+        takeover=bool(args.takeover),
     )
 
 

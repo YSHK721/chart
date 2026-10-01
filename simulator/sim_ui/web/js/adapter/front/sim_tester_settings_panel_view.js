@@ -35,6 +35,7 @@
 // fake DOM 前提: querySelector は使わず、キーごとに要素参照を JS 側で保持する。
 
 import { createSimDatePickerView } from "./sim_date_picker_view.js";
+import { sameCandidates } from "./sim_submission_builder.js";
 
 /** 対象種別（規則 D）: 本パネルは Expert テストだけを組む。`Indicator` は出さない。 */
 const SUBJECT_KEY = "Expert";
@@ -42,6 +43,16 @@ const INDICATOR_KEY = "Indicator";
 /** 期間（規則 E）: プリセット 1 キー ⇄ カスタム 2 キーの排他。 */
 const PRESET_DATE_KEY = "Dates";
 const CUSTOM_DATE_KEYS = ["FromDate", "ToDate"];
+/** 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）の説明。ホバーで規則が
+ *  読める（枠の外に説明行を足さない＝MT5 面の行構成を崩さない）。時刻系は UTC（画面全体の
+ *  時間軸・取引明細と同じ）。未入力なら日単位＝従来どおり。 */
+const TIME_TITLES = {
+  FromDate: "開始時刻 HH:MM（UTC）。未入力なら日単位（当日 00:00 から）",
+  ToDate: "終了時刻 HH:MM（UTC）。未入力なら日単位（当日の終わりまで）。入力した分を含む",
+};
+/** 日付欄に時刻ごと打たれたとき（例: `2026.09.25 01:30`）に分離する形。分の置き場は
+ *  時刻欄 1 つ（承認済み仕様）——日付欄と時刻欄の両方に時刻が在る状態を作らない。 */
+const DATE_WITH_TIME = /^\s*([0-9]{4}\.[0-9]{2}\.[0-9]{2})[ \u3000]+([0-9]{2}:[0-9]{2})\s*$/;
 /** フォワード分割（規則 F）: 分割比は schema の `ForwardMode` 選択肢が配る宣言
  *  （enums `FORWARD_MODE_SPLIT_DENOMINATORS` 由来・表示専用）。 */
 const FORWARD_MODE_KEY = "ForwardMode";
@@ -50,6 +61,14 @@ const FORWARD_DATE_KEY = "ForwardDate";
 const BLANK_MEANS_ABSENT = [FORWARD_DATE_KEY];
 /** 実行対象の銘柄キー（実行対象データセットの決定に使う・Phase 9 S4）。 */
 const SYMBOL_KEY = "Symbol";
+/** 系列の軸（ISSUE-511 段階 8-D-5）: 同一銘柄に複数のデータセットが在るときの選び直し。
+ *
+ *  `.ini` のキーではない＝`controls` に登録しない（登録しないことが「投入本文へ載らない」
+ *  ことの構造的な保証である。`buildTesterMapping` は `controls` からしか値を採らない）。
+ *  画面契約の宣言は `ui:`（表示制御・本文のキーにならない）であり、それは
+ *  `tests/sim_form_mt5_contract.test.js` が機械的に突き合わせる。
+ *  候補（ラベル・値）は run-options の `dataset` ref だけから来る（front リテラル 0）。 */
+const SERIES_ID = "testerSeries";
 /** 実行対象データセットとの一致が要求されるキー（写像層 `_require_match` の対象・T-3）。 */
 const PROFILE_MATCHED_KEYS = [SYMBOL_KEY, "Period"];
 /** `.ini` キー → 既定値を供給する run profile のフィールド名。
@@ -163,14 +182,21 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   let schema = null;
   let profile = null;
   let symbolCb = null;
+  let seriesCb = null;
   /** 実行対象データセットが供給する銘柄候補（Phase 9 S4）。空なら自由入力へ縮退する。 */
   let symbolCandidates = [];
+  /** 同一銘柄の系列候補（ISSUE-511 段階 8-D-5）。空なら軸を出さない（現行画面と同一）。 */
+  let seriesCandidates = [];
+  /** 系列の軸の控え（出していなければ null）。 */
+  let seriesNode = null;
   /** 行 id → その行の控え置き場（`.tester-row-controls`）。rebuild ごとに作り直す。 */
   const rowHosts = new Map();
   /** `.ini` キー → 入力要素。 */
   const controls = new Map();
   /** `.ini` キー → 欄を包む見た目の箱（日付箱・レバレッジ箱など。無いキーは登録しない）。 */
   const controlBoxes = new Map();
+  /** 期間キー → 時刻欄（`CUSTOM_DATE_KEYS` だけが持つ。値の結合は buildTesterMapping が行う）。 */
+  const timeControls = new Map();
   /** Expert の生トークン → EA 名の語幹（接尾辞の切り出しを front でやらない）。 */
   const expertLabels = new Map();
 
@@ -362,6 +388,33 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     });
     box.appendChild(node);
     box.appendChild(btn);
+    if (CUSTOM_DATE_KEYS.includes(key)) {
+      // 時刻欄を持つ日付箱は幅の規則が別（日付欄＋時刻欄）。CSS がこのクラスで広げる——
+      //   1 つの枠へ押し込むと日付部が時刻欄のぶん潰れる（依頼者指摘 2026-09-27）。
+      box.className = `${box.className} tester-date-wrap--with-time`;
+      // 時刻欄（時間入力専用のテキストボックス・依頼者指示 2026-09-27）。未入力なら日単位。
+      //   検証はしない——書式の正否はサーバの `_strict_date_minute`（R10）が単一ソース
+      //   （日付欄・カレンダーと同じ方針）。
+      const time = el("input", {
+        id: `tester${key}Time`, className: "tester-time", type: "text",
+        placeholder: "HH:MM", title: TIME_TITLES[key] || "",
+        dataset: { key, mt5: `ui:time:${key}` },
+      });
+      time.addEventListener("change", () => onChanged(key));
+      time.addEventListener("input", () => onChanged(key));
+      timeControls.set(key, time);
+      box.appendChild(time);
+      // 日付欄に時刻ごと打たれたら、確定（change）時に時刻部を時刻欄へ移す。分の置き場を
+      //   時刻欄 1 つにする（承認済み仕様）。input 中に動かすとタイプ中の欄を書き換えて
+      //   しまうため、確定時だけ行う。移した結果は投入本文では同じ 1 つのトークンになる。
+      node.addEventListener("change", () => {
+        const matched = DATE_WITH_TIME.exec(node.value);
+        if (!matched) return;
+        node.value = matched[1];
+        time.value = matched[2];
+        onChanged(key);
+      });
+    }
     return box;
   }
 
@@ -400,6 +453,27 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     if (kind === "year_to_date") return { from: `${year}.01.01`, to: String(last) };
     if (kind === "month_to_date") return { from: `${year}.${month}.01`, to: String(last) };
     return null;   // 未知の種別は表示しない（発明しない・投入には関与しない）
+  }
+
+  /** 期間指定（カスタム）中に、選択中の系列のデータ範囲を From/To へ引き直す（依頼者指摘
+   *  2026-09-27「ティックデータを変更しても期間が更新されない」）。呼び出しは**系列・銘柄の
+   *  変更（run profile の引き直し）だけ**——系列を替えるとは対象データを替えることなので、
+   *  打ってあった期間もその系列の範囲へ引き直す。時刻欄は空（日単位）へ戻す（前の系列の
+   *  分指定を新しい範囲へ持ち越すと、意図しない分単位の窓が黙って残る）。 */
+  function applySeriesRangeToCustom() {
+    if (!schema || !isCustomRange() || !profile) return;
+    const first = profile.data_first_date;
+    const last = profile.data_last_date;
+    if (!first || !last) return;
+    const fromNode = controls.get(CUSTOM_DATE_KEYS[0]);
+    const toNode = controls.get(CUSTOM_DATE_KEYS[1]);
+    if (!fromNode || !toNode) return;
+    fromNode.value = String(first);
+    toNode.value = String(last);
+    for (const key of CUSTOM_DATE_KEYS) {
+      const timeNode = timeControls.get(key);
+      if (timeNode) timeNode.value = "";
+    }
   }
 
   /** プリセット選択時、解決済み期間を不活性の From/To ボックスへ**表示**する（MT5 実測:
@@ -473,7 +547,8 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (isDateKey(key)) {
         // 日付箱の▾ボタンも同時に殺す（欄だけ殺すとカレンダーから書けてしまう）。
         for (const child of piece.children || []) {
-          if (child.tagName === "BUTTON") child.disabled = !active;
+          // ▾ボタンと時刻欄も同時に殺す（欄だけ殺すと不活性でも時刻だけ打てる欄が残る）。
+          if (child.tagName === "BUTTON" || child.tagName === "INPUT") child.disabled = !active;
         }
       }
     }
@@ -582,9 +657,14 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
     // 開く中身の件数をトグルへ書く（0 件なら CSS が消す＝押しても何も出ないボタンを残さない）。
     // schema を取れない構成でも必ず通る位置に置く（下の早期 return より前）。
     unsupportedToggle.dataset.count = String(((schema && schema.unsupported) || []).length);
+    // 行ごと作り直すため、系列の軸も必ず作り直す（古い実体を掴み続けると、画面から消えた
+    // select を「今の欄」として読み続ける）。選択だけは引き継ぐ。
+    const keptSeries = selectedSeries();
+    seriesNode = null;
     rowHosts.clear();
     controls.clear();
     controlBoxes.clear();
+    timeControls.clear();
     expertLabels.clear();
     picker.close();      // 組み直しで欄が入れ替わるため、開いたままのカレンダーを残さない
     pickerKey = null;
@@ -605,6 +685,7 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       ...renderedKeys.filter((k) => rowDefOf(k) === DEFAULT_ROW),
     ];
     for (const key of ordered) buildControl(key);
+    rebuildSeries(keptSeries);   // 銘柄行が出来た後（置き場所がそこ）
     applyProfileDefaults();
     applyActivation();
     applyPresetRangeDisplay();
@@ -618,6 +699,47 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
   function selectedSymbol() {
     const token = currentToken(SYMBOL_KEY);
     return token === null ? "" : token;
+  }
+
+  /** 実行対象の系列（軸を出していなければ空文字＝「指定なし」）。 */
+  function selectedSeries() {
+    return seriesNode ? String(seriesNode.value == null ? "" : seriesNode.value) : "";
+  }
+
+  /** select が今出している選択肢のトークン列（HTMLCollection なので Array.from を経由）。 */
+  const offeredTokensOf = (node) => Array.from(node.children || []).map((o) => String(o.value));
+
+  /**
+   * 系列の軸を組み直す（候補が在るときだけ出す＝実在する分岐のときだけ）。
+   *
+   * **フォーム全体を作り直さない**: 候補は銘柄を変えるたびに配り直される。ここで `rebuild()`
+   * を呼ぶと、利用者が今選んだ銘柄が初期値へ戻り、触っていた要素そのものが差し替わる
+   * （ビュー自動介入の禁止）。触るのはこの 1 要素だけである。
+   *
+   * 出力が変わらない注入（同じ候補）では 1 つも生成しない——作って捨てる生成は出力が
+   * 正しいままなので状態検証では原理的に落ちない（`tests/series_axis_complexity.test.js`）。
+   *
+   * 置き場所は MT5「銘柄」行である。系列は銘柄の内側の軸であり、行ラベルがそれを示す
+   * （front に系列用の表示名を作らない＝ラベル・値はどちらも run-options 由来のまま）。
+   *
+   * @param {string} [preferred] 選択を引き継ぐ系列（省略時は今の選択）
+   */
+  function rebuildSeries(preferred) {
+    const wanted = preferred === undefined ? selectedSeries() : preferred;
+    if (seriesNode && sameCandidates(offeredTokensOf(seriesNode), seriesCandidates)) return;
+    if (seriesNode && seriesNode.parentNode) seriesNode.parentNode.removeChild(seriesNode);
+    seriesNode = null;
+    if (!schema || !seriesCandidates.length) return;
+    const node = el("select", {
+      id: SERIES_ID, className: "tester-input", dataset: { mt5: "ui:series" },
+    });
+    for (const token of seriesCandidates) {
+      node.appendChild(el("option", { value: token, textContent: token }));
+    }
+    node.value = seriesCandidates.includes(wanted) ? wanted : seriesCandidates[0];
+    node.addEventListener("change", () => { if (seriesCb) seriesCb(selectedSeries()); });
+    seriesNode = node;
+    rowHostFor(SYMBOL_KEY).appendChild(node);
   }
 
   function currentEaName() {
@@ -667,8 +789,13 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (!isActive(key) && !isDisplayOnlyActivation(key)) continue;
       const node = controls.get(key);
       if (!node) continue;
-      const value = valueOf(node);
+      let value = valueOf(node);
       if (value === "" && BLANK_MEANS_ABSENT.includes(key)) continue;
+      // 期間キーは時刻欄（未入力なら日単位）と結合して 1 つのトークンにする（依頼者指示
+      //   2026-09-27）。日付が空のときは結合しない（時刻だけの期間は存在しない）。
+      const timeNode = timeControls.get(key);
+      const timeValue = timeNode ? String(timeNode.value || "").trim() : "";
+      if (value !== "" && timeValue !== "") value = `${value} ${timeValue}`;
       mapping[key] = value;
     }
     return mapping;
@@ -726,12 +853,23 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       if (schema) rebuild();
     },
 
+    /** 系列候補（同一銘柄の `RunProfile.dataset` 一覧）を注入する（段階 8-D-5）。
+     *
+     *  `setSymbolCandidates` と違い**フォームを組み直さない**: これは銘柄を変えるたびに
+     *  配り直される注入であり、組み直すと今選んだ銘柄が初期値へ戻る。触るのは系列の欄
+     *  1 つだけであり、候補が変わらない注入では 1 要素も生成しない。 */
+    setSeriesCandidates(list) {
+      seriesCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      rebuildSeries();
+    },
+
     /** 選択中のデータセット profile を注入する（Symbol/Period/Leverage/Currency の既定値）。 */
     setRunProfile(runProfile) {
       profile = runProfile || null;
       if (!schema) return;
       applyProfileDefaults();
       applyPresetRangeDisplay();   // データ範囲の供給元が変わった＝表示期間も引き直す
+      applySeriesRangeToCustom();  // 期間指定中も同じ理由で引き直す（時刻欄は空へ）
       applyForwardSplitDisplay();  // 表示期間が動いた＝分割日も引き直す
       renderUnsupportedActivation();
       renderWarnings();
@@ -760,6 +898,11 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
 
     /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
     onSymbolChange(cb) { symbolCb = cb; },
+
+    selectedSeries,
+
+    /** 系列変更時のコールバックを登録する（新しい系列を渡す）。 */
+    onSeriesChange(cb) { seriesCb = cb; },
 
     warnings,
     activeUnsupported,

@@ -20,6 +20,7 @@ def _factory_open_then_close_5m(ctx: EaBuildContext):
 
 BINDING = EaBinding(
     name="OpenThenClose5mLong_EA",
+    strategy_type=OpenThenClose5mLong,
     build=_factory_open_then_close_5m,
     strategy_params=("lot_size",),
 )

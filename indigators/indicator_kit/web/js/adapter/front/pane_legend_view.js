@@ -140,10 +140,21 @@ export class PaneLegendView {
     if (paneIndex !== 0) {
       return 0;
     }
-    const doc = this._document;
-    const el = (doc && typeof doc.getElementById === 'function') ? doc.getElementById(this._overlayId) : null;
+    const el = this._overlayStack();
     const h = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect().height : 0;
     return Number.isFinite(h) && h > 0 ? h + 14 : 0;   // 14px はオーバーレイ上端の余白ぶん。
+  }
+
+  // 左上オーバーレイの器。版面を注入された（ライブチャート以外の版面に置かれた）ときは、その版面の
+  //   中から探す——文書全体の id で引くと、先に在るライブチャートの器を掴み、別の版面の凡例が
+  //   ライブチャートの欄の高さでずれる（売買履歴チャート・2026-09-27）。注入が無ければ従来どおり。
+  _overlayStack() {
+    const anchor = this._anchor;
+    if (anchor && typeof anchor.querySelector === 'function') {
+      return anchor.querySelector(`#${this._overlayId}`);
+    }
+    const doc = this._document;
+    return (doc && typeof doc.getElementById === 'function') ? doc.getElementById(this._overlayId) : null;
   }
 
   // 行の在席権威は **controller の適用一覧（_rowMeta）**。renderer のモデルは「その行をどこへ
@@ -283,21 +294,28 @@ export class PaneLegendView {
     eye.textContent = meta.visible ? '●' : '○';
     eye.addEventListener('click', () => meta.onEye && meta.onEye());
 
-    const gear = doc.createElement('button');
-    gear.type = 'button';
-    gear.className = 'pane-legend-gear';
-    gear.title = '設定';
-    gear.textContent = '⚙';
-    gear.addEventListener('click', () => meta.onGear && meta.onGear());
-
-    const close = doc.createElement('button');
-    close.type = 'button';
-    close.className = 'pane-legend-remove';
-    close.title = '削除';
-    close.textContent = '✕';
-    close.addEventListener('click', () => meta.onClose && meta.onClose());
-
-    el.append(eye, gear, close, vals);
+    el.append(eye);
+    // 設定（⚙）と削除（✕）は、その操作を持つ行にだけ出す。押しても何も起きないボタンを置かない
+    //   （売買履歴チャートの行は設定も削除も持たない・2026-09-27）。ライブチャートの行は両方を持つ＝従来どおり。
+    if (typeof meta.onGear === 'function') {
+      const gear = doc.createElement('button');
+      gear.type = 'button';
+      gear.className = 'pane-legend-gear';
+      gear.title = '設定';
+      gear.textContent = '⚙';
+      gear.addEventListener('click', () => meta.onGear());
+      el.append(gear);
+    }
+    if (typeof meta.onClose === 'function') {
+      const close = doc.createElement('button');
+      close.type = 'button';
+      close.className = 'pane-legend-remove';
+      close.title = '削除';
+      close.textContent = '✕';
+      close.addEventListener('click', () => meta.onClose());
+      el.append(close);
+    }
+    el.append(vals);
     return el;
   }
 }

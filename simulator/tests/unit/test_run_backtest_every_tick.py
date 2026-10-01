@@ -42,6 +42,10 @@ class SpyIndicatorPort:
 
 class SpyStrategyPort:
     """on_new_bar が orders_by_bar[bar_index] を返し、呼出を記録するスパイ。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def __init__(self, orders_by_bar=None):
         self._orders_by_bar = orders_by_bar or {}
@@ -56,6 +60,16 @@ class SpyStrategyPort:
 
     def on_position_check(self, position, bar_index, indicators):
         return "hold"
+
+
+class _DecidesAtBarOpenSpy(SpyStrategyPort):
+    """足の始まりで判定すると名乗るスパイ（ISSUE-533 段階 1）。
+
+    建値基準の権威は戦略の宣言であり、config ではない。「バー open クォートで約定する」
+    ことを測る検定は、この宣言で条件を作る。
+    """
+
+    entry_price_basis = "current_open"
 
 
 class ListTickModel:
@@ -149,26 +163,30 @@ class TestFillAtBarOpenQuote:
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort(orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
-        # Act: entry_price_basis="current_open" でバー open クォート約定
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        # Act: 戦略が current_open を宣言しているのでバー open クォート約定
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: entry はバー open Ask（1.103）。close 1.10 でもティック ask 1.123 でもない。
-        assert len(result.trades) == 1
+        assert len(result.trades) == 2
         assert result.trades[0].side == "buy"
+        # bar1 で建った売り（バー open Bid=1.10）はテスト期間終了時に最終足の
+        #   Ask=close 1.11+spread0×point で清算される（MT5 の end of test）。
+        assert result.trades[1].side == "sell"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(1.10)
+        assert result.trades[1].exit_price == pytest.approx(1.11)
         assert result.trades[0].entry_price == pytest.approx(1.103)
         assert result.trades[0].entry_price != pytest.approx(1.10)
         assert result.trades[0].entry_price != pytest.approx(1.123)
 
     def test_real_ticks_default_basis_fills_at_close_like_bar_mode(self):
-        # 回帰防止（レビュー🟡-1）: real_ticks でも entry_price_basis 既定="close" の
-        # ときは bar.close 約定になる（bar-mode と同一・derive_quotes の close 分岐）。
+        # 回帰防止（レビュー🟡-1）: real_ticks でも戦略が close を宣言していれば
+        # bar.close 約定になる（bar-mode と同一・derive_quotes の close 分岐）。
         # open=1.10・close=1.105・spread=300 で close≠open を作り、約定が close=1.105
         # （open 1.10 でも罠ティック ask 1.123 でもない）であることを値で固定する。
         bars = [
@@ -187,11 +205,16 @@ class TestFillAtBarOpenQuote:
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
-        # Act: _config() 既定（tick_model="real_ticks" / entry_price_basis="close"）
+        # Act: tick_model="real_ticks"・戦略（`SpyStrategyPort`）は close を宣言
         result = interactor.execute(_request(bars))
         # Assert: entry は bar0.close=1.105（open 1.10 でもティック ask 1.123 でもない）
-        assert len(result.trades) == 1
+        assert len(result.trades) == 2
         assert result.trades[0].entry_price == pytest.approx(1.105)
+        # bar1 で建った売り（close 基準 Bid=1.11）はテスト期間終了時に Ask=1.11 で清算される。
+        assert result.trades[1].side == "sell"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(1.11)
+        assert result.trades[1].exit_price == pytest.approx(1.11)
         assert result.trades[0].entry_price != pytest.approx(1.10)
         assert result.trades[0].entry_price != pytest.approx(1.123)
 
@@ -250,22 +273,26 @@ class TestOnNewBarOnlyAtBarBoundary:
         }
         buy = Order(side="buy", kind="market", volume=1.0, price=None)
         sell = Order(side="sell", kind="market", volume=1.0, price=None)
-        strategy = SpyStrategyPort(orders_by_bar={0: [buy], 1: [sell]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [buy], 1: [sell]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: on_new_bar は足境界で各 1 回（ティック数に依存しない）
         assert strategy.on_new_bar_calls == [0, 1]
         # かつ約定は「バー open クォート」でのみ起きる（ティックごとの再約定をしない）:
-        #   確定トレードはちょうど 1 件・買い。
-        assert len(result.trades) == 1
+        #   確定トレードは買いの reverse 1 件と、bar1 で建った売りのテスト期間終了時清算 1 件。
+        assert len(result.trades) == 2
         assert result.trades[0].side == "buy"
+        # 売りの建値も bar1 バー open=Bid=1.13（ティック bid ではない）。期末清算は最終足の
+        #   Ask=close 1.11+spread0×point=1.11。
+        assert result.trades[1].side == "sell"
+        assert result.trades[1].exit_reason == "end_of_test"
+        assert result.trades[1].entry_price == pytest.approx(1.13)
+        assert result.trades[1].exit_price == pytest.approx(1.11)
         # entry は bar0 バー open Ask=1.103（close 1.10 でもティック ask でもない）
         assert result.trades[0].entry_price == pytest.approx(1.103)
         assert result.trades[0].entry_price != pytest.approx(1.10)
@@ -307,16 +334,14 @@ class TestSlTpClosesAtTickPrice:
         }
         order = Order(side="buy", kind="market", volume=1.0, price=None,
                       sl=1.095, tp=1.300)
-        strategy = SpyStrategyPort(orders_by_bar={0: [order]})
+        strategy = _DecidesAtBarOpenSpy(orders_by_bar={0: [order]})
         interactor = RunBacktestInteractor(
             strategy=strategy,
             indicators=SpyIndicatorPort(),
             tick_model=ListTickModel(ticks),
         )
         # Act
-        result = interactor.execute(
-            _request(bars, config=_config(entry_price_basis="current_open"))
-        )
+        result = interactor.execute(_request(bars, config=_config()))
         # Assert: ティック価格でのみ成立する SL 決済（bar.low では到達しない）
         assert len(result.trades) == 1
         # entry は bar0 バー open Ask=1.101（close 1.10 でもティック ask 1.108 でもない）
@@ -468,14 +493,16 @@ class TestDegenerateMatchesBarMode:
         )
 
         # Assert: 確定トレードが一致（side/entry/exit/価格/理由）
-        assert len(et_result.trades) == len(bar_result.trades) == 1
-        bt, et = bar_result.trades[0], et_result.trades[0]
-        assert et.side == bt.side
-        assert et.entry_price == pytest.approx(bt.entry_price)
-        assert et.exit_price == pytest.approx(bt.exit_price)
-        assert et.exit_reason == bt.exit_reason
-        assert et.entry_time == bt.entry_time
-        assert et.exit_time == bt.exit_time
+        #   買いの reverse 1 件と、bar2 で建った売りのテスト期間終了時清算 1 件。
+        assert len(et_result.trades) == len(bar_result.trades) == 2
+        assert [t.exit_reason for t in bar_result.trades] == ["reverse", "end_of_test"]
+        for bt, et in zip(bar_result.trades, et_result.trades):
+            assert et.side == bt.side
+            assert et.entry_price == pytest.approx(bt.entry_price)
+            assert et.exit_price == pytest.approx(bt.exit_price)
+            assert et.exit_reason == bt.exit_reason
+            assert et.entry_time == bt.entry_time
+            assert et.exit_time == bt.exit_time
         # stats の確定損益も一致
         assert et_result.stats.profit == pytest.approx(bar_result.stats.profit)
 
@@ -506,5 +533,7 @@ class TestDefaultConfigDoesNotEnterEveryTick:
             _request(bars, config=_config(tick_model="ohlc_expand"))
         )
         # Assert: entry は close(1.10)（every-tick の ask 1.123 ではない＝経路に入っていない）
-        assert len(result.trades) == 1
+        assert len(result.trades) == 2
         assert result.trades[0].entry_price == pytest.approx(1.10)
+        # bar1 で建った売りはテスト期間終了時に清算される（MT5 の end of test）。
+        assert result.trades[1].exit_reason == "end_of_test"

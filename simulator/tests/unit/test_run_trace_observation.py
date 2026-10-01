@@ -170,6 +170,10 @@ class _TicksExceptOnEmptyBars:
 
 class _BuyOnce(_NullStrategy):
     """バー 0 で 1 lot 買う（証拠金割れを起こすため）。"""
+    #: 判定の瞬間の宣言（ISSUE-533 段階 1）。缶詰の注文を返す代役なので足を読まず、
+    #: 固有の瞬間を持たない。この run が従来使っていた値を名乗り、測る対象を変えない。
+    entry_price_basis = "close"
+
 
     def on_new_bar(self, bar_index, indicators, account):
         return [_market("buy")] if bar_index == 0 else []
@@ -872,3 +876,36 @@ class TestTheEngineDoesNotSwallowAnObservationFailure:
         # Assert
         assert result is not None
         assert tracer.calls == len(schedule.produced) > 0
+
+
+# ---- 足の総数の通知（observe_start・2026-09-27 進み具合の分母）----
+
+class _StartSpy(RunTracePort):
+    """`observe_start` の受領と、それが最初の評価点より前であることを記録する。"""
+
+    def __init__(self):
+        self.events: "list[tuple]" = []
+
+    def observe_start(self, bar_count):
+        self.events.append(("start", bar_count))
+
+    def observe(self, point, account, open_trades, halted):
+        self.events.append(("point", point.bar_index))
+
+
+@pytest.mark.parametrize("bar_count", [3, 40])
+def test_observe_start_is_called_once_with_the_bar_count_before_any_point(bar_count):
+    spy = _StartSpy()
+    _run(bar_count=bar_count, tracer=spy)
+    starts = [e for e in spy.events if e[0] == "start"]
+    # 1 run に 1 回・分母は run の足の総数・最初の評価点より前。
+    assert starts == [("start", bar_count)]
+    assert spy.events[0] == ("start", bar_count)
+
+
+def test_fan_out_forwards_observe_start_to_every_tracer():
+    from simulator.usecase.run_trace_ports import FanOutRunTrace
+
+    a, b = _StartSpy(), _StartSpy()
+    FanOutRunTrace(a, b).observe_start(7)
+    assert a.events == b.events == [("start", 7)]

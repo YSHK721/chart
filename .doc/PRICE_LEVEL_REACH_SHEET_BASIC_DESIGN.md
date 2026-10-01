@@ -1,4 +1,4 @@
-# 水準到達シート 基本設計書 v0.9.53
+# 水準到達シート 基本設計書 v0.9.57
 
 - 起票: 2026-08-28（ISSUE-449）／オシレータの価格投影は ISSUE-453
 - 状態: **実装済み（feature/issue-449-price-level-reach-sheet・未マージ）**
@@ -23,6 +23,21 @@
 
 改訂履歴:
 
+- **v0.9.57（2026-10-01）**: **§3.5.3 現在バーの time の出所を参照実装と同じ「ローソクの末尾」へ改訂**。形成中バー（`onBar`）だけでは休場中・起動直後に 3 足とも行が 0 本になる（独立レビュー指摘）。`/candles` の末尾と `onBar`（後退ガード付き）で 1 つの台帳を更新する。実測で `/candles` 末尾＝`/forming_bar`＝当期の列の time（jp225_mt5・3 足）。
+- **v0.9.56（2026-10-01）**: **§3.5 を実装**。サーバ: `mp_levels` の合流（36f34d4b）と、その足は足だけを引き形成中足を引かない是正（f6bb80c7）。live 公開面へ `buildTfPeriodUrl` / `mpTfPeriodSrc` / `mpSourceCapability` を加法で再輸出（d17369fb）。front: 足ごとの `mp_poller` で `/tf_period_profile` を借り、現在バーの期間の値だけを `mp_levels` で送る・`bodyKey` に含める・未着／列なし／失敗を掲示欄へ（e51b6dbf）。計算量テスト: サーバは足の読み出しが足の種類で抑えられる（束に同じ足があれば 0）、front は発行 − 使用 = 0・契機あたり各足 1 本以下・行数／列の本数／ティック数の 2 点で発行不変。
+- **v0.9.55（2026-09-29）**: **§3.5.4 を裁定で確定**（依頼者承認 2026-09-29「y」・推奨案のとおり）。
+  (1) front が借りた 9 値を `/reach_sheet` の要求の新しい欄 `mp_levels` に載せ、サーバが
+  `build_ladder` へ射影行と同じ入口で合流させる（要求への欄の追加のみ・既存の欄は変えない）。
+  (2) 到達時間は定義 D（`_level_period_touch`）を当てる。(3) 次のターゲット印の候補に MP の
+  9 行も入れる（印が既存行から移ることを認める）。当期の列の選び方をライブの参照実装と同じ
+  規則（列 `time` ＝その足の現在バーの `time`）に確定し、実データで実測した（§3.5.3）。
+- **v0.9.54（2026-09-29）**: **第 1 表へ market_profile の期間水準を追加**（依頼者指示
+  2026-09-29「「日」「週」「月」のMFの「POT」「VAH」「VAL」を追加しろ」。MF＝Market Profile・
+  POT＝POC と読む）。§3.3 / §9-3 の保留を解消し、対象・出所・行の名前・当期を §3.5 に確定した
+  （依頼者裁定 2026-09-29: 値の種類はラダーの MP 列と同じ借用規則・行はライブ core の
+  `/tf_period_profile` を借りる・サーバ側で MP を計算しない）。**距離・差・次のターゲット印・
+  到達時間を MP 行にどう持たせるかは参照実装で決まらないため未確定**（§3.5.4・§9-3）。
+  実装は未着手。
 - **v0.9.53（2026-09-05）**: 第 2 表セル内の水準行（閾値・到達価格）の**項目名を左端へ**
   （依頼者指示 2026-09-05「項目を左端に固定しろ。現状は右寄せになっている」）。
   各行は項目名＝左端・数値＝右端の 2 要素（数値の右揃えは表全体の規約のまま）。
@@ -527,7 +542,7 @@
 
 | indicatorId | 理由 |
 |---|---|
-| `market_profile` | 価格分布そのもの。水準の概念が別（POC・VA）。追加要否は未裁定（§9） |
+| `market_profile` | 価格分布そのもの。**期間水準（1D / 1W / 1M の POC・VAH・VAL）は第 1 表の対象に加えた**（依頼者指示 2026-09-29・§3.5）。分布そのもの（密度）は MP 列（依頼者承認 2026-09-06）が受け持ち、行にはしない |
 | `price_range_power` | 価格軸分布（`archetype = axis_distribution`）。同上。4h に 1 本のみ |
 
 ### 3.4 時間足と紐付け（両表に共通）
@@ -536,6 +551,95 @@
 
 - `1m` と `1M` が同一テンプレート `tpl#4` を共有するのは**正しい設定**（依頼者確認済み 2026-08-28）。
 - `tpl#2`（名前 "D"）は未紐付け。**未確認事項**（§9）。
+
+### 3.5 market_profile の期間水準（依頼者指示 2026-09-29・v0.9.54）
+
+依頼者の言葉: 「「日」「週」「月」のMFの「POT」「VAH」「VAL」を追加しろ」（価格ラダーに）。
+「MF」は Market Profile、「POT」は MP の POC と読む（依頼者に提示済み）。
+
+#### 3.5.1 対象（9 行）
+
+| 時間足 | 行 |
+|---|---|
+| `1D` | POC（zp では POC*）・VAH・VAL |
+| `1W` | 同上 |
+| `1M` | 同上 |
+
+期間の区切りは参照実装のまま（日＝NY 17:00 起点のブローカー日・週＝W-FRI・月＝暦月。
+`marketdata/session_day.py`）。本シートは区切りの定義を持たない。
+
+#### 3.5.2 出所＝ライブ core の `/tf_period_profile` の借用（依頼者裁定 2026-09-29）
+
+- 値は live core の `GET /tf_period_profile?datasetRef=&timeframe=&from=&to=[&src=][&va=]` の
+  応答 `columns[]` の `poc` / `va_high` / `va_low` を**そのまま**使う。dashboard core は MP を
+  計算しない（依頼者裁定 2026-09-06「MP 列はライブ MP を借りる」・ISSUE-500 でサーバ側 MP を
+  止めた経緯と同じ）。
+- 取得パラメータはライブチャートの tf-period 列と同じ組
+  （参照実装 `indicator_ui/web/js/adapter/front/composition_root_front.js` の
+  `getQuery: () => ({ src: mpTfPeriodSrc(mpSrc()), va: mpVa() })`）。URL はライブの
+  `buildTfPeriodUrl`（`market_profile/web/js/adapter/front/tf_period_profile_client.js`）が
+  唯一源で、借り手は綴らない（MP 列の `buildMarketProfileUrl` と同じ規約）。
+- どの instance の設定を借りるか（`src` / `va`）は MP 列と同じ規則
+  （`dashboard_ui/web/js/adapter/front/mp_fetch_context.js` の `setFromBundle`: ラダーの足に
+  `timeframe_binding` が一致する `market_profile` instance の先頭 1 件。不在ならライブの
+  `MP_DEFAULT_SOURCE`）。規則を 2 か所に書かない。
+- 借用に要る名前（`buildTfPeriodUrl` / `mpTfPeriodSrc` / `mpSourceCapability`）は live の公開面
+  `live_public_api.js` へ**加法の再輸出**で出す（MP 列の借用面と同じ手順。G-3 の越境禁止のため）。
+
+#### 3.5.3 行の名前と当期
+
+- 行の名前: POC は `mpSourceCapability(src).poc === 'star'` のとき「POC*」、それ以外は「POC」。
+  VAH / VAL はそのまま。いずれもライブの描画ラベル（`market_profile_primitive.js` の
+  POC* / VAH / VAL）と同じ語。
+- 当期: 各時間足の**形成中の期間**（当日・当週・当月）の列を使う。確定済みの過去期間は使わない。
+  選び方はライブの参照実装と同じ規則である: **列の `time` がその足の現在バーの `time` に一致する
+  列**（`market_profile_primitive.js` の `tfPeriodLevelAt` が `c.time === t` で列を引き、
+  `tf_period_profile_actor.js` の `onLiveTick` が「最新ローソクの time＝現在周期の列」とする）。
+  現在バーの `time` の出所は参照実装と同じ「その足のローソクの末尾の time」である（参照実装は
+  `renderer.getCandles()` の末尾。そのローソクは `/candles` の全置換と形成中バーの `updateLastCandle`
+  で更新される）。front は既に受けている 2 本で 1 つの台帳（`usecase/current_bar_times.js`）を
+  更新する: `/candles` の応答は末尾の time で置き換え（ティックの無い休場中・起動直後も当期が
+  決まる）、形成中バー（`live_tick_players` の `onBar`）は末尾より古い time を捨てる（参照実装
+  `candle_feed.js` の後退ガード ISSUE-096）。どちらも届いた応答を控えるだけで取得は増えない。
+  **実測（2026-10-01 10:09 UTC・`jp225_mt5`・`src=zp`・同じ数え方）**: `/candles`（limit=180）の
+  末尾の time は 1D 2026-10-01・1W 2026-10-02・1M 2026-10-31 で、`/forming_bar` の bar の time と
+  3 足とも一致し、窓 `[t, t+1)` の `/tf_period_profile` は列 `time == t` をちょうど 1 本返した
+  （広い窓の末尾の列とも一致）。`MARKETDATA_DATA_DIR` は本ツリーの data を読み、書き込みが無い
+  ことを `find -newer` で確かめた。取得窓は
+  その列だけを含む `[time, time + 1)`。1W / 1M の `time` は期間ラベル（週末金曜・月末の UTC 深夜）で
+  現在時刻より後になるが、controller は `from <= 列 time < to` で列を拾うのでこの窓で拾える。
+  **実測（2026-09-29 14:14 UTC・`jp225_tick`・`src=zp`）**: `bar_time_unix` の値で窓 `[t, t+1)` を
+  引くと 1D（t=2026-09-29）・1W（t=2026-10-02）・1M（t=2026-09-30）とも列 `time == t` がちょうど
+  1 本返り、広い窓（1D 5 日・1W 30 日・1M 95 日）の末尾の列とも一致した。数え方: controller を
+  同一プロセスで呼び、`_TFP_CACHE_ROOT=False`（日次 JSON を書かない）・`MARKETDATA_DATA_DIR` を
+  作業用ディレクトリ（tick は本ツリーの実体を読むだけ）にして、本ツリーの data へ書き込みが
+  無いことを `find -newer` で確かめた。
+  現在バーがまだ届いていない足・当期の列が無い足は行を出さず、理由を掲示欄に出す（無言の縮退の禁止）。
+- 取得の回数: 時間足ごとに 1 回（1 回の応答から 3 行）。行ごと・足の本数ごとには取りに行かない。
+  取りに行く契機は MP 列と同じ判定器（`mp_poller`・1m バー枠の進み・初回・設定の変化）に、
+  各足の現在バーの `time` が変わったことを設定の鍵へ足して従う（計算量テストで固定する）。
+
+#### 3.5.4 サーバが計算している列の持たせ方（依頼者裁定 2026-09-29）
+
+第 1 表の行の距離・差・次のターゲット印・並び・現在値行の位置はサーバ
+（`domain/price_ladder.py` の `build_ladder`）が、到達時間は定義 D
+（`usecase/build_reach_sheet.py` の `_level_period_touch`）がそれぞれ唯一源である。
+これを MP 行にもそのまま当てる。
+
+1. **合流はサーバ**: front は借りた値を `/reach_sheet` の要求の欄 `mp_levels`
+   （`[{timeframe, level, price}]`・`level` は「POC*」/「POC」/「VAH」/「VAL」）に載せる。サーバは
+   射影行と同じ入口で `build_ladder` へ合流させる。サーバは MP を計算しない（値は受け取るだけ）。
+   欄が無い要求は従来と同じ応答になる（追加のみ）。
+2. **到達時間は定義 D**: 水準＝受け取った値、期間の始端＝その足の最新バーの `time`（他の行と同じ）。
+   サーバはその足の足を 1 回だけ引く（束に同じ足があれば引き直さない）。
+3. **次のターゲット印の候補に入れる**: `build_ladder` の地平判定がそのまま MP 行にも効く。
+   印が既存行から MP 行へ移ることを認める。
+4. 行の識別子 `(label, timeframe)`: label は `market_profile {level}`。naming は
+   `{name: "market_profile", level, level_p: null, period: null, source: null, extra: ""}`。
+   `instance_key` / `series` は null（系列が無いので tick のなめらか更新の対象外＝値は借用の
+   更新でだけ動く）。
+5. **状態トークン**に `mp_levels` を含める。含めないと MP の値だけが変わったとき `unchanged` が
+   返り、版面が古い値のまま残る。front の発行判定の鍵（`sheet_poller` の `bodyKey`）にも含める。
 
 ---
 
@@ -1231,7 +1335,9 @@ constants:
 2. **地平の段の切り方**（3 段でよいか・境界を 1h / 1D にするか）。根拠は **6.5 時間・1 銘柄・
    1 回の観測**のみ。長期は標本 6 件しかない。**日をまたいだ再測が要る**。
 3. `market_profile`（POC・VA）と `price_range_power`（価格帯）を水準として追加するか。
-   どちらも価格水準でありラダーの定義に合致するが、依頼者指定が無いため対象外にしている。
+   **`market_profile` は対象・出所・行の名前・当期を確定した**（依頼者指示 2026-09-29・§3.5）。
+   §3.5.4 も依頼者裁定 2026-09-29 で確定した（サーバで合流・到達時間は定義 D・印の候補に入れる）。
+   `price_range_power` は依頼者指定が無いため対象外のまま。
 4. **測定済み（2026-08-29・本項）**。段 2 の 1 ティックあたり費用を現行コードで実測した。
 
    **先行記録の限界（記録として残す）**: 実装コミット `85a0ca4` のメッセージに

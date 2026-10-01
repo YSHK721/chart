@@ -84,7 +84,7 @@ def _interactor(ledger=None, launcher=None, window_check=None):
         ledger=ledger if ledger is not None else _Ledger(),
         launcher=launcher if launcher is not None else _Launcher(),
         series_catalog=None,
-        required_series=lambda basis: "close",
+        required_series=lambda ea_name: "close",
         stop_loss_catalog=None,
         allowed_backtest_keys=lambda: frozenset(_BACKTEST),
         required_backtest_keys=lambda: frozenset(),

@@ -40,3 +40,29 @@ def test_forming_bar_fallback_chain(monkeypatch):
 def test_forming_bar_unknown_ref_400():
     st, _ = cc.handle_forming_bar("nope", "5m", None)
     assert st == 400
+
+
+def test_candles_time_range_is_passed_through(monkeypatch):
+    """from/to（UNIX 秒）は範囲として下位へ渡る（2026-09-26 承認）。"""
+    seen = {}
+
+    def _load(ref, tf, limit, *, start=None, end=None):
+        seen.update(start=start, end=end)
+        return [{"time": 1}]
+
+    monkeypatch.setattr(cc.dataset, "load_candles", _load)
+    st, _body = cc.handle_candles("jp225_tick", "1m", None, "100", "200")
+    assert st == 200 and seen == {"start": 100, "end": 200}
+
+
+def test_candles_without_a_range_keep_the_old_call(monkeypatch):
+    """範囲を指定しない呼出は従来の 3 引数のまま（範囲を知らない供給実装を壊さない）。"""
+    monkeypatch.setattr(cc.dataset, "load_candles", lambda ref, tf, limit: [{"time": 1}])
+    st, _body = cc.handle_candles("jp225_tick", "1m", "10", None, "")
+    assert st == 200
+
+
+def test_a_non_integer_range_is_rejected_not_ignored():
+    """整数でない from/to は範囲なしへ倒さず 400（別の足をその期間の足として返さない）。"""
+    st, body = cc.handle_candles("jp225_tick", "1m", None, "abc", None)
+    assert st == 400 and body["ok"] is False

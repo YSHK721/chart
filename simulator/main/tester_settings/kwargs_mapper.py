@@ -70,15 +70,10 @@ from simulator.usecase.tester_settings import (
 #: `engine_data_consistency.RULE_DATA_CONSISTENCY` にあり、ここには写さない。
 _RULE_RUNTIME_REQUIRED: str = "R"
 
-#: 建値基準の明示値（§4.5.1・MT5 実走整合の実証値）。既定 "close" のままだと
-#: spread 無視の分岐に入り MT5 再現にならないため、Settings 経路は明示指定する。
-ENTRY_PRICE_BASIS: str = "current_open"
-
 #: 証拠金ストップアウト時の挙動の明示値（MT5 実走整合の実証値）。エンジン既定
 #: "fail_stop" は `MarginCallError` を送出して部分結果を破棄するが、実 MT5 は
 #: 保有玉を強制決済したうえでテストを完走し確定レポートを出す。よって Settings 経路は
-#: `ENTRY_PRICE_BASIS` と同じ理由——「エンジン既定のままだと MT5 と別の分岐に入る」——で
-#: 明示指定する。
+#: 「エンジン既定のままだと MT5 と別の分岐に入る」という理由で明示指定する。
 #:
 #: 出典（`simulator/tests/fixtures/mt5/ma_slope_jp225_202501/` の実 MT5 出力）:
 #:   - `mt5_report/tester.log` 11663 行:
@@ -118,7 +113,6 @@ class EngineBinding:
     symbol / period / data_path: 実行対象データセットの識別（`.ini` の値との整合を検査する）。
                          ``data_path`` の ``None`` は「バー系列を供給しない」の意であり、
                          規則 S（`MATH_CALCULATIONS` ⇔ バー系列なし）の判定入力になる。
-    known_ea_names:      実行可能な EA 名の集合（N-01 の事前検証に使う）。
     settlement_currency: 銘柄の決済通貨（D-10）。**既定値を持たない**——「たぶん JPY」の
                          ような推定を層内に置くと銘柄仕様の単一ソース性が壊れ、通貨不一致の
                          run が沈黙で通る。
@@ -131,7 +125,14 @@ class EngineBinding:
                          `.ini` の `Deposit` が有効な実行では**参照しない**（.ini が権威）。
     stop_out_level:      現行既定 0.0（`build_interactor` の既定値＝実測）。
     tick_store_root:     実ティック格納根（`REAL_TICKS` 用。未供給時は N-05 で拒否）。
-    config_overrides:    データセット側が権威として持つ決定論設定（`entry_price_basis` 等）。
+    config_overrides:    データセット側が権威として持つ決定論設定（「``tick_model``」 等）。
+                         建値基準は含まない——値の出所は戦略の宣言ただ 1 つであり、
+                         決定論設定の語彙から外してある（ISSUE-533 段階 2）。
+
+    実行可能な EA 名の集合を**持たない**理由（ISSUE-535）: N-01（未登録 EA 名の遮断）の
+    判定源は合流点が運ぶ 「`RunScopeInputs.known_ea_names`」 であり、本注入束ではない
+    （ISSUE-525 で合流点へ移した）。ここに同じ集合を置くと、設定されるだけで誰も読まない
+    欄になる——実際にそうなっていた。同じ事実の置き場所を 2 つ持たない。
 
     `RunProfile`（`sim_ui`）を受けない理由: `simulator/main` から `simulator/sim_ui` への
     参照は 0 件（実測）であり、逆向き（`sim_ui/main/run_job.py` → `simulator.main`）が実在
@@ -142,7 +143,6 @@ class EngineBinding:
     symbol: str
     period: str
     data_path: "str | None"
-    known_ea_names: "frozenset[str]"
     settlement_currency: str
     ea_params: "Mapping[str, Any]"
     leverage: float
@@ -360,17 +360,17 @@ def _config_overrides(ctx: _MappingContext) -> Any:
     優先順位:
         1. `binding.config_overrides`（データセット側が権威＝`SymbolSpecCatalog` 由来）。
         2. `Model`（Settings の権威項目）→ ``tick_model``（Settings が上書きする）。
-        3. ``entry_price_basis`` / ``stop_out_action`` は未指定時のみ明示値を補う
-           （§4.5.1・`ENTRY_PRICE_BASIS` / `STOP_OUT_ACTION` の宣言に出典を記す）。
-           いずれも「エンジン既定のままだと MT5 と別の分岐に入る」という同一の理由で
-           明示する値であり、既定はここで 1 度だけ読む（値を 2 箇所に書かない）。
+        3. ``stop_out_action`` は未指定時のみ明示値を補う（§4.5.1・`STOP_OUT_ACTION` の
+           宣言に出典を記す）。「エンジン既定のままだと MT5 と別の分岐に入る」ためである。
+
+    建値基準（``entry_price_basis``）は**扱わない**（ISSUE-533 段階 2）。値の出所は戦略の
+    宣言ただ 1 つであり、設定からは供給できない（`load_config` が未知キーとして拒む）。
     """
     overrides = dict(ctx.binding.config_overrides or {})
     # A-1（L-5 の解消）: `Model` は全値がエンジン id を持つ（`tick_model_word` が単一の
     # 取得点で、未登録値は ConfigError）。これにより `BacktestConfig.tick_model` が
     # Settings 層の語彙と一致する（従来 math は既定 "every_tick" のままだった）。
     overrides["tick_model"] = tick_model_word(ctx.effective.tick_model)
-    overrides.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
     overrides.setdefault("stop_out_action", STOP_OUT_ACTION)
     return overrides
 

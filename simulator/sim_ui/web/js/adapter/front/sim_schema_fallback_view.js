@@ -21,6 +21,8 @@
 //
 // fake DOM 前提: querySelector は使わず、要素参照を JS 側で保持する。
 
+import { sameCandidates } from "./sim_submission_builder.js";
+
 /** 初期資金の初期表示。schema があれば Tester 面の `Deposit` が同じ役割を担う
  *  （両面が同時に立つことは無いので、画面上でこの値が競合することはない）。 */
 const INITIAL_DEPOSIT = "10000";
@@ -31,9 +33,12 @@ export function createSimSchemaFallbackView({ doc } = {}) {
   let depositInput = null;
   let symbolHost = null;
   let symbolNode = null;
+  let seriesNode = null;
   let eaCandidates = [];
   let symbolCandidates = [];
+  let seriesCandidates = [];
   let symbolCb = null;
+  let seriesCb = null;
 
   const el = (tag, props) => {
     const node = doc.createElement(tag);
@@ -59,7 +64,9 @@ export function createSimSchemaFallbackView({ doc } = {}) {
   function rebuildSymbol() {
     if (!symbolHost) return;
     const previous = symbolNode ? String(symbolNode.value || "") : "";
-    for (const child of Array.from(symbolHost.children || [])) symbolHost.removeChild(child);
+    // 外すのは銘柄の欄**だけ**（同じ欄に並ぶ系列の軸を巻き込むと、銘柄を変えるたびに
+    // 系列の欄が差し替わる＝利用者が触った要素が消える）。
+    if (symbolNode && symbolNode.parentNode) symbolNode.parentNode.removeChild(symbolNode);
     if (symbolCandidates.length) {
       symbolNode = el("select", {
         id: "execSymbol", className: "fallback-symbol", dataset: { mt5: "tester:Symbol" },
@@ -73,12 +80,42 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       });
     }
     symbolNode.addEventListener("change", () => { if (symbolCb) symbolCb(selectedSymbol()); });
-    symbolHost.appendChild(symbolNode);
+    // 系列の軸の**前**へ入れる（軸が無ければ末尾）。並びは「銘柄 → 系列」で固定する。
+    symbolHost.insertBefore(symbolNode, seriesNode);
+  }
+
+  /** select が今出している選択肢のトークン列（HTMLCollection なので Array.from を経由）。 */
+  const offeredTokensOf = (node) => Array.from(node.children || []).map((o) => String(o.value));
+
+  /** 系列の軸を組み直す（候補が在るときだけ出す＝実在する分岐のときだけ・段階 8-D-5）。
+   *
+   *  M1（Tester Settings 面）と同じ規律である: 触るのはこの 1 要素だけで、候補が変わらない
+   *  注入では 1 要素も生成しない。置き場所は銘柄の欄と同じ枠——系列は銘柄の内側の軸であり、
+   *  front に系列用の表示名を作らない（ラベル・値はどちらも run-options 由来のまま）。 */
+  function rebuildSeries() {
+    if (!symbolHost) return;
+    const previous = seriesNode ? String(seriesNode.value || "") : "";
+    if (seriesNode && sameCandidates(offeredTokensOf(seriesNode), seriesCandidates)) return;
+    if (seriesNode && seriesNode.parentNode) seriesNode.parentNode.removeChild(seriesNode);
+    seriesNode = null;
+    if (!seriesCandidates.length) return;
+    seriesNode = el("select", {
+      id: "execSeries", className: "fallback-series", dataset: { mt5: "ui:series" },
+    });
+    fillOptions(seriesNode, seriesCandidates);
+    if (seriesCandidates.includes(previous)) seriesNode.value = previous;
+    seriesNode.addEventListener("change", () => { if (seriesCb) seriesCb(selectedSeries()); });
+    symbolHost.appendChild(seriesNode);
   }
 
   /** 実行対象の銘柄（未生成なら空文字）。 */
   function selectedSymbol() {
     return symbolNode ? String(symbolNode.value == null ? "" : symbolNode.value) : "";
+  }
+
+  /** 実行対象の系列（軸を出していなければ空文字＝「指定なし」）。 */
+  function selectedSeries() {
+    return seriesNode ? String(seriesNode.value == null ? "" : seriesNode.value) : "";
   }
 
   return {
@@ -129,6 +166,12 @@ export function createSimSchemaFallbackView({ doc } = {}) {
       rebuildSymbol();
     },
 
+    /** 系列候補（同一銘柄の `RunProfile.dataset` 一覧）を注入する（段階 8-D-5）。 */
+    setSeriesCandidates(list) {
+      seriesCandidates = Array.isArray(list) ? list.map((v) => String(v)) : [];
+      rebuildSeries();
+    },
+
     // --- SubjectSource Port（M1 Tester Settings 面と同型）---------------------------
 
     /** 実行対象データセットを注入する（この面は既定値を持たないので受け取るだけ）。 */
@@ -138,6 +181,11 @@ export function createSimSchemaFallbackView({ doc } = {}) {
 
     /** 銘柄変更時のコールバックを登録する（新しい銘柄を渡す）。 */
     onSymbolChange(cb) { symbolCb = cb; },
+
+    selectedSeries,
+
+    /** 系列変更時のコールバックを登録する（新しい系列を渡す）。 */
+    onSeriesChange(cb) { seriesCb = cb; },
 
     /** `backtest` へ渡す実行対象（EA・口座）。 */
     derivedBacktest() {

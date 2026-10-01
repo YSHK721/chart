@@ -16,7 +16,7 @@ from simulator.domain.oco_order_pair import OcoOrderPair
 from simulator.domain.order import Order
 from simulator.domain.variance_forecast import VarianceForecast
 from simulator.domain.volatility_band import VolatilityBand
-from simulator.usecase.ports import StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
 def indicators_open_at(indicators: Any, i: int) -> float:
@@ -40,7 +40,11 @@ def _cfg_get(config: Any, key: str, default: Any) -> Any:
         return getattr(config, key, default)
 
 
-class WeeklyVolBand(StrategyPort):
+class WeeklyVolBand(StrategyPort, EntryPriceBasisPort):
+    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのはセグメント先頭足の open だけなので、
+    #: 判定は足の**始まり**に成立する。
+    entry_price_basis = "current_open"
+
     def __init__(
         self, forecast: VarianceForecast, p_tp: float, capital: float, f_risk: float
     ) -> None:

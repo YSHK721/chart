@@ -18,7 +18,7 @@ import datetime as dt
 import pandas as pd
 import pytest
 
-from marketdata import tick_m1
+from marketdata import dataset_registry, tick_m1
 from marketdata.mt5_ticks import m1_chain
 
 _REF = "jp225_mt5"
@@ -142,8 +142,9 @@ def test_appended_bytes_match_the_existing_csv_formatter(store):
     from marketdata.mt5_ticks import ingest
 
     frame = ingest.rows_to_frame([r for r in rows if r[0] < _label_ms(_START + dt.timedelta(minutes=1))])
+    # 基準は台帳から引く（段階 6・TBD-4 で ingest の定数は廃止＝台帳が唯一の源）。
     expected_body = tick_m1._format_m1_for_csv(
-        tick_m1.ticks_to_m1(frame, price_basis=ingest.PRICE_BASIS)
+        tick_m1.ticks_to_m1(frame, price_basis=dataset_registry.tick_price_basis(_REF))
     ).to_csv(header=False, index_label="date")
     assert written.endswith(expected_body)
 

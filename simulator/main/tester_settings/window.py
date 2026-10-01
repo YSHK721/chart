@@ -44,7 +44,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 # A-3: `bar.time` の epoch 正規化は domain（`Bar.time` 型契約の所有者）が単一ソースを持つ。
@@ -59,6 +59,8 @@ from simulator.usecase.tester_settings import (
     DateRangeKind,
     DatesPreset,
     EffectiveSettings,
+    custom_range_end_exclusive_utc,
+    custom_range_start_utc,
 )
 
 #: 期間の実行時規則（規則 R の一部）に付す ID。実行要求時の必須値検査であるため
@@ -88,11 +90,6 @@ class DataWindow:
     trading_start: "datetime | None"
     tick_start: "datetime | None"
     tick_end: "datetime | None"
-
-
-def _midnight_utc(value: date) -> datetime:
-    """日付 → その日の 00:00 UTC（aware）。W-3 のローカル TZ 依存を除去する。"""
-    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
 
 
 def _no_window() -> DataWindow:
@@ -141,7 +138,11 @@ def _resolve_preset(effective: EffectiveSettings) -> DataWindow:
 
 
 def _resolve_custom(effective: EffectiveSettings) -> DataWindow:
-    """`FromDate` / `ToDate`: `[from 00:00Z, to+1day 00:00Z)`（V-2 を半開へ写す）。"""
+    """`FromDate` / `ToDate` → 半開窓。境界の定義は usecase の 2 関数が唯一持つ。
+
+    日付（`YYYY.MM.DD`）は `[from 00:00Z, to+1day 00:00Z)`（V-2 を半開へ写す・従来どおり）。
+    分単位（`YYYY.MM.DD HH:MM`・依頼者指示 2026-09-27）は `[from分, to分+1分)`（To の分を含む）。
+    """
     date_range = effective.date_range
     from_date = None if date_range is None else date_range.from_date
     to_date = None if date_range is None else date_range.to_date
@@ -152,8 +153,8 @@ def _resolve_custom(effective: EffectiveSettings) -> DataWindow:
     ]
     if missing:
         raise SettingsKeyMissingError(keys=tuple(missing), rule_id=_RULE_RUNTIME_REQUIRED)
-    start = _midnight_utc(from_date)
-    end = _midnight_utc(to_date) + timedelta(days=1)
+    start = custom_range_start_utc(from_date)
+    end = custom_range_end_exclusive_utc(to_date)
     return DataWindow(
         marketdata_window=(start, end),
         trading_start=None,

@@ -54,6 +54,8 @@ export class TradeMarkersRenderer {
     this._candlesDimmed = false; // v6: ローソク減光中か（onCandlesChanged 時の復元要否判定）。
     this._currentTimeframe = null; // 現在の時間足（null=未設定）。setCurrentTimeframe で更新。
     this._targetTimeframe = null; // 該当時間足＝建玉の時間足。load で json.timeframe から取り込む（null=未宣言＝ゲートしない）。
+    // ISSUE-538: グリフ hover で強調の取引が変わったことの通知先（取引番号 or null）。1 つだけ持つ。
+    this._onHighlightChange = null;
 
     const sub = chart && chart.timeScale && chart.timeScale();
     if (sub && typeof sub.subscribeVisibleTimeRangeChange === 'function') {
@@ -102,6 +104,40 @@ export class TradeMarkersRenderer {
     this._highlight = next;
     this._render();
     this._updatePopup(param); // ISSUE-026: 取引明細ポップアップ（highlight 状態に同期）。
+    if (this._onHighlightChange) {
+      this._onHighlightChange(this._tradeNumberOf(next));
+    }
+  }
+
+  // ISSUE-538: 外から取引番号（取引明細の番号・pairs[].id）で強調する（取引明細の行 hover との連動）。
+  //   null で解除。番号に当たるペアが無ければ解除と同じ。強調が変わらなければ何もしない
+  //   （グリフ hover → 通知 → 連動元 → 本メソッド、と戻ってきたときに描き直さない）。
+  //   ポップアップはグリフ hover の位置に出すものなので、外からの強調では出さない。
+  highlightTrade(tradeNumber) {
+    const pair = tradeNumber == null ? null : this._pairs.find((p) => p.id === tradeNumber);
+    const next = pair ? pair.i : null;
+    if (next === this._highlight) {
+      return;
+    }
+    this._highlight = next;
+    this._render();
+    if (this._popupEl) {
+      this._popupEl.style.display = 'none';
+    }
+  }
+
+  // ISSUE-538: グリフ hover で強調の取引が変わったら、その取引番号（解除は null）を知らせる。
+  onHighlightChange(fn) {
+    this._onHighlightChange = typeof fn === 'function' ? fn : null;
+  }
+
+  // ペアの位置 i → 取引番号（pairs[].id）。番号を持たない旧データ・非強調は null。
+  _tradeNumberOf(i) {
+    if (i == null) {
+      return null;
+    }
+    const pair = this._pairs.find((p) => p.i === i);
+    return pair && pair.id != null ? pair.id : null;
   }
 
   // ISSUE-026: 売買ペアの取引明細ステートメントをポップアップ表示する。
@@ -168,7 +204,9 @@ export class TradeMarkersRenderer {
       + `<span style="color:${color || chromeVar('uiText')};font-variant-numeric:tabular-nums">${value}</span></div>`;
     return [
       `<div style="font-weight:600;margin-bottom:4px;color:${pair.side === 'buy' ? chromeVar('tradeSideBuy') : chromeVar('tradeSideSell')}">`
-        + `#${pair.i} ${sideLabel}</div>`,
+        // 番号は取引明細と同じ取引番号（pairs[].id・ISSUE-539）。位置 i は番号として出さない。
+        //   番号を持たない旧データでは番号を出さない（ずれた番号を出すより出さない）。
+        + `${pair.id != null ? `#${pair.id} ` : ''}${sideLabel}</div>`,
       row('利益', this._fmtNum(profit), profitColor),
       `<div style="border-top:1px solid ${chromeVar('uiBorder')};margin:4px 0"></div>`,
       row('取引日時', this._fmtDate(pair.entry.time)),
@@ -183,10 +221,11 @@ export class TradeMarkersRenderer {
     ].join('');
   }
 
-  // UNIX 秒を JST（日本時間・UTC+9）の Date オブジェクトへ変換する（ISSUE-026 ユーザー決定）。
-  //   実行環境の TZ に依存しないよう +9h オフセットを加えて getUTC* で読む（決定論的）。
-  _jst(unixSec) {
-    return new Date((unixSec + 9 * 3600) * 1000); // JST = UTC+9。
+  // UNIX 秒を Date へ変換する。表示は UTC（getUTC* で読む＝実行環境の TZ に依存しない）。
+  //   ISSUE-539（依頼者裁定 2026-09-27「UTC に揃える」）: 時間軸・読み取り欄・取引明細は足の時刻（UTC）で
+  //   出している。ポップアップだけ JST（ISSUE-026 の旧決定）だったため同じ取引が 9 時間ずれて見えていた。
+  _utc(unixSec) {
+    return new Date(unixSec * 1000);
   }
 
   // 2 桁ゼロ埋め（_fmtDate / _fmtClock 共通）。
@@ -194,21 +233,21 @@ export class TradeMarkersRenderer {
     return String(n).padStart(2, '0');
   }
 
-  // 日付のみ YYYY/MM/DD（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  // 日付のみ YYYY/MM/DD（UTC）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
   _fmtDate(unixSec) {
     if (typeof unixSec !== 'number') {
       return '-';
     }
-    const d = this._jst(unixSec);
+    const d = this._utc(unixSec);
     return `${d.getUTCFullYear()}/${this._pad2(d.getUTCMonth() + 1)}/${this._pad2(d.getUTCDate())}`;
   }
 
-  // 時刻のみ HH:MM:SS（JST）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
+  // 時刻のみ HH:MM:SS（UTC）へ整形する（ISSUE-026: 日時と時間を別行に分離）。
   _fmtClock(unixSec) {
     if (typeof unixSec !== 'number') {
       return '-';
     }
-    const d = this._jst(unixSec);
+    const d = this._utc(unixSec);
     return `${this._pad2(d.getUTCHours())}:${this._pad2(d.getUTCMinutes())}:${this._pad2(d.getUTCSeconds())}`;
   }
 

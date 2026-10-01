@@ -455,6 +455,13 @@ wait_up "http://127.0.0.1:${REPLAY_PORT}/" "リプレイ core (${REPLAY_PORT})"
 wait_up "http://127.0.0.1:${SIM_PORT}/" "シミュレーション core (${SIM_PORT})"
 wait_up "http://127.0.0.1:${DASHBOARD_PORT}/" "ダッシュボード core (${DASHBOARD_PORT})"
 
+# 供給の健全性を可視化する（ISSUE-526 段 3）。**拒否ではない**: 供給が止まっていても UI は開く
+#   （止まっているから画面も開けない、では原因を調べる手段ごと失う）。判定の規則は
+#   marketdata/supply_health.py が持ち、告知の形は tools/supply_health_notice.sh が持つ。
+#   ここがルータ起動より前でなければならない理由は、ルータが foreground 起動で、その後ろの行が
+#   走らないことである。
+"${REPO_ROOT}/tools/supply_health_notice.sh" "$VENV_PY" "$REPO_ROOT"
+
 echo "統合ルータを起動します: ${PUBLIC_URL}"
 # 配信元は**必ず**出す。「どのツリーの UI を見ているか」は検証の前提であり、
 #   問い合わせないと分からない状態にしておくと ISSUE-348 の事故がまた起きる。

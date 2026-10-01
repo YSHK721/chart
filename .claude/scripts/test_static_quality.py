@@ -17,26 +17,14 @@ from pathlib import Path
 
 import pytest
 
-import declaration_integrity as di
-import test_quality as tq
-import quality_scope
+# 違反集合の定義（走査・フィルタ・baseline の対応）は run_quality_gate.SUITES が唯一持つ。
+# 本ファイルが生の di.run / tq.run を別に組むと「違反集合」の第 2 定義になり、gate が
+# 落とす C1（散文引用・実在パス）をこちらだけが数えて、gate 緑・pytest 赤が恒常化する
+# （ISSUE-543 の裁定で単一ソース化。実測: HEAD の旧構成は 3.14 でも 4 件赤だった）。
+import run_quality_gate as gate
 
-quality_scope.apply(di, tq)
-
-# this file: <repo>/.claude/scripts/ -> parents[2] = リポジトリ根。
-REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).parent
-
-SUITES = {
-    "declaration": (
-        HERE / "di_baseline.json",
-        lambda: di.run(REPO, di._infer_prefixes(REPO), {"C1", "C2", "C3"}),
-    ),
-    "test_quality": (
-        HERE / "tq_baseline.json",
-        lambda: tq.run(REPO, set(tq.ALL_CHECKS)),
-    ),
-}
+SUITES = gate.SUITES
 
 
 def _frozen(path: Path) -> set[str]:

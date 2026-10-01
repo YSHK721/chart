@@ -149,7 +149,10 @@ def test_起動に失敗しても例外は呼び出し側へ漏れない() -> No
 # --- 4. E-3（§12.5 価格系列を供給できない戦略の sizing ON 拒否）------------
 
 def test_価格系列を持たない戦略へのsizingONは受付時に拒否される() -> None:
-    """§12.5: MA_Slope_EA の registry は ema のみ（実測）。close も open も無い。"""
+    """§12.5: MA_Slope_EA の registry は ema のみ（実測）。close も open も無い。
+
+    同 EA は足の始まりで判定すると宣言している（実測）ので、要る系列は "open" である。
+    """
     # Arrange
     sut = _interactor()
     sub = submission("MA_Slope_EA", sizing={"enabled": True})
@@ -159,7 +162,7 @@ def test_価格系列を持たない戦略へのsizingONは受付時に拒否さ
     # 何が足りないかがメッセージから読めること（無音の誤動作を作らない）
     message = str(exc.value)
     assert "MA_Slope_EA" in message
-    assert "close" in message
+    assert "open" in message
 
 
 def test_拒否された投入は台帳にも子プロセスにも残らない() -> None:
@@ -175,39 +178,48 @@ def test_拒否された投入は台帳にも子プロセスにも残らない()
     assert launcher.launched == []
 
 
-def test_約定基準がcurrent_openなら必要系列はopenになる() -> None:
-    """§12.2: entry_price_basis="current_open" の建値は bar.open 由来。
+def test_必要系列は戦略の宣言で決まり投入本文では動かない() -> None:
+    """ISSUE-533 段階 2: 要る系列は ea_name（＝戦略の宣言）だけで決まる。
 
-    PRO_fit_Band_EA の registry は close を持つが **open を持たない**（実測）ため、
-    current_open 指定では拒否される。基準ごとに必要系列が変わることを固定する。
+    同じ登録系列（close を持ち open を持たない PRO_fit_Band_EA）に対して、投入本文へ
+    建値基準を書き込んでも判定は動かない——書いた値が効く経路はもう無い。是正前は
+    「`config_overrides.entry_price_basis`」 が判定を動かしており、宣言が "current_open" の
+    EA（`MA_Slope_Pending_EA` / `WeeklyVolBand_EA`）が供給の無い実体では**登録系列に
+    あるのに拒まれる**形になっていた。
     """
-    # Arrange
-    sut = _interactor()
-    sub = submission(
-        "PRO_fit_Band_EA", sizing={"enabled": True}, entry_price_basis="current_open"
+    from simulator.sim_ui.usecase.job_models import JobSubmission
+
+    # Arrange（本文に建値基準を書いた投入。受付は建値基準を 1 度も読まない）
+    sut = _interactor(launcher=FakeLauncher())
+    sub = JobSubmission(
+        backtest={
+            "ea_name": "PRO_fit_Band_EA",
+            "symbol": "JP225",
+            "period": "M5",
+            "config_overrides": {"entry_price_basis": "current_open"},
+        },
+        sizing={"enabled": True},
     )
-    # Act / Assert
-    with pytest.raises(SizingUnsupportedError) as exc:
-        sut.execute(sub)
-    assert "open" in str(exc.value)
+    # Act（宣言は "close"・登録系列に close があるので通る）
+    got = sut.execute(sub)
+    # Assert
+    assert got.status == JobStatus.RUNNING.value
 
 
 @pytest.mark.parametrize(
-    "ea_name, basis",
+    "ea_name",
     [
-        ("PRO_fit_Band_EA", None),              # close 基準（既定）・close を持つ
-        ("WeeklyVolBand_EA", "current_open"),   # open 基準・open を持つ
-        ("MA_Slope_Pending_EA", "current_open"),
+        "PRO_fit_Band_EA",      # 宣言 close・close を持つ
+        "WeeklyVolBand_EA",     # 宣言 current_open・open を持つ
+        "MA_Slope_Pending_EA",  # 宣言 current_open・open を持つ
     ],
 )
-def test_必要系列を持つ戦略のsizingONは受け付ける(ea_name: str, basis) -> None:
+def test_必要系列を持つ戦略のsizingONは受け付ける(ea_name: str) -> None:
     # Arrange
     launcher = FakeLauncher()
     sut = _interactor(launcher=launcher)
     # Act
-    got = sut.execute(
-        submission(ea_name, sizing={"enabled": True}, entry_price_basis=basis)
-    )
+    got = sut.execute(submission(ea_name, sizing={"enabled": True}))
     # Assert
     assert got.status == JobStatus.RUNNING.value
     assert len(launcher.launched) == 1
@@ -250,15 +262,16 @@ def test_系列を解決できない戦略へのsizingONは拒否される() -> 
 # （`ea_registry_series_catalog` と同じ流儀）。
 
 def _sl_submission(*, backtest=None, sizing=None, ea_name="TC24051901",
-                   entry_price_basis="close", sizing_enabled=True):
-    """`JobSubmission` は ea_name / entry_price_basis / sizing_enabled を
-    `backtest` と `sizing` から**導出する**（プロパティ）。検定側もその形で組む。"""
+                   sizing_enabled=True):
+    """`JobSubmission` は ea_name / sizing_enabled を `backtest` と `sizing` から
+    **導出する**（プロパティ）。検定側もその形で組む。
+
+    建値基準は投入本文に載せない（ISSUE-533 段階 2: 要る系列は ea_name から決まる）。
+    """
     from simulator.sim_ui.usecase.job_models import JobSubmission
 
     bt = dict(backtest if backtest is not None else {"stop_loss_points": 500})
     bt.setdefault("ea_name", ea_name)
-    if entry_price_basis != "close":
-        bt.setdefault("config_overrides", {"entry_price_basis": entry_price_basis})
     if sizing_enabled and sizing is None:
         sizing = {"enabled": True}
     return JobSubmission(backtest=bt, sizing=sizing)
@@ -271,7 +284,7 @@ def _sl_interactor(catalog_map=None, **over):
         ledger=FakeLedger(),
         launcher=FakeLauncher(),
         series_catalog=FakeSeriesCatalog({"TC24051901": frozenset({"close", "madiff"})}),
-        required_series=lambda basis: "close",
+        required_series=lambda ea_name: "close",
         stop_loss_catalog=FakeStopLossCatalog(
             catalog_map
             if catalog_map is not None
@@ -388,12 +401,9 @@ def test_SL系パラメータを持たないEAは受付時に判定しない() -
         series_catalog=FakeSeriesCatalog(
             {"WeeklyVolBand_EA": frozenset({"open"})}
         ),
-        required_series=lambda basis: "open",
+        required_series=lambda ea_name: "open",
     )
-    submission = _sl_submission(
-        backtest={"ea_name": "WeeklyVolBand_EA"},
-        entry_price_basis="current_open",
-    )
+    submission = _sl_submission(backtest={"ea_name": "WeeklyVolBand_EA"})
     # Act
     view = interactor.execute(submission)
     # Assert

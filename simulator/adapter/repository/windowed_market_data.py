@@ -47,6 +47,7 @@ from typing import Any
 from datawindow.half_open import HalfOpenEpochWindow
 from simulator.domain.bar import Bar
 from simulator.domain.bar_time import epoch_seconds
+from simulator.usecase.bar_times import bar_epoch_seconds
 from simulator.usecase.ports import MarketDataPort
 
 
@@ -89,4 +90,7 @@ class WindowedMarketDataRepository(MarketDataPort):
         start, end = self._window
         # 境界正規化・半開判定とも共有実体（Candle 段と同一オブジェクト）を読む。
         window = HalfOpenEpochWindow(epoch_seconds(start), epoch_seconds(end))
-        return [bar for bar in bars if window.contains(epoch_seconds(bar.time))]
+        # 足の時刻は 1 回の一括変換で epoch 秒にする（ISSUE-553。足ごとの変換は
+        #   `test_bar_time_conversion_not_per_bar.py` のゲートが禁じる）。値は 1 本ずつと同じ。
+        times = bar_epoch_seconds(bars)
+        return [bar for bar, t in zip(bars, times) if window.contains(t)]
