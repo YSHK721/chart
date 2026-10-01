@@ -124,9 +124,9 @@ def _meta(data_path: Any, ea_name: str) -> dict:
     以前は ``contract_size`` に 10.0、``leverage`` に 100.0 を直書きしていた。前者は MT5 レポート
     に一度も現れない逆算値（真値 1.0）であり、後者は実口座値 10 と食い違っていた（ISSUE-445）。
     ``leverage`` は本ツールでは観測不能である（実測 2026-08-26: 0.5 / 10 / 100 のいずれでも
-    出力が同一）。理由は ``build_interactor(stop_out_level=0.0)`` の既定のまま
-    ``stop_out_level`` を渡しておらず、``margin_level() < stop_out_level`` が成立しないためで、
-    証拠金経路そのものが無効化されている。よって真値へ寄せるのは無償である。
+    出力が同一）。理由は当時 ``build_interactor`` の既定 ``stop_out_level=0.0`` のままで、
+    ``margin_level() < stop_out_level`` が成立しなかったためである。ISSUE-546 で既定を撤去し、
+    水準も ``spec`` の ``stop_out_level``（台帳の口座 ``margin_so_so``）から来る。
 
     ``lot_size`` は EA 入力であって銘柄仕様ではないが、``TC24051901`` は原典 ``.mq5`` を持たず
     ``NormalizeLot`` 相当を実装しない（``cfg["lot_size"]`` を素通し・ISSUE-445 段階 3-B の申し送り）。
@@ -148,7 +148,7 @@ def _meta(data_path: Any, ea_name: str) -> dict:
         ea_name=ea_name,
         initial_deposit=10_000.0,
         # contract_size / volume_min / volume_max / volume_step / stops_level /
-        # digits / point_size / leverage の 8 キー（供給元が唯一の権威）。
+        # digits / point_size / leverage / stop_out_level（供給元が唯一の権威）。
         **spec,
         ma_period=14,
         ma_method="sma",

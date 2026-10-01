@@ -80,7 +80,10 @@ _G0_GATES: "tuple[G0Gate, ...]" = (
             "TestMaSlopeReconcile::test_buy_trades_match_entry_and_exit_price_fully",
             "TestMaSlopeReconcile::test_sell_trades_match_entry_and_exit_price_fully",
             "TestMaSlopeReconcile::test_no_spurious_sell_at_session_boundary_01_00",
-            "TestMaSlopeReconcile::test_stop_out_fires_on_sell_at_mt5_bar_13_07",
+            # ISSUE-546（2026-10-01）: 旧 test_stop_out_fires_on_sell_at_mt5_bar_13_07 は 99.95 の
+            #   水準で MT5 に無い取引を強制決済した姿を固定していた。台帳の水準で MT5 の so deal と
+            #   同じ玉・同じ価格を決済することを固定する検定へ置き換えた（守る面は同じ stop-out）。
+            "TestMaSlopeReconcile::test_stop_out_closes_the_mt5_position_at_the_mt5_price",
             "TestMaSlopeEquityStatsReconcile::test_equity_dd_abs_matches_mt5_tightly",
             "TestMaSlopeEquityStatsReconcile::test_recovery_factor_equity_based_matches_mt5_within_residual",
         ),

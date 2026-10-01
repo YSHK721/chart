@@ -36,6 +36,7 @@ from simulator.domain.bar_time import epoch_seconds
 from simulator.domain.exceptions import ConfigError
 from simulator.main import build_interactor
 from simulator.usecase.run_trace_ports import RunTracePort
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 #: 2024-01-01T00:00:00Z（comma 形式 CSV の 「`time`」 は epoch 秒 int が契約）。
 _EPOCH = 1_704_067_200
@@ -96,6 +97,7 @@ def _meta(csv_path: Path, **overrides: Any) -> dict:
         digits=1,
         point_size=_POINT,
         leverage=_LEVERAGE,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=3,
         ma_method="sma",
         lot_size=1.27,

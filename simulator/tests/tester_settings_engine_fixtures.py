@@ -108,10 +108,19 @@ def jp225_leverage() -> float:
     return float(build_run_options_port().datasets()[0].leverage)
 
 
+def jp225_stop_out_level() -> float:
+    """JP225 のストップアウト水準（ISSUE-546）。値は書き写さず、実行プロファイル（台帳の
+    口座 ``margin_so_so``）から引く（`jp225_leverage` と同じ単一ソース）。"""
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+
+    return float(build_run_options_port().datasets()[0].stop_out_level)
+
+
 def engine_binding(
     *,
     symbol_spec: SymbolSpec | None = None,
     leverage: float | None = None,
+    stop_out_level: float | None = None,
     symbol: str = "JP225",
     period: str = "Daily",
     data_path: Any = None,
@@ -128,6 +137,9 @@ def engine_binding(
     return EngineBinding(
         symbol_spec=symbol_spec if symbol_spec is not None else jp225_symbol_spec(),
         leverage=leverage if leverage is not None else jp225_leverage(),
+        stop_out_level=(
+            stop_out_level if stop_out_level is not None else jp225_stop_out_level()
+        ),
         symbol=symbol,
         period=period,
         data_path=data_path,

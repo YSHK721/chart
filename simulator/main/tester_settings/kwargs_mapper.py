@@ -123,7 +123,10 @@ class EngineBinding:
     initial_deposit:     `deposit` が inert のときエンジンへ渡す初期証拠金（ISSUE-397 裁定:
                          inert なフィールドは binding が権威）。既定 `INERT_DEPOSIT`＝0.0。
                          `.ini` の `Deposit` が有効な実行では**参照しない**（.ini が権威）。
-    stop_out_level:      現行既定 0.0（`build_interactor` の既定値＝実測）。
+    stop_out_level:      ストップアウト水準（ISSUE-546）。**既定値を持たない**必須注入。出所は
+                         台帳の口座 ``margin_so_so``（`spec_fields` の ``stop_out_level``）ただ 1 つ。
+                         以前の既定 0.0 は「有効証拠金が負になるまで決済しない」生きた閾値として
+                         働き、sim 画面の run で残高が負になるまで取引が続いた（実測）。
     tick_store_root:     実ティック格納根（`REAL_TICKS` 用。未供給時は N-05 で拒否）。
     config_overrides:    データセット側が権威として持つ決定論設定（「``tick_model``」 等）。
                          建値基準は含まない——値の出所は戦略の宣言ただ 1 つであり、
@@ -146,7 +149,7 @@ class EngineBinding:
     settlement_currency: str
     ea_params: "Mapping[str, Any]"
     leverage: float
-    stop_out_level: float = 0.0
+    stop_out_level: float
     tick_store_root: "str | None" = None
     config_overrides: "dict | None" = None
     initial_deposit: float = INERT_DEPOSIT

@@ -155,7 +155,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--take-profit-points", type=int, default=0)
     p.add_argument("--entry-offset-points", type=float, default=0.0)
     p.add_argument("--entry-type", default="stop")
-    p.add_argument("--stop-out-level", type=float, default=100.0)
     p.add_argument("--config-override", action="append", default=[])
     return p
 
@@ -208,7 +207,6 @@ def main(argv: "list[str] | None" = None, *, repo_root: Any = None) -> int:
         entry_offset_points=args.entry_offset_points,
         entry_type=args.entry_type,
         config_overrides=_parse_config_overrides(args.config_override),
-        stop_out_level=args.stop_out_level,
     )
     sample_time = request.bars[0].time
     split = normalize_time(args.split, sample_time)

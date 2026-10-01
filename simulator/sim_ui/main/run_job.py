@@ -158,6 +158,8 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
             #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
             job_id=job_dir.name,
             indicators_supply=lambda: build_run_indicators(**backtest),
+            # run が実際に使った水準（台帳から注入した値・ISSUE-546）。
+            stop_out_level=backtest["stop_out_level"],
             marketdata_window=backtest.get("marketdata_window"),
         )
     except Exception as exc:  # 観測の失敗で成功した計算を捨てない
@@ -350,6 +352,50 @@ class SettlementCurrencyDisagreement(ValueError):
     """
 
 
+def _profile_value_for_submission(
+    profiles: "Any",
+    *,
+    symbol: str,
+    data_path: "Any",
+    read: "Any",
+    what: str,
+    unsourced: str,
+    disagreed: str,
+    disagreement: "type[ValueError]",
+) -> "Any":
+    """投入の実体から profile の値を 1 つ引く（規則は `_settlement_currency_for_submission`）。
+
+    決済通貨（N-11）とストップアウト水準（ISSUE-546）が**同じ規則**で引く。規則を値ごとに
+    書き写すと片方だけ改訂される（ISSUE-511 段階 8-D-3 で是正した「並びで決まる」誤りが
+    片方にだけ戻る）。``read`` は profile から値を取り出す関数、``what`` は案内に載せる値の
+    名前、``unsourced`` / ``disagreed`` は止める理由、``disagreement`` は食い違いの例外型。
+    """
+    submitted = None if data_path is None else str(data_path)
+    if submitted is not None:
+        exact = next((p for p in profiles if p.data_path == submitted), None)
+        if exact is not None:
+            return read(exact)
+    candidates = [p for p in profiles if p.symbol == symbol]
+    if not candidates:
+        raise ValueError(
+            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
+            f"（{what}の供給源が無いため実行できません。{unsourced}）"
+        )
+    agreed = {read(p) for p in candidates}
+    if len(agreed) != 1:
+        # 案内には「どの profile 群がどの値で食い違ったか」と「どの投入がどれとも一致しな
+        # かったか」を載せる。綴りは 1 つも書き写さず、渡された profile から導く（書き写すと
+        # 片方だけ動いたときに案内が嘘になる）。
+        listed = "・".join(f"{p.dataset}={read(p)}" for p in candidates)
+        raise disagreement(
+            f"投入された実体 {submitted!r} はどの実行プロファイルの実体とも一致せず、"
+            f"銘柄 {symbol!r} の実行プロファイル群は{what}で食い違っています"
+            f"（{listed}）。{disagreed}、投入の実体を"
+            "いずれかのプロファイルの実体に合わせてください。"
+        )
+    return agreed.pop()
+
+
 def _settlement_currency_for_submission(
     profiles: "Any", *, symbol: str, data_path: "Any"
 ) -> str:
@@ -372,33 +418,70 @@ def _settlement_currency_for_submission(
         ValueError: 銘柄一致の profile が 1 件も無い（決済通貨の供給源が無い）。
         SettlementCurrencyDisagreement: 実体が一致せず、候補が値で食い違う。
     """
-    submitted = None if data_path is None else str(data_path)
-    if submitted is not None:
-        exact = next((p for p in profiles if p.data_path == submitted), None)
-        if exact is not None:
-            return exact.settlement_currency
+    return _profile_value_for_submission(
+        profiles,
+        symbol=symbol,
+        data_path=data_path,
+        read=lambda p: p.settlement_currency,
+        what="決済通貨",
+        unsourced="推定値では N-11 の判定が壊れます",
+        disagreed="推定値では N-11 の判定が壊れるため",
+        disagreement=SettlementCurrencyDisagreement,
+    )
 
-    candidates = [p for p in profiles if p.symbol == symbol]
-    if not candidates:
+
+class StopOutLevelDisagreement(ValueError):
+    """投入の実体がどの profile とも一致せず、銘柄一致の profile 群が水準で食い違う（ISSUE-546）。
+
+    食い違う候補から 1 つを選ぶ規則は存在しないため、推定しないで止める。
+    """
+
+
+def _stop_out_level_for_submission(
+    profiles: "Any", *, symbol: str, data_path: "Any"
+) -> float:
+    """投入からストップアウト水準を引く（ISSUE-546・決済通貨と同じ規則）。
+
+    水準の出所は台帳の口座 ``margin_so_so`` ただ 1 つで、profile はそれを `spec_fields` から
+    運ぶ。投入（`backtest`）からは受け取らない（受付が 「`_INJECTED_ONLY_KEYS`」 で拒む）。
+    """
+    return _profile_value_for_submission(
+        profiles,
+        symbol=symbol,
+        data_path=data_path,
+        read=lambda p: p.stop_out_level,
+        what="ストップアウト水準",
+        unsourced="既定値で走ると強制決済の水準が台帳と違います",
+        disagreed="推定値では強制決済の水準が台帳と違ってしまうため",
+        disagreement=StopOutLevelDisagreement,
+    )
+
+
+def _refuse_ledger_supplied_keys(backtest: "dict[str, Any]") -> None:
+    """台帳から渡すキーが投入に載っていたら止める（黙って台帳の値で上書きしない・ISSUE-546）。
+
+    受付（`SubmitJob`）は同じキーを拒むが、`spec.json` は受付を通らずにも書ける。どちらの
+    経路でも「投入の値が台帳に優先する」も「投入の値が黙って捨てられる」も起こさない。
+    """
+    from simulator.sim_ui.main.composition_root_jobs import LEDGER_SUPPLIED_KEYS
+
+    present = sorted(LEDGER_SUPPLIED_KEYS & set(backtest))
+    if present:
         raise ValueError(
-            f"銘柄 {symbol!r} の実行プロファイルが登録されていません"
-            "（決済通貨の供給源が無いため実行できません。推定値では N-11 の判定が壊れます）"
+            f"backtest に {present} は書けません（台帳の口座の値を使います・ISSUE-546）"
         )
-    agreed = {p.settlement_currency for p in candidates}
-    if len(agreed) != 1:
-        # 案内には「どの profile 群がどの値で食い違ったか」と「どの投入がどれとも一致しな
-        # かったか」を載せる。綴りは 1 つも書き写さず、渡された profile から導く（書き写すと
-        # 片方だけ動いたときに案内が嘘になる）。
-        disagreement = "・".join(
-            f"{p.dataset}={p.settlement_currency}" for p in candidates
-        )
-        raise SettlementCurrencyDisagreement(
-            f"投入された実体 {submitted!r} はどの実行プロファイルの実体とも一致せず、"
-            f"銘柄 {symbol!r} の実行プロファイル群は決済通貨で食い違っています"
-            f"（{disagreement}）。推定値では N-11 の判定が壊れるため、投入の実体を"
-            "いずれかのプロファイルの実体に合わせてください。"
-        )
-    return agreed.pop()
+
+
+def _ledger_stop_out_level(backtest: "dict[str, Any]") -> float:
+    """現行経路（settings 不在）の水準を台帳から引く（`_build_engine_binding` と同じ出所）。"""
+    from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
+
+    _refuse_ledger_supplied_keys(backtest)
+    return _stop_out_level_for_submission(
+        build_run_options_port().datasets(),
+        symbol=backtest["symbol"],
+        data_path=backtest.get("data_path"),
+    )
 
 
 def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
@@ -421,6 +504,8 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
                      **どの profile かは投入された実体で決まる**（`data_path` 一致・
                      `_settlement_currency_for_submission`。ISSUE-511 段階 8-D-3）。
                      登録の無い銘柄は**推定しない**で失敗させる。
+        ストップアウト水準 — 決済通貨と同じ profile 群・同じ規則（ISSUE-546）。台帳の口座
+                     ``margin_so_so`` が唯一の出所で、投入からは受け取らない。
         EA 固有引数 — `backtest` のうち写像層が供給しない残余（`_settings_supplied_params`）。
         data_path  — バー系列を消費する modelling のときだけ渡す（規則 S）。要否の宣言は
                      `tick_model_registry.consumes_market_data` の 1 箇所にしかない。
@@ -433,9 +518,17 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     from simulator.usecase.models import SymbolSpec
 
     backtest = spec.get("backtest") or {}
+    _refuse_ledger_supplied_keys(backtest)
     symbol = backtest["symbol"]
+    # カタログ（台帳）は 1 回だけ読み、決済通貨とストップアウト水準を同じ profile 群から引く。
+    profiles = build_run_options_port().datasets()
     settlement = _settlement_currency_for_submission(
-        build_run_options_port().datasets(),
+        profiles,
+        symbol=symbol,
+        data_path=backtest.get("data_path"),
+    )
+    stop_out_level = _stop_out_level_for_submission(
+        profiles,
         symbol=symbol,
         data_path=backtest.get("data_path"),
     )
@@ -451,6 +544,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
             else None
         ),
         settlement_currency=settlement,
+        stop_out_level=stop_out_level,
         ea_params={k: v for k, v in backtest.items() if k not in supplied},
         config_overrides=dict(backtest.get("config_overrides") or {}),
     )
@@ -764,6 +858,15 @@ def main(argv: "list[str] | None" = None) -> int:
     if spec.get("settings"):
         exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions, account)
     else:
+        # ストップアウト水準は台帳から注入する（ISSUE-546・settings 経路と同じ出所と規則）。
+        #   投入の `backtest` は水準を持たない（受付が拒む）。
+        try:
+            meta["stop_out_level"] = _ledger_stop_out_level(meta)
+        except Exception as exc:
+            message = f"ストップアウト水準を台帳から引けませんでした: {exc}"
+            print(message, file=sys.stderr)
+            _record_failure(job_dir, message)
+            return _EXIT_SPEC_ERROR
         meta.update(extensions)
         # 現行経路が `build_interactor` へ渡す引数は `meta` そのものである
         #   （`run_backtest(output_dir=..., **meta)`）。窓の申告はここから採る（§6.5.2.1）。
@@ -779,9 +882,12 @@ def main(argv: "list[str] | None" = None) -> int:
         # 表示用ペイロード（report.json）は**成功 run のときだけ**書く。失敗 run の結果を
         # 表示面へ出すと、古い/壊れた結果が「今の結果」に見える。
         if exit_code == 0 and _result is not None:
+            # 足の取り直しも run と同じ水準（台帳から注入済み）で組む（`build_interactor` の
+            #   必須引数・ISSUE-546）。投入の `backtest` は水準を持たない。
+            ledger_level = {"stop_out_level": meta["stop_out_level"]}
             _write_report_payload(
                 job_dir, _result,
-                load_run_inputs=_load_run_inputs,
+                load_run_inputs=lambda backtest: _load_run_inputs({**backtest, **ledger_level}),
                 load_indicators=lambda: _build_run_indicators(meta),
                 run_kwargs=meta, account=account,
             )

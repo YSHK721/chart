@@ -21,6 +21,7 @@ from simulator.adapter.strategy.generic_condition_strategy import GenericConditi
 from simulator.domain.entry_conditions import Condition, EntryConditions
 from simulator.main import build_interactor
 from simulator.usecase import order_execution
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 #: 2024-01-01T00:00:00Z（comma 形式 CSV の 「`time`」 は epoch 秒 int が契約）。
 _EPOCH_2024_01_01 = 1_704_067_200
@@ -118,6 +119,7 @@ def _measure(tmp_path: Path, monkeypatch: Any, bar_count: int) -> "tuple[int, in
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

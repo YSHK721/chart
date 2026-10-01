@@ -77,8 +77,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     meta = dict(cfg.get("meta", {}))
     meta["data_path"] = args.data
     meta["config_overrides"] = determinism
+    try:
+        meta[_STOP_OUT_LEVEL] = _ledger_stop_out_level(meta)
+    except BacktestError as error:
+        return exit_code_for(error)
     exit_code, _ = run_backtest(output_dir=args.output, **meta)
     return exit_code
+
+
+#: 「`build_interactor`」 の引数名（ストップアウト水準）。
+_STOP_OUT_LEVEL = "stop_out_level"
+
+
+def _ledger_stop_out_level(meta: "dict[str, Any]") -> float:
+    """ストップアウト水準を台帳から引く（ISSUE-546）。
+
+    水準の出所は台帳の口座 ``margin_so_so``（`spec_fields` の `「`stop_out_level`」`）ただ 1 つ。
+    config.yaml の ``meta`` からは受け取らない——人が書いた値が台帳に優先する入口になる。
+    台帳に無い銘柄は既定値で走らせず `ConfigError` で止める。
+    """
+    from marketdata.symbol_spec_snapshot import (
+        OANDA_JAPAN_MT5_LIVE,
+        SnapshotError,
+        load_spec_fields,
+    )
+
+    if _STOP_OUT_LEVEL in meta:
+        raise ConfigError(
+            "config.yaml の meta に stop_out_level は書けません"
+            "（ストップアウト水準は台帳の口座 margin_so_so から引きます・ISSUE-546）",
+            context={"stop_out_level": meta[_STOP_OUT_LEVEL]},
+        )
+    symbol = meta.get("symbol")
+    try:
+        return load_spec_fields(OANDA_JAPAN_MT5_LIVE, str(symbol))[_STOP_OUT_LEVEL]
+    except SnapshotError as exc:
+        raise ConfigError(
+            f"銘柄 {symbol!r} のストップアウト水準を台帳から引けません: {exc}",
+            context={"symbol": symbol},
+        ) from exc
 
 
 if __name__ == "__main__":  # pragma: no cover（薄いラッパの実行入口）

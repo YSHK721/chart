@@ -27,6 +27,7 @@ from simulator.usecase.models import AccountSpec
 from simulator.adapter.exit_codes import SUCCESS_EXIT_CODE, exit_code_for
 from simulator.domain.exceptions import ConfigError, DataError
 from simulator.usecase.run_backtest import RunBacktestInteractor
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 #: `BacktestController.run` が組む `RunBacktestRequest.account`（ISSUE-445 段階 3-D3 で
@@ -165,6 +166,7 @@ class TestTheResultComesFromExecute:
             digits=1,
             point_size=0.1,
             leverage=100.0,
+            stop_out_level=ledger_stop_out_level(),
             ma_period=2,
             ma_method="ema",
             lot_size=0.1,

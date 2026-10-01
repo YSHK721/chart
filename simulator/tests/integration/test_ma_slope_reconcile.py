@@ -19,30 +19,33 @@ expected.deals/results と比較し、一致率を定量化する。完全一致
 
 実走 config（全修正 ON + warmup + stop-out 精度2層・本テストが固定する条件）:
   entry_price_basis="current_open" / spread は Bar から取得 /
-  stop_out_action="close_and_halt" / stop_out_level=99.95 /
+  stop_out_action="close_and_halt" / stop_out_level=台帳の口座 margin_so_so（ISSUE-546）/
   prime_first_trading_bar=True（層1）/ floating_pnl_basis="bid_ask"（層2）。
   データは warmup 込み CSV（2024-12-23 始点）を与え、trading_start=2025-01-02T01:00:00 を
   指定する。開始前のバーは指標(EMA)seed 収束のみを行い、MT5 と同じく 2024 履歴で EMA 収束済
   の状態で取引期間に入る。層1 は取引開始境界の degenerate バー(01:00)をプライム扱いして
   spurious SELL を除去し（初回約定を MT5 と同じ 01:01 buy@39412 に揃える）、層2 は含み損益を
-  決済価格基準（買い=Bid=close / 売り=Ask=close+spread×point）で評価して stop-out 発火を
-  MT5 の 13:07 に揃える。
+  決済価格基準（買い=Bid=close / 売り=Ask=close+spread×point）で評価する。
 
-実測サマリ（本テストが固定する観測値・2026-06 実走・上記 全修正 config）:
-  - 我々の往復トレード = 1164、MT5 = 1163。差 ≈ 1 は sub-minute 時刻表現の残差。
-  - net profit = -6173.9（MT5 = -6169.0）/ 最終 balance = 3826.1（MT5 = 3831.0・
-    初期証拠金 10000）。差 ≈ 4.9 はトレード差＋stop-out 価格差由来の現実的残差。
-    注: 層1 単独なら net/balance は MT5 にほぼ bit-exact（-6168.9 / 3831.1）だが stop-out
-    発火が 13:16 とずれる。層2 を加えると stop-out が 13:07（MT5 一致）に揃う代わりに
-    net/balance が ≈4.9 乖離する（stop-out 時刻一致 vs net/balance bit-exact のトレードオフ。
-    本テストは「stop-out 時刻 = MT5 と完全一致」を優先する config を固定する）。
+ストップアウト水準（ISSUE-546・2026-10-01）:
+  以前は ``stop_out_level=99.95`` を本ファイルに書いていた。台帳の口座の水準は 100.0
+  （``margin_so_so``・MT5 端末から機械取得）であり、99.95 では MT5 が強制決済した 13:06 の
+  評価点（維持率 99.959%）を割れと見なさず、MT5 に無い取引を 1 件余分に行っていた
+  （往復 1164・net -6173.9）。台帳の水準で走ると次がすべて MT5 と一致する。
+
+実測サマリ（本テストが固定する観測値・台帳の水準・上記 全修正 config）:
+  - 往復トレード数は MT5 と同じ 1163。
+  - 損益は 1163 件とも MT5 の deal の損益と一致する（MT5 は口座通貨の桁＝JPY 0 桁で
+    四捨五入した値を記録する。素の損益が整数でない 4 件だけ丸めの差があり、素の net は
+    -6168.9・丸めた net は MT5 と同じ -6169）。最終 balance も MT5 と同じ 3831。
+  - stop-out の強制決済は MT5 の deal #2326（buy 13:04 @38325.7）→ #2327（@38295.7）と
+    同じ玉・同じ価格。時刻は我々 13:06（評価した足の時刻）・MT5 13:07（記録 1 行・未調査）。
   - side + entry_time 一致率 = 98.2%（1142/1163）→ 戦略ロジック・エントリ時刻はほぼ一致。
-    残差は我々が 13:07 stop-out で停止し以降のエントリを生成しない必然差。
+    残差 21 件は MT5 の約定時刻が分の途中（:30 秒）にある sub-minute 時刻表現の差。
   - **SELL トレードは entry/exit 価格とも完全一致（574/574）**。reverse 決済 = 買い戻し
     = ask(open+spread×point) により spread が正しく加算される（spread 未加算への退行を禁止）。
-  - **BUY トレードは entry/exit 価格とも完全一致（568/568・568/568）**。層2 により
-    stop-out が SELL 側（13:07）で発火するため、BUY exit の stop-out バー不一致が解消する
-    （従来の層1単独では BUY が 13:04/13:16 で停止し 1 件不一致だった）。
+  - **BUY トレードは entry/exit 価格とも完全一致（568/568・568/568）**。stop-out の
+    強制決済（BUY・@38295.7）も MT5 の決済価格と一致する。
   - 初回 BUY の fill 価格式 open+spread×point を再現する: 層1 により初回 BUY 時刻は
     MT5 と同じ 2025-01-02T01:01 に揃い、価格 = open(39402)+spread(100)×point(0.1) = 39412
     で MT5 初回約定（01:01@39412）と完全一致する（01:00 の spurious SELL は生成されない）。
@@ -66,14 +69,12 @@ _CASE = "ma_slope_jp225_202501"
 # 層1（prime_first_trading_bar）により、この境界に当たる最初のバー(01:00 degenerate)は
 # プライム扱いされ取引対象外となる（初回約定は次足 01:01）。
 _TRADING_START = np.datetime64("2025-01-02T01:00:00")
-# 我々の stop-out 強制決済バー。層2（bid_ask 含み損評価）により stop-out 発火が MT5 の
-# 13:07 に一致する。この時刻に SELL を建てた直後の同バーで強制決済される（entry=exit=13:07）。
-_OUR_STOPOUT_ENTRY = np.datetime64("2025-01-13T13:07:00")
-# MT5(report.json) との突合基準値（実測の現実的トレランスで固定する）。
+# MT5(report.json) との突合基準値。
 _MT5_TRADES = 1163
-_MT5_NET = -6169.0
-_MT5_BALANCE = 3831.0  # 初期 10000 + net(-6169)
 _INITIAL_DEPOSIT = 10_000.0
+#: MT5 が deal の損益を記録する桁（口座通貨 JPY の桁）。report.json の deals[].profit は
+#: すべて整数（実測）。
+_MT5_PROFIT_DIGITS = 0
 # MT5 report.json results の equity 系オラクル（突合基準）。
 _MT5_EQUITY_DD_ABS = 6174.0       # initial - min(equity)
 _MT5_EQUITY_DD_MAX = 6594.0       # equity peak-to-trough 最大金額 DD
@@ -122,7 +123,8 @@ def _run_engine(case):
             "prime_first_trading_bar": True,
             "floating_pnl_basis": "bid_ask",
         },
-        stop_out_level=99.95,
+        # ストップアウト水準は `spec` の stop_out_level（台帳の口座 margin_so_so）が唯一の
+        #   出所（ISSUE-546）。以前はここに 99.95 を書いていた。
         trading_start=_TRADING_START,
     )
     return controller.execute(request)
@@ -165,7 +167,26 @@ def reconcile():
         "mt5": mt5,
         "mt5_by_key": mt5_by_key,
         "expected": case.expected,
+        "deals": [d for d in case.deals if d["type"] != "balance"],
     }
+
+
+def _mt5_rounded(pnl: float) -> float:
+    """MT5 が deal に記録する形（口座通貨の桁で四捨五入）。"""
+    from decimal import ROUND_HALF_UP, Decimal
+
+    quantum = Decimal(1).scaleb(-_MT5_PROFIT_DIGITS)
+    return float(Decimal(repr(pnl)).quantize(quantum, rounding=ROUND_HALF_UP))
+
+
+def _mt5_out_deals(deals) -> list:
+    return [d for d in deals if d["dir"] == "out"]
+
+
+def _mt5_stop_out_pair(deals) -> "tuple[dict, dict]":
+    """MT5 の stop-out 決済 deal（comment が "so "）と、その玉を建てた直前の in deal。"""
+    index = next(i for i, d in enumerate(deals) if (d.get("comment") or "").startswith("so "))
+    return deals[index - 1], deals[index]
 
 
 class TestMaSlopeReconcile:
@@ -180,30 +201,32 @@ class TestMaSlopeReconcile:
         assert len(reconcile["mt5"]) == _MT5_TRADES
         assert reconcile["expected"]["results"]["total_trades"] == float(_MT5_TRADES)
 
-    def test_trade_count_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # 全修正 ON（層1+層2）+ warmup で実走したトレード総数 = 1164。MT5 = 1163。
-        # 差 ≈ 1 は sub-minute 時刻表現の残差（stop-out は層2 で MT5 と同じ 13:07 に一致）。
-        ours = len(reconcile["ours"])
-        assert ours == 1164  # 実測固定（warmup + 層1 + 層2）
-        assert abs(ours - _MT5_TRADES) <= 25  # MT5 との乖離トレランス（退行検出）
+    def test_trade_count_equals_mt5(self, reconcile):
+        # 台帳の水準（ISSUE-546）で走ると往復トレード数は MT5 と同じ（以前の 99.95 では 1164）。
+        assert len(reconcile["ours"]) == len(_mt5_out_deals(reconcile["deals"]))
 
-    def test_net_profit_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # net profit = -6173.9（MT5 = -6169.0）。差 ≈ 4.9 はトレード差＋stop-out 価格差。
-        # 層2（stop-out 時刻一致）優先のトレードオフ（層1単独なら -6168.9 で bit-exact）。
-        # 注記（ISSUE-019）: 本 net は stop-out 強制決済を mark_price(close 基準)へ是正後も
-        #   不変。理由は当該 stop-out バーが open==close だったため close 基準=従来 open
-        #   基準と一致する偶然による。将来 fixture を差し替え当該バーが open≠close になると
-        #   決済価格が変わり net も変化する（その際は本実測値の更新が必要）。
-        assert reconcile["net"] == pytest.approx(-6173.9, abs=0.1)  # 実測固定
-        assert abs(reconcile["net"] - _MT5_NET) <= 60.0  # MT5 との乖離トレランス
+    def test_every_trade_profit_equals_the_mt5_deal_profit(self, reconcile):
+        # 1163 件の損益を MT5 の記録形（口座通貨の桁で四捨五入）にすると、MT5 の out deal の
+        # 損益と並びごと一致する。
+        ours = [_mt5_rounded(t.pnl()) for t in reconcile["ours"]]
+        theirs = [float(d["profit"]) for d in _mt5_out_deals(reconcile["deals"])]
+        assert ours == theirs
 
-    def test_final_balance_close_to_mt5_within_realistic_tolerance(self, reconcile):
-        # 最終 balance = 3826.1（MT5 = 3831.0・初期 10000）。net と整合する現実的残差。
-        assert reconcile["balance"] == pytest.approx(3826.1, abs=0.1)  # 実測固定
+    def test_net_profit_equals_mt5(self, reconcile):
+        # 丸めた net は MT5 の Total Net Profit と一致する（素の net との差は丸めだけ）。
+        mt5_net = reconcile["expected"]["results"]["total_net_profit"]
+        assert sum(_mt5_rounded(t.pnl()) for t in reconcile["ours"]) == pytest.approx(mt5_net)
+        assert reconcile["net"] == pytest.approx(mt5_net, abs=0.5 * len(reconcile["ours"]))
+
+    def test_final_balance_equals_mt5(self, reconcile):
+        # 最終 balance = 初期証拠金 + net（自己整合）。丸めた値は MT5 の最終 deal の balance。
         assert reconcile["balance"] == pytest.approx(
             _INITIAL_DEPOSIT + reconcile["net"], abs=0.1
-        )  # balance = 初期証拠金 + net（自己整合）
-        assert abs(reconcile["balance"] - _MT5_BALANCE) <= 60.0  # MT5 との乖離トレランス
+        )
+        mt5_final = float(reconcile["deals"][-1]["balance"])
+        assert _INITIAL_DEPOSIT + sum(
+            _mt5_rounded(t.pnl()) for t in reconcile["ours"]
+        ) == pytest.approx(mt5_final)
 
     def test_first_buy_fill_reproduces_open_plus_spread_times_point(self, reconcile):
         # 層1（prime_first_trading_bar）により初回約定は MT5 と同じ 2025-01-02T01:01 buy。
@@ -254,16 +277,19 @@ class TestMaSlopeReconcile:
         # BUY exit も全件一致（層2 で stop-out が SELL 側へ移り BUY exit の乖離が消える）。
         assert exit_ok == n, f"BUY exit 一致 {exit_ok}/{n}（期待 568・層2 退行の疑い）"
 
-    def test_stop_out_fires_on_sell_at_mt5_bar_13_07(self, reconcile):
-        # 層2（bid_ask 含み損評価）の回帰固定: stop-out 強制決済は SELL 側で MT5 と同じ
-        # 2025-01-13T13:07 のバーで発火する（同バー建て→同バー強制決済で entry=exit=13:07）。
-        # 層2 を無効化すると stop-out が 13:16（層1単独）へずれ本アサートが落ちる。
+    def test_stop_out_closes_the_mt5_position_at_the_mt5_price(self, reconcile):
+        # stop-out の強制決済は MT5 の so deal（#2327）と同じ玉（同じ向き・建て時刻・建値）を
+        # 同じ価格で決済する（ISSUE-546・台帳の水準）。時刻は我々が評価した足の時刻（13:06）で、
+        # MT5 は 13:07 と記録する。この 1 分の差は未調査（ISSUE-546 に記録）。
         stop_outs = [t for t in reconcile["ours"] if t.exit_reason == "stop_out"]
         assert len(stop_outs) == 1, f"stop-out 強制決済は 1 件（実測 {len(stop_outs)}）"
         so = stop_outs[0]
-        assert so.side == "sell", f"stop-out は SELL 側で発火（実測 {so.side}・層2 退行）"
-        assert so.entry_time == _OUR_STOPOUT_ENTRY  # 2025-01-13T13:07（MT5 停止バーに一致）
-        assert so.exit_time == np.datetime64("2025-01-13T13:07:00")
+        opened, closed = _mt5_stop_out_pair(reconcile["deals"])
+        assert so.side == opened["type"]
+        assert so.entry_time == _to64(opened["time"])
+        assert so.entry_price == pytest.approx(opened["price"])
+        assert so.exit_price == pytest.approx(closed["price"])
+        assert so is reconcile["ours"][-1], "stop-out の後に取引が続いている（halt の退行）"
 
     def test_sell_trades_match_entry_and_exit_price_fully(self, reconcile):
         # cycle4 バグ① 修正後の回帰固定: SELL の決済（買い戻し=buy 約定）は
@@ -308,27 +334,32 @@ class TestMaSlopeEquityStatsReconcile:
         assert eq is not None and len(eq) > 0
 
     def test_equity_dd_abs_matches_mt5_tightly(self, reconcile):
-        # equity_dd_abs（init - min(equity)）は engine 実走 = 6173.9。MT5 = 6174.0。
-        # net と同根（最安 equity = 初期 + net 近傍）のため極小トレランスで MT5 と一致する。
+        # equity_dd_abs（init - min(equity)）は engine 実走 = 6168.9。MT5 = 6174.0。
+        # 我々の最安 equity は最終 balance（3831.1）で、足の評価点で測る。MT5 の最安 3826 は
+        # 足の内側のティック（bar 解像度の限界・equity_dd_max の残差と同じ種類）。
+        # 以前の 6173.9（残差 0.1）は 99.95 の水準で MT5 に無い取引を 1 件行い、その損で
+        # 下がった値が偶然近かったもの（ISSUE-546）。
         stats = reconcile["result"].stats
-        assert stats.equity_dd_abs == pytest.approx(6173.9, abs=0.1)  # 実走実測固定
-        assert abs(stats.equity_dd_abs - _MT5_EQUITY_DD_ABS) <= 0.5   # MT5 残差（~0.1）
+        assert stats.equity_dd_abs == pytest.approx(6168.9, abs=0.1)  # 実走実測固定
+        assert abs(stats.equity_dd_abs - _MT5_EQUITY_DD_ABS) <= 6.0   # tick 粒度残差 5.1
 
     def test_equity_dd_max_matches_mt5_within_tick_residual(self, reconcile):
-        # equity_dd_max（peak-to-trough）は engine 実走 = 6568.9。MT5 = 6594.0。
-        # 残差 ~25 は bar 解像度の限界（bar 内含み損ピーク非捕捉）由来の既知残差。
+        # equity_dd_max（peak-to-trough）は engine 実走 = 6563.9。MT5 = 6594.0。
+        # 残差 30.1 は bar 解像度の限界（bar 内含み損ピーク非捕捉）由来の既知残差 25.0 と、
+        # 谷の側の同じ種類の残差 5.1（上の equity_dd_abs）の和。以前の 6568.9 は 99.95 の
+        # 水準で行った MT5 に無い取引 1 件の損 5.0 を含んでいた（ISSUE-546）。
         stats = reconcile["result"].stats
-        assert stats.equity_dd_max == pytest.approx(6568.9, abs=0.1)       # 実走実測固定
-        assert abs(stats.equity_dd_max - _MT5_EQUITY_DD_MAX) <= 30.0       # tick 粒度残差 ~25
-        # % DD も同様: 実走 63.19% / MT5 63.28%（残差 ~0.1）。
-        assert stats.equity_dd_max_percent == pytest.approx(63.19, abs=0.05)
+        assert stats.equity_dd_max == pytest.approx(6563.9, abs=0.1)       # 実走実測固定
+        assert abs(stats.equity_dd_max - _MT5_EQUITY_DD_MAX) <= 31.0       # tick 粒度残差 30.1
+        # % DD も同様: 実走 63.14% / MT5 63.28%（残差 ~0.14）。
+        assert stats.equity_dd_max_percent == pytest.approx(63.14, abs=0.05)
         assert abs(stats.equity_dd_max_percent - _MT5_EQUITY_DD_MAX_PCT) <= 0.2
 
     def test_recovery_factor_equity_based_matches_mt5_within_residual(self, reconcile):
-        # recovery = net / equity_dd_max（符号付き）。engine 実走 = -0.93987（net -6173.9 /
-        # equity_dd_max 6568.9）。MT5 = -0.935547。残差 ~0.0043 は net・DD の tick 粒度残差由来。
+        # recovery = net / equity_dd_max（符号付き）。engine 実走 = -0.93982（net -6168.9 /
+        # equity_dd_max 6563.9）。MT5 = -0.935547。残差 ~0.0043 は DD の tick 粒度残差由来。
         stats = reconcile["result"].stats
-        assert stats.recovery_factor == pytest.approx(-0.93987, abs=1e-4)  # 実走実測固定
+        assert stats.recovery_factor == pytest.approx(-0.93982, abs=1e-4)  # 実走実測固定
         assert abs(stats.recovery_factor - _MT5_RECOVERY) <= 0.01          # MT5 残差（~0.004）
         # 自己整合: recovery == net / equity_dd_max。
         assert stats.recovery_factor == pytest.approx(

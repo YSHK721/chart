@@ -44,6 +44,7 @@ from simulator.tests.integration.test_run_backtest_fingerprint import (
 from simulator.tests.fixtures.mt5 import load_case
 from simulator.main import run_backtest
 from simulator.usecase.run_trace_ports import OBSERVATION_UNITS, RunTracePort
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 _CASE = "ma_slope_jp225_202501"
 
@@ -265,7 +266,7 @@ class TestTheRealTicksFingerprintDoesNotMoveWhenObserved:
             data_path=bars_csv, symbol="EURUSD", period="M1", ea_name="TC24051901",
             initial_deposit=10_000.0, contract_size=1.0, volume_min=0.01,
             volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
-            point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
+            point_size=0.0001, leverage=100.0, stop_out_level=ledger_stop_out_level(), ma_period=2, ma_method="sma",
             lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
             # ISSUE-533 段階 1: 建値基準は渡さない（EA の宣言が権威）。
             config_overrides={"tick_model": "real_ticks"},
@@ -302,7 +303,7 @@ class TestTheRealTicksFingerprintDoesNotMoveWhenObserved:
                 data_path=bars_csv, symbol="EURUSD", period="M1", ea_name="TC24051901",
                 initial_deposit=10_000.0, contract_size=1.0, volume_min=0.01,
                 volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
-                point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
+                point_size=0.0001, leverage=100.0, stop_out_level=ledger_stop_out_level(), ma_period=2, ma_method="sma",
                 lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
                 # ISSUE-533 段階 1: 建値基準は渡さない（EA の宣言が権威）。
                 config_overrides={"tick_model": "real_ticks"},

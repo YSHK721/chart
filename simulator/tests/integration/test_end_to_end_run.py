@@ -20,6 +20,7 @@ import pytest
 
 # Composition Root（未実装なら ModuleNotFoundError＝真の Red）
 from simulator.main import build_interactor, run_backtest
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 # 合成 OHLC（MADiff SMA period=2 が bar2 で負→正・bar4 で正→負にクロス）
@@ -60,6 +61,7 @@ def _meta_kwargs(csv_path: Path) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

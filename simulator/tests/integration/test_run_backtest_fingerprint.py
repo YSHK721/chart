@@ -26,7 +26,8 @@
     ケース A の 2 ダイジェストが**完全一致**することを実走で確認し、その値を採用した。
     ケース B は是正前には A と同一ダイジェストになった（`controller.run` が request を
     組み直し `trading_start` を落としていたため）。是正後は分岐し、その結果は MT5 突合
-    テストが記録する実測（往復トレード 1164 / net -6173.9）と一致する。
+    テストが記録する実測（往復トレード 1163 / net -6168.9・MT5 1163 / -6169）と一致する
+    （ISSUE-546 で水準を台帳の値にする前は 1164 / -6173.9）。
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ import pytest
 from marketdata.symbol_spec_snapshot import OANDA_JAPAN_MT5_LIVE, load_spec_fields
 from simulator.main import run_backtest
 from simulator.tests.fixtures.mt5 import load_case
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 _CASE = "ma_slope_jp225_202501"
 
@@ -79,9 +81,15 @@ _A_TRADES_SHA256 = "3942ad9a43746e867b02a61b7e8f0e679444fae9de90149ca378c6c51610
 _A_TRADE_COUNT = 1107
 
 # --- ケース B: `trading_start` あり（是正で「黙って捨てる」が消えた） ---------
-_B_STATS_SHA256 = "b31a93be964a05fa10a9ff9d5da508997fedfdee6e1b5bf0705655f54aa7a704"
-_B_TRADES_SHA256 = "a2535a03273585e1aa2ecec2d0c313a8515c3ab64ce90151c4133c2c891e8353"
-_B_TRADE_COUNT = 1164
+#: 2026-10-01 ISSUE-546 で取り直した（ストップアウト水準を本ファイルの 99.95 から台帳の口座の
+#:   margin_so_so＝100.0 へ）。取り直す前に、同じ作業ツリーで水準だけ 99.95 へ戻した run の
+#:   A・B の指紋が旧値と完全一致することを確かめた（エンジンは動いていない）。A は stop-out の
+#:   評価点が 99.95〜100 の間に無いため不変。B は MT5 に無い 13:07 の取引 1 件が消え、
+#:   往復 1164→1163（MT5 と同じ）・net -6173.9→-6168.9。旧値: B stats b31a93be… /
+#:   trades a2535a03…。
+_B_STATS_SHA256 = "7680e877e8f3ca99b000f70aa54c825e0d5b5a2a2bb49e753daf8a49ac9e81be"
+_B_TRADES_SHA256 = "d9d625c521e7b8db4ecbd7bc710d316689881af25989e2faccd13072266e07ac"
+_B_TRADE_COUNT = 1163
 
 
 def _meta(case, *, trading_start=None) -> dict:
@@ -116,7 +124,8 @@ def _meta(case, *, trading_start=None) -> dict:
             "prime_first_trading_bar": True,
             "floating_pnl_basis": "bid_ask",
         },
-        stop_out_level=99.95,
+        # ストップアウト水準は上の `load_spec_fields` の stop_out_level（台帳の口座
+        #   margin_so_so）が唯一の出所（ISSUE-546）。以前はここに 99.95 を書いていた。
     )
     if trading_start is not None:
         meta["trading_start"] = trading_start
@@ -241,16 +250,19 @@ class TestRunBacktestHonoursTradingStart:
         assert run_b["trades_sha256"] == _B_TRADES_SHA256
 
     def test_the_trading_start_run_reproduces_the_mt5_reconcile_observation(self, run_b):
-        """`run_backtest` 経路が MT5 突合テストの実測（1164 / -6173.9）を再現する。
+        """`run_backtest` 経路が MT5 の往復トレード数と net を再現する（MT5 オラクルから導く）。
 
-        MT5 突合テストは `build_interactor` ＋ `execute` を直接使う経路で
-        「往復トレード = 1164 / net profit = -6173.9」を記録している。是正後は
-        `run_backtest` も同じ request を実行するため、同じ観測へ到達する。
-        これが `run_backtest` 経路に対する唯一の MT5 等級の裏付けである
+        MT5 突合テスト（`build_interactor` ＋ `execute`）と同じ request を実行するため、同じ
+        観測へ到達する。これが `run_backtest` 経路に対する唯一の MT5 等級の裏付けである
         （上の sha256 は自分で採取した値なので、それ単独では外部の裏付けにならない）。
+        net の差は MT5 が deal の損益を口座通貨の桁（JPY 0 桁）で四捨五入して記録すること
+        だけによる（1 件あたり 0.5 未満・突合テストが 1 件ずつ一致を固定する）。
         """
-        assert run_b["trade_count"] == 1164
-        assert run_b["stats"]["profit"] == pytest.approx(-6173.9, abs=0.05)
+        results = load_case(_CASE).expected["results"]
+        assert run_b["trade_count"] == int(results["total_trades"])
+        assert run_b["stats"]["profit"] == pytest.approx(
+            results["total_net_profit"], abs=0.5 * run_b["trade_count"]
+        )
 
 
 # ======================================================================================
@@ -398,6 +410,7 @@ def _run_c(tmp_path: Path, *, tick_model: str = "real_ticks", tag: str = "c") ->
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

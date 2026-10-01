@@ -18,17 +18,18 @@ ISSUE-445 で判明した誤りは「値が 1 つ間違っていたこと」で�
 MT5 のフィールド名（``trade_contract_size`` / ``trade_stops_level`` / ``point`` …）と
 ``simulator/usecase/models.py:SymbolSpec`` の 8 フィールド名（``contract_size`` /
 ``stops_level`` / ``point_size`` …）は綴りが違う。この対応が複数箇所に散ると、片方だけ直した
-ときに沈黙で食い違う。よって対応を持つ表は次の 3 つに**限る**:
+ときに沈黙で食い違う。よって対応を持つ表は次の 4 つに**限る**:
 
 * :data:`SYMBOL_FIELD_SOURCES` — 銘柄仕様（``mt5.symbol_info()`` の出力＝``symbol`` セクション）
 * :data:`ACCOUNT_FIELD_SOURCES` — 口座属性（``account`` セクション）
 * :data:`SETTLEMENT_CURRENCY_SOURCE` — 決済（profit）通貨 1 件
+* :data:`ACCOUNT_FIELD_CONDITIONS` — 口座属性を読む前提（値の単位を決める別のキー・ISSUE-546）
 
 :data:`SPEC_FIELD_SOURCES` は上 2 表の**合成ビュー**であり、対応を新たに持たない（MT5 の
 フィールド名を 1 つも書かない）。よって「対応は 1 箇所にしかない」という不変条件は分割後も
 保たれる——どのフィールドも、その供給元を述べている表はちょうど 1 つである。この不変条件は
 宣言ではなく ``marketdata/tests/test_symbol_spec_snapshot.py`` の AST 走査が施行する
-（MT5 フィールド名のリテラルが上 3 表の**外**に現れたら赤。合成ビューも「外」であり、
+（MT5 フィールド名のリテラルが上 4 表の**外**に現れたら赤。合成ビューも「外」であり、
 そこに対応を書き足せば赤になる）。加えて同ファイルは
 「:data:`SYMBOL_FIELD_SOURCES` ∪ :data:`ACCOUNT_FIELD_SOURCES` == :data:`SPEC_FIELD_SOURCES`」
 （並び・``FieldSource`` の中身まで）と「各表の供給セクションが単一」を機械的に固定する。
@@ -104,6 +105,33 @@ SYMBOL_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
 ACCOUNT_FIELD_SOURCES: "Mapping[str, FieldSource]" = MappingProxyType(
     {
         "leverage": FieldSource("account", "leverage", float),
+        # ストップアウト水準（ISSUE-546）。証拠金維持率がこれを下回ると全玉を現値で決済する。
+        "stop_out_level": FieldSource("account", "margin_so_so", float),
+    }
+)
+
+
+@dataclass(frozen=True)
+class FieldCondition:
+    """1 フィールドを読んでよい条件（同じセクションの別のキーが ``required`` であること）。"""
+
+    source: FieldSource
+    required: Any
+    meaning: str
+
+
+#: **口座属性を読む前提の表**: 値の意味を決める別のキー（ISSUE-546）。
+#: ``margin_so_so`` の意味は ``margin_so_mode`` で決まる。0 は百分率（証拠金維持率の %）。
+#: 裏付け: 同じ口座（OANDA-Japan MT5 Live）の MT5 テスターは ``margin_so_so=100.0`` の下で
+#: 有効証拠金 3,831 JPY・維持率 99.95% の時点で強制決済した
+#: （``simulator/tests/fixtures/mt5/ma_slope_jp225_202501/mt5_report/tester.log`` 11663 行）。
+#: 金額なら 100 JPY を割るまで決済しないので、この口座の水準は百分率である。
+#: 百分率以外の単位はエンジンが扱えない（判定は維持率との比較）ため、黙って % として読まず止める。
+ACCOUNT_FIELD_CONDITIONS: "Mapping[str, FieldCondition]" = MappingProxyType(
+    {
+        "stop_out_level": FieldCondition(
+            FieldSource("account", "margin_so_mode", int), 0, "百分率（証拠金維持率 %）"
+        ),
     }
 )
 
@@ -162,6 +190,20 @@ def _pick(snapshot: "Mapping[str, Any]", source: FieldSource, name: str) -> Any:
         ) from exc
 
 
+def _check_condition(snapshot: "Mapping[str, Any]", name: str) -> None:
+    """``name`` に読む前提があれば確かめる。満たさなければ値を返さず中断する。"""
+    condition = ACCOUNT_FIELD_CONDITIONS.get(name)
+    if condition is None:
+        return
+    actual = _pick(snapshot, condition.source, name)
+    if actual != condition.required:
+        raise SnapshotError(
+            f"{name}: {condition.source.section}.{condition.source.key}={actual!r} は"
+            f"受け付ける単位 {condition.required!r}（{condition.meaning}）ではありません。"
+            " 別の単位の値を百分率として使わないため中断します。"
+        )
+
+
 def spec_fields(snapshot: "Mapping[str, Any]") -> "dict[str, Any]":
     """``SymbolSpec`` の 8 フィールド名をキーに持つ dict を返す。
 
@@ -169,6 +211,8 @@ def spec_fields(snapshot: "Mapping[str, Any]") -> "dict[str, Any]":
     （``marketdata`` は最下層であり ``simulator`` を知らない）。呼び出し側が
     ``build_interactor(**spec_fields(...))`` のように展開して使う。
     """
+    for name in ACCOUNT_FIELD_CONDITIONS:
+        _check_condition(snapshot, name)
     return {name: _pick(snapshot, source, name) for name, source in SPEC_FIELD_SOURCES.items()}
 
 
@@ -215,6 +259,8 @@ __all__ = [
     "FieldSource",
     "SYMBOL_FIELD_SOURCES",
     "ACCOUNT_FIELD_SOURCES",
+    "FieldCondition",
+    "ACCOUNT_FIELD_CONDITIONS",
     "SPEC_FIELD_SOURCES",
     "SETTLEMENT_CURRENCY_SOURCE",
     "snapshot_path",

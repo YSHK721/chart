@@ -215,7 +215,7 @@ def test_SL不在のfail_stop理由が実プロセス経由で台帳へ届く(tm
     )
     submission = JobSubmission(
         backtest={
-            "ea_name": "TC24051901", "symbol": "EURUSD", "period": "M1",
+            "ea_name": "TC24051901", "symbol": "JP225", "period": "M1",
             "data_path": str(csv_path), "initial_deposit": 100_000.0,
             "contract_size": 1.0, "volume_min": 0.01, "volume_max": 100.0,
             "volume_step": 0.01, "stops_level": 0, "digits": 5,

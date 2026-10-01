@@ -66,7 +66,7 @@ def _base_kwargs(csv_path: Path) -> dict:
             "pending_persistent": True,
             "hedged_margin": True,
         },
-        stop_out_level=100.0,
+        # ストップアウト水準は `load_spec_fields` の stop_out_level（台帳）が唯一の出所（ISSUE-546）。
     )
 
 

@@ -143,9 +143,9 @@ class TestAccountAndPeriodMapping:
     def test_data_path_comes_from_the_binding(self):
         assert _kwargs()["data_path"] == DATA_PATH
 
-    def test_stop_out_level_defaults_to_the_current_engine_default(self):
-        # 現行既定（`build_interactor` の `stop_out_level: float = 0.0`）
-        assert _kwargs()["stop_out_level"] == pytest.approx(0.0)
+    def test_stop_out_level_comes_from_the_binding(self):
+        # 既定値は無い（ISSUE-546）。束（「`EngineBinding`」）が台帳から運んだ値がそのまま渡る。
+        assert _kwargs()["stop_out_level"] == engine_binding().stop_out_level
 
     def test_ea_params_are_passed_through(self):
         kwargs = _kwargs()

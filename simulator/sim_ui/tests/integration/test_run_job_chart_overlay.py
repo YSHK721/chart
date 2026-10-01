@@ -58,7 +58,7 @@ def _run(tmp: Path, csv: Path, *, trace=None) -> Path:
     job_dir = tmp / "0123456789abcdef0123456789abcdef"
     job_dir.mkdir(parents=True)
     backtest = {
-        "ea_name": "CalcProbe_EA", "symbol": "SYNTH", "period": "M1", "data_path": str(csv),
+        "ea_name": "CalcProbe_EA", "symbol": "JP225", "period": "M1", "data_path": str(csv),
         "initial_deposit": _DEPOSIT, "contract_size": 10.0, "volume_min": 0.1,
         "volume_max": 100.0, "volume_step": 0.1, "stops_level": 0, "digits": 1,
         "point_size": 0.1, "leverage": 100.0, "ma_period": _PERIOD, "ma_method": "sma",

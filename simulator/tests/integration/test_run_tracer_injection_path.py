@@ -28,6 +28,7 @@ from simulator.sim_ui.main.composition_root_jobs import (
     required_backtest_keys,
 )
 from simulator.usecase.run_backtest import RunBacktestInteractor
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 # ---- 1: 拡張点が在り、そのまま渡る ----
@@ -162,7 +163,7 @@ class TestTheTracerReachesTheEngineAsAnEntity:
             data_path=csv, symbol="EURUSD", period="M1", ea_name="TC24051901",
             initial_deposit=10_000.0, contract_size=1.0, volume_min=0.01,
             volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
-            point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
+            point_size=0.0001, leverage=100.0, stop_out_level=ledger_stop_out_level(), ma_period=2, ma_method="sma",
             lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
             run_tracer=spy,
         )
@@ -192,7 +193,7 @@ class TestTheTracerReachesTheEngineAsAnEntity:
             data_path=csv, symbol="EURUSD", period="M1", ea_name="TC24051901",
             initial_deposit=10_000.0, contract_size=1.0, volume_min=0.01,
             volume_max=100.0, volume_step=0.01, stops_level=0, digits=5,
-            point_size=0.0001, leverage=100.0, ma_period=2, ma_method="sma",
+            point_size=0.0001, leverage=100.0, stop_out_level=ledger_stop_out_level(), ma_period=2, ma_method="sma",
             lot_size=1.0, stop_loss_points=500, take_profit_points=3000,
         )
 

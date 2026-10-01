@@ -49,6 +49,8 @@ POINTS_FILENAME = "trace_points.parquet"
 INDICATORS_FILENAME = "trace_indicators.parquet"
 #: 窓・記録行数・列の宣言・`marketdata_window` の有無・生成元 job_id。
 META_FILENAME = "trace_meta.json"
+#: trace_meta.json のうち run が使ったストップアウト水準の鍵（「`build_interactor`」 の引数名と同じ）。
+STOP_OUT_LEVEL_KEY = "stop_out_level"
 
 
 def write(
@@ -57,6 +59,7 @@ def write(
     *,
     job_id: str,
     indicators_supply: "Callable[[], Any]",
+    stop_out_level: float,
     marketdata_window: Any = None,
 ) -> "dict[str, Any]":
     """トレース 3 本を `job_dir` 直下へ書き、書いた事実を返す。
@@ -67,6 +70,9 @@ def write(
       読み直すと台帳の規約の 2 つ目の実装ができる）。
     ``indicators_supply``: その run が使った指標 registry を返す注入 Callable
       （`names()` と `get(name)` を持つ実体）。**1 回だけ**呼ぶ。
+    ``stop_out_level``: その run が**実際に使った**ストップアウト水準（ISSUE-546）。出所は
+      台帳の口座 margin_so_so であり、投入（spec.json）には現れないため、ここへ記録して
+      分析面（維持率の閾値）が読む。既定値を置かない。
     ``marketdata_window``: run に指定された取得窓（無指定は `None`）。値そのものは
       使わず、**有無だけ**を meta へ残す（§6.5.2）。
     """
@@ -106,6 +112,8 @@ def write(
         #   隠さずに載せ、段階 4 の分析面が「正しい対応づけ」として提示しないようにする。
         "marketdata_window": windowed,
         "indicator_bar_index_is_comparable": not windowed,
+        # run が使ったストップアウト水準（分析面の維持率の閾値・ISSUE-546）。
+        STOP_OUT_LEVEL_KEY: float(stop_out_level),
     }
     (job_dir / META_FILENAME).write_text(
         json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8"
