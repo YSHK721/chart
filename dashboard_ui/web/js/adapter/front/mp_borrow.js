@@ -38,11 +38,15 @@ import { createMpPoller } from '../../usecase/mp_poller.js';
  * @param {Function} opts.readBundle      instance 束を読む（束の記録の形は呼び手が知る）
  * @param {Function} opts.isActive        いま有効か（モードを出た後の着弾を捨てる札）
  * @param {Function} opts.onBorrowed      ({note, profile, changed}) => void
+ * @param {?object}  [opts.periodBorrow]  同じ公開面・同じ取得文脈で借りる MP の期間水準の系統
+ *                                        （mp_period_borrow・設計書 §3.5。`{start, tick, stop}`）。
+ *                                        どの instance の設定を借りるかの規則を 2 か所に書かないため、
+ *                                        文脈はここで作ったものを渡す。
  * @returns {{start: Function, tick: Function, stop: Function}}
  */
 export function createMpBorrow({
   transport, apiPrefix, datasetRef, timeframe, barMs, now,
-  loadLiveMpApi, getLatestCandle, readBundle, isActive, onBorrowed,
+  loadLiveMpApi, getLatestCandle, readBundle, isActive, onBorrowed, periodBorrow = null,
 }) {
   let client = null;
   let context = null;
@@ -79,6 +83,9 @@ export function createMpBorrow({
     //   知るのは設定を写す役であって、結線ではない。
     context.setFromBundle(read);
     poller.tick({ paramsKey: context.settingsKey() });
+    if (periodBorrow) {
+      periodBorrow.tick();   // 同じ契機・同じ文脈（発行するかは期間水準側の判定器が決める）。
+    }
   }
 
   return {
@@ -121,6 +128,9 @@ export function createMpBorrow({
           // 枠の判定はチャート足のバー周期（candle_poller と同じ表・同じ式）。
           barMs,
         });
+        if (periodBorrow) {
+          periodBorrow.start(mod, context);
+        }
         tick();   // 有効化直後の初回（3 契機のうちの 1 つ）。
       }).catch((err) => {
         // 公開面を読めない（live 停止・単体起動・配置換え・再輸出の削除）。借用は始まらない
@@ -144,6 +154,9 @@ export function createMpBorrow({
       if (poller) {
         poller.stop();
         poller = null;
+      }
+      if (periodBorrow) {
+        periodBorrow.stop();
       }
       client = null;
       context = null;
