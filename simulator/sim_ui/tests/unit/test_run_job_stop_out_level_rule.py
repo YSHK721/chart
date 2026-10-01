@@ -25,6 +25,8 @@ from simulator.usecase.models import SymbolSpec
 from simulator.usecase.tester_settings import TickModel
 
 _SYMBOL = "JP225"
+#: 台帳からしか受け取らない項目のうち本検定が測るもの（宣言 LEDGER_ONLY_FIELDS の要素）。
+_KEY = "stop_out_level"
 #: 実在しない番兵の水準（どちらの profile の値が来たかを一意に言える）。
 _LEVEL_A = 1234.5
 _LEVEL_B = 6789.25
@@ -85,32 +87,32 @@ _ORDERS = {"declared": (0, 1), "reversed": (1, 0)}
 def test_the_submitted_entity_identifies_the_level_whatever_the_order(order):
     profiles = _pair(disagree=True)
     ordered = [profiles[i] for i in _ORDERS[order]]
-    got = run_job._stop_out_level_for_submission(
+    got = run_job._ledger_values_for_submission(
         ordered, symbol=_SYMBOL, data_path=profiles[1].data_path
-    )
+    )[_KEY]
     assert got == _LEVEL_B
 
 
 def test_an_unmatched_entity_uses_the_agreed_level():
-    got = run_job._stop_out_level_for_submission(
+    got = run_job._ledger_values_for_submission(
         _pair(disagree=False), symbol=_SYMBOL, data_path=_FOREIGN_ENTITY
-    )
+    )[_KEY]
     assert got == _LEVEL_A
 
 
 def test_an_unmatched_entity_stops_when_the_levels_disagree():
-    with pytest.raises(run_job.StopOutLevelDisagreement) as caught:
-        run_job._stop_out_level_for_submission(
+    with pytest.raises(run_job.LedgerValueDisagreement) as caught:
+        run_job._ledger_values_for_submission(
             _pair(disagree=True), symbol=_SYMBOL, data_path=_FOREIGN_ENTITY
-        )
+        )[_KEY]
     assert str(_LEVEL_A) in str(caught.value) and str(_LEVEL_B) in str(caught.value)
 
 
 def test_an_unregistered_symbol_stops_instead_of_using_a_default():
     with pytest.raises(ValueError) as caught:
-        run_job._stop_out_level_for_submission(
+        run_job._ledger_values_for_submission(
             _pair(disagree=False), symbol="NOT_A_SYMBOL", data_path=_FOREIGN_ENTITY
-        )
+        )[_KEY]
     assert "NOT_A_SYMBOL" in str(caught.value)
 
 
@@ -134,13 +136,13 @@ def test_the_run_without_settings_takes_its_level_through_the_entity_rule(monkey
         composition_root_jobs, "build_run_options_port", lambda: _CountingPort(profiles)
     )
     wanted = profiles[1]
-    assert run_job._ledger_stop_out_level(_backtest_of(wanted)) == _LEVEL_A
+    assert run_job._ledger_values(_backtest_of(wanted))[_KEY] == _LEVEL_A
 
 
 #: 両経路の組み立て（検定本体で分岐しないため、経路を引数の側で与える）。
 _BUILDS = {
     "binding": lambda backtest: run_job._build_engine_binding({"backtest": backtest}, _EFFECTIVE),
-    "legacy": lambda backtest: run_job._ledger_stop_out_level(backtest),
+    "legacy": lambda backtest: run_job._ledger_values(backtest),
 }
 
 

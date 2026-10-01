@@ -430,31 +430,36 @@ def _settlement_currency_for_submission(
     )
 
 
-class StopOutLevelDisagreement(ValueError):
-    """投入の実体がどの profile とも一致せず、銘柄一致の profile 群が水準で食い違う（ISSUE-546）。
+class LedgerValueDisagreement(ValueError):
+    """投入の実体がどの profile とも一致せず、銘柄一致の profile 群が台帳の値で食い違う（ISSUE-546）。
 
     食い違う候補から 1 つを選ぶ規則は存在しないため、推定しないで止める。
     """
 
 
-def _stop_out_level_for_submission(
+def _ledger_values_for_submission(
     profiles: "Any", *, symbol: str, data_path: "Any"
-) -> float:
-    """投入からストップアウト水準を引く（ISSUE-546・決済通貨と同じ規則）。
+) -> "dict[str, Any]":
+    """台帳からしか受け取らない項目（「`LEDGER_SUPPLIED_KEYS`」）を profile から引く（ISSUE-546）。
 
-    水準の出所は台帳の口座 ``margin_so_so`` ただ 1 つで、profile はそれを `spec_fields` から
-    運ぶ。投入（`backtest`）からは受け取らない（受付が 「`_INJECTED_ONLY_KEYS`」 で拒む）。
+    項目の宣言は marketdata の 1 か所（LEDGER_ONLY_FIELDS）にあり、ここは項目名を書かない。
+    規則は決済通貨と同じ（一致 → 合意 → 停止）。投入（`backtest`）からは受け取らない。
     """
-    return _profile_value_for_submission(
-        profiles,
-        symbol=symbol,
-        data_path=data_path,
-        read=lambda p: p.stop_out_level,
-        what="ストップアウト水準",
-        unsourced="既定値で走ると強制決済の水準が台帳と違います",
-        disagreed="推定値では強制決済の水準が台帳と違ってしまうため",
-        disagreement=StopOutLevelDisagreement,
-    )
+    from simulator.sim_ui.main.composition_root_jobs import LEDGER_SUPPLIED_KEYS
+
+    return {
+        key: _profile_value_for_submission(
+            profiles,
+            symbol=symbol,
+            data_path=data_path,
+            read=lambda p, key=key: getattr(p, key),
+            what=f"台帳の値 {key}",
+            unsourced="既定値で走ると台帳と違う値で走ります",
+            disagreed="推定値では台帳と違う値で走ってしまうため",
+            disagreement=LedgerValueDisagreement,
+        )
+        for key in sorted(LEDGER_SUPPLIED_KEYS)
+    }
 
 
 def _refuse_ledger_supplied_keys(backtest: "dict[str, Any]") -> None:
@@ -472,13 +477,16 @@ def _refuse_ledger_supplied_keys(backtest: "dict[str, Any]") -> None:
         )
 
 
-def _ledger_stop_out_level(backtest: "dict[str, Any]") -> float:
-    """現行経路（settings 不在）の水準を台帳から引く（`_build_engine_binding` と同じ出所）。"""
+def _ledger_values(backtest: "dict[str, Any]", profiles: "Any" = None) -> "dict[str, Any]":
+    """投入の台帳の値を引く（両経路の唯一の供給点）。投入に同じ項目があれば止める。
+
+    ``profiles`` を渡せば読み直さない（束を組む側が決済通貨と同じ読みを共有する）。
+    """
     from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 
     _refuse_ledger_supplied_keys(backtest)
-    return _stop_out_level_for_submission(
-        build_run_options_port().datasets(),
+    return _ledger_values_for_submission(
+        build_run_options_port().datasets() if profiles is None else profiles,
         symbol=backtest["symbol"],
         data_path=backtest.get("data_path"),
     )
@@ -518,7 +526,6 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
     from simulator.usecase.models import SymbolSpec
 
     backtest = spec.get("backtest") or {}
-    _refuse_ledger_supplied_keys(backtest)
     symbol = backtest["symbol"]
     # カタログ（台帳）は 1 回だけ読み、決済通貨とストップアウト水準を同じ profile 群から引く。
     profiles = build_run_options_port().datasets()
@@ -527,11 +534,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
         symbol=symbol,
         data_path=backtest.get("data_path"),
     )
-    stop_out_level = _stop_out_level_for_submission(
-        profiles,
-        symbol=symbol,
-        data_path=backtest.get("data_path"),
-    )
+    ledger = _ledger_values(backtest, profiles)
     supplied = _settings_supplied_params()
     return EngineBinding(
         symbol_spec=SymbolSpec(**{f.name: backtest[f.name] for f in fields(SymbolSpec)}),
@@ -544,7 +547,7 @@ def _build_engine_binding(spec: "dict[str, Any]", effective: Any) -> Any:
             else None
         ),
         settlement_currency=settlement,
-        stop_out_level=stop_out_level,
+        **ledger,
         ea_params={k: v for k, v in backtest.items() if k not in supplied},
         config_overrides=dict(backtest.get("config_overrides") or {}),
     )
@@ -861,12 +864,13 @@ def main(argv: "list[str] | None" = None) -> int:
         # ストップアウト水準は台帳から注入する（ISSUE-546・settings 経路と同じ出所と規則）。
         #   投入の `backtest` は水準を持たない（受付が拒む）。
         try:
-            meta["stop_out_level"] = _ledger_stop_out_level(meta)
+            ledger = _ledger_values(meta)
         except Exception as exc:
-            message = f"ストップアウト水準を台帳から引けませんでした: {exc}"
+            message = f"台帳の値を引けませんでした: {exc}"
             print(message, file=sys.stderr)
             _record_failure(job_dir, message)
             return _EXIT_SPEC_ERROR
+        meta.update(ledger)
         meta.update(extensions)
         # 現行経路が `build_interactor` へ渡す引数は `meta` そのものである
         #   （`run_backtest(output_dir=..., **meta)`）。窓の申告はここから採る（§6.5.2.1）。
@@ -884,10 +888,9 @@ def main(argv: "list[str] | None" = None) -> int:
         if exit_code == 0 and _result is not None:
             # 足の取り直しも run と同じ水準（台帳から注入済み）で組む（`build_interactor` の
             #   必須引数・ISSUE-546）。投入の `backtest` は水準を持たない。
-            ledger_level = {"stop_out_level": meta["stop_out_level"]}
             _write_report_payload(
                 job_dir, _result,
-                load_run_inputs=lambda backtest: _load_run_inputs({**backtest, **ledger_level}),
+                load_run_inputs=lambda backtest: _load_run_inputs({**backtest, **ledger}),
                 load_indicators=lambda: _build_run_indicators(meta),
                 run_kwargs=meta, account=account,
             )

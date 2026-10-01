@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from simulator.main import build_interactor
+from marketdata.symbol_spec_snapshot import LEDGER_ONLY_FIELDS
 from simulator.main.ea_bindings import (
     COMMON_STRATEGY_PARAMS,
     DEFAULT_EA_NAME,
@@ -357,7 +358,7 @@ class TestThePublicSignatureIsUntouched:
     #: 既定値を持たない引数＝反射側の「必須キー」集合（是正前の実測）。
     #: ISSUE-546（2026-10-01）で 「`stop_out_level`」 の既定 0.0 を撤去し必須にした（出所は台帳
     #:   の口座 margin_so_so ただ 1 つ）。名前・並びは不変。
-    _EXPECTED_REQUIRED = frozenset(_EXPECTED[:18]) | {"stop_out_level"}
+    _EXPECTED_REQUIRED = frozenset(_EXPECTED[:18]) | LEDGER_ONLY_FIELDS
 
     def test_the_parameter_names_and_order_are_unchanged(self):
         assert tuple(inspect.signature(build_interactor).parameters) == self._EXPECTED
@@ -395,8 +396,8 @@ class TestThePublicSignatureIsUntouched:
         module_name, function_name = derive.split(":")
         function = getattr(importlib.import_module(module_name), function_name)
         injected_only = {"strategy_decorator", "strategy_override", "run_tracer"}
-        # 「`stop_out_level`」 は run_job が台帳から渡す（ISSUE-546・投入から受け取らない）。
-        injected_only |= {"stop_out_level"}
+        # 台帳からしか受け取らない項目は run_job が台帳から渡す（ISSUE-546・投入から受け取らない）。
+        injected_only |= LEDGER_ONLY_FIELDS
         expected = (
             set(self._EXPECTED)
             if function_name == "allowed_backtest_keys"

@@ -199,8 +199,12 @@ def _mt5_stop_out_pair(deals) -> "tuple[dict, dict]":
 # 機構（2025-01・2026-01 の 2 ケースで MT5 の表示値と完全一致することを実測）: 玉を持つ
 # 足ごとに、有効証拠金は「建てる前の残高 ＋ 評価価格 − 建値」（売りは逆符号）で、評価価格は
 # 買い＝bid、売り＝ask（bid ＋ 気配幅 × point）。MT5 の Equity Drawdown はこの評価価格の
-# **足の内側の極値**（bid の高値・安値）で測った山と谷から来る。sim は足の**終値**で評価する
-# ので、山と谷は終値の値になる。足の中での順序は「山の側 → 谷の側」で数える。
+# **足の内側の極値**（bid の高値・安値）で測った山と谷から来る（含み損益は × 数量 × 契約サイズ）。
+# sim は足の**終値**で評価するので、山と谷は終値の値になる。
+# 未検証: 足の中での順序は「山の側 → 谷の側」で数えている。2 ケースとも一致したが、順序を
+#   入れ替えると値が変わる足をデータで区別できていない。
+# 売りの評価価格（bid ＋ 気配幅）を区別できるのは 2025-01 だけである（山が売りの玉・
+#   02:30 の安値 ＋ 気配幅）。2026-01 は山も谷も買いの玉で、売りの規則は値に効いていない。
 
 
 def load_case_report(name: str) -> dict:
@@ -219,10 +223,19 @@ def _mt5_bars(case) -> "dict":
     return frame.set_index(index)
 
 
-def _held_bar_equities(deals, bars, *, point: float, deal_clock=lambda t: t) -> "list[dict]":
+def _units_of_the_stop_out(deals) -> float:
+    """数量 × 契約サイズを MT5 の stop-out の deal から導く（|損益| ÷ |決済価格 − 建値|）。"""
+    opened, closed = _mt5_stop_out_pair(deals)
+    return abs(float(closed["profit"])) / abs(float(closed["price"]) - float(opened["price"]))
+
+
+def _held_bar_equities(
+    deals, bars, *, point: float, units: float, deal_clock=lambda t: t
+) -> "list[dict]":
     """玉を持つ足ごとの有効証拠金（足の内側の極値・終値）を時刻順に返す。
 
-    ``deals`` は MT5 の deal（balance を除く）。``deal_clock`` は deal の時刻を足の時計へ写す。
+    ``deals`` は MT5 の deal（balance を除く）。``units`` は数量 × 契約サイズ。
+    ``deal_clock`` は deal の時刻を足の時計へ写す。
     """
     import pandas as pd
 
@@ -235,7 +248,7 @@ def _held_bar_equities(deals, bars, *, point: float, deal_clock=lambda t: t) -> 
             held = (deal["type"], float(deal["price"]), at, float(deal["balance"]))
             continue
         side, entry, since, balance = held
-        sign = 1.0 if side == "buy" else -1.0
+        sign = (1.0 if side == "buy" else -1.0) * units
         for when, bar in bars.loc[since.floor("min"): at.floor("min")].iterrows():
             ask_add = 0.0 if side == "buy" else bar["spread"] * point
             best, worst = (bar["high"], bar["low"]) if side == "buy" else (bar["low"], bar["high"])
@@ -250,6 +263,17 @@ def _held_bar_equities(deals, bars, *, point: float, deal_clock=lambda t: t) -> 
             )
         held = None
     return rows
+
+
+def _units_2025(deals) -> float:
+    """2025-01 の数量 × 契約サイズ。deal の数量（vol）× 台帳の契約サイズが、stop-out の deal から
+    導いた値と一致することを確かめてから返す（2026-01 の report.json は vol を持たない）。"""
+    contract = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")["contract_size"]
+    volumes = {float(d["vol"]) for d in deals}
+    assert len(volumes) == 1
+    units = volumes.pop() * contract
+    assert units == _units_of_the_stop_out(deals)
+    return units
 
 
 def _drawdowns(rows, initial: float) -> "dict":
@@ -424,8 +448,12 @@ class TestMaSlopeEquityStatsReconcile:
         stats = reconcile["result"].stats
         case = load_case(_CASE)
         derived = _drawdowns(
-            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
-                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _held_bar_equities(
+                reconcile["deals"], _mt5_bars(case),
+                point=load_spec_fields(
+                    OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"],
+                units=_units_2025(reconcile["deals"]),
+            ),
             _INITIAL_DEPOSIT,
         )
         so = reconcile["ours"][-1]
@@ -444,8 +472,12 @@ class TestMaSlopeEquityStatsReconcile:
         stats = reconcile["result"].stats
         case = load_case(_CASE)
         derived = _drawdowns(
-            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
-                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _held_bar_equities(
+                reconcile["deals"], _mt5_bars(case),
+                point=load_spec_fields(
+                    OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"],
+                units=_units_2025(reconcile["deals"]),
+            ),
             _INITIAL_DEPOSIT,
         )
         our_peak = stats.equity_dd_max + reconcile["balance"]
@@ -488,8 +520,12 @@ class TestMt5EquityDrawdownMechanism:
     def test_the_2025_01_case_reproduces_the_mt5_values(self, reconcile):
         case = load_case(_CASE)
         derived = _drawdowns(
-            _held_bar_equities(reconcile["deals"], _mt5_bars(case), point=load_spec_fields(
-                OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"]),
+            _held_bar_equities(
+                reconcile["deals"], _mt5_bars(case),
+                point=load_spec_fields(
+                    OANDA_JAPAN_MT5_LIVE, case.config["symbol"]["name"])["point_size"],
+                units=_units_2025(reconcile["deals"]),
+            ),
             _INITIAL_DEPOSIT,
         )
         results = case.expected["results"]
@@ -510,7 +546,9 @@ class TestMt5EquityDrawdownMechanism:
         frame = frame.set_index(pd.to_datetime(frame.pop("date")))
         point = load_spec_fields(OANDA_JAPAN_MT5_LIVE, "JP225")["point_size"]
         to_utc = lambda t: pd.Timestamp(to_utc_ms(int(t.value // 10**6)), unit="ms")  # noqa: E731
-        rows = _held_bar_equities(deals, frame, point=point, deal_clock=to_utc)
+        rows = _held_bar_equities(
+            deals, frame, point=point, units=_units_of_the_stop_out(deals), deal_clock=to_utc
+        )
         derived = _drawdowns(rows, float(expected["settings"]["initial_deposit"]))
         results = expected["results"]
         amount, _percent = _mt5_amount_and_percent(results["equity_dd_max"])
