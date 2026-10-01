@@ -16374,6 +16374,35 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   負数の分数乗で NaN。残高が 0 以下になる run の扱いが定義されていない。
 - **記録（発生未実測）**: 残高が 0 以下になるまで取引が続くこと自体（証拠金維持率 0.23%）が
   ロスカットの規則として正しいかは未調査（2026-09-27 に 1 行記録済みの件と同じ run）。
+- **根本原因（2026-10-01・実測）**: sim 画面の経路はストップアウト水準を渡していない。
+  `run_job._build_engine_binding` は `EngineBinding` に `stop_out_level` を渡さず、既定 0.0
+  （`kwargs_mapper.EngineBinding`・`build_interactor` の既定を写した値・ISSUE-445 の申し送り (1) の残り）が入る。
+  判定は `margin_level < stop_out_level` なので、強制決済は有効証拠金が負になるまで起きない。GHPR の NaN は症状。
+  - 数え方 1（ジョブ 94aadcb4・`chart_bars.parquet` の足ごとの口座の列を読むだけ）: 建玉のある足 7,790 本のうち
+    維持率 < 100% が 1,548 本。最初は 2020-05-07 18:20（有効証拠金 1964.3・残高 1989.7）。最小 0.66%。
+    `trade_markers.json` に stop_out は 0 件。最後の建玉の足 2020-05-11 03:11（残高 13.5）の後の決済で残高 −6.9。
+  - 数え方 2（ジョブ 1d08008a の spec を `_build_engine_binding` → `effective_to_interactor_kwargs` に通し、
+    `stop_out_level` だけ差し替えて `build_interactor` で実行・ジョブの成果物には触れない）:
+    経路が渡す値は **0.0**。0.0 のまま: 取引 1,239・残高 −55.2・GHPR NaN（起票時の値を再現）・stop_out は
+    09-10 15:10 に有効証拠金が負になって 1 件。100.0: 09-03 03:01 に stop_out・取引 379・残高 6416.1・GHPR 0.9988。
+- **参照実装（MT5）の裏付け**: 水準は口座の `margin_so_so=100.0`（同じ口座 900005560 の `account_info` 実測・
+  ISSUE-445）。テスターの挙動は `simulator/tests/fixtures/mt5/ma_slope_jp225_202501/mt5_report/tester.log`
+  11663 行「position stop out triggered at 99.95%」→ 現値で決済 deal → 11668 行「stop out occurred on 41% of
+  testing interval」で終了（`close_and_halt` と同じ・`kwargs_mapper.STOP_OUT_ACTION` の出典）。
+  同じ突合 run を水準だけ変えて実行（`test_ma_slope_reconcile._run_engine` を読むだけで使用）:
+  99.95（検定の現行値）→ 取引 1,164・損益 −6173.9・stop_out 13:07 @38300.7。
+  **100.0 → 取引 1,163・損益 −6168.9・stop_out 13:06 @38295.7**（MT5: 1,163・−6169・決済 deal #2327 @38295.7 13:07）。
+  水準 100 は MT5 の件数・決済価格と一致する（時刻の 1 分差は未調査）。
+- **対策（根本・段階分割）**: 水準を MT5 端末から機械取得して run へ渡す。人が 100 を書かない（RC-1）。
+  - 段 1（実施・`b24f6d8b`）: `tools/capture_mt5_symbol_spec.py` の許可リストに `margin_so_mode` / `margin_so_so` を追加。
+    通過条件: 検定 63 件緑・計算量（読み − 出力 = 0・無関係フィールド 10 / 1000 で読みが同じ）・変異 2 種で赤を実測。
+  - 段 2（依頼者・VM）: 新しい取得スクリプトを VM へ持ち込み再取得し、`marketdata/symbol_specs/OANDA-Japan-MT5-Live/JP225.json`
+    を更新する。通過条件: `account` に `margin_so_so` と `margin_so_mode` がある。
+  - 段 3（要承認）: `ACCOUNT_FIELD_SOURCES` に `stop_out_level ← account.margin_so_so`（`margin_so_mode` が % でなければ中断）を足し、
+    画面の投入 → `EngineBinding` → `build_interactor` を既定値なしで結線する（`build_interactor` / `EngineBinding` の
+    既定 0.0 の撤去＝ISSUE-445 で別裁定とされた署名変更）。通過条件: ジョブ 1d08008a の spec で stop_out が 09-03 03:01・残高 > 0。
+- **記録（発生未実測）**: 発注時の証拠金検査（MT5 の "not enough money"）は sim に無い。リポジトリの MT5 参照に該当行は 0 件で、
+  挙動の定義が無い。GHPR の負の残高での MT5 の定義もリポジトリに無い（水準 100 では未発生）。
 
 ## ISSUE-547: 同じ run の「勝率」が 比較・判定 と サマリー で違う定義になっている
 - **ステータス**: RESOLVED（2026-09-28）
