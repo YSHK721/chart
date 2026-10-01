@@ -54,7 +54,7 @@ EA_PARAMS = {"sl_points": 200, "tp_points": 500}
 # 逆算値・真値 1.0）を含む 8 項目のリテラルがあった＝人が値を書ける構造（RC-1）。
 _SYMBOL = "JP225"
 #: contract_size / volume_min / volume_max / volume_step / stops_level / digits /
-#: point_size / leverage の 8 項目。数値はここに 1 つも書かない。
+#: point_size / leverage / stop_out_level（ISSUE-546）。数値はここに 1 つも書かない。
 _SPEC = load_spec_fields(OANDA_JAPAN_MT5_LIVE, _SYMBOL)
 
 # build_interactor 共通引数（reconcile_is.py / reconcile.py の所与と完全一致・§7）。
@@ -78,7 +78,8 @@ COMMON = dict(
         "pending_persistent": True,
         "hedged_margin": True,
     },
-    stop_out_level=100.0,
+    # ストップアウト水準は `_SPEC` の stop_out_level（台帳の口座 margin_so_so）だけが出所
+    # （ISSUE-546）。ここに値を書かない。
 )
 
 # (key, label, bars_csv, trading_start, bars_start_filter[YYYY-MM-DD or None])

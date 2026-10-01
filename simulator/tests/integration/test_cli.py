@@ -39,7 +39,7 @@ def _write_config(path: Path) -> Path:
     cfg = {
         "determinism": {"tick_model": "ohlc_expand"},
         "meta": {
-            "symbol": "EURUSD",
+            "symbol": "JP225",
             "period": "M1",
             "ea_name": "TC24051901",
             "initial_deposit": 10_000.0,

@@ -35,6 +35,8 @@ from simulator.sim_ui.adapter import trace_writer
 
 _EPOCH = 1_704_067_200
 _JOB_ID = "0123456789abcdef0123456789abcdef"
+#: 記録させる水準（任意の値。台帳の値かどうかは本検定の対象外・run_job の検定が固定する）。
+_STOP_OUT_LEVEL = 123.0
 
 
 class _Series:
@@ -115,6 +117,7 @@ def _write(job_dir, trace=None, *, registry=None, marketdata_window=None):
         trace if trace is not None else _filled_trace(),
         job_id=_JOB_ID,
         indicators_supply=_supply(registry if registry is not None else _Registry({})),
+        stop_out_level=_STOP_OUT_LEVEL,
         marketdata_window=marketdata_window,
     )
 
@@ -232,7 +235,7 @@ class TestTheWriterDoesNotReachIntoTheCompositionRoot:
         # Act
         trace_writer.write(
             job_dir, _filled_trace(), job_id=_JOB_ID,
-            indicators_supply=supply, marketdata_window=None,
+            indicators_supply=supply, stop_out_level=_STOP_OUT_LEVEL, marketdata_window=None,
         )
 
         # Assert: 注入された供給が実際に使われている。
@@ -356,7 +359,7 @@ class TestTheWriterIssuesNoThrowawayWork:
         # Act
         trace_writer.write(
             job_dir, _filled_trace(bars=tuple(range(8))), job_id=_JOB_ID,
-            indicators_supply=supply, marketdata_window=None,
+            indicators_supply=supply, stop_out_level=_STOP_OUT_LEVEL, marketdata_window=None,
         )
 
         # Assert: 発行（registry 供給）− 使用（書出し 1 回）= 0。
@@ -377,3 +380,10 @@ class TestTheWriterIssuesNoThrowawayWork:
         # 正の対照: 記録が 0 件／成果物 0 本なら上は恒真になる。
         assert measured[4][0] == 3, measured
         assert measured[128][1] > measured[4][1], measured
+
+
+def test_the_meta_records_the_stop_out_level_the_run_used(tmp_path):
+    """run が使った水準を trace_meta.json に残す（分析面の維持率の閾値・ISSUE-546）。"""
+    _write(tmp_path)
+    meta = json.loads((tmp_path / trace_writer.META_FILENAME).read_text(encoding="utf-8"))
+    assert meta[trace_writer.STOP_OUT_LEVEL_KEY] == _STOP_OUT_LEVEL

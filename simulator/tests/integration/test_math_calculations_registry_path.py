@@ -92,12 +92,14 @@ class TestMappingRules:
 
     def test_math_kwargs_satisfy_the_submission_key_contract(self):
         from simulator.sim_ui.main.composition_root_jobs import (
+            LEDGER_SUPPLIED_KEYS,
             allowed_backtest_keys,
             required_backtest_keys,
         )
 
         keys = set(_math_kwargs())
-        assert keys <= allowed_backtest_keys()
+        # 台帳から渡すキー（ISSUE-546）は投入の許容集合に無いが、写像の出力には載る。
+        assert keys <= allowed_backtest_keys() | LEDGER_SUPPLIED_KEYS
         assert keys >= required_backtest_keys()
 
     def test_engine_identifiers_come_from_the_binding(self):

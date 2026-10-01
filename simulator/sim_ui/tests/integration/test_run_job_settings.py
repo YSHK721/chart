@@ -171,7 +171,10 @@ def test_settings不在のstats_jsonは直接実行とbyte完全一致(tmp_path:
     golden_dir.mkdir()
     # Act
     code = run_job.main(["--job-dir", str(job_dir)])
-    golden_code, _ = run_backtest(output_dir=golden_dir, **_backtest())
+    # 直接実行の側も run と同じ出所（実行プロファイル＝台帳）の水準を渡す（ISSUE-546）。
+    golden_code, _ = run_backtest(
+        output_dir=golden_dir, **_backtest(), stop_out_level=_profile().stop_out_level
+    )
     # Assert
     assert (code, golden_code) == (0, 0), _reason(job_dir)
     assert (job_dir / "stats.json").read_bytes() == (golden_dir / "stats.json").read_bytes()

@@ -24,6 +24,7 @@ import pytest
 
 from simulator.main import build_interactor
 from simulator.usecase.ports import StrategyPort
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 #: 2024-01-01T00:00:00Z。comma 形式 CSV の `time` は UNIX 秒 int が契約である
@@ -69,6 +70,7 @@ def _meta(csv_path: Path, **overrides) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

@@ -24,11 +24,12 @@ from simulator.adapter.strategy.sizing_decorator import build_sizing_decorator
 from simulator.main import build_interactor
 from simulator.usecase.pending_order_use import PendingOrderUse
 from simulator.usecase.sizing_models import SizingConfig
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 _COMMON = dict(
     symbol="JP225", period="M1", initial_deposit=1_000_000.0, contract_size=1.0,
     volume_min=1.0, volume_max=100.0, volume_step=1.0, stops_level=0, digits=1,
-    point_size=0.1, leverage=10.0, ma_period=5, ma_method="ema", lot_size=1.0,
+    point_size=0.1, leverage=10.0, stop_out_level=ledger_stop_out_level(), ma_period=5, ma_method="ema", lot_size=1.0,
     stop_loss_points=30, take_profit_points=30, slope_shift=1, slope_min_points=1.0,
     entry_offset_points=20.0, entry_type="limit",
 )

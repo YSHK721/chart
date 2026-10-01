@@ -20,6 +20,7 @@ import pytest
 
 # Composition Root（未実装なら ModuleNotFoundError＝真の Red）
 from simulator.main import build_interactor, run_backtest
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 # 合成 OHLC（MADiff SMA period=2 が bar2 で負→正・bar4 で正→負にクロス）
@@ -60,6 +61,7 @@ def _meta_kwargs(csv_path: Path) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,
@@ -125,5 +127,6 @@ class TestBuildInteractorUnit:
         assert isinstance(controller._interactor, RunBacktestInputBoundary)
         assert isinstance(request, RunBacktestRequest)
         # meta が結線される: 口座の契約（ISSUE-445 段階 3-D3）と銘柄仕様が反映
-        assert request.account.initial_deposit == 10_000.0
-        assert request.symbol_spec.contract_size == 1.0
+        meta = _meta_kwargs(csv_path)
+        assert request.account.initial_deposit == meta["initial_deposit"]
+        assert request.symbol_spec.contract_size == meta["contract_size"]

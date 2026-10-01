@@ -23,8 +23,10 @@ argparse の**既定値**として持っていた（``--contract-size 10.0`` / `
 1. **既定値を置かない**。argparse は ``default=None``（未指定＝「人が値を選ばなかった」）。
 2. **未指定は供給元から引く**。権威は ``marketdata.symbol_spec_snapshot``（MT5 端末から
    機械取得したスナップショット）だけであり、ここに数値を 1 つも書かない。
-3. **引けず、明示もされていなければ中断する**（:class:`SymbolSpecArgsError`）。黙って推定値を
-   使わない。「動かすために既定値を残す」は症状の出る条件を避けただけで RC-1 を消していない。
+3. **台帳が引けなければ中断する**（:class:`SymbolSpecArgsError`）。8 項目を全部明示しても、
+   台帳からしか受け取らない項目（``LEDGER_ONLY_FIELDS``・ストップアウト水準・ISSUE-546）は
+   明示できないため中断する。黙って推定値を使わない。「動かすために既定値を残す」は症状の出る
+   条件を避けただけで RC-1 を消していない。
 
 明示指定は供給元に**優先する**。コマンドラインの明示は「人が書いた台帳」ではなく呼出時の意図で
 あり、かつコマンド行に見えるからである（what-if 実行＝探索 CLI の存在理由でもある）。ただし
@@ -67,14 +69,19 @@ import sys
 from typing import Any, Mapping
 
 from marketdata.symbol_spec_snapshot import (
+    LEDGER_ONLY_FIELDS,
     OANDA_JAPAN_MT5_LIVE,
     SPEC_FIELD_SOURCES,
     SnapshotError,
     load_spec_fields,
 )
 
-#: 銘柄仕様 8 項目の名前。**列挙をここに書き写さない**（対応表の所有者は供給元ローダ）。
-SPEC_KEYS: "tuple[str, ...]" = tuple(SPEC_FIELD_SOURCES)
+#: CLI で明示指定できる銘柄仕様 8 項目の名前。**列挙をここに書き写さない**（対応表の所有者は
+#: 供給元ローダ）。台帳からしか受け取らない項目（``LEDGER_ONLY_FIELDS``・ストップアウト水準
+#: ISSUE-546）は除く——オプションを出さず、常に台帳から引く。
+SPEC_KEYS: "tuple[str, ...]" = tuple(
+    name for name in SPEC_FIELD_SOURCES if name not in LEDGER_ONLY_FIELDS
+)
 
 #: 供給元（どの台帳を引くか）。値ではないためモジュール定数で束ねる（module docstring）。
 SPEC_SERVER = OANDA_JAPAN_MT5_LIVE
@@ -104,7 +111,8 @@ def add_symbol_spec_arguments(parser: argparse.ArgumentParser) -> argparse.Argum
     型は供給元の対応表（``FieldSource.cast``）から取る。argparse 側に型表を書き写すと、
     供給元が型を変えたとき片方だけが腐る。
     """
-    for name, source in SPEC_FIELD_SOURCES.items():
+    for name in SPEC_KEYS:
+        source = SPEC_FIELD_SOURCES[name]
         parser.add_argument(
             spec_option(name),
             type=source.cast,
@@ -191,16 +199,14 @@ def _unresolved_error(symbol: str, missing: "list[str]", cause: SnapshotError) -
 
 
 def resolve_symbol_spec(args: argparse.Namespace) -> "dict[str, Any]":
-    """``args`` から銘柄仕様 8 項目を解決して返す（``build_interactor`` へ ``**`` 展開する形）。
+    """``args`` から銘柄仕様と台帳の値を解決して返す（``build_interactor`` へ ``**`` 展開する形）。
 
     決め方:
-        * 明示指定された項目はその値を使う（供給元と食い違えば stderr へ警告）。
-        * 明示されていない項目は ``SPEC_SERVER`` / ``args.symbol`` のスナップショットから引く。
-        * 引けず、かつ明示もされていない項目が 1 つでもあれば :class:`SymbolSpecArgsError`。
-
-    8 項目すべてが明示指定なら供給元を読まなくても解決できる（未登録銘柄でも実行できる）。
-    その場合は突き合わせる相手が存在しないため警告も出ない——**既定値を無言で使うのとは別物**で、
-    値はすべてコマンド行に現れている。
+        * 明示指定された項目（8 項目のうち）はその値を使う（供給元と食い違えば stderr へ警告）。
+        * 明示されていない項目と、台帳からしか受け取らない項目（``LEDGER_ONLY_FIELDS``）は
+          ``SPEC_SERVER`` / ``args.symbol`` のスナップショットから引く。
+        * 台帳が引けなければ常に :class:`SymbolSpecArgsError`（ISSUE-546 以降は 8 項目を全部
+          明示しても中断する。台帳からしか受け取らない項目を作れないため）。
     """
     explicit = {
         name: getattr(args, name)
@@ -214,7 +220,11 @@ def resolve_symbol_spec(args: argparse.Namespace) -> "dict[str, Any]":
     except SnapshotError as exc:
         if missing:
             raise _unresolved_error(symbol, missing, exc) from exc
-        return dict(explicit)  # 全項目が明示＝供給元を必要としない
+        # 明示できない項目（台帳からしか受け取らない・ISSUE-546）は既定値で作らず止める。
+        raise SymbolSpecArgsError(
+            f"銘柄 {symbol!r} の台帳が引けません。台帳からしか受け取らない項目"
+            f" {sorted(LEDGER_ONLY_FIELDS)} は明示指定できないため実行できません: {exc}"
+        ) from exc
     _warn_on_disagreement(explicit, supplied, symbol)
     return {**supplied, **explicit}
 

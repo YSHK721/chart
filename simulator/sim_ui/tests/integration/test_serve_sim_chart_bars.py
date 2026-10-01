@@ -71,7 +71,7 @@ def _run_real_job(data_root: Path) -> str:
         ]
     ).to_csv(csv, index=False)
     backtest = {
-        "ea_name": "CalcProbe_EA", "symbol": "SYNTH", "period": "M1", "data_path": str(csv),
+        "ea_name": "CalcProbe_EA", "symbol": "JP225", "period": "M1", "data_path": str(csv),
         "initial_deposit": 100_000.0, "contract_size": 10.0, "volume_min": 0.1,
         "volume_max": 100.0, "volume_step": 0.1, "stops_level": 0, "digits": 1,
         "point_size": 0.1, "leverage": 100.0, "ma_period": _PERIOD, "ma_method": "sma",

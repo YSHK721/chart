@@ -530,13 +530,17 @@ def test_必須集合はbuild_interactorのシグネチャから導出する() -
     import inspect
 
     from simulator.main import build_interactor
-    from simulator.sim_ui.main.composition_root_jobs import required_backtest_keys
+    from simulator.sim_ui.main.composition_root_jobs import (
+        LEDGER_SUPPLIED_KEYS,
+        required_backtest_keys,
+    )
 
     required = required_backtest_keys()
     params = inspect.signature(build_interactor).parameters
+    # 台帳から渡すキー（ISSUE-546・ストップアウト水準）は投入に求めない。
     expected = {
         name for name, p in params.items() if p.default is inspect.Parameter.empty
-    }
+    } - LEDGER_SUPPLIED_KEYS
     assert required == expected
     assert "data_path" in required
     assert "config_overrides" not in required   # 既定値あり＝任意

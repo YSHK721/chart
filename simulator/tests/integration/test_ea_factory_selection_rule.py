@@ -468,8 +468,15 @@ class TestMathJobProducesAReportPayload:
     @pytest.fixture()
     def job_dir(self, tmp_path):
         from simulator.sim_ui.main import run_job
+        from simulator.sim_ui.main.composition_root_jobs import LEDGER_SUPPLIED_KEYS
 
-        spec = {"backtest": _serialisable(_math_kwargs())}
+        # 投入はストップアウト水準を持たない（run_job が台帳から渡す・ISSUE-546）。
+        backtest = {
+            key: value
+            for key, value in _serialisable(_math_kwargs()).items()
+            if key not in LEDGER_SUPPLIED_KEYS
+        }
+        spec = {"backtest": backtest}
         (tmp_path / "spec.json").write_text(
             json.dumps(spec, ensure_ascii=False), encoding="utf-8"
         )

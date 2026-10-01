@@ -31,6 +31,7 @@ import pytest
 
 from simulator.sim_ui.adapter import trace_writer
 from simulator.sim_ui.main import run_job
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 _EPOCH = 1_704_067_200
 _BARS = 40
@@ -53,7 +54,7 @@ def _write_csv(path: Path) -> Path:
 
 def _backtest(csv: Path) -> dict:
     return {
-        "ea_name": "TC24051901", "symbol": "EURUSD", "period": "M1",
+        "ea_name": "TC24051901", "symbol": "JP225", "period": "M1",
         "data_path": str(csv), "initial_deposit": 100_000.0, "contract_size": 1.0,
         "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01,
         "stops_level": 0, "digits": 5, "point_size": 0.0001, "leverage": 100.0,
@@ -486,7 +487,11 @@ class TestTheDeclarationFollowsTheKwargsTheRunActuallyUsed:
         from simulator.sim_ui.tests.unit.test_trace_writer import _filled_trace
 
         csv = _write_csv(tmp_path / "bars.csv")
-        run_kwargs = {**_backtest(csv), "marketdata_window": window}
+        # 実効 kwargs には run が台帳から受けた水準が載る（ISSUE-546）。
+        run_kwargs = {
+            **_backtest(csv), "marketdata_window": window,
+            "stop_out_level": ledger_stop_out_level(),
+        }
         job_dir = tmp_path / ("0123456789abcdef" + str(declared).ljust(16, "0")[:16])
         job_dir.mkdir()
 
@@ -692,7 +697,8 @@ class TestTheGranularityColumnTakesBothValuesInRealRuns:
         )
 
         bars_csv = _write_c_bars(tmp_path / "synth_m1.csv")
-        tick_root = _write_c_ticks(tmp_path / "ticks")
+        # tick-store は銘柄で引く。投入の銘柄（台帳に水準のある銘柄・ISSUE-546）で書く。
+        tick_root = _write_c_ticks(tmp_path / "ticks", symbol=_backtest(bars_csv)["symbol"])
         backtest = {
             **_backtest(bars_csv),
             "stop_loss_points": 500,

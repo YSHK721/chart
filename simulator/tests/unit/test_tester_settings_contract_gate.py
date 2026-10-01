@@ -28,6 +28,7 @@ from simulator.adapter.execution.tick_model_registry import TICK_MODEL_IDS
 from simulator.domain.tester_settings_exceptions import SettingsKeyMissingError
 from simulator.main.tester_settings.kwargs_mapper import to_interactor_kwargs
 from simulator.sim_ui.main.composition_root_jobs import (
+    LEDGER_SUPPLIED_KEYS,
     allowed_backtest_keys,
     required_backtest_keys,
 )
@@ -75,7 +76,8 @@ class TestBuildInteractorKeyContract:
         assert required_backtest_keys() <= allowed_backtest_keys()
 
     def test_output_keys_are_within_the_allowed_set(self):
-        assert set(_kwargs()) <= allowed_backtest_keys()
+        # 台帳から渡すキー（ISSUE-546）は投入の許容集合に無いが、写像の出力には載る。
+        assert set(_kwargs()) <= allowed_backtest_keys() | LEDGER_SUPPLIED_KEYS
 
     def test_output_keys_cover_every_required_argument(self):
         # 必須引数の欠けた kwargs を返すと `build_interactor` が TypeError で遅く落ちる

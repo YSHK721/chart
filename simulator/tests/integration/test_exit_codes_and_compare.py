@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from simulator.main import run_backtest
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 
 _ROWS = [
@@ -46,6 +47,7 @@ def _meta(csv_path: Path) -> dict:
         digits=5,
         point_size=0.0001,
         leverage=100.0,
+        stop_out_level=ledger_stop_out_level(),
         ma_period=2,
         ma_method="sma",
         lot_size=1.0,

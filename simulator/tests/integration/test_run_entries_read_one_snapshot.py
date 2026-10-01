@@ -25,6 +25,7 @@ from simulator.adapter.repository import ohlc_frame_cache as cache
 from simulator.main import run_backtest
 from simulator.main.tester_settings.run_from_settings import run_from_settings
 from simulator.tests.tester_settings_engine_fixtures import custom_range_settings, engine_binding
+from simulator.tests.ledger_stop_out import ledger_stop_out_level
 
 _HOURS = 72
 _EA_PARAMS = {"ma_period": 2, "ma_method": "sma", "lot_size": 1.0,
@@ -78,7 +79,7 @@ def test_run_backtest_reads_the_entity_once_while_it_is_appended(tmp_path, rows_
         output_dir=tmp_path / "out", data_path=str(csv), ea_name="CalcProbe_EA", symbol="JP225",
         period="H1", initial_deposit=100000.0, contract_size=1.0, volume_min=1.0,
         volume_max=100.0, volume_step=1.0, stops_level=0, digits=1, point_size=0.1,
-        leverage=10.0, **_EA_PARAMS,
+        leverage=10.0, stop_out_level=ledger_stop_out_level(), **_EA_PARAMS,
     )
 
     assert code == 0

@@ -227,17 +227,18 @@ def test_the_unregistered_symbol_really_has_no_snapshot():
     assert not snapshot_path(OANDA_JAPAN_MT5_LIVE, _UNREGISTERED).exists()
 
 
-# --- 5. 8 項目すべて明示なら供給元不在でも通る ----------------------------------------
+# --- 5. 8 項目すべて明示しても、供給元不在なら止める（ISSUE-546） ---------------------
+#
+# 以前は 8 項目を明示すれば未登録銘柄でも通った。ストップアウト水準は台帳からしか受け取らない
+# （明示できない）ため、台帳の無い銘柄は水準を作らずに止める（既定値で走らせない）。
 
 
-def test_unregistered_symbol_with_every_value_explicit_is_accepted(spec, capsys):
+def test_unregistered_symbol_with_every_value_explicit_stops(spec, capsys):
     explicit: "list[str]" = ["--symbol", _UNREGISTERED]
     for key in SPEC_KEYS:
         explicit += [spec_option(key), str(spec[key])]
-    resolved = resolve_symbol_spec(_parse("run_is_oos_cli", explicit))
-    assert resolved == {key: SPEC_FIELD_SOURCES[key].cast(spec[key]) for key in SPEC_KEYS}
-    # 供給元が引けない以上、食い違いの警告は出しようがない（無言で既定値を使うのとは別物）。
-    assert capsys.readouterr().err == ""
+    with pytest.raises(SymbolSpecArgsError):
+        resolve_symbol_spec(_parse("run_is_oos_cli", explicit))
 
 
 def test_unregistered_symbol_with_one_value_missing_still_fails_loud(spec):
@@ -322,14 +323,12 @@ def test_unregistered_symbol_fails_loud_even_when_the_lot_is_explicit(spec):
         resolve_lot_size(args, resolve_symbol_spec(args))
 
 
-def test_unregistered_symbol_with_every_value_explicit_resolves_the_lot_too(spec):
-    """**負の対照**: 8 項目を明示すれば未登録銘柄でも lot まで解決する（無条件に落ちない）。
+def test_the_lot_follows_the_resolved_spec_not_the_snapshot(spec):
+    """既定 lot は**解決済み仕様**から引き、供給元スナップショットを直接引かない。
 
-    既定 lot は**解決済み仕様**から引くのであって供給元スナップショットを直接引かない
-    （＝仕様が解決できた経路では必ず lot も解決できる）ことの実証でもある。
+    明示した ``volume_min``（供給元と違う値）が lot の既定になることで実証する。
+    （以前は未登録銘柄で同じことを示していたが、ISSUE-546 で未登録銘柄は止まるようになった。）
     """
-    explicit: "list[str]" = ["--symbol", _UNREGISTERED]
-    for key in SPEC_KEYS:
-        explicit += [spec_option(key), str(spec[key])]
-    args = _parse("run_is_oos_cli", explicit)
-    assert resolve_lot_size(args, resolve_symbol_spec(args)) == spec["volume_min"]
+    explicit_min = spec["volume_min"] * 2
+    args = _parse("run_is_oos_cli", [spec_option("volume_min"), str(explicit_min)])
+    assert resolve_lot_size(args, resolve_symbol_spec(args)) == explicit_min

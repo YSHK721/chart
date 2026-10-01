@@ -54,7 +54,7 @@ from marketdata.dataset_registry import (
     sim_offered_refs,
     whitelist,
 )
-from marketdata.symbol_spec_snapshot import settlement_currency, spec_fields
+from marketdata.symbol_spec_snapshot import SPEC_FIELD_SOURCES, settlement_currency, spec_fields
 from marketdata.tests.spread_series_fixture import spy
 from simulator.adapter.repository import ohlc_marketdata_csv
 from simulator.sim_ui.adapter import symbol_spec_catalog
@@ -211,7 +211,7 @@ def test_the_second_series_symbol_spec_follows_the_supply_snapshot(monkeypatch):
 
     # Assert
     assert expected["digits"] != int(baseline["symbol"]["digits"])   # 空振り防止（差し替えた）
-    assert len(expected) == 8
+    assert len(expected) == len(SPEC_FIELD_SOURCES)   # 台帳の表の全項目（ISSUE-546 で水準が加わった）
     for name, value in expected.items():
         assert getattr(second, name) == value, name
     assert second.settlement_currency == _SENTINEL_CURRENCY

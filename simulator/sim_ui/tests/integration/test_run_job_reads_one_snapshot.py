@@ -71,7 +71,7 @@ def _run(tmp_path: Path, rows_per_parse: int) -> "tuple[int, Path, Path]":
     job_dir = tmp_path / "0123456789abcdef0123456789abcdef"
     job_dir.mkdir()
     backtest = {
-        "ea_name": "TC24051901", "symbol": "EURUSD", "period": "M1", "data_path": str(csv),
+        "ea_name": "TC24051901", "symbol": "JP225", "period": "M1", "data_path": str(csv),
         "initial_deposit": 100_000.0, "contract_size": 1.0, "volume_min": 0.01,
         "volume_max": 100.0, "volume_step": 0.01, "stops_level": 0, "digits": 5,
         "point_size": 0.0001, "leverage": 100.0, "ma_period": 2, "ma_method": "sma",

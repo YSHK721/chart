@@ -432,7 +432,10 @@ def build_interactor(
     stop_loss_points: float,
     take_profit_points: float,
     config_overrides: dict | None = None,
-    stop_out_level: float = 0.0,
+    # ストップアウト水準（ISSUE-546）。**既定値を持たない**: 出所は台帳の口座 margin_so_so
+    #   ただ 1 つ（「`spec_fields`」 が配る）。既定 0.0 は「有効証拠金が負になるまで決済しない」
+    #   生きた閾値として働き、sim 画面の run で残高が負になるまで取引が続いた（実測）。
+    stop_out_level: float,
     slope_shift: int = 1,
     slope_min_points: float = 1.0,
     entry_offset_points: float = 50.0,

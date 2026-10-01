@@ -21,7 +21,8 @@ ISSUE-445 の根本原因 RC-1 は「値が 1 つ間違っていたこと」で�
 
 ## なぜ account だけ許可リストで絞るのか（規則と理由）
 
-含める: ``leverage`` / ``currency`` / ``trade_mode`` / ``company`` / ``server``
+含める: ``leverage`` / ``currency`` / ``trade_mode`` / ``company`` / ``server`` /
+``margin_so_mode`` / ``margin_so_so``
 除外する: 口座の識別子（``login`` 等）と変動値（``balance`` / ``equity`` / ``margin`` /
 ``margin_free`` / ``margin_level`` / ``profit`` / ``credit`` / ``assets`` / ``liabilities`` 等）
 
@@ -36,6 +37,13 @@ ISSUE-445 の根本原因 RC-1 は「値が 1 つ間違っていたこと」で�
 フィールドを増やしたときに機微値が黙って混入する側へ倒れる。許可リストなら、増えた
 フィールドは黙って落ちる（安全側）。``leverage`` を account 側から供給するのは、
 ``mt5.symbol_info()`` に ``leverage`` が存在しない（ISSUE-445 実測）ためである（設計書 §3.4）。
+
+``margin_so_so``（ストップアウト水準）と ``margin_so_mode``（その単位: % か金額か）は
+ISSUE-546 で足した。sim のストップアウト水準には供給元が無く 0.0 が入り、証拠金維持率が
+100% を割っても取引が続いて残高が負になった（実測）。水準は口座の契約であり、機微でも
+変動値でもない。人が ISSUE の実測値（``margin_so_so=100.0``）を台帳へ書き写すと RC-1 の
+再生産になるため、端末から機械取得する本スクリプトの許可リストに載せる。
+``margin_so_call``（マージンコール水準）はストップアウトの判定に要らないため載せない。
 
 ## 安全性（接続先は実弾のライブ口座である）
 
@@ -103,7 +111,10 @@ SNAPSHOT_DIR = "marketdata/symbol_specs"
 GENERATOR = "tools/capture_mt5_symbol_spec.py"
 
 #: ``account`` セクションに含めるキー（許可リスト。理由は module docstring）。
-ACCOUNT_KEYS: "tuple[str, ...]" = ("company", "currency", "leverage", "server", "trade_mode")
+ACCOUNT_KEYS: "tuple[str, ...]" = (
+    "company", "currency", "leverage", "server", "trade_mode",
+    "margin_so_mode", "margin_so_so",
+)
 
 #: ``meta.terminal`` に記録する ``terminal_info()`` のキー。
 TERMINAL_KEYS: "tuple[str, ...]" = ("company", "name", "build")
