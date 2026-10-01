@@ -8,10 +8,15 @@
     起動時に読んだか」をプロセス外から照合できなければ、黙って古いコードを見続ける。
 
 固定する規則（判定の根拠は ``unified_ui/serving_code.py`` の docstring）:
-    1. 同一性は **Python ソースの内容**で決める。HEAD の移動・コミットだけでは変わらない
-       （内容が同じなら同じ）。Python 以外（文書・静的ファイル）の変更では変わらない。
-    2. 未コミットの変更・未追跡の Python ファイル・削除は内容の差として数える。
-       ``.gitignore`` で無視されたファイルは数えない（配信の入力ではない）。
+    1. 同一性は**内容**で決める。HEAD の移動・コミットだけでは変わらない（内容が同じなら同じ）。
+    2. 対象は「ツリーのすべて − 配信プロセスが読まないと理由つきで宣言したもの」。
+       誤りの向きを安全側に倒す（「同じ」と誤ると古いコードを黙って配信する＝ISSUE-531 そのもの）。
+       Python 以外の起動時の入力（JSON の台帳・serve.sh・dev_paths.local.sh）の変更は差になる。
+       宣言した除外（テスト・文書・.claude・prototype・要求ごとに読み直される静的ファイル）の
+       変更は差にならない。
+    3. 未コミットの変更・未追跡・削除は内容の差として数える。``.gitignore`` で無視された
+       ファイルは数えない。ただし起動時に読まれる dev_paths.local.sh は明示して数える
+       （値は出力しない＝秘密を含む）。
     3. 差があるとき、起動後に更新された Python ファイルを示す（違いを黙らない）。
 
 計算量（CLAUDE.md 計算量テスト規約）:
@@ -52,6 +57,26 @@ def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
+#: 起動時に読まれうる Python 以外の入力（変えると指紋が変わるべきもの）。
+_STARTUP_INPUTS = ("common/topology.json", "pkg/serve.sh")
+
+#: 配信プロセスが読まないと宣言されたもの（変えても指紋が変わらないべきもの）。
+_DECLARED_NOT_READ = (
+    "pkg/tests/test_a.py",
+    "pkg/test_b.py",
+    "docs/guide.md",
+    ".doc/design.md",
+    ".claude/notes.txt",
+    "prototype_260101-01/a.py",
+    "pkg/web/js/app.js",
+    "pkg/web/index.html",
+    "pkg/web/css/a.css",
+    "pkg/web/js/m.mjs",
+)
+
+_EXTRA_FILES = {rel: "v1\n" for rel in (*_STARTUP_INPUTS, *_DECLARED_NOT_READ)}
+
+
 def _make_repo(tmp_path: Path, n_files: int) -> Path:
     """Python ファイル ``n_files`` 本・文書 1 本・無視ディレクトリ 1 つを持つリポジトリを作る。"""
     repo = tmp_path / f"repo_{n_files}"
@@ -59,14 +84,17 @@ def _make_repo(tmp_path: Path, n_files: int) -> Path:
     for i in range(n_files):
         (repo / "pkg" / f"m{i}.py").write_text(f"VALUE = {i}\n", encoding="utf-8")
     (repo / "README.md").write_text("doc\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    for rel, text in _EXTRA_FILES.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored/\ndev_paths.local.sh\n", encoding="utf-8")
     (repo / "ignored").mkdir()
     for i in range(n_files):
         (repo / "ignored" / f"x{i}.py").write_text("X = 1\n", encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "t@example.invalid")
     _git(repo, "config", "user.name", "t")
-    _git(repo, "add", "pkg", "README.md", ".gitignore")
+    _git(repo, "add", "pkg", "README.md", ".gitignore", *_EXTRA_FILES)
     _git(repo, "commit", "-q", "-m", "init")
     return repo
 
@@ -84,6 +112,13 @@ class _GitSpy:
         if "hash-object" in args and stdin:
             self.hashed.extend(p for p in stdin.decode("utf-8").split("\n") if p)
         return self._inner(args, stdin)
+
+
+def _set_mtime_of_worktree_files(repo: Path, when: float) -> None:
+    """作業ツリーの全ファイル（.git を除く）の更新時刻を ``when`` にする。"""
+    for path in repo.rglob("*"):
+        if path.is_file() and ".git" not in path.relative_to(repo).parts:
+            os.utime(path, (when, when))
 
 
 def _fp(sc, repo: Path) -> str:
@@ -110,13 +145,47 @@ def test_変更をコミットしても内容が同じなら指紋は変わら�
     assert _fp(sc, repo) == edited
 
 
-def test_Python以外の変更では指紋は変わらない(sc, tmp_path: Path) -> None:
-    """静的ファイル・文書は要求ごとに読み直されるか、そもそも配信の入力ではない。"""
+@pytest.mark.parametrize("rel", _STARTUP_INPUTS)
+def test_Python以外の起動時の入力を変えると指紋が変わる(sc, tmp_path: Path, rel: str) -> None:
+    """JSON の台帳（lru_cache・import 時決定）や serve.sh は起動時に 1 回だけ読まれる。"""
     repo = _make_repo(tmp_path, 3)
     before = _fp(sc, repo)
-    (repo / "README.md").write_text("edited\n", encoding="utf-8")
-    _git(repo, "commit", "-q", "-am", "doc")
+    (repo / rel).write_text("v2\n", encoding="utf-8")
+    assert _fp(sc, repo) != before
+
+
+@pytest.mark.parametrize("rel", (*_DECLARED_NOT_READ, "README.md"))
+def test_読まないと宣言したものを変えても指紋は変わらない(sc, tmp_path: Path, rel: str) -> None:
+    """不要な restart（＝実行中のバックテストの停止）を招かない。"""
+    repo = _make_repo(tmp_path, 3)
+    before = _fp(sc, repo)
+    (repo / rel).write_text("v2\n", encoding="utf-8")
     assert _fp(sc, repo) == before
+
+
+def test_除外の宣言に無いものは含める側に倒す(sc, tmp_path: Path) -> None:
+    """拡張子の許可リストではない: 未知の種類のファイルも差として数える。"""
+    repo = _make_repo(tmp_path, 3)
+    before = _fp(sc, repo)
+    (repo / "pkg" / "table.unknownext").write_text("x\n", encoding="utf-8")
+    assert _fp(sc, repo) != before
+
+
+def test_dev_paths_localは無視されていても数え値は出力しない(sc, tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path, 3)
+    secret = "s3cr3t-value-should-not-appear"
+    local = repo / "dev_paths.local.sh"
+    local.write_text(f"export MT5_BRIDGE_SECRET={secret}\n", encoding="utf-8")
+    git = sc.run_git(repo)
+    line = sc.identity_line(git, now=1_000.0)
+    local.write_text("export MT5_BRIDGE_SECRET=other\n", encoding="utf-8")
+    proc = subprocess.run(
+        ["python3", str(_MODULE_PATH), "compare", str(repo), line],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 1
+    assert "dev_paths.local.sh" in proc.stdout
+    assert secret not in proc.stdout + proc.stderr + line
 
 
 # ---------------------------------------------------------------- 規則 2: 未追跡・削除・無視
@@ -161,8 +230,7 @@ def test_照合_違えば起動後に更新されたファイルを示す(sc, tm
     started = 1_000_000.0
     line = sc.identity_line(git, now=started)
     # 起動前に作られたファイルは起動時刻より古い更新時刻を持つ（実運用と同じ順序を固定する）。
-    for path in (repo / "pkg").glob("*.py"):
-        os.utime(path, (started - 60, started - 60))
+    _set_mtime_of_worktree_files(repo, started - 60)
     edited = repo / "pkg" / "m0.py"
     edited.write_text("VALUE = 'x'\n", encoding="utf-8")
     os.utime(edited, (started + 5, started + 5))
@@ -195,6 +263,8 @@ def test_CLI_同じなら0_違えば1_読めなければ2(tmp_path: Path) -> Non
     assert differ.returncode == 1
     assert "pkg/m1.py" in differ.stdout
     assert cli("compare", str(repo), "garbage").returncode == 2
+    # git が失敗する（リポジトリでない）ときも「確かめられない」へ寄せる。
+    assert cli("compare", str(tmp_path / "not_a_repo"), line).returncode == 2
 
 
 # ---------------------------------------------------------------- 計算量

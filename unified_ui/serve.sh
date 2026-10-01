@@ -234,7 +234,8 @@ stop_sim_core_if_up() {
 # 止める前に、止めたら起動し直せないものが無いかを確かめる（ISSUE-531）。
 #
 # MT5 ティック供給（live core の serve.sh が起動する mt5_tick_watch）は、秘密 MT5_BRIDGE_SECRET が
-#   **起動した端末の環境**にあるときだけ起動される（indigators/indicator_ui/serve.sh）。秘密の無い
+#   環境にあるときだけ起動される（indigators/indicator_ui/serve.sh）。秘密は起動した端末の環境か、
+#   tools/dev_paths.sh が source する <REPO_ROOT>/dev_paths.local.sh から来る。秘密の無い
 #   端末から入れ替えると、停止は成功し、起動し直しでは供給だけが黙って上がらない。これは
 #   ISSUE-524（供給が止まったまま 8 日間誰も気づかなかった）と同じ「黙って止まる」形である。
 #   よって停止対象のスタックが供給を動かしているのに秘密が無ければ、**何も止めずに**中止する。
@@ -247,7 +248,8 @@ ensure_supply_restartable() {
   echo "エラー: 停止しようとしたスタック（配信元: ${root}）は MT5 ティック供給を動かしていますが、" >&2
   echo "       この端末には MT5_BRIDGE_SECRET がありません。このまま入れ替えると、供給だけが" >&2
   echo "       起動し直されずに止まります。何も停止せずに中止しました。" >&2
-  echo "       秘密を設定した端末から実行してください（例: MT5_BRIDGE_SECRET=... ./serve.sh ...）。" >&2
+  echo "       秘密の供給元は ${REPO_ROOT}/dev_paths.local.sh（tools/dev_paths.sh が source する）です。" >&2
+  echo "       そこへ export MT5_BRIDGE_SECRET=... を置くか、秘密を設定した端末から実行してください。" >&2
   exit 1
 }
 

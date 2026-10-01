@@ -347,6 +347,7 @@ def test_MT5供給が動いているのに秘密が無ければ止める前に�
 
     assert proc.returncode != 0
     assert "MT5_BRIDGE_SECRET" in proc.stderr
+    assert f"{repo}/dev_paths.local.sh" in proc.stderr, "秘密の供給元を案内していない"
     assert router.alive(), "止めた後で供給だけ起動し直されない形を作ってはならない"
     assert watch.poll() is None
 
