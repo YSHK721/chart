@@ -63,7 +63,8 @@ NOT_READ_BY_SERVING = (
     #   新しかった。コード: 各 core の静的配信は要求ごとに読む（simulator/replay_ui/framework/
     #   static_file_server.py の read_bytes を sim・dashboard が共有・indigators/indicator_ui/api/
     #   framework/server.py の _handle_static・unified_ui/router.py の _serve_static）。
-    #   web 配下でも json 等は起動時に読まれうるので含める（拡張子を絞る）。
+    #   web 配下でも json 等は起動時に読まれうるので含める（拡張子を絞る）。含めるのは追跡済みと、
+    #   .gitignore の対象でない未追跡に限る（未追跡の扱いは .gitignore に従う）。
     "**/web/**/*.js",
     "**/web/**/*.mjs",
     "**/web/**/*.css",
@@ -88,7 +89,13 @@ def run_git(repo_root) -> GitRunner:
             ["git", "-C", root, *args], input=stdin, capture_output=True, check=True
         ).stdout
 
+    run.root = root  # type: ignore[attr-defined]  # symlink の判定に使う（code_manifest）
     return run
+
+
+def _blob_sha(data: bytes) -> str:
+    """git の blob ハッシュ（``git hash-object`` と同じ値）。"""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 def _paths(raw: bytes) -> List[str]:
@@ -110,6 +117,15 @@ def code_manifest(git: GitRunner) -> Dict[str, str]:
     for path in deleted:
         manifest.pop(path, None)
     to_hash = sorted(modified | untracked)
+    # symlink はリンク先の文字列を blob としてハッシュする（git の mode 120000 と同じ扱い）。
+    #   hash-object --stdin-paths はリンクを辿るため、ディレクトリを指すと失敗する
+    #   （.gitignore の `venv/` は symlink に効かず、未追跡として目録に入る・独立レビューで再現）。
+    root = getattr(git, "root", None)
+    if root is not None:
+        links = {p for p in to_hash if os.path.islink(os.path.join(root, p))}
+        for path in links:
+            manifest[path] = _blob_sha(os.fsencode(os.readlink(os.path.join(root, path))))
+        to_hash = [p for p in to_hash if p not in links]
     if to_hash:
         out = git(["hash-object", "--stdin-paths"], "\n".join(to_hash).encode("utf-8"))
         for path, sha in zip(to_hash, out.decode("ascii").split()):
@@ -180,7 +196,12 @@ def describe(result: Comparison) -> str:
 def main(argv: Sequence[str]) -> int:
     """``identity <root>`` → 申告 1 行を出す。``compare <root> <申告>`` → 0 同じ / 1 違う / 2 読めない。"""
     if len(argv) == 2 and argv[0] == "identity":
-        print(identity_line(run_git(argv[1]), now=time.time()))
+        try:
+            print(identity_line(run_git(argv[1]), now=time.time()))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            # 申告を作れない＝次の serve.sh は「確かめられない」になる（serve.sh が空として扱う）。
+            print(f"同一性の申告を作れません: {exc}", file=sys.stderr)
+            return 2
         return 0
     if len(argv) == 3 and argv[0] == "compare":
         try:

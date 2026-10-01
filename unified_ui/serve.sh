@@ -305,7 +305,7 @@ PUBLIC_URL="http://127.0.0.1:${PUBLIC_PORT}/"
 SERVING_ROOT_URL="http://127.0.0.1:${PUBLIC_PORT}/__serving_root"
 SERVING_CODE_URL="http://127.0.0.1:${PUBLIC_PORT}/__serving_code"
 
-# 配信中のコードが、このツリーの今の Python ソースと同じかを照合する（ISSUE-531）。
+# 配信中のコードが、このツリーの今の配信の入力（serving_code.py の定義）と同じかを照合する（ISSUE-531）。
 #   0=同じ / 1=違う（違いを標準エラーへ出す）/ 2=確かめられない（申告口を持たない旧ルータ等）。
 #   「同じコード」の定義と根拠は serving_code.py の docstring が持つ。占有者への問い合わせは
 #   1 回だけで、ツリーの照合は手元の git で済む（問い合わせがファイル数に比例しない）。
@@ -341,7 +341,8 @@ resolve_occupant() {
       return 0
     fi
     # 同じツリーでも、配信中のコードが今のツリーと同じとは限らない（ISSUE-531）。静的ファイルは
-    #   要求ごとに読み直されるが Python は起動時のままなので、黙って no-op すると画面の一部だけ
+    #   要求ごとに読み直されるが、起動時に読んだ入力（Python・台帳・serve.sh 等＝serving_code.py の
+    #   定義）は起動時のままなので、黙って no-op すると画面の一部だけ
     #   新しく、サーバ側の判断は古いまま動く。
     rc=0
     serving_code_matches || rc=$?
@@ -356,8 +357,8 @@ resolve_occupant() {
         exit 1
         ;;
       *)
-        echo "エラー: 配信中のコードがこのツリーの今のコードと同じか確かめられません（${SERVING_CODE_URL} が無応答）。" >&2
-        echo "       本エンドポイントを持たない古いルータが配信している可能性があります（配信元: ${serving_root}）。" >&2
+        echo "エラー: 配信中のコードがこのツリーの今のコードと同じか確かめられません（理由は上の行。上の行が無ければ ${SERVING_CODE_URL} が無応答）。" >&2
+        echo "       配信元: ${serving_root}" >&2
         echo "       新しいコードへ入れ替える場合: ./serve.sh --restart" >&2
         exit 1
         ;;

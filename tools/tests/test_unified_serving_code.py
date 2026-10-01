@@ -16,8 +16,9 @@
        変更は差にならない。
     3. 未コミットの変更・未追跡・削除は内容の差として数える。``.gitignore`` で無視された
        ファイルは数えない。ただし起動時に読まれる dev_paths.local.sh は明示して数える
-       （値は出力しない＝秘密を含む）。
-    3. 差があるとき、起動後に更新された Python ファイルを示す（違いを黙らない）。
+       （値は出力しない＝秘密を含む）。symlink はリンク先の文字列で数える（git の mode 120000 と同じ）。
+    4. 差があるとき、起動後に更新されたファイルを示す（違いを黙らない）。
+    5. 想定外の失敗（git の失敗等）は identity・compare とも「確かめられない」（終了コード 2）。
 
 計算量（CLAUDE.md 計算量テスト規約）:
     観測の境界は ``code_manifest`` の git 引数（宣言された注入点）と ``compare`` の
@@ -265,6 +266,33 @@ def test_CLI_同じなら0_違えば1_読めなければ2(tmp_path: Path) -> Non
     assert cli("compare", str(repo), "garbage").returncode == 2
     # git が失敗する（リポジトリでない）ときも「確かめられない」へ寄せる。
     assert cli("compare", str(tmp_path / "not_a_repo"), line).returncode == 2
+
+
+# ---------------------------------------------------------------- symlink・想定外の失敗
+
+
+def test_未追跡のディレクトリへのsymlinkでも失敗せずリンク先の文字列で数える(sc, tmp_path: Path) -> None:
+    """.gitignore の ``venv/`` は symlink に効かない（ディレクトリでないため）。目録に入っても落ちない。"""
+    repo = _make_repo(tmp_path, 3)
+    target_a = tmp_path / "real_a"
+    target_a.mkdir()
+    target_b = tmp_path / "real_b"
+    target_b.mkdir()
+    link = repo / "venv"
+    link.symlink_to(target_a)
+    before = _fp(sc, repo)
+    link.unlink()
+    link.symlink_to(target_b)
+    assert _fp(sc, repo) != before
+
+
+def test_CLI_identityも想定外の失敗は2で確かめられないと答える(tmp_path: Path) -> None:
+    proc = subprocess.run(
+        ["python3", str(_MODULE_PATH), "identity", str(tmp_path / "not_a_repo")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
 
 
 # ---------------------------------------------------------------- 計算量
