@@ -2,8 +2,8 @@
 //
 // 由来: unified_root.js が売買履歴チャートの足を読むために `/live/candles?datasetRef=…` を手書きしていた。
 //   同じ問い合わせは live core の chart_app_wiring.js（fetchCandles）が持っており、片方だけ直ると
-//   食い違う。問い合わせは live core の公開面（fetchCandleRange）から借り、行き先は routedFetch の
-//   規則で決める。
+//   食い違う。当時は live core の公開面（fetchCandleRange）から借りる形にした（その口は借り手が 0 に
+//   なり 2026-10-01 に撤去・826b1904）。
 // 2026-09-30（ISSUE-552/554 段階 1）: 売買履歴チャートの足はジョブ自身の report.json から sim が読む。
 //   統合層は足の読み手を持たない（`/candles` の問い合わせも、その借用も、live 固定の fetch も無い）。
 //
