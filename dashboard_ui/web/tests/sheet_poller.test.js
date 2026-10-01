@@ -161,6 +161,31 @@ describe('sheet_poller — 2 段の発行判定', () => {
     assert.equal(spy.calls.length, afterFirst + 1);
   });
 
+  test('changed_mp_levels_are_issued_inside_the_same_cycle_and_unchanged_ones_are_not', async () => {
+    // 設計書 §3.5.4 の 5: 借りた MP の期間水準も同一性の鍵に入る。入れないと MP の値だけが
+    //   変わった要求が周期の内側で畳まれ、版面が古い値のまま残る。
+    const spy = spyIssue();
+    const clock = fakeClock(0);
+    const poller = createSheetPoller({
+      issue: spy.issue, now: clock.now, tickIntervalMs: 1_000,
+    });
+    const levels = [{ timeframe: '1D', level: 'POC*', price: 104.2 }];
+    await poller.tick({ body: { ...BODY, mp_levels: levels }, barCloseTime: 100 });
+    const afterFirst = spy.calls.length;
+    // Act
+    clock.advance(10);
+    await poller.tick({ body: { ...BODY, mp_levels: levels }, barCloseTime: 100 });
+    const afterSame = spy.calls.length;
+    clock.advance(10);
+    await poller.tick({
+      body: { ...BODY, mp_levels: [{ ...levels[0], price: 105.2 }] }, barCloseTime: 100,
+    });
+    // Assert
+    assert.equal(afterSame, afterFirst, '同じ水準の同じ要求を周期の内側で撃っています');
+    assert.equal(spy.calls.length, afterSame + 1, '水準が変わった要求が畳まれています');
+    assert.deepEqual(spy.calls[spy.calls.length - 1].mp_levels, [{ ...levels[0], price: 105.2 }]);
+  });
+
   test('stop_prevents_any_further_issue', async () => {
     // disable() 後に発行が続くと、モードを出た後も dashboard core を叩き続ける。
     const spy = spyIssue();

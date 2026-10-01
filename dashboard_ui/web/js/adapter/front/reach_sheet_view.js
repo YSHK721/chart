@@ -231,6 +231,8 @@ export function createReachSheetView({
   const glow = createNextTargetGlow();
   /** MP 借用の掲示文（null＝異常なし）。書き手は合成根（setMpNote）だけ。 */
   let mpNote = null;
+  /** MP の期間水準の掲示文（null＝異常なし・設計書 §3.5.3）。書き手は合成根（setMpLevelsNote）だけ。 */
+  let mpLevelsNote = null;
   /** 現在値行のその場書き換え先（毎 tick の表再構築を避ける）。 */
   let currentRowEl = null;
   let currentPriceEl = null;
@@ -822,6 +824,9 @@ export function createReachSheetView({
     if (mpNote) {
       notes.push(mpNote);
     }
+    if (mpLevelsNote) {
+      notes.push(mpLevelsNote);
+    }
     message.textContent = notes.join(' / ');
 
     // 絞り込みと現在値行の位置は状態機械（domain/ladder_scope.js）が決める。並びはサーバの
@@ -942,5 +947,17 @@ export function createReachSheetView({
     mpNote = text || null;
   }
 
-  return { mount, render, unmount, updateCurrentPrice, updateLevelValues, setMpNote };
+  /**
+   * MP の期間水準の掲示文を差し替える（null で解除）。次の描画から効く。
+   *
+   * 現在バーが未着・当期の列が無い足は行が出ないため、その理由をここへ載せる（設計書 §3.5.3・
+   * 無言の縮退の禁止）。文言は借用を観測した層（mp_period_borrow）が組む。
+   */
+  function setMpLevelsNote(text) {
+    mpLevelsNote = text || null;
+  }
+
+  return {
+    mount, render, unmount, updateCurrentPrice, updateLevelValues, setMpNote, setMpLevelsNote,
+  };
 }

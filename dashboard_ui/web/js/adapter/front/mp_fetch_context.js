@@ -44,7 +44,8 @@ const MP_INDICATOR_ID = 'market_profile';
  * @param {Function} deps.nowSec          現在時刻 秒（注入＝実時間に依存させない）
  * @param {*}        [deps.defaultSource] ライブの src 既定（`MP_DEFAULT_SOURCE`。テンプレートに
  *                                        MP が無いときだけ使う。'zp' のリテラルを持たない）
- * @returns {{setParams: Function, setFromBundle: Function, context: Function, settingsKey: Function}}
+ * @returns {{setParams: Function, setFromBundle: Function, context: Function, settingsKey: Function,
+ *            fetchSettings: Function}}
  */
 export function createMpFetchContext({
   MpFetchParams, datasetRef, timeframe, getLatestCandle, nowSec, defaultSource,
@@ -142,5 +143,16 @@ export function createMpFetchContext({
     return `${host._sessions ? 'sessions' : 'normal'}|${settings}`;
   }
 
-  return { setParams, setFromBundle, context, settingsKey };
+  /**
+   * 借りている MP 設定の src / va（ライブの srcParam / vaParam と同じ値・未設定は null）。
+   *
+   * MP の期間水準（設計書 §3.5.2）は同じ instance の設定で `/tf_period_profile` を借りる
+   * （ライブの tf-period 列の getQuery が `marketProfile.srcParam()` / `vaParam()` を読むのと同じ）。
+   * どの instance を借りるかの規則（setFromBundle）を 2 か所に書かないため、ここから読ませる。
+   */
+  function fetchSettings() {
+    return { src: params.src(), va: params.va() };
+  }
+
+  return { setParams, setFromBundle, context, settingsKey, fetchSettings };
 }
