@@ -16445,7 +16445,9 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
     `python -m simulator.main`（meta にあれば止める）が参照する。台帳の無い銘柄は他の項目を全部明示しても止まる。
   - 記録（🔵）: `simulator/adapter/sizing/account_margin_sizing.py:152` の `official_losscut_price` は「有効証拠金 ＝ 必要証拠金」
     （水準 100%）を式の中で前提にしており、台帳の水準を読まない（機構は確認・発生は未実測）。
-
+- 記録（発生未実測・独立レビュー 🔵）: 強制決済の判定時点は sim が足の終値、MT5 は次の足の最初のティック。2 ケースで決済価格が一致したのは次の足の始値が前の足の終値と同値だったため。窓開けのある run では価格が食い違いうる。
+- 記録（発生未実測・独立レビュー 🔵）: `account_engine.py:90`・`run_account_scenario.py:61` の losscut_ratio 既定 1.00 は sim の run の入口から届かない（run_account_scenario ツールと fixture 生成のみ）。
+- 記録（発生未実測・独立レビュー 🔵）: `simulator/tests/confirmation/2026-0{1,3,4}*/reconcile*.py` に stop_out_level=100.0 のリテラルが残る（検証側の写し・AST 走査の対象外）。
 ## ISSUE-547: 同じ run の「勝率」が 比較・判定 と サマリー で違う定義になっている
 - **ステータス**: RESOLVED（2026-09-28）
 - **重大度**: 中（同じ語に 2 つの値・実測）
