@@ -164,8 +164,8 @@ class MpPeriodLevel:
     """front が live core の `/tf_period_profile` から借りた期間水準 1 本（設計書 §3.5）。
 
     依頼者裁定 2026-09-29: 値は front が借り、サーバは MP を計算しない。サーバはこれを
-    射影行と同じ入口で第 1 表へ合流させ、並び・距離・差・次のターゲット印は `build_ladder`、
-    到達時間は定義 D（`_level_period_touch`）で与える。
+    射影行と同じ入口で第 1 表へ合流させ、並び・距離・差・次のターゲット印は 「`build_ladder`」、
+    到達時間は定義 D（「`_level_period_touch`」）で与える。
     """
 
     timeframe: str

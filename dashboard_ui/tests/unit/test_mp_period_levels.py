@@ -3,7 +3,7 @@
 裁定:
     1. front が借りた値（`/tf_period_profile` の当期の POC・VAH・VAL）を要求の欄 `mp_levels` で
        受け取り、射影行と同じ入口で `build_ladder` へ合流させる（サーバは MP を計算しない）。
-    2. 到達時間は定義 D（`_level_period_touch` → domain の `period_first_touch`）。
+    2. 到達時間は定義 D（「`_level_period_touch`」 → domain の `period_first_touch`）。
     3. 次のターゲット印の候補に入れる（`build_ladder` の地平判定がそのまま効く）。
 
 期待値は宣言（domain の唯一源）から導く。行の並び・距離・差は `build_ladder`、到達は
@@ -79,7 +79,7 @@ def _sheet(levels, *, instances=(), series=None, extra_bars=None):
     unique = request.unique_instances()
     supply = BarSupply.load(request, bar_port=bar_port).extended(
         request, unique, bar_port=bar_port
-    ).extended_timeframes(
+    ).extended_bars(
         request, [level.timeframe for level in levels], bar_port=bar_port
     )
     return build_reach_sheet(

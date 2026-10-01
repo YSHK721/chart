@@ -242,7 +242,7 @@ class ReachSheetController:
         bar_supply = bar_supply.extended(request, instances, bar_port=self._bar_port)
         # MP の期間水準の到達時間（定義 D）は期間の始端にその足の最新バーを読む。束に同じ足が
         #   あれば引き直さない（行の本数ではなく足の種類で上から抑えられる）。
-        bar_supply = bar_supply.extended_timeframes(
+        bar_supply = bar_supply.extended_bars(
             request, [level.timeframe for level in parsed.mp_levels],
             bar_port=self._bar_port,
         )

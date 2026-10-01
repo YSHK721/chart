@@ -38,7 +38,8 @@ class BarSupply:
     """P-2 を **時間足ごとに 1 回だけ** 引いた結果（足と形成中足）。
 
     形成中足は表示足の末尾 time（`now_unix`）で決まる 1 対 1 の派生であり、足を引いた
-    時間足ぶんだけ持つ。件数は束の instance 数ではなく **時間足数**で上から抑えられる。
+    時間足ぶんだけ持つ（足だけを足した時間足＝ :meth:`extended_bars` の分は持たない）。
+    件数は束の instance 数ではなく **時間足数**で上から抑えられる。
     """
 
     by_timeframe: "Mapping[str, tuple[Bar, ...]]"
@@ -62,29 +63,41 @@ class BarSupply:
         行にもセルにもならない（縮退だけになる）ので、その足を引くのは「作ってから捨てる」
         に当たる——出力は正しいままなので状態検証では落ちない。
         """
-        return self.extended_timeframes(
-            request, [instance.timeframe for instance in instances], bar_port=bar_port
+        return self._extended(
+            request, [instance.timeframe for instance in instances],
+            bar_port=bar_port, with_forming=True,
         )
 
-    def extended_timeframes(
+    def extended_bars(
         self,
         request: ReachSheetRequest,
         timeframes: "Sequence[str]",
         *,
         bar_port,
     ) -> "BarSupply":
-        """指定の時間足を足した素材を返す（既に引いた足は **引き直さない**）。
+        """指定の時間足の**足だけ**を足した素材を返す（既に引いた足は引き直さない）。
 
-        MP の期間水準（設計書 §3.5.4）は instance を持たないが、到達時間（定義 D）の期間の
-        始端にその足の最新バーを読む。渡すのは**実際に読む足**だけにする（`extended` と同じ規律）。
+        MP の期間水準（設計書 §3.5.4）は instance を持たず、到達時間（定義 D）の期間の始端に
+        その足の最新バーの time しか読まない。形成中足まで引くと誰も読まない発行になる
+        （出力は正しいままなので状態検証では落ちない）。渡すのは**実際に読む足**だけにする。
         """
+        return self._extended(request, timeframes, bar_port=bar_port, with_forming=False)
+
+    def _extended(
+        self,
+        request: ReachSheetRequest,
+        timeframes: "Sequence[str]",
+        *,
+        bar_port,
+        with_forming: bool,
+    ) -> "BarSupply":
         wanted = [
             timeframe for timeframe in timeframes if timeframe not in self.by_timeframe
         ]
         if not wanted:
             return self
         added = self._of(request, wanted, bar_port=bar_port,
-                         now_unix=self._now_unix(request))
+                         now_unix=self._now_unix(request), with_forming=with_forming)
         return BarSupply(
             by_timeframe={**self.by_timeframe, **added.by_timeframe},
             forming_by_timeframe={
@@ -109,6 +122,7 @@ class BarSupply:
         *,
         bar_port,
         now_unix: "int | None" = None,
+        with_forming: bool = True,
     ) -> "BarSupply":
         ordered: "list[str]" = []
         for timeframe in timeframes:
@@ -125,7 +139,7 @@ class BarSupply:
             chart = bars.get(request.chart_timeframe) or ()
             moment = int(chart[-1].time) if chart else None
         forming: "dict[str, Bar | None]" = {}
-        if moment is not None:
+        if moment is not None and with_forming:
             forming = {
                 timeframe: bar_port.forming_bar(
                     dataset_ref=request.dataset_ref, timeframe=timeframe,
