@@ -62,10 +62,24 @@ class BarSupply:
         行にもセルにもならない（縮退だけになる）ので、その足を引くのは「作ってから捨てる」
         に当たる——出力は正しいままなので状態検証では落ちない。
         """
+        return self.extended_timeframes(
+            request, [instance.timeframe for instance in instances], bar_port=bar_port
+        )
+
+    def extended_timeframes(
+        self,
+        request: ReachSheetRequest,
+        timeframes: "Sequence[str]",
+        *,
+        bar_port,
+    ) -> "BarSupply":
+        """指定の時間足を足した素材を返す（既に引いた足は **引き直さない**）。
+
+        MP の期間水準（設計書 §3.5.4）は instance を持たないが、到達時間（定義 D）の期間の
+        始端にその足の最新バーを読む。渡すのは**実際に読む足**だけにする（`extended` と同じ規律）。
+        """
         wanted = [
-            instance.timeframe
-            for instance in instances
-            if instance.timeframe not in self.by_timeframe
+            timeframe for timeframe in timeframes if timeframe not in self.by_timeframe
         ]
         if not wanted:
             return self

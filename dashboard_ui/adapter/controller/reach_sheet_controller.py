@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from dashboard_ui.adapter.quantile_scale_builder import quantile_scale_of
-from dashboard_ui.domain.horizon import Horizon
+from dashboard_ui.domain.horizon import TIMEFRAME_ORDER, Horizon
 from dashboard_ui.usecase.build_reach_sheet import (
     ExcessEventCache,
     HistoryStripCache,
@@ -35,6 +35,7 @@ from dashboard_ui.usecase.project_quantiles_to_price import (
 )
 from dashboard_ui.usecase.sheet_models import (
     Degradation,
+    MpPeriodLevel,
     OscillatorSpec,
     ProjectedLevel,
     ReachSheetRequest,
@@ -90,6 +91,9 @@ class _Parsed:
     #: クライアントが既知の状態トークン（依頼者承認 2026-08-30・省リソース段階 2）。
     #: 現在の素材から計算したトークンと一致すれば、シートは**計算もせず** unchanged を返す。
     known_state: "str | None" = None
+    #: front が live core から借りた MP の期間水準（設計書 §3.5.4・依頼者裁定 2026-09-29）。
+    #: 欄が無い要求は空＝従来と同じ応答（追加のみ）。
+    mp_levels: "tuple[MpPeriodLevel, ...]" = ()
 
 
 class ReachSheetController:
@@ -166,6 +170,7 @@ class ReachSheetController:
                 self._instance_of(entry, chart_timeframe) for entry in raw
             ),
             known_state=known_state if isinstance(known_state, str) else None,
+            mp_levels=_mp_levels_of(request.get("mp_levels")),
         )
 
     def _instance_of(self, entry: Any, chart_timeframe: str) -> SheetInstance:
@@ -235,6 +240,12 @@ class ReachSheetController:
         # 足を足すのは**系列が届いた instance の分だけ**でよい。供給不能な instance は
         #   シートの行にもセルにもならず（縮退だけになる）、その足は誰も読まない。
         bar_supply = bar_supply.extended(request, instances, bar_port=self._bar_port)
+        # MP の期間水準の到達時間（定義 D）は期間の始端にその足の最新バーを読む。束に同じ足が
+        #   あれば引き直さない（行の本数ではなく足の種類で上から抑えられる）。
+        bar_supply = bar_supply.extended_timeframes(
+            request, [level.timeframe for level in parsed.mp_levels],
+            bar_port=self._bar_port,
+        )
         specs = {
             instance.key: self._roles.oscillator_spec(
                 instance=instance,
@@ -282,6 +293,7 @@ class ReachSheetController:
             history_cache=self._state.history,
             projected_levels=self._projected_levels(instances, specs, level_prices),
             mp_port=self._mp_port,
+            mp_period_levels=parsed.mp_levels,
         )
         background = project_quantiles_to_price(sheet.rows, projections=projections)
         degradations = [*sheet.degradations, *_unprojectable_degradations(unprojectable)]
@@ -612,11 +624,44 @@ def _row_json(row, horizon_p: "Mapping[Horizon, float | None]") -> "dict[str, An
     }
 
 
+def _mp_levels_of(raw: Any) -> "tuple[MpPeriodLevel, ...]":
+    """要求の欄 `mp_levels` を解釈する（無い・null は空＝従来と同じ応答）。
+
+    形が契約に合わなければ RequestError（無言で捨てると、借りた行が版面から理由なく消える）。
+    行の識別子 `(label, timeframe)` の一意性はここで先に確かめる（同じ足に同じ水準名が 2 本）。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise RequestError("mp_levels は配列である必要があります")
+    out: "list[MpPeriodLevel]" = []
+    seen: "set[tuple[str, str]]" = set()
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            raise RequestError("mp_levels の要素は JSON オブジェクトである必要があります")
+        timeframe = entry.get("timeframe")
+        if timeframe not in TIMEFRAME_ORDER:
+            raise RequestError(f"mp_levels[].timeframe が未知です: {timeframe!r}")
+        level = entry.get("level")
+        if not isinstance(level, str) or not level:
+            raise RequestError("mp_levels[].level が必要です")
+        price = entry.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)) \
+                or not math.isfinite(float(price)):
+            raise RequestError(f"mp_levels[].price は有限の数値が必要です: {price!r}")
+        if (timeframe, level) in seen:
+            raise RequestError(f"mp_levels が重複しています: {timeframe} {level}")
+        seen.add((timeframe, level))
+        out.append(MpPeriodLevel(timeframe=timeframe, level=level, price=float(price)))
+    return tuple(out)
+
+
 def _state_token(parsed, instances, chart_bars, forming) -> str:
     """応答内容を一意に定める素材の指紋（省リソース段階 2）。
 
     含めるもの: 束（畳み込み後の instance キー・順序不問）・表示足・素材の末尾
-    （最終確定足のタプルと本数・形成中足のタプル）。全系列は同じティック素材から
+    （最終確定足のタプルと本数・形成中足のタプル）・借りた MP の期間水準（設計書 §3.5.4。
+    素材の外から来る値なので、含めないと MP の値だけが動いたとき unchanged が返る）。全系列は同じティック素材から
     導かれるため、これが不変なら応答内容も不変である（新ティックは形成中足の
     volume を最低でも動かす）。
     """
@@ -632,6 +677,7 @@ def _state_token(parsed, instances, chart_bars, forming) -> str:
             int(forming.time), float(forming.open), float(forming.high),
             float(forming.low), float(forming.close), float(forming.volume),
         ],
+        sorted([level.timeframe, level.level, level.price] for level in parsed.mp_levels),
     ]
     return hashlib.sha1(
         json.dumps(material, ensure_ascii=False).encode("utf-8")

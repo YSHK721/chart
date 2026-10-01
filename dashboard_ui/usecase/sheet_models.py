@@ -155,6 +155,25 @@ class LadderRow:
     mp: "float | None" = None
 
 
+#: MP の期間水準の行が名乗る指標名（行の label と naming.name の唯一源・設計書 §3.5.4）。
+MP_PERIOD_INDICATOR_ID: str = "market_profile"
+
+
+@dataclass(frozen=True)
+class MpPeriodLevel:
+    """front が live core の `/tf_period_profile` から借りた期間水準 1 本（設計書 §3.5）。
+
+    依頼者裁定 2026-09-29: 値は front が借り、サーバは MP を計算しない。サーバはこれを
+    射影行と同じ入口で第 1 表へ合流させ、並び・距離・差・次のターゲット印は `build_ladder`、
+    到達時間は定義 D（`_level_period_touch`）で与える。
+    """
+
+    timeframe: str
+    #: 行の水準名（「POC*」/「POC」/「VAH」/「VAL」＝ライブの描画ラベルと同じ語）。
+    level: str
+    price: float
+
+
 @dataclass(frozen=True)
 class ProjectedLevel:
     """オシレータの**分位水準に達する価格**を第 1 表の行として載せる宣言
