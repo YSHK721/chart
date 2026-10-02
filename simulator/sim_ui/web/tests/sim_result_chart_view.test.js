@@ -338,8 +338,8 @@ test('ペイン別凡例の行は描いた instance と一致し、設定・削�
 
 /** 面の系列と、区間の列から期待する値・基準。 */
 const AREAS = Object.freeze([
-  { id: 'pane:残高・有効証拠金', name: '残高（足ごと）', lines: ['有効証拠金（足ごと）', '残高（取引終了時）'],
-    base: (deposit) => deposit, values: (cols) => cols.balance },
+  { id: 'pane:残高・有効証拠金', name: '有効証拠金（足ごと）', lines: ['残高（足ごと）', '残高（取引終了時）'],
+    base: (deposit) => deposit, values: (cols) => cols.equity },
   { id: 'pane:DD', name: 'DD（足ごと）', lines: ['DD（取引終了時）'],
     base: () => 0, values: (cols) => cols.drawdown.map((v) => -v) },
   { id: 'pane:損益（初期資金比）', name: '損益（初期資金比）', lines: ['確定損益（累計）'],

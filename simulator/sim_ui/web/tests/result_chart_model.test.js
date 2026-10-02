@@ -13,6 +13,8 @@ import {
   TRADE_CLOSE_LINE_WIDTH,
   balanceCurveTimes,
   AREA_FILL_ALPHA,
+  SERIES_RULE,
+  SOURCE_BASIS,
   areaPoint,
   candlesOf,
   drawnColumns,
@@ -49,7 +51,7 @@ const STOP_OUT_LEVEL = 87.5;
 
 /** 面の系列（残高・DD・損益・証拠金維持率）と、その基準。 */
 const AREAS = Object.freeze([
-  { pane: '残高・有効証拠金', name: '残高（足ごと）', base: (b) => b.deposit },
+  { pane: '残高・有効証拠金', name: '有効証拠金（足ごと）', base: (b) => b.deposit },
   { pane: 'DD', name: 'DD（足ごと）', base: () => 0 },
   { pane: '損益（初期資金比）', name: '損益（初期資金比）', base: () => 0 },
   { pane: '証拠金維持率(%)', name: '証拠金維持率', base: (b, d) => d.stop_out_level },
@@ -210,13 +212,13 @@ test('instance: 価格パネルは系列ごと・他のパネルは 1 枚 1 つ�
   ]);
   assert.equal(new Set(insts.map((i) => i.instanceId)).size, insts.length);
   const acct = insts.find((i) => i.label === '残高・有効証拠金');
-  assert.deepEqual(acct.payloads.map((p) => p.name), ['残高（足ごと）', '有効証拠金（足ごと）', '残高（取引終了時）']);
+  assert.deepEqual(acct.payloads.map((p) => p.name), ['有効証拠金（足ごと）', '残高（足ごと）', '残高（取引終了時）']);
   assert.deepEqual(Object.keys(acct.payloads[1]).sort(), ['color', 'data', 'kind', 'name', 'style', 'width']);
   // 面は基準（base）と面の色（baseline）も名乗る。
   assert.deepEqual(Object.keys(acct.payloads[0]).sort(), ['base', 'baseline', 'color', 'data', 'kind', 'name', 'style', 'width']);
   // 描き方（ChartRenderer の renderBaseline / renderLine のどちらで描くか）は payload が名乗る。
   const kinds = (label) => insts.find((i) => i.label === label).payloads.map((p) => [p.name, p.kind]);
-  assert.deepEqual(kinds('残高・有効証拠金'), [['残高（足ごと）', 'baseline'], ['有効証拠金（足ごと）', 'line'], ['残高（取引終了時）', 'line']]);
+  assert.deepEqual(kinds('残高・有効証拠金'), [['有効証拠金（足ごと）', 'baseline'], ['残高（足ごと）', 'line'], ['残高（取引終了時）', 'line']]);
   assert.deepEqual(kinds('DD'), [['DD（足ごと）', 'baseline'], ['DD（取引終了時）', 'line']]);
   assert.deepEqual(kinds('損益（初期資金比）'), [['損益（初期資金比）', 'baseline'], ['確定損益（累計）', 'line']]);
   assert.ok(insts.filter((i) => !AREAS.some((a) => a.pane === i.label))
@@ -244,13 +246,15 @@ test('面の色: 線は不透明、面は縁の線の側（edge）が基準の�
   assert.ok(AREA_FILL_ALPHA.edge > AREA_FILL_ALPHA.base && AREA_FILL_ALPHA.base > 0 && AREA_FILL_ALPHA.edge < 1);
 });
 
-test('残高（足ごと）の面: 値は残高の金額のまま、基準は初期資金。上に重ねる線の色・太さは今のまま', () => {
+test('有効証拠金（足ごと）の面: 値は有効証拠金の金額のまま、基準は初期資金。残高（足ごと・取引終了時）の線を重ねる', () => {
   const cols = columns();
-  cols.balance = [1000, 990, 1012.5];
+  cols.equity = [1000, 990, 1012.5];
+  cols.balance = [1000, 1000, 1010];
   const acct = resultChartInstances(declared(), cols, close(), BASELINE).find((i) => i.label === '残高・有効証拠金');
-  const [area, equity, closeLine] = acct.payloads;
+  const [area, balance, closeLine] = acct.payloads;
   assert.deepEqual(area.data, [{ time: 100, value: 1000 }, { time: 160, value: 990 }, { time: 220, value: 1012.5 }]);
-  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, DEFAULT_LINE_WIDTH]);
+  assert.deepEqual(balance.data, [{ time: 100, value: 1000 }, { time: 160, value: 1000 }, { time: 220, value: 1010 }]);
+  assert.deepEqual([balance.color, balance.width], [RESULT_CHART_COLORS.balance, DEFAULT_LINE_WIDTH]);
   assert.deepEqual([closeLine.color, closeLine.width], [RESULT_CHART_COLORS.balanceClose, TRADE_CLOSE_LINE_WIDTH]);
   // 別の初期資金なら基準が変わる（値は金額のまま）。
   const other = resultChartInstances(declared(), cols, close(), { ...BASELINE, deposit: 995 })
@@ -273,7 +277,7 @@ test('面: 値なし（null・NaN）の足は 0 を描かず whitespace（3 つ�
   cols.margin_level = [null, 120, Number.NaN];
   const insts = resultChartInstances(declared(), cols, close(), BASELINE);
   const data = (a) => insts.find((i) => i.label === a.pane).payloads.find((q) => q.name === a.name).data;
-  assert.deepEqual(data(AREAS[0]), [{ time: 100 }, { time: 160, value: 1000 }, { time: 220 }]);
+  assert.deepEqual(data(AREAS[0]), [{ time: 100 }, { time: 160, value: 990 }, { time: 220 }]);
   assert.deepEqual(data(AREAS[1]), [{ time: 100 }, { time: 160, value: -5 }, { time: 220 }]);
   assert.deepEqual(data(AREAS[2]), [{ time: 100 }, { time: 160, value: -10 }, { time: 220 }]);
   assert.deepEqual(data(AREAS[3]), [{ time: 100 }, { time: 160, value: 120 }, { time: 220 }]);
@@ -326,6 +330,48 @@ test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（4 
   }
 });
 
+// ---- 面と線の規則（依頼者裁定 2026-10-02「面グラフのルールはどうなっているのか? … 統一しろ」） ----
+
+test('面と線の規則: どのペインでも、面は有効証拠金ベース・重ねる線は確定（宣言 SERIES_RULE・SOURCE_BASIS から導く）', () => {
+  // ペインを足しても書き換えずに済むよう、役割（面 / 線）を名乗る系列を持つペインを出力から拾う。
+  const noLevel = declared();
+  delete noLevel.stop_out_level;
+  for (const d of [declared(), noLevel]) {
+    const panes = resultChartPanes(d, columns(), close(), BASELINE).filter((p) => p.series.some((s) => s.role));
+    assert.ok(panes.length > 0, '検定の前提: 役割を名乗るペインが無い');
+    for (const p of panes) {
+      assert.equal(p.series.filter((s) => s.role === 'area').length, 1, `${p.title} の面が 1 つでない`);
+      for (const s of p.series) {
+        assert.ok(s.role in SERIES_RULE, `${p.title} ${s.name} の役割 ${s.role}`);
+        assert.ok(s.source in SOURCE_BASIS, `${p.title} ${s.name} の出所 ${s.source} が宣言に無い`);
+        assert.equal(SOURCE_BASIS[s.source], SERIES_RULE[s.role], `${p.title} ${s.name}（${s.source}）`);
+      }
+    }
+  }
+});
+
+test('面と線の規則: 系列の点は名乗った出所の列から作る（名乗りと中身が食い違わない）', () => {
+  // 出所ごとに別の値を入れ、面・線の点がその列の値（面は描く値への写像の前後で順序が保たれる）であることを見る。
+  const cols = columns();
+  // 列どうしが平行移動でも符号反転でも重ならない値（取り違えれば差が一定にならない）。
+  cols.equity = [1001, 1005, 1002];
+  cols.balance = [2001, 2001, 2010];
+  cols.drawdown = [3, 7, 1];
+  cols.realized_pnl = [4, 4, 9];
+  cols.margin_level = [101, 150, 90];
+  const panes = resultChartPanes(declared(), cols, close(), BASELINE).filter((p) => p.series.some((s) => s.role));
+  for (const p of panes) {
+    for (const s of p.series.filter((q) => q.source in cols)) {
+      const raw = cols[s.source];
+      const drawn = s.points.map((q) => q.value);
+      const diffs = drawn.map((v, k) => v - raw[k]);
+      const negDiffs = drawn.map((v, k) => v + raw[k]);
+      // 描く値は列の値の平行移動（基準からの差）か符号反転（DD）で、別の列の値ではない。
+      assert.ok(new Set(diffs).size === 1 || new Set(negDiffs).size === 1, `${p.title} ${s.name} が ${s.source} 以外から作られている`);
+    }
+  }
+});
+
 // ---- 損益（初期資金比）: 0（＝スタート残高）を基準にした面と、確定損益（累計）の線 ----
 
 test('損益（初期資金比）の面は 足ごとの有効証拠金 − 初期資金、確定損益（累計）の線を上に重ね、含み損益の線は無い', () => {
@@ -359,7 +405,7 @@ test('取引終了時のレイヤー: 残高・DD の 2 枚に、シミュレー
   const panes = resultChartPanes(...material(), tc, BASELINE);
   const bal = panes.find((p) => p.title === '残高・有効証拠金').series;
   const dd = panes.find((p) => p.title === 'DD').series;
-  assert.deepEqual(bal.map((s) => s.name), ['残高（足ごと）', '有効証拠金（足ごと）', '残高（取引終了時）']);
+  assert.deepEqual(bal.map((s) => s.name), ['有効証拠金（足ごと）', '残高（足ごと）', '残高（取引終了時）']);
   assert.deepEqual(dd.map((s) => s.name), ['DD（足ごと）', 'DD（取引終了時）']);
   assert.equal(bal[2].points, tc.balData);
   assert.equal(dd[1].points, tc.ddData);
@@ -391,17 +437,16 @@ function alpha(c) {
   return m ? Number(m[1]) : 1;
 }
 
-test('面に重ねる線は控えめ: 足ごとの線は面の縁より太くなく、不透明度はどれも面の最も濃い色より低い', () => {
-  // 依頼者指示（2026-10-02）「上に重ねている線（有効証拠金・取引終了時の残高と DD・確定損益）が主張しすぎ」。
+test('面に重ねる線: 太さは面の縁の線より細くなく、足ごとの線は面の縁より太くない', () => {
+  // 依頼者指示（2026-10-02）「主張しすぎ」で細くし、「足ごとのラインの視認性が低い」で不透明度を戻した。
   const insts = resultChartInstances(...material(), close(), BASELINE);
   const panesWithArea = insts.filter((i) => i.payloads.some((p) => p.kind === 'baseline'));
   const overlays = panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'line');
   assert.deepEqual(overlays.map((p) => p.name).sort(),
-    ['有効証拠金（足ごと）', '残高（取引終了時）', 'DD（取引終了時）', '確定損益（累計）'].sort(), '検定の前提');
+    ['残高（足ごと）', '残高（取引終了時）', 'DD（取引終了時）', '確定損益（累計）'].sort(), '検定の前提');
   const edge = Math.max(...panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline').map((p) => p.width));
-  const densest = Math.max(AREA_FILL_ALPHA.edge, AREA_FILL_ALPHA.base);
   for (const p of overlays) {
-    assert.ok(alpha(p.color) < densest, `${p.name} の不透明度 ${alpha(p.color)} が面の最も濃い色 ${densest} 以上`);
+    assert.ok(p.width >= edge, `${p.name} の太さ ${p.width} が面の縁 ${edge} より細い`);
     if (!p.name.includes('取引終了時')) assert.ok(p.width <= edge, `${p.name} の太さ ${p.width} が面の縁 ${edge} より太い`);
   }
 });
