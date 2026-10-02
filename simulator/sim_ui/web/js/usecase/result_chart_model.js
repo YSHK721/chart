@@ -35,30 +35,35 @@
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
   indicator: ['#f5c542', '#42a5f5', '#ab47bc', '#26c6da'],
-  // 残高・DD の 2 枚は、取引終了時のレイヤーを足ごとのレイヤーに重ねる（2026-09-27 依頼者指示:
-  //   足ごとは「木」、取引終了時は「森」）。森を読めるよう、足ごとは不透明度を下げて細く、
-  //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色で描く
-  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色）。太さは依頼者指示（2026-10-02）で +2
-  //   （`TRADE_CLOSE_LINE_WIDTH`）。
-  equity: 'rgba(38,166,154,0.35)',
-  balanceClose: 'rgba(59,130,246,0.9)',
-  drawdownClose: 'rgba(239,83,80,0.9)',
-  realized: '#2962ff',
+  // 面（残高・DD・損益）に重ねる線（依頼者指示 2026-10-02「上に重ねている線…が主張しすぎ」）。
+  //   面が主役なので、不透明度は面の最も濃い色（AREA_FILL_ALPHA.edge＝0.28）より低くする。
+  //   取引終了時（森）は足ごと（木）より濃く太い関係を保つ（2026-09-27 依頼者指示）:
+  //     足ごと（有効証拠金）… 0.18
+  //     取引終了時（残高・DD）・確定損益 … 0.26
+  //   色相は取引終了時がシミュレーション結果の資産曲線 balChart・ドローダウン ddChart の線色
+  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries）、確定損益は従来の #2962ff。
+  equity: 'rgba(38,166,154,0.18)',
+  balanceClose: 'rgba(59,130,246,0.26)',
+  drawdownClose: 'rgba(239,83,80,0.26)',
+  realized: 'rgba(41,98,255,0.26)',
   marginLevel: '#ab47bc',
 });
 
 /** 線の既定の太さ（lwc の既定と同じ 1）。指標の線（価格パネル・別窓）はこの太さのまま。 */
 export const DEFAULT_LINE_WIDTH = 1;
 /**
- * 口座の 4 ペイン（残高・有効証拠金／DD／損益（初期資金比）／証拠金維持率(%)）の線を太くする量
- * （依頼者指示 2026-10-02「全体的に線が見にくい +2px 程度太くしたい」「残高グラフなどの4ペインの
- * ラインのことだけで... チャートの移動平均線は通常でよい」）。
+ * 口座のペインの主役の線を太くする量（依頼者指示 2026-10-02「全体的に線が見にくい +2px 程度太くしたい」
+ * 「残高グラフなどの4ペインのラインのことだけで... チャートの移動平均線は通常でよい」）。面に替わった後は、
+ * 面の代わりに描く線（`ACCOUNT_LINE_WIDTH`）だけに効く。
  */
 export const LINE_WIDTH_GAIN = 2;
-/** 口座の 4 ペインの線の太さ（足ごとのレイヤー・損益・維持率）。 */
+/**
+ * 口座のペインで面の代わりに主役になる線の太さ。今は、宣言が水準を名乗らないジョブの証拠金維持率の線だけ
+ * （面に重ねる線は控えめにする・依頼者指示 2026-10-02）。
+ */
 export const ACCOUNT_LINE_WIDTH = DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN;
-/** 取引終了時のレイヤーの線の太さ（足ごとより太くして「森」を読めるようにする関係は保つ）。 */
-export const TRADE_CLOSE_LINE_WIDTH = 2 + LINE_WIDTH_GAIN;
+/** 取引終了時のレイヤーの線の太さ（足ごと＝既定より 1 太くして「森」を読めるようにする関係は保つ）。 */
+export const TRADE_CLOSE_LINE_WIDTH = DEFAULT_LINE_WIDTH + 1;
 
 /** 値の列を lwc の点列へ（null・非有限は whitespace）。 */
 export function toPoints(times, values) {
@@ -231,7 +236,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { area
     series: [
       // 面を先に置く（先に描いたものが下になる）。基準は初期資金の高さ・値は残高の金額のまま。
       area('残高（足ごと）', deposit, a.balance, (v) => v),
-      { name: '有効証拠金（足ごと）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
+      { name: '有効証拠金（足ごと）', width: DEFAULT_LINE_WIDTH, color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
       { name: '残高（取引終了時）', color: RESULT_CHART_COLORS.balanceClose, width: TRADE_CLOSE_LINE_WIDTH,
         points: tradeClose.balData },
     ],
@@ -251,7 +256,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { area
     series: [
       // 面を先に置く（先に描いたものが下になる）。基準は 0（＝スタート残高）。
       area('損益（初期資金比）', 0, a.equity, (v) => v - deposit),
-      { name: '確定損益（累計）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
+      { name: '確定損益（累計）', width: DEFAULT_LINE_WIDTH, color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
     ],
   });
   panes.push({

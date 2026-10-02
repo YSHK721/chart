@@ -250,7 +250,7 @@ test('残高（足ごと）の面: 値は残高の金額のまま、基準は初
   const acct = resultChartInstances(declared(), cols, close(), BASELINE).find((i) => i.label === '残高・有効証拠金');
   const [area, equity, closeLine] = acct.payloads;
   assert.deepEqual(area.data, [{ time: 100, value: 1000 }, { time: 160, value: 990 }, { time: 220, value: 1012.5 }]);
-  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, ACCOUNT_LINE_WIDTH]);
+  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, DEFAULT_LINE_WIDTH]);
   assert.deepEqual([closeLine.color, closeLine.width], [RESULT_CHART_COLORS.balanceClose, TRADE_CLOSE_LINE_WIDTH]);
   // 別の初期資金なら基準が変わる（値は金額のまま）。
   const other = resultChartInstances(declared(), cols, close(), { ...BASELINE, deposit: 995 })
@@ -369,8 +369,7 @@ test('取引終了時のレイヤー: 残高・DD の 2 枚に、シミュレー
   }
 });
 
-test('視認性: 取引終了時は不透明で太く、足ごとは不透明度を下げて細い', () => {
-  const alpha = (c) => Number(/rgba\([^)]*,\s*([\d.]+)\)/.exec(c)[1]);
+test('視認性: 取引終了時は足ごとより濃く太い（森＞木）', () => {
   const insts = resultChartInstances(...material(), close(), BASELINE);
   for (const label of ['残高・有効証拠金', 'DD']) {
     const payloads = insts.find((i) => i.label === label).payloads;
@@ -384,7 +383,27 @@ test('視認性: 取引終了時は不透明で太く、足ごとは不透明度
       assert.ok(t.width < forest[0].width);
     }
   }
-  assert.equal(RESULT_CHART_COLORS.balanceClose, 'rgba(59,130,246,0.9)');
+});
+
+/** rgba(...) の不透明度（不透明の色は 1）。 */
+function alpha(c) {
+  const m = /rgba\([^)]*,\s*([\d.]+)\)/.exec(c);
+  return m ? Number(m[1]) : 1;
+}
+
+test('面に重ねる線は控えめ: 足ごとの線は面の縁より太くなく、不透明度はどれも面の最も濃い色より低い', () => {
+  // 依頼者指示（2026-10-02）「上に重ねている線（有効証拠金・取引終了時の残高と DD・確定損益）が主張しすぎ」。
+  const insts = resultChartInstances(...material(), close(), BASELINE);
+  const panesWithArea = insts.filter((i) => i.payloads.some((p) => p.kind === 'baseline'));
+  const overlays = panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'line');
+  assert.deepEqual(overlays.map((p) => p.name).sort(),
+    ['有効証拠金（足ごと）', '残高（取引終了時）', 'DD（取引終了時）', '確定損益（累計）'].sort(), '検定の前提');
+  const edge = Math.max(...panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline').map((p) => p.width));
+  const densest = Math.max(AREA_FILL_ALPHA.edge, AREA_FILL_ALPHA.base);
+  for (const p of overlays) {
+    assert.ok(alpha(p.color) < densest, `${p.name} の不透明度 ${alpha(p.color)} が面の最も濃い色 ${densest} 以上`);
+    if (!p.name.includes('取引終了時')) assert.ok(p.width <= edge, `${p.name} の太さ ${p.width} が面の縁 ${edge} より太い`);
+  }
 });
 
 test('計算量: 取引終了時のレイヤーの点は足の数に一致し、取引の数を増やしても増えない', () => {
@@ -464,28 +483,26 @@ test('計算量: 区間の計算へ渡す時刻 − （区間の足 + 区間よ�
   }
 });
 
-test('線の太さ: 口座の 4 ペインの線は既定 + LINE_WIDTH_GAIN 以上（取引終了時はそれより太い）、指標の線は既定のまま', () => {
-  // 依頼者指示（2026-10-02）「残高グラフなどの4ペインのラインのことだけで... チャートの移動平均線は通常でよい」。
+test('線の太さ: 指標の線と面の縁は既定、取引終了時は足ごとより太い、水準の宣言の無い維持率の線は口座ペインの太さ', () => {
   const insts = resultChartInstances(...material([
     { series: 'sma', placement: 'price', value: [null, 1, 2] },
     { series: 'madiff', placement: 'pane', value: [1, 2, 3] },
   ]), close(), BASELINE);
   const account = ['残高・有効証拠金', 'DD', '損益（初期資金比）', '証拠金維持率(%)'];
-  const linesOf = (pred) => insts.filter(pred).flatMap((i) => i.payloads).filter((p) => p.kind === 'line');
-  const accountLines = linesOf((i) => account.includes(i.label));
-  const indicatorLines = linesOf((i) => !account.includes(i.label));
+  const all = insts.flatMap((i) => i.payloads.map((p) => ({ ...p, pane: i.label })));
+  const indicatorLines = all.filter((p) => !account.includes(p.pane));
   assert.deepEqual(indicatorLines.map((p) => p.name), ['sma', 'madiff'], '検定の前提: 指標の線が無い');
-  assert.ok(accountLines.length > 0);
-  for (const p of accountLines) {
-    assert.ok(p.width >= DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN, `${p.name} の太さ ${p.width}`);
-    assert.ok(p.width === ACCOUNT_LINE_WIDTH || p.width === TRADE_CLOSE_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
-  }
   for (const p of indicatorLines) assert.equal(p.width, DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
-  // 面の縁は既定の太さ、面の上に重ねる線は太い（依頼者指示 2026-10-02「面グラフのラインは1px」）。
-  const areas = insts.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline');
+  // 面の縁は既定の太さ（依頼者指示 2026-10-02「面グラフのラインは1px」）。
+  const areas = all.filter((p) => p.kind === 'baseline');
   assert.equal(areas.length, AREAS.length);
   for (const p of areas) assert.equal(p.width, DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
-  for (const p of accountLines) assert.ok(p.width > DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  // 取引終了時（森）は足ごと（木）より太い。
+  const forest = all.filter((p) => p.name.includes('取引終了時'));
+  const trees = all.filter((p) => p.name.includes('足ごと'));
+  assert.ok(forest.length > 0 && trees.length > 0);
+  for (const f of forest) for (const t of trees) assert.ok(f.width > t.width, `${f.name} が ${t.name} より太くない`);
+  // 水準の宣言の無い維持率の線（面の代わりのペインの主役）は口座ペインの太さ（既定 + LINE_WIDTH_GAIN）。
   assert.equal(ACCOUNT_LINE_WIDTH, DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN);
-  assert.ok(TRADE_CLOSE_LINE_WIDTH > ACCOUNT_LINE_WIDTH);
+  assert.ok(ACCOUNT_LINE_WIDTH > DEFAULT_LINE_WIDTH);
 });
