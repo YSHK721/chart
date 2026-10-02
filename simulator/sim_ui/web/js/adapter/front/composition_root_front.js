@@ -27,7 +27,7 @@
 // tradeCloseCurves は親の売買履歴チャートの残高・DD 系列を作るためだけに使う。
 //   子文書側の 3 窓チャートは撤去済み（2026-09-27 依頼者指示）＝チャート描画の表示規則
 //   （マーカー・減光・バッジ・接点）はここでは読まない。
-import { tradeCloseCurves } from "/sim/report-js/chart.js";
+import { tradeCloseCurves, _withAlpha } from "/sim/report-js/chart.js";
 import { fmtMoney } from "/sim/report-js/format.js";
 import { createLinkage } from "/sim/report-js/linkage.js";
 import { buildTradeTable } from "/sim/report-js/table.js";
@@ -110,6 +110,8 @@ export async function setupSimDisplay({
       //   銘柄名を 1 回の取得から作る。取引終了時の残高・DD は同じ関数（tradeCloseCurves）で作る。
       loadReport: (jobId) => reportSource.load(jobId),
       tradeCloseCurves,
+      // 面（残高・DD・損益）の色に不透明度を付ける（ローソク足の色から面の色を作る）。
+      withAlpha: _withAlpha,
     })
     : null;
   // 版面の最大化（参照 report_ui layout.js の 3 状態・2026-09-27）。状態遷移は参照の純関数

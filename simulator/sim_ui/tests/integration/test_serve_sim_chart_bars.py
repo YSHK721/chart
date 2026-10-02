@@ -104,7 +104,7 @@ def _write_long_job(data_root: Path, prefix: str, rows: int, *, status: str = "c
         job_dir, bars=[_Bar(v) for v in values],
         bar_times=[_EPOCH + 60 * i for i in range(rows)],
         account_columns={name: values for name in chart_overlay_writer.ACCOUNT_COLUMNS},
-        series=[], ea_name="CalcProbe_EA", dataset_ref=None,
+        series=[], ea_name="CalcProbe_EA", dataset_ref=None, stop_out_level=100.0,
     )
     _mark(job_dir, status)
     return job_dir.name

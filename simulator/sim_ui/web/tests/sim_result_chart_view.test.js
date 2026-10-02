@@ -14,14 +14,17 @@ import assert from 'node:assert/strict';
 
 import { createSimResultChartView } from '../js/adapter/front/sim_result_chart_view.js';
 import { firstSegment } from '../js/adapter/front/report_source_client.js';
-import { resultChartInstances, windowTradeClose, balanceCurveTimes } from '../js/usecase/result_chart_model.js';
+import {
+  AREA_FILL_ALPHA, DEFAULT_LINE_WIDTH, resultChartInstances, windowTradeClose, balanceCurveTimes,
+} from '../js/usecase/result_chart_model.js';
 import { heldRowsCap, readRowsOf, tailWindow } from '../js/usecase/chart_window.js';
-import { tradeCloseCurves } from '../../../report_ui/web/js/chart.js';
+import { tradeCloseCurves, _withAlpha } from '../../../report_ui/web/js/chart.js';
 import { createLinkage } from '../../../report_ui/web/js/linkage.js';
 import { fakeEl } from './_fakes.js';
 
 const RECENT_BARS = 50;          // Fake の公開面が名乗る「最初に読む本数」
 const MAX_RETURNED_ROWS = 200;   // Fake の宣言が名乗る「1 回の上限」
+const STOP_OUT_LEVEL = 87.5;     // Fake の宣言が名乗る、run が使ったストップアウト水準（台帳の値と違う）
 const READ_ROWS = readRowsOf({ recentBars: RECENT_BARS, maxReturnedRows: MAX_RETURNED_ROWS });
 const CAP = heldRowsCap({ readRows: READ_ROWS, maxReturnedRows: MAX_RETURNED_ROWS });
 const TOTAL = 3000;
@@ -41,6 +44,7 @@ function extent({ rows = TOTAL, datasetRef = 'jp225_mt5_spread' } = {}) {
     indicators: [{ series: 'sma', placement: 'price', column: 'indicator_0' }],
     timeframe: '1m', ea_name: 'EA', dataset_ref: datasetRef, time_unit: 'epoch_seconds',
     max_returned_rows: MAX_RETURNED_ROWS,
+    stop_out_level: STOP_OUT_LEVEL,
   };
 }
 
@@ -54,8 +58,9 @@ function rowsAnswer(start, end) {
       bar_index: index,
       time: index.map(timeAt),
       open: constant(1), high: constant(2), low: constant(0.5), close: index.map((i) => i + 0.5),
-      balance: constant(1000), equity: constant(1000), drawdown: constant(0), drawdown_pct: constant(0),
-      realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: constant(null),
+      // 有効証拠金は初期資金（report の meta.initial_deposit＝1000）の上下と、ちょうど同じ値を混ぜる。
+      balance: index.map((i) => 1000 + ((i % 3) - 1)), equity: index.map((i) => 1000 + ((i % 5) - 2)), drawdown: index.map((i) => i % 4), drawdown_pct: constant(0),
+      realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: index.map((i) => (i % 5 === 0 ? null : 80 + (i % 21))),
       indicator_0: constant(1),
     },
   };
@@ -71,9 +76,12 @@ function report(symbol = 'JP225', curve = []) {
 
 function kit() {
   const calls = {
-    viewer: [], operations: [], geometry: 0, renderLine: [], legendRows: [], draws: [],
+    viewer: [], operations: [], geometry: 0, renderLine: [], renderBaseline: [], renders: [], legendRows: [], draws: [],
     loaded: [], removed: 0, disposed: { operations: 0, geometry: 0 }, markers: null,
     scrolls: [], toasts: [], visibleSets: [], rangeHandlers: new Set(), chartOptions: [],
+    // ChartRenderer が持つクロム色（ローソク足の陽線・陰線）。本番（CHROME_CURRENT）と違う色を名乗る——
+    //   View が色を書き写していれば落ちる。
+    chrome: { candleUp: '#11aa11', candleDown: '#aa1111' }, chromeSubscribed: 0, chromeUnsubscribed: 0,
   };
   // 見えている論理範囲（検定が動かす）。
   calls.range = { from: 0, to: RECENT_BARS };
@@ -92,7 +100,19 @@ function kit() {
         paneLegendView: { setInstances(rows) { calls.legendRows.push(rows); } },
         renderer: {
           setCandles(c) { calls.draws.push({ via: 'setCandles', candles: c, instances: null }); calls.last = c; },
-          renderLine(id, payloads, opts) { calls.renderLine.push({ id, payloads, opts }); },
+          renderLine(id, payloads, opts) {
+            calls.renderLine.push({ id, payloads, opts });
+            calls.renders.push({ method: 'renderLine', id, payloads, opts });
+          },
+          renderBaseline(id, payloads, opts) {
+            calls.renderBaseline.push({ id, payloads, opts });
+            calls.renders.push({ method: 'renderBaseline', id, payloads, opts });
+          },
+          addChromeObserver(fn) {
+            calls.chromeSubscribed += 1;
+            fn(calls.chrome);
+            return () => { calls.chromeUnsubscribed += 1; };
+          },
           replaceDataKeepingView(c, instances) {
             // 本物（ChartRenderer.replaceDataKeepingView）と同じく、同じ時刻の足を同じ画面位置に
             //   留める＝先頭に増えた（減った）足の本数だけ、見えている論理範囲がずれる。
@@ -176,6 +196,7 @@ function view({ k = kit(), ext = extent(), rep = () => report(), answer = rowsAn
       c.tradeCloseSegments.push(segment);
       return tradeCloseCurves(segment, times, deposit);
     },
+    withAlpha: _withAlpha,
     setTimer: (fn, ms) => { const t = { fn, ms }; c.timers.push(t); return t; },
     clearTimer: (t) => { c.timers = c.timers.filter((x) => x !== t); },
   });
@@ -196,6 +217,16 @@ function view({ k = kit(), ext = extent(), rep = () => report(), answer = rowsAn
   /** 利用者が操作して表示範囲が変わり、止まった。 */
   const scrollTo = async (range) => { userActs(); rangeChanges(range); await settle(); };
   return { v, host, k, c, userActs, rangeChanges, settle, scrollTo };
+}
+
+/** View が model へ渡すはずの初期資金基準と色（report の初期資金・ChartRenderer の色）。 */
+function baseline(c, deposit = 1000) {
+  return { deposit, upColor: c.chrome.candleUp, downColor: c.chrome.candleDown, withAlpha: _withAlpha };
+}
+
+/** 描いた instance（renderLine・renderBaseline のどちらで描いたものも・描いた順・重複なし）。 */
+function drawnIds(c) {
+  return [...new Set(c.renders.map((x) => x.id))];
 }
 
 /** 描いた足の Bar 列の中の位置の区間（足の時刻から逆算）。 */
@@ -248,9 +279,11 @@ test('描くとき: 全 instance（点の時刻は区間の足の時刻）・売
   await v.render('job1');
   const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
   const columns = rowsAnswer(tail.start, tail.end).columns;
-  const expected = resultChartInstances(extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000));
-  assert.deepEqual(c.renderLine.map((x) => x.id), expected.map((inst) => inst.instanceId));
-  for (const call of c.renderLine) {
+  const expected = resultChartInstances(
+    extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000), baseline(c),
+  );
+  assert.deepEqual(drawnIds(c), expected.map((inst) => inst.instanceId));
+  for (const call of c.renders) {
     for (const p of call.payloads) assert.deepEqual(p.data.map((q) => q.time), columns.time, `${call.id} ${p.name}`);
   }
   assert.deepEqual(c.loaded, ['/sim/data/job1/trade_markers.json']);
@@ -297,8 +330,118 @@ test('ペイン別凡例の行は描いた instance と一致し、設定・削�
   const { v, c } = view();
   await v.render('job1');
   const rows = c.legendRows.at(-1);
-  assert.deepEqual(rows.map((r) => r.instanceId), c.renderLine.map((x) => x.id));
+  assert.deepEqual(rows.map((r) => r.instanceId), drawnIds(c));
   assert.ok(rows.every((r) => typeof r.onEye === 'function' && r.onGear === undefined && r.onClose === undefined));
+});
+
+// ---- 面（基準つき・グラデーション）: 残高・DD・損益（初期資金比） ----
+
+/** 面の系列と、区間の列から期待する値・基準。 */
+const AREAS = Object.freeze([
+  { id: 'pane:残高・有効証拠金', name: '有効証拠金（足ごと）', lines: ['残高（取引終了時）'],
+    base: (deposit) => deposit, values: (cols) => cols.equity },
+  { id: 'pane:DD', name: 'DD（足ごと）', lines: ['DD（取引終了時）'],
+    base: () => 0, values: (cols) => cols.drawdown.map((v) => -v) },
+  { id: 'pane:損益（初期資金比）', name: '損益（初期資金比）', lines: ['確定損益（累計）'],
+    base: () => 0, values: (cols, deposit) => cols.equity.map((v) => v - deposit) },
+  { id: 'pane:証拠金維持率(%)', name: '証拠金維持率', lines: [],
+    base: () => STOP_OUT_LEVEL, values: (cols) => cols.margin_level },
+]);
+
+/** 区間の列から期待する面の点（値なしは whitespace）。 */
+function expectedArea(cols, values) {
+  return cols.time.map((time, k) => (values[k] === null ? { time } : { time, value: values[k] }));
+}
+
+/** 面の 6 色（ChartRenderer が持つローソク足の陽線・陰線の色から作る）。 */
+function expectedFill(c) {
+  const up = c.chrome.candleUp;
+  const down = c.chrome.candleDown;
+  return {
+    topLineColor: up,
+    topFillColor1: _withAlpha(up, AREA_FILL_ALPHA.edge),
+    topFillColor2: _withAlpha(up, AREA_FILL_ALPHA.base),
+    bottomLineColor: down,
+    bottomFillColor1: _withAlpha(down, AREA_FILL_ALPHA.base),
+    bottomFillColor2: _withAlpha(down, AREA_FILL_ALPHA.edge),
+  };
+}
+
+test('面: 3 つとも renderBaseline で、上に重ねる線より先に（下に）同じ instance・同じペインへ描く', async () => {
+  const { v, c } = view();
+  await v.render('job1');
+  for (const a of AREAS) {
+    const mine = c.renders.filter((x) => x.id === a.id);
+    assert.deepEqual(mine.map((x) => [x.method, x.payloads.map((p) => p.name), x.opts]), [
+      ['renderBaseline', [a.name], { pane: true }],
+      ...(a.lines.length > 0 ? [['renderLine', a.lines, { pane: true }]] : []),
+    ], a.name);
+    // 凡例の行は 1 つ（面と線で 1 instance）。
+    assert.equal(c.legendRows.at(-1).filter((r) => r.instanceId === a.id).length, 1);
+  }
+  assert.deepEqual(c.renderBaseline.map((x) => x.id).sort(), AREAS.map((a) => a.id).sort());
+  // 含み損益の線は描かない。
+  assert.ok(c.renders.every((x) => x.payloads.every((p) => p.name !== '含み損益')));
+});
+
+test('面: 値・基準は区間の列と report.json の初期資金・宣言の水準から、面の色は ChartRenderer のローソク足の色から、縁の線は既定の太さ', async () => {
+  const deposit = 999;
+  const { v, c } = view({ rep: () => ({ ...report(), meta: { initial_deposit: deposit, symbol: 'JP225' } }) });
+  await v.render('job1');
+  const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
+  const cols = rowsAnswer(tail.start, tail.end).columns;
+  for (const a of AREAS) {
+    const p = c.renderBaseline.find((x) => x.id === a.id).payloads[0];
+    assert.equal(p.base, a.base(deposit), a.name);
+    assert.deepEqual(p.baseline, expectedFill(c), a.name);
+    assert.equal(p.width, DEFAULT_LINE_WIDTH, a.name);
+    assert.deepEqual(p.data, expectedArea(cols, a.values(cols, deposit)), a.name);
+  }
+  // 色は購読 1 回で受け取り、購読を残さない。
+  assert.equal(c.chromeSubscribed - c.chromeUnsubscribed, 0);
+});
+
+test('面: 読み足しの後も、持っている区間の値と同じ基準・色で表示を保つ口から差し替わる（系列を作り直さない）', async () => {
+  const { v, c, scrollTo } = view();
+  await v.render('job1');
+  await scrollTo({ from: 2, to: 20 });
+  const draw = c.draws.at(-1);
+  assert.equal(draw.via, 'replaceDataKeepingView');
+  const w = drawnWindow(draw.candles);
+  const cols = rowsAnswer(w.start, w.end).columns;
+  for (const a of AREAS) {
+    const p = draw.instances.find((i) => i.instanceId === a.id).payloads[0];
+    assert.equal(p.kind, 'baseline');
+    assert.equal(p.base, a.base(1000));
+    assert.deepEqual(p.baseline, expectedFill(c));
+    assert.deepEqual(p.data, expectedArea(cols, a.values(cols, 1000)), a.name);
+  }
+  // 面は作り直さない（renderBaseline は instance ごとに 1 回のまま）。
+  assert.equal(c.renderBaseline.length - new Set(c.renderBaseline.map((x) => x.id)).size, 0);
+});
+
+test('計算量: 色の購読は 1 チャートにつき 1 回で、読み足しの回数（2 点）で増えない', async () => {
+  const observed = [];
+  for (const steps of [2, 6]) {
+    const h = view();
+    await h.v.render('job1');
+    await script(h, steps);
+    assert.ok(h.c.reads.length > steps, '読み足しが起きていない（検定が空虚）');
+    assert.equal(h.c.chromeSubscribed - h.c.viewer.length, 0);
+    assert.equal(h.c.chromeSubscribed - h.c.chromeUnsubscribed, 0);
+    observed.push(h.c.chromeSubscribed);
+  }
+  assert.equal(observed[0], observed[1]);
+});
+
+test('report.json が初期資金（meta.initial_deposit）を名乗らなければ描かずに理由を出す（基準を推測しない・足も読まない）', async () => {
+  for (const meta of [{ symbol: 'JP225' }, { initial_deposit: null }, { initial_deposit: Number.NaN }]) {
+    const { v, c, host } = view({ rep: () => ({ ...report(), meta }) });
+    assert.equal(await v.render('job1'), false);
+    assert.match(host.children.at(-1).textContent, /初期資金/);
+    assert.equal(c.reads.length, 0);
+    assert.equal(c.draws.length, 0);
+  }
 });
 
 // ---- 描かない条件（理由を掲示する） ----
@@ -418,6 +561,7 @@ test('読んでいる途中で別のジョブへ替えたら、前のジョブ�
     fetchRows: async (jobId, start, end) => rowsAnswer(start, end),
     loadReport: async () => report(),
     tradeCloseCurves,
+    withAlpha: _withAlpha,
   });
   const first = v.render('job1');
   assert.equal(await v.render('job2'), true);
@@ -442,7 +586,7 @@ test('利用者が操作して左端へ近づき、変化が止まったら、�
   // 読んだ結果で表示範囲を動かさない（移動の口を呼ばない）。
   assert.deepEqual(c.scrolls, []);
   // 値の系列は描き直さず、同じ instance へ入れる。
-  assert.deepEqual(draw.instances.map((inst) => inst.instanceId), c.renderLine.map((x) => x.id));
+  assert.deepEqual(draw.instances.map((inst) => inst.instanceId), drawnIds(c));
   for (const inst of draw.instances) {
     for (const p of inst.payloads) assert.equal(p.data.length, draw.candles.length, `${inst.instanceId} ${p.name}`);
   }
@@ -473,10 +617,11 @@ test('目のボタンで隠した instance は、読み足しの後も隠れた�
   const id = c.legendRows.at(-1)[0].instanceId;
   c.legendRows.at(-1)[0].onEye();
   assert.deepEqual(c.visibleSets, [[id, false]]);
+  const rendersBefore = c.renders.length;
   await scrollTo({ from: 2, to: 20 });
   assert.equal(c.draws.length, 2);
-  // 描き直し（renderLine の再発行）も、表示の付け直しもしない。
-  assert.equal(c.renderLine.length, c.draws[1].instances.length);
+  // 描き直し（renderLine・renderBaseline の再発行）も、表示の付け直しもしない。
+  assert.equal(c.renders.length - rendersBefore, 0);
   assert.deepEqual(c.visibleSets, [[id, false]]);
   assert.equal(c.legendRows.at(-1).find((r) => r.instanceId === id).visible, false);
 });
@@ -688,7 +833,8 @@ test('計算量: 取得した行 − 描画へ渡した点 = 0（足も各系列
     assert.equal(wasted.length, 0, `読んだ ${read.times.length} 行のうち ${wasted.length} 行を足に描いていない`);
     const series = draw.instances
       ? draw.instances.flatMap((inst) => inst.payloads)
-      : h.c.renderLine.flatMap((x) => x.payloads);
+      : h.c.renders.flatMap((x) => x.payloads);
+    assert.ok(series.some((p) => p.kind === 'baseline'), '面が検定に入っていない（検定が空虚）');
     for (const p of series) {
       const points = new Set(p.data.map((q) => q.time));
       assert.equal(read.times.filter((t) => !points.has(t)).length, 0, `${p.name} に渡していない行がある`);
@@ -788,10 +934,10 @@ test('計算量: 描いた instance − 凡例に出した instance = 0、組み
     const h = view({ ext: extent({ rows }) });
     await h.v.render('job1');
     await script(h, 3);
-    const drawn = new Set(h.c.renderLine.map((x) => x.id));
+    const drawn = new Set(drawnIds(h.c));
     const listed = new Set(h.c.legendRows.at(-1).map((r) => r.instanceId));
     assert.deepEqual([...drawn].filter((id) => !listed.has(id)), []);
-    counts.push([h.c.viewer.length, h.c.operations.length, h.c.renderLine.length]);
+    counts.push([h.c.viewer.length, h.c.operations.length, h.c.renders.length]);
   }
   assert.deepEqual(counts[0], counts[1]);
 });

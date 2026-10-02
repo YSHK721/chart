@@ -57,7 +57,7 @@ class _Query:
             rows=2_152_183, index_column="bar_index", columns=_COLUMNS,
             indicators=({"series": "sma", "placement": "price", "column": "indicator_0"},),
             timeframe="1m", ea_name="CalcProbe_EA", dataset_ref="jp225_mt5_spread",
-            time_unit="epoch_seconds",
+            time_unit="epoch_seconds", stop_out_level=100.0,
         )
 
     def rows(self, job_id: str, *, start: int, end: int) -> ChartBarsRows:
@@ -85,7 +85,7 @@ class TestTheExtentCarriesTheDeclaration:
             "columns": list(_COLUMNS),
             "indicators": [{"series": "sma", "placement": "price", "column": "indicator_0"}],
             "timeframe": "1m", "ea_name": "CalcProbe_EA", "dataset_ref": "jp225_mt5_spread",
-            "time_unit": "epoch_seconds", "max_returned_rows": MAX_RETURNED_BARS,
+            "time_unit": "epoch_seconds", "stop_out_level": 100.0, "max_returned_rows": MAX_RETURNED_BARS,
         }
 
 

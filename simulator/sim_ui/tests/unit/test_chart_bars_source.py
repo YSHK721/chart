@@ -69,8 +69,13 @@ def _write_run(directory: Path, rows: int) -> Path:
         series=[{"series": "sma", "placement": "price", "value": values}],
         ea_name="CalcProbe_EA",
         dataset_ref="jp225_mt5_spread",
+        stop_out_level=_STOP_OUT_LEVEL,
     )
     return directory
+
+
+#: 書き手へ渡す水準（台帳の値と違う値）。
+_STOP_OUT_LEVEL = 87.5
 
 
 @pytest.fixture
@@ -103,6 +108,32 @@ class TestItReadsWhatTheWriterWrote:
             chart_overlay_writer.RUN_TIMEFRAME, "CalcProbe_EA", "jp225_mt5_spread",
             chart_overlay_writer.TIME_UNIT,
         )
+        assert declared.stop_out_level == _STOP_OUT_LEVEL
+
+    def test_a_declaration_written_before_the_level_was_declared_has_no_level(self, tmp_path: Path):
+        # Arrange: 水準を宣言に書く前に実行したジョブ（実ジョブの chart_bars.json 8 件すべてがこの形・2026-10-02 実測）。
+        _write_run(tmp_path, 5)
+        path = tmp_path / chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["stop_out_level"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        # Act
+        declared = ChartBarsSource(result_gate=_Gate(tmp_path)).declaration(_JOB)
+
+        # Assert: 値を発明しない（None＝宣言が名乗らない）。他の宣言は読める。
+        assert declared.stop_out_level is None
+        assert declared.rows == 5
+
+    @pytest.mark.parametrize("level", ["100", None, float("nan"), True])
+    def test_a_level_that_is_not_a_finite_number_is_missing(self, tmp_path: Path, level):
+        _write_run(tmp_path, 5)
+        path = tmp_path / chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["stop_out_level"] = level
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ChartBarsArtefactMissingError, match="宣言"):
+            ChartBarsSource(result_gate=_Gate(tmp_path)).declaration(_JOB)
 
     def test_the_range_is_half_open_on_the_bar_position(self, tmp_path: Path):
         source = ChartBarsSource(result_gate=_Gate(_write_run(tmp_path, 50)))

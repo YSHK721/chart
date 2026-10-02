@@ -595,6 +595,12 @@ export class ChartRenderer {
     this._renderSeries(instanceId, payloads, 'histogram', opts);
   }
 
+  // baseline 系列群を生成（基準つきの面・lwc の BaselineSeries。基準は payload.base、面の色は
+  //   payload.baseline）。追加（2026-10-02・売買履歴チャートの残高・損益・DD の面）。
+  renderBaseline(instanceId, payloads, opts = {}) {
+    this._renderSeries(instanceId, payloads, 'baseline', opts);
+  }
+
   // level_dash 系列群を生成（ローソク足幅の水平ダッシュ・同値 4 値の Candlestick）。
   renderLevelDash(instanceId, payloads, opts = {}) {
     this._renderSeries(instanceId, payloads, 'level_dash', opts);

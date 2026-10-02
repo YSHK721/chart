@@ -33,6 +33,9 @@ class ChartBarsDeclaration:
     ``timeframe`` / ``ea_name`` / ``dataset_ref``: その run の事実。``dataset_ref`` は
         台帳に無い実体で走った run では `None`（推測しない）。
     ``time_unit``: 時刻の列の単位。
+    ``stop_out_level``: その run が使ったストップアウト水準（ISSUE-546・trace_meta.json と同じ出所）。
+        売買履歴チャートの証拠金維持率の面の基準（2026-10-02）。宣言に書く前に実行したジョブでは
+        `None`（推測しない）。
     """
 
     rows: int
@@ -43,6 +46,7 @@ class ChartBarsDeclaration:
     ea_name: str
     dataset_ref: "str | None"
     time_unit: str
+    stop_out_level: "float | None" = None
 
 
 class ChartBarsPort(abc.ABC):

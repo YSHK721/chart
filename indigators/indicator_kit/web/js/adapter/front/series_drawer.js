@@ -186,7 +186,9 @@ export class SeriesDrawer {
       ? this._h._lwc.HistogramSeries
       : seriesType === 'level_dash'
         ? this._h._lwc.CandlestickSeries
-        : this._h._lwc.LineSeries;
+        : seriesType === 'baseline'
+          ? this._h._lwc.BaselineSeries
+          : this._h._lwc.LineSeries;
     for (const p of payloads ?? []) {
       // 価格軸（画面右端）のラベルは系列名ではなく現在値（数値・系列色チップ）を表示する
       //   （ユーザー指示 2026-07-23。旧: title=系列名＋lastValueVisible=false＝名前チップ）。
@@ -198,6 +200,14 @@ export class SeriesDrawer {
       if (seriesKind(kind).appliesLineStyle) {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
+      }
+      // baseline（基準つきの面・追加 2026-10-02）: 基準（payload.base → baseValue）と面の色
+      //   （payload.baseline の 6 色）を渡す。baseline 以外の種別はここを通らない（生成オプションは従来と同じ）。
+      if (seriesType === 'baseline') {
+        if (p.base !== undefined) {
+          options.baseValue = { type: 'price', price: p.base };
+        }
+        Object.assign(options, p.baseline ?? {});
       }
       // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
       //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload

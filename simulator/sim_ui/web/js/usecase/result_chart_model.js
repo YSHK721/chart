@@ -6,36 +6,59 @@
 //          値なしは null）。足（time・open・high・low・close）・口座・指標が同じ行に並ぶ。
 //   返った列の長さが行数と違う・区間が問うた区間と違うなら描かない（`rowsMismatch`）。
 // DOM・lwc に触れない。描画はライブチャートの ChartRenderer が行い、View は本モジュールの
-// 出力（`resultChartInstances`）をそのまま渡す（系列はすべて線・ChartRenderer に面の塗りの種類は無い）。
+// 出力（`resultChartInstances`）をそのまま渡す。系列は線か面で、どちらで描くかは系列の `kind`
+// （'line' / 'baseline'）が名乗る（ChartRenderer の renderLine / renderBaseline）。
 //
 // パネルの並び（依頼者指示 2026-09-26）:
 //   0     … 価格（ローソク足・売買マーク・置き場 "price" のトリガー指標）
 //   1..k  … 置き場 "pane" のトリガー指標（1 系列 1 パネル）
-//   続く  … 口座（残高・有効証拠金）／DD／損益（確定の累計・含み）／証拠金維持率
+//   続く  … 口座（残高・有効証拠金）／DD／損益（初期資金比）／証拠金維持率
 // 口座系はすべて**足ごと**の値（保有中も更新）。値の無い足（未成立の指標・保有の無い足の
 // 維持率）は lwc の whitespace（time だけの点）にする——0 を置くと偽の値を描く。
 // 残高・DD の 2 枚には**取引終了時**のレイヤー（シミュレーション結果の資産曲線 balChart・
 // ドローダウン ddChart と同じ系列）も重ねる（依頼者指示 2026-09-27）。
+// 基準つきの面（依頼者指示 2026-10-02「スタート残高を基準に損益を分かりやすくプロットしてほしい」
+// 「残高グラフも同じ仕様にしろ」「棒グラフではなく、面グラフでグラデーションで表現しろ」「DDも同じく」
+// 「証拠金維持率も同じく」「面グラフのラインは1px」）。
+// 基準を境に、上は陽線・下は陰線の色の、グラデーションの面（lwc の BaselineSeries・kind 'baseline'）。
+// 色は View が売買履歴チャートのローソク足から借りて渡す。縁の線は既定の太さ（DEFAULT_LINE_WIDTH）。
+//   面と線の規則（依頼者裁定 2026-10-02）: 面＝足ごとの有効証拠金ベース・重ねる線＝確定（残高ベース）。
+//     宣言は SERIES_RULE・SOURCE_BASIS・ACCOUNT_PANES の 1 か所。
+//   残高・有効証拠金 … 足ごとの有効証拠金の面。基準は初期資金の高さ（目盛りは金額のまま）。
+//                      確定の線（残高（取引終了時））を上に重ねる。確定の線は全ペインで同じ見た目・1 本（SERIES_RULE）。
+//   DD               … 足ごとの DD（下向き・≤0）の面。基準は 0。DD（取引終了時）の線を上に重ねる。
+//   損益（初期資金比）… 足ごとの 有効証拠金 − 初期資金 の面。基準は 0（＝スタート残高）。
+//                      確定損益（累計）の線を上に重ねる。含み損益の線は描かない
+//                      （面の縁と確定損益の線の差が含み損益）。
+//   証拠金維持率(%)  … 足ごとの維持率の面。基準は run が使ったストップアウト水準（足の成果物の宣言
+//                      `stop_out_level`）。宣言が水準を名乗らないジョブ（宣言に書く前に実行した run）は
+//                      基準が分からないので面にせず線で描き、凡例名「証拠金維持率（水準の宣言なし）」で示す。
 
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
   indicator: ['#f5c542', '#42a5f5', '#ab47bc', '#26c6da'],
-  // 残高・DD の 2 枚は、取引終了時のレイヤーを足ごとのレイヤーに重ねる（2026-09-27 依頼者指示:
-  //   足ごとは「木」、取引終了時は「森」）。森を読めるよう、足ごとは不透明度を下げて細く、
-  //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色と太さで描く
-  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色・lineWidth 2）。
-  balance: 'rgba(41,98,255,0.35)',
-  equity: 'rgba(38,166,154,0.35)',
-  drawdown: 'rgba(239,83,80,0.35)',
-  balanceClose: 'rgba(59,130,246,0.9)',
-  drawdownClose: 'rgba(239,83,80,0.9)',
-  realized: '#2962ff',
-  floating: '#ff9800',
+  // 確定の線の色（全ペインで 1 色・依頼者裁定 2026-10-02「DDの配色が、確定と足ごとが同じ色で視認性が
+  //   悪すぎる」「統一しろ」）。色相はシミュレーション結果の資産曲線 balChart の線色（`lwc5_chart_renderer.js`
+  //   の balSeries）で、面の上下の色（陽線・陰線）とは別の色相。不透明度は 0.75。
+  settled: 'rgba(59,130,246,0.75)',
   marginLevel: '#ab47bc',
 });
 
-/** 取引終了時のレイヤーの線の太さ（足ごとのレイヤーは 1）。 */
-export const TRADE_CLOSE_LINE_WIDTH = 2;
+/** 線の既定の太さ（lwc の既定と同じ 1）。指標の線（価格パネル・別窓）はこの太さのまま。 */
+export const DEFAULT_LINE_WIDTH = 1;
+/**
+ * 口座のペインの主役の線を太くする量（依頼者指示 2026-10-02「全体的に線が見にくい +2px 程度太くしたい」
+ * 「残高グラフなどの4ペインのラインのことだけで... チャートの移動平均線は通常でよい」）。面に替わった後は、
+ * 面の代わりに描く線（`ACCOUNT_LINE_WIDTH`）だけに効く。
+ */
+export const LINE_WIDTH_GAIN = 2;
+/**
+ * 口座のペインで面の代わりに主役になる線の太さ。今は、宣言が水準を名乗らないジョブの証拠金維持率の線だけ
+ * （面に重ねる線は控えめにする・依頼者指示 2026-10-02）。
+ */
+export const ACCOUNT_LINE_WIDTH = DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN;
+/** 確定の線の太さ（全ペインで 1 つ。面の縁＝既定より 1 太い）。 */
+export const SETTLED_LINE_WIDTH = DEFAULT_LINE_WIDTH + 1;
 
 /** 値の列を lwc の点列へ（null・非有限は whitespace）。 */
 export function toPoints(times, values) {
@@ -49,12 +72,61 @@ export function toPoints(times, values) {
   return out;
 }
 
+/**
+ * 面の塗りの不透明度。edge＝縁の線の側（濃い）、base＝基準の側（薄い）。値は vendor の lightweight-charts
+ * v5 の BaselineSeries の既定（topFillColor1 0.28 → topFillColor2 0.05・bottomFillColor1 0.05 →
+ * bottomFillColor2 0.28）と同じ。
+ */
+export const AREA_FILL_ALPHA = Object.freeze({ edge: 0.28, base: 0.05 });
+
+/**
+ * 面の点を作る口。面の点はすべてここを通る（観測の境界として宣言する注入点:
+ * `resultChartPanes` / `resultChartInstances` の `seams.areaPoint`。計算量の検定が数える）。
+ * @param {number} time
+ * @param {number|null} value null は値なし（whitespace＝time だけの点）
+ */
+export function areaPoint(time, value) {
+  return value === null ? { time } : { time, value };
+}
+
+/**
+ * 面の点: 足ごとの値 v を toValue(v) にする。値なし（null・非有限）の足は whitespace（0 を置かない）。
+ * @param {Array<number>} times
+ * @param {Array<number|null>} values
+ * @param {function} toValue (v) => number
+ * @param {function} point 面の点を作る口（既定 `areaPoint`）
+ */
+export function areaPoints(times, values, toValue, point = areaPoint) {
+  const out = new Array(times.length);
+  for (let i = 0; i < times.length; i += 1) {
+    const v = values[i];
+    out[i] = (v === null || v === undefined || !Number.isFinite(v)) ? point(times[i], null) : point(times[i], toValue(v));
+  }
+  return out;
+}
+
+/**
+ * 面の 6 色（lwc の BaselineSeries のオプション名）。基準より上は upColor・下は downColor。
+ * 線は不透明、面は縁の線の側が濃く（AREA_FILL_ALPHA.edge）基準の側が薄い（AREA_FILL_ALPHA.base）。
+ * @param {{upColor: string, downColor: string, withAlpha: function}} baseline
+ */
+export function areaFill({ upColor, downColor, withAlpha }) {
+  return {
+    topLineColor: upColor,
+    topFillColor1: withAlpha(upColor, AREA_FILL_ALPHA.edge),
+    topFillColor2: withAlpha(upColor, AREA_FILL_ALPHA.base),
+    bottomLineColor: downColor,
+    bottomFillColor1: withAlpha(downColor, AREA_FILL_ALPHA.base),
+    bottomFillColor2: withAlpha(downColor, AREA_FILL_ALPHA.edge),
+  };
+}
+
 /** 足の列（成果物の列名。ローソク足 1 本を作る 5 列）。 */
 const CANDLE_COLUMNS = Object.freeze(['time', 'open', 'high', 'low', 'close']);
 
 /** 描く口座の列（`resultChartPanes` が読む列。長さの照合もこの列すべてに行う）。 */
 const ACCOUNT_COLUMNS = Object.freeze(
-  ['balance', 'equity', 'drawdown', 'realized_pnl', 'floating_pnl', 'margin_level'],
+  ['equity', 'drawdown', 'realized_pnl', 'margin_level'],
 );
 
 function indicatorsOf(declared) {
@@ -117,15 +189,132 @@ export function candlesOf(columns) {
 }
 
 /**
+ * 足ごとの量の出所（成果物の列・取引終了時の系列）が、有効証拠金ベース（含み損益込み）か確定（残高ベース）か。
+ *   drawdown・margin_level は有効証拠金から作る列（書き手 chart_overlay_writer の drawdown(account.equity)・
+ *   口座記録の維持率＝有効証拠金 ÷ 必要証拠金）。取引終了時の系列は残高ベース（report_ui の tradeCloseCurves）。
+ */
+export const SOURCE_BASIS = Object.freeze({
+  equity: 'equity',
+  drawdown: 'equity',
+  margin_level: 'equity',
+  realized_pnl: 'settled',
+  balanceClose: 'settled',
+  drawdownClose: 'settled',
+});
+
+/**
+ * 面と線の規則（依頼者裁定 2026-10-02「面グラフのルールはどうなっているのか? … 統一しろ」）:
+ *   面（role 'area'）＝足ごとの有効証拠金ベース（含み損益込み）／重ねる線（role 'line'）＝確定（残高ベース）。
+ * 確定の線（依頼者裁定 2026-10-02「確定と足ごとが同じ色で視認性が悪すぎる」「太さが違う。統一しろ」）:
+ *   全ペインで同じ見た目（settledLine の色・太さ）で、1 ペイン高々 1 本。
+ */
+export const SERIES_RULE = Object.freeze({
+  area: 'equity',
+  line: 'settled',
+  // minHueGap: 確定の線の色が面の上下の色（陽線・陰線）から離れているべき色相差の下限（度・円周上）。
+  //   今の値: 確定の線 約 217° と陽線 #26a69a 約 174°（差 約 43°）・陰線 #ef5350 約 1°（差 約 144°）。
+  settledLine: Object.freeze({ color: RESULT_CHART_COLORS.settled, width: SETTLED_LINE_WIDTH, minHueGap: 30 }),
+});
+
+/** 取引終了時の系列（点の列のまま重ねる。出所の名前 → tradeClose の鍵）。 */
+const TRADE_CLOSE_SOURCES = Object.freeze({ balanceClose: 'balData', drawdownClose: 'ddData' });
+
+/**
+ * 口座のペイン（並び順）。各ペインは面 1 つ（role 'area'）と、その上に重ねる線（role 'line'）を宣言する。
+ *   area.base(ctx)    … 面の基準（ctx = { deposit, stopOutLevel }）。null なら基準が分からない
+ *                       → 面にせず area.fallback の名前の線で描く（ペインの主役なので ACCOUNT_LINE_WIDTH）。
+ *   area.toValue(v, ctx) … 列の値 → 描く値。
+ *   area.legendSide   … 凡例の色チップの側（'up'＝陽線の色 / 'down'＝陰線の色）。面がふつう基準のどちら側に
+ *                       在るかで決める（DD は常に 0 以下＝下側。他は基準より上が良い側）。
+ *   lines             … 確定の線（高々 1 本・見た目は SERIES_RULE.settledLine）。
+ */
+export const ACCOUNT_PANES = Object.freeze([
+  {
+    title: '残高・有効証拠金',
+    // 基準は初期資金の高さ（目盛りは金額のまま）。
+    area: {
+      name: '有効証拠金（足ごと）', source: 'equity', base: (ctx) => ctx.deposit, toValue: (v) => v, legendSide: 'up',
+    },
+    // 残高は決済でしか変わらないので、確定の線は取引終了時の 1 本。
+    lines: [{ name: '残高（取引終了時）', source: 'balanceClose' }],
+  },
+  {
+    title: 'DD',
+    // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。基準は 0。
+    area: { name: 'DD（足ごと）', source: 'drawdown', base: () => 0, toValue: (v) => -v, legendSide: 'down' },
+    // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
+    lines: [{ name: 'DD（取引終了時）', source: 'drawdownClose' }],
+  },
+  {
+    title: '損益（初期資金比）',
+    // 基準は 0（＝スタート残高）。面の縁と確定損益の線の差が含み損益。
+    area: {
+      name: '損益（初期資金比）', source: 'equity', base: () => 0, toValue: (v, ctx) => v - ctx.deposit, legendSide: 'up',
+    },
+    lines: [{ name: '確定損益（累計）', source: 'realized_pnl' }],
+  },
+  {
+    title: '証拠金維持率(%)',
+    // 基準は run が使ったストップアウト水準（足の成果物の宣言 stop_out_level）。
+    area: {
+      name: '証拠金維持率', source: 'margin_level', base: (ctx) => ctx.stopOutLevel, toValue: (v) => v, legendSide: 'up',
+      fallback: { name: '証拠金維持率（水準の宣言なし）', color: 'marginLevel' },
+    },
+    lines: [],
+  },
+]);
+
+/** 宣言 1 枚ぶんの系列（面を先に＝下に置き、線を重ねる）。 */
+function accountSeries(pane, { declared, columns, tradeClose, baseline, point }) {
+  const t = columns.time;
+  const ctx = {
+    deposit: baseline.deposit,
+    stopOutLevel: Number.isFinite(declared.stop_out_level) ? declared.stop_out_level : null,
+  };
+  const { area } = pane;
+  const base = area.base(ctx);
+  const out = [];
+  if (base === null) {
+    out.push({
+      name: area.fallback.name, role: 'area', source: area.source, width: ACCOUNT_LINE_WIDTH,
+      // 点は面と同じ口で作る（水準の宣言が無い経路も計算量の観測に入る）。
+      color: RESULT_CHART_COLORS[area.fallback.color],
+      points: areaPoints(t, columns[area.source], (v) => area.toValue(v, ctx), point),
+    });
+  } else {
+    out.push({
+      name: area.name, role: 'area', source: area.source, kind: 'baseline',
+      color: area.legendSide === 'down' ? baseline.downColor : baseline.upColor,
+      width: DEFAULT_LINE_WIDTH, base, fill: areaFill(baseline),
+      points: areaPoints(t, columns[area.source], (v) => area.toValue(v, ctx), point),
+    });
+  }
+  for (const line of pane.lines) {
+    const closeKey = TRADE_CLOSE_SOURCES[line.source];
+    out.push({
+      name: line.name, role: 'line', source: line.source,
+      color: SERIES_RULE.settledLine.color, width: SERIES_RULE.settledLine.width,
+      points: closeKey ? tradeClose[closeKey] : toPoints(t, columns[line.source]),
+    });
+  }
+  return out;
+}
+
+/**
  * パネルの並びと各パネルの系列を返す。
  * @param {object} declared   足の成果物の宣言（extent の応答。指標と列の対応を持つ）
  * @param {object} columns    持っている区間の列（列名 → 並び。時刻は列 time）
  * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（`windowTradeClose` の出力。
  *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
- * @returns {Array<{title: string, series: Array<{name: string, color: string, width?: number, points: Array}>}>}
+ * @param {{deposit: number, upColor: string, downColor: string, withAlpha: function}} baseline 面の基準
+ *                            （report.json の meta.initial_deposit）と塗り分けの色（ローソク足の陽線・陰線）・
+ *                            色に不透明度を付ける関数（report_ui の _withAlpha）。
+ * @param {{areaPoint?: function}} [seams] 観測の境界（面の点を作る口。既定 `areaPoint`）
+ * @returns {Array<{title: string, series: Array<{name: string, kind: string, color: string, width?: number,
+ *   base?: number, fill?: object, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(declared, columns, tradeClose) {
+export function resultChartPanes(declared, columns, tradeClose, baseline, { areaPoint: point = areaPoint } = {}) {
   const times = columns.time;
   const panes = [{ title: '価格', series: [] }];
   indicatorsOf(declared).forEach((ind, i) => {
@@ -140,42 +329,11 @@ export function resultChartPanes(declared, columns, tradeClose) {
       panes.push({ title: ind.series, series: [series] });
     }
   });
-  const a = columns;
-  const t = times;
-  panes.push({
-    title: '残高・有効証拠金',
-    series: [
-      { name: '残高（足ごと）', color: RESULT_CHART_COLORS.balance, points: toPoints(t, a.balance) },
-      { name: '有効証拠金（足ごと）', color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
-      { name: '残高（取引終了時）', color: RESULT_CHART_COLORS.balanceClose, width: TRADE_CLOSE_LINE_WIDTH,
-        points: tradeClose.balData },
-    ],
-  });
-  panes.push({
-    title: 'DD',
-    series: [
-      // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。
-      { name: 'DD（足ごと）', color: RESULT_CHART_COLORS.drawdown,
-        points: toPoints(t, a.drawdown.map((v) => (v === null ? null : -v))) },
-      // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
-      { name: 'DD（取引終了時）', color: RESULT_CHART_COLORS.drawdownClose, width: TRADE_CLOSE_LINE_WIDTH,
-        points: tradeClose.ddData },
-    ],
-  });
-  panes.push({
-    title: '損益',
-    series: [
-      { name: '確定損益（累計）', color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
-      { name: '含み損益', color: RESULT_CHART_COLORS.floating, points: toPoints(t, a.floating_pnl) },
-    ],
-  });
-  panes.push({
-    title: '証拠金維持率(%)',
-    series: [
-      { name: '証拠金維持率', color: RESULT_CHART_COLORS.marginLevel, points: toPoints(t, a.margin_level) },
-    ],
-  });
-  return panes;
+  for (const pane of ACCOUNT_PANES) {
+    panes.push({ title: pane.title, series: accountSeries(pane, { declared, columns, tradeClose, baseline, point }) });
+  }
+  // kind を名乗らない系列は線（点の列は作り直さずそのまま渡す）。
+  return panes.map((pane) => ({ ...pane, series: pane.series.map((s) => ({ kind: 'line', ...s })) }));
 }
 
 /**
@@ -184,12 +342,17 @@ export function resultChartPanes(declared, columns, tradeClose) {
  *   価格パネルの系列 … 系列 1 つが instance 1 つ（凡例で 1 本ずつ表示/非表示を切り替えられる）
  *   それ以外のパネル … パネル 1 枚が instance 1 つ（パネルの系列を束ねる）
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
- *   payloads: Array<{name: string, color: string, width: number, style: string, data: Array}>}>}
+ *   payloads: Array<{name: string, kind: string, color: string, width: number, style: string, data: Array,
+ *     base?: number, baseline?: object}>}>}
  */
-export function resultChartInstances(declared, columns, tradeClose) {
-  const payload = (s) => ({ name: s.name, color: s.color, width: s.width || 1, style: 'solid', data: s.points });
+export function resultChartInstances(declared, columns, tradeClose, baseline, seams = {}) {
+  const payload = (s) => ({
+    name: s.name, kind: s.kind, color: s.color, width: s.width || DEFAULT_LINE_WIDTH, style: 'solid', data: s.points,
+    // 面の基準と 6 色（ChartRenderer の renderBaseline が lwc の baseValue・面の色へ渡す）。面だけが持つ。
+    ...(s.kind === 'baseline' ? { base: s.base, baseline: s.fill } : {}),
+  });
   const out = [];
-  resultChartPanes(declared, columns, tradeClose).forEach((pane, paneIndex) => {
+  resultChartPanes(declared, columns, tradeClose, baseline, seams).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });

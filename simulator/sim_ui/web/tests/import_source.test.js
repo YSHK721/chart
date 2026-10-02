@@ -313,16 +313,22 @@ test("the composition root imports the report_ui modules from /sim/report-js/", 
   ]);
 });
 
-test("the composition root reads only tradeCloseCurves from chart.js (3 窓チャート撤去)", () => {
+test("the composition root reads from chart.js only names declared with a reason (3 窓チャート撤去)", () => {
   // chart.js の表示規則（マーカー・減光・バッジ・接点）を再び import した時点で、
-  //   子文書に描かないチャート計算が戻る芽になる（撤去の回帰の壁）。親の売買履歴チャートの
-  //   残高・DD 系列（tradeCloseCurves）だけを許す。
+  //   子文書に描かないチャート計算が戻る芽になる（撤去の回帰の壁）。借りてよい名前は、
+  //   親の売買履歴チャートが使う理由つきで宣言したものだけ（集合のリテラル一致ではなく宣言で統制する）。
+  const DECLARED = {
+    tradeCloseCurves: "親の売買履歴チャートの残高・DD の取引終了時の系列（2026-09-27 依頼者指示・3 窓チャート撤去）",
+    _withAlpha: "親の売買履歴チャートの面（残高・DD・損益・証拠金維持率）の色の不透明度"
+      + "（2026-10-02 依頼者指示「面グラフでグラデーションで表現しろ」・ISSUE 番号なし）",
+  };
   const src = read(ROOT);
   const m = src.match(/import\s*\{([^}]*)\}\s*from\s*["']\/sim\/report-js\/chart\.js["']/);
   assert.ok(m, "chart.js の import が見つかりません");
   const names = m[1].split(",").map((s) => s.trim()).filter(Boolean);
-  assert.deepEqual(names, ["tradeCloseCurves"],
-    `chart.js から表示規則を import しています: ${names}`);
+  assert.ok(names.length > 0);
+  assert.deepEqual(names.filter((n) => !Object.hasOwn(DECLARED, n)), [],
+    `chart.js から理由の宣言の無い名前（表示規則）を import しています: ${names}`);
 });
 
 test("the composition root imports nothing but /sim/report-js/ and its own siblings", () => {
