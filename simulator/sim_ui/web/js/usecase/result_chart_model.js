@@ -31,8 +31,9 @@ export const RESULT_CHART_COLORS = Object.freeze({
   indicator: ['#f5c542', '#42a5f5', '#ab47bc', '#26c6da'],
   // 残高・DD の 2 枚は、取引終了時のレイヤーを足ごとのレイヤーに重ねる（2026-09-27 依頼者指示:
   //   足ごとは「木」、取引終了時は「森」）。森を読めるよう、足ごとは不透明度を下げて細く、
-  //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色と太さで描く
-  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色・lineWidth 2）。
+  //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色で描く
+  //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色）。太さは依頼者指示（2026-10-02）で +2
+  //   （`TRADE_CLOSE_LINE_WIDTH`）。
   equity: 'rgba(38,166,154,0.35)',
   drawdown: 'rgba(239,83,80,0.35)',
   balanceClose: 'rgba(59,130,246,0.9)',
@@ -41,10 +42,16 @@ export const RESULT_CHART_COLORS = Object.freeze({
   marginLevel: '#ab47bc',
 });
 
-/** 線を全体に太くする量（2026-10-02 依頼者指示「全体的に線が見にくい +2px 程度太くしたい」）。 */
-const LINE_WIDTH_GAIN = 2;
-/** 線の太さ（足ごとのレイヤー・指標・損益・維持率）。lwc の既定 1 に LINE_WIDTH_GAIN を足す。 */
-export const LINE_WIDTH = 1 + LINE_WIDTH_GAIN;
+/** 線の既定の太さ（lwc の既定と同じ 1）。指標の線（価格パネル・別窓）はこの太さのまま。 */
+export const DEFAULT_LINE_WIDTH = 1;
+/**
+ * 口座の 4 ペイン（残高・有効証拠金／DD／損益（初期資金比）／証拠金維持率(%)）の線を太くする量
+ * （依頼者指示 2026-10-02「全体的に線が見にくい +2px 程度太くしたい」「残高グラフなどの4ペインの
+ * ラインのことだけで... チャートの移動平均線は通常でよい」）。
+ */
+export const LINE_WIDTH_GAIN = 2;
+/** 口座の 4 ペインの線の太さ（足ごとのレイヤー・損益・維持率）。 */
+export const ACCOUNT_LINE_WIDTH = DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN;
 /** 取引終了時のレイヤーの線の太さ（足ごとより太くして「森」を読めるようにする関係は保つ）。 */
 export const TRADE_CLOSE_LINE_WIDTH = 2 + LINE_WIDTH_GAIN;
 
@@ -197,7 +204,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { barP
       // 棒を先に置く（先に描いたものが下になる）。基準は初期資金の高さ・値は残高の金額のまま。
       { name: '残高（足ごと）', kind: 'histogram', color: upColor, base: deposit,
         points: baselineBars(t, a.balance, { minus: 0, base: deposit, upColor, downColor }, point) },
-      { name: '有効証拠金（足ごと）', color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
+      { name: '有効証拠金（足ごと）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
       { name: '残高（取引終了時）', color: RESULT_CHART_COLORS.balanceClose, width: TRADE_CLOSE_LINE_WIDTH,
         points: tradeClose.balData },
     ],
@@ -206,7 +213,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { barP
     title: 'DD',
     series: [
       // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。
-      { name: 'DD（足ごと）', color: RESULT_CHART_COLORS.drawdown,
+      { name: 'DD（足ごと）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.drawdown,
         points: toPoints(t, a.drawdown.map((v) => (v === null ? null : -v))) },
       // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
       { name: 'DD（取引終了時）', color: RESULT_CHART_COLORS.drawdownClose, width: TRADE_CLOSE_LINE_WIDTH,
@@ -219,13 +226,13 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { barP
       // 棒を先に置く（先に描いたものが下になる）。凡例の色は 0 以上の色。
       { name: '損益（初期資金比）', kind: 'histogram', color: upColor,
         points: baselineBars(t, a.equity, { minus: deposit, base: 0, upColor, downColor }, point) },
-      { name: '確定損益（累計）', color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
+      { name: '確定損益（累計）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
     ],
   });
   panes.push({
     title: '証拠金維持率(%)',
     series: [
-      { name: '証拠金維持率', color: RESULT_CHART_COLORS.marginLevel, points: toPoints(t, a.margin_level) },
+      { name: '証拠金維持率', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.marginLevel, points: toPoints(t, a.margin_level) },
     ],
   });
   // kind を名乗らない系列は線（点の列は作り直さずそのまま渡す）。
@@ -243,7 +250,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { barP
  */
 export function resultChartInstances(declared, columns, tradeClose, baseline, seams = {}) {
   const payload = (s) => ({
-    name: s.name, kind: s.kind, color: s.color, width: s.width || LINE_WIDTH, style: 'solid', data: s.points,
+    name: s.name, kind: s.kind, color: s.color, width: s.width || DEFAULT_LINE_WIDTH, style: 'solid', data: s.points,
     // 棒の基準（ChartRenderer の renderHistogram が lwc の base へ渡す）。名乗る系列だけが持つ。
     ...(s.base !== undefined ? { base: s.base } : {}),
   });

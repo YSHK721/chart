@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 
 import {
   RESULT_CHART_COLORS,
-  LINE_WIDTH,
+  ACCOUNT_LINE_WIDTH,
+  DEFAULT_LINE_WIDTH,
+  LINE_WIDTH_GAIN,
   TRADE_CLOSE_LINE_WIDTH,
   balanceCurveTimes,
   barPoint,
@@ -215,7 +217,7 @@ test('残高（足ごと）は初期資金を基準（base）にした棒で、�
     { time: 220, value: 1012.5, color: BASELINE.upColor },
   ]);
   // 線の色・太さは今のまま。
-  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, LINE_WIDTH]);
+  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, ACCOUNT_LINE_WIDTH]);
   assert.deepEqual([closeLine.color, closeLine.width], [RESULT_CHART_COLORS.balanceClose, TRADE_CLOSE_LINE_WIDTH]);
   // 別の初期資金なら基準も色も変わる（値は金額のまま）。
   const other = resultChartInstances(declared(), cols, close(), { ...BASELINE, deposit: 995 })
@@ -411,16 +413,23 @@ test('計算量: 区間の計算へ渡す時刻 − （区間の足 + 区間よ�
   }
 });
 
-test('線の太さ: すべての線が lwc の既定（1）より 2 太い（取引終了時は足ごとより太い関係を保つ）', () => {
+test('線の太さ: 口座の 4 ペインの線は既定 + LINE_WIDTH_GAIN 以上（取引終了時はそれより太い）、指標の線は既定のまま', () => {
+  // 依頼者指示（2026-10-02）「残高グラフなどの4ペインのラインのことだけで... チャートの移動平均線は通常でよい」。
   const insts = resultChartInstances(...material([
     { series: 'sma', placement: 'price', value: [null, 1, 2] },
     { series: 'madiff', placement: 'pane', value: [1, 2, 3] },
   ]), close(), BASELINE);
-  const lines = insts.flatMap((i) => i.payloads).filter((p) => p.kind !== 'histogram');
-  assert.ok(lines.length > 0);
-  for (const p of lines) {
-    assert.ok(p.width >= 1 + 2, `${p.name} の太さ ${p.width}`);
-    assert.ok(p.width === LINE_WIDTH || p.width === TRADE_CLOSE_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  const account = ['残高・有効証拠金', 'DD', '損益（初期資金比）', '証拠金維持率(%)'];
+  const linesOf = (pred) => insts.filter(pred).flatMap((i) => i.payloads).filter((p) => p.kind === 'line');
+  const accountLines = linesOf((i) => account.includes(i.label));
+  const indicatorLines = linesOf((i) => !account.includes(i.label));
+  assert.deepEqual(indicatorLines.map((p) => p.name), ['sma', 'madiff'], '検定の前提: 指標の線が無い');
+  assert.ok(accountLines.length > 0);
+  for (const p of accountLines) {
+    assert.ok(p.width >= DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN, `${p.name} の太さ ${p.width}`);
+    assert.ok(p.width === ACCOUNT_LINE_WIDTH || p.width === TRADE_CLOSE_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
   }
-  assert.ok(TRADE_CLOSE_LINE_WIDTH > LINE_WIDTH);
+  for (const p of indicatorLines) assert.equal(p.width, DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  assert.equal(ACCOUNT_LINE_WIDTH, DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN);
+  assert.ok(TRADE_CLOSE_LINE_WIDTH > ACCOUNT_LINE_WIDTH);
 });
