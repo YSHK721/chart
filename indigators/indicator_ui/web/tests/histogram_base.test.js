@@ -63,16 +63,31 @@ test('棒の payload が base を持てば、生成オプションの base に�
   assert.equal(chart.created.at(-1)._createOpts.base, 10000);
 });
 
-test('base を持たない棒・線の生成オプションと styleMeta は従来と同じ（base のキーを持たない）', () => {
+test('base が足すのは base のキーだけ（比較の基準は同じ payload の base 無しの経路から導く）', () => {
+  // 比較の基準: base を持たない payload（ライブ・リプレイの既存経路と同じ形）の生成オプションと styleMeta。
+  //   キー集合をリテラルで固定しない（生成オプションが正しく育っても赤にならない）。
   const { renderer, chart } = fakes();
-  renderer.renderHistogram('osc#1', [{ name: 'lc', kind: 'histogram', color: '#0a0', data: points(0, 3) }]);
-  renderer.renderLine('ma#1', [{ name: 'ma', kind: 'line', color: '#fff', width: 1, style: 'solid', data: points(0, 3) }]);
-  const [hist, line] = chart.created.slice(-2);
-  assert.deepEqual(Object.keys(hist._createOpts).sort(), ['color', 'lastValueVisible', 'priceLineVisible']);
-  assert.deepEqual(Object.keys(line._createOpts).sort(), ['color', 'lastValueVisible', 'lineStyle', 'lineWidth', 'priceLineVisible']);
-  for (const id of ['osc#1', 'ma#1']) {
-    assert.ok(renderer.getSeriesStyles(id).every((m) => !('base' in m)), `${id} の styleMeta に base が付いた`);
+  const keys = (o) => Object.keys(o).sort();
+  const draw = (method, id, payload) => {
+    renderer[method](id, [{ ...payload, data: points(0, 3) }]);
+    return { opts: chart.created.at(-1)._createOpts, meta: renderer.getSeriesStyles(id)[0] };
+  };
+  const hist = { name: 'lc', kind: 'histogram', color: '#0a0' };
+  const line = { name: 'ma', kind: 'line', color: '#fff', width: 1, style: 'solid' };
+  const histPlain = draw('renderHistogram', 'osc#1', hist);
+  const histBased = draw('renderHistogram', 'osc#2', { ...hist, base: 3 });
+  const linePlain = draw('renderLine', 'ma#1', line);
+  const lineBased = draw('renderLine', 'ma#2', { ...line, base: 3 });
+  // base 無しの経路は base のキーを持たない。
+  for (const x of [histPlain, linePlain]) {
+    assert.equal('base' in x.opts, false);
+    assert.equal('base' in x.meta, false);
   }
+  // 棒: base 有りは、base 無しのキー集合に base を足したものと一致する。
+  assert.deepEqual(keys(histBased.opts), keys({ ...histPlain.opts, base: 0 }));
+  assert.deepEqual(keys(histBased.meta), keys({ ...histPlain.meta, base: 0 }));
+  // 線: 生成オプションは base 無しと一致する（base は棒の基準）。
+  assert.deepEqual(keys(lineBased.opts), keys(linePlain.opts));
 });
 
 test('線の payload に base があっても線には渡さない（base は棒の基準）', () => {

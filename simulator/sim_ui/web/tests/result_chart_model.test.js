@@ -237,6 +237,10 @@ test('計算量: 棒の点は 発行した点 − 描画へ渡した点 = 0（�
     const times = Array.from({ length: n }, (_, i) => 60 * (i + 1));
     const cols = Object.fromEntries(declared().columns.map((k) => [k, times.map((_, i) => 990 + (i % 21))]));
     cols.time = times;
+    // 値なしの足（null・NaN）を混ぜ、whitespace の分岐も同じ表明で見張る。
+    for (const k of ['balance', 'equity']) {
+      cols[k] = cols[k].map((v, i) => (i % 3 === 1 ? null : (i % 3 === 2 && i % 2 === 0 ? Number.NaN : v)));
+    }
     const issued = [];
     const spy = (...args) => { const q = barPoint(...args); issued.push(q); return q; };
     const insts = resultChartInstances(declared(), cols, close(times, []), BASELINE, { barPoint: spy });
@@ -244,6 +248,7 @@ test('計算量: 棒の点は 発行した点 − 描画へ渡した点 = 0（�
     assert.deepEqual(bars.map((p) => p.name).sort(), ['損益（初期資金比）', '残高（足ごと）'].sort(), '棒が検定に入っていない');
     const drawn = new Set(bars.flatMap((p) => p.data));
     assert.ok(issued.length > 0, '注入点を通っていない（検定が空虚）');
+    assert.ok([...drawn].some((q) => !('value' in q)) && [...drawn].some((q) => 'value' in q), '値なしと値ありの両方の足が無い（検定が空虚）');
     assert.equal(issued.filter((q) => !drawn.has(q)).length, 0, '作って描かない棒の点がある');
     assert.equal(issued.length - drawn.size, 0);
     // 1 本の棒あたりの点 − 足の数 = 0。
