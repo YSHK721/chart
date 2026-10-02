@@ -211,7 +211,9 @@ export const SOURCE_BASIS = Object.freeze({
 export const SERIES_RULE = Object.freeze({
   area: 'equity',
   line: 'settled',
-  settledLine: Object.freeze({ color: RESULT_CHART_COLORS.settled, width: SETTLED_LINE_WIDTH }),
+  // minHueGap: 確定の線の色が面の上下の色（陽線・陰線）から離れているべき色相差の下限（度・円周上）。
+  //   今の値: 確定の線 約 217° と陽線 #26a69a 約 174°（差 約 43°）・陰線 #ef5350 約 1°（差 約 144°）。
+  settledLine: Object.freeze({ color: RESULT_CHART_COLORS.settled, width: SETTLED_LINE_WIDTH, minHueGap: 30 }),
 });
 
 /** 取引終了時の系列（点の列のまま重ねる。出所の名前 → tradeClose の鍵）。 */

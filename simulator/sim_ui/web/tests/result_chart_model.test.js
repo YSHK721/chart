@@ -371,7 +371,6 @@ test('面と線の規則: 系列の点は名乗った出所の列から作る（
   const cols = columns();
   // 列どうしが平行移動でも符号反転でも重ならない値（取り違えれば差が一定にならない）。
   cols.equity = [1001, 1005, 1002];
-  cols.balance = [2001, 2001, 2010];
   cols.drawdown = [3, 7, 1];
   cols.realized_pnl = [4, 4, 9];
   cols.margin_level = [101, 150, 90];
@@ -480,11 +479,29 @@ test('確定の線: どのペインでも同じ色・太さ・不透明度で 1 
   assert.equal(SETTLED_LINE_WIDTH, SERIES_RULE.settledLine.width);
 });
 
-test('確定の線の色は、面の上下どちらの色（実際のローソク足の陽線・陰線の色）とも別の色相', () => {
+/** 色の HSL の色相（度・0〜360）。 */
+function hueOf(c) {
+  const [r, g, b] = rgbOf(c).split(',').map((v) => Number(v) / 255);
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  if (d === 0) return 0;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+/** 円周上の色相差 min(|h1−h2|, 360−|h1−h2|)。 */
+function hueGap(c1, c2) {
+  const d = Math.abs(hueOf(c1) - hueOf(c2));
+  return Math.min(d, 360 - d);
+}
+
+test('確定の線の色は、面の上下どちらの色（実際のローソク足の陽線・陰線の色）とも宣言した下限以上に色相が離れる', () => {
+  const { color, minHueGap } = SERIES_RULE.settledLine;
+  assert.ok(minHueGap > 0, '色相差の下限を宣言していない');
   for (const [up, down] of [[BASELINE.upColor, BASELINE.downColor], [CHROME_CURRENT.candleUp, CHROME_CURRENT.candleDown]]) {
-    const fill = expectedFill({ ...BASELINE, upColor: up, downColor: down });
-    const settled = rgbOf(SERIES_RULE.settledLine.color);
-    for (const c of Object.values(fill)) assert.notEqual(rgbOf(c), settled, c);
+    for (const c of [up, down]) {
+      assert.ok(hueGap(color, c) >= minHueGap, `確定の線 ${color} と ${c} の色相差 ${hueGap(color, c).toFixed(1)} が下限 ${minHueGap} 未満`);
+    }
   }
 });
 
