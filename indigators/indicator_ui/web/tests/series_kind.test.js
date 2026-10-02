@@ -18,7 +18,8 @@ const FRONT = path.resolve(
 // 旧ハードコード比較が存在した 3 種別。この回帰壁は緩めない（新種別は別テストで固定する）。
 const LEGACY_KINDS = ['line', 'histogram', 'horizontal_line'];
 // level_dash はローソク足幅の水平ダッシュ（同値 4 値の Candlestick）。ISSUE-223 で追加。
-const ADDED_KINDS = ['level_dash'];
+// baseline は基準つきの面（BaselineSeries）。売買履歴チャートの残高・損益の面（2026-10-02）。
+const ADDED_KINDS = ['level_dash', 'baseline'];
 const KINDS = [...LEGACY_KINDS, ...ADDED_KINDS];
 
 test('capabilities match legacy kind comparisons 1:1', () => {
