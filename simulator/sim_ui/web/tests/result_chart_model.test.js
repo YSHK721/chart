@@ -10,7 +10,7 @@ import {
   ACCOUNT_LINE_WIDTH,
   DEFAULT_LINE_WIDTH,
   LINE_WIDTH_GAIN,
-  TRADE_CLOSE_LINE_WIDTH,
+  SETTLED_LINE_WIDTH,
   balanceCurveTimes,
   AREA_FILL_ALPHA,
   SERIES_RULE,
@@ -25,6 +25,7 @@ import {
   windowTradeClose,
 } from '../js/usecase/result_chart_model.js';
 import { tradeCloseCurves, _withAlpha } from '../../../report_ui/web/js/chart.js';
+import { CHROME_CURRENT } from '../../../../indigators/chart_kernel/web/js/usecase/chrome_tokens.js';
 
 const T = [100, 160, 220];
 
@@ -177,7 +178,7 @@ test('描画に使う列は、位置・足・口座の描く列・宣言され�
   const names = drawnColumns(declared([{ series: 'sma', placement: 'price', value: [] }]));
   assert.deepEqual(names, [
     'bar_index', 'time', 'open', 'high', 'low', 'close',
-    'balance', 'equity', 'drawdown', 'realized_pnl', 'margin_level', 'indicator_0',
+    'equity', 'drawdown', 'realized_pnl', 'margin_level', 'indicator_0',
   ]);
 });
 
@@ -212,13 +213,13 @@ test('instance: 価格パネルは系列ごと・他のパネルは 1 枚 1 つ�
   ]);
   assert.equal(new Set(insts.map((i) => i.instanceId)).size, insts.length);
   const acct = insts.find((i) => i.label === '残高・有効証拠金');
-  assert.deepEqual(acct.payloads.map((p) => p.name), ['有効証拠金（足ごと）', '残高（足ごと）', '残高（取引終了時）']);
+  assert.deepEqual(acct.payloads.map((p) => p.name), ['有効証拠金（足ごと）', '残高（取引終了時）']);
   assert.deepEqual(Object.keys(acct.payloads[1]).sort(), ['color', 'data', 'kind', 'name', 'style', 'width']);
   // 面は基準（base）と面の色（baseline）も名乗る。
   assert.deepEqual(Object.keys(acct.payloads[0]).sort(), ['base', 'baseline', 'color', 'data', 'kind', 'name', 'style', 'width']);
   // 描き方（ChartRenderer の renderBaseline / renderLine のどちらで描くか）は payload が名乗る。
   const kinds = (label) => insts.find((i) => i.label === label).payloads.map((p) => [p.name, p.kind]);
-  assert.deepEqual(kinds('残高・有効証拠金'), [['有効証拠金（足ごと）', 'baseline'], ['残高（足ごと）', 'line'], ['残高（取引終了時）', 'line']]);
+  assert.deepEqual(kinds('残高・有効証拠金'), [['有効証拠金（足ごと）', 'baseline'], ['残高（取引終了時）', 'line']]);
   assert.deepEqual(kinds('DD'), [['DD（足ごと）', 'baseline'], ['DD（取引終了時）', 'line']]);
   assert.deepEqual(kinds('損益（初期資金比）'), [['損益（初期資金比）', 'baseline'], ['確定損益（累計）', 'line']]);
   assert.ok(insts.filter((i) => !AREAS.some((a) => a.pane === i.label))
@@ -246,16 +247,14 @@ test('面の色: 線は不透明、面は縁の線の側（edge）が基準の�
   assert.ok(AREA_FILL_ALPHA.edge > AREA_FILL_ALPHA.base && AREA_FILL_ALPHA.base > 0 && AREA_FILL_ALPHA.edge < 1);
 });
 
-test('有効証拠金（足ごと）の面: 値は有効証拠金の金額のまま、基準は初期資金。残高（足ごと・取引終了時）の線を重ねる', () => {
+test('有効証拠金（足ごと）の面: 値は有効証拠金の金額のまま、基準は初期資金。確定の線は残高（取引終了時）1 本', () => {
   const cols = columns();
   cols.equity = [1000, 990, 1012.5];
-  cols.balance = [1000, 1000, 1010];
-  const acct = resultChartInstances(declared(), cols, close(), BASELINE).find((i) => i.label === '残高・有効証拠金');
-  const [area, balance, closeLine] = acct.payloads;
+  const tc = close();
+  const acct = resultChartInstances(declared(), cols, tc, BASELINE).find((i) => i.label === '残高・有効証拠金');
+  const [area, closeLine] = acct.payloads;
   assert.deepEqual(area.data, [{ time: 100, value: 1000 }, { time: 160, value: 990 }, { time: 220, value: 1012.5 }]);
-  assert.deepEqual(balance.data, [{ time: 100, value: 1000 }, { time: 160, value: 1000 }, { time: 220, value: 1010 }]);
-  assert.deepEqual([balance.color, balance.width], [RESULT_CHART_COLORS.balance, DEFAULT_LINE_WIDTH]);
-  assert.deepEqual([closeLine.color, closeLine.width], [RESULT_CHART_COLORS.balanceClose, TRADE_CLOSE_LINE_WIDTH]);
+  assert.equal(closeLine.data, tc.balData);
   // 別の初期資金なら基準が変わる（値は金額のまま）。
   const other = resultChartInstances(declared(), cols, close(), { ...BASELINE, deposit: 995 })
     .find((i) => i.label === '残高・有効証拠金').payloads[0];
@@ -263,15 +262,15 @@ test('有効証拠金（足ごと）の面: 値は有効証拠金の金額のま
   assert.deepEqual(other.data, area.data);
 });
 
-test('DD（足ごと）の面: 値は下向き（≤0）、基準 0。上に重ねる DD（取引終了時）の線は今のまま', () => {
-  const dd = resultChartInstances(...material(), close(), BASELINE).find((i) => i.label === 'DD');
+test('DD（足ごと）の面: 値は下向き（≤0）、基準 0。確定の線は DD（取引終了時）1 本', () => {
+  const tc = close();
+  const dd = resultChartInstances(...material(), tc, BASELINE).find((i) => i.label === 'DD');
   assert.deepEqual(dd.payloads[0].data.map((q) => q.value), [-0, -5, -0]);
-  assert.deepEqual([dd.payloads[1].color, dd.payloads[1].width], [RESULT_CHART_COLORS.drawdownClose, TRADE_CLOSE_LINE_WIDTH]);
+  assert.equal(dd.payloads[1].data, tc.ddData);
 });
 
 test('面: 値なし（null・NaN）の足は 0 を描かず whitespace（3 つとも）', () => {
   const cols = columns();
-  cols.balance = [null, 1000, Number.NaN];
   cols.drawdown = [null, 5, Number.NaN];
   cols.equity = [null, 990, Number.NaN];
   cols.margin_level = [null, 120, Number.NaN];
@@ -312,7 +311,7 @@ test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（4 
     const cols = Object.fromEntries(declared().columns.map((k) => [k, times.map((_, i) => 990 + (i % 21))]));
     cols.time = times;
     // 値なしの足（null・NaN）を混ぜ、whitespace の分岐も同じ表明で見張る。
-    for (const k of ['balance', 'equity', 'drawdown', 'margin_level']) {
+    for (const k of ['equity', 'drawdown', 'margin_level']) {
       cols[k] = cols[k].map((v, i) => (i % 3 === 1 ? null : (i % 3 === 2 && i % 2 === 0 ? Number.NaN : v)));
     }
     const issued = [];
@@ -405,9 +404,9 @@ test('取引終了時のレイヤー: 残高・DD の 2 枚に、シミュレー
   const panes = resultChartPanes(...material(), tc, BASELINE);
   const bal = panes.find((p) => p.title === '残高・有効証拠金').series;
   const dd = panes.find((p) => p.title === 'DD').series;
-  assert.deepEqual(bal.map((s) => s.name), ['有効証拠金（足ごと）', '残高（足ごと）', '残高（取引終了時）']);
+  assert.deepEqual(bal.map((s) => s.name), ['有効証拠金（足ごと）', '残高（取引終了時）']);
   assert.deepEqual(dd.map((s) => s.name), ['DD（足ごと）', 'DD（取引終了時）']);
-  assert.equal(bal[2].points, tc.balData);
+  assert.equal(bal[1].points, tc.balData);
   assert.equal(dd[1].points, tc.ddData);
   // 他のパネルには重ねない（参照実装の資産曲線・ドローダウンは残高と DD の 2 つだけ）。
   for (const title of ['損益（初期資金比）', '証拠金維持率(%)']) {
@@ -437,17 +436,38 @@ function alpha(c) {
   return m ? Number(m[1]) : 1;
 }
 
-test('面に重ねる線: 太さは面の縁の線より細くなく、足ごとの線は面の縁より太くない', () => {
-  // 依頼者指示（2026-10-02）「主張しすぎ」で細くし、「足ごとのラインの視認性が低い」で不透明度を戻した。
-  const insts = resultChartInstances(...material(), close(), BASELINE);
-  const panesWithArea = insts.filter((i) => i.payloads.some((p) => p.kind === 'baseline'));
-  const overlays = panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'line');
-  assert.deepEqual(overlays.map((p) => p.name).sort(),
-    ['残高（足ごと）', '残高（取引終了時）', 'DD（取引終了時）', '確定損益（累計）'].sort(), '検定の前提');
-  const edge = Math.max(...panesWithArea.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline').map((p) => p.width));
-  for (const p of overlays) {
-    assert.ok(p.width >= edge, `${p.name} の太さ ${p.width} が面の縁 ${edge} より細い`);
-    if (!p.name.includes('取引終了時')) assert.ok(p.width <= edge, `${p.name} の太さ ${p.width} が面の縁 ${edge} より太い`);
+/** 色の rgb（不透明度を除く）。#rrggbb と rgba(...) を受ける。 */
+function rgbOf(c) {
+  if (c[0] === '#') {
+    const n = parseInt(c.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',');
+  }
+  return /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/.exec(c).slice(1, 4).map(Number).join(',');
+}
+
+test('確定の線: どのペインでも同じ色・太さ・不透明度で 1 ペイン高々 1 本、面の縁より太い（宣言 SERIES_RULE.settledLine から導く）', () => {
+  // 依頼者裁定（2026-10-02）「DDの配色が、確定と足ごとが同じ色で視認性が悪すぎる」「太さが違う。統一しろ」。
+  const noLevel = declared();
+  delete noLevel.stop_out_level;
+  for (const d of [declared(), noLevel]) {
+    const panes = resultChartPanes(d, columns(), close(), BASELINE).filter((p) => p.series.some((s) => s.role));
+    const settled = panes.flatMap((p) => p.series.filter((s) => s.role === 'line'));
+    assert.ok(settled.length > 0, '検定の前提: 確定の線が無い');
+    for (const p of panes) assert.ok(p.series.filter((s) => s.role === 'line').length <= 1, `${p.title} の確定の線が 2 本以上`);
+    for (const s of settled) {
+      assert.deepEqual([s.color, s.width], [SERIES_RULE.settledLine.color, SERIES_RULE.settledLine.width], s.name);
+    }
+    const edges = panes.flatMap((p) => p.series.filter((s) => s.kind === 'baseline').map((s) => s.width));
+    for (const w of edges) assert.ok(SERIES_RULE.settledLine.width > w);
+  }
+  assert.equal(SETTLED_LINE_WIDTH, SERIES_RULE.settledLine.width);
+});
+
+test('確定の線の色は、面の上下どちらの色（実際のローソク足の陽線・陰線の色）とも別の色相', () => {
+  for (const [up, down] of [[BASELINE.upColor, BASELINE.downColor], [CHROME_CURRENT.candleUp, CHROME_CURRENT.candleDown]]) {
+    const fill = expectedFill({ ...BASELINE, upColor: up, downColor: down });
+    const settled = rgbOf(SERIES_RULE.settledLine.color);
+    for (const c of Object.values(fill)) assert.notEqual(rgbOf(c), settled, c);
   }
 });
 
