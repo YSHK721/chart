@@ -88,11 +88,15 @@ def _account(times: "list[int]") -> _Account:
                     margin=[0.0] * n, margin_level=[None] * n)
 
 
+#: run が使ったストップアウト水準（台帳の値と違う値を名乗る——書き手が値を書き写していれば落ちる）。
+_STOP_OUT_LEVEL = 87.5
+
+
 def _write(tmp: Path, bars: "list[Bar]", account: _Account) -> None:
     chart_overlay_writer.write(
         tmp, result=_Result(), bars=bars, symbol="SYNTH", digits=1, ea_name="CalcProbe_EA",
         indicators=_Indicators({"sma": [1.0] * len(bars)}), plots=[_Plot("sma", "price")],
-        account=account, initial_deposit=1000.0, dataset_ref=None,
+        account=account, initial_deposit=1000.0, dataset_ref=None, stop_out_level=_STOP_OUT_LEVEL,
     )
 
 
@@ -265,6 +269,8 @@ def test_the_declaration_names_the_run_and_every_column(tmp_path: Path) -> None:
     assert declared["timeframe"] == chart_overlay_writer.RUN_TIMEFRAME
     assert declared["ea_name"] == "CalcProbe_EA"
     assert declared["dataset_ref"] is None
+    # run が使ったストップアウト水準（売買履歴チャートの証拠金維持率の面の基準・2026-10-02）。
+    assert declared["stop_out_level"] == _STOP_OUT_LEVEL
     assert declared["rows"] == 4
     assert declared["index_column"] == chart_overlay_writer.INDEX_COLUMN
     indicator_columns = [ind["column"] for ind in declared["indicators"]]
@@ -284,6 +290,7 @@ def test_an_indicator_named_like_a_bar_column_does_not_overwrite_it(tmp_path: Pa
         tmp_path, result=_Result(), bars=bars, symbol="SYNTH", digits=1, ea_name="CalcProbe_EA",
         indicators=_Indicators({"close": [9.0] * 3}), plots=[_Plot("close", "price")],
         account=_account(_times(3)), initial_deposit=1000.0, dataset_ref=None,
+        stop_out_level=_STOP_OUT_LEVEL,
     )
     declared = _declaration(tmp_path)
     got = _read_all(tmp_path, declared["columns"])

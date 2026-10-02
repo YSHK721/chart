@@ -49,6 +49,19 @@ export const SERIES_KINDS = Object.freeze({
     editableLineStyle: false,
     renderRoute: 'level_dash',
   }),
+  // baseline: 基準つきの面（lwc の BaselineSeries）。基準（payload.base）を境に上下で塗り分ける
+  //   グラデーションの面と縁の線。売買履歴チャートの残高・損益・DD の面（依頼者指示 2026-10-02
+  //   「棒グラフではなく、面グラフでグラデーションで表現しろ」）。payload 契約は line と同じ {time, value}
+  //   に、基準 base と面の色 baseline（topLineColor / topFillColor1/2 / bottomLineColor / bottomFillColor1/2）。
+  baseline: Object.freeze({
+    tailUpdatable: true,
+    seriesType: 'baseline',
+    appliesLineStyle: true,
+    supportsHeat: false,
+    overlayReadout: false,
+    editableLineStyle: true,
+    renderRoute: 'baseline',
+  }),
   horizontal_line: Object.freeze({
     tailUpdatable: false,
     seriesType: null,
@@ -80,6 +93,8 @@ export const RENDER_ROUTES = Object.freeze([
   Object.freeze({ route: 'histogram', method: 'renderHistogram', perItem: false, opts: true }),
   Object.freeze({ route: 'line', method: 'renderLine', perItem: false, opts: true }),
   Object.freeze({ route: 'level_dash', method: 'renderLevelDash', perItem: false, opts: true }),
+  // 追加（2026-10-02）。既存の経路の後ろに置く（既存の経路どうしの z 順は変えない）。
+  Object.freeze({ route: 'baseline', method: 'renderBaseline', perItem: false, opts: true }),
   Object.freeze({
     route: 'horizontal',
     method: 'renderHorizontal',

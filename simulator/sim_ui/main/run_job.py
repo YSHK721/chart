@@ -665,6 +665,8 @@ def _write_chart_overlay(
         account=account,
         initial_deposit=float(run_kwargs["initial_deposit"]),
         dataset_ref=_dataset_ref_of(run_kwargs["data_path"]),
+        # run が実際に使った水準（`_write_trace` と同じ run の引数から・ISSUE-546）。
+        stop_out_level=run_kwargs["stop_out_level"],
     )
 
 

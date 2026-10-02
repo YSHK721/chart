@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from simulator.sim_ui.adapter import trace_writer
+from simulator.sim_ui.adapter import chart_overlay_writer, trace_writer
 from simulator.sim_ui.main import run_job
 from simulator.sim_ui.main.composition_root_jobs import build_run_options_port
 
@@ -93,8 +93,13 @@ def _observed(job_dir: Path) -> dict:
     halted = points.index[points["halted"]]
     before = points.loc[: halted[0] - 1] if len(halted) else points
     holding = before[before["open_count"] > 0]
+    declared = json.loads(
+        (job_dir / chart_overlay_writer.CHART_BARS_DECLARATION_FILENAME).read_text(encoding="utf-8")
+    )
     return {
         "level": meta[trace_writer.STOP_OUT_LEVEL_KEY],
+        # 売買履歴チャートの宣言が名乗る水準（証拠金維持率の面の基準・2026-10-02）。
+        "chart_bars_level": declared["stop_out_level"],
         "halts": len(halted),
         "holding_points": len(holding),
         "min_level_while_holding": float(holding["margin_level"].min()),
@@ -119,6 +124,8 @@ def test_the_run_without_settings_stops_out_at_the_ledger_level(tmp_path: Path) 
     _run(job_dir)
     got = _observed(job_dir)
     assert got["level"] == _ledger_level()
+    # 売買履歴チャートの宣言も trace_meta.json と同じ出所（run が使った水準）。
+    assert got["chart_bars_level"] == got["level"]
     assert got["halts"] > 0, "強制決済が起きていない"
     assert got["holding_points"] > 0, "halt 前に建玉のある評価点が無い（検定が空虚）"
     assert got["min_level_while_holding"] >= _ledger_level()
@@ -140,6 +147,8 @@ def test_the_run_with_settings_stops_out_at_the_ledger_level(tmp_path: Path) -> 
     _run(job_dir)
     got = _observed(job_dir)
     assert got["level"] == _ledger_level()
+    # 売買履歴チャートの宣言も trace_meta.json と同じ出所（run が使った水準）。
+    assert got["chart_bars_level"] == got["level"]
     assert got["halts"] > 0, "強制決済が起きていない"
     assert got["holding_points"] > 0, "halt 前に建玉のある評価点が無い（検定が空虚）"
     assert got["min_level_while_holding"] >= _ledger_level()
