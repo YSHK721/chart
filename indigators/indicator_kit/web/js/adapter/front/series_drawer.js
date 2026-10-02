@@ -199,6 +199,12 @@ export class SeriesDrawer {
         options.lineWidth = p.width;
         options.lineStyle = toLineStyleInt(p.style);
       }
+      // 棒の基準（lwc の HistogramSeries の base・既定 0）。payload が持つときだけ渡す（持たない
+      //   payload の生成オプションは従来と同じ）。売買履歴チャートの残高の棒が初期資金の高さを基準にする
+      //   （依頼者指示 2026-10-02）。
+      if (seriesType === 'histogram' && p.base !== undefined) {
+        options.base = p.base;
+      }
       // btlm_trail 表示層: ドット/ライン切替ヒント（point_markers/line_visible）を
       //   lightweight-charts v5 の LineSeries オプションへ写像する。ヒント未付与の payload
       //   （既存指標）はキーを設定しない＝従来挙動を保つ（後方互換）。
@@ -274,6 +280,10 @@ export class SeriesDrawer {
       //   line ⇄ histogram スワップの対象。styleMeta へ barEditable=true を刻み（applySeriesStyle の
       //   二重ゲート源）、保持データを seriesData へ退避する（旧系列除去後の再設定用）。非ゲート系列は
       //   barEditable キーを持たず seriesData にも載せない（native histogram 他指標へ非波及＝挙動不変）。
+      // 棒の基準（payload が持つときだけ記録する。_swapSeriesType が棒を作り直すときに使う）。
+      if (p.base !== undefined) {
+        metaEntry.base = p.base;
+      }
       if (p.bar_editable === true) {
         metaEntry.barEditable = true;
         // ISSUE-383: 退避もガード済み配列（スワップ再 setData で契約違反を再持込しない）。
@@ -488,7 +498,8 @@ export class SeriesDrawer {
       visible: slot.visible && meta.visible,
     };
     if (toHistogram) {
-      options.base = 0;
+      // 基準を名乗った系列はその基準、名乗らない系列は従来どおり 0。
+      options.base = meta.base !== undefined ? meta.base : 0;
     } else {
       options.lineWidth = meta.width ?? 1;
       options.lineStyle = toLineStyleInt(meta.style);
