@@ -63,11 +63,10 @@ const READ_DEBOUNCE_MS = 150;
 
 /**
  * 系列の `kind` → 描く ChartRenderer のメソッド。**配列の順が z 順**（先に描いたものが下）。
- * 損益（初期資金比）は棒の上に確定損益（累計）の線を重ねるため、棒を先に描く
- * （ライブチャートの描画経路の台帳 RENDER_ROUTES も histogram → line の順）。
+ * 残高・DD・損益（初期資金比）は面（baseline）の上に線を重ねるため、面を先に描く。
  */
 const RENDER_METHODS = Object.freeze([
-  Object.freeze({ kind: 'histogram', method: 'renderHistogram' }),
+  Object.freeze({ kind: 'baseline', method: 'renderBaseline' }),
   Object.freeze({ kind: 'line', method: 'renderLine' }),
 ]);
 
@@ -86,7 +85,7 @@ function initialDepositOf(payload) {
 }
 
 /**
- * ChartRenderer が持つローソク足の陽線・陰線の色（初期資金基準の棒の塗り分けに借りる）。
+ * ChartRenderer が持つローソク足の陽線・陰線の色（面（残高・DD・損益）の色に借りる）。
  * 購読口は登録直後に今の色を 1 回配る。その 1 回だけ受け取り、購読は残さない。
  */
 function candleColorsOf(renderer) {
@@ -125,6 +124,8 @@ const CANVAS_CLASS = 'sim-result-chart-canvas';
  * @param {function} deps.loadExtent    (jobId) => Promise<object>（足の成果物の宣言。1 ジョブにつき 1 回呼ぶ）
  * @param {function} deps.fetchRows     (jobId, start, end) => Promise<object>（位置の半開区間の列）
  * @param {function} deps.loadReport    (jobId) => Promise<object>（report.json の取得。1 ジョブにつき 1 回呼ぶ）
+ * @param {function} deps.withAlpha   (color, alpha) => color（面の色に不透明度を付ける。report_ui の
+ *                                      _withAlpha＝売買マークの減光色と同じ単一ソース）
  * @param {function} deps.tradeCloseCurves (segment, barTimes, payloadDeposit) => {balData, ddData}
  *                                      （取引終了時の残高・DD。シミュレーション結果の資産曲線 balChart・
  *                                      ドローダウン ddChart と同じ系列を作る report_ui の単一ソース）
@@ -133,7 +134,7 @@ const CANVAS_CLASS = 'sim-result-chart-canvas';
  * @param {function} [deps.clearTimer]  (handle) => void（既定 clearTimeout）
  */
 export function createSimResultChartView({
-  doc, host, lwc, chartKit, loadExtent, fetchRows, loadReport, tradeCloseCurves, fetchImpl,
+  doc, host, lwc, chartKit, loadExtent, fetchRows, loadReport, tradeCloseCurves, withAlpha, fetchImpl,
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (handle) => clearTimeout(handle),
 }) {
@@ -203,9 +204,9 @@ export function createSimResultChartView({
     const names = drawnColumns(declared);
     const segment = firstSegment(payload);
     const deposit = initialDepositOf(payload);
-    // 初期資金基準の棒（残高・損益（初期資金比））の基準と塗り分けの色（ローソク足と同じ色）。
+    // 面（残高・DD・損益（初期資金比））の基準と色（ローソク足と同じ色）。
     //   1 ジョブにつき 1 回だけ決める。
-    const baseline = { deposit, ...candleColorsOf(renderer) };
+    const baseline = { deposit, ...candleColorsOf(renderer), withAlpha };
     // balance_curve の時刻は 1 ジョブにつき 1 回だけ並べる（区間ごとに並べ直さない）。
     const curveTimes = balanceCurveTimes(segment);
     const reportSymbol = reportSymbolOf(payload);
