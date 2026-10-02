@@ -6,16 +6,21 @@
 //          値なしは null）。足（time・open・high・low・close）・口座・指標が同じ行に並ぶ。
 //   返った列の長さが行数と違う・区間が問うた区間と違うなら描かない（`rowsMismatch`）。
 // DOM・lwc に触れない。描画はライブチャートの ChartRenderer が行い、View は本モジュールの
-// 出力（`resultChartInstances`）をそのまま渡す（系列はすべて線・ChartRenderer に面の塗りの種類は無い）。
+// 出力（`resultChartInstances`）をそのまま渡す。系列は線か棒で、どちらで描くかは系列の `kind`
+// （'line' / 'histogram'）が名乗る（ChartRenderer の renderLine / renderHistogram）。
 //
 // パネルの並び（依頼者指示 2026-09-26）:
 //   0     … 価格（ローソク足・売買マーク・置き場 "price" のトリガー指標）
 //   1..k  … 置き場 "pane" のトリガー指標（1 系列 1 パネル）
-//   続く  … 口座（残高・有効証拠金）／DD／損益（確定の累計・含み）／証拠金維持率
+//   続く  … 口座（残高・有効証拠金）／DD／損益（初期資金比）／証拠金維持率
 // 口座系はすべて**足ごと**の値（保有中も更新）。値の無い足（未成立の指標・保有の無い足の
 // 維持率）は lwc の whitespace（time だけの点）にする——0 を置くと偽の値を描く。
 // 残高・DD の 2 枚には**取引終了時**のレイヤー（シミュレーション結果の資産曲線 balChart・
 // ドローダウン ddChart と同じ系列）も重ねる（依頼者指示 2026-09-27）。
+// 損益（初期資金比）のパネル（依頼者指示 2026-10-02「スタート残高を基準に損益を分かりやすく
+// プロットしてほしい」）: 足ごとの 有効証拠金 − 初期資金 を 0（＝スタート残高）を基準にした棒で描き、
+// 0 以上は陽線・0 未満は陰線の色で塗る。確定損益（累計）の線を上に重ねる。含み損益の線は描かない
+// （棒の先端と確定損益の線の差が含み損益）。色は View が売買履歴チャートのローソク足から借りて渡す。
 
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
@@ -30,7 +35,6 @@ export const RESULT_CHART_COLORS = Object.freeze({
   balanceClose: 'rgba(59,130,246,0.9)',
   drawdownClose: 'rgba(239,83,80,0.9)',
   realized: '#2962ff',
-  floating: '#ff9800',
   marginLevel: '#ab47bc',
 });
 
@@ -49,12 +53,33 @@ export function toPoints(times, values) {
   return out;
 }
 
+/**
+ * 損益（初期資金比）の棒の点: 足ごとの 有効証拠金 − 初期資金。0 以上は upColor・0 未満は downColor
+ * （0 ちょうどは upColor）。有効証拠金が値なし（null・非有限）の足は whitespace（0 を置かない）。
+ * @param {Array<number>} times
+ * @param {Array<number|null>} equity
+ * @param {{deposit: number, upColor: string, downColor: string}} basis
+ */
+export function pnlBars(times, equity, { deposit, upColor, downColor }) {
+  const out = new Array(times.length);
+  for (let i = 0; i < times.length; i += 1) {
+    const e = equity[i];
+    if (e === null || e === undefined || !Number.isFinite(e)) {
+      out[i] = { time: times[i] };
+      continue;
+    }
+    const value = e - deposit;
+    out[i] = { time: times[i], value, color: value >= 0 ? upColor : downColor };
+  }
+  return out;
+}
+
 /** 足の列（成果物の列名。ローソク足 1 本を作る 5 列）。 */
 const CANDLE_COLUMNS = Object.freeze(['time', 'open', 'high', 'low', 'close']);
 
 /** 描く口座の列（`resultChartPanes` が読む列。長さの照合もこの列すべてに行う）。 */
 const ACCOUNT_COLUMNS = Object.freeze(
-  ['balance', 'equity', 'drawdown', 'realized_pnl', 'floating_pnl', 'margin_level'],
+  ['balance', 'equity', 'drawdown', 'realized_pnl', 'margin_level'],
 );
 
 function indicatorsOf(declared) {
@@ -122,10 +147,12 @@ export function candlesOf(columns) {
  * @param {object} columns    持っている区間の列（列名 → 並び。時刻は列 time）
  * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（`windowTradeClose` の出力。
  *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
- * @returns {Array<{title: string, series: Array<{name: string, color: string, width?: number, points: Array}>}>}
+ * @param {{deposit: number, upColor: string, downColor: string}} pnlBasis 損益（初期資金比）の基準
+ *                            （report.json の meta.initial_deposit）と塗り分けの色（ローソク足の陽線・陰線）。
+ * @returns {Array<{title: string, series: Array<{name: string, kind: string, color: string, width?: number, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(declared, columns, tradeClose) {
+export function resultChartPanes(declared, columns, tradeClose, pnlBasis) {
   const times = columns.time;
   const panes = [{ title: '価格', series: [] }];
   indicatorsOf(declared).forEach((ind, i) => {
@@ -163,10 +190,12 @@ export function resultChartPanes(declared, columns, tradeClose) {
     ],
   });
   panes.push({
-    title: '損益',
+    title: '損益（初期資金比）',
     series: [
+      // 棒を先に置く（先に描いたものが下になる）。凡例の色は 0 以上の色。
+      { name: '損益（初期資金比）', kind: 'histogram', color: pnlBasis.upColor,
+        points: pnlBars(t, a.equity, pnlBasis) },
       { name: '確定損益（累計）', color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
-      { name: '含み損益', color: RESULT_CHART_COLORS.floating, points: toPoints(t, a.floating_pnl) },
     ],
   });
   panes.push({
@@ -175,7 +204,8 @@ export function resultChartPanes(declared, columns, tradeClose) {
       { name: '証拠金維持率', color: RESULT_CHART_COLORS.marginLevel, points: toPoints(t, a.margin_level) },
     ],
   });
-  return panes;
+  // kind を名乗らない系列は線（点の列は作り直さずそのまま渡す）。
+  return panes.map((pane) => ({ ...pane, series: pane.series.map((s) => ({ kind: 'line', ...s })) }));
 }
 
 /**
@@ -184,12 +214,14 @@ export function resultChartPanes(declared, columns, tradeClose) {
  *   価格パネルの系列 … 系列 1 つが instance 1 つ（凡例で 1 本ずつ表示/非表示を切り替えられる）
  *   それ以外のパネル … パネル 1 枚が instance 1 つ（パネルの系列を束ねる）
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
- *   payloads: Array<{name: string, color: string, width: number, style: string, data: Array}>}>}
+ *   payloads: Array<{name: string, kind: string, color: string, width: number, style: string, data: Array}>}>}
  */
-export function resultChartInstances(declared, columns, tradeClose) {
-  const payload = (s) => ({ name: s.name, color: s.color, width: s.width || 1, style: 'solid', data: s.points });
+export function resultChartInstances(declared, columns, tradeClose, pnlBasis) {
+  const payload = (s) => ({
+    name: s.name, kind: s.kind, color: s.color, width: s.width || 1, style: 'solid', data: s.points,
+  });
   const out = [];
-  resultChartPanes(declared, columns, tradeClose).forEach((pane, paneIndex) => {
+  resultChartPanes(declared, columns, tradeClose, pnlBasis).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });

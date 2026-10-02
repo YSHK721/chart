@@ -2,7 +2,7 @@
 //
 // 何を描くか（「何をどのパネルへ」は usecase/result_chart_model.js が決め、ここは描くだけ）:
 //   価格パネル … ジョブ自身の足（run が実行した Bar 列）・売買マーク・トリガー指標
-//   別パネル  … 別窓指標・残高/有効証拠金・DD・損益・証拠金維持率（いずれも足ごと）
+//   別パネル  … 別窓指標・残高/有効証拠金・DD・損益（初期資金比）・証拠金維持率（いずれも足ごと）
 //
 // 組み立てはライブチャートと**同じ関数**で行う（`chartKit`＝live core の公開面 `live_chart_kit_api.js`
 //   を統合層が注入する。sim は live core の URL を知らない）。2026-09-27 依頼者指示「チャートの
@@ -24,8 +24,8 @@
 //     捨てない）。
 //   どこを読み、どこを捨てるかは usecase/chart_window.js が一緒に決める（`planReads`）。
 //
-// report.json は足を持たない。取引終了時の残高・DD の材料と銘柄名のために**1 ジョブにつき 1 回だけ**
-//   取得する。
+// report.json は足を持たない。取引終了時の残高・DD の材料・損益（初期資金比）の基準（初期資金）・
+//   銘柄名のために**1 ジョブにつき 1 回だけ**取得する。
 //
 // 描かない条件（黙ってずらさない）。どれも理由を host に出して終わる:
 //   - ジョブが未完了（409）・足の成果物が無い（404＝本変更より前に実行したジョブ）・足が 0 本
@@ -60,6 +60,43 @@ const NO_BARS_ARTEFACT_MESSAGE = "このジョブは変更前に実行された�
  * 変化のたびに読むと、ドラッグ中に読みが連発する。
  */
 const READ_DEBOUNCE_MS = 150;
+
+/**
+ * 系列の `kind` → 描く ChartRenderer のメソッド。**配列の順が z 順**（先に描いたものが下）。
+ * 損益（初期資金比）は棒の上に確定損益（累計）の線を重ねるため、棒を先に描く
+ * （ライブチャートの描画経路の台帳 RENDER_ROUTES も histogram → line の順）。
+ */
+const RENDER_METHODS = Object.freeze([
+  Object.freeze({ kind: 'histogram', method: 'renderHistogram' }),
+  Object.freeze({ kind: 'line', method: 'renderLine' }),
+]);
+
+/** instance の系列を kind ごとに ChartRenderer へ渡す（同じ instance・同じペイン）。 */
+function renderInstance(renderer, inst) {
+  for (const { kind, method } of RENDER_METHODS) {
+    const payloads = inst.payloads.filter((p) => p.kind === kind);
+    if (payloads.length > 0) renderer[method](inst.instanceId, payloads, { pane: inst.pane });
+  }
+}
+
+/** report.json の meta.initial_deposit（有限の数でなければ null）。損益（初期資金比）の基準。 */
+function initialDepositOf(payload) {
+  const deposit = payload && payload.meta ? payload.meta.initial_deposit : null;
+  return typeof deposit === 'number' && Number.isFinite(deposit) ? deposit : null;
+}
+
+/**
+ * ChartRenderer が持つローソク足の陽線・陰線の色（損益（初期資金比）の塗り分けに借りる）。
+ * 購読口は登録直後に今の色を 1 回配る。その 1 回だけ受け取り、購読は残さない。
+ */
+function candleColorsOf(renderer) {
+  let colors = null;
+  const unsubscribe = renderer.addChromeObserver((slots) => {
+    colors = { upColor: slots.candleUp, downColor: slots.candleDown };
+  });
+  unsubscribe();
+  return colors;
+}
 
 /** 利用者の操作とみなす事象（これの後に来た表示範囲の変化だけが読み足しの起点になる）。 */
 const USER_EVENTS = ['pointerdown', 'wheel', 'keydown', 'touchstart'];
@@ -165,7 +202,9 @@ export function createSimResultChartView({
     const cap = heldRowsCap({ readRows, maxReturnedRows: declared.max_returned_rows });
     const names = drawnColumns(declared);
     const segment = firstSegment(payload);
-    const deposit = payload.meta && payload.meta.initial_deposit;
+    const deposit = initialDepositOf(payload);
+    // 損益（初期資金比）の基準と塗り分けの色（ローソク足と同じ色）。1 ジョブにつき 1 回だけ決める。
+    const pnlBasis = { deposit, ...candleColorsOf(renderer) };
     // balance_curve の時刻は 1 ジョブにつき 1 回だけ並べる（区間ごとに並べ直さない）。
     const curveTimes = balanceCurveTimes(segment);
     const reportSymbol = reportSymbolOf(payload);
@@ -180,7 +219,9 @@ export function createSimResultChartView({
       const tradeClose = windowTradeClose({
         tradeCloseCurves, segment, deposit, curveTimes, times: columns.time,
       });
-      return { candles: candlesOf(columns), instances: resultChartInstances(declared, columns, tradeClose) };
+      return {
+        candles: candlesOf(columns), instances: resultChartInstances(declared, columns, tradeClose, pnlBasis),
+      };
     };
 
     // ---- 読み足し・「最新足」の読み（発行は 1 本ずつ・順に） ----
@@ -273,9 +314,7 @@ export function createSimResultChartView({
     });
 
     renderer.setCandles(initial.candles);
-    for (const inst of instances) {
-      renderer.renderLine(inst.instanceId, inst.payloads, { pane: inst.pane });
-    }
+    for (const inst of instances) renderInstance(renderer, inst);
     // ペイン別凡例の行（ライブチャートの行と同じ形）。売買履歴チャートの行が持つ操作は表示/非表示だけ。
     //   表示/非表示は ChartRenderer が instance ごとに持つ。読み足しは同じ instance の系列へ
     //   入れるだけなので、目のボタンの状態は読み足しの後も残る。
@@ -373,6 +412,10 @@ export function createSimResultChartView({
       }
       if (!(Number.isInteger(declared.max_returned_rows) && declared.max_returned_rows > 0)) {
         showMessage('足の成果物の宣言が 1 回に返す上限を名乗っていないため、売買履歴チャートを表示できません。');
+        return false;
+      }
+      if (initialDepositOf(payload) === null) {
+        showMessage('report.json が初期資金（meta.initial_deposit）を名乗っていないため、損益（初期資金比）の基準が無く、売買履歴チャートを表示できません。');
         return false;
       }
       const readRows = readRowsOf({ recentBars, maxReturnedRows: declared.max_returned_rows });

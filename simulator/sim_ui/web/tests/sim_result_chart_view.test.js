@@ -54,7 +54,8 @@ function rowsAnswer(start, end) {
       bar_index: index,
       time: index.map(timeAt),
       open: constant(1), high: constant(2), low: constant(0.5), close: index.map((i) => i + 0.5),
-      balance: constant(1000), equity: constant(1000), drawdown: constant(0), drawdown_pct: constant(0),
+      // 有効証拠金は初期資金（report の meta.initial_deposit＝1000）の上下と、ちょうど同じ値を混ぜる。
+      balance: constant(1000), equity: index.map((i) => 1000 + ((i % 5) - 2)), drawdown: constant(0), drawdown_pct: constant(0),
       realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: constant(null),
       indicator_0: constant(1),
     },
@@ -71,9 +72,12 @@ function report(symbol = 'JP225', curve = []) {
 
 function kit() {
   const calls = {
-    viewer: [], operations: [], geometry: 0, renderLine: [], legendRows: [], draws: [],
+    viewer: [], operations: [], geometry: 0, renderLine: [], renderHistogram: [], renders: [], legendRows: [], draws: [],
     loaded: [], removed: 0, disposed: { operations: 0, geometry: 0 }, markers: null,
     scrolls: [], toasts: [], visibleSets: [], rangeHandlers: new Set(), chartOptions: [],
+    // ChartRenderer が持つクロム色（ローソク足の陽線・陰線）。本番（CHROME_CURRENT）と違う色を名乗る——
+    //   View が色を書き写していれば落ちる。
+    chrome: { candleUp: '#11aa11', candleDown: '#aa1111' }, chromeSubscribed: 0, chromeUnsubscribed: 0,
   };
   // 見えている論理範囲（検定が動かす）。
   calls.range = { from: 0, to: RECENT_BARS };
@@ -92,7 +96,19 @@ function kit() {
         paneLegendView: { setInstances(rows) { calls.legendRows.push(rows); } },
         renderer: {
           setCandles(c) { calls.draws.push({ via: 'setCandles', candles: c, instances: null }); calls.last = c; },
-          renderLine(id, payloads, opts) { calls.renderLine.push({ id, payloads, opts }); },
+          renderLine(id, payloads, opts) {
+            calls.renderLine.push({ id, payloads, opts });
+            calls.renders.push({ method: 'renderLine', id, payloads, opts });
+          },
+          renderHistogram(id, payloads, opts) {
+            calls.renderHistogram.push({ id, payloads, opts });
+            calls.renders.push({ method: 'renderHistogram', id, payloads, opts });
+          },
+          addChromeObserver(fn) {
+            calls.chromeSubscribed += 1;
+            fn(calls.chrome);
+            return () => { calls.chromeUnsubscribed += 1; };
+          },
           replaceDataKeepingView(c, instances) {
             // 本物（ChartRenderer.replaceDataKeepingView）と同じく、同じ時刻の足を同じ画面位置に
             //   留める＝先頭に増えた（減った）足の本数だけ、見えている論理範囲がずれる。
@@ -198,6 +214,16 @@ function view({ k = kit(), ext = extent(), rep = () => report(), answer = rowsAn
   return { v, host, k, c, userActs, rangeChanges, settle, scrollTo };
 }
 
+/** View が model へ渡すはずの損益（初期資金比）の基準と色（report の初期資金・ChartRenderer の色）。 */
+function pnlBasis(c, deposit = 1000) {
+  return { deposit, upColor: c.chrome.candleUp, downColor: c.chrome.candleDown };
+}
+
+/** 描いた instance（renderLine・renderHistogram のどちらで描いたものも・描いた順・重複なし）。 */
+function drawnIds(c) {
+  return [...new Set(c.renders.map((x) => x.id))];
+}
+
 /** 描いた足の Bar 列の中の位置の区間（足の時刻から逆算）。 */
 function drawnWindow(candles) {
   return { start: candles[0].time / 60 - 1, end: candles.at(-1).time / 60 };
@@ -248,9 +274,11 @@ test('描くとき: 全 instance（点の時刻は区間の足の時刻）・売
   await v.render('job1');
   const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
   const columns = rowsAnswer(tail.start, tail.end).columns;
-  const expected = resultChartInstances(extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000));
-  assert.deepEqual(c.renderLine.map((x) => x.id), expected.map((inst) => inst.instanceId));
-  for (const call of c.renderLine) {
+  const expected = resultChartInstances(
+    extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000), pnlBasis(c),
+  );
+  assert.deepEqual(drawnIds(c), expected.map((inst) => inst.instanceId));
+  for (const call of c.renders) {
     for (const p of call.payloads) assert.deepEqual(p.data.map((q) => q.time), columns.time, `${call.id} ${p.name}`);
   }
   assert.deepEqual(c.loaded, ['/sim/data/job1/trade_markers.json']);
@@ -297,8 +325,71 @@ test('ペイン別凡例の行は描いた instance と一致し、設定・削�
   const { v, c } = view();
   await v.render('job1');
   const rows = c.legendRows.at(-1);
-  assert.deepEqual(rows.map((r) => r.instanceId), c.renderLine.map((x) => x.id));
+  assert.deepEqual(rows.map((r) => r.instanceId), drawnIds(c));
   assert.ok(rows.every((r) => typeof r.onEye === 'function' && r.onGear === undefined && r.onClose === undefined));
+});
+
+// ---- 損益（初期資金比）: 0（＝スタート残高）を基準にした棒 ----
+
+/** 損益（初期資金比）の棒の点（区間の列から: 有効証拠金 − 初期資金・陽線/陰線の色）。 */
+function expectedPnlBars(c, columns, deposit = 1000) {
+  return columns.time.map((time, k) => {
+    const value = columns.equity[k] - deposit;
+    return { time, value, color: value >= 0 ? c.chrome.candleUp : c.chrome.candleDown };
+  });
+}
+
+test('損益（初期資金比）: 棒は renderHistogram で、確定損益（累計）の線より先に（下に）同じ instance・同じペインへ描く', async () => {
+  const { v, c } = view();
+  await v.render('job1');
+  const id = 'pane:損益（初期資金比）';
+  const mine = c.renders.filter((x) => x.id === id);
+  assert.deepEqual(mine.map((x) => [x.method, x.payloads.map((p) => p.name), x.opts]), [
+    ['renderHistogram', ['損益（初期資金比）'], { pane: true }],
+    ['renderLine', ['確定損益（累計）'], { pane: true }],
+  ]);
+  // 棒を描くのはこの 1 系列だけ（他の系列は線のまま）。
+  assert.deepEqual(c.renderHistogram.map((x) => x.id), [id]);
+  // 含み損益の線は描かない。
+  assert.ok(c.renders.every((x) => x.payloads.every((p) => p.name !== '含み損益')));
+  // 凡例の行は 1 つ（棒と線で 1 instance）。
+  assert.equal(c.legendRows.at(-1).filter((r) => r.instanceId === id).length, 1);
+});
+
+test('損益（初期資金比）: 値は 有効証拠金 − report.json の初期資金、色は ChartRenderer が持つローソク足の陽線・陰線の色', async () => {
+  const { v, c } = view({ rep: () => ({ ...report(), meta: { initial_deposit: 999, symbol: 'JP225' } }) });
+  await v.render('job1');
+  const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
+  const columns = rowsAnswer(tail.start, tail.end).columns;
+  const bars = c.renderHistogram[0].payloads[0].data;
+  assert.deepEqual(bars, expectedPnlBars(c, columns, 999));
+  // 検定の前提: 区間に 0 以上と 0 未満の両方がある（塗り分けを見ていることの確認）。
+  assert.ok(bars.some((q) => q.value < 0) && bars.some((q) => q.value >= 0));
+  // 色は購読 1 回で受け取り、購読を残さない。
+  assert.equal(c.chromeSubscribed - c.chromeUnsubscribed, 0);
+});
+
+test('損益（初期資金比）: 読み足しの後も、持っている区間の値で表示を保つ口から差し替わる（系列を作り直さない）', async () => {
+  const { v, c, scrollTo } = view();
+  await v.render('job1');
+  await scrollTo({ from: 2, to: 20 });
+  const draw = c.draws.at(-1);
+  assert.equal(draw.via, 'replaceDataKeepingView');
+  const w = drawnWindow(draw.candles);
+  const inst = draw.instances.find((i) => i.instanceId === 'pane:損益（初期資金比）');
+  assert.deepEqual(inst.payloads.map((p) => [p.name, p.kind]), [['損益（初期資金比）', 'histogram'], ['確定損益（累計）', 'line']]);
+  assert.deepEqual(inst.payloads[0].data, expectedPnlBars(c, rowsAnswer(w.start, w.end).columns));
+  assert.equal(c.renderHistogram.length, 1);
+});
+
+test('report.json が初期資金（meta.initial_deposit）を名乗らなければ描かずに理由を出す（基準を推測しない・足も読まない）', async () => {
+  for (const meta of [{ symbol: 'JP225' }, { initial_deposit: null }, { initial_deposit: Number.NaN }]) {
+    const { v, c, host } = view({ rep: () => ({ ...report(), meta }) });
+    assert.equal(await v.render('job1'), false);
+    assert.match(host.children.at(-1).textContent, /初期資金/);
+    assert.equal(c.reads.length, 0);
+    assert.equal(c.draws.length, 0);
+  }
 });
 
 // ---- 描かない条件（理由を掲示する） ----
@@ -442,7 +533,7 @@ test('利用者が操作して左端へ近づき、変化が止まったら、�
   // 読んだ結果で表示範囲を動かさない（移動の口を呼ばない）。
   assert.deepEqual(c.scrolls, []);
   // 値の系列は描き直さず、同じ instance へ入れる。
-  assert.deepEqual(draw.instances.map((inst) => inst.instanceId), c.renderLine.map((x) => x.id));
+  assert.deepEqual(draw.instances.map((inst) => inst.instanceId), drawnIds(c));
   for (const inst of draw.instances) {
     for (const p of inst.payloads) assert.equal(p.data.length, draw.candles.length, `${inst.instanceId} ${p.name}`);
   }
@@ -475,8 +566,9 @@ test('目のボタンで隠した instance は、読み足しの後も隠れた�
   assert.deepEqual(c.visibleSets, [[id, false]]);
   await scrollTo({ from: 2, to: 20 });
   assert.equal(c.draws.length, 2);
-  // 描き直し（renderLine の再発行）も、表示の付け直しもしない。
+  // 描き直し（renderLine・renderHistogram の再発行）も、表示の付け直しもしない。
   assert.equal(c.renderLine.length, c.draws[1].instances.length);
+  assert.equal(c.renderHistogram.length, 1);
   assert.deepEqual(c.visibleSets, [[id, false]]);
   assert.equal(c.legendRows.at(-1).find((r) => r.instanceId === id).visible, false);
 });
@@ -688,7 +780,8 @@ test('計算量: 取得した行 − 描画へ渡した点 = 0（足も各系列
     assert.equal(wasted.length, 0, `読んだ ${read.times.length} 行のうち ${wasted.length} 行を足に描いていない`);
     const series = draw.instances
       ? draw.instances.flatMap((inst) => inst.payloads)
-      : h.c.renderLine.flatMap((x) => x.payloads);
+      : h.c.renders.flatMap((x) => x.payloads);
+    assert.ok(series.some((p) => p.kind === 'histogram'), '棒（損益（初期資金比））が検定に入っていない（検定が空虚）');
     for (const p of series) {
       const points = new Set(p.data.map((q) => q.time));
       assert.equal(read.times.filter((t) => !points.has(t)).length, 0, `${p.name} に渡していない行がある`);
@@ -788,10 +881,10 @@ test('計算量: 描いた instance − 凡例に出した instance = 0、組み
     const h = view({ ext: extent({ rows }) });
     await h.v.render('job1');
     await script(h, 3);
-    const drawn = new Set(h.c.renderLine.map((x) => x.id));
+    const drawn = new Set(drawnIds(h.c));
     const listed = new Set(h.c.legendRows.at(-1).map((r) => r.instanceId));
     assert.deepEqual([...drawn].filter((id) => !listed.has(id)), []);
-    counts.push([h.c.viewer.length, h.c.operations.length, h.c.renderLine.length]);
+    counts.push([h.c.viewer.length, h.c.operations.length, h.c.renders.length]);
   }
   assert.deepEqual(counts[0], counts[1]);
 });
