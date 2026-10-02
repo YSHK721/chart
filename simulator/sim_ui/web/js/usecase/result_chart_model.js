@@ -41,8 +41,12 @@ export const RESULT_CHART_COLORS = Object.freeze({
   marginLevel: '#ab47bc',
 });
 
-/** 取引終了時のレイヤーの線の太さ（足ごとのレイヤーは 1）。 */
-export const TRADE_CLOSE_LINE_WIDTH = 2;
+/** 線を全体に太くする量（2026-10-02 依頼者指示「全体的に線が見にくい +2px 程度太くしたい」）。 */
+const LINE_WIDTH_GAIN = 2;
+/** 線の太さ（足ごとのレイヤー・指標・損益・維持率）。lwc の既定 1 に LINE_WIDTH_GAIN を足す。 */
+export const LINE_WIDTH = 1 + LINE_WIDTH_GAIN;
+/** 取引終了時のレイヤーの線の太さ（足ごとより太くして「森」を読めるようにする関係は保つ）。 */
+export const TRADE_CLOSE_LINE_WIDTH = 2 + LINE_WIDTH_GAIN;
 
 /** 値の列を lwc の点列へ（null・非有限は whitespace）。 */
 export function toPoints(times, values) {
@@ -239,7 +243,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { barP
  */
 export function resultChartInstances(declared, columns, tradeClose, baseline, seams = {}) {
   const payload = (s) => ({
-    name: s.name, kind: s.kind, color: s.color, width: s.width || 1, style: 'solid', data: s.points,
+    name: s.name, kind: s.kind, color: s.color, width: s.width || LINE_WIDTH, style: 'solid', data: s.points,
     // 棒の基準（ChartRenderer の renderHistogram が lwc の base へ渡す）。名乗る系列だけが持つ。
     ...(s.base !== undefined ? { base: s.base } : {}),
   });

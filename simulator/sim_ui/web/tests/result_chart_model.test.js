@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 
 import {
   RESULT_CHART_COLORS,
+  LINE_WIDTH,
   TRADE_CLOSE_LINE_WIDTH,
   balanceCurveTimes,
   barPoint,
@@ -214,7 +215,7 @@ test('残高（足ごと）は初期資金を基準（base）にした棒で、�
     { time: 220, value: 1012.5, color: BASELINE.upColor },
   ]);
   // 線の色・太さは今のまま。
-  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, 1]);
+  assert.deepEqual([equity.color, equity.width], [RESULT_CHART_COLORS.equity, LINE_WIDTH]);
   assert.deepEqual([closeLine.color, closeLine.width], [RESULT_CHART_COLORS.balanceClose, TRADE_CLOSE_LINE_WIDTH]);
   // 別の初期資金なら基準も色も変わる（値は金額のまま）。
   const other = resultChartInstances(declared(), cols, close(), { ...BASELINE, deposit: 995 })
@@ -331,7 +332,6 @@ test('視認性: 取引終了時は不透明で太く、足ごとは不透明度
     }
   }
   assert.equal(RESULT_CHART_COLORS.balanceClose, 'rgba(59,130,246,0.9)');
-  assert.equal(TRADE_CLOSE_LINE_WIDTH, 2);
 });
 
 test('計算量: 取引終了時のレイヤーの点は足の数に一致し、取引の数を増やしても増えない', () => {
@@ -409,4 +409,18 @@ test('計算量: 区間の計算へ渡す時刻 − （区間の足 + 区間よ�
     assert.equal(part.balData.length - window.length, 0);
     assert.equal(part.ddData.length - window.length, 0);
   }
+});
+
+test('線の太さ: すべての線が lwc の既定（1）より 2 太い（取引終了時は足ごとより太い関係を保つ）', () => {
+  const insts = resultChartInstances(...material([
+    { series: 'sma', placement: 'price', value: [null, 1, 2] },
+    { series: 'madiff', placement: 'pane', value: [1, 2, 3] },
+  ]), close(), BASELINE);
+  const lines = insts.flatMap((i) => i.payloads).filter((p) => p.kind !== 'histogram');
+  assert.ok(lines.length > 0);
+  for (const p of lines) {
+    assert.ok(p.width >= 1 + 2, `${p.name} の太さ ${p.width}`);
+    assert.ok(p.width === LINE_WIDTH || p.width === TRADE_CLOSE_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  }
+  assert.ok(TRADE_CLOSE_LINE_WIDTH > LINE_WIDTH);
 });
