@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { createSimResultChartView } from '../js/adapter/front/sim_result_chart_view.js';
 import { firstSegment } from '../js/adapter/front/report_source_client.js';
 import {
-  ACCOUNT_LINE_WIDTH, AREA_FILL_ALPHA, resultChartInstances, windowTradeClose, balanceCurveTimes,
+  AREA_FILL_ALPHA, DEFAULT_LINE_WIDTH, resultChartInstances, windowTradeClose, balanceCurveTimes,
 } from '../js/usecase/result_chart_model.js';
 import { heldRowsCap, readRowsOf, tailWindow } from '../js/usecase/chart_window.js';
 import { tradeCloseCurves, _withAlpha } from '../../../report_ui/web/js/chart.js';
@@ -24,6 +24,7 @@ import { fakeEl } from './_fakes.js';
 
 const RECENT_BARS = 50;          // Fake の公開面が名乗る「最初に読む本数」
 const MAX_RETURNED_ROWS = 200;   // Fake の宣言が名乗る「1 回の上限」
+const STOP_OUT_LEVEL = 87.5;     // Fake の宣言が名乗る、run が使ったストップアウト水準（台帳の値と違う）
 const READ_ROWS = readRowsOf({ recentBars: RECENT_BARS, maxReturnedRows: MAX_RETURNED_ROWS });
 const CAP = heldRowsCap({ readRows: READ_ROWS, maxReturnedRows: MAX_RETURNED_ROWS });
 const TOTAL = 3000;
@@ -43,6 +44,7 @@ function extent({ rows = TOTAL, datasetRef = 'jp225_mt5_spread' } = {}) {
     indicators: [{ series: 'sma', placement: 'price', column: 'indicator_0' }],
     timeframe: '1m', ea_name: 'EA', dataset_ref: datasetRef, time_unit: 'epoch_seconds',
     max_returned_rows: MAX_RETURNED_ROWS,
+    stop_out_level: STOP_OUT_LEVEL,
   };
 }
 
@@ -58,7 +60,7 @@ function rowsAnswer(start, end) {
       open: constant(1), high: constant(2), low: constant(0.5), close: index.map((i) => i + 0.5),
       // 有効証拠金は初期資金（report の meta.initial_deposit＝1000）の上下と、ちょうど同じ値を混ぜる。
       balance: index.map((i) => 1000 + ((i % 3) - 1)), equity: index.map((i) => 1000 + ((i % 5) - 2)), drawdown: index.map((i) => i % 4), drawdown_pct: constant(0),
-      realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: constant(null),
+      realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: index.map((i) => (i % 5 === 0 ? null : 80 + (i % 21))),
       indicator_0: constant(1),
     },
   };
@@ -342,7 +344,14 @@ const AREAS = Object.freeze([
     base: () => 0, values: (cols) => cols.drawdown.map((v) => -v) },
   { id: 'pane:損益（初期資金比）', name: '損益（初期資金比）', lines: ['確定損益（累計）'],
     base: () => 0, values: (cols, deposit) => cols.equity.map((v) => v - deposit) },
+  { id: 'pane:証拠金維持率(%)', name: '証拠金維持率', lines: [],
+    base: () => STOP_OUT_LEVEL, values: (cols) => cols.margin_level },
 ]);
+
+/** 区間の列から期待する面の点（値なしは whitespace）。 */
+function expectedArea(cols, values) {
+  return cols.time.map((time, k) => (values[k] === null ? { time } : { time, value: values[k] }));
+}
 
 /** 面の 6 色（ChartRenderer が持つローソク足の陽線・陰線の色から作る）。 */
 function expectedFill(c) {
@@ -365,7 +374,7 @@ test('面: 3 つとも renderBaseline で、上に重ねる線より先に（下
     const mine = c.renders.filter((x) => x.id === a.id);
     assert.deepEqual(mine.map((x) => [x.method, x.payloads.map((p) => p.name), x.opts]), [
       ['renderBaseline', [a.name], { pane: true }],
-      ['renderLine', a.lines, { pane: true }],
+      ...(a.lines.length > 0 ? [['renderLine', a.lines, { pane: true }]] : []),
     ], a.name);
     // 凡例の行は 1 つ（面と線で 1 instance）。
     assert.equal(c.legendRows.at(-1).filter((r) => r.instanceId === a.id).length, 1);
@@ -375,7 +384,7 @@ test('面: 3 つとも renderBaseline で、上に重ねる線より先に（下
   assert.ok(c.renders.every((x) => x.payloads.every((p) => p.name !== '含み損益')));
 });
 
-test('面: 値・基準は区間の列と report.json の初期資金から、面の色は ChartRenderer のローソク足の色から、縁の線は口座ペインの太さ', async () => {
+test('面: 値・基準は区間の列と report.json の初期資金・宣言の水準から、面の色は ChartRenderer のローソク足の色から、縁の線は既定の太さ', async () => {
   const deposit = 999;
   const { v, c } = view({ rep: () => ({ ...report(), meta: { initial_deposit: deposit, symbol: 'JP225' } }) });
   await v.render('job1');
@@ -385,9 +394,8 @@ test('面: 値・基準は区間の列と report.json の初期資金から、�
     const p = c.renderBaseline.find((x) => x.id === a.id).payloads[0];
     assert.equal(p.base, a.base(deposit), a.name);
     assert.deepEqual(p.baseline, expectedFill(c), a.name);
-    assert.equal(p.width, ACCOUNT_LINE_WIDTH, a.name);
-    const values = a.values(cols, deposit);
-    assert.deepEqual(p.data, cols.time.map((time, k) => ({ time, value: values[k] })), a.name);
+    assert.equal(p.width, DEFAULT_LINE_WIDTH, a.name);
+    assert.deepEqual(p.data, expectedArea(cols, a.values(cols, deposit)), a.name);
   }
   // 色は購読 1 回で受け取り、購読を残さない。
   assert.equal(c.chromeSubscribed - c.chromeUnsubscribed, 0);
@@ -406,8 +414,7 @@ test('面: 読み足しの後も、持っている区間の値と同じ基準・
     assert.equal(p.kind, 'baseline');
     assert.equal(p.base, a.base(1000));
     assert.deepEqual(p.baseline, expectedFill(c));
-    const values = a.values(cols, 1000);
-    assert.deepEqual(p.data, cols.time.map((time, k) => ({ time, value: values[k] })), a.name);
+    assert.deepEqual(p.data, expectedArea(cols, a.values(cols, 1000)), a.name);
   }
   // 面は作り直さない（renderBaseline は instance ごとに 1 回のまま）。
   assert.equal(c.renderBaseline.length - new Set(c.renderBaseline.map((x) => x.id)).size, 0);
@@ -610,11 +617,11 @@ test('目のボタンで隠した instance は、読み足しの後も隠れた�
   const id = c.legendRows.at(-1)[0].instanceId;
   c.legendRows.at(-1)[0].onEye();
   assert.deepEqual(c.visibleSets, [[id, false]]);
+  const rendersBefore = c.renders.length;
   await scrollTo({ from: 2, to: 20 });
   assert.equal(c.draws.length, 2);
   // 描き直し（renderLine・renderBaseline の再発行）も、表示の付け直しもしない。
-  assert.equal(c.renderLine.length, c.draws[1].instances.length);
-  assert.equal(c.renderBaseline.length - new Set(c.renderBaseline.map((x) => x.id)).size, 0);
+  assert.equal(c.renders.length - rendersBefore, 0);
   assert.deepEqual(c.visibleSets, [[id, false]]);
   assert.equal(c.legendRows.at(-1).find((r) => r.instanceId === id).visible, false);
 });

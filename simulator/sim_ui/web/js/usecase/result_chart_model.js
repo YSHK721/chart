@@ -18,15 +18,19 @@
 // 残高・DD の 2 枚には**取引終了時**のレイヤー（シミュレーション結果の資産曲線 balChart・
 // ドローダウン ddChart と同じ系列）も重ねる（依頼者指示 2026-09-27）。
 // 基準つきの面（依頼者指示 2026-10-02「スタート残高を基準に損益を分かりやすくプロットしてほしい」
-// 「残高グラフも同じ仕様にしろ」「棒グラフではなく、面グラフでグラデーションで表現しろ」「DDも同じく」）。
+// 「残高グラフも同じ仕様にしろ」「棒グラフではなく、面グラフでグラデーションで表現しろ」「DDも同じく」
+// 「証拠金維持率も同じく」「面グラフのラインは1px」）。
 // 基準を境に、上は陽線・下は陰線の色の、グラデーションの面（lwc の BaselineSeries・kind 'baseline'）。
-// 色は View が売買履歴チャートのローソク足から借りて渡す。縁の線の太さは口座ペインの太さ。
+// 色は View が売買履歴チャートのローソク足から借りて渡す。縁の線は既定の太さ（DEFAULT_LINE_WIDTH）。
 //   残高・有効証拠金 … 足ごとの残高の面。基準は初期資金の高さ（目盛りは金額のまま）。
 //                      有効証拠金（足ごと）と残高（取引終了時）の線を上に重ねる。
 //   DD               … 足ごとの DD（下向き・≤0）の面。基準は 0。DD（取引終了時）の線を上に重ねる。
 //   損益（初期資金比）… 足ごとの 有効証拠金 − 初期資金 の面。基準は 0（＝スタート残高）。
 //                      確定損益（累計）の線を上に重ねる。含み損益の線は描かない
 //                      （面の縁と確定損益の線の差が含み損益）。
+//   証拠金維持率(%)  … 足ごとの維持率の面。基準は run が使ったストップアウト水準（足の成果物の宣言
+//                      `stop_out_level`）。宣言が水準を名乗らないジョブ（宣言に書く前に実行した run）は
+//                      基準が分からないので面にせず線で描き、凡例名「証拠金維持率（水準の宣言なし）」で示す。
 
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
@@ -203,7 +207,7 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { area
   // 面の 3 つは同じ形（kind・凡例の色・縁の太さ・面の色）。基準と点だけが違う。
   const fill = areaFill(baseline);
   const area = (name, base, values, toValue) => ({
-    name, kind: 'baseline', color: upColor, width: ACCOUNT_LINE_WIDTH, base, fill,
+    name, kind: 'baseline', color: upColor, width: DEFAULT_LINE_WIDTH, base, fill,
     points: areaPoints(times, values, toValue, point),
   });
   const times = columns.time;
@@ -253,7 +257,11 @@ export function resultChartPanes(declared, columns, tradeClose, baseline, { area
   panes.push({
     title: '証拠金維持率(%)',
     series: [
-      { name: '証拠金維持率', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.marginLevel, points: toPoints(t, a.margin_level) },
+      // 基準は run が使ったストップアウト水準。宣言が名乗らなければ面にせず線（凡例名で示す）。
+      Number.isFinite(declared.stop_out_level)
+        ? area('証拠金維持率', declared.stop_out_level, a.margin_level, (v) => v)
+        : { name: '証拠金維持率（水準の宣言なし）', width: ACCOUNT_LINE_WIDTH, color: RESULT_CHART_COLORS.marginLevel,
+          points: toPoints(t, a.margin_level) },
     ],
   });
   // kind を名乗らない系列は線（点の列は作り直さずそのまま渡す）。

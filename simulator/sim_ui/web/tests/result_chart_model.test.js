@@ -44,15 +44,19 @@ function expectedFill(b = BASELINE) {
   };
 }
 
-/** 面の系列（残高・DD・損益）と、その基準。 */
+/** 足の成果物の宣言が名乗る、run が使ったストップアウト水準（台帳の値と違う値を名乗る）。 */
+const STOP_OUT_LEVEL = 87.5;
+
+/** 面の系列（残高・DD・損益・証拠金維持率）と、その基準。 */
 const AREAS = Object.freeze([
   { pane: '残高・有効証拠金', name: '残高（足ごと）', base: (b) => b.deposit },
   { pane: 'DD', name: 'DD（足ごと）', base: () => 0 },
   { pane: '損益（初期資金比）', name: '損益（初期資金比）', base: () => 0 },
+  { pane: '証拠金維持率(%)', name: '証拠金維持率', base: (b, d) => d.stop_out_level },
 ]);
 
 /** 足の成果物の宣言（extent の応答のうち model が読む部分）。指標の列名は位置から付く。 */
-function declared(indicators = []) {
+function declared(indicators = [], { stopOutLevel = STOP_OUT_LEVEL } = {}) {
   const entries = indicators.map((ind, i) => ({ series: ind.series, placement: ind.placement, column: `indicator_${i}` }));
   return {
     index_column: 'bar_index',
@@ -62,6 +66,7 @@ function declared(indicators = []) {
       ...entries.map((e) => e.column),
     ],
     indicators: entries,
+    stop_out_level: stopOutLevel,
   };
 }
 
@@ -219,16 +224,18 @@ test('instance: 価格パネルは系列ごと・他のパネルは 1 枚 1 つ�
 });
 
 // ---- 面（基準つき・グラデーション）: 残高（基準＝初期資金）・DD（基準＝0）・損益（基準＝0） ----
-//   依頼者指示 2026-10-02「棒グラフではなく、面グラフでグラデーションで表現しろ」「DDも同じく」。
+//   依頼者指示 2026-10-02「棒グラフではなく、面グラフでグラデーションで表現しろ」「DDも同じく」
+//   「証拠金維持率も同じく」「面グラフのラインは1px」。
 
-test('面: 3 つとも基準と面の 6 色・縁の線の太さ（口座ペインの太さ）を名乗り、点は値だけ（色を持たない）', () => {
-  const insts = resultChartInstances(...material(), close(), BASELINE);
+test('面: 4 つとも基準と面の 6 色を名乗り、縁の線は既定の太さ、点は値だけ（色を持たない）', () => {
+  const m = material();
+  const insts = resultChartInstances(...m, close(), BASELINE);
   for (const a of AREAS) {
     const p = insts.find((i) => i.label === a.pane).payloads.find((q) => q.name === a.name);
     assert.equal(p.kind, 'baseline', a.name);
-    assert.equal(p.base, a.base(BASELINE), a.name);
+    assert.equal(p.base, a.base(BASELINE, m[0]), a.name);
     assert.deepEqual(p.baseline, expectedFill(), a.name);
-    assert.equal(p.width, ACCOUNT_LINE_WIDTH, a.name);
+    assert.equal(p.width, DEFAULT_LINE_WIDTH, a.name);
     assert.ok(p.data.every((q) => !('color' in q)), `${a.name} の点が色を持つ`);
   }
 });
@@ -263,21 +270,45 @@ test('面: 値なし（null・NaN）の足は 0 を描かず whitespace（3 つ�
   cols.balance = [null, 1000, Number.NaN];
   cols.drawdown = [null, 5, Number.NaN];
   cols.equity = [null, 990, Number.NaN];
+  cols.margin_level = [null, 120, Number.NaN];
   const insts = resultChartInstances(declared(), cols, close(), BASELINE);
   const data = (a) => insts.find((i) => i.label === a.pane).payloads.find((q) => q.name === a.name).data;
   assert.deepEqual(data(AREAS[0]), [{ time: 100 }, { time: 160, value: 1000 }, { time: 220 }]);
   assert.deepEqual(data(AREAS[1]), [{ time: 100 }, { time: 160, value: -5 }, { time: 220 }]);
   assert.deepEqual(data(AREAS[2]), [{ time: 100 }, { time: 160, value: -10 }, { time: 220 }]);
+  assert.deepEqual(data(AREAS[3]), [{ time: 100 }, { time: 160, value: 120 }, { time: 220 }]);
 });
 
-test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（3 つの面・null と NaN を含む・足の本数 2 点）', () => {
+test('証拠金維持率の面: 基準は宣言が名乗る run のストップアウト水準（値は維持率のまま）', () => {
+  const cols = columns();
+  cols.margin_level = [null, 80, 130];
+  for (const level of [STOP_OUT_LEVEL, 50]) {
+    const p = resultChartInstances(declared([], { stopOutLevel: level }), cols, close(), BASELINE)
+      .find((i) => i.label === '証拠金維持率(%)').payloads[0];
+    assert.deepEqual([p.kind, p.base], ['baseline', level]);
+    assert.deepEqual(p.data, [{ time: 100 }, { time: 160, value: 80 }, { time: 220, value: 130 }]);
+  }
+});
+
+test('証拠金維持率: 宣言が水準を名乗らないジョブは面にせず線で描き、凡例名で分かるようにする', () => {
+  const absent = declared();
+  delete absent.stop_out_level;
+  for (const d of [declared([], { stopOutLevel: null }), absent]) {
+    const p = resultChartInstances(d, columns(), close(), BASELINE)
+      .find((i) => i.label === '証拠金維持率(%)').payloads;
+    assert.deepEqual(p.map((q) => [q.name, q.kind, q.width]), [['証拠金維持率（水準の宣言なし）', 'line', ACCOUNT_LINE_WIDTH]]);
+    assert.deepEqual(p[0].data, [{ time: 100 }, { time: 160, value: 500 }, { time: 220 }]);
+  }
+});
+
+test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（4 つの面・null と NaN を含む・足の本数 2 点）', () => {
   // 観測の境界: 面の点を作る口 areaPoint（resultChartInstances の注入点 seams.areaPoint として宣言）。
   for (const n of [3, 3000]) {
     const times = Array.from({ length: n }, (_, i) => 60 * (i + 1));
     const cols = Object.fromEntries(declared().columns.map((k) => [k, times.map((_, i) => 990 + (i % 21))]));
     cols.time = times;
     // 値なしの足（null・NaN）を混ぜ、whitespace の分岐も同じ表明で見張る。
-    for (const k of ['balance', 'equity', 'drawdown']) {
+    for (const k of ['balance', 'equity', 'drawdown', 'margin_level']) {
       cols[k] = cols[k].map((v, i) => (i % 3 === 1 ? null : (i % 3 === 2 && i % 2 === 0 ? Number.NaN : v)));
     }
     const issued = [];
@@ -450,6 +481,11 @@ test('線の太さ: 口座の 4 ペインの線は既定 + LINE_WIDTH_GAIN 以�
     assert.ok(p.width === ACCOUNT_LINE_WIDTH || p.width === TRADE_CLOSE_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
   }
   for (const p of indicatorLines) assert.equal(p.width, DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  // 面の縁は既定の太さ、面の上に重ねる線は太い（依頼者指示 2026-10-02「面グラフのラインは1px」）。
+  const areas = insts.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline');
+  assert.equal(areas.length, AREAS.length);
+  for (const p of areas) assert.equal(p.width, DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
+  for (const p of accountLines) assert.ok(p.width > DEFAULT_LINE_WIDTH, `${p.name} の太さ ${p.width}`);
   assert.equal(ACCOUNT_LINE_WIDTH, DEFAULT_LINE_WIDTH + LINE_WIDTH_GAIN);
   assert.ok(TRADE_CLOSE_LINE_WIDTH > ACCOUNT_LINE_WIDTH);
 });
