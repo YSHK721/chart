@@ -17,10 +17,14 @@
 // 維持率）は lwc の whitespace（time だけの点）にする——0 を置くと偽の値を描く。
 // 残高・DD の 2 枚には**取引終了時**のレイヤー（シミュレーション結果の資産曲線 balChart・
 // ドローダウン ddChart と同じ系列）も重ねる（依頼者指示 2026-09-27）。
-// 損益（初期資金比）のパネル（依頼者指示 2026-10-02「スタート残高を基準に損益を分かりやすく
-// プロットしてほしい」）: 足ごとの 有効証拠金 − 初期資金 を 0（＝スタート残高）を基準にした棒で描き、
-// 0 以上は陽線・0 未満は陰線の色で塗る。確定損益（累計）の線を上に重ねる。含み損益の線は描かない
-// （棒の先端と確定損益の線の差が含み損益）。色は View が売買履歴チャートのローソク足から借りて渡す。
+// 初期資金基準の棒（依頼者指示 2026-10-02「スタート残高を基準に損益を分かりやすくプロットしてほしい」
+// 「残高グラフも同じ仕様にしろ」）。どちらも基準以上は陽線・基準未満は陰線の色（基準ちょうどは陽線）。
+// 色は View が売買履歴チャートのローソク足から借りて渡す。
+//   残高・有効証拠金 … 足ごとの残高を、初期資金の高さを基準（base）にした棒で描く（目盛りは金額のまま）。
+//                      有効証拠金（足ごと）と残高（取引終了時）の線を上に重ねる。
+//   損益（初期資金比）… 足ごとの 有効証拠金 − 初期資金 を 0（＝スタート残高）を基準にした棒で描き、
+//                      確定損益（累計）の線を上に重ねる。含み損益の線は描かない
+//                      （棒の先端と確定損益の線の差が含み損益）。
 
 /** 描画色（系列ごとに固定）。 */
 export const RESULT_CHART_COLORS = Object.freeze({
@@ -29,7 +33,6 @@ export const RESULT_CHART_COLORS = Object.freeze({
   //   足ごとは「木」、取引終了時は「森」）。森を読めるよう、足ごとは不透明度を下げて細く、
   //   取引終了時はシミュレーション結果の資産曲線 balChart・ドローダウン ddChart と同じ色と太さで描く
   //   （`lwc5_chart_renderer.js` の balSeries / ddSeries の線色・lineWidth 2）。
-  balance: 'rgba(41,98,255,0.35)',
   equity: 'rgba(38,166,154,0.35)',
   drawdown: 'rgba(239,83,80,0.35)',
   balanceClose: 'rgba(59,130,246,0.9)',
@@ -54,22 +57,34 @@ export function toPoints(times, values) {
 }
 
 /**
- * 損益（初期資金比）の棒の点: 足ごとの 有効証拠金 − 初期資金。0 以上は upColor・0 未満は downColor
- * （0 ちょうどは upColor）。有効証拠金が値なし（null・非有限）の足は whitespace（0 を置かない）。
- * @param {Array<number>} times
- * @param {Array<number|null>} equity
- * @param {{deposit: number, upColor: string, downColor: string}} basis
+ * 棒の点を作る口。棒の点はすべてここを通る（観測の境界として宣言する注入点:
+ * `resultChartPanes` / `resultChartInstances` の `seams.barPoint`。計算量の検定が数える）。
+ * @param {number} time
+ * @param {number|null} value null は値なし（whitespace＝time だけの点）
+ * @param {string} [color]
  */
-export function pnlBars(times, equity, { deposit, upColor, downColor }) {
+export function barPoint(time, value, color) {
+  return value === null ? { time } : { time, value, color };
+}
+
+/**
+ * 基準つきの棒の点: 足ごとの値 v から value = v − minus を作り、value が base 以上なら upColor・
+ * base 未満なら downColor（base ちょうどは upColor）。値なし（null・非有限）の足は whitespace（0 を置かない）。
+ * @param {Array<number>} times
+ * @param {Array<number|null>} values
+ * @param {{minus: number, base: number, upColor: string, downColor: string}} rule
+ * @param {function} point 棒の点を作る口（既定 `barPoint`）
+ */
+export function baselineBars(times, values, { minus, base, upColor, downColor }, point = barPoint) {
   const out = new Array(times.length);
   for (let i = 0; i < times.length; i += 1) {
-    const e = equity[i];
-    if (e === null || e === undefined || !Number.isFinite(e)) {
-      out[i] = { time: times[i] };
+    const v = values[i];
+    if (v === null || v === undefined || !Number.isFinite(v)) {
+      out[i] = point(times[i], null);
       continue;
     }
-    const value = e - deposit;
-    out[i] = { time: times[i], value, color: value >= 0 ? upColor : downColor };
+    const value = v - minus;
+    out[i] = point(times[i], value, value >= base ? upColor : downColor);
   }
   return out;
 }
@@ -147,12 +162,15 @@ export function candlesOf(columns) {
  * @param {object} columns    持っている区間の列（列名 → 並び。時刻は列 time）
  * @param {{balData: Array, ddData: Array}} tradeClose 取引終了時の残高・DD（`windowTradeClose` の出力。
  *                            各足の時刻で持つ）。残高・DD のパネルに足ごとのレイヤーと重ねて描く。
- * @param {{deposit: number, upColor: string, downColor: string}} pnlBasis 損益（初期資金比）の基準
+ * @param {{deposit: number, upColor: string, downColor: string}} baseline 初期資金基準の棒の基準
  *                            （report.json の meta.initial_deposit）と塗り分けの色（ローソク足の陽線・陰線）。
- * @returns {Array<{title: string, series: Array<{name: string, kind: string, color: string, width?: number, points: Array}>}>}
+ * @param {{barPoint?: function}} [seams] 観測の境界（棒の点を作る口。既定 `barPoint`）
+ * @returns {Array<{title: string, series: Array<{name: string, kind: string, color: string, width?: number,
+ *   base?: number, points: Array}>}>}
  *   配列の添字がパネル番号（0 は価格パネル・ローソク足は View が別に置く）。
  */
-export function resultChartPanes(declared, columns, tradeClose, pnlBasis) {
+export function resultChartPanes(declared, columns, tradeClose, baseline, { barPoint: point = barPoint } = {}) {
+  const { deposit, upColor, downColor } = baseline;
   const times = columns.time;
   const panes = [{ title: '価格', series: [] }];
   indicatorsOf(declared).forEach((ind, i) => {
@@ -172,7 +190,9 @@ export function resultChartPanes(declared, columns, tradeClose, pnlBasis) {
   panes.push({
     title: '残高・有効証拠金',
     series: [
-      { name: '残高（足ごと）', color: RESULT_CHART_COLORS.balance, points: toPoints(t, a.balance) },
+      // 棒を先に置く（先に描いたものが下になる）。基準は初期資金の高さ・値は残高の金額のまま。
+      { name: '残高（足ごと）', kind: 'histogram', color: upColor, base: deposit,
+        points: baselineBars(t, a.balance, { minus: 0, base: deposit, upColor, downColor }, point) },
       { name: '有効証拠金（足ごと）', color: RESULT_CHART_COLORS.equity, points: toPoints(t, a.equity) },
       { name: '残高（取引終了時）', color: RESULT_CHART_COLORS.balanceClose, width: TRADE_CLOSE_LINE_WIDTH,
         points: tradeClose.balData },
@@ -193,8 +213,8 @@ export function resultChartPanes(declared, columns, tradeClose, pnlBasis) {
     title: '損益（初期資金比）',
     series: [
       // 棒を先に置く（先に描いたものが下になる）。凡例の色は 0 以上の色。
-      { name: '損益（初期資金比）', kind: 'histogram', color: pnlBasis.upColor,
-        points: pnlBars(t, a.equity, pnlBasis) },
+      { name: '損益（初期資金比）', kind: 'histogram', color: upColor,
+        points: baselineBars(t, a.equity, { minus: deposit, base: 0, upColor, downColor }, point) },
       { name: '確定損益（累計）', color: RESULT_CHART_COLORS.realized, points: toPoints(t, a.realized_pnl) },
     ],
   });
@@ -214,14 +234,17 @@ export function resultChartPanes(declared, columns, tradeClose, pnlBasis) {
  *   価格パネルの系列 … 系列 1 つが instance 1 つ（凡例で 1 本ずつ表示/非表示を切り替えられる）
  *   それ以外のパネル … パネル 1 枚が instance 1 つ（パネルの系列を束ねる）
  * @returns {Array<{instanceId: string, label: string, pane: boolean,
- *   payloads: Array<{name: string, kind: string, color: string, width: number, style: string, data: Array}>}>}
+ *   payloads: Array<{name: string, kind: string, color: string, width: number, style: string, data: Array,
+ *     base?: number}>}>}
  */
-export function resultChartInstances(declared, columns, tradeClose, pnlBasis) {
+export function resultChartInstances(declared, columns, tradeClose, baseline, seams = {}) {
   const payload = (s) => ({
     name: s.name, kind: s.kind, color: s.color, width: s.width || 1, style: 'solid', data: s.points,
+    // 棒の基準（ChartRenderer の renderHistogram が lwc の base へ渡す）。名乗る系列だけが持つ。
+    ...(s.base !== undefined ? { base: s.base } : {}),
   });
   const out = [];
-  resultChartPanes(declared, columns, tradeClose, pnlBasis).forEach((pane, paneIndex) => {
+  resultChartPanes(declared, columns, tradeClose, baseline, seams).forEach((pane, paneIndex) => {
     if (paneIndex === 0) {
       for (const s of pane.series) {
         out.push({ instanceId: `price:${s.name}`, label: s.name, pane: false, payloads: [payload(s)] });

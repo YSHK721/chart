@@ -86,7 +86,7 @@ function initialDepositOf(payload) {
 }
 
 /**
- * ChartRenderer が持つローソク足の陽線・陰線の色（損益（初期資金比）の塗り分けに借りる）。
+ * ChartRenderer が持つローソク足の陽線・陰線の色（初期資金基準の棒の塗り分けに借りる）。
  * 購読口は登録直後に今の色を 1 回配る。その 1 回だけ受け取り、購読は残さない。
  */
 function candleColorsOf(renderer) {
@@ -203,8 +203,9 @@ export function createSimResultChartView({
     const names = drawnColumns(declared);
     const segment = firstSegment(payload);
     const deposit = initialDepositOf(payload);
-    // 損益（初期資金比）の基準と塗り分けの色（ローソク足と同じ色）。1 ジョブにつき 1 回だけ決める。
-    const pnlBasis = { deposit, ...candleColorsOf(renderer) };
+    // 初期資金基準の棒（残高・損益（初期資金比））の基準と塗り分けの色（ローソク足と同じ色）。
+    //   1 ジョブにつき 1 回だけ決める。
+    const baseline = { deposit, ...candleColorsOf(renderer) };
     // balance_curve の時刻は 1 ジョブにつき 1 回だけ並べる（区間ごとに並べ直さない）。
     const curveTimes = balanceCurveTimes(segment);
     const reportSymbol = reportSymbolOf(payload);
@@ -220,7 +221,7 @@ export function createSimResultChartView({
         tradeCloseCurves, segment, deposit, curveTimes, times: columns.time,
       });
       return {
-        candles: candlesOf(columns), instances: resultChartInstances(declared, columns, tradeClose, pnlBasis),
+        candles: candlesOf(columns), instances: resultChartInstances(declared, columns, tradeClose, baseline),
       };
     };
 

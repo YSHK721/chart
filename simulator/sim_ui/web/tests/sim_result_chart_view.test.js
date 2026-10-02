@@ -55,7 +55,7 @@ function rowsAnswer(start, end) {
       time: index.map(timeAt),
       open: constant(1), high: constant(2), low: constant(0.5), close: index.map((i) => i + 0.5),
       // 有効証拠金は初期資金（report の meta.initial_deposit＝1000）の上下と、ちょうど同じ値を混ぜる。
-      balance: constant(1000), equity: index.map((i) => 1000 + ((i % 5) - 2)), drawdown: constant(0), drawdown_pct: constant(0),
+      balance: index.map((i) => 1000 + ((i % 3) - 1)), equity: index.map((i) => 1000 + ((i % 5) - 2)), drawdown: constant(0), drawdown_pct: constant(0),
       realized_pnl: constant(0), floating_pnl: constant(0), margin: constant(0), margin_level: constant(null),
       indicator_0: constant(1),
     },
@@ -214,8 +214,8 @@ function view({ k = kit(), ext = extent(), rep = () => report(), answer = rowsAn
   return { v, host, k, c, userActs, rangeChanges, settle, scrollTo };
 }
 
-/** View が model へ渡すはずの損益（初期資金比）の基準と色（report の初期資金・ChartRenderer の色）。 */
-function pnlBasis(c, deposit = 1000) {
+/** View が model へ渡すはずの初期資金基準と色（report の初期資金・ChartRenderer の色）。 */
+function baseline(c, deposit = 1000) {
   return { deposit, upColor: c.chrome.candleUp, downColor: c.chrome.candleDown };
 }
 
@@ -275,7 +275,7 @@ test('描くとき: 全 instance（点の時刻は区間の足の時刻）・売
   const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
   const columns = rowsAnswer(tail.start, tail.end).columns;
   const expected = resultChartInstances(
-    extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000), pnlBasis(c),
+    extent(), columns, tradeCloseCurves(firstSegment(report()), columns.time, 1000), baseline(c),
   );
   assert.deepEqual(drawnIds(c), expected.map((inst) => inst.instanceId));
   for (const call of c.renders) {
@@ -348,8 +348,8 @@ test('損益（初期資金比）: 棒は renderHistogram で、確定損益（�
     ['renderHistogram', ['損益（初期資金比）'], { pane: true }],
     ['renderLine', ['確定損益（累計）'], { pane: true }],
   ]);
-  // 棒を描くのはこの 1 系列だけ（他の系列は線のまま）。
-  assert.deepEqual(c.renderHistogram.map((x) => x.id), [id]);
+  // 棒を描くのは残高と損益（初期資金比）の 2 枚だけ（他の系列は線のまま）。
+  assert.deepEqual(c.renderHistogram.map((x) => x.id).sort(), ['pane:残高・有効証拠金', id].sort());
   // 含み損益の線は描かない。
   assert.ok(c.renders.every((x) => x.payloads.every((p) => p.name !== '含み損益')));
   // 凡例の行は 1 つ（棒と線で 1 instance）。
@@ -361,7 +361,7 @@ test('損益（初期資金比）: 値は 有効証拠金 − report.json の初
   await v.render('job1');
   const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
   const columns = rowsAnswer(tail.start, tail.end).columns;
-  const bars = c.renderHistogram[0].payloads[0].data;
+  const bars = c.renderHistogram.find((x) => x.id === 'pane:損益（初期資金比）').payloads[0].data;
   assert.deepEqual(bars, expectedPnlBars(c, columns, 999));
   // 検定の前提: 区間に 0 以上と 0 未満の両方がある（塗り分けを見ていることの確認）。
   assert.ok(bars.some((q) => q.value < 0) && bars.some((q) => q.value >= 0));
@@ -379,7 +379,54 @@ test('損益（初期資金比）: 読み足しの後も、持っている区間
   const inst = draw.instances.find((i) => i.instanceId === 'pane:損益（初期資金比）');
   assert.deepEqual(inst.payloads.map((p) => [p.name, p.kind]), [['損益（初期資金比）', 'histogram'], ['確定損益（累計）', 'line']]);
   assert.deepEqual(inst.payloads[0].data, expectedPnlBars(c, rowsAnswer(w.start, w.end).columns));
-  assert.equal(c.renderHistogram.length, 1);
+  assert.equal(c.renderHistogram.length - new Set(c.renderHistogram.map((x) => x.id)).size, 0);
+});
+
+test('残高（足ごと）: 棒は renderHistogram で初期資金を基準（base）にし、有効証拠金・取引終了時の線より先に描く', async () => {
+  const { v, c } = view({ rep: () => ({ ...report(), meta: { initial_deposit: 1001, symbol: 'JP225' } }) });
+  await v.render('job1');
+  const id = 'pane:残高・有効証拠金';
+  const mine = c.renders.filter((x) => x.id === id);
+  assert.deepEqual(mine.map((x) => [x.method, x.payloads.map((p) => p.name)]), [
+    ['renderHistogram', ['残高（足ごと）']],
+    ['renderLine', ['有効証拠金（足ごと）', '残高（取引終了時）']],
+  ]);
+  const bars = mine[0].payloads[0];
+  assert.equal(bars.base, 1001);
+  const tail = tailWindow({ totalRows: TOTAL, readRows: READ_ROWS });
+  const columns = rowsAnswer(tail.start, tail.end).columns;
+  assert.deepEqual(bars.data, columns.time.map((time, k) => ({
+    time, value: columns.balance[k], color: columns.balance[k] >= 1001 ? c.chrome.candleUp : c.chrome.candleDown,
+  })));
+  assert.ok(bars.data.some((q) => q.value < 1001) && bars.data.some((q) => q.value === 1001), '検定の前提: 基準の上下が無い');
+});
+
+test('残高（足ごと）: 読み足しの後も、持っている区間の値と同じ基準で表示を保つ口から差し替わる', async () => {
+  const { v, c, scrollTo } = view();
+  await v.render('job1');
+  await scrollTo({ from: 2, to: 20 });
+  const draw = c.draws.at(-1);
+  const w = drawnWindow(draw.candles);
+  const bars = draw.instances.find((i) => i.instanceId === 'pane:残高・有効証拠金').payloads[0];
+  const columns = rowsAnswer(w.start, w.end).columns;
+  assert.equal(bars.base, 1000);
+  assert.deepEqual(bars.data.map((q) => [q.time, q.value]), columns.time.map((t, k) => [t, columns.balance[k]]));
+  // 棒は作り直さない（renderHistogram は instance ごとに 1 回のまま）。
+  assert.equal(c.renderHistogram.length - new Set(c.renderHistogram.map((x) => x.id)).size, 0);
+});
+
+test('計算量: 色の購読は 1 チャートにつき 1 回で、読み足しの回数（2 点）で増えない', async () => {
+  const observed = [];
+  for (const steps of [2, 6]) {
+    const h = view();
+    await h.v.render('job1');
+    await script(h, steps);
+    assert.ok(h.c.reads.length > steps, '読み足しが起きていない（検定が空虚）');
+    assert.equal(h.c.chromeSubscribed - h.c.viewer.length, 0);
+    assert.equal(h.c.chromeSubscribed - h.c.chromeUnsubscribed, 0);
+    observed.push(h.c.chromeSubscribed);
+  }
+  assert.equal(observed[0], observed[1]);
 });
 
 test('report.json が初期資金（meta.initial_deposit）を名乗らなければ描かずに理由を出す（基準を推測しない・足も読まない）', async () => {
@@ -568,7 +615,7 @@ test('目のボタンで隠した instance は、読み足しの後も隠れた�
   assert.equal(c.draws.length, 2);
   // 描き直し（renderLine・renderHistogram の再発行）も、表示の付け直しもしない。
   assert.equal(c.renderLine.length, c.draws[1].instances.length);
-  assert.equal(c.renderHistogram.length, 1);
+  assert.equal(c.renderHistogram.length - new Set(c.renderHistogram.map((x) => x.id)).size, 0);
   assert.deepEqual(c.visibleSets, [[id, false]]);
   assert.equal(c.legendRows.at(-1).find((r) => r.instanceId === id).visible, false);
 });
