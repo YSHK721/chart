@@ -9,7 +9,8 @@
         （ISSUE-552/554 段階 2-1）。
         画面は表示する範囲だけを位置（「`bar_index`」）の区間で読む。**足はジョブの成果物の
         ここ 1 か所にだけ在る**。書き方は `simulator/adapter/trace/parquet_trace_store.py` が持つ。
-    「`chart_bars.json`」: 上の成果物の宣言（時間足・EA・系列名・列名・指標と列の対応・行数）。
+    「`chart_bars.json`」: 上の成果物の宣言（時間足・EA・系列名・列名・指標と列の対応・行数・
+        run が使ったストップアウト水準）。
         足ごとの値を持たないので、大きさは足の本数で変わらない。**最後に書く**——これが在れば
         足の成果物は書き終えている。
 
@@ -122,6 +123,7 @@ def write(
     account: Any,
     initial_deposit: float,
     dataset_ref: "str | None",
+    stop_out_level: float,
 ) -> "tuple[Path, Path]":
     """``job_dir`` へ成果物を書き、売買マークと足の成果物（chart_bars.parquet）のパスを返す。
 
@@ -129,6 +131,8 @@ def write(
 
     ``account``: 足ごとの口座記録（`AccountCurveRecorder` と同じ属性を持つもの）。
     ``plots``: EA が宣言した 「`PlotDecl`」 の列（宣言の無い EA は空＝指標を描かない）。
+    ``stop_out_level``: その run が実際に使ったストップアウト水準（ISSUE-546。trace_meta.json と
+        同じ run の引数から渡す）。宣言に書き、売買履歴チャートの証拠金維持率の面の基準になる。既定値を置かない。
     """
     directory = Path(job_dir)
     markers_path = directory / TRADE_MARKERS_FILENAME
@@ -178,7 +182,7 @@ def write(
     }
     write_chart_bars(
         directory, bars=bars, bar_times=bar_times, account_columns=account_columns,
-        series=series, ea_name=ea_name, dataset_ref=dataset_ref,
+        series=series, ea_name=ea_name, dataset_ref=dataset_ref, stop_out_level=stop_out_level,
     )
     return markers_path, directory / CHART_BARS_FILENAME
 
@@ -192,6 +196,7 @@ def write_chart_bars(
     series: "list[dict]",
     ea_name: str,
     dataset_ref: "str | None",
+    stop_out_level: float,
 ) -> None:
     """足の成果物（parquet 1 本）とその宣言を書く。
 
@@ -227,6 +232,7 @@ def write_chart_bars(
         "rows": rows,
         "index_column": INDEX_COLUMN,
         "time_unit": TIME_UNIT,
+        "stop_out_level": float(stop_out_level),
         "columns": list(columns),
         "indicators": indicators,
     }

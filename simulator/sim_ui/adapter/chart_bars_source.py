@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -36,6 +37,19 @@ from simulator.sim_ui.usecase.chart_bars_ports import (
     ChartBarsDeclaration,
     ChartBarsPort,
 )
+
+
+def _level_of(payload: dict) -> "float | None":
+    """宣言のストップアウト水準。鍵が無い（書く前に実行したジョブ）は `None`。
+
+    鍵が在るのに有限の数でなければ読めない宣言として扱う（既定値で埋めない）。
+    """
+    if "stop_out_level" not in payload:
+        return None
+    level = payload["stop_out_level"]
+    if isinstance(level, bool) or not isinstance(level, (int, float)) or not math.isfinite(level):
+        raise ValueError(f"stop_out_level が有限の数ではありません: {level!r}")
+    return float(level)
 
 
 class ChartBarsSource(ChartBarsPort):
@@ -64,6 +78,7 @@ class ChartBarsSource(ChartBarsPort):
                 ea_name=payload["ea_name"],
                 dataset_ref=payload["dataset_ref"],
                 time_unit=payload["time_unit"],
+                stop_out_level=_level_of(payload),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             # 読めない宣言を既定値で埋めない（列を発明すると別の列を足として描く）。

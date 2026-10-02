@@ -99,6 +99,8 @@ class ChartBarsApiController:
                 "ea_name": declared.ea_name,
                 "dataset_ref": declared.dataset_ref,
                 "time_unit": declared.time_unit,
+                # run が使ったストップアウト水準（宣言が名乗らないジョブは null）。
+                "stop_out_level": declared.stop_out_level,
                 "max_returned_rows": MAX_RETURNED_BARS,
             },
         )
