@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ライブ / リプレイ 一本化ルータ（8000）を起動する。
-#   使い方:  ./serve.sh [--takeover]   （公開 8000・停止は Ctrl-C）
+#   使い方:  ./serve.sh [--takeover] [--restart]   （公開 8000・停止は Ctrl-C）
 #     --takeover : 8000 を別ツリーが握っているとき、そのスタックを停止してから起動する。
+#     --restart  : 8000 を**このツリー**が握っているとき、そのスタックを停止してから起動し直す
+#                  （コードを更新した後、配信を新しいコードへ入れ替える・ISSUE-531）。
+#     フラグ無しで同じツリーが配信中なら、配信中のコードが今のツリーと同じときだけ何もせず
+#     終わる。違う（または確かめられない）ときは違いを示して中止する（--restart で入れ替える）。
 #
 # --takeover の位置づけ（ISSUE-366 の派生・2026-08-10）:
 #   8000 は固定の単一資源なので、別ツリーで検証するには占有の移譲が要る。旧実装は移譲の
@@ -36,11 +40,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TAKEOVER=0
+RESTART=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --takeover) TAKEOVER=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
-    *) echo "不明な引数: $1（使い方: ./serve.sh [--takeover]）" >&2; exit 1 ;;
+    --restart) RESTART=1; shift ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    *) echo "不明な引数: $1（使い方: ./serve.sh [--takeover] [--restart]）" >&2; exit 1 ;;
   esac
 done
 
@@ -70,6 +76,8 @@ SIM_WEB_DIR="${REPO_ROOT}/simulator/sim_ui/web"
 #   相乗りには既存 core の改変が要る＝「既存 3 モードを改変しない」に反する）。
 DASHBOARD_MODULE="dashboard_ui.main.serve"
 DASHBOARD_ENTRY="${REPO_ROOT}/dashboard_ui/main/serve.py"
+# 配信中のコードの同一性（ISSUE-531）。判定の規則はこのファイルが持ち、本スクリプトは呼ぶだけ。
+SERVING_CODE_PY="${SCRIPT_DIR}/serving_code.py"
 
 PUBLIC_PORT=8000
 LIVE_PORT=8001
@@ -92,7 +100,7 @@ VENV_PY="${VENV_PYTHON:-${MAIN_ROOT}/lightweight-charts-python-main/.venv/bin/py
 # 既存 serve.sh の存在確認（無ければ core を起動できない＝即中断）。
 #   dashboard core の実体（DASHBOARD_ENTRY）もここで見る。無いまま起動すると wait_up の
 #   60 秒タイムアウトで「起動しませんでした」としか出ず、原因（実体不在）がメッセージに現れない。
-for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY" "${SIM_WEB_DIR}/index.html" "$DASHBOARD_ENTRY"; do
+for f in "$LIVE_SERVE" "$REPLAY_SERVE" "$ROUTER_PY" "$SERVING_CODE_PY" "${SIM_WEB_DIR}/index.html" "$DASHBOARD_ENTRY"; do
   if [ ! -f "$f" ]; then
     echo "エラー: 必須ファイルが見つかりません: $f" >&2
     exit 1
@@ -109,7 +117,7 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
-# ---- 占有スタックの停止に使う道具（--takeover 経路でのみ使う）-----------------
+# ---- 占有スタックの停止に使う道具（--takeover / --restart 経路で使う）-----------
 #
 # 決してシグナルを送ってはならない PID 集合＝**自分の側**のプロセス。
 #
@@ -223,13 +231,37 @@ stop_sim_core_if_up() {
   fi
 }
 
+# 止める前に、止めたら起動し直せないものが無いかを確かめる（ISSUE-531）。
+#
+# MT5 ティック供給（live core の serve.sh が起動する mt5_tick_watch）は、秘密 MT5_BRIDGE_SECRET が
+#   環境にあるときだけ起動される（indigators/indicator_ui/serve.sh）。秘密は起動した端末の環境か、
+#   tools/dev_paths.sh が source する <REPO_ROOT>/dev_paths.local.sh から来る。秘密の無い
+#   端末から入れ替えると、停止は成功し、起動し直しでは供給だけが黙って上がらない。これは
+#   ISSUE-524（供給が止まったまま 8 日間誰も気づかなかった）と同じ「黙って止まる」形である。
+#   よって停止対象のスタックが供給を動かしているのに秘密が無ければ、**何も止めずに**中止する。
+#   常駐はツリーの絶対パスを argv に持つ（`<tree>/tools/mt5_tick_watch.py`）ので、どのツリーの
+#   供給かは pids_with で一意に決まる。
+ensure_supply_restartable() {
+  local root="$1"
+  [ -n "${MT5_BRIDGE_SECRET:-}" ] && return 0
+  [ -z "$(pids_with "${root}/tools/mt5_tick_watch.py")" ] && return 0
+  echo "エラー: 停止しようとしたスタック（配信元: ${root}）は MT5 ティック供給を動かしていますが、" >&2
+  echo "       この端末には MT5_BRIDGE_SECRET がありません。このまま入れ替えると、供給だけが" >&2
+  echo "       起動し直されずに止まります。何も停止せずに中止しました。" >&2
+  echo "       秘密の供給元は ${REPO_ROOT}/dev_paths.local.sh（tools/dev_paths.sh が source する）です。" >&2
+  echo "       そこへ export MT5_BRIDGE_SECRET=... を置くか、秘密を設定した端末から実行してください。" >&2
+  exit 1
+}
+
 # 指定ツリーの 8000 スタックを停止する（Ctrl-C と同じ経路をたどる）。
+#   --takeover（別ツリー）と --restart（同じツリー）の両方がここを通る。停止の手順はここだけに書く。
 #   router は foreground プロセスなので、INT を送ると親 serve.sh が EXIT trap へ進み、
 #   cleanup が core をプロセスグループごと止める。過去のセッションが setsid nohup で
 #   起動したスタックは Ctrl-C が届かないため、この経路が唯一の正しい止め方になる。
 stop_stack() {
   local root="$1" p
   local router_pids
+  ensure_supply_restartable "$root"
   router_pids="$(pids_with "--web-root ${root}/unified_ui/web")"
   if [ -n "$router_pids" ]; then
     for p in $router_pids; do
@@ -266,9 +298,31 @@ stop_stack() {
 #   停止するかどうかは**人の判断**に委ねる（他セッションが作業中のスタックを落としうるため）。
 #   ただし判断が `--takeover` で表明されているなら、停止の**手順**はスクリプトが行う
 #   （ISSUE-366 派生。人に PID 探しをさせない）。フラグが無ければ従来どおりエラー終了する。
+#
+# ISSUE-531: 一致するときも、配信中の**コード**が今のツリーと同じかを確かめる。違えば
+#   黙って no-op せず、違いを示して `--restart` を案内する（入れ替えの手順は stop_stack を共有）。
 PUBLIC_URL="http://127.0.0.1:${PUBLIC_PORT}/"
 SERVING_ROOT_URL="http://127.0.0.1:${PUBLIC_PORT}/__serving_root"
-if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev/null; then
+SERVING_CODE_URL="http://127.0.0.1:${PUBLIC_PORT}/__serving_code"
+
+# 配信中のコードが、このツリーの今の配信の入力（serving_code.py の定義）と同じかを照合する（ISSUE-531）。
+#   0=同じ / 1=違う（違いを標準エラーへ出す）/ 2=確かめられない（申告口を持たない旧ルータ等）。
+#   「同じコード」の定義と根拠は serving_code.py の docstring が持つ。占有者への問い合わせは
+#   1 回だけで、ツリーの照合は手元の git で済む（問い合わせがファイル数に比例しない）。
+serving_code_matches() {
+  local line rc=0
+  line="$(curl -sf --max-time 5 "$SERVING_CODE_URL" 2>/dev/null | head -n 1 || true)"
+  [ -n "$line" ] || return 2
+  python3 "$SERVING_CODE_PY" compare "$REPO_ROOT" "$line" >&2 || rc=$?
+  return "$rc"
+}
+
+# 8000 の占有者を判定し、何もせず終える／止めて起動へ進む／中止する、のいずれかを決める。
+#   起動へ進むときだけ return 0 で戻る。
+resolve_occupant() {
+  local serving_root rc
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev/null || return 0
   # 占有者が居る。配信元を問い合わせて自分と同一か確かめる。
   serving_root="$(curl -sf --max-time 5 "$SERVING_ROOT_URL" 2>/dev/null | head -n 1 || true)"
   if [ -z "$serving_root" ]; then
@@ -280,22 +334,53 @@ if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$PUBLIC_URL" 2>/dev
     exit 1
   fi
   if [ "$serving_root" = "$REPO_ROOT" ]; then
-    echo "既に起動済みです: $PUBLIC_URL （配信元: ${serving_root}）"
-    exit 0
+    if [ "$RESTART" -eq 1 ]; then
+      echo "▶ ${PUBLIC_PORT} はこのツリーが配信中: ${serving_root}"
+      echo "▶ 入れ替えます（--restart）..."
+      stop_stack "$REPO_ROOT"
+      return 0
+    fi
+    # 同じツリーでも、配信中のコードが今のツリーと同じとは限らない（ISSUE-531）。静的ファイルは
+    #   要求ごとに読み直されるが、起動時に読んだ入力（Python・台帳・serve.sh 等＝serving_code.py の
+    #   定義）は起動時のままなので、黙って no-op すると画面の一部だけ
+    #   新しく、サーバ側の判断は古いまま動く。
+    rc=0
+    serving_code_matches || rc=$?
+    case "$rc" in
+      0)
+        echo "既に起動済みです: $PUBLIC_URL （配信元: ${serving_root}・コードは起動時と同じ）"
+        exit 0
+        ;;
+      1)
+        echo "エラー: このツリーのコードは、配信中のスタックの起動後に変わっています。起動を中止しました。" >&2
+        echo "       新しいコードへ入れ替える場合: ./serve.sh --restart" >&2
+        exit 1
+        ;;
+      *)
+        echo "エラー: 配信中のコードがこのツリーの今のコードと同じか確かめられません（理由は上の行。上の行が無ければ ${SERVING_CODE_URL} が無応答）。" >&2
+        echo "       配信元: ${serving_root}" >&2
+        echo "       新しいコードへ入れ替える場合: ./serve.sh --restart" >&2
+        exit 1
+        ;;
+    esac
   fi
   if [ "$TAKEOVER" -eq 1 ]; then
     echo "▶ ${PUBLIC_PORT} は別ツリーが配信中: ${serving_root}"
     echo "▶ 引き継ぎます（--takeover）..."
     stop_stack "$serving_root"
-  else
-    echo "エラー: ${PUBLIC_PORT} は**別のツリー**が配信しています。起動を中止しました。" >&2
-    echo "       占有中の配信元: ${serving_root}" >&2
-    echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
-    echo "       そのまま開くと、このツリーの変更が入っていない UI を見ることになります。" >&2
-    echo "       引き継いで起動する場合: ./serve.sh --takeover" >&2
-    exit 1
+    return 0
   fi
-fi
+  echo "エラー: ${PUBLIC_PORT} は**別のツリー**が配信しています。起動を中止しました。" >&2
+  echo "       占有中の配信元: ${serving_root}" >&2
+  echo "       起動しようとしたツリー: ${REPO_ROOT}" >&2
+  echo "       そのまま開くと、このツリーの変更が入っていない UI を見ることになります。" >&2
+  if [ "$RESTART" -eq 1 ]; then
+    echo "       --restart は同じツリーの入れ替え用です（別ツリーのスタックは落としません）。" >&2
+  fi
+  echo "       引き継いで起動する場合: ./serve.sh --takeover" >&2
+  exit 1
+}
+resolve_occupant
 
 # 8001 / 8281 が誰かに握られたまま core serve.sh へ委譲しないようにする（ISSUE-355）。
 #
@@ -375,6 +460,16 @@ ensure_dashboard_port_free() {
   ps -eo pid,args 2>/dev/null | grep -F "dashboard_ui.main.serve" | grep -v grep >&2 || true
   exit 1
 }
+
+# 配信中のコードの申告（ISSUE-531）。core を起動する**前**に作る: 作った後・core が読む前に
+#   更新されたファイルは「違う」側へ倒れる（古いものを「同じ」と言う向きの誤りが起きない）。
+#   router が受け取り /__serving_code で配る。
+#   作れないとき（git が無い等）は起動を止めず空で渡す: router は 404 を返し、次の serve.sh は
+#   「確かめられない」として扱う（分からないことを「同じ」に倒さない）。
+SERVING_CODE="$(python3 "$SERVING_CODE_PY" identity "$REPO_ROOT" || true)"
+if [ -z "$SERVING_CODE" ]; then
+  echo "warn: 配信するコードの申告を作れませんでした（次回の serve.sh は同一性を確かめられません）。" >&2
+fi
 
 LIVE_PGID=""
 REPLAY_PGID=""
@@ -481,4 +576,5 @@ python3 "$ROUTER_PY" "$PUBLIC_PORT" \
   --upstream "replay=http://127.0.0.1:${REPLAY_PORT}" \
   --upstream "sim=http://127.0.0.1:${SIM_PORT}" \
   --upstream "dashboard=http://127.0.0.1:${DASHBOARD_PORT}" \
-  --web-root "${SCRIPT_DIR}/web"
+  --web-root "${SCRIPT_DIR}/web" \
+  --serving-code "$SERVING_CODE"
