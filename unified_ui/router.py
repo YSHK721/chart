@@ -63,6 +63,18 @@ _SERVING_ROOT_PATH = "/__serving_root"
 #   モジュールでもある）が作り、ルータはそれを配るだけである。
 _SUPPLY_HEALTH_PATH = "/__supply_health"
 
+# 配信中のコードを答える診断エンドポイント（ISSUE-531）。
+#
+# なぜ要るか: `_SERVING_ROOT_PATH` は「どのツリーか」しか答えない。同じツリーでコードを更新しても
+#   Python は起動時のまま動くため、起動側が「そのツリーの**どの内容**で起動したか」を照合できないと、
+#   古いコードを黙って見続ける（2026-10-01 に実 UI 確認が 3 回止まった）。
+#
+# ルータは同一性の規則を 1 行も持たない。serve.sh が core を起動する**前**に作った申告
+#   （serving_code.py の identity）を `--serving-code` で受け取り、そのまま配るだけである。
+#   申告を受け取っていなければ 404（「分からない」を「同じ」に見せない）。様式は
+#   `_SERVING_ROOT_PATH` に揃える（平文・1 行・キャッシュさせない）。
+_SERVING_CODE_PATH = "/__serving_code"
+
 # 本ファイルは `<repo_root>/unified_ui/router.py` に在る。したがって配信元ツリーの実体は
 #   本ファイルの位置から一意に決まる（引数や cwd に依存させない＝偽装の余地を作らない）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -236,6 +248,9 @@ class RouterHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == _SUPPLY_HEALTH_PATH:
             self._serve_supply_health()
             return
+        if urlsplit(self.path).path == _SERVING_CODE_PATH:
+            self._serve_serving_code()
+            return
         prefix, upstream = self._match_prefix(self.path)
         if prefix is not None:
             self._proxy(upstream, self.path[len(prefix):])
@@ -253,6 +268,20 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         # 占有者が入れ替わっても即座に見える必要があるため、キャッシュさせない。
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_serving_code(self) -> None:
+        """起動時に受け取った申告をそのまま返す（ISSUE-531）。受け取っていなければ 404。"""
+        line = getattr(self.server, "serving_code", "")
+        if not line:
+            self._send_simple(404, b"serving code not declared\n")
+            return
+        body = (line + "\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -468,6 +497,7 @@ def create_router_server(
     connect_timeout=5.0,
     read_timeout=300.0,
     supply_health=None,
+    serving_code="",
 ):
     """ルータ用 HTTP サーバを構築して返す。
 
@@ -487,6 +517,9 @@ def create_router_server(
         供給の健全性の観測器（`report()` が平文の報告を返すもの）。None なら出荷時の観測器を
         最初の要求で作る（ISSUE-526 段 3）。差し替え口を持たせているのは、口の配管を供給の
         実状態から切り離して検証できるようにするためである。
+    serving_code : str
+        起動側が core 起動前に作った配信中のコードの申告（1 行）。`/__serving_code` で
+        そのまま返す。空なら 404（ISSUE-531）。
 
     Returns
     -------
@@ -500,6 +533,7 @@ def create_router_server(
     server.connect_timeout = connect_timeout
     server.read_timeout = read_timeout
     server.supply_health = supply_health
+    server.serving_code = serving_code
     return server
 
 
@@ -546,6 +580,11 @@ def main(argv=None):
             "リプレイ全期間ロード等を 502 化しないため production は寛容値にする（🔴-2）。"
         ),
     )
+    parser.add_argument(
+        "--serving-code",
+        default="",
+        help="配信中のコードの申告（serve.sh が core 起動前に作る 1 行・/__serving_code で返す）",
+    )
     args = parser.parse_args(argv)
 
     # --read-timeout 0 は「無制限」(None) と解釈する（重処理を絶対に打ち切らない運用）。
@@ -559,6 +598,7 @@ def main(argv=None):
         web_root=args.web_root,
         connect_timeout=args.connect_timeout,
         read_timeout=read_timeout,
+        serving_code=args.serving_code,
     )
     try:
         server.serve_forever()
