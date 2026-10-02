@@ -222,34 +222,40 @@ const TRADE_CLOSE_SOURCES = Object.freeze({ balanceClose: 'balData', drawdownClo
  *   area.base(ctx)    … 面の基準（ctx = { deposit, stopOutLevel }）。null なら基準が分からない
  *                       → 面にせず area.fallback の名前の線で描く（ペインの主役なので ACCOUNT_LINE_WIDTH）。
  *   area.toValue(v, ctx) … 列の値 → 描く値。
+ *   area.legendSide   … 凡例の色チップの側（'up'＝陽線の色 / 'down'＝陰線の色）。面がふつう基準のどちら側に
+ *                       在るかで決める（DD は常に 0 以下＝下側。他は基準より上が良い側）。
  *   lines             … 確定の線（高々 1 本・見た目は SERIES_RULE.settledLine）。
  */
-const ACCOUNT_PANES = Object.freeze([
+export const ACCOUNT_PANES = Object.freeze([
   {
     title: '残高・有効証拠金',
     // 基準は初期資金の高さ（目盛りは金額のまま）。
-    area: { name: '有効証拠金（足ごと）', source: 'equity', base: (ctx) => ctx.deposit, toValue: (v) => v },
+    area: {
+      name: '有効証拠金（足ごと）', source: 'equity', base: (ctx) => ctx.deposit, toValue: (v) => v, legendSide: 'up',
+    },
     // 残高は決済でしか変わらないので、確定の線は取引終了時の 1 本。
     lines: [{ name: '残高（取引終了時）', source: 'balanceClose' }],
   },
   {
     title: 'DD',
     // 下落を下向きに見せる（金額は正で持っているので符号を反転して描く）。基準は 0。
-    area: { name: 'DD（足ごと）', source: 'drawdown', base: () => 0, toValue: (v) => -v },
+    area: { name: 'DD（足ごと）', source: 'drawdown', base: () => 0, toValue: (v) => -v, legendSide: 'down' },
     // 残高ベースの DD（≤0）。シミュレーション結果のドローダウン ddChart と同じ系列。
     lines: [{ name: 'DD（取引終了時）', source: 'drawdownClose' }],
   },
   {
     title: '損益（初期資金比）',
     // 基準は 0（＝スタート残高）。面の縁と確定損益の線の差が含み損益。
-    area: { name: '損益（初期資金比）', source: 'equity', base: () => 0, toValue: (v, ctx) => v - ctx.deposit },
+    area: {
+      name: '損益（初期資金比）', source: 'equity', base: () => 0, toValue: (v, ctx) => v - ctx.deposit, legendSide: 'up',
+    },
     lines: [{ name: '確定損益（累計）', source: 'realized_pnl' }],
   },
   {
     title: '証拠金維持率(%)',
     // 基準は run が使ったストップアウト水準（足の成果物の宣言 stop_out_level）。
     area: {
-      name: '証拠金維持率', source: 'margin_level', base: (ctx) => ctx.stopOutLevel, toValue: (v) => v,
+      name: '証拠金維持率', source: 'margin_level', base: (ctx) => ctx.stopOutLevel, toValue: (v) => v, legendSide: 'up',
       fallback: { name: '証拠金維持率（水準の宣言なし）', color: 'marginLevel' },
     },
     lines: [],
@@ -269,11 +275,14 @@ function accountSeries(pane, { declared, columns, tradeClose, baseline, point })
   if (base === null) {
     out.push({
       name: area.fallback.name, role: 'area', source: area.source, width: ACCOUNT_LINE_WIDTH,
-      color: RESULT_CHART_COLORS[area.fallback.color], points: toPoints(t, columns[area.source]),
+      // 点は面と同じ口で作る（水準の宣言が無い経路も計算量の観測に入る）。
+      color: RESULT_CHART_COLORS[area.fallback.color],
+      points: areaPoints(t, columns[area.source], (v) => area.toValue(v, ctx), point),
     });
   } else {
     out.push({
-      name: area.name, role: 'area', source: area.source, kind: 'baseline', color: baseline.upColor,
+      name: area.name, role: 'area', source: area.source, kind: 'baseline',
+      color: area.legendSide === 'down' ? baseline.downColor : baseline.upColor,
       width: DEFAULT_LINE_WIDTH, base, fill: areaFill(baseline),
       points: areaPoints(t, columns[area.source], (v) => area.toValue(v, ctx), point),
     });

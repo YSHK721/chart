@@ -12,6 +12,7 @@ import {
   LINE_WIDTH_GAIN,
   SETTLED_LINE_WIDTH,
   balanceCurveTimes,
+  ACCOUNT_PANES,
   AREA_FILL_ALPHA,
   SERIES_RULE,
   SOURCE_BASIS,
@@ -50,13 +51,12 @@ function expectedFill(b = BASELINE) {
 /** 足の成果物の宣言が名乗る、run が使ったストップアウト水準（台帳の値と違う値を名乗る）。 */
 const STOP_OUT_LEVEL = 87.5;
 
-/** 面の系列（残高・DD・損益・証拠金維持率）と、その基準。 */
-const AREAS = Object.freeze([
-  { pane: '残高・有効証拠金', name: '有効証拠金（足ごと）', base: (b) => b.deposit },
-  { pane: 'DD', name: 'DD（足ごと）', base: () => 0 },
-  { pane: '損益（初期資金比）', name: '損益（初期資金比）', base: () => 0 },
-  { pane: '証拠金維持率(%)', name: '証拠金維持率', base: (b, d) => d.stop_out_level },
-]);
+/** 面の系列と、その基準（口座のペインの宣言 ACCOUNT_PANES から導く。ペインを足しても書き換えない）。 */
+const AREAS = Object.freeze(ACCOUNT_PANES.map((p) => ({
+  pane: p.title,
+  name: p.area.name,
+  base: (b, d) => p.area.base({ deposit: b.deposit, stopOutLevel: d.stop_out_level }),
+})));
 
 /** 足の成果物の宣言（extent の応答のうち model が読む部分）。指標の列名は位置から付く。 */
 function declared(indicators = [], { stopOutLevel = STOP_OUT_LEVEL } = {}) {
@@ -304,29 +304,46 @@ test('証拠金維持率: 宣言が水準を名乗らないジョブは面にせ
   }
 });
 
-test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（4 つの面・null と NaN を含む・足の本数 2 点）', () => {
-  // 観測の境界: 面の点を作る口 areaPoint（resultChartInstances の注入点 seams.areaPoint として宣言）。
-  for (const n of [3, 3000]) {
-    const times = Array.from({ length: n }, (_, i) => 60 * (i + 1));
-    const cols = Object.fromEntries(declared().columns.map((k) => [k, times.map((_, i) => 990 + (i % 21))]));
-    cols.time = times;
-    // 値なしの足（null・NaN）を混ぜ、whitespace の分岐も同じ表明で見張る。
-    for (const k of ['equity', 'drawdown', 'margin_level']) {
-      cols[k] = cols[k].map((v, i) => (i % 3 === 1 ? null : (i % 3 === 2 && i % 2 === 0 ? Number.NaN : v)));
+test('計算量: 面の点は 発行した点 − 描画へ渡した点 = 0（null と NaN を含む・足の本数 2 点・水準の宣言の有無 2 通り）', () => {
+  // 観測の境界: 面の点を作る口 areaPoint（resultChartPanes / resultChartInstances の注入点 seams.areaPoint）。
+  //   水準の宣言が無いジョブでは維持率は面の代わりの線（role 'area'）になる。その経路も同じ口を通る。
+  const noLevel = declared();
+  delete noLevel.stop_out_level;
+  for (const d of [declared(), noLevel]) {
+    for (const n of [3, 3000]) {
+      const times = Array.from({ length: n }, (_, i) => 60 * (i + 1));
+      const cols = Object.fromEntries(d.columns.map((k) => [k, times.map((_, i) => 990 + (i % 21))]));
+      cols.time = times;
+      // 値なしの足（null・NaN）を混ぜ、whitespace の分岐も同じ表明で見張る。
+      for (const k of ['equity', 'drawdown', 'margin_level']) {
+        cols[k] = cols[k].map((v, i) => (i % 3 === 1 ? null : (i % 3 === 2 && i % 2 === 0 ? Number.NaN : v)));
+      }
+      const issued = [];
+      const spy = (...args) => { const q = areaPoint(...args); issued.push(q); return q; };
+      const panes = resultChartPanes(d, cols, close(times, []), BASELINE, { areaPoint: spy });
+      const areas = panes.flatMap((p) => p.series).filter((s) => s.role === 'area');
+      assert.deepEqual(areas.length, AREAS.length, '面（とその代わりの線）が検定に入っていない');
+      const drawn = new Set(areas.flatMap((s) => s.points));
+      assert.ok(issued.length > 0, '注入点を通っていない（検定が空虚）');
+      assert.ok([...drawn].some((q) => !('value' in q)) && [...drawn].some((q) => 'value' in q), '値なしと値ありの両方の足が無い（検定が空虚）');
+      assert.equal(issued.filter((q) => !drawn.has(q)).length, 0, '作って描かない面の点がある');
+      assert.equal(issued.length - drawn.size, 0);
+      // 1 つの面あたりの点 − 足の数 = 0。
+      assert.deepEqual([...new Set(areas.map((s) => s.points.length - n))], [0]);
     }
-    const issued = [];
-    const spy = (...args) => { const q = areaPoint(...args); issued.push(q); return q; };
-    const insts = resultChartInstances(declared(), cols, close(times, []), BASELINE, { areaPoint: spy });
-    const areas = insts.flatMap((i) => i.payloads).filter((p) => p.kind === 'baseline');
-    assert.deepEqual(areas.map((p) => p.name).sort(), AREAS.map((a) => a.name).sort(), '面が検定に入っていない');
-    const drawn = new Set(areas.flatMap((p) => p.data));
-    assert.ok(issued.length > 0, '注入点を通っていない（検定が空虚）');
-    assert.ok([...drawn].some((q) => !('value' in q)) && [...drawn].some((q) => 'value' in q), '値なしと値ありの両方の足が無い（検定が空虚）');
-    assert.equal(issued.filter((q) => !drawn.has(q)).length, 0, '作って描かない面の点がある');
-    assert.equal(issued.length - drawn.size, 0);
-    // 1 つの面あたりの点 − 足の数 = 0。
-    assert.deepEqual([...new Set(areas.map((p) => p.data.length - n))], [0]);
   }
+});
+
+test('面の凡例の色: 宣言した側（DD は下側＝陰線の色、他は上側＝陽線の色）', () => {
+  // DD の面は常に基準 0 以下なので下側の色で塗られる。凡例の色チップも同じ色にする。
+  const panes = resultChartPanes(...material(), close(), BASELINE);
+  for (const p of ACCOUNT_PANES) {
+    const s = panes.find((q) => q.title === p.title).series.find((q) => q.role === 'area');
+    const expected = p.area.legendSide === 'down' ? BASELINE.downColor : BASELINE.upColor;
+    assert.ok(['up', 'down'].includes(p.area.legendSide), `${p.title} が凡例の色の側を宣言していない`);
+    assert.equal(s.color, expected, p.title);
+  }
+  assert.equal(ACCOUNT_PANES.find((p) => p.title === 'DD').area.legendSide, 'down');
 });
 
 // ---- 面と線の規則（依頼者裁定 2026-10-02「面グラフのルールはどうなっているのか? … 統一しろ」） ----
