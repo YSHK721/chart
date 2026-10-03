@@ -1,6 +1,6 @@
 """ブロック高値・安値ログの計算量検定（絶対命令 2026-08-28）。
 
-観測の境界: 宣言された注入点 ``BarSource``（tools.block_extrema.extrema）を Test Spy で包み、
+観測の境界: 宣言された注入点 ``tools.block_extrema.extrema.BarSource`` を Test Spy で包み、
 バーの読み出しと時刻の引き当てを数える（内部名の差し替えはしない）。
 
 表明:
