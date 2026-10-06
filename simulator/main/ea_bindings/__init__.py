@@ -31,6 +31,7 @@ from simulator.adapter.execution.tick_model_registry import consumes_market_data
 from simulator.main.ea_bindings import (
     calc_probe,
     dataless,
+    ema_deviation_short,
     ma_slope,
     ma_slope_pending,
     margin_probe,
@@ -69,6 +70,7 @@ _EA_MODULES = (
     open_then_close_5m,
     calc_probe,
     margin_probe,
+    ema_deviation_short,
 )
 
 #: ea_name → 束縛の登録表。キーは各 EA モジュールの宣言が持つ（ここで名前を写さない）。

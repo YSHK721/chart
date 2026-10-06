@@ -454,6 +454,8 @@ def build_interactor(
     #   注入専用ブロック（strategy_decorator〜run_tracer）は末尾固定なので、ジョブ仕様の
     #   パラメータはその**前**へ足す（test_run_tracer_injection_path が末尾を固定する）。
     margin_level_target: float = 95.0,
+    # EMA_Deviation_Short_EA（2026-10-06）が読む EMA からの上方乖離率（%）。注入専用ブロックの前へ足す。
+    ema_deviation_pct: float = 8.0,
     marketdata_window: Any = None,
     strategy_decorator: "Callable[[Any], Any] | None" = None,
     strategy_override: "Any | None" = None,

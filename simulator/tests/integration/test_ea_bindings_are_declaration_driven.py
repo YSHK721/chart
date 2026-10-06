@@ -325,6 +325,9 @@ class TestTheStrategyParametersComeFromTheDeclarations:
             "margin_level_target",
             "leverage",
             "contract_size",
+            # EMA_Deviation_Short_EA（2026-10-06）の宣言分。既存 17 名の並びは動いていない。
+            "ma_period",
+            "ema_deviation_pct",
         )
 
 
@@ -349,6 +352,8 @@ class TestThePublicSignatureIsUntouched:
         #   （strategy_decorator〜run_tracer）は末尾固定（test_run_tracer_injection_path）
         #   なのでその前へ足す。既定値つき＝必須キー集合は不変・既存名の相対順も不変。
         "margin_level_target",
+        # EMA_Deviation_Short_EA（2026-10-06）で追加。同じく注入専用ブロックの前・既定値つき。
+        "ema_deviation_pct",
         "marketdata_window",
         "strategy_decorator", "strategy_override", "position_manager",
         # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3・是正 F-6）で末尾へ追加。

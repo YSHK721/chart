@@ -48,6 +48,8 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     # MarginProbe_EA（証拠金維持率の動作確認・2026-09-27）の狙い維持率。実シグネチャと
     # 一致させる規約（test_walk_forward_cli.py）に従い列挙する。
     "margin_level_target",
+    # EMA_Deviation_Short_EA（2026-10-06）の上方乖離率。実シグネチャ一致規約に従い列挙する。
+    "ema_deviation_pct",
     "marketdata_window",
     # E-2（基本設計書 §12.4）で追加された戦略 Decorator の差し込み口。探索対象の
     # スカラーではないが、本集合は build_interactor の実シグネチャと一致させる規約
