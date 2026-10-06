@@ -95,6 +95,31 @@ INI_LABEL_TO_TIMEFRAME: dict[str, Timeframe] = {
     label: timeframe for timeframe, label in TIMEFRAME_INI_LABELS.items()
 }
 
+#: 1 分足から作れる足（選んだ足で判定する run・2026-10-06・依頼者承認）。列挙 → marketdata の
+#: 時間足名（`marketdata.resample.TIMEFRAME_RULES` の鍵・照合は `simulator.main.run_period`）。
+#: 載っていない足（M2・H2 等）は marketdata に無いので作れない（近い足へ寄せない）。
+TIMEFRAME_FROM_MINUTE_BARS: dict[Timeframe, str] = {
+    Timeframe.M1: "1m",
+    Timeframe.M5: "5m",
+    Timeframe.M15: "15m",
+    Timeframe.M30: "30m",
+    Timeframe.H1: "1h",
+    Timeframe.H4: "4h",
+    Timeframe.D1: "1D",
+    Timeframe.W1: "1W",
+    Timeframe.MN1: "1M",
+}
+
+
+def periods_runnable_on(data_period: str) -> "tuple[str, ...]":
+    """そのデータの足（Period ラベル）で選べる Period ラベル（列挙の順）。
+
+    データが 1 分足なら 1 分足から作れる足すべて、それ以外はデータの足そのものだけ。
+    """
+    if data_period != TIMEFRAME_INI_LABELS[Timeframe.M1]:
+        return (data_period,)
+    return tuple(TIMEFRAME_INI_LABELS[tf] for tf in TIMEFRAME_FROM_MINUTE_BARS)
+
 
 class TickModel(IntEnum):
     """`Model`（Modelling）。値は `.ini` の生値と一致（UI 表示順ではない）。"""

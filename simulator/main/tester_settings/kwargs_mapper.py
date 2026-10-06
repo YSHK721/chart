@@ -392,6 +392,11 @@ def _config_overrides(ctx: _MappingContext) -> Any:
     return overrides
 
 
+def _data_period(ctx: _MappingContext) -> Any:
+    """データの足（実行対象データセットの Period）。選んだ足と違えば 1 分足から作る。"""
+    return ctx.binding.period
+
+
 def _stop_out_level(ctx: _MappingContext) -> Any:
     return ctx.binding.stop_out_level
 
@@ -407,6 +412,7 @@ EXPLICIT_BINDINGS: "tuple[KwargBinding, ...]" = (
     KwargBinding("data_path", "binding.data_path", _data_path, injected=True),
     KwargBinding("symbol", "symbol", _symbol),
     KwargBinding("period", "timeframe", _period),
+    KwargBinding("data_period", "binding.period", _data_period, injected=True),
     KwargBinding("ea_name", "subject_path", _ea_name),
     KwargBinding("initial_deposit", "deposit", _initial_deposit),
     KwargBinding("leverage", "leverage", _leverage),

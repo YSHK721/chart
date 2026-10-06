@@ -45,11 +45,13 @@ from typing import Any, Callable, Sequence
 
 from simulator.adapter.presenter.trade_markers import TradeMarkersPresenter
 from simulator.adapter.trace import parquet_trace_store
+from simulator.domain.bar_time import epoch_seconds as bar_epoch_seconds_of_time
 from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 売買マークのファイル名（sim core の `/data/{job_id}/{file}` が配信する名前）。
 TRADE_MARKERS_FILENAME = "trade_markers.json"
-#: run の Bar 列の時間足（チャート側の台帳コード）。
+#: run の Bar 列の時間足（チャート側の台帳コード）。選んだ足で判定する run は、その足の
+#: 時間足名を `write` の ``timeframe`` で渡す（売買履歴チャートは選んだ足で表示する）。
 RUN_TIMEFRAME = "1m"
 #: 足の成果物（足＋口座＋指標を範囲で読める 1 本）のファイル名。
 CHART_BARS_FILENAME = "chart_bars.parquet"
@@ -110,6 +112,76 @@ def _finite_or_none(value: Any) -> "float | None":
     return number if math.isfinite(number) else None
 
 
+@dataclass(frozen=True)
+class PeriodEndAccount:
+    """選んだ足ごとの口座（各期間の最後の 1 分足の値・時刻は選んだ足の時刻）。"""
+
+    times: "list[int]"
+    balance: "list[float]"
+    equity: "list[float]"
+    margin: "list[float]"
+    margin_level: "list[float | None]"
+
+
+def account_at_period_ends(
+    account: Any, *, minute_count: int, ends: "Sequence[int]", period_times: "list[int]"
+) -> PeriodEndAccount:
+    """1 分足ごとの口座の行から、各期間の最後の 1 分足の行を取り出す。
+
+    口座の行が 1 分足と 1 対 1 でなければ（行の位置が 1 分足の位置でなければ）取り出す
+    行を決められないので `ValueError`（推測で寄せない）。
+    """
+    if account.rows != minute_count:
+        raise ValueError(
+            f"口座の行（{account.rows} 行）が 1 分足（{minute_count} 本）と 1 対 1 ではありません"
+        )
+    return PeriodEndAccount(
+        times=period_times,
+        balance=[account.balance[i] for i in ends],
+        equity=[account.equity[i] for i in ends],
+        margin=[account.margin[i] for i in ends],
+        margin_level=[account.margin_level[i] for i in ends],
+    )
+
+
+class _TradeAtPeriodBar:
+    """取引の建て・決済の時刻を、その時刻を含む選んだ足の時刻へ置いた見え方（他は元の取引）。"""
+
+    def __init__(self, trade: Any, entry_time: int, exit_time: int) -> None:
+        self._trade = trade
+        self.entry_time = entry_time
+        self.exit_time = exit_time
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._trade, name)
+
+
+@dataclass(frozen=True)
+class ResultAtPeriodBars:
+    """売買の印を選んだ足のチャートへ置くための結果の見え方（取引の時刻だけを選んだ足へ）。
+
+    印の時刻がローソク足の時刻と一致しないと、チャートは近くの足へ寄せて描く（寄せ方は
+    描画部品が決め、こちらからは保証できない）。選んだ足の時刻へ置いて渡せば寄せは起きない。
+    """
+
+    trades: "list[Any]"
+
+
+def result_at_period_bars(
+    result: Any, *, period_starts: "Sequence[int]", period_times: "Sequence[int]"
+) -> ResultAtPeriodBars:
+    """取引の時刻 t を「t を含む選んだ足」の時刻へ置く（足 k は ``period_starts[k]`` から始まる）。"""
+    import bisect
+
+    def at(t: Any) -> int:
+        k = bisect.bisect_right(period_starts, bar_epoch_seconds_of_time(t)) - 1
+        return int(period_times[max(k, 0)])
+
+    return ResultAtPeriodBars(
+        trades=[_TradeAtPeriodBar(tr, at(tr.entry_time), at(tr.exit_time)) for tr in result.trades]
+    )
+
+
 def write(
     job_dir: Any,
     *,
@@ -124,6 +196,7 @@ def write(
     initial_deposit: float,
     dataset_ref: "str | None",
     stop_out_level: float,
+    timeframe: str = RUN_TIMEFRAME,
 ) -> "tuple[Path, Path]":
     """``job_dir`` へ成果物を書き、売買マークと足の成果物（chart_bars.parquet）のパスを返す。
 
@@ -141,7 +214,7 @@ def write(
         markers_path,
         symbol=_MarkerSymbol(name=symbol, digits=digits),
         ea_name=ea_name,
-        timeframe=RUN_TIMEFRAME,
+        timeframe=timeframe,
     )
 
     bar_times = bar_epoch_seconds(bars)
@@ -183,6 +256,7 @@ def write(
     write_chart_bars(
         directory, bars=bars, bar_times=bar_times, account_columns=account_columns,
         series=series, ea_name=ea_name, dataset_ref=dataset_ref, stop_out_level=stop_out_level,
+        timeframe=timeframe,
     )
     return markers_path, directory / CHART_BARS_FILENAME
 
@@ -197,6 +271,7 @@ def write_chart_bars(
     ea_name: str,
     dataset_ref: "str | None",
     stop_out_level: float,
+    timeframe: str = RUN_TIMEFRAME,
 ) -> None:
     """足の成果物（parquet 1 本）とその宣言を書く。
 
@@ -226,7 +301,7 @@ def write_chart_bars(
         )
     rows = parquet_trace_store.write_columns(directory / CHART_BARS_FILENAME, columns)
     declaration = {
-        "timeframe": RUN_TIMEFRAME,
+        "timeframe": timeframe,
         "ea_name": ea_name,
         "dataset_ref": dataset_ref,
         "rows": rows,

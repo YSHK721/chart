@@ -45,6 +45,7 @@ from typing import Any
 from simulator.adapter.repository import ohlc_frame_cache
 from simulator.main import run_backtest
 from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -587,7 +588,7 @@ def _write_metrics_steps(job_dir: Path, result: Any) -> None:
 
 def _write_report_payload(
     job_dir: Path, result: Any, *, load_run_inputs, load_indicators,
-    run_kwargs: "dict[str, Any]", account: Any,
+    run_kwargs: "dict[str, Any]", account: Any, load_decision_series=lambda: None,
 ) -> None:
     """表示用ペイロード（report.json と売買履歴チャートへ描く成果物）を書く。**run の成否は変えない**。
 
@@ -613,13 +614,25 @@ def _write_report_payload(
             loaded["indicators"] = load_indicators()
         return loaded["indicators"]
 
+    def contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
+        decision_series = load_decision_series()
+        if decision_series is None:
+            return _supply_contacts(bars, backtest, indicators_once())
+        # 選んだ足の run: 接点は選んだ足の足と指標で求める（指標は 1 分足に揃っていない）。
+        period_bars = [
+            report_payload_writer.IntTimeBar(b, t)
+            for b, t in zip(decision_series.bars, bar_epoch_seconds(decision_series.bars))
+        ]
+        return _supply_contacts(
+            period_bars, {**backtest, "period": run_kwargs["period"]}, decision_series.indicators
+        )
+
     try:
         report_payload_writer.write(
             job_dir, result,
             load_run_inputs=load_once,
-            contacts_supply=lambda bars, backtest: _supply_contacts(
-                bars, backtest, indicators_once()
-            ),
+            contacts_supply=contacts,
+            timeframe=run_kwargs.get("period"),
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"report.json の書出しに失敗しました: {exc}"
@@ -627,9 +640,11 @@ def _write_report_payload(
         _record_report_payload_error(job_dir, message)
     try:
         bars, symbol_spec = load_once(run_kwargs)
+        decision_series = load_decision_series()
         _write_chart_overlay(
             job_dir, result, bars, symbol_spec, run_kwargs, account,
-            indicators=indicators_once(),
+            indicators=indicators_once() if decision_series is None else decision_series.indicators,
+            decision_series=decision_series,
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = (
@@ -644,6 +659,7 @@ def _write_report_payload(
 def _write_chart_overlay(
     job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
     run_kwargs: "dict[str, Any]", account: Any, *, indicators: Any,
+    decision_series: Any = None,
 ) -> None:
     """売買マークと足の成果物（足・足ごとの口座・トリガー指標）を書く（束縛は Composition Root が持つ）。
 
@@ -653,9 +669,30 @@ def _write_chart_overlay(
     """
     from simulator.main import known_plots
 
+    timeframe = chart_overlay_writer.RUN_TIMEFRAME
+    if decision_series is not None:
+        # 選んだ足で判定した run は、選んだ足で表示する（足・指標・口座・売買の印の時間足）。
+        period_times = bar_epoch_seconds(decision_series.bars)
+        minute_times = bar_epoch_seconds(bars)
+        account = chart_overlay_writer.account_at_period_ends(
+            account,
+            minute_count=len(bars),
+            ends=decision_series.period_end_positions(),
+            period_times=period_times,
+        )
+        result = chart_overlay_writer.result_at_period_bars(
+            result,
+            period_starts=[
+                minute_times[i] for i, k in enumerate(decision_series.positions) if k is not None
+            ],
+            period_times=period_times,
+        )
+        bars = decision_series.bars
+        timeframe = decision_series.timeframe
     chart_overlay_writer.write(
         job_dir,
         result=result,
+        timeframe=timeframe,
         bars=bars,
         symbol=run_kwargs["symbol"],
         digits=int(run_kwargs["digits"]),
@@ -749,6 +786,7 @@ def _run_with_settings(
             load_run_inputs=lambda _backtest: (request.bars, request.symbol_spec),
             load_indicators=lambda: _build_run_indicators(run_kwargs, request.bars),
             run_kwargs=run_kwargs, account=account,
+            load_decision_series=lambda: request.decision_series,
         )
     return exit_code, run_kwargs
 

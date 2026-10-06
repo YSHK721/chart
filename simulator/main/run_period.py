@@ -13,26 +13,23 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from marketdata.resample import TIMEFRAME_RULES
 from simulator.adapter.repository.period_bars import period_frame, write_marketdata_csv
 from simulator.domain.exceptions import ConfigError
+from simulator.usecase.tester_settings.enums import (
+    TIMEFRAME_FROM_MINUTE_BARS,
+    TIMEFRAME_INI_LABELS,
+)
 
 #: データの足（1 分足）の時間足名。選んだ足がこれなら従来どおり（まとめない）。
 DATA_TF = "1m"
 
-#: Period ラベル → marketdata の時間足名。
+#: Period ラベル → marketdata の時間足名（宣言は `TIMEFRAME_FROM_MINUTE_BARS` の 1 か所）。
 RUN_TF_BY_PERIOD: "dict[str, str]" = {
-    "M1": "1m",
-    "M5": "5m",
-    "M15": "15m",
-    "M30": "30m",
-    "H1": "1h",
-    "H4": "4h",
-    "Daily": "1D",
-    "Weekly": "1W",
-    "Monthly": "1M",
+    TIMEFRAME_INI_LABELS[timeframe]: code
+    for timeframe, code in TIMEFRAME_FROM_MINUTE_BARS.items()
 }
 assert set(RUN_TF_BY_PERIOD.values()) <= set(TIMEFRAME_RULES), "marketdata に無い時間足名"
 
@@ -42,10 +39,21 @@ def run_tf_of(period: Any) -> str:
     tf = RUN_TF_BY_PERIOD.get(period)
     if tf is None:
         raise ConfigError(
-            f"この Period では実行できません（1 分足から作れる足ではありません）: {period!r}",
+            f"period {period!r} の足は 1 分足から作れません"
+            f"（選べる足: {' / '.join(RUN_TF_BY_PERIOD)}）",
             context={"period": period, "supported": sorted(RUN_TF_BY_PERIOD)},
         )
     return tf
+
+
+#: 観測の境界（検査側の設計・絶対命令 2026-09-25）: 選んだ足の実体を作るたびに時間足名を
+#: 知らせる注入点。1 ジョブで作る回数（作った数 − 使った数 = 0）を検定する口であり、既定なし。
+_build_observer: "Callable[[str], None] | None" = None
+
+
+def set_build_observer(observer: "Callable[[str], None] | None") -> None:
+    global _build_observer
+    _build_observer = observer
 
 
 class PeriodDataset:
@@ -57,6 +65,8 @@ class PeriodDataset:
     """
 
     def __init__(self, m1_bars: Any, tf: str) -> None:
+        if _build_observer is not None:
+            _build_observer(tf)
         self._tmp = tempfile.TemporaryDirectory(prefix="sim_period_")
         self.path = write_marketdata_csv(
             period_frame(m1_bars, tf), Path(self._tmp.name) / f"period_{tf}.csv"

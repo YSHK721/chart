@@ -19,7 +19,7 @@
 // 使い方: node e2e_submit_driver.mjs <base-url> <scenario> [mode]
 //   settings   : schema 込み（Tester Settings パネルが settings の供給元）
 //   legacy     : schema 面が無い構成（fail-open → 旧フォーム投入・settings 不在）
-//   mismatch   : Period を実行対象データセットと食い違わせて投入
+//   mismatch   : 実行対象データセットで選べない Period（1 分足から作れない足）で投入
 //   bad_symbol : 候補外の Symbol を打って投入（受付が 400 で拒む＝理由文の掲示を観測する）
 //   mode="watch": 投入後、状態監視の掲示が終端まで追従するのを待ってから出力する
 //                 （既定は投入の応答を得た時点で終了＝既存シナリオの観測は変わらない）
@@ -30,6 +30,7 @@ import { CUSTOM_RANGE_OPTION } from "../js/adapter/front/sim_tester_settings_pan
 
 const [base, scenario, mode] = process.argv.slice(2);
 const SCHEMA_PATH = "/sim/settings-schema";
+const RUN_OPTIONS_PATH = "/sim/run-options";
 const SUBMIT_TIMEOUT_MS = 60_000;
 /** 監視の掲示が終端に追い付くのを待つ上限（front の照会周期は 1000ms）。 */
 const WATCH_TIMEOUT_MS = 300_000;
@@ -147,10 +148,13 @@ async function main() {
   }
 
   if (scenario === "mismatch") {
-    // 実行対象データセットと食い違う `Period` を選ぶ（schema が配る別トークン）。
+    // 実行対象データセットで**選べない** `Period` を選ぶ（schema が配るトークンのうち、
+    //   データセットの `periods`＝1 分足から作れる足の外にあるもの・2026-10-06）。
     const schema = await (await globalThis.fetch(base + SCHEMA_PATH)).json();
+    const options = await (await globalThis.fetch(base + RUN_OPTIONS_PATH)).json();
+    const runnable = options.datasets[0].periods;
     const period = findById(doc.body, "testerPeriod");
-    const other = schema.enum_options.Period.find((o) => o.token !== String(period.value));
+    const other = schema.enum_options.Period.find((o) => !runnable.includes(o.token));
     period.value = other.token;
     fire(period, "change");
   }

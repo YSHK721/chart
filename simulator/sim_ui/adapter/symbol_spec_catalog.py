@@ -156,10 +156,13 @@ from marketdata.symbol_spec_snapshot import (
     settlement_currency,
     spec_fields,
 )
+from simulator.usecase.tester_settings.enums import periods_runnable_on
 from simulator.sim_ui.usecase.run_options_ports import RunOptionsPort, RunProfile
 
 # 銘柄仕様の供給元（機械生成スナップショット）。銘柄名・サーバ名は**同一性**の指定であって
 # 仕様の値ではない（値は 1 つもここに書かない）。
+#: 提供する系列の足（すべて 1 分足の実体）。
+_DATA_PERIOD = "M1"
 _JP225_SYMBOL = "JP225"
 _JP225_SERVER = OANDA_JAPAN_MT5_LIVE
 
@@ -263,7 +266,9 @@ class SymbolSpecCatalog(RunOptionsPort):
             data_first_date=data_first,
             data_last_date=data_last,
             symbol=_JP225_SYMBOL,
-            period="M1",
+            period=_DATA_PERIOD,
+            # 選べる Period（表示専用・1 分足から作れる足・宣言は usecase の 1 か所）。
+            periods=periods_runnable_on(_DATA_PERIOD),
             # contract_size / digits / point_size / leverage / stops_level /
             # volume_min / volume_max / volume_step の 8 項目（供給元が唯一の権威）。
             **spec_fields(snapshot),

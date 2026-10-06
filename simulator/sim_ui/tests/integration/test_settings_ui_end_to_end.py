@@ -7,7 +7,7 @@
        結果配信面から取得できる。
     3. 同一指定 2 回で `stats.json` が **byte 完全一致**する（決定性）。
     4. settings 不在の旧本文の投入は従来どおり完了する（併存・現行経路に 1 bit も漏れない）。
-    5. `Period` を実行対象データセットと食い違わせた投入は**失敗し、理由が応答に載る**
+    5. 実行対象データセットで選べない `Period`（1 分足から作れない足）の投入は**失敗し、理由が応答に載る**
        （沈黙で別の時間足の結果を出さない）。front 側は投入前に警告を出している。
 
 方式（Phase 7 の先例 ISSUE-382-9 と同じ）: **製品 UI の合成経路**を ephemeral port で立てる。
@@ -225,7 +225,7 @@ def test_settings不在の旧本文の投入も従来どおり完了する(stack
     assert _request(stack, f"/sim/data/{job_id}/stats.json")[0] == 200
 
 
-# --- 5. データセットと食い違う Period は失敗し理由が残る ----------------------
+# --- 5. データセットで選べない Period は失敗し理由が残る ----------------------
 
 def test_正しく指定したカスタム期間に偽の非対象告知を出さない(stack) -> None:
     """N-15 は**実行後にしか判定できない**（`detect=None`）。窓を要求しただけで
@@ -269,7 +269,8 @@ def test_非対象トークンの選択は投入前にUIが理由を示し実行
     assert "N-05" in (final["failure_reason"] or ""), final["failure_reason"]
 
 
-def test_Periodがデータセットと不一致なら失敗し理由が応答に載る(stack) -> None:
+def test_データセットで選べないPeriodは失敗し理由が応答に載る(stack) -> None:
+    """選べる Period（1 分足から作れる足）の外を選ぶと、投入前に警告し実行は失敗する（2026-10-06）。"""
     # Act
     observed = _drive(stack, "mismatch")
     # Assert: front は投入前に警告している（沈黙で投入させない）

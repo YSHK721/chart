@@ -17,14 +17,15 @@ import numpy as np
 import pandas as pd
 
 from marketdata.resample import period_utc_start, resample_ohlc_tf
-from simulator.domain.bar_time import epoch_seconds
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 選んだ足の列（marketdata 形式の CSV に書く列・この並びで書く）。
 _COLUMNS = ("open", "high", "low", "close", "volume", "spread")
 
 
 def _epochs(bars: Sequence[Any]) -> np.ndarray:
-    return np.fromiter((epoch_seconds(b.time) for b in bars), dtype=np.int64, count=len(bars))
+    # 足の時刻は列ごとに一括で変換する（足ごとに変換しない・ISSUE-553 項目 3）。
+    return np.asarray(bar_epoch_seconds(bars), dtype=np.int64)
 
 
 def period_frame(m1_bars: Sequence[Any], tf: str) -> pd.DataFrame:
@@ -56,8 +57,8 @@ def decision_bars(
     """
     starts = np.fromiter(
         (
-            int(period_utc_start(tf, pd.Timestamp(epoch_seconds(b.time), unit="s")).timestamp())
-            for b in period_bars
+            int(period_utc_start(tf, pd.Timestamp(t, unit="s")).timestamp())
+            for t in _epochs(period_bars).tolist()
         ),
         dtype=np.int64,
         count=len(period_bars),

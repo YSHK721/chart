@@ -354,6 +354,8 @@ class TestThePublicSignatureIsUntouched:
         "margin_level_target",
         # EMA_Deviation_Short_EA（2026-10-06）で追加。同じく注入専用ブロックの前・既定値つき。
         "ema_deviation_pct",
+        # 選んだ足で判定する run（2026-10-06）のデータの足。同じく注入専用ブロックの前・既定値つき。
+        "data_period",
         "marketdata_window",
         "strategy_decorator", "strategy_override", "position_manager",
         # ISSUE-508 段階 3（RUN_TRACE_BASIC_DESIGN §6.6.3・是正 F-6）で末尾へ追加。

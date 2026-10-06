@@ -133,12 +133,12 @@ class RunBacktestRequest:
     # を目的とし、約定・損益・equity 記録を行わない）。時刻型は bar.time と比較可能な型
     # （numpy.datetime64 / epoch int）を想定する。
     trading_start: Any = None
-    # 判定足の位置（選んだ足で判定する run・2026-10-06）。``bars`` と同じ長さの列で、要素は
-    # その足で戦略に判定させる**判定足の番号**、判定しない足は ``None``。``bars`` は約定と
-    # SL/TP を評価する足（1 分足）のまま、戦略は判定足（日足など）が始まる足でだけ呼ばれ、
-    # 指標も判定足の番号で引く（MT5 がチャートの足で判定し、ティックで約定させるのと同じ）。
+    # 判定足の系列（選んだ足で判定する run・2026-10-06・`decision_series.DecisionSeries`）。
+    # ``bars`` は約定と SL/TP を評価する足（1 分足）のまま、戦略は判定足（日足など）が始まる
+    # 足でだけ呼ばれ、指標も判定足の番号で引く（MT5 がチャートの足で判定し、ティックで
+    # 約定させるのと同じ）。エンジンが読むのは ``positions`` だけ。
     # 既定 None は「全部の足が自分の番号で判定する」＝従来と同じ。
-    decision_bars: Any = None
+    decision_series: Any = None
 
 
 class RunBacktestInteractor(RunBacktestInputBoundary):
@@ -395,7 +395,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         if state.tracer is not None:
             state.tracer.observe_start(len(bars))
 
-        decision_bars = request.decision_bars
+        decision_bars = (
+            None if request.decision_series is None else request.decision_series.positions
+        )
         # 直近に始まった判定足の番号（足途中の再アームへ渡す番号）。
         decision_index: "int | None" = None
         for bar_index, bar in enumerate(bars):

@@ -95,7 +95,7 @@ class _CountingStrategy:
 
 def _run(csv: Path, period: str, **kw):
     controller, request = build_interactor(
-        data_path=str(csv), ea_name="EMA_Deviation_Short_EA", period=period,
+        data_path=str(csv), ea_name="EMA_Deviation_Short_EA", period=period, data_period="M1",
         config_overrides={"tick_model": "ohlc_expand", "stop_out_action": "close_and_halt"},
         **{**_COMMON, **kw},
     )

@@ -255,6 +255,31 @@ test("choosing a Period that differs from the profile warns before submission", 
   assert.equal(view.buildTesterMapping().Period, other.token);
 });
 
+test("with the dataset's runnable periods, only a Period outside them warns (2026-10-06)", () => {
+  // Arrange: 1 分足のデータセット。選べる足は profile.periods が名乗る（front は一覧を持たない）。
+  const m = mounted();
+  m.schema = settingsSchema();
+  const tokens = m.schema.enum_options.Period.map((o) => o.token);
+  const runnable = tokens.filter((t, i) => i % 2 === 0);
+  const outside = tokens.find((t) => !runnable.includes(t));
+  const inside = runnable.find((t) => t !== runProfile().period);
+  assert.ok(outside && inside, "fixture に選べる足と選べない足の両方が無い（検定が空振り）");
+  m.view.setSchema(m.schema);
+  m.view.setRunProfile({ ...runProfile(), periods: runnable });
+  const sel = field(m.host, "Period");
+  // Act / Assert: 一覧の中ならデータの足と違っても警告しない
+  sel.value = inside;
+  fire(sel);
+  assert.deepEqual(m.view.warnings(), []);
+  // 一覧の外は警告し、選べる足を示す
+  sel.value = outside;
+  fire(sel);
+  const warnings = m.view.warnings();
+  assert.equal(warnings.length, 1, JSON.stringify(warnings));
+  assert.match(warnings[0], new RegExp(outside));
+  assert.match(warnings[0], new RegExp(inside));
+});
+
 test("a Symbol that differs from the profile warns as well", () => {
   const { host, view, profile } = ready();
   const sym = field(host, "Symbol");
