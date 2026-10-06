@@ -125,8 +125,6 @@ def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_pat
 
     線の値は、前の日足の EMA から形成中の EMA を独立に作ると、ちょうど 8% 上になる。
     """
-    import math
-
     job_dir = _job(
         tmp_path, "level",
         backtest=_backtest(ea_name="EMA_Deviation_Short_EA", ma_period=21),
@@ -140,15 +138,12 @@ def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_pat
     series = {d["series"]: d["column"] for d in declaration["indicators"]}
     assert set(series) == {"ema", "deviation_level"}
     frame = pd.read_parquet(job_dir / "chart_bars.parquet")
-    ema, level = frame[series["ema"]].tolist(), frame[series["deviation_level"]].tolist()
+    # 定義へ戻す: 足 k の線は、形成中 EMA（前の日足の EMA から）からちょうど 8% 上の価格。
+    #   前の足の EMA が在る足だけを、列ごとにまとめて照合する（行ごとの分岐を書かない）。
     a = 2.0 / 22
-    up = 1.08
-    checked = 0
-    for k in range(1, len(frame)):
-        if ema[k - 1] is None or math.isnan(ema[k - 1]):
-            continue
-        # 定義へ戻す: 足 k の線は、形成中 EMA（前の日足の EMA から）からちょうど 8% 上の価格。
-        forming = a * level[k] + (1 - a) * ema[k - 1]
-        assert level[k] / forming == pytest.approx(up, abs=1e-12), k
-        checked += 1
-    assert checked, "照合した足が 0 本（検定が空虚）"
+    pairs = pd.DataFrame(
+        {"prev_ema": frame[series["ema"]].shift(1), "level": frame[series["deviation_level"]]}
+    ).dropna()
+    assert len(pairs), "照合した足が 0 本（検定が空虚）"
+    ratio = pairs["level"] / (a * pairs["level"] + (1 - a) * pairs["prev_ema"])
+    assert (ratio - 1.08).abs().max() == pytest.approx(0.0, abs=1e-12)
