@@ -44,10 +44,10 @@ def _fixture_dataset(monkeypatch):
 
 def _broker_days(job_dir: Path) -> "set[str]":
     """run が読んだ 1 分足（売買履歴チャートの元）から、UTC+2 時間の日付の集合を数える。"""
-    from simulator.main.ea_bindings.sources import ohlc_repository_for
+    from simulator.adapter.repository.ohlc_mt5_csv import Mt5CsvOHLCRepository
     from simulator.usecase.bar_times import bar_epoch_seconds
 
-    bars = ohlc_repository_for(str(_FIXTURE)).load(str(_FIXTURE), None, None)
+    bars = Mt5CsvOHLCRepository().load(str(_FIXTURE), None, None)
     return {
         (datetime.fromtimestamp(t, timezone.utc) + timedelta(hours=2)).date().isoformat()
         for t in bar_epoch_seconds(bars)
