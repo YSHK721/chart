@@ -1,4 +1,4 @@
-"""MT5 エクスポート CSV（タブ区切り・<DATE> <TIME> <OPEN> … <SPREAD>）を `BarSource` にする。"""
+"""MT5 エクスポート CSV（タブ区切り・<DATE> <TIME> <OPEN> … <SPREAD>）を `tools.ema_deviation_short.rules.BarSource` にする。"""
 from __future__ import annotations
 
 from pathlib import Path
