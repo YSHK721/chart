@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from marketdata.resample import period_utc_start, resample_ohlc_tf
+from simulator.domain.bar_time import epoch_seconds_of_datetime64_array
 from simulator.usecase.bar_times import bar_epoch_seconds
 
 #: 価格の列（足の集約規則は marketdata の値列台帳）。
@@ -63,7 +64,8 @@ def period_frame(
 
 def label_epochs(frame: pd.DataFrame) -> "list[int]":
     """まとめた足のラベル時刻（epoch 秒・CSV の ``date`` 列を UTC として読んだ値と同じ）。"""
-    return frame.index.values.astype("datetime64[s]").astype(np.int64).tolist()
+    # epoch 秒化の式は domain の単一ソースを使う（ここで datetime64 を cast しない）。
+    return epoch_seconds_of_datetime64_array(frame.index.values)
 
 
 def write_marketdata_csv(frame: pd.DataFrame, path: Path) -> Path:
