@@ -3,16 +3,30 @@ from __future__ import annotations
 
 from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
-from simulator.adapter.strategy.ema_deviation_short import EmaDeviationShort
+from simulator.adapter.strategy.ema_deviation_short import (
+    LEVEL_SERIES,
+    EmaDeviationShort,
+    level_series,
+)
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext, PlotDecl
 from simulator.main.ea_bindings.sources import series_or_data_error, source_for
 
 
-def build_registry(df, *, ma_period: int) -> PandasIndicatorRegistry:
-    """終値の EMA（MaSlope と同じ MQL 忠実 EMA）と当該足の "open" を登録する。"""
+def build_registry(
+    df, *, ma_period: int, deviation_pct: float, point_size: float, digits: int
+) -> PandasIndicatorRegistry:
+    """終値の EMA（MaSlope と同じ MQL 忠実 EMA）・足ごとの指値の水準・当該足の "open" を登録する。"""
+    ema = madiff_indicator.ema_series(df["close"], ma_period)
     return PandasIndicatorRegistry(
         {
-            "ema": madiff_indicator.ema_series(df["close"], ma_period),
+            "ema": ema,
+            LEVEL_SERIES: level_series(
+                ema,
+                ma_period=ma_period,
+                deviation_pct=deviation_pct,
+                point_size=point_size,
+                digits=digits,
+            ),
             "open": series_or_data_error(df, "open"),
         }
     )
@@ -21,7 +35,13 @@ def build_registry(df, *, ma_period: int) -> PandasIndicatorRegistry:
 def _factory_ema_deviation_short(ctx: EaBuildContext):
     # frame と読み手は同じ 1 回の解決から受け取る（形式判定を 2 回発行しない）。
     source = source_for(ctx.data_path)
-    registry = build_registry(source.frame, ma_period=ctx.param("ma_period"))
+    registry = build_registry(
+        source.frame,
+        ma_period=ctx.param("ma_period"),
+        deviation_pct=ctx.param("ema_deviation_pct"),
+        point_size=ctx.param("point_size"),
+        digits=ctx.param("digits"),
+    )
     return EmaDeviationShort(), registry, source.repository
 
 
@@ -43,5 +63,6 @@ BINDING = EaBinding(
         "digits",
         "stops_level",
     ),
-    plots=(PlotDecl("ema", "price"),),
+    # 売買のトリガー: 足ごとの指値の水準（その日の 8% 乖離の線）と、その元の EMA。
+    plots=(PlotDecl("ema", "price"), PlotDecl(LEVEL_SERIES, "price")),
 )

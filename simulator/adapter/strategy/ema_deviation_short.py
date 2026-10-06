@@ -20,6 +20,11 @@
     始まりなので、始値 Bid の成行売りにする。
 
 保有中は新規に建てない（売り 1 玉まで）。待機注文は毎足取り消して置き直す（1 足寿命）。
+
+水準の系列（`level_series`・系列名 ``LEVEL_SERIES``）:
+    足 k の指値価格（ema[k-1] × 係数を刻みへ切り上げた値）を束縛が 1 回だけ系列にして登録し、
+    戦略はそれを読む。売買履歴チャートも同じ系列を描く（式を 2 か所に書かない・2026-10-06）。
+    足 k の値は足 k の始まりに確定している（先読みではない）。
 """
 from __future__ import annotations
 
@@ -31,6 +36,20 @@ from simulator.domain.order import Order
 from simulator.domain.volume_step import floor_to_step
 from simulator.usecase.pending_order_use import PendingOrderUse
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
+
+
+#: 指値の水準の系列名（束縛が登録し、戦略が読み、チャートが描く）。
+LEVEL_SERIES = "deviation_level"
+
+
+def level_series(
+    ema: Any, *, ma_period: int, deviation_pct: float, point_size: float, digits: int
+) -> Any:
+    """足 k の指値価格の系列（ema[k-1] × 係数を刻みへ切り上げる・先頭は NaN）。"""
+    import numpy as np
+
+    raw = ema.shift(1) * touch_coefficient(ma_period, deviation_pct)
+    return (np.ceil((raw / point_size).round(9)) * point_size).round(int(digits))
 
 
 def touch_coefficient(ma_period: int, deviation_pct: float) -> float:
@@ -49,8 +68,8 @@ def touch_coefficient(ma_period: int, deviation_pct: float) -> float:
 class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
     """EMA 上方乖離の水準に触れたら売り、固定 SL/TP で決済する EA。"""
 
-    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは確定足の ema[i-1] と当該足の open・spread
-    #: だけで、いずれも足の**始まり**に確定している。
+    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは足 i の水準（確定足 ema[i-1] から決まる）と
+    #: 当該足の open だけで、いずれも足の**始まり**に確定している。
     entry_price_basis = "current_open"
 
     #: 待機注文の使い方（ISSUE-557）。毎足、未約定の指値を取り消して置き直す（1 足寿命）。
@@ -59,11 +78,9 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
     def __init__(self) -> None:
         self._config: Any = None
         self._lot: float | None = None
-        self._coefficient: float | None = None
 
     def on_init(self, config: Any, indicators: Any) -> None:
         self._config = config
-        self._coefficient = touch_coefficient(config["ma_period"], config["ema_deviation_pct"])
         requested = float(config["lot_size"])
         if requested <= 0.0:
             raise ConfigError(
@@ -97,11 +114,9 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
             return []
         if "sell" in self._held_sides(account):
             return []
-        cfg = self._config
-        point = float(cfg["point_size"])
-        digits = int(cfg["digits"])
-        level = float(indicators.get("ema").iloc[bar_index - 1]) * self._coefficient
-        level = round(math.ceil(round(level / point, 9)) * point, digits)
+        level = float(indicators.get(LEVEL_SERIES).iloc[bar_index])
+        if math.isnan(level):
+            return []
         bid = float(indicators.get("open").iloc[bar_index])
         if bid >= level:
             return [self._order("market", None, basis=bid)]

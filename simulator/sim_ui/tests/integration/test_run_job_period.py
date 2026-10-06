@@ -118,3 +118,36 @@ def test_one_job_builds_the_selected_bars_once_even_with_the_trace(tmp_path: Pat
     # トレースは書けている（作り直しも 1 分足の番号での引き損ないも無い）。
     assert not (job_dir / "trace_error.json").exists()
     assert (job_dir / "trace_indicators.parquet").is_file()
+
+
+def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_path: Path) -> None:
+    """EMA_Deviation_Short_EA の売買履歴チャートは、日足の EMA と足ごとの指値の水準を描く（2026-10-06）。
+
+    水準の値は、前の日足の EMA から独立に計算した指値価格と一致する。
+    """
+    import math
+
+    job_dir = _job(
+        tmp_path, "level",
+        backtest=_backtest(ea_name="EMA_Deviation_Short_EA", ma_period=21),
+        settings={
+            "tester": _tester(Expert="EMA_Deviation_Short_EA.ex5", Period="Daily"),
+            "inputs": [],
+        },
+    )
+    assert run_job.main(["--job-dir", str(job_dir)]) == 0, _reason(job_dir)
+    declaration = json.loads((job_dir / "chart_bars.json").read_text(encoding="utf-8"))
+    series = {d["series"]: d["column"] for d in declaration["indicators"]}
+    assert set(series) == {"ema", "deviation_level"}
+    frame = pd.read_parquet(job_dir / "chart_bars.parquet")
+    ema, level = frame[series["ema"]].tolist(), frame[series["deviation_level"]].tolist()
+    a = 2.0 / 22
+    up = 1.08
+    checked = 0
+    for k in range(1, len(frame)):
+        if ema[k - 1] is None or math.isnan(ema[k - 1]):
+            continue
+        expected = round(math.ceil(ema[k - 1] * up * (1 - a) / (1 - up * a) / 0.1 - 1e-9) * 0.1, 1)
+        assert level[k] == pytest.approx(expected, abs=1e-6), k
+        checked += 1
+    assert checked, "照合した足が 0 本（検定が空虚）"

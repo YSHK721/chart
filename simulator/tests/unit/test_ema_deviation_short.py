@@ -19,11 +19,15 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from simulator.adapter.strategy.ema_deviation_short import EmaDeviationShort, touch_coefficient
+from simulator.adapter.strategy.ema_deviation_short import (
+    LEVEL_SERIES,
+    EmaDeviationShort,
+    level_series,
+    touch_coefficient,
+)
 from simulator.domain.exceptions import ConfigError
 from simulator.usecase.ports import IndicatorPort
 
-EMA_SERIES = "ema"
 OPEN_SERIES = "open"
 
 
@@ -87,41 +91,55 @@ class TestTouchCoefficient:
 
 # ---- 発注 ----
 
-class TestOrders:
-    def _series(self, ema_prev: float, open_: float) -> "dict[str, pd.Series]":
-        return {EMA_SERIES: pd.Series([ema_prev, ema_prev]), OPEN_SERIES: pd.Series([open_, open_])}
+def _expected_level(ema_prev: float, period: int = 21, pct: float = 8.0) -> float:
+    """独立計算: 形成中 EMA から pct 上方に触れる価格を 0.1 刻みへ切り上げる。"""
+    a = 2.0 / (period + 1)
+    up = 1.0 + pct / 100.0
+    return round(math.ceil(ema_prev * up * (1 - a) / (1 - up * a) / 0.1 - 1e-9) * 0.1, 1)
 
-    def test_below_the_level_a_sell_limit_is_placed_at_the_level_rounded_up(self) -> None:
-        # Arrange
-        series = self._series(38_000.0, 38_100.0)
-        exact = 38_000.0 * touch_coefficient(21, 8.0)
-        expected = math.ceil(exact / 0.1 - 1e-9) * 0.1
-        # Act
+
+class TestLevelSeries:
+    def test_bar_k_holds_the_limit_price_from_the_previous_ema_and_the_first_is_empty(self) -> None:
+        ema = pd.Series([38_000.0, 38_123.4, 39_001.7])
+        got = level_series(ema, ma_period=21, deviation_pct=8.0, point_size=0.1, digits=1)
+        assert math.isnan(got.iloc[0])
+        assert got.iloc[1] == pytest.approx(_expected_level(38_000.0), abs=1e-9)
+        assert got.iloc[2] == pytest.approx(_expected_level(38_123.4), abs=1e-9)
+        # 切り上げ: 水準は正確な値以上（乖離 8% 未満で約定しない）。
+        assert got.iloc[1] >= 38_000.0 * touch_coefficient(21, 8.0)
+
+
+class TestOrders:
+    def _series(self, level: float, open_: float) -> "dict[str, pd.Series]":
+        return {
+            LEVEL_SERIES: pd.Series([float("nan"), level]),
+            OPEN_SERIES: pd.Series([open_, open_]),
+        }
+
+    def test_below_the_level_a_sell_limit_is_placed_at_the_level(self) -> None:
+        series = self._series(41_371.0, 38_100.0)
         (order,) = _strategy(series).on_new_bar(1, _Registry(series), _account())
-        # Assert
-        assert (order.side, order.kind) == ("sell", "sell_limit")
-        assert order.price == pytest.approx(expected, abs=1e-9)
-        assert order.price >= exact
-        assert order.sl == pytest.approx(order.price + 50.0, abs=1e-9)
-        assert order.tp == pytest.approx(order.price - 100.0, abs=1e-9)
+        assert (order.side, order.kind, order.price) == ("sell", "sell_limit", 41_371.0)
+        assert order.sl == pytest.approx(41_421.0, abs=1e-9)
+        assert order.tp == pytest.approx(41_271.0, abs=1e-9)
 
     def test_at_or_above_the_level_at_the_open_it_sells_at_market(self) -> None:
-        series = self._series(38_000.0, 42_000.0)
+        series = self._series(41_371.0, 42_000.0)
         (order,) = _strategy(series).on_new_bar(1, _Registry(series), _account())
         assert (order.side, order.kind, order.price) == ("sell", "market", None)
         assert order.sl == pytest.approx(42_050.0, abs=1e-9)
         assert order.tp == pytest.approx(41_900.0, abs=1e-9)
 
     def test_while_holding_a_sell_nothing_is_placed(self) -> None:
-        series = self._series(38_000.0, 38_100.0)
+        series = self._series(41_371.0, 38_100.0)
         assert _strategy(series).on_new_bar(1, _Registry(series), _account("sell")) == []
 
-    def test_the_first_bar_has_no_previous_ema(self) -> None:
-        series = self._series(38_000.0, 38_100.0)
+    def test_no_level_no_order(self) -> None:
+        series = self._series(41_371.0, 38_100.0)
         assert _strategy(series).on_new_bar(0, _Registry(series), _account()) == []
 
     def test_zero_points_place_no_sl_tp(self) -> None:
-        series = self._series(38_000.0, 38_100.0)
+        series = self._series(41_371.0, 38_100.0)
         s = _strategy(series, stop_loss_points=0, take_profit_points=0)
         (order,) = s.on_new_bar(1, _Registry(series), _account())
         assert (order.sl, order.tp) == (None, None)
@@ -155,9 +173,11 @@ class _IndicatorSpy(IndicatorPort):
         return None
 
 
-def _wave(n: int) -> "dict[str, pd.Series]":
+def _wave(n: int, period: int) -> "dict[str, pd.Series]":
     opens = pd.Series([38_000.0 * (1.0 + 0.12 * math.sin(i / 4.0)) for i in range(n)])
-    return {EMA_SERIES: opens.ewm(span=21, adjust=False).mean(), OPEN_SERIES: opens}
+    ema = opens.ewm(span=period, adjust=False).mean()
+    level = level_series(ema, ma_period=period, deviation_pct=8.0, point_size=0.1, digits=1)
+    return {LEVEL_SERIES: level, OPEN_SERIES: opens}
 
 
 def _held_at(i: int) -> "tuple[str, ...]":
@@ -166,7 +186,7 @@ def _held_at(i: int) -> "tuple[str, ...]":
 
 
 def _drive(n: int, period: int):
-    series = _wave(n)
+    series = _wave(n, period)
     spy = _IndicatorSpy(series)
     strategy = EmaDeviationShort()
     strategy.on_init(_config(ma_period=period), spy)
@@ -179,10 +199,11 @@ def _drive(n: int, period: int):
 
 
 def _declared_reads(n: int) -> "set[tuple[str, int]]":
+    """売買規則の宣言: 足 i（i>=1・売り保有なし）で水準 level[i] を読み、水準があれば open[i] を読む。"""
     expected = set()
     for i in range(1, n):
         if not _held_at(i):
-            expected |= {(EMA_SERIES, i - 1), (OPEN_SERIES, i)}
+            expected |= {(LEVEL_SERIES, i), (OPEN_SERIES, i)}
     return expected
 
 
