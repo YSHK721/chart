@@ -4,7 +4,7 @@
     * 戦略は選んだ足ごとに 1 回だけ判定し、指標は選んだ足の系列で引く。
     * 約定・SL/TP・口座の評価は 1 分足（とその足の途中の評価点）で行う。
 
-判定する 1 分足は、戦略が名乗る建値基準（`EntryPriceBasisPort`）が決める:
+判定する 1 分足は、戦略が名乗る建値基準（建値基準ポートの宣言）が決める:
     * ``"close"``（その足の終値で判定する）→ 期間の**最後**の 1 分足。期間の終値が確定した瞬間。
     * それ以外（足の始まりで判定する）→ 期間の**最初**の 1 分足。
   期間の始まりで「出来上がった足」の終値を読ませると先読みになる（レビュー実測 2026-10-06）。
@@ -63,13 +63,13 @@ def period_frame(
 
 
 def label_epochs(frame: pd.DataFrame) -> "list[int]":
-    """まとめた足のラベル時刻（epoch 秒・CSV の ``date`` 列を UTC として読んだ値と同じ）。"""
+    """まとめた足のラベル時刻（epoch 秒・CSV の日時列を UTC として読んだ値と同じ）。"""
     # epoch 秒化の式は domain の単一ソースを使う（ここで datetime64 を cast しない）。
     return epoch_seconds_of_datetime64_array(frame.index.values)
 
 
 def write_marketdata_csv(frame: pd.DataFrame, path: Path) -> Path:
-    """まとめた足を marketdata 形式（先頭列 ``date``・naive UTC）の CSV に書く。"""
+    """まとめた足を marketdata 形式（先頭列は日時列・naive UTC）の CSV に書く。"""
     out = frame.copy()
     if _VOLUME not in out.columns:
         out[_VOLUME] = 0.0

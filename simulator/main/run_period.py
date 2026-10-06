@@ -63,7 +63,7 @@ def set_build_observer(observer: "Callable[[str], None] | None") -> None:
 class PeriodDataset:
     """1 分足から作った ``tf`` の足を、marketdata 形式の一時 CSV として差し出す。
 
-    EA 束縛は「データ実体のパス」から指標とバーを読む（`ea_bindings.sources`）。選んだ足の
+    EA 束縛は「データ実体のパス」から指標とバーを読む（EA 束縛の共有データ供給）。選んだ足の
     実体を同じ形で渡すので、束縛は 1 行も変えずに選んだ足の指標を作る。読み終えたら
     `close` で消す（途中で例外が出ても一時ディレクトリは回収時に消える）。
     """
