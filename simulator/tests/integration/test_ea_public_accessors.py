@@ -198,3 +198,27 @@ def test_every_known_ea_name_resolves_to_a_strategy() -> None:
                 assert strategy is not None, ea_name
                 break
     assert resolved == list(known_ea_names())
+
+
+def test_a_private_parameter_with_a_run_default_is_filled_like_the_run(csv_path: Path) -> None:
+    """仕様に無いキーは build_interactor の既定値で補う（run と同じ束で組む・2026-10-06）。
+
+    EMA_Deviation_Short_EA は既定値つきの ``ema_deviation_pct`` を読む。是正前は run では組めるのに、
+    表示・受付の経路（本アクセサ）では ConfigError になった。期待値の係数はシグネチャの既定値から導く。
+    """
+    import inspect
+
+    import pandas as pd
+
+    from simulator.adapter.strategy.ema_deviation_short import touch_coefficient
+    from simulator.main import build_interactor
+
+    default_pct = inspect.signature(build_interactor).parameters["ema_deviation_pct"].default
+    spec = _spec(csv_path, "EMA_Deviation_Short_EA")
+    assert "ema_deviation_pct" not in spec
+    registry = build_ea_indicators(**spec)
+    ema = pd.Series(list(registry.get("ema")))
+    threshold = pd.Series(list(registry.get("deviation_threshold")))
+    coefficient = touch_coefficient(spec["ma_period"], default_pct)
+    assert (threshold - ema * coefficient).abs().max() == pytest.approx(0.0, abs=1e-9)
+    assert build_ea_strategy(**spec).__class__.__name__ == "EmaDeviationShort"
