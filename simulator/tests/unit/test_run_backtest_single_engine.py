@@ -1396,9 +1396,9 @@ class TestTheEngineIsDrivenByEvaluationPoints:
         monkeypatch.setattr(
             RunBacktestInteractor,
             "_evaluate_point",
-            lambda self, state, point, open_trades, halted: (
+            lambda self, state, point, open_trades, halted, **kw: (
                 evaluated.append(point),
-                original(self, state, point, open_trades, halted),
+                original(self, state, point, open_trades, halted, **kw),
             )[1],
         )
         # Act
@@ -1753,9 +1753,9 @@ class _PerLotSettlingInteractor(RunBacktestInteractor):
 class _ResetupPerBarInteractor(RunBacktestInteractor):
     """M3: run につき 1 度で足りる準備（セッション判定の導出）をバーごとに繰り返す。"""
 
-    def _evaluate_point(self, state, point, open_trades, halted):
+    def _evaluate_point(self, state, point, open_trades, halted, **kwargs):
         self._session_gate(state.bars)  # 同じ答えを毎回求め直す
-        return super()._evaluate_point(state, point, open_trades, halted)
+        return super()._evaluate_point(state, point, open_trades, halted, **kwargs)
 
 
 def _outcome(result):

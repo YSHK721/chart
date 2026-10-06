@@ -71,6 +71,9 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
 # （循環は構造ごと消えた）。
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
+from simulator.main.run_period import DATA_TF, PeriodDataset, run_tf_of
+from simulator.adapter.repository.period_bars import decision_bars as _decision_bars
+from simulator.main.ea_bindings.sources import ohlc_repository_for
 # ISSUE-525: 保証境界のうち run 自身の引数だけで判定できる宣言と、その適用器。規則 S と
 # 同じ「どちらでもない第三の点」に置いてある（親が子パッケージを読むと ISSUE-502 の C-2＝
 # パッケージ間の双方向依存が復活し、`test_package_import_acyclicity.py` が落ちる）。
@@ -521,10 +524,20 @@ def build_interactor(
     #   構成）は ea_bindings の select_ea_binding 1 箇所が持ち、ここは呼ぶだけである。
     # A-1: データ供給の要否は tick_model レジストリの宣言（requires_market_data）だけで
     # 決まる。既定 True のため既存 4 モードは従来と同じ EA 束縛を引く（byte 等価）。
+    # 選んだ足（Period）で判定する run（2026-10-06）。データを読む run で Period が 1 分足で
+    #   なければ、1 分足の全行から選んだ足の実体を作り、EA 束縛へは**その実体**を渡す
+    #   （指標もバーも選んだ足になる）。エンジンが約定と SL/TP を評価する足は 1 分足のまま。
+    run_tf = run_tf_of(period) if consumes_market_data(determinism.tick_model) else DATA_TF
+    period_dataset: "PeriodDataset | None" = None
+    if run_tf != DATA_TF:
+        m1_reader = ohlc_repository_for(data_path)
+        m1_all = m1_reader.load(data_path, None, None)
+        period_dataset = PeriodDataset(m1_all, run_tf)
+    ea_data_path = data_path if period_dataset is None else period_dataset.path
     strategy, registry, market_data = build_ea_components(
         ea_name,
         tick_model=determinism.tick_model,
-        data_path=data_path,
+        data_path=ea_data_path,
         params=job,
     )
     # EA 束縛が形式を判定して選んだ読み手（窓で包む前）。指標の行時刻の解釈はここから引く
@@ -572,7 +585,7 @@ def build_interactor(
     # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
     # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
     # 素通り＝既存 4 モードと byte 等価。
-    market_data = _windowed_reader(market_data, data_path, marketdata_window)
+    market_data = _windowed_reader(market_data, ea_data_path, marketdata_window)
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -580,7 +593,7 @@ def build_interactor(
     # committed adapter/usecase の IF（registry は系列・Interactor は Bar 列・controller は path
     # 再読み）に起因する。1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り
     # （DESIGN 申し送り）。every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
-    bars = market_data.load(data_path, None, None)
+    bars = market_data.load(ea_data_path, None, None)
 
     # ISSUE-509: 戦略は ``iloc[bar_index]`` で指標を位置参照するので、指標の行と Bar 列を
     #   **時刻で**対応させる。registry はデータ実体の全行（期間前の履歴で温まった値）から
@@ -588,8 +601,21 @@ def build_interactor(
     #   （実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError` で止める。
     #   バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
     registry = _aligned_to_run_bars(
-        registry, reader, data_path, bars, tick_model=determinism.tick_model
+        registry, reader, ea_data_path, bars, tick_model=determinism.tick_model
     )
+    # 選んだ足の run: 指標は選んだ足（``bars``）へ揃えた。エンジンへは 1 分足を渡し、
+    #   1 分足ごとに「判定する選んだ足の番号」を添える。一時実体はここで読み終わる。
+    decisions = None
+    if period_dataset is not None:
+        period_dataset.close()
+        market_data = _windowed_reader(m1_reader, data_path, marketdata_window)
+        m1_bars = (
+            m1_all
+            if marketdata_window is None
+            else market_data.load(data_path, None, None)
+        )
+        decisions = _decision_bars(m1_bars, bars, run_tf)
+        bars = m1_bars
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
@@ -659,6 +685,7 @@ def build_interactor(
         # warmup/trading_start（既定 None=全バー取引＝後方互換）。warmup 込み CSV を
         # data_path に与え trading_start を指定すると、開始前のバーは指標 seed 収束のみ。
         trading_start=trading_start,
+        decision_bars=decisions,
     )
     return controller, request
 
