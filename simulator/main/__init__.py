@@ -287,8 +287,22 @@ def _ea_components(
         tick_model=_tick_model_of(config_overrides),
         data_path=data_path,
         # 明示引数（既定値つき）が、素通しで来た同名キーより優先する（従来と同一）。
-        params={**extra, **declared},
+        #   仕様に無いキーは `build_interactor` の既定値で補う（run と同じ束で組む・既定値を
+        #   ここへ書き写さない。是正前は EA が既定値つきの私有パラメータを読むと、run では
+        #   組めるのに表示・受付の経路では ConfigError になった・2026-10-06）。
+        params={**_build_interactor_defaults(), **extra, **declared},
     )
+
+
+def _build_interactor_defaults() -> "dict[str, Any]":
+    """`build_interactor` の既定値つき引数の既定値（シグネチャが唯一の出所）。"""
+    import inspect
+
+    return {
+        name: parameter.default
+        for name, parameter in inspect.signature(build_interactor).parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+    }
 
 
 def _windowed_reader(market_data: Any, data_path: Any, marketdata_window: Any) -> Any:

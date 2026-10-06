@@ -123,7 +123,7 @@ def test_one_job_builds_the_selected_bars_once_even_with_the_trace(tmp_path: Pat
 def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_path: Path) -> None:
     """EMA_Deviation_Short_EA の売買履歴チャートは、日足の EMA と足ごとの指値の水準を描く（2026-10-06）。
 
-    水準の値は、前の日足の EMA から独立に計算した指値価格と一致する。
+    線の値は、前の日足の EMA から形成中の EMA を独立に作ると、ちょうど 8% 上になる。
     """
     import math
 
@@ -147,7 +147,8 @@ def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_pat
     for k in range(1, len(frame)):
         if ema[k - 1] is None or math.isnan(ema[k - 1]):
             continue
-        expected = round(math.ceil(ema[k - 1] * up * (1 - a) / (1 - up * a) / 0.1 - 1e-9) * 0.1, 1)
-        assert level[k] == pytest.approx(expected, abs=1e-6), k
+        # 定義へ戻す: 足 k の線は、形成中 EMA（前の日足の EMA から）からちょうど 8% 上の価格。
+        forming = a * level[k] + (1 - a) * ema[k - 1]
+        assert level[k] / forming == pytest.approx(up, abs=1e-12), k
         checked += 1
     assert checked, "照合した足が 0 本（検定が空虚）"

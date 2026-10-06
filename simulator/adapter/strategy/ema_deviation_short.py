@@ -21,10 +21,10 @@
 
 保有中は新規に建てない（売り 1 玉まで）。待機注文は毎足取り消して置き直す（1 足寿命）。
 
-水準の系列（`level_series`・系列名 ``LEVEL_SERIES``）:
-    足 k の指値価格（ema[k-1] × 係数を刻みへ切り上げた値）を束縛が 1 回だけ系列にして登録し、
-    戦略はそれを読む。売買履歴チャートも同じ系列を描く（式を 2 か所に書かない・2026-10-06）。
-    足 k の値は足 k の始まりに確定している（先読みではない）。
+水準の系列（`threshold_series`・2026-10-06）:
+    ``THRESHOLD_SERIES`` の足 k の値は ema[k] × 係数＝「次の足で乖離 d に触れる価格」。束縛が
+    1 回だけ作り、戦略は確定足 i-1 の値を読んで刻みへ切り上げ、指値にする。売買履歴チャートは
+    同じ系列を 1 本ずらした ``LEVEL_SERIES``（足 k の水準）を描く（係数の式を 2 か所に書かない）。
 """
 from __future__ import annotations
 
@@ -38,18 +38,15 @@ from simulator.usecase.pending_order_use import PendingOrderUse
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 
 
-#: 指値の水準の系列名（束縛が登録し、戦略が読み、チャートが描く）。
+#: 次の足の水準の系列名（足 k の値＝ema[k] × 係数・戦略が確定足 i-1 で読む）。
+THRESHOLD_SERIES = "deviation_threshold"
+#: 足 k の水準の系列名（``THRESHOLD_SERIES`` を 1 本ずらしたもの・チャートが描く）。
 LEVEL_SERIES = "deviation_level"
 
 
-def level_series(
-    ema: Any, *, ma_period: int, deviation_pct: float, point_size: float, digits: int
-) -> Any:
-    """足 k の指値価格の系列（ema[k-1] × 係数を刻みへ切り上げる・先頭は NaN）。"""
-    import numpy as np
-
-    raw = ema.shift(1) * touch_coefficient(ma_period, deviation_pct)
-    return (np.ceil((raw / point_size).round(9)) * point_size).round(int(digits))
+def threshold_series(ema: Any, *, ma_period: int, deviation_pct: float) -> Any:
+    """足 k の値＝次の足で形成中 EMA から乖離に触れる価格（ema[k] × 係数）。"""
+    return ema * touch_coefficient(ma_period, deviation_pct)
 
 
 def touch_coefficient(ma_period: int, deviation_pct: float) -> float:
@@ -68,8 +65,8 @@ def touch_coefficient(ma_period: int, deviation_pct: float) -> float:
 class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
     """EMA 上方乖離の水準に触れたら売り、固定 SL/TP で決済する EA。"""
 
-    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは足 i の水準（確定足 ema[i-1] から決まる）と
-    #: 当該足の open だけで、いずれも足の**始まり**に確定している。
+    #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは確定足 i-1 の水準と当該足の open だけで、
+    #: いずれも足の**始まり**に確定している。
     entry_price_basis = "current_open"
 
     #: 待機注文の使い方（ISSUE-557）。毎足、未約定の指値を取り消して置き直す（1 足寿命）。
@@ -114,9 +111,13 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
             return []
         if "sell" in self._held_sides(account):
             return []
-        level = float(indicators.get(LEVEL_SERIES).iloc[bar_index])
+        # 系列名は文字列で書く（建値基準の宣言と読み方の照合は、読む系列を字面で数える）。
+        level = float(indicators.get("deviation_threshold").iloc[bar_index - 1])
         if math.isnan(level):
             return []
+        # 指値は刻みへ切り上げる（切り捨てると乖離 d 未満で約定しうる）。
+        point = float(self._config["point_size"])
+        level = round(math.ceil(round(level / point, 9)) * point, int(self._config["digits"]))
         bid = float(indicators.get("open").iloc[bar_index])
         if bid >= level:
             return [self._order("market", None, basis=bid)]

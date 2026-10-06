@@ -157,6 +157,7 @@ class TestTheDeclaredStrategyTypeMatchesWhatIsBuilt:
         data_path = write_marketdata_csv(tmp_path / "md.csv", with_spread=True)
         params = {
             "ma_period": 2, "ma_method": "sma", "adx_period": 14, "adx_min": 22.0,
+            "ema_deviation_pct": 8.0,
             "lot_size": 1.0, "stop_loss_points": 0.0, "take_profit_points": 0.0,
             **weekly_params(),
         }
