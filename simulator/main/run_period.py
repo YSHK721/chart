@@ -64,12 +64,15 @@ class PeriodDataset:
     `close` で消す（途中で例外が出ても一時ディレクトリは回収時に消える）。
     """
 
-    def __init__(self, m1_bars: Any, tf: str) -> None:
+    def __init__(
+        self, frame: Any, row_times: Any, tf: str, *, decide_at_end: bool
+    ) -> None:
         if _build_observer is not None:
             _build_observer(tf)
         self._tmp = tempfile.TemporaryDirectory(prefix="sim_period_")
         self.path = write_marketdata_csv(
-            period_frame(m1_bars, tf), Path(self._tmp.name) / f"period_{tf}.csv"
+            period_frame(frame, row_times, tf, decide_at_end=decide_at_end),
+            Path(self._tmp.name) / f"period_{tf}.csv",
         )
 
     def close(self) -> None:

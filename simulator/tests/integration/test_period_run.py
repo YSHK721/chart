@@ -56,6 +56,12 @@ def _iso(t: int) -> str:
     return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _utc(t: int):
+    import datetime as _dt
+
+    return _dt.datetime.fromtimestamp(t, _dt.timezone.utc)
+
+
 def _flat_day(p: float, n: int) -> "list[tuple[float, float, float, float]]":
     return [(p, p + 5.0, p - 5.0, p) for _ in range(n)]
 
@@ -120,7 +126,8 @@ class TestDecisionsHappenOncePerSelectedBar:
         csv = _write(tmp_path / "md.csv", days)
         spy = _CountingStrategy()
         _run(csv, "M1", strategy_override=spy)
-        assert len(spy.calls) - 30 == 0
+        # 判定 − 1 分足の本数 = 0（期待値は入力の宣言から導く）。
+        assert len(spy.calls) - sum(len(d) for d in days) == 0
 
 
 def test_daily_ema_short_sells_at_the_daily_level_inside_the_day_and_takes_profit(tmp_path):
@@ -152,3 +159,96 @@ def test_a_period_that_cannot_be_built_from_1_minute_bars_refuses_to_start(tmp_p
     csv = _write(tmp_path / "md.csv", [_flat_day(20_000.0, 10) for _ in range(3)])
     with pytest.raises(ConfigError):
         _run(csv, "H2")
+
+
+def _build(csv: Path, period: str, **kw):
+    return build_interactor(
+        data_path=str(csv), ea_name="EMA_Deviation_Short_EA", period=period, data_period="M1",
+        config_overrides={"tick_model": "ohlc_expand", "stop_out_action": "close_and_halt"},
+        **{**_COMMON, **kw},
+    )
+
+
+class _CloseDeciding(_CountingStrategy):
+    """終値で判定すると名乗る戦略（Test Spy）。"""
+
+    entry_price_basis = "close"
+
+
+def _wavy_days(n_days: int, per_day: int) -> "list[list[tuple[float, float, float, float]]]":
+    days = []
+    for d in range(n_days):
+        bars = []
+        for m in range(per_day):
+            o = 20_000.0 + d * 10 + m
+            c = o + (3.0 if m % 2 else -3.0)
+            bars.append((o, max(o, c) + 1.0, min(o, c) - 1.0, c))
+        days.append(bars)
+    return days
+
+
+class TestTheDecisionReadsOnlyWhatIsKnownAtThatMinute:
+    """レビュー 🔴1（2026-10-06）: 選んだ足の値を、判定する 1 分足の時点で分かっている値だけ読む。"""
+
+    def test_a_close_deciding_strategy_decides_on_the_last_minute_and_reads_that_close(self, tmp_path):
+        csv = _write(tmp_path / "md.csv", _wavy_days(5, 20))
+        _controller, request = _build(csv, "Daily", strategy_override=_CloseDeciding())
+        ds = request.decision_series
+        decided = [i for i, k in enumerate(ds.positions) if k is not None]
+        assert decided == list(ds.ends)
+        # 判定の瞬間（期間の最後の 1 分足）の終値＝選んだ足の終値（先読みでない）。
+        for k, i in enumerate(decided):
+            assert ds.bars[k].close == request.bars[i].close
+
+    def test_an_open_deciding_strategy_decides_on_the_first_minute_and_reads_that_open(self, tmp_path):
+        csv = _write(tmp_path / "md.csv", _wavy_days(5, 20))
+        _controller, request = _build(csv, "Daily")
+        ds = request.decision_series
+        decided = [i for i, k in enumerate(ds.positions) if k is not None]
+        assert decided == list(ds.starts)
+        opens = ds.indicators.get("open")
+        for k, i in enumerate(decided):
+            assert opens.iloc[k] == request.bars[i].open
+            # 気配幅も判定の瞬間の値（期間の最小値ではない）。
+            assert ds.bars[k].spread == request.bars[i].spread
+
+
+class TestTheWindowEdgeIsDecidedByTheMinutes:
+    """レビュー 🔴2（2026-10-06）: 窓の端が期間の途中でも、1 分足は自分の期間に属する。"""
+
+    @pytest.mark.parametrize(("period", "expected_bars"), [("Daily", 3), ("Monthly", 1)])
+    def test_a_window_ending_inside_a_period_keeps_its_minutes_in_that_period(
+        self, tmp_path, period, expected_bars
+    ):
+        # 5 日分のうち、2 日目の途中〜4 日目の途中を窓にする（日付の境界と重ならない）。
+        csv = _write(tmp_path / "md.csv", _wavy_days(5, 20))
+        window = (_utc(_DAY0 + 86_400 + 10 * 60), _utc(_DAY0 + 3 * 86_400 + 10 * 60))
+        spy = _CountingStrategy()
+        _controller, request = _build(csv, period, marketdata_window=window, strategy_override=spy)
+        ds = request.decision_series
+        assert len(ds.bars) == expected_bars
+        # 最後の 1 分足は最後の選んだ足に属する（前の足へ入れない）。
+        assert ds.owners[-1] == len(ds.bars) - 1
+        assert sum(1 for k in ds.positions if k is not None) == expected_bars
+
+
+@pytest.mark.parametrize("window_days", [2, 4])
+def test_bars_built_minus_bars_used_is_zero_for_any_window(tmp_path, window_days):
+    """計算量（レビュー 🔴4）: 作った Bar − 使った足 = 0。窓の長さを変えても成り立つ。
+
+    使った足 = run の 1 分足（request.bars）＋ 全履歴の選んだ足（指標を温めるため全履歴で作る）。
+    観測の境界は `_ohlc_frame.set_observer`（Bar へ変換した行数を知らせる宣言済みの注入点）。
+    """
+    from simulator.adapter.repository import _ohlc_frame
+
+    days = _wavy_days(6, 20)
+    csv = _write(tmp_path / "md.csv", days)
+    window = (_utc(_DAY0 + 86_400), _utc(_DAY0 + (1 + window_days) * 86_400))
+    built: "list[int]" = []
+    _ohlc_frame.set_observer(lambda rows, _required: built.append(rows))
+    try:
+        _controller, request = _build(csv, "Daily", marketdata_window=window)
+    finally:
+        _ohlc_frame.set_observer(None)
+    used = len(request.bars) + len(days)
+    assert sum(built) - used == 0, built

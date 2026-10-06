@@ -120,7 +120,9 @@ def _build_run_tracer(spec: "dict[str, Any]") -> Any:
     return ColumnarRunTrace(TraceWindow.of(block.get("start"), block.get("end")))
 
 
-def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> None:
+def _write_trace(
+    job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]", decision_series: Any = None
+) -> None:
     """実行トレースを job-dir へ書く。**run の成否は変えない**（§6.5.3）。
 
     呼出点は `main()` のただ 1 箇所である（現行経路と settings 経路で書き写さない）。
@@ -158,7 +160,13 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
             # `job_dir.name` は台帳の採番規則そのものである。writer に読み直させると
             #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
             job_id=job_dir.name,
-            indicators_supply=lambda: build_run_indicators(**backtest),
+            # 選んだ足の run は、run の判定足の系列を 1 分足の番号で引く見え方で渡す
+            #   （作り直さない・トレースの足番号は 1 分足の番号）。
+            indicators_supply=(
+                (lambda: build_run_indicators(**backtest))
+                if decision_series is None
+                else decision_series.minute_indicators
+            ),
             # run が実際に使った水準（台帳から注入した値・ISSUE-546）。
             stop_out_level=backtest["stop_out_level"],
             marketdata_window=backtest.get("marketdata_window"),
@@ -677,14 +685,12 @@ def _write_chart_overlay(
         account = chart_overlay_writer.account_at_period_ends(
             account,
             minute_count=len(bars),
-            ends=decision_series.period_end_positions(),
+            ends=decision_series.ends,
             period_times=period_times,
         )
         result = chart_overlay_writer.result_at_period_bars(
             result,
-            period_starts=[
-                minute_times[i] for i, k in enumerate(decision_series.positions) if k is not None
-            ],
+            period_starts=[minute_times[i] for i in decision_series.starts],
             period_times=period_times,
         )
         bars = decision_series.bars
@@ -722,7 +728,7 @@ def _dataset_ref_of(data_path: Any) -> "str | None":
 
 def _run_with_settings(
     job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]", account: Any
-) -> "tuple[int, dict[str, Any] | None]":
+) -> "tuple[int, dict[str, Any] | None, Any]":
     """Tester Settings 経路（Phase 8 §18.3「実行」）。
 
     `.ini` の生トークン → `TesterSettings` → `EffectiveSettings` → `run_settings_job`（T-1）。
@@ -755,7 +761,7 @@ def _run_with_settings(
         message = f"Tester Settings の解釈に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR, None
+        return _EXIT_SPEC_ERROR, None, None
 
     try:
         exit_code, result, _metadata, request = run_settings_job(
@@ -765,12 +771,12 @@ def _run_with_settings(
         message = f"Tester Settings からの実行に失敗しました: {error}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return exit_code_for(error), None
+        return exit_code_for(error), None, None
     except Exception as exc:  # 内部例外を呼出側へ生で漏らさない
         message = f"バックテストの実行に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR, None
+        return _EXIT_SPEC_ERROR, None, None
 
     run_kwargs: "dict[str, Any] | None" = None
     if exit_code == 0 and result is not None:
@@ -788,7 +794,8 @@ def _run_with_settings(
             run_kwargs=run_kwargs, account=account,
             load_decision_series=lambda: request.decision_series,
         )
-    return exit_code, run_kwargs
+    # 3 つ目は run の判定足の系列（選んだ足で判定した run のときだけ・実行トレースが使う）。
+    return exit_code, run_kwargs, (request.decision_series if run_kwargs is not None else None)
 
 
 # 1 ジョブの読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。実体が実行中に
@@ -899,8 +906,11 @@ def main(argv: "list[str] | None" = None) -> int:
     # 分岐ごとに写すと、`_write_report_payload` が 2 箇所から呼ばれている形が増える
     # ——片方だけ改訂される複製を新しく作らない（§6.5.1）。
     if spec.get("settings"):
-        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions, account)
+        exit_code, run_kwargs, decision_series = _run_with_settings(
+            job_dir, spec, extensions, account
+        )
     else:
+        decision_series = None  # 現行経路は選んだ足で判定しない（data_period を渡さない）
         # ストップアウト水準は台帳から注入する（ISSUE-546・settings 経路と同じ出所と規則）。
         #   投入の `backtest` は水準を持たない（受付が拒む）。
         try:
@@ -942,7 +952,7 @@ def main(argv: "list[str] | None" = None) -> int:
     #   `spec["backtest"]` を読むと、`.ini` で期間を絞った settings run が
     #   「窓なし・比較可能」と偽って申告する（窓を絞った run ほど食い違いが大きい）。
     if tracer is not None and exit_code == 0:
-        _write_trace(job_dir, tracer, run_kwargs)
+        _write_trace(job_dir, tracer, run_kwargs, decision_series)
     return exit_code
 
 

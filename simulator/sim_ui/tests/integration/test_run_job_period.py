@@ -65,6 +65,7 @@ def test_a_daily_job_writes_its_chart_markers_and_report_on_daily_bars(tmp_path:
     # Assert
     assert code == 0, _reason(job_dir)
     assert not (job_dir / "chart_overlay_error.json").exists()
+    assert not (job_dir / "report_payload_error.json").exists()
     declaration = json.loads((job_dir / "chart_bars.json").read_text(encoding="utf-8"))
     assert declaration["timeframe"] == "1D"
     frame = pd.read_parquet(job_dir / "chart_bars.parquet")
@@ -86,22 +87,34 @@ def test_an_m1_job_still_writes_1_minute_bars(tmp_path: Path) -> None:
     assert declaration["rows"] > len(_broker_days(job_dir)) * 100
 
 
-@pytest.mark.parametrize("period", ["Daily", "H1"])
-def test_one_job_builds_the_selected_bars_once(tmp_path: Path, period: str) -> None:
-    """計算量: 1 ジョブで選んだ足の実体を作る回数 − 1 = 0（実行・表示・接点で作り直さない）。
+def _with_trace(job_dir: Path) -> Path:
+    spec_path = job_dir / "spec.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["trace"] = {"enabled": True}
+    spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    return job_dir
 
-    観測の境界は `simulator.main.run_period.set_build_observer`（宣言された注入点）。
-    足の種類（日足・1 時間足）を変えても 1 回のまま。
+
+@pytest.mark.parametrize("period", ["Daily", "H1"])
+def test_one_job_builds_the_selected_bars_once_even_with_the_trace(tmp_path: Path, period: str) -> None:
+    """計算量: 1 ジョブで選んだ足の実体を作る回数 − 1 run が使う判定足の系列の数 = 0。
+
+    実行・表示・接点・実行トレースのどこでも作り直さない（レビュー 🔴3: トレースが
+    組み直していた）。観測の境界は `simulator.main.run_period.set_build_observer`。
     """
     from simulator.main import run_period
 
     built: "list[str]" = []
     run_period.set_build_observer(built.append)
     try:
-        job_dir = _job(
-            tmp_path, period, settings={"tester": _tester(Period=period), "inputs": []}
+        job_dir = _with_trace(
+            _job(tmp_path, period, settings={"tester": _tester(Period=period), "inputs": []})
         )
         assert run_job.main(["--job-dir", str(job_dir)]) == 0, _reason(job_dir)
     finally:
         run_period.set_build_observer(None)
-    assert len(built) - 1 == 0, built
+    runs = 1  # 1 ジョブ＝1 run、run が受け取る判定足の系列は 1 つ
+    assert len(built) - runs == 0, built
+    # トレースは書けている（作り直しも 1 分足の番号での引き損ないも無い）。
+    assert not (job_dir / "trace_error.json").exists()
+    assert (job_dir / "trace_indicators.parquet").is_file()

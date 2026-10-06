@@ -59,6 +59,7 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
     build_ea_components,
     known_ea_names,
     plot_declarations,
+    select_ea_binding,
     spread_dependent_ea_names,
     strategy_param_names,
 )
@@ -72,8 +73,8 @@ from simulator.main.ea_bindings import (  # noqa: F401  (re-export: 公開 API)
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
 from simulator.main.run_config import RunConfig
 from simulator.main.run_period import DATA_TF, PeriodDataset, run_tf_of
-from simulator.adapter.repository.period_bars import decision_bars as _decision_bars
-from simulator.main.ea_bindings.sources import ohlc_repository_for
+from simulator.adapter.repository.period_bars import ownership as _period_ownership
+from simulator.main.ea_bindings.sources import dataframe_for, ohlc_repository_for
 # ISSUE-525: 保証境界のうち run 自身の引数だけで判定できる宣言と、その適用器。規則 S と
 # 同じ「どちらでもない第三の点」に置いてある（親が子パッケージを読むと ISSUE-502 の C-2＝
 # パッケージ間の双方向依存が復活し、`test_package_import_acyclicity.py` が落ちる）。
@@ -361,6 +362,11 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     return registry
 
 
+def _decides_at_bar_close(strategy: Any) -> bool:
+    """戦略がその足の終値で判定する（建値基準 "close"）か。"""
+    return declared_entry_price_basis(strategy) == "close"
+
+
 def _run_tf(period: Any, data_period: Any, *, tick_model: str) -> str:
     """判定する足の時間足名（まとめない run は `DATA_TF`）。
 
@@ -394,10 +400,12 @@ def build_run_indicators(*, run_bars: Any = None, **spec: Any) -> IndicatorPort:
     """
     tick_model = _tick_model_of(spec.get("config_overrides"))
     if _run_tf(spec.get("period"), spec.get("data_period"), tick_model=tick_model) != DATA_TF:
-        # 選んだ足の run: 指標は選んだ足に揃う（run の 1 分足には揃わない）。実行と同じ組み立てで
-        #   選んだ足の系列を得る（選んだ足の作り方を 2 つに分けない）。
-        _controller, request = build_interactor(**spec)
-        return request.decision_series.indicators
+        # 選んだ足の run の指標は、その run の request.decision_series が持つ（組み立て直すと
+        #   1 分足の全行を読み直して同じ足を作って捨てる）。ここでは作らない。
+        raise ConfigError(
+            "選んだ足の run の指標は request.decision_series から取ってください",
+            context={"period": spec.get("period"), "data_period": spec.get("data_period")},
+        )
     _strategy, registry, reader = _ea_components(**spec)
     data_path = spec.get("data_path")
     if data_path is None or not consumes_market_data(tick_model):
@@ -554,12 +562,26 @@ def build_interactor(
     # 選んだ足（Period）で判定する run（2026-10-06）。データを読む run で Period が 1 分足で
     #   なければ、1 分足の全行から選んだ足の実体を作り、EA 束縛へは**その実体**を渡す
     #   （指標もバーも選んだ足になる）。エンジンが約定と SL/TP を評価する足は 1 分足のまま。
+    #   判定する 1 分足は戦略が名乗る建値基準が決める（"close" は期間の最後・それ以外は最初）。
+    #   エンジンへ渡る戦略は override があればそれ、無ければ束縛の戦略である（下で実体の宣言と
+    #   一致することを確かめる）。
     run_tf = _run_tf(period, data_period, tick_model=determinism.tick_model)
     period_dataset: "PeriodDataset | None" = None
+    decide_at_end = False
     if run_tf != DATA_TF:
+        decide_at_end = _decides_at_bar_close(
+            strategy_override
+            if strategy_override is not None
+            else select_ea_binding(ea_name, tick_model=determinism.tick_model).strategy_type
+        )
         m1_reader = ohlc_repository_for(data_path)
-        m1_all = m1_reader.load(data_path, None, None)
-        period_dataset = PeriodDataset(m1_all, run_tf)
+        # 1 分足の Bar 列は作らない（フレーム段でまとめる）。
+        period_dataset = PeriodDataset(
+            dataframe_for(data_path),
+            row_times_for(m1_reader, data_path),
+            run_tf,
+            decide_at_end=decide_at_end,
+        )
     ea_data_path = data_path if period_dataset is None else period_dataset.path
     strategy, registry, market_data = build_ea_components(
         ea_name,
@@ -589,7 +611,14 @@ def build_interactor(
     #   問える点がここしか無いのは、エンジンへ渡る実体が `strategy_override` と
     #   `strategy_decorator` を通った後にしか確定しないからである。宣言が無ければ run を
     #   **始めない**——エンジン側の読み取り点まで遅らせると、走り出してから落ちる。
-    declared_entry_price_basis(strategy)
+    declared = declared_entry_price_basis(strategy)
+    if period_dataset is not None and _decides_at_bar_close(strategy) != decide_at_end:
+        # 判定する 1 分足と気配幅は、組み立て前に読んだ宣言で決めた。実体の宣言と違えば
+        #   別の瞬間で判定させることになるので始めない。
+        raise ConfigError(
+            "選んだ足の run で、戦略の建値基準が組み立ての途中で変わりました",
+            context={"declared": declared, "decide_at_end": decide_at_end},
+        )
     # ISSUE-557: 待機注文（指値・逆指値）の使い方も戦略が名乗る。呼び出し側が渡さなくても、
     #   待機注文を出す戦略の run は足の途中で注文を評価する（是正前は sim の Settings 経路が
     #   「`pending_lifecycle`」 を渡さず、待機注文がすべて足境界の成行として約定していた）。
@@ -612,7 +641,10 @@ def build_interactor(
     # 包み、窓を load の外側＝合成で適用する（各 repository と _ohlc_frame は無改変）。
     # 新しい語彙は増やさない（窓は marketdata_window 一語のまま）。既定 None は両分岐とも
     # 素通り＝既存 4 モードと byte 等価。
-    market_data = _windowed_reader(market_data, ea_data_path, marketdata_window)
+    #   選んだ足の run は選んだ足を窓で絞らない（窓の境界は 1 分足の側が決める・下）。
+    market_data = _windowed_reader(
+        market_data, ea_data_path, marketdata_window if period_dataset is None else None
+    )
 
     # bars は committed 公開 IF（market_data.load）で構築する。source_ref は全 MarketDataPort
     # 実装で data_path に統一する（委譲 repo は取得窓を構築時に保持し source_ref を参照しない・
@@ -627,27 +659,33 @@ def build_interactor(
     #   作られ、Bar 列は取得窓で絞られるため、対応させないと別の足の指標値を読む
     #   （実測 2026-09-26・実 UI）。対応が取れない実体は推測せず `DataError` で止める。
     #   バー系列を読まない構成（読む行が無い）には対応させる相手が無い。
-    registry = _aligned_to_run_bars(
-        registry, reader, ea_data_path, bars, tick_model=determinism.tick_model
-    )
-    # 選んだ足の run: 指標は選んだ足（``bars``）へ揃えた。エンジンへは 1 分足を渡し、
-    #   1 分足ごとに「判定する選んだ足の番号」を添える。一時実体はここで読み終わる。
+    # 選んだ足の run: エンジンへは窓の 1 分足を渡し、1 分足ごとに「判定する選んだ足の番号」を
+    #   添える。run の区間の選んだ足は「窓の 1 分足を 1 本以上含む期間」であり、指標はその足へ
+    #   揃える。一時実体はここで読み終わる。
     decisions: "DecisionSeries | None" = None
     if period_dataset is not None:
-        period_dataset.close()
         market_data = _windowed_reader(m1_reader, data_path, marketdata_window)
-        m1_bars = (
-            m1_all
-            if marketdata_window is None
-            else market_data.load(data_path, None, None)
+        m1_bars = market_data.load(data_path, None, None)
+        owned = _period_ownership(m1_bars, bars, run_tf, decide_at_end=decide_at_end)
+        period_bars = bars[owned.first : owned.last + 1]
+        registry = _aligned_to_run_bars(
+            registry, reader, ea_data_path, period_bars, tick_model=determinism.tick_model
         )
+        period_dataset.close()
         decisions = DecisionSeries(
             timeframe=run_tf,
-            bars=bars,
-            positions=_decision_bars(m1_bars, bars, run_tf),
+            bars=period_bars,
+            positions=owned.positions,
+            owners=owned.owners,
+            starts=owned.starts,
+            ends=owned.ends,
             indicators=registry,
         )
         bars = m1_bars
+    else:
+        registry = _aligned_to_run_bars(
+            registry, reader, data_path, bars, tick_model=determinism.tick_model
+        )
 
     # tick_model 選択（config gated）。real_ticks（requires_real_ticks=True）のときのみ
     # ParquetTickRepository から対象期間の実ティックを load し RealTickModel に供給する
