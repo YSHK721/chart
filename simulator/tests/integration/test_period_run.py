@@ -213,6 +213,33 @@ class TestTheDecisionReadsOnlyWhatIsKnownAtThatMinute:
             assert ds.bars[k].spread == request.bars[i].spread
 
 
+def test_a_close_deciding_strategy_with_a_window_ending_inside_a_day_reads_that_minute(tmp_path):
+    """再レビュー A（2026-10-06）: 窓の終わりが期間の途中でも、最後の判定で読む終値は
+    判定した（窓の最後の）1 分足の終値であって、その期間全体の終値ではない。"""
+    csv = _write(tmp_path / "md.csv", _wavy_days(5, 20))
+    window = (_utc(_DAY0), _utc(_DAY0 + 3 * 86_400 + 10 * 60))
+    _controller, request = _build(
+        csv, "Daily", marketdata_window=window, strategy_override=_CloseDeciding()
+    )
+    ds = request.decision_series
+    last = [i for i, k in enumerate(ds.positions) if k is not None][-1]
+    assert last == len(request.bars) - 1
+    assert ds.bars[-1].close == request.bars[last].close
+
+
+def test_the_trace_view_holds_only_values_decided_by_that_minute(tmp_path):
+    """再レビュー B: トレースの見え方は 1 分足 i の時点で最後に判定した選んだ足の値（判定前は NaN）。"""
+    import math as _math
+
+    csv = _write(tmp_path / "md.csv", _wavy_days(3, 20))
+    _controller, request = _build(csv, "Daily", strategy_override=_CloseDeciding())
+    ds = request.decision_series
+    view = ds.minute_indicators().get("open")
+    first_decision = list(ds.ends)[0]
+    assert all(_math.isnan(view.iloc[i]) for i in range(first_decision))
+    assert view.iloc[first_decision] == ds.indicators.get("open").iloc[0]
+
+
 class TestTheWindowEdgeIsDecidedByTheMinutes:
     """レビュー 🔴2（2026-10-06）: 窓の端が期間の途中でも、1 分足は自分の期間に属する。"""
 
@@ -236,7 +263,8 @@ class TestTheWindowEdgeIsDecidedByTheMinutes:
 def test_bars_built_minus_bars_used_is_zero_for_any_window(tmp_path, window_days):
     """計算量（レビュー 🔴4）: 作った Bar − 使った足 = 0。窓の長さを変えても成り立つ。
 
-    使った足 = run の 1 分足（request.bars）＋ 全履歴の選んだ足（指標を温めるため全履歴で作る）。
+    使った足 = run の 1 分足（request.bars）＋ run の区間の選んだ足（decision_series.bars）。
+    窓の外の選んだ足は Bar にしない（指標は一時実体のフレームで全履歴から温まる・再レビュー C）。
     観測の境界は `_ohlc_frame.set_observer`（Bar へ変換した行数を知らせる宣言済みの注入点）。
     """
     from simulator.adapter.repository import _ohlc_frame
@@ -250,5 +278,5 @@ def test_bars_built_minus_bars_used_is_zero_for_any_window(tmp_path, window_days
         _controller, request = _build(csv, "Daily", marketdata_window=window)
     finally:
         _ohlc_frame.set_observer(None)
-    used = len(request.bars) + len(days)
+    used = len(request.bars) + len(request.decision_series.bars)
     assert sum(built) - used == 0, built

@@ -362,6 +362,12 @@ def build_ea_indicators(**spec: Any) -> IndicatorPort:
     return registry
 
 
+def _utc_datetime(epoch: int) -> Any:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(int(epoch), timezone.utc)
+
+
 def _decides_at_bar_close(strategy: Any) -> bool:
     """戦略がその足の終値で判定する（建値基準 "close"）か。"""
     return declared_entry_price_basis(strategy) == "close"
@@ -575,12 +581,17 @@ def build_interactor(
             else select_ea_binding(ea_name, tick_model=determinism.tick_model).strategy_type
         )
         m1_reader = ohlc_repository_for(data_path)
-        # 1 分足の Bar 列は作らない（フレーム段でまとめる）。
+        # 1 分足の Bar 列は作らない（フレーム段でまとめる）。まとめる元は窓の終わりより前の
+        #   行だけ（窓の終わりが期間の途中なら、区間の最後の足は窓の最後の 1 分足で閉じる。
+        #   全行でまとめると、窓の最後の 1 分足でその期間全体の終値を読む＝先読み）。窓の
+        #   始まりより前は過去なので、指標を温めるため残す。
+        frame = dataframe_for(data_path)
+        row_times = row_times_for(m1_reader, data_path)
+        if marketdata_window is not None:
+            before_end = row_times < epoch_seconds(marketdata_window[1])
+            frame, row_times = frame[before_end], row_times[before_end]
         period_dataset = PeriodDataset(
-            dataframe_for(data_path),
-            row_times_for(m1_reader, data_path),
-            run_tf,
-            decide_at_end=decide_at_end,
+            frame, row_times, run_tf, decide_at_end=decide_at_end
         )
     ea_data_path = data_path if period_dataset is None else period_dataset.path
     strategy, registry, market_data = build_ea_components(
@@ -652,7 +663,8 @@ def build_interactor(
     # committed adapter/usecase の IF（registry は系列・Interactor は Bar 列・controller は path
     # 再読み）に起因する。1 回読みへの統合は committed IF 変更が要るため範囲外＝申し送り
     # （DESIGN 申し送り）。every-tick 経路は bars から実ティック読込区間を導出するため先に load する。
-    bars = market_data.load(ea_data_path, None, None)
+    #   選んだ足の run は、Bar にする区間が 1 分足の割り当ての後で決まる（下で読む）。
+    bars = market_data.load(ea_data_path, None, None) if period_dataset is None else []
 
     # ISSUE-509: 戦略は ``iloc[bar_index]`` で指標を位置参照するので、指標の行と Bar 列を
     #   **時刻で**対応させる。registry はデータ実体の全行（期間前の履歴で温まった値）から
@@ -664,10 +676,25 @@ def build_interactor(
     #   揃える。一時実体はここで読み終わる。
     decisions: "DecisionSeries | None" = None
     if period_dataset is not None:
+        market_data_of_period = reader
         market_data = _windowed_reader(m1_reader, data_path, marketdata_window)
         m1_bars = market_data.load(data_path, None, None)
-        owned = _period_ownership(m1_bars, bars, run_tf, decide_at_end=decide_at_end)
-        period_bars = bars[owned.first : owned.last + 1]
+        owned = _period_ownership(
+            m1_bars, period_dataset.labels, run_tf, decide_at_end=decide_at_end
+        )
+        # Bar にするのは run の区間の選んだ足だけ（ラベル時刻 [first, last] の半開区間）。
+        period_bars = (
+            _windowed_reader(
+                market_data_of_period,
+                ea_data_path,
+                (
+                    _utc_datetime(period_dataset.labels[owned.first]),
+                    _utc_datetime(period_dataset.labels[owned.last] + 1),
+                ),
+            ).load(ea_data_path, None, None)
+            if owned.last >= owned.first
+            else []
+        )
         registry = _aligned_to_run_bars(
             registry, reader, ea_data_path, period_bars, tick_model=determinism.tick_model
         )

@@ -61,6 +61,11 @@ def period_frame(
     return out
 
 
+def label_epochs(frame: pd.DataFrame) -> "list[int]":
+    """まとめた足のラベル時刻（epoch 秒・CSV の ``date`` 列を UTC として読んだ値と同じ）。"""
+    return frame.index.values.astype("datetime64[s]").astype(np.int64).tolist()
+
+
 def write_marketdata_csv(frame: pd.DataFrame, path: Path) -> Path:
     """まとめた足を marketdata 形式（先頭列 ``date``・naive UTC）の CSV に書く。"""
     out = frame.copy()
@@ -93,9 +98,11 @@ class PeriodOwnership:
 
 
 def ownership(
-    m1_bars: Sequence[Any], period_bars: Sequence[Any], tf: str, *, decide_at_end: bool
+    m1_bars: Sequence[Any], period_labels: Sequence[int], tf: str, *, decide_at_end: bool
 ) -> PeriodOwnership:
-    """run の 1 分足を全履歴の選んだ足へ割り当てる。
+    """run の 1 分足を全履歴の選んだ足（ラベル時刻 ``period_labels``・epoch 秒）へ割り当てる。
+
+    選んだ足を Bar にする前に割り当てる（Bar にするのは run の区間 ``[first, last]`` だけ）。
 
     選んだ足 k の期間は ``[period_utc_start(k), period_utc_start(k+1))``。窓の境界は 1 分足の
     側が決める（選んだ足をラベル時刻で窓に絞らない＝期間の途中で窓が切れても、残りの
@@ -104,10 +111,10 @@ def ownership(
     starts_utc = np.fromiter(
         (
             int(period_utc_start(tf, pd.Timestamp(t, unit="s")).timestamp())
-            for t in bar_epoch_seconds(period_bars)
+            for t in period_labels
         ),
         dtype=np.int64,
-        count=len(period_bars),
+        count=len(period_labels),
     )
     owner = np.searchsorted(
         starts_utc, np.asarray(bar_epoch_seconds(m1_bars), dtype=np.int64), side="right"

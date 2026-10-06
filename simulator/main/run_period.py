@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from marketdata.resample import TIMEFRAME_RULES
-from simulator.adapter.repository.period_bars import period_frame, write_marketdata_csv
+from simulator.adapter.repository.period_bars import (
+    label_epochs,
+    period_frame,
+    write_marketdata_csv,
+)
 from simulator.domain.exceptions import ConfigError
 from simulator.usecase.tester_settings.enums import (
     TIMEFRAME_FROM_MINUTE_BARS,
@@ -70,10 +74,10 @@ class PeriodDataset:
         if _build_observer is not None:
             _build_observer(tf)
         self._tmp = tempfile.TemporaryDirectory(prefix="sim_period_")
-        self.path = write_marketdata_csv(
-            period_frame(frame, row_times, tf, decide_at_end=decide_at_end),
-            Path(self._tmp.name) / f"period_{tf}.csv",
-        )
+        periods = period_frame(frame, row_times, tf, decide_at_end=decide_at_end)
+        #: 選んだ足のラベル時刻（epoch 秒）。1 分足の割り当てを Bar にする前に行うために持つ。
+        self.labels = label_epochs(periods)
+        self.path = write_marketdata_csv(periods, Path(self._tmp.name) / f"period_{tf}.csv")
 
     def close(self) -> None:
         self._tmp.cleanup()

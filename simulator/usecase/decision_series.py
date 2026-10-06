@@ -32,15 +32,27 @@ class DecisionSeries:
     indicators: Any
 
     def minute_indicators(self) -> "MinuteIndicators":
-        """1 分足の番号で引ける指標の見え方（位置 i ＝ 1 分足 i が属する選んだ足の値）。"""
-        return MinuteIndicators(self.indicators, self.owners)
+        """1 分足の番号で引ける指標の見え方（位置 i ＝ 1 分足 i の時点で最後に判定した選んだ足の値）。
+
+        エンジンが 1 分足 i の時点で読める指標は、最後に判定した選んだ足の番号の値だけである
+        （判定足でない足では ``indicators.update`` を呼ばない）。終値で判定する run で「属する
+        期間の値」を記録すると、その時点では分からない値になる（再レビュー B）。判定より前の
+        1 分足は値なし。
+        """
+        last: "list[int | None]" = []
+        current: "int | None" = None
+        for k in self.positions:
+            if k is not None:
+                current = k
+            last.append(current)
+        return MinuteIndicators(self.indicators, last)
 
 
 class MinuteIndicators:
     """選んだ足へ揃えた指標を、1 分足の番号で引く見え方（値を写さない）。
 
     1 分足の番号で値を読む読み手（実行トレースは評価点の足番号で引く）へ渡す。1 分足 i の値は
-    i が属する選んだ足の値であり、M1 の run で「足 i の値」を記録するのと同じ意味になる。
+    i の時点で最後に判定した選んだ足の値（判定より前は NaN）。
     """
 
     def __init__(self, indicators: Any, owners: Sequence[int]) -> None:
@@ -68,4 +80,5 @@ class _MinuteIloc:
         self._owners = owners
 
     def __getitem__(self, i: int) -> Any:
-        return self._series.iloc[int(self._owners[i])]
+        k = self._owners[i]
+        return float("nan") if k is None else self._series.iloc[int(k)]
