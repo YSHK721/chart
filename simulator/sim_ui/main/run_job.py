@@ -45,6 +45,7 @@ from typing import Any
 from simulator.adapter.repository import ohlc_frame_cache
 from simulator.main import run_backtest
 from simulator.sim_ui.adapter import chart_overlay_writer, contacts_supply, report_payload_writer
+from simulator.usecase.bar_times import bar_epoch_seconds
 
 # 仕様の読めないジョブ・内部例外は失敗（非 0）で返す。`run_backtest` の終了コード
 # （0 成功 / 1 BacktestError / 2 ConfigError）と衝突しない値を使う。
@@ -119,7 +120,9 @@ def _build_run_tracer(spec: "dict[str, Any]") -> Any:
     return ColumnarRunTrace(TraceWindow.of(block.get("start"), block.get("end")))
 
 
-def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> None:
+def _write_trace(
+    job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]", decision_series: Any = None
+) -> None:
     """実行トレースを job-dir へ書く。**run の成否は変えない**（§6.5.3）。
 
     呼出点は `main()` のただ 1 箇所である（現行経路と settings 経路で書き写さない）。
@@ -157,7 +160,13 @@ def _write_trace(job_dir: Path, tracer: Any, run_kwargs: "dict[str, Any]") -> No
             # `job_dir.name` は台帳の採番規則そのものである。writer に読み直させると
             #   `FileJobLedger.job_dir` の規約の 2 つ目の実装ができる（§6.5）。
             job_id=job_dir.name,
-            indicators_supply=lambda: build_run_indicators(**backtest),
+            # 選んだ足の run は、run の判定足の系列を 1 分足の番号で引く見え方で渡す
+            #   （作り直さない・トレースの足番号は 1 分足の番号）。
+            indicators_supply=(
+                (lambda: build_run_indicators(**backtest))
+                if decision_series is None
+                else decision_series.minute_indicators
+            ),
             # run が実際に使った水準（台帳から注入した値・ISSUE-546）。
             stop_out_level=backtest["stop_out_level"],
             marketdata_window=backtest.get("marketdata_window"),
@@ -587,7 +596,7 @@ def _write_metrics_steps(job_dir: Path, result: Any) -> None:
 
 def _write_report_payload(
     job_dir: Path, result: Any, *, load_run_inputs, load_indicators,
-    run_kwargs: "dict[str, Any]", account: Any,
+    run_kwargs: "dict[str, Any]", account: Any, load_decision_series=lambda: None,
 ) -> None:
     """表示用ペイロード（report.json と売買履歴チャートへ描く成果物）を書く。**run の成否は変えない**。
 
@@ -613,13 +622,25 @@ def _write_report_payload(
             loaded["indicators"] = load_indicators()
         return loaded["indicators"]
 
+    def contacts(bars: "list", backtest: "dict[str, Any]") -> "list[dict]":
+        decision_series = load_decision_series()
+        if decision_series is None:
+            return _supply_contacts(bars, backtest, indicators_once())
+        # 選んだ足の run: 接点は選んだ足の足と指標で求める（指標は 1 分足に揃っていない）。
+        period_bars = [
+            report_payload_writer.IntTimeBar(b, t)
+            for b, t in zip(decision_series.bars, bar_epoch_seconds(decision_series.bars))
+        ]
+        return _supply_contacts(
+            period_bars, {**backtest, "period": run_kwargs["period"]}, decision_series.indicators
+        )
+
     try:
         report_payload_writer.write(
             job_dir, result,
             load_run_inputs=load_once,
-            contacts_supply=lambda bars, backtest: _supply_contacts(
-                bars, backtest, indicators_once()
-            ),
+            contacts_supply=contacts,
+            timeframe=run_kwargs.get("period"),
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = f"report.json の書出しに失敗しました: {exc}"
@@ -627,9 +648,11 @@ def _write_report_payload(
         _record_report_payload_error(job_dir, message)
     try:
         bars, symbol_spec = load_once(run_kwargs)
+        decision_series = load_decision_series()
         _write_chart_overlay(
             job_dir, result, bars, symbol_spec, run_kwargs, account,
-            indicators=indicators_once(),
+            indicators=indicators_once() if decision_series is None else decision_series.indicators,
+            decision_series=decision_series,
         )
     except Exception as exc:  # 表示の失敗で成功した計算を捨てない
         message = (
@@ -644,6 +667,7 @@ def _write_report_payload(
 def _write_chart_overlay(
     job_dir: Path, result: Any, bars: Any, symbol_spec: Any,
     run_kwargs: "dict[str, Any]", account: Any, *, indicators: Any,
+    decision_series: Any = None,
 ) -> None:
     """売買マークと足の成果物（足・足ごとの口座・トリガー指標）を書く（束縛は Composition Root が持つ）。
 
@@ -653,9 +677,28 @@ def _write_chart_overlay(
     """
     from simulator.main import known_plots
 
+    timeframe = chart_overlay_writer.RUN_TIMEFRAME
+    if decision_series is not None:
+        # 選んだ足で判定した run は、選んだ足で表示する（足・指標・口座・売買の印の時間足）。
+        period_times = bar_epoch_seconds(decision_series.bars)
+        minute_times = bar_epoch_seconds(bars)
+        account = chart_overlay_writer.account_at_period_ends(
+            account,
+            minute_count=len(bars),
+            ends=decision_series.ends,
+            period_times=period_times,
+        )
+        result = chart_overlay_writer.result_at_period_bars(
+            result,
+            period_starts=[minute_times[i] for i in decision_series.starts],
+            period_times=period_times,
+        )
+        bars = decision_series.bars
+        timeframe = decision_series.timeframe
     chart_overlay_writer.write(
         job_dir,
         result=result,
+        timeframe=timeframe,
         bars=bars,
         symbol=run_kwargs["symbol"],
         digits=int(run_kwargs["digits"]),
@@ -685,7 +728,7 @@ def _dataset_ref_of(data_path: Any) -> "str | None":
 
 def _run_with_settings(
     job_dir: Path, spec: "dict[str, Any]", extensions: "dict[str, Any]", account: Any
-) -> "tuple[int, dict[str, Any] | None]":
+) -> "tuple[int, dict[str, Any] | None, Any]":
     """Tester Settings 経路（Phase 8 §18.3「実行」）。
 
     `.ini` の生トークン → `TesterSettings` → `EffectiveSettings` → `run_settings_job`（T-1）。
@@ -718,7 +761,7 @@ def _run_with_settings(
         message = f"Tester Settings の解釈に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR, None
+        return _EXIT_SPEC_ERROR, None, None
 
     try:
         exit_code, result, _metadata, request = run_settings_job(
@@ -728,12 +771,12 @@ def _run_with_settings(
         message = f"Tester Settings からの実行に失敗しました: {error}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return exit_code_for(error), None
+        return exit_code_for(error), None, None
     except Exception as exc:  # 内部例外を呼出側へ生で漏らさない
         message = f"バックテストの実行に失敗しました: {exc}"
         print(message, file=sys.stderr)
         _record_failure(job_dir, message)
-        return _EXIT_SPEC_ERROR, None
+        return _EXIT_SPEC_ERROR, None, None
 
     run_kwargs: "dict[str, Any] | None" = None
     if exit_code == 0 and result is not None:
@@ -749,8 +792,10 @@ def _run_with_settings(
             load_run_inputs=lambda _backtest: (request.bars, request.symbol_spec),
             load_indicators=lambda: _build_run_indicators(run_kwargs, request.bars),
             run_kwargs=run_kwargs, account=account,
+            load_decision_series=lambda: request.decision_series,
         )
-    return exit_code, run_kwargs
+    # 3 つ目は run の判定足の系列（選んだ足で判定した run のときだけ・実行トレースが使う）。
+    return exit_code, run_kwargs, (request.decision_series if run_kwargs is not None else None)
 
 
 # 1 ジョブの読みはデータ実体ごとに 1 回の読みへ固定する（ISSUE-551）。実体が実行中に
@@ -861,8 +906,11 @@ def main(argv: "list[str] | None" = None) -> int:
     # 分岐ごとに写すと、`_write_report_payload` が 2 箇所から呼ばれている形が増える
     # ——片方だけ改訂される複製を新しく作らない（§6.5.1）。
     if spec.get("settings"):
-        exit_code, run_kwargs = _run_with_settings(job_dir, spec, extensions, account)
+        exit_code, run_kwargs, decision_series = _run_with_settings(
+            job_dir, spec, extensions, account
+        )
     else:
+        decision_series = None  # 現行経路は選んだ足で判定しない（data_period を渡さない）
         # ストップアウト水準は台帳から注入する（ISSUE-546・settings 経路と同じ出所と規則）。
         #   投入の `backtest` は水準を持たない（受付が拒む）。
         try:
@@ -904,7 +952,7 @@ def main(argv: "list[str] | None" = None) -> int:
     #   `spec["backtest"]` を読むと、`.ini` で期間を絞った settings run が
     #   「窓なし・比較可能」と偽って申告する（窓を絞った run ほど食い違いが大きい）。
     if tracer is not None and exit_code == 0:
-        _write_trace(job_dir, tracer, run_kwargs)
+        _write_trace(job_dir, tracer, run_kwargs, decision_series)
     return exit_code
 
 

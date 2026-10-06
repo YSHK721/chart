@@ -50,6 +50,8 @@ _BUILD_INTERACTOR_KEYWORDS = frozenset({
     "margin_level_target",
     # EMA_Deviation_Short_EA（2026-10-06）の上方乖離率。実シグネチャ一致規約に従い列挙する。
     "ema_deviation_pct",
+    # 選んだ足で判定する run（2026-10-06）のデータの足。実シグネチャ一致規約に従い列挙する。
+    "data_period",
     "marketdata_window",
     # E-2（基本設計書 §12.4）で追加された戦略 Decorator の差し込み口。探索対象の
     # スカラーではないが、本集合は build_interactor の実シグネチャと一致させる規約

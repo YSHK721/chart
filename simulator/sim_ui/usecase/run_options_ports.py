@@ -72,6 +72,10 @@ class RunProfile:
     #: （settlement_currency と同じ扱い）。範囲を読めないデータセットは None（表示なし）。
     data_first_date: "str | None" = None
     data_last_date: "str | None" = None
+    #: このデータセットで選べる Period（**表示専用**・選んだ足で判定する run・2026-10-06）。
+    #: 1 分足のデータなら 1 分足から作れる足すべて。画面は投入前の警告にだけ使い、投入 body の
+    #: profile 由来 11 キーには**含めない**（data_first_date と同じ扱い）。
+    periods: "tuple[str, ...]" = ()
 
     def to_dict(self) -> "dict":
         """JSON 直列化用のプレーン dict（API 応答が使う）。``None`` の任意項目は載せない。"""

@@ -133,6 +133,12 @@ class RunBacktestRequest:
     # を目的とし、約定・損益・equity 記録を行わない）。時刻型は bar.time と比較可能な型
     # （numpy.datetime64 / epoch int）を想定する。
     trading_start: Any = None
+    # 判定足の系列（選んだ足で判定する run・2026-10-06・`decision_series.DecisionSeries`）。
+    # ``bars`` は約定と SL/TP を評価する足（1 分足）のまま、戦略は判定足（日足など）が始まる
+    # 足でだけ呼ばれ、指標も判定足の番号で引く（MT5 がチャートの足で判定し、ティックで
+    # 約定させるのと同じ）。エンジンが読むのは ``positions`` だけ。
+    # 既定 None は「全部の足が自分の番号で判定する」＝従来と同じ。
+    decision_series: Any = None
 
 
 class RunBacktestInteractor(RunBacktestInputBoundary):
@@ -389,9 +395,18 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         if state.tracer is not None:
             state.tracer.observe_start(len(bars))
 
+        decision_bars = (
+            None if request.decision_series is None else request.decision_series.positions
+        )
+        # 直近に始まった判定足の番号（足途中の再アームへ渡す番号）。
+        decision_index: "int | None" = None
         for bar_index, bar in enumerate(bars):
-            # C 指標値の取得（前計算系列から現足インデックスを引く）
-            self._indicators.update(bar_index)
+            # この足で戦略に判定させるか（判定足の番号・判定しない足は None）。
+            decides = bar_index if decision_bars is None else decision_bars[bar_index]
+            if decides is not None:
+                decision_index = decides
+                # C 指標値の取得（前計算系列から判定足の番号を引く）
+                self._indicators.update(decides)
             # warmup 区間（bar.time < trading_start）は指標 seed 収束のみを行い、トレード
             # 評価・約定・SL/TP 監視・equity 記録をすべてスキップする（config-gated）。
             if trading_start is not None and bar.time < trading_start:
@@ -445,11 +460,12 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             # D/E ★足境界のみ: 新規バーのシグナル評価（足の途中では呼ばない）。
             #   halt 後はシグナルを評価しても発注しない（玉を増やさない）。
             #   戦略の戻り値は admit_orders（受理の唯一の門・ISSUE-445 段階 3-C）を通す。
+            #   判定足が始まらない足では戦略を呼ばない（判定は判定足ごとに 1 回）。
             orders = (
                 []
-                if halted
+                if halted or decides is None
                 else admit_orders(
-                    self._strategy.on_new_bar(bar_index, self._indicators, account) or [],
+                    self._strategy.on_new_bar(decides, self._indicators, account) or [],
                     spec,
                 )
             )
@@ -475,7 +491,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
 
             # ★ペンディングの設置（PROCESS §4.2 拡張）。持続モードでは貼り替えず約定まで
             #   保持する（再アームは足途中の点が担う）。
-            if pending_mode and not pending_persistent:
+            #   1 足寿命の待機注文の「足」は判定足である（判定足が始まる足でだけ置き直す）。
+            if pending_mode and not pending_persistent and decides is not None:
                 executor.clear_resting_pending()
             if has_points and pending_orders:
                 open_trades = executor.place_pending(open_trades, pending_orders, bar=bar)
@@ -487,7 +504,7 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
             first_equity_at = len(state.equity_curve)
             for point in points:
                 open_trades, halted = self._evaluate_point(
-                    state, point, open_trades, halted
+                    state, point, open_trades, halted, decision_index=decision_index
                 )
                 # 実行トレースの観測（唯一の呼出点）。ここである理由: 「その評価点の
                 #   全副作用が確定した直後」であり、`account` が当該点のクォートで
@@ -525,7 +542,13 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         )
 
     def _evaluate_point(
-        self, state: _RunState, point: Any, open_trades: list, halted: bool
+        self,
+        state: _RunState,
+        point: Any,
+        open_trades: list,
+        halted: bool,
+        *,
+        decision_index: "int | None",
     ) -> "tuple[list, bool]":
         """1 評価点で行うことすべて（両粒度で共有する唯一の手続き）。
 
@@ -580,8 +603,9 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         ):
             # 再アームも発注であり、受理の門（admit_orders）を通す。
             rearm = admit_orders(
+                # 戦略へ渡す番号は判定足の番号（既定の run では当該足の番号と同じ）。
                 self._strategy.on_tick(
-                    point.bar_index, point.eval_bid, point.eval_ask, state.account
+                    decision_index, point.eval_bid, point.eval_ask, state.account
                 )
                 or [],
                 state.spec,

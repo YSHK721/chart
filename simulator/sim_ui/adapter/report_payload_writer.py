@@ -93,6 +93,7 @@ def write(
     *,
     load_run_inputs: "Callable[[dict], tuple[Any, Any]]",
     contacts_supply: "Callable[[list, dict], list] | None" = None,
+    timeframe: "str | None" = None,
 ) -> Path:
     """`job_dir` へ `report.json` を書き、そのパスを返す。
 
@@ -100,7 +101,8 @@ def write(
     """
     job_dir = Path(job_dir)
     payload = build_payload(
-        job_dir, result, load_run_inputs=load_run_inputs, contacts_supply=contacts_supply)
+        job_dir, result, load_run_inputs=load_run_inputs, contacts_supply=contacts_supply,
+        timeframe=timeframe)
     out = job_dir / REPORT_FILENAME
     ReportUiPresenter().present_report_payload(payload, out)
     return out
@@ -112,6 +114,7 @@ def build_payload(
     *,
     load_run_inputs: "Callable[[dict], tuple[Any, Any]]",
     contacts_supply: "Callable[[list, dict], list] | None" = None,
+    timeframe: "str | None" = None,
 ) -> ReportPayloadModel:
     """ジョブ仕様と結果から、report.json に書く `ReportPayloadModel` を組み立てて返す（書かない）。
 
@@ -135,6 +138,8 @@ def build_payload(
       未指定なら `agg` に `contacts` キーを生やさない（Phase 4 までの payload と等価）。
       ここへ渡す ``bars`` は**読み込み済みの int 時刻ビュー**である。もう一度読ませると、
       表示している足と接点を算出した足が別物になり得る。
+    ``timeframe``: run が実際に使った Period ラベル（選んだ足で判定する run・2026-10-06）。
+      投入の ``backtest.period`` はデータの足（M1）なので、省略時だけそれを使う。
     """
     job_dir = Path(job_dir)
     spec = json.loads((job_dir / "spec.json").read_text(encoding="utf-8"))
@@ -151,7 +156,7 @@ def build_payload(
         "tp_points": backtest.get("take_profit_points") or 0,
     }
     symbol = backtest.get("symbol", "")
-    timeframe = backtest.get("period", "")
+    timeframe = timeframe or backtest.get("period", "")
     strategy = backtest.get("ea_name", "")
 
     return BuildReportPayload(bar_rows=no_bar_rows).execute_single(

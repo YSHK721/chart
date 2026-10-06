@@ -757,6 +757,18 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       const field = PROFILE_FIELD_OF_KEY[key];
       const expected = profile[field] === undefined || profile[field] === null
         ? "" : String(profile[field]);
+      // 選べる Period の一覧（`profile.periods`・選んだ足で判定する run・2026-10-06）があれば、
+      //   Period はデータの足と一致しなくてよい（選んだ足は 1 分足から作る）。一覧の外だけを警告する。
+      const runnable = key === "Period" && Array.isArray(profile.periods) ? profile.periods : null;
+      if (runnable) {
+        if (!runnable.includes(chosen)) {
+          out.push(
+            `Period ${chosen} はこのデータセットでは実行できません（選べる足: ${runnable.join(" / ")}）`
+            + "（このまま投入すると実行時に失敗します）",
+          );
+        }
+        continue;
+      }
       if (expected !== "" && chosen !== expected) {
         out.push(
           `${key} が実行対象データセットと一致しません: ${chosen} ≠ ${expected}`

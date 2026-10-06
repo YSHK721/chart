@@ -53,6 +53,7 @@ from simulator.domain.exceptions import ConfigError
 from simulator.domain.tester_settings_exceptions import SettingsKeyMissingError
 from simulator.main import build_interactor
 from simulator.main.engine_data_consistency import verify_engine_data_consistency
+from simulator.main.run_period import DATA_TF, RUN_TF_BY_PERIOD, run_tf_of
 from simulator.main.tester_settings.ea_input_map import bind_ea_inputs, ea_stem
 from simulator.main.tester_settings.unsupported import apply_unsupported_rules
 from simulator.main.tester_settings.window import DataWindow, resolve_data_window
@@ -318,9 +319,22 @@ def _symbol(ctx: _MappingContext) -> Any:
 
 
 def _period(ctx: _MappingContext) -> Any:
-    """`Period`。`.ini` ラベル（写像は enums の単一ソース）を渡し、整合を検査する。"""
+    """`Period`。`.ini` ラベル（写像は enums の単一ソース）を渡し、整合を検査する。
+
+    選んだ足で判定する run（2026-10-06・依頼者承認）: データが 1 分足なら、Period は
+    データと一致しなくてよい——選んだ足は 1 分足から作る（`simulator.main.run_period`）。
+    作れない足はここで `ConfigError` にする（投入の時点で止める）。
+    """
     timeframe = ctx.effective.timeframe
     label = None if timeframe is None else TIMEFRAME_INI_LABELS[timeframe]
+    if (
+        label is not None
+        and "timeframe" not in ctx.effective.inert_fields
+        and label != ctx.binding.period
+        and RUN_TF_BY_PERIOD.get(ctx.binding.period) == DATA_TF
+    ):
+        run_tf_of(label)
+        return label
     return _settings_or_binding(
         ctx,
         field="timeframe",
@@ -378,6 +392,11 @@ def _config_overrides(ctx: _MappingContext) -> Any:
     return overrides
 
 
+def _data_period(ctx: _MappingContext) -> Any:
+    """データの足（実行対象データセットの Period）。選んだ足と違えば 1 分足から作る。"""
+    return ctx.binding.period
+
+
 def _stop_out_level(ctx: _MappingContext) -> Any:
     return ctx.binding.stop_out_level
 
@@ -393,6 +412,7 @@ EXPLICIT_BINDINGS: "tuple[KwargBinding, ...]" = (
     KwargBinding("data_path", "binding.data_path", _data_path, injected=True),
     KwargBinding("symbol", "symbol", _symbol),
     KwargBinding("period", "timeframe", _period),
+    KwargBinding("data_period", "binding.period", _data_period, injected=True),
     KwargBinding("ea_name", "subject_path", _ea_name),
     KwargBinding("initial_deposit", "deposit", _initial_deposit),
     KwargBinding("leverage", "leverage", _leverage),
