@@ -424,6 +424,11 @@ export function createSimTesterSettingsPanelView({ doc, today } = {}) {
       const node = controls.get(key);
       const value = profile[field];
       if (!node || value === undefined || value === null) continue;
+      // 利用者が選んだ Period は、新しいデータセットでも選べる足（`profile.periods`）なら残す
+      //   （選んだ足で判定する run・2026-10-07）。是正前は系列を選び直すと Daily が黙って
+      //   データの足（M1）へ戻り、M1 の run が投入されていた（依頼者の実 UI で発生）。
+      if (key === "Period" && Array.isArray(profile.periods)
+          && profile.periods.includes(String(node.value))) continue;
       node.value = String(value);
     }
   }

@@ -280,6 +280,31 @@ test("with the dataset's runnable periods, only a Period outside them warns (202
   assert.match(warnings[0], new RegExp(inside));
 });
 
+test("switching the dataset keeps a chosen Period that the new dataset can run (2026-10-07)", () => {
+  // Arrange: 選べる足を名乗るデータセット。利用者が データの足と違う足 を選ぶ。
+  const m = mounted();
+  m.schema = settingsSchema();
+  const tokens = m.schema.enum_options.Period.map((o) => o.token);
+  const base = runProfile();
+  const chosen = tokens.find((t) => t !== base.period);
+  m.view.setSchema(m.schema);
+  m.view.setRunProfile({ ...base, periods: tokens });
+  const sel = field(m.host, "Period");
+  sel.value = chosen;
+  fire(sel);
+  // Act: 系列を選び直す（同じ足を選べる別のデータセット）。
+  m.view.setRunProfile({ ...base, dataset: `${base.dataset}_other`, periods: tokens });
+  // Assert: 選んだ足のまま（データの足へ黙って戻さない）。
+  assert.equal(view_period(m), chosen);
+  // 新しいデータセットで選べない足なら、データの足へ戻す。
+  m.view.setRunProfile({ ...base, periods: [base.period] });
+  assert.equal(view_period(m), String(base.period));
+});
+
+function view_period(m) {
+  return m.view.buildTesterMapping().Period;
+}
+
 test("a Symbol that differs from the profile warns as well", () => {
   const { host, view, profile } = ready();
   const sym = field(host, "Symbol");
