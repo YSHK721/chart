@@ -32,6 +32,10 @@ _ROWS = 12
 _PROBE_MA_PERIOD = 2
 _PROBE_MA_METHOD = "sma"
 _PROBE_ADX_PERIOD = 2
+#: 銘柄の刻み（必須の構築引数・既定値は無い）。探索は系列名を知るためだけなので値は使わない。
+#:   指値の刻みで線を描く EA（EMA_Deviation_Short_EA・2026-10-07）が組み立てに読む。
+_PROBE_POINT_SIZE = 0.1
+_PROBE_DIGITS = 1
 
 
 def _comma_csv() -> str:
@@ -87,6 +91,8 @@ class EaBuildProbe:
                         ma_period=_PROBE_MA_PERIOD,
                         ma_method=_PROBE_MA_METHOD,
                         adx_period=_PROBE_ADX_PERIOD,
+                        point_size=_PROBE_POINT_SIZE,
+                        digits=_PROBE_DIGITS,
                     )
                 except Exception as exc:  # この形式では読めない → 次の形式を試す
                     last_error = exc

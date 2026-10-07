@@ -123,8 +123,10 @@ def test_one_job_builds_the_selected_bars_once_even_with_the_trace(tmp_path: Pat
 def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_path: Path) -> None:
     """EMA_Deviation_Short_EA の売買履歴チャートは、日足の EMA と足ごとの指値の水準を描く（2026-10-06）。
 
-    線の値は、前の日足の EMA から形成中の EMA を独立に作ると、ちょうど 8% 上になる。
+    線の値は、その足に置く指値価格（前の日足の EMA から求めた 8% の水準を 0.1 刻みへ切り上げた値）。
     """
+    import math
+
     job_dir = _job(
         tmp_path, "level",
         backtest=_backtest(ea_name="EMA_Deviation_Short_EA", ma_period=21),
@@ -138,12 +140,14 @@ def test_the_ema_deviation_chart_draws_the_ema_and_the_daily_limit_level(tmp_pat
     series = {d["series"]: d["column"] for d in declaration["indicators"]}
     assert set(series) == {"ema", "deviation_level"}
     frame = pd.read_parquet(job_dir / "chart_bars.parquet")
-    # 定義へ戻す: 足 k の線は、形成中 EMA（前の日足の EMA から）からちょうど 8% 上の価格。
-    #   前の足の EMA が在る足だけを、列ごとにまとめて照合する（行ごとの分岐を書かない）。
-    a = 2.0 / 22
+    # 定義へ戻す（独立計算）: 足 k の線は、前の日足の EMA から形成中 EMA を作ってちょうど 8% 上に
+    #   触れる価格を、0.1 刻みへ切り上げた指値価格。列ごとにまとめて照合する（行ごとの分岐を書かない）。
+    a, up = 2.0 / 22, 1.08
     pairs = pd.DataFrame(
         {"prev_ema": frame[series["ema"]].shift(1), "level": frame[series["deviation_level"]]}
     ).dropna()
     assert len(pairs), "照合した足が 0 本（検定が空虚）"
-    ratio = pairs["level"] / (a * pairs["level"] + (1 - a) * pairs["prev_ema"])
-    assert (ratio - 1.08).abs().max() == pytest.approx(0.0, abs=1e-12)
+    exact = pairs["prev_ema"] * up * (1 - a) / (1 - up * a)
+    expected = (exact / 0.1 - 1e-9).apply(math.ceil) * 0.1
+    assert (pairs["level"] - expected).abs().max() == pytest.approx(0.0, abs=1e-6)
+    assert (pairs["level"] >= exact - 1e-9).all()

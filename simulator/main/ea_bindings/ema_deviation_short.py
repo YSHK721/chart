@@ -1,19 +1,24 @@
 """EMA_Deviation_Short_EA の束縛（EMA 上方乖離の水準で売る EA・依頼 2026-10-06）。"""
 from __future__ import annotations
 
+import pandas as pd
+
 from simulator.adapter.indicator import madiff as madiff_indicator
 from simulator.adapter.indicator.registry import PandasIndicatorRegistry
 from simulator.adapter.strategy.ema_deviation_short import (
     LEVEL_SERIES,
     THRESHOLD_SERIES,
     EmaDeviationShort,
+    limit_prices,
     threshold_series,
 )
 from simulator.main.ea_bindings.binding import EaBinding, EaBuildContext, PlotDecl
 from simulator.main.ea_bindings.sources import series_or_data_error, source_for
 
 
-def build_registry(df, *, ma_period: int, deviation_pct: float) -> PandasIndicatorRegistry:
+def build_registry(
+    df, *, ma_period: int, deviation_pct: float, point_size: float, digits: int
+) -> PandasIndicatorRegistry:
     """終値の EMA（MaSlope と同じ MQL 忠実 EMA）・足ごとの乖離の水準・当該足の "open" を登録する。"""
     ema = madiff_indicator.ema_series(df["close"], ma_period)
     threshold = threshold_series(ema, ma_period=ma_period, deviation_pct=deviation_pct)
@@ -21,8 +26,12 @@ def build_registry(df, *, ma_period: int, deviation_pct: float) -> PandasIndicat
         {
             "ema": ema,
             THRESHOLD_SERIES: threshold,
-            # 足 k の水準（チャートが描く）。戦略が読む系列を 1 本ずらしただけ（式は 1 つ）。
-            LEVEL_SERIES: threshold.shift(1),
+            # 足 k の指値価格（チャートが描く）。戦略が読む系列を 1 本ずらし、戦略と同じ関数で
+            #   刻みへ切り上げる（指値と線の値は必ず一致する）。
+            LEVEL_SERIES: pd.Series(
+                limit_prices(threshold.shift(1), point_size=point_size, digits=digits),
+                index=threshold.index,
+            ),
             "open": series_or_data_error(df, "open"),
         }
     )
@@ -35,6 +44,8 @@ def _factory_ema_deviation_short(ctx: EaBuildContext):
         source.frame,
         ma_period=ctx.param("ma_period"),
         deviation_pct=ctx.param("ema_deviation_pct"),
+        point_size=ctx.param("point_size"),
+        digits=ctx.param("digits"),
     )
     return EmaDeviationShort(), registry, source.repository
 

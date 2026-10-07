@@ -23,8 +23,9 @@
 
 水準の系列（`threshold_series`・2026-10-06）:
     ``THRESHOLD_SERIES`` の足 k の値は ema[k] × 係数＝「次の足で乖離 d に触れる価格」。束縛が
-    1 回だけ作り、戦略は確定足 i-1 の値を読んで刻みへ切り上げ、指値にする。売買履歴チャートは
-    同じ系列を 1 本ずらした ``LEVEL_SERIES``（足 k の水準）を描く（係数の式を 2 か所に書かない）。
+    1 回だけ作り、戦略は確定足 i-1 の値を読んで刻みへ切り上げ（`limit_prices`）、指値にする。
+    売買履歴チャートは同じ系列を 1 本ずらして同じ関数で切り上げた ``LEVEL_SERIES``（足 k の
+    指値価格）を描く（係数の式も切り上げの式も 2 か所に書かない・依頼者指示 2026-10-07）。
 """
 from __future__ import annotations
 
@@ -42,6 +43,19 @@ from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
 THRESHOLD_SERIES = "deviation_threshold"
 #: 足 k の水準の系列名（``THRESHOLD_SERIES`` を 1 本ずらしたもの・チャートが描く）。
 LEVEL_SERIES = "deviation_level"
+
+
+def limit_prices(levels: Any, *, point_size: float, digits: int) -> Any:
+    """水準を指値の刻みへ切り上げる（戦略の指値とチャートの線が呼ぶ唯一の式）。
+
+    切り上げるのは、切り捨てると乖離 d 未満で約定しうるため。配列で受けて配列で返す
+    （戦略は 1 要素で呼ぶ）。同じ関数を通すので、指値とチャートの線は値が必ず一致する。
+    NaN はそのまま NaN。
+    """
+    import numpy as np
+
+    values = np.asarray(levels, dtype=float)
+    return np.round(np.ceil(np.round(values / point_size, 9)) * point_size, int(digits))
 
 
 def threshold_series(ema: Any, *, ma_period: int, deviation_pct: float) -> Any:
@@ -115,9 +129,13 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
         level = float(indicators.get("deviation_threshold").iloc[bar_index - 1])
         if math.isnan(level):
             return []
-        # 指値は刻みへ切り上げる（切り捨てると乖離 d 未満で約定しうる）。
-        point = float(self._config["point_size"])
-        level = round(math.ceil(round(level / point, 9)) * point, int(self._config["digits"]))
+        level = float(
+            limit_prices(
+                [level],
+                point_size=float(self._config["point_size"]),
+                digits=int(self._config["digits"]),
+            )[0]
+        )
         bid = float(indicators.get("open").iloc[bar_index])
         if bid >= level:
             return [self._order("market", None, basis=bid)]

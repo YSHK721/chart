@@ -68,6 +68,8 @@ def _spec(csv: Path, ea_name: str, **overrides) -> dict:
         "ma_period": 2,
         "ma_method": "sma",
         "adx_period": 2,
+        "point_size": 0.1,
+        "digits": 1,
     }
     spec.update(overrides)
     return spec
