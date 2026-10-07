@@ -132,6 +132,22 @@ class StrategyPort(abc.ABC):
         return []
 
 
+class PositionRetargetPort(abc.ABC):
+    """戦略が保有中の玉の SL/TP を新しい足で動かす口（2026-10-07・依頼者承認）。
+
+    実 MT5 の EA が新しい足の最初のティックで OrderModify する動作に当たる。エンジンは判定する
+    足でだけ、保有中の玉ごとに本メソッドを呼び、返った値を玉の SL/TP に反映する（次の評価点
+    から効く）。``None`` は「変えない」。本口を持たない戦略では何も起きない（既定経路と同じ）。
+    """
+
+    @abc.abstractmethod
+    def retarget_positions(
+        self, bar_index: int, indicators: Any, position: Any
+    ) -> "tuple[float | None, float | None]":
+        """保有中の玉 ``position`` の新しい (SL, TP)。変えない方は ``None``。"""
+        raise NotImplementedError
+
+
 class EntryPriceBasisPort(abc.ABC):
     """戦略が**判定の瞬間**を名乗る口（ISSUE-533 段階 1）。
 

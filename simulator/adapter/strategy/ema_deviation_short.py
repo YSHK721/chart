@@ -3,7 +3,10 @@
 売買規則（依頼者裁定 2026-10-06）:
     エントリー: **形成中の足**の価格 P が、形成中の EMA（期間 ``ma_period``）から
         ``ema_deviation_pct`` % 以上上方へ離れた瞬間に売る（足の途中で触れたら約定）。
-    決済: 固定 SL/TP（``stop_loss_points`` / ``take_profit_points``・0 は置かない）。
+    決済: TP は 21EMA（依頼者指示 2026-10-07）。足 k で形成中の EMA に触れる価格は ema[k-1]
+        （EMA 固有の同値・接点スキャンの参照実装と同じ）なので、TP は ema[k-1] を刻みへ切り捨てた
+        値。建てるときに付け、保有中は新しい足ごとに動かす（`retarget_positions`）。
+        SL は固定（``stop_loss_points``・0 は置かない）。``take_profit_points`` は使わない。
 
 形成中の線に触れる価格（接点スキャンの規約・`simulator/usecase/contact_scan/spec.py`）:
     形成中の EMA は ``ema_i(P) = a·P + (1−a)·ema[i-1]``（a = 2/(ma_period+1)）。
@@ -36,7 +39,7 @@ from simulator.domain.exceptions import ConfigError
 from simulator.domain.order import Order
 from simulator.domain.volume_step import floor_to_step
 from simulator.usecase.pending_order_use import PendingOrderUse
-from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
+from simulator.usecase.ports import EntryPriceBasisPort, PositionRetargetPort, StrategyPort
 
 
 #: 次の足の水準の系列名（足 k の値＝ema[k] × 係数・戦略が確定足 i-1 で読む）。
@@ -58,6 +61,14 @@ def limit_prices(levels: Any, *, point_size: float, digits: int) -> Any:
     return np.round(np.ceil(np.round(values / point_size, 9)) * point_size, int(digits))
 
 
+def take_profit_prices(levels: Any, *, point_size: float, digits: int) -> Any:
+    """売りの TP を刻みへ切り捨てる（線に触れたときにだけ決済する・`limit_prices` と対の式）。"""
+    import numpy as np
+
+    values = np.asarray(levels, dtype=float)
+    return np.round(np.floor(np.round(values / point_size, 9)) * point_size, int(digits))
+
+
 def threshold_series(ema: Any, *, ma_period: int, deviation_pct: float) -> Any:
     """足 k の値＝次の足で形成中 EMA から乖離に触れる価格（ema[k] × 係数）。"""
     return ema * touch_coefficient(ma_period, deviation_pct)
@@ -76,7 +87,7 @@ def touch_coefficient(ma_period: int, deviation_pct: float) -> float:
     return up * (1.0 - a) / denominator
 
 
-class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
+class EmaDeviationShort(StrategyPort, EntryPriceBasisPort, PositionRetargetPort):
     """EMA 上方乖離の水準に触れたら売り、固定 SL/TP で決済する EA。"""
 
     #: 判定の瞬間（`EntryPriceBasisPort`）。読むのは確定足 i-1 の水準と当該足の open だけで、
@@ -137,9 +148,10 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
             )[0]
         )
         bid = float(indicators.get("open").iloc[bar_index])
+        tp = self._tp_at(bar_index, indicators)
         if bid >= level:
-            return [self._order("market", None, basis=bid)]
-        return [self._order("sell_limit", level, basis=level)]
+            return [self._order("market", None, basis=bid, tp=tp)]
+        return [self._order("sell_limit", level, basis=level, tp=tp)]
 
     def on_position_check(self, position: Any, bar_index: int, indicators: Any) -> str:
         return "hold"  # 決済は Order に載せた SL/TP（エンジンが監視する）
@@ -152,20 +164,41 @@ class EmaDeviationShort(StrategyPort, EntryPriceBasisPort):
             return set()
         return {p.side for p in getattr(account, "open_positions", [])}
 
-    def _order(self, kind: str, price: "float | None", *, basis: float) -> Order:
-        sl, tp = self._sltp(basis)
-        return Order(side="sell", kind=kind, volume=self._lot, price=price, sl=sl, tp=tp)
+    def _order(
+        self, kind: str, price: "float | None", *, basis: float, tp: "float | None"
+    ) -> Order:
+        return Order(
+            side="sell", kind=kind, volume=self._lot, price=price, sl=self._sl(basis), tp=tp
+        )
 
-    def _sltp(self, price: float) -> "tuple[float | None, float | None]":
-        """売りの SL/TP（points==0 は None・最小距離は stops_level・MaSlopePending と同じ規則）。"""
+    def retarget_positions(
+        self, bar_index: int, indicators: Any, position: Any
+    ) -> "tuple[float | None, float | None]":
+        """保有中の売りの TP を、この足の 21EMA（ema[bar_index-1] を刻みへ切り捨て）へ動かす。"""
+        if position.side != "sell":
+            return None, None
+        return None, self._tp_at(bar_index, indicators)
+
+    def _tp_at(self, bar_index: int, indicators: Any) -> "float | None":
+        """足 bar_index で形成中の EMA に触れる価格（ema[bar_index-1]）を刻みへ切り捨てた TP。"""
+        if bar_index < 1:
+            return None
+        ema_prev = float(indicators.get("ema").iloc[bar_index - 1])
+        if math.isnan(ema_prev):
+            return None
+        return float(
+            take_profit_prices(
+                [ema_prev],
+                point_size=float(self._config["point_size"]),
+                digits=int(self._config["digits"]),
+            )[0]
+        )
+
+    def _sl(self, price: float) -> "float | None":
+        """売りの SL（points==0 は None・最小距離は stops_level・MaSlopePending と同じ規則）。"""
         cfg = self._config
+        if cfg["stop_loss_points"] <= 0:
+            return None
         point = float(cfg["point_size"])
-        digits = int(cfg["digits"])
         min_dist = cfg["stops_level"] * point
-        sl: float | None = None
-        tp: float | None = None
-        if cfg["stop_loss_points"] > 0:
-            sl = round(price + max(cfg["stop_loss_points"] * point, min_dist), digits)
-        if cfg["take_profit_points"] > 0:
-            tp = round(price - max(cfg["take_profit_points"] * point, min_dist), digits)
-        return sl, tp
+        return round(price + max(cfg["stop_loss_points"] * point, min_dist), int(cfg["digits"]))

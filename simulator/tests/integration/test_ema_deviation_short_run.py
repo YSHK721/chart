@@ -4,7 +4,7 @@
     EMA:   α = 2/(n+1)・先頭の終値でシード（MQL 忠実 EMA）
     水準:  形成中の EMA から d 上方に触れる価格 = ema[i-1]·(1+d)(1−a)/(1−(1+d)a) を刻みへ切り上げ
     約定:  sell_limit は Bid が水準に届いた足で、水準の価格で約定（足の途中）
-    決済:  SL = 建値 + SL 距離 / TP = 建値 − TP 距離
+    決済:  SL = 建値 + SL 距離 / TP = 足 i の ema[i-1] を 0.1 刻みへ切り捨て（毎足動かす）
 """
 from __future__ import annotations
 
@@ -73,26 +73,40 @@ def _bar(t) -> int:
     return (epoch_seconds(t) - 1_704_153_600) // 60  # 2024-01-02T00:00:00Z
 
 
-@pytest.mark.parametrize(("exit_low", "exit_high", "reason"), [(19_000.0, 21_700.0, "tp"), (21_500.0, 23_500.0, "sl")])
-def test_a_touch_of_the_level_sells_at_the_level_and_exits_at_the_fixed_distance(
-    tmp_path: Path, exit_low: float, exit_high: float, reason: str
-) -> None:
-    # Arrange: 横ばい 30 本 → 足 30 で 8% 水準を突き抜ける → 足 31 で TP か SL に届く。
-    bars = _flat(30) + [(20_000.0, 22_500.0, 19_995.0, 21_600.0), (21_600.0, exit_high, exit_low, 21_600.0)]
-    bars += _flat(5, 21_600.0)
+def _tp(ema_prev: float) -> float:
+    """独立計算: 足 i の TP＝形成中 EMA に触れる価格 ema[i-1] を 0.1 刻みへ切り捨て。"""
+    return math.floor(ema_prev / _POINT + 1e-9) * _POINT
+
+
+def test_the_sell_takes_profit_at_the_21ema_of_the_bar_where_price_returns(tmp_path: Path) -> None:
+    """TP は 21EMA（依頼者指示 2026-10-07）。保有中は足ごとに TP を動かし、価格が戻った足の
+    EMA の価格で決済する（建てた足の TP のままではない）。"""
+    # Arrange: 横ばい 30 本 → 足 30 で 8% 水準を突き抜ける → 足 31〜34 は EMA より上 → 足 35 で EMA 割れ。
+    bars = _flat(30) + [(20_000.0, 22_500.0, 19_995.0, 21_600.0)]
+    bars += _flat(4, 21_600.0) + [(21_600.0, 21_605.0, 19_000.0, 19_100.0)] + _flat(3, 19_100.0)
     csv = _write_csv(tmp_path / "md.csv", bars)
     ema = _ema([b[3] for b in bars])
     level = _level(ema[29])
     assert bars[30][0] < level <= bars[30][1], "足 30 の途中で水準に触れる並びでない（検定が空虚）"
+    assert all(bars[j][2] > _tp(ema[j - 1]) for j in range(31, 35)), "足 31〜34 で TP に届いている"
     # Act
-    trades = _run(csv)
+    first = _run(csv)[0]
     # Assert
-    first = trades[0]
     assert (first.side, _bar(first.entry_time)) == ("sell", 30)
     assert first.entry_price == pytest.approx(level, abs=1e-9)
-    assert first.exit_reason == reason
-    expected_exit = level - _TP_PTS * _POINT if reason == "tp" else level + _SL_PTS * _POINT
-    assert first.exit_price == pytest.approx(expected_exit, abs=1e-9)
+    assert (first.exit_reason, _bar(first.exit_time)) == ("tp", 35)
+    assert first.exit_price == pytest.approx(_tp(ema[34]), abs=1e-9)
+    assert first.exit_price != pytest.approx(_tp(ema[29]), abs=1e-9), "TP が建てた足のまま動いていない"
+
+
+def test_the_sell_stops_out_at_the_fixed_sl_distance(tmp_path: Path) -> None:
+    bars = _flat(30) + [(20_000.0, 22_500.0, 19_995.0, 21_600.0), (21_600.0, 23_500.0, 21_500.0, 21_600.0)]
+    bars += _flat(5, 21_600.0)
+    csv = _write_csv(tmp_path / "md.csv", bars)
+    level = _level(_ema([b[3] for b in bars])[29])
+    first = _run(csv)[0]
+    assert first.exit_reason == "sl"
+    assert first.exit_price == pytest.approx(level + _SL_PTS * _POINT, abs=1e-9)
 
 
 def test_no_touch_no_trade(tmp_path: Path) -> None:

@@ -49,6 +49,7 @@ from simulator.usecase.schedule_selection import requires_tick_granularity
 from simulator.usecase.session_gate import SessionGate
 from simulator.usecase.sltp_monitor import SltpMonitor
 from simulator.usecase.stop_out_policy import resolve_stop_out_policy
+from simulator.usecase.position_retarget import declared_position_retarget
 from simulator.usecase.tick_schedule import TickSchedule
 from simulator.usecase.trade_ledger import TradeLedger
 
@@ -398,6 +399,8 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
         decision_bars = (
             None if request.decision_series is None else request.decision_series.positions
         )
+        # 保有中の玉の SL/TP を新しい足で動かす口（持たない戦略は None・run に 1 回だけ読む）。
+        retarget = declared_position_retarget(self._strategy)
         # 直近に始まった判定足の番号（足途中の再アームへ渡す番号）。
         decision_index: "int | None" = None
         for bar_index, bar in enumerate(bars):
@@ -469,6 +472,15 @@ class RunBacktestInteractor(RunBacktestInputBoundary):
                     spec,
                 )
             )
+            # 保有中の玉の SL/TP を動かす（判定する足だけ・実 MT5 の新しい足での OrderModify）。
+            #   反映は次の評価点から効く（この足の評価点ループで初めて見られる）。
+            if retarget is not None and decides is not None and open_trades and not halted:
+                for ot in open_trades:
+                    new_sl, new_tp = retarget(decides, self._indicators, ot.position)
+                    if new_sl is not None:
+                        ot.sl = new_sl
+                    if new_tp is not None:
+                        ot.tp = new_tp
             # 市場閉鎖バーは新規注文を一切通さない（ドテン反転の reverse 決済も含む）。
             #   on_new_bar は評価済＝保有不変のため、戦略（保有側基準の level-trigger）が
             #   次の開場バーで自動再発注し、実 MT5 の fail→retry→開場約定を再現する。

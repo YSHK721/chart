@@ -63,7 +63,6 @@ BINDING = EaBinding(
         "volume_max",
         "volume_step",
         "stop_loss_points",
-        "take_profit_points",
         "point_size",
         "digits",
         "stops_level",

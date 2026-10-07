@@ -29,6 +29,7 @@ from simulator.domain.exceptions import ConfigError
 from simulator.usecase.ports import IndicatorPort
 
 OPEN_SERIES = "open"
+EMA_SERIES = "ema"
 
 
 def _config(**overrides: Any) -> dict:
@@ -110,11 +111,20 @@ class TestThresholdSeries:
 
 
 class TestOrders:
+    """TP は 21EMA（依頼者指示 2026-10-07）: 足 i で形成中の EMA に触れる価格 ema[i-1] を 0.1 刻みへ切り捨て。"""
+
+    EMA_PREV = 38_123.47
+
     def _series(self, level: float, open_: float) -> "dict[str, pd.Series]":
         return {
             THRESHOLD_SERIES: pd.Series([level, level]),
+            EMA_SERIES: pd.Series([self.EMA_PREV, self.EMA_PREV]),
             OPEN_SERIES: pd.Series([open_, open_]),
         }
+
+    def _expected_tp(self) -> float:
+        # 独立計算: 切り捨て（線に触れたときにだけ決済する）。
+        return math.floor(self.EMA_PREV / 0.1 + 1e-9) * 0.1
 
     def test_below_the_level_a_sell_limit_is_placed_at_the_level_rounded_up(self) -> None:
         # 系列は正確な線（41,370.96...）、指値は 0.1 刻みへ切り上げた 41,371.0。
@@ -124,15 +134,16 @@ class TestOrders:
         assert (order.side, order.kind) == ("sell", "sell_limit")
         assert order.price == pytest.approx(_expected_level(38_000.0), abs=1e-9)
         assert order.price >= exact
-        assert order.sl == pytest.approx(41_421.0, abs=1e-9)
-        assert order.tp == pytest.approx(41_271.0, abs=1e-9)
+        assert order.sl == pytest.approx(order.price + 50.0, abs=1e-9)
+        assert order.tp == pytest.approx(self._expected_tp(), abs=1e-9)
+        assert order.tp <= self.EMA_PREV
 
     def test_at_or_above_the_level_at_the_open_it_sells_at_market(self) -> None:
         series = self._series(41_371.0, 42_000.0)
         (order,) = _strategy(series).on_new_bar(1, _Registry(series), _account())
         assert (order.side, order.kind, order.price) == ("sell", "market", None)
         assert order.sl == pytest.approx(42_050.0, abs=1e-9)
-        assert order.tp == pytest.approx(41_900.0, abs=1e-9)
+        assert order.tp == pytest.approx(self._expected_tp(), abs=1e-9)
 
     def test_while_holding_a_sell_nothing_is_placed(self) -> None:
         series = self._series(41_371.0, 38_100.0)
@@ -142,11 +153,25 @@ class TestOrders:
         series = self._series(41_371.0, 38_100.0)
         assert _strategy(series).on_new_bar(0, _Registry(series), _account()) == []
 
-    def test_zero_points_place_no_sl_tp(self) -> None:
+    def test_zero_sl_points_place_no_sl_and_tp_points_are_not_used(self) -> None:
         series = self._series(41_371.0, 38_100.0)
-        s = _strategy(series, stop_loss_points=0, take_profit_points=0)
+        s = _strategy(series, stop_loss_points=0, take_profit_points=999_999)
         (order,) = s.on_new_bar(1, _Registry(series), _account())
-        assert (order.sl, order.tp) == (None, None)
+        assert order.sl is None
+        assert order.tp == pytest.approx(self._expected_tp(), abs=1e-9)
+
+    def test_a_held_sell_moves_its_tp_to_this_bars_ema_and_sl_stays(self) -> None:
+        series = self._series(41_371.0, 38_100.0)
+        s = _strategy(series)
+        new_sl, new_tp = s.retarget_positions(1, _Registry(series), SimpleNamespace(side="sell"))
+        assert new_sl is None
+        assert new_tp == pytest.approx(self._expected_tp(), abs=1e-9)
+
+    def test_a_buy_is_not_retargeted(self) -> None:
+        series = self._series(41_371.0, 38_100.0)
+        assert _strategy(series).retarget_positions(
+            1, _Registry(series), SimpleNamespace(side="buy")
+        ) == (None, None)
 
 
 # ---- 計算量 ----
@@ -181,7 +206,7 @@ def _wave(n: int, period: int) -> "dict[str, pd.Series]":
     opens = pd.Series([38_000.0 * (1.0 + 0.12 * math.sin(i / 4.0)) for i in range(n)])
     ema = opens.ewm(span=period, adjust=False).mean()
     threshold = threshold_series(ema, ma_period=period, deviation_pct=8.0)
-    return {THRESHOLD_SERIES: threshold, OPEN_SERIES: opens}
+    return {THRESHOLD_SERIES: threshold, EMA_SERIES: ema, OPEN_SERIES: opens}
 
 
 def _held_at(i: int) -> "tuple[str, ...]":
@@ -203,11 +228,12 @@ def _drive(n: int, period: int):
 
 
 def _declared_reads(n: int) -> "set[tuple[str, int]]":
-    """売買規則の宣言: 足 i（i>=1・売り保有なし）で確定足の水準 threshold[i-1] と open[i] を読む。"""
+    """売買規則の宣言: 足 i（i>=1・売り保有なし）で確定足の水準 threshold[i-1]・open[i]・
+    TP の ema[i-1] を読む。"""
     expected = set()
     for i in range(1, n):
         if not _held_at(i):
-            expected |= {(THRESHOLD_SERIES, i - 1), (OPEN_SERIES, i)}
+            expected |= {(THRESHOLD_SERIES, i - 1), (OPEN_SERIES, i), (EMA_SERIES, i - 1)}
     return expected
 
 

@@ -131,16 +131,20 @@ class TestDecisionsHappenOncePerSelectedBar:
 
 
 def test_daily_ema_short_sells_at_the_daily_level_inside_the_day_and_takes_profit(tmp_path):
-    # Arrange: 横ばい 30 日 → 30 日目の 1 分足 #80 で日足 8% 水準を突き抜ける → 翌日に TP。
+    # Arrange: 横ばい 30 日 → 30 日目の 1 分足 #80 で日足 8% 水準を突き抜ける → 翌日、日足の
+    #   21EMA まで下がって TP（TP は 21EMA・依頼者指示 2026-10-07）。
     days = [_flat_day(20_000.0, 120) for _ in range(30)]
     spike = _flat_day(20_000.0, 80) + [(20_000.0, 22_500.0, 19_995.0, 22_000.0)]
     spike += _flat_day(22_000.0, 39)
     days.append(spike)
-    days.append(_flat_day(22_000.0, 10) + [(22_000.0, 22_005.0, 21_000.0, 21_100.0)] + _flat_day(21_100.0, 109))
-    days += [_flat_day(21_100.0, 120) for _ in range(3)]
+    days.append(_flat_day(22_000.0, 10) + [(22_000.0, 22_005.0, 20_000.0, 20_100.0)] + _flat_day(20_100.0, 109))
+    days += [_flat_day(20_100.0, 120) for _ in range(3)]
     csv = _write(tmp_path / "md.csv", days)
     daily_close = [bars[-1][3] for bars in days]
-    level = _level(_ema(daily_close)[29])
+    daily_ema = _ema(daily_close)
+    level = _level(daily_ema[29])
+    # 31 日目の TP＝31 日目に形成中の日足 EMA に触れる価格＝30 日目の日足 EMA（0.1 刻みへ切り捨て）。
+    tp = math.floor(daily_ema[30] / _POINT + 1e-9) * _POINT
     assert 20_000.0 < level <= 22_500.0, "30 日目の途中で水準に触れる並びでない（検定が空虚）"
     # Act
     trades = _run(csv, "Daily").trades
@@ -151,7 +155,7 @@ def test_daily_ema_short_sells_at_the_daily_level_inside_the_day_and_takes_profi
     # 約定時刻は触れた 1 分足（30 日目の #80）であって、日足の時刻ではない。
     assert epoch_seconds(first.entry_time) == _DAY0 + 30 * 86_400 + 80 * 60
     assert first.exit_reason == "tp"
-    assert first.exit_price == pytest.approx(level - _TP_PTS * _POINT, abs=1e-9)
+    assert first.exit_price == pytest.approx(tp, abs=1e-9)
     assert epoch_seconds(first.exit_time) == _DAY0 + 31 * 86_400 + 10 * 60
 
 

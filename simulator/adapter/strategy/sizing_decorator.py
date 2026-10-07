@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from simulator.adapter.sizing.account_margin_sizing import AccountMarginSizing
 from simulator.domain.order import Order
+from simulator.usecase.position_retarget import declared_position_retarget
 from simulator.usecase.entry_price_basis import declared_entry_price_basis
 from simulator.usecase.pending_order_use import PendingOrderUse, declared_pending_order_use
 from simulator.usecase.ports import EntryPriceBasisPort, StrategyPort
@@ -88,6 +89,15 @@ class SizingDecorator(StrategyPort, EntryPriceBasisPort):
         理由は無い。ここで名乗らないと、サイジングを掛けただけで待機注文が成行に戻る。
         """
         return declared_pending_order_use(self._inner)
+
+    @property
+    def retarget_positions(self) -> Any:
+        """内側の「保有中の玉の SL/TP を動かす口」をそのまま名乗る（2026-10-07）。
+
+        量だけを差し替える本 Decorator が決済の水準を変えてよい理由は無い。名乗らないと、
+        サイジングを掛けただけで TP が動かなくなる。内側が口を持たなければ ``None``。
+        """
+        return declared_position_retarget(self._inner)
 
     # ---- StrategyPort（4 点すべてを透過・LSP）----
 
