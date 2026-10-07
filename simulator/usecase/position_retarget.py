@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-
+    """戦略が名乗る SL/TP を動かすメソッド（無ければ ``None``）。"""
 def declared_position_retarget(strategy: Any) -> "Callable[..., Any] | None":
     """戦略の ``retarget_positions``（無ければ ``None``）。"""
     retarget = getattr(strategy, "retarget_positions", None)
