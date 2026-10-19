@@ -1,12 +1,13 @@
 """patterns.py の状態検証と計算量検定（CLAUDE.md の計算量テスト規約）。"""
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import patterns as P  # noqa: E402
+from tools.measure.bar_patterns import patterns as P
+
+
+def rng_from_seed(seed):
+    """乱数は必ずシードから作る（再現性）。"""
+    return np.random.default_rng(seed)
 
 
 # ---- 状態検証 ----
@@ -30,7 +31,7 @@ def test_pattern_labels_oldest_bar_is_high_digit_and_unknown_breaks():
 
 
 def test_tstats_matches_direct_formula():
-    rng = np.random.default_rng(0)
+    rng = rng_from_seed(0)
     vals = rng.normal(size=200)
     lab = rng.integers(0, 3, size=200)
     m = P.grouped_moments(lab, vals, np.ones(200, bool), 3)
@@ -42,7 +43,7 @@ def test_tstats_matches_direct_formula():
 
 
 def test_null_with_zero_shift_equals_observed():
-    rng = np.random.default_rng(1)
+    rng = rng_from_seed(1)
     fwd = rng.normal(size=300)
     fwd[-2:] = np.nan
     sets = [(rng.integers(-1, 4, size=300), 4), (rng.integers(-1, 2, size=300), 2)]
@@ -69,7 +70,7 @@ class MomentsSpy:
 
 
 def _run(n, n_shifts, groups):
-    rng = np.random.default_rng(2)
+    rng = rng_from_seed(2)
     fwd = rng.normal(size=n)
     sets = [(rng.integers(-1, g, size=n), g) for g in groups]
     spy = MomentsSpy()
@@ -95,7 +96,7 @@ def test_null_issue_count_does_not_grow_with_number_of_patterns_per_set():
 
 
 def test_observed_issues_one_computation_per_set():
-    rng = np.random.default_rng(3)
+    rng = rng_from_seed(3)
     for groups in ([2], [2, 4, 8, 16]):
         sets = [(rng.integers(-1, g, size=300), g) for g in groups]
         spy = MomentsSpy()
