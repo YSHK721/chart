@@ -72,13 +72,18 @@ def measure(period: str, tf: str, h: int, rng: np.random.Generator):
     df["p_up"] = (1 + up) / (M + 1)
     df["p_dn"] = (1 + dn) / (M + 1)
     df["tested"] = tested
+    # §1.7: 時間足 × 本数ごとの最大 |t| の帰無（検定対象の並びだけで最大を取る）
+    max_null = np.nanmax(np.abs(t_null[:, tested]), axis=1)
+    with np.errstate(invalid="ignore"):
+        df["p_fw"] = (1 + (max_null[:, None] >= np.abs(t_obs)[None, :]).sum(axis=0)) / (M + 1)
+        df["se_bp"] = df.excess_bp / df.t
     # 全体検定: 検定対象の並びの Σt²。帰無は同じ並びの集合で数える（NaN は 0 とみなさず除外）
     s_obs = np.nansum(t_obs[tested] ** 2)
     s_null = np.nansum(t_null[:, tested] ** 2, axis=1)
     omni = dict(period=period, tf=tf, h=h, bars=n, n_tested=int(tested.sum()), S=s_obs,
                 S_null_mean=s_null.mean(), p=(1 + (s_null >= s_obs).sum()) / (M + 1),
                 start=str(d.date.iloc[0]), end=str(d.date.iloc[-1]),
-                mean_close=float(d.close.mean()))
+                mean_close=float(d.close.mean()), t_req95=float(np.quantile(max_null, 0.95)))
     return df, omni
 
 
@@ -100,7 +105,8 @@ def main():
     tests = tests.merge(is_[["family", "k", "pattern", "tf", "h", "q"]], how="left",
                         on=["family", "k", "pattern", "tf", "h"])
     tests.loc[tests.period != "IS", "q"] = np.nan
-    passed = tests[(tests.period == "IS") & (tests.q < 0.05)]
+    FW = 0.05 / (len(TFS) * len(HS))
+    passed = tests[(tests.period == "IS") & tests.tested & (tests.p_fw <= FW)]
     oos = tests[tests.period == "OOS"].set_index(["family", "k", "pattern", "tf", "h"])
     rows = []
     for _, r in passed.iterrows():
@@ -108,7 +114,7 @@ def main():
         o = oos.loc[key]
         p1 = o.p_up if r.t > 0 else o.p_dn
         rows.append(dict(tf=r.tf, h=r.h, pattern=r.pattern, is_n=r.n, is_excess_bp=r.excess_bp,
-                         is_t=r.t, is_q=r.q, oos_n=o.n, oos_excess_bp=o.excess_bp, oos_t=o.t,
+                         is_t=r.t, is_q=r.q, is_p_fw=r.p_fw, oos_n=o.n, oos_excess_bp=o.excess_bp, oos_t=o.t,
                          oos_p1=p1 if o.tested else np.nan))
     sel = pd.DataFrame(rows)
     if len(sel):
@@ -117,7 +123,7 @@ def main():
     tests.to_csv(OUT / "tests.csv", index=False)
     pd.DataFrame(omnis).to_csv(OUT / "omnibus.csv", index=False)
     sel.to_csv(OUT / "selected.csv", index=False)
-    print(f"\nIS 検定数 {len(is_)}・BH 通過 {len(passed)}")
+    print(f"\nIS 検定数 {len(is_)}・BH 通過 {int((is_.q < 0.05).sum())}・maxT 通過（p_fw ≤ {FW:.5f}）{len(passed)}")
     pd.set_option("display.width", 220)
     if len(sel):
         print(sel.round(4).to_string(index=False))
