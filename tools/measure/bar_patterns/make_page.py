@@ -15,6 +15,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
+RES_CD = HERE / "results_CD"
 TFS = ("15m", "1h", "4h", "1D")
 TF_JA = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
 COST_BP = None  # omnibus から計算
@@ -124,15 +125,15 @@ def fig_strip(tests, omni):
 
 
 # ---------- 図 4: 全体検定の p ----------
-def fig_omni(omni):
+def fig_omni(omni, aria="全体検定の p。選ぶ期間はすべて 0.05 より右"):
     rows = [(tf, h) for tf in TFS for h in (1, 4)]
     X0, X1 = 150, 620
-    lo, hi = math.log10(0.01), math.log10(1.0)
+    lo, hi = math.log10(0.001), math.log10(1.0)  # p の最小値は 1/1000
     sx = lambda p: X0 + (math.log10(p) - lo) / (hi - lo) * (X1 - X0)
     rh = 30
     H = 40 + rh * len(rows) + 40
     parts = []
-    for p in (0.01, 0.05, 0.1, 0.5, 1.0):
+    for p in (0.001, 0.01, 0.05, 0.1, 0.5, 1.0):
         parts.append(f'<line x1="{sx(p):.1f}" x2="{sx(p):.1f}" y1="28" y2="{H-40}" class="{"thr" if p == 0.05 else "grid"}"/>')
         parts.append(f'<text x="{sx(p):.1f}" y="{H-24}" text-anchor="middle" class="tk">{p:g}</text>')
     parts.append(f'<text x="{sx(0.05):.1f}" y="20" text-anchor="middle" class="lb red">0.05</text>')
@@ -145,7 +146,7 @@ def fig_omni(omni):
         parts.append(f'<line x1="{sx(pi):.1f}" x2="{sx(po):.1f}" y1="{yy:.1f}" y2="{yy:.1f}" class="link"/>')
         parts.append(f'<circle cx="{sx(pi):.1f}" cy="{yy:.1f}" r="6" class="m-is"/>')
         parts.append(f'<rect x="{sx(po)-5:.1f}" y="{yy-5:.1f}" width="10" height="10" class="m-oos"/>')
-    return (f'<svg viewBox="0 0 680 {H}" role="img" aria-label="全体検定の p。選ぶ期間はすべて 0.05 より右">'
+    return (f'<svg viewBox="0 0 680 {H}" role="img" aria-label="{aria}">'
             + "".join(parts) + "</svg>")
 
 
@@ -206,6 +207,47 @@ def fig_power(tests, omni, cost_bp):
             + "".join(parts) + "</svg>")
 
 
+# ---------- 図 7: ひげの 4 種類 ----------
+def fig_wicks():
+    shapes = [("上短下短", 4, 4), ("上短下長", 4, 30), ("上長下短", 30, 4), ("上長下長", 30, 30)]
+    parts = []
+    for i, (name, up, lo) in enumerate(shapes):
+        x = 80 + i * 150
+        top, bot = 70, 110
+        parts.append(f'<line x1="{x}" x2="{x}" y1="{top-up}" y2="{bot+lo}" class="wick"/>')
+        parts.append(f'<rect x="{x-14}" y="{top}" width="28" height="{bot-top}" class="up"/>')
+        parts.append(f'<text x="{x}" y="176" text-anchor="middle" class="lb">{name}</text>')
+    parts.append('<text x="20" y="196" class="tk">ひげの長短は、その足より前の 100 本の同じひげの中央値と比べて決める（図は陽線の例）。</text>')
+    return ('<svg viewBox="0 0 640 206" role="img" aria-label="ひげの形の 4 種類">' + "".join(parts) + "</svg>")
+
+
+# ---------- 図 8: ひげの効果と費用 ----------
+def fig_wick_cost(tests_cd, cost_bp):
+    want = [("C", 1, "陰・上長下短"), ("C", 1, "陽・上長下短"), ("C", 1, "陽・上短下長"), ("D", 1, "大陽・上短下長")]
+    t = tests_cd[(tests_cd.tf == "15m") & (tests_cd.h == 1)].set_index(["family", "k", "pattern", "period"])
+    X0, X1 = 200, 640
+    vmax = 16
+    sx = lambda v: X0 + v / vmax * (X1 - X0)
+    rh = 30
+    rows = [(f"{p}", t.loc[(f, k, p, "OOS"), "excess_bp"]) for f, k, p in want]
+    H = 30 + rh * (len(rows) + 1) + 40
+    parts = []
+    for v in range(0, 17, 4):
+        parts.append(f'<line x1="{sx(v):.1f}" x2="{sx(v):.1f}" y1="20" y2="{H-40}" class="grid"/>')
+        parts.append(f'<text x="{sx(v):.1f}" y="{H-24}" text-anchor="middle" class="tk">{v}</text>')
+    parts.append(f'<text x="{(X0+X1)/2}" y="{H-6}" text-anchor="middle" class="tk">大きさ（bp）</text>')
+    for i, (name, v) in enumerate(rows):
+        yy = 30 + i * rh + rh / 2
+        parts.append(f'<text x="{X0-10}" y="{yy+4:.1f}" text-anchor="end" class="lb">{esc(name)}（{v:+.2f}）</text>')
+        parts.append(f'<rect x="{X0}" y="{yy-7:.1f}" width="{max(sx(abs(v))-X0, 1.5):.1f}" height="14" class="m-is"/>')
+    yy = 30 + len(rows) * rh + rh / 2
+    parts.append(f'<text x="{X0-10}" y="{yy+4:.1f}" text-anchor="end" class="lb amb">費用</text>')
+    parts.append(f'<rect x="{X0}" y="{yy-7:.1f}" width="{sx(cost_bp)-X0:.1f}" height="14" class="m-cost"/>')
+    parts.append(f'<text x="{sx(cost_bp)+6:.1f}" y="{yy+4:.1f}" class="lb amb">{cost_bp:.1f}</text>')
+    return (f'<svg viewBox="0 0 680 {H}" role="img" aria-label="ひげの形による次の足の戻りは費用に比べてごく小さい">'
+            + "".join(parts) + "</svg>")
+
+
 def main(out_path: str):
     tests = pd.read_csv(RES / "tests.csv")
     omni = pd.read_csv(RES / "omnibus.csv")
@@ -225,6 +267,14 @@ def main(out_path: str):
         f'<td class="n">{r.excess_bp_is:+.1f}</td><td class="n">{r.t_is:.2f}</td><td class="n">{r.p_fw:.3f}</td>'
         f'<td class="n">{fmt_n(r.n_oos)}</td><td class="n">{r.excess_bp_oos:+.1f}</td><td class="n">{r.t_oos:.2f}</td></tr>'
         for r in top.itertuples())
+    tests_cd = pd.read_csv(RES_CD / "tests.csv")
+    omni_cd = pd.read_csv(RES_CD / "omnibus.csv")
+    n_cd = int(((tests_cd.period == "IS") & tests_cd.tested).sum())
+    sel_cd = pd.read_csv(RES_CD / "selected.csv")
+    cd_rows = "".join(
+        f'<tr><td>{TF_JA[r.tf]}</td><td class="n">{r.h}</td><td>{esc(r.pattern)}</td><td class="n">{r.is_excess_bp:+.1f}</td>'
+        f'<td class="n">{r.is_t:.2f}</td><td class="n">{r.is_p_fw:.3f}</td><td class="n">{r.oos_excess_bp:+.1f}</td>'
+        f'<td class="n">{r.oos_t:.2f}</td><td class="n">{r.oos_holm:.3f}</td></tr>' for r in sel_cd.itertuples())
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_EXAMPLE}}", fig_example())
             .replace("{{FIG_SHIFT}}", fig_shift())
@@ -234,7 +284,11 @@ def main(out_path: str):
             .replace("{{FIG_POWER}}", fig_power(tests, omni, cost_bp))
             .replace("{{N_IS}}", fmt_n(n_is)).replace("{{PASSED}}", str(passed))
             .replace("{{COST_BP}}", f"{cost_bp:.0f}").replace("{{OOS_CLOSE}}", fmt_n(oos_close))
-            .replace("{{OMNI_ROWS}}", omni_rows).replace("{{TOP_ROWS}}", top_rows))
+            .replace("{{OMNI_ROWS}}", omni_rows).replace("{{TOP_ROWS}}", top_rows)
+            .replace("{{FIG_WICKS}}", fig_wicks())
+            .replace("{{FIG_OMNI_CD}}", fig_omni(omni_cd, "ひげを入れた並びの全体検定の p。15 分足と 1 時間足の 1 本後は両期間で小さい"))
+            .replace("{{FIG_WICK_COST}}", fig_wick_cost(tests_cd, cost_bp))
+            .replace("{{N_CD}}", fmt_n(n_cd)).replace("{{CD_ROWS}}", cd_rows))
     Path(out_path).write_text(page, encoding="utf-8")
     print("wrote", out_path, len(page), "bytes")
 
