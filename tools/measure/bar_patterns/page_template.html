@@ -1,0 +1,167 @@
+<title>足の並びの有意性</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
+<style>
+/* 1 列の読み物。ライン売買の検定・21EMA 下方乖離の反発率と同じ体裁。図は実データから描く（make_page.py） */
+:root {
+  --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
+  --is: #2f6f8f; --oos: #b4442e; --thr: #b4442e; --band: #cfe0e8; --amb: #a06a12;
+  --up: #2e8b6e; --dn: #c25b4a; --pat: #e6eef2; --null: #f2e9e6;
+  --body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --display: "BIZ UDPMincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --thr: #ef8a73; --band: #23404c; --amb: #e0a64a;
+  --up: #5cc59b; --dn: #ef8a73; --pat: #1f3640; --null: #3a2a26; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --thr: #ef8a73; --band: #23404c; --amb: #e0a64a;
+  --up: #5cc59b; --dn: #ef8a73; --pat: #1f3640; --null: #3a2a26; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.85 var(--body); }
+main { max-width: 46rem; margin: 0 auto; padding-inline: 16px; padding-block: 40px 64px; display: grid; gap: 40px; }
+h1 { font: 700 2rem/1.3 var(--display); margin: 0; text-wrap: balance; }
+h2 { font: 700 1.3rem/1.4 var(--display); margin: 0 0 4px; text-wrap: balance; }
+p { margin: 0; }
+section { display: grid; gap: 12px; min-width: 0; }
+.lead { font-size: 1.08rem; }
+.sub, .cap { color: var(--muted); font-size: .88rem; }
+.verdict { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--oos); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
+.verdict b { color: var(--oos); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
+.figure svg { display: block; width: 100%; min-width: 540px; height: auto; }
+figcaption { font-weight: 700; font-size: .95rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+.kinds { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.kind { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 2px; }
+.kind b { font-size: 1.05rem; }
+.kind span { color: var(--muted); font-size: .85rem; }
+ul { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-size: .8rem; }
+td.n { text-align: right; }
+svg text { font-family: var(--body); }
+svg .tk { font-size: 11px; fill: var(--muted); }
+svg .lb { font-size: 12px; fill: var(--fg); }
+svg .lb.red { fill: var(--thr); font-weight: 700; }
+svg .lb.amb { fill: var(--amb); font-weight: 700; }
+svg .lb.acc { fill: var(--oos); font-weight: 700; }
+svg .grid { stroke: var(--rule); stroke-width: 1; }
+svg .zero { stroke: var(--muted); stroke-width: 1.2; }
+svg .thr { stroke: var(--thr); stroke-width: 2.2; }
+svg .cost { stroke: var(--amb); stroke-width: 2; stroke-dasharray: 5 3; }
+svg .dot { fill: var(--is); fill-opacity: .55; }
+svg .link { stroke: var(--muted); stroke-width: 1.4; }
+svg .m-is { fill: var(--is); }
+svg .m-oos { fill: var(--oos); }
+svg .band { fill: var(--band); }
+svg .med { stroke: var(--is); stroke-width: 3; }
+svg .wick { stroke: var(--muted); stroke-width: 1.5; }
+svg .up { fill: var(--up); } svg .dn { fill: var(--dn); }
+svg .brace { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+svg .pt { fill: var(--fg); }
+svg .guide { stroke: var(--rule); stroke-width: 1.2; stroke-dasharray: 4 3; }
+svg .fwd { fill: none; stroke: var(--oos); stroke-width: 2.2; stroke-dasharray: 6 4; }
+svg .fwdpt { fill: var(--oos); }
+svg .arrow { stroke: var(--oos); stroke-width: 1.6; }
+svg .ahead { fill: var(--oos); }
+svg .c-pat { fill: var(--pat); stroke: var(--is); stroke-width: 1; }
+svg .c-real { fill: var(--panel); stroke: var(--muted); stroke-width: 1; }
+svg .c-null { fill: var(--null); stroke: var(--oos); stroke-width: 1; }
+svg .cell { font-size: 12px; fill: var(--fg); }
+svg .shiftline { fill: none; stroke: var(--oos); stroke-width: 1.2; stroke-dasharray: 3 3; }
+</style>
+
+<main>
+<header style="display:grid;gap:10px">
+  <h1>足の並びの有意性</h1>
+  <p class="lead">陽線・陰線と実体の大きさで分けた足の並びの後に、値動きが上か下へかたよるかを調べました。</p>
+  <p class="sub">日経 225（JP225）・15 分足／1 時間足／4 時間足／日足・2026-10-19 実施・条件は実行前に RESULTS.md に記録</p>
+</header>
+
+<div class="verdict">
+  <p><b>結論：意味のある並びはありませんでした。</b></p>
+  <p>{{N_IS}} 件の検定で、偶然と区別できた並びは {{PASSED}} 件です。並びの情報が全体として有るかの検定でも、選ぶ期間はどの時間足でも有意ではありません。選ぶ期間で上位だった並びは、確かめる期間ではすべて差がほぼ 0 か逆向きになりました。</p>
+  <p>見逃しでもありません。15 分足と 1 時間足では、費用（約 {{COST_BP}} bp）より大きい効果があれば検出できる精度で測っています。</p>
+</div>
+
+<section aria-labelledby="h-what">
+  <h2 id="h-what">「並び」とは</h2>
+  <p>足を 1 本ずつ、次の 4 種類に分けます。大きさの境目は、その足より前の 100 本の実体（始値と終値の差）の中央値です。始値と終値が同じ足を含む並びは数えません。</p>
+  <div class="kinds">
+    <div class="kind"><b>大陽</b><span>終値 &gt; 始値・実体が中央値以上</span></div>
+    <div class="kind"><b>小陽</b><span>終値 &gt; 始値・実体が中央値未満</span></div>
+    <div class="kind"><b>大陰</b><span>終値 &lt; 始値・実体が中央値以上</span></div>
+    <div class="kind"><b>小陰</b><span>終値 &lt; 始値・実体が中央値未満</span></div>
+  </div>
+  <p>この 4 種類を 1〜3 本つなげた 84 通りと、陽線（U）・陰線（D）の向きだけを 1〜5 本つなげた 62 通り、合わせて 146 通りの並びを調べました。</p>
+  <figure class="figure"><figcaption>並びと先の値動き</figcaption>{{FIG_EXAMPLE}}
+    <p class="cap">並びが確定した足の終値から、1 本後と 4 本後の終値までの値動きを測ります。図は説明用で、実際の値ではありません。</p></figure>
+</section>
+
+<section aria-labelledby="h-how">
+  <h2 id="h-how">比べ方</h2>
+  <p>並びの後の平均の値動きを、全部の足の後の平均と比べます。全部の平均を引くのは、相場全体の上昇を並びの効果と取り違えないためです。差を標準誤差で割った値を t と呼びます。|t| が大きいほど、並びの後の値動きが平均から外れています。</p>
+  <p>t がどれだけ大きければ偶然ではないと言えるかは、並びと値動きの対応だけを壊した列と比べて決めます。</p>
+  <figure class="figure"><figcaption>円環状にずらす</figcaption>{{FIG_SHIFT}}</figure>
+  <p>146 通りを同時に調べると、偶然でも |t| が大きい並びがいくつか出ます。そこで、ずらした列 999 本それぞれで「146 通りの中の最大の |t|」を取り、その 95% にあたる値を通過線にしました。さらに時間足 × 本数の 8 組で割り、通過の基準を 0.05 ÷ 8 にしています。</p>
+  <p>期間は 2 つに分けました。<b>選ぶ期間</b>（Dukascopy・2014-01〜2020-04）で通過した並びだけを、<b>確かめる期間</b>（MT5・2020-05〜2026-10-15）で同じ向きに出るか確かめる、と実行前に決めました。</p>
+</section>
+
+<section aria-labelledby="h-r1">
+  <h2 id="h-r1">結果 1：通過線を越えた並びは無い</h2>
+  <figure class="figure"><figcaption>選ぶ期間の全並びの |t|</figcaption>{{FIG_STRIP}}
+    <div class="legend"><span><i style="background:var(--is);opacity:.55;border-radius:50%"></i>並び 1 通り（出現 30 回以上）</span><span><i style="background:var(--thr);width:3px"></i>通過線（ずらした列の最大 |t| の 95%）</span></div></figure>
+  <p>どの時間足でも、点はすべて通過線の左にあります。一番近いのは 1 時間足の「小陰 小陰 小陽」の 1 本後（t = 3.56・通過線 3.43 は越えたが、8 組の補正後の基準 0.00625 には届かず p = 0.036）です。</p>
+</section>
+
+<section aria-labelledby="h-r2">
+  <h2 id="h-r2">結果 2：並び全体としても情報は無い</h2>
+  <p>1 つずつでは小さくても、146 通り全体では情報があるかもしれません。|t| の二乗の合計を、ずらした列と比べました。</p>
+  <figure class="figure"><figcaption>全体検定の p</figcaption>{{FIG_OMNI}}
+    <div class="legend"><span><i style="background:var(--is);border-radius:50%"></i>選ぶ期間</span><span><i style="background:var(--oos)"></i>確かめる期間</span><span><i style="background:var(--thr);width:3px"></i>0.05</span></div></figure>
+  <p>選ぶ期間は 8 組とも 0.05 より右です。確かめる期間の日足・4 本後だけ 0.032 ですが、選ぶ期間では 0.869 で、16 回の検定の 1 回なので補正すると有意ではありません。1 時間足は両期間とも 0.07 前後で、弱い情報がある可能性は残りますが、判定の基準には届きません。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>時間足</th><th>何本後</th><th>本数（選ぶ）</th><th>本数（確かめる）</th><th>p（選ぶ）</th><th>p（確かめる）</th><th>通過線の |t|</th></tr></thead>
+    <tbody>{{OMNI_ROWS}}</tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="h-r3">
+  <h2 id="h-r3">結果 3：上位の並びは確かめる期間で消える</h2>
+  <p>判定の外の観察として、選ぶ期間で通過線に近かった 5 件を、確かめる期間で見ました。</p>
+  <figure class="figure"><figcaption>選ぶ期間 → 確かめる期間</figcaption>{{FIG_TOP}}
+    <div class="legend"><span><i style="background:var(--is);border-radius:50%"></i>選ぶ期間</span><span><i style="background:var(--oos)"></i>確かめる期間</span></div></figure>
+  <p>5 件とも、確かめる期間では 0 付近か逆向きです。146 通り全体でも、選ぶ期間と確かめる期間で t の向きがそろった割合は 40〜58% で、でたらめの 50% と変わりません。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>時間足</th><th>何本後</th><th>並び</th><th>回数（選ぶ）</th><th>差 bp（選ぶ）</th><th>t（選ぶ）</th><th>p</th><th>回数（確かめる）</th><th>差 bp（確かめる）</th><th>t（確かめる）</th></tr></thead>
+    <tbody>{{TOP_ROWS}}</tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="h-r4">
+  <h2 id="h-r4">見逃していないか</h2>
+  <p>「無い」と言えるのは、あれば見つけられる精度で測ったときだけです。並びごとに、通過線を越えるのに必要だった差の大きさを出しました。</p>
+  <figure class="figure"><figcaption>検出できた最小の差と費用</figcaption>{{FIG_POWER}}
+    <div class="legend"><span><i style="background:var(--band)"></i>並びの 10〜90%</span><span><i style="background:var(--is);width:3px"></i>中央値</span><span><i style="background:var(--amb);width:3px"></i>費用（MT5 の最頻の気配幅 50 point ÷ 平均終値 {{OOS_CLOSE}}）</span></div></figure>
+  <p>15 分足と 1 時間足は、ほとんどの並びで費用より小さい差まで検出できます。費用を払っても残るほどの効果があれば、見つかっていたはずです。日足は標本が少なく、検出できるのは数十 bp 以上の差です。それより小さい効果は、有るとも無いとも言えません。</p>
+</section>
+
+<section aria-labelledby="h-fix">
+  <h2 id="h-fix">手順の修正</h2>
+  <p>実行前の登録では、個別の判定に BH 法を使う予定でした。1 回目の実行後、ずらした列 999 本では p が 0.001 より小さくならず、効く並びが 1 つだけならどれほど強くても通過できない手順だと分かりました。個別の並びの結果を見る前に、上で説明した最大 |t| の通過線へ切り替え、理由と一緒に記録しました。BH 法でも通過は 0 件です。</p>
+</section>
+
+<section aria-labelledby="h-unk">
+  <h2 id="h-unk">分かっていないこと</h2>
+  <ul>
+    <li>ひげ（上ひげ・下ひげ）の形は分類に入れていません。包み足やはらみ足のような名前のある型は調べていません。</li>
+    <li>大きさの境目（前 100 本の中央値）や並びの長さの上限を変えた場合は測っていません。</li>
+    <li>日足では数十 bp より小さい効果を見分けられません。</li>
+  </ul>
+  <p class="cap">コード：tools/measure/bar_patterns/（run.py・patterns.py・make_page.py）／記録：RESULTS.md</p>
+</section>
+</main>
