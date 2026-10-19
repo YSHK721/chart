@@ -11,8 +11,27 @@ import numpy as np
 
 SIZE_WINDOW = 100
 MIN_COUNT = 30
-#: 族 → 長さ（RESULTS.md §1.3）。A は向きだけ（底 2）、B は向き × 大きさ（底 4）。
-FAMILIES = {"A": (1, 2, 3, 4, 5), "B": (1, 2, 3)}
+#: 族 → 長さ。A は向きだけ（底 2）、B は向き × 大きさ（底 4）＝ RESULTS.md §1.3。
+#: C は向き × ひげ（底 8）、D は向き × 大きさ × ひげ（底 16）＝ RESULTS.md §3.2。
+FAMILIES = {"A": (1, 2, 3, 4, 5), "B": (1, 2, 3), "C": (1, 2), "D": (1, 2)}
+BASES = {"A": 2, "B": 4, "C": 8, "D": 16}
+WICK_JA = ("上短下短", "上短下長", "上長下短", "上長下長")
+
+
+def _past_median(x: np.ndarray, window: int) -> np.ndarray:
+    """各足より前の window 本の中央値（その足自身は含まない）。そろうまでは NaN。"""
+    n = len(x)
+    med = np.full(n, np.nan)
+    if n > window:
+        win = np.lib.stride_tricks.sliding_window_view(x, window)[:-1]
+        med[window:] = np.median(win, axis=1)
+    return med
+
+
+def _long_flag(x: np.ndarray, window: int) -> np.ndarray:
+    """前の window 本の中央値以上なら 1、未満なら 0、そろうまでは -1。"""
+    med = _past_median(x, window)
+    return np.where(np.isnan(med), -1, (x >= med).astype(int))
 
 
 def classify(o: np.ndarray, c: np.ndarray, size_window: int = SIZE_WINDOW):
@@ -22,16 +41,26 @@ def classify(o: np.ndarray, c: np.ndarray, size_window: int = SIZE_WINDOW):
     """
     body = c - o
     up = np.where(body > 0, 1, np.where(body < 0, 0, -1))
-    absb = np.abs(body)
-    n = len(o)
-    med = np.full(n, np.nan)
-    if n > size_window:
-        win = np.lib.stride_tricks.sliding_window_view(absb, size_window)[:-1]
-        med[size_window:] = np.median(win, axis=1)
-    big = np.where(np.isnan(med), -1, (absb >= med).astype(int))
+    big = _long_flag(np.abs(body), size_window)
     sym_a = up
     sym_b = np.where((up < 0) | (big < 0), -1, up * 2 + big)
     return sym_a, sym_b
+
+
+def classify_wicks(o, h, l, c, size_window: int = SIZE_WINDOW):
+    """ひげを入れた記号（RESULTS.md §3.1）。族 C（0..7）と族 D（0..15）。不明は -1。
+
+    ひげ記号 w = 上長 × 2 + 下長（0 上短下短・1 上短下長・2 上長下短・3 上長下長）。
+    C = 向き × 4 + w、D = (向き × 2 + 大) × 4 + w。
+    """
+    sym_a, sym_b = classify(o, c, size_window)
+    upper = h - np.maximum(o, c)
+    lower = np.minimum(o, c) - l
+    lu, ll = _long_flag(upper, size_window), _long_flag(lower, size_window)
+    w = np.where((lu < 0) | (ll < 0), -1, lu * 2 + ll)
+    sym_c = np.where((sym_a < 0) | (w < 0), -1, sym_a * 4 + w)
+    sym_d = np.where((sym_b < 0) | (w < 0), -1, sym_b * 4 + w)
+    return sym_c, sym_d
 
 
 def pattern_labels(sym: np.ndarray, base: int, k: int) -> np.ndarray:
@@ -51,7 +80,7 @@ def pattern_labels(sym: np.ndarray, base: int, k: int) -> np.ndarray:
 
 
 def pattern_name(family: str, k: int, code: int) -> str:
-    base = 2 if family == "A" else 4
+    base = BASES[family]
     digits = []
     for _ in range(k):
         digits.append(code % base)
@@ -59,7 +88,16 @@ def pattern_name(family: str, k: int, code: int) -> str:
     digits.reverse()
     if family == "A":
         return "".join("U" if d else "D" for d in digits)
-    return " ".join(("大" if d % 2 else "小") + ("陽" if d // 2 else "陰") for d in digits)
+    if family == "B":
+        return " ".join(_body_ja(d) for d in digits)
+    if family == "C":
+        return " ".join(("陽" if d // 4 else "陰") + "・" + WICK_JA[d % 4] for d in digits)
+    return " ".join(_body_ja(d // 4) + "・" + WICK_JA[d % 4] for d in digits)
+
+
+def _body_ja(d: int) -> str:
+    """族 B の記号（向き × 2 + 大）を「大陽」などへ。"""
+    return ("大" if d % 2 else "小") + ("陽" if d // 2 else "陰")
 
 
 def forward_returns(c: np.ndarray, h: int) -> np.ndarray:

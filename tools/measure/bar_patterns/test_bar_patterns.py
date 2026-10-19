@@ -103,3 +103,26 @@ def test_observed_issues_one_computation_per_set():
         t, _, _ = P.observed(sets, rng.normal(size=300), moments=spy)
         assert spy.issued - len(sets) == 0
         assert len(t) == sum(groups)
+
+
+# ---- ひげ（RESULTS.md §3.1） ----
+
+def test_classify_wicks_uses_past_median_of_each_wick():
+    o = np.array([10, 10, 10, 10.0])
+    c = np.array([11, 9, 12, 9.0])
+    h = np.array([11, 12, 12.5, 10.5])   # 上ひげ 0, 2, 0.5, 0.5
+    l = np.array([8, 9, 9, 8.0])         # 下ひげ 2, 0, 1, 1
+    sym_c, sym_d = P.classify_wicks(o, h, l, c, size_window=2)
+    # 足 2: 上 0.5 < 中央値(0,2)=1 → 短・下 1 ≥ 中央値(2,0)=1 → 長 → w=1、陽 → C=5
+    #       実体 2 ≥ 中央値(1,1)=1 → 大陽(3) → D=13
+    # 足 3: 上 0.5 < 中央値(2,0.5)=1.25 → 短・下 1 ≥ 中央値(0,1)=0.5 → 長 → w=1、陰 → C=1
+    #       実体 1 < 中央値(1,2)=1.5 → 小陰(0) → D=1
+    assert sym_c.tolist() == [-1, -1, 5, 1]
+    assert sym_d.tolist() == [-1, -1, 13, 1]
+
+
+def test_wick_pattern_names_and_bases():
+    assert P.pattern_name("C", 1, 5) == "陽・上短下長"
+    assert P.pattern_name("D", 2, 13 * 16 + 2) == "大陽・上短下長 小陰・上長下短"
+    sym = np.array([15, 0, 3])
+    assert P.pattern_labels(sym, 16, 2).tolist() == [-1, 15 * 16 + 0, 0 * 16 + 3]

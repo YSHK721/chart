@@ -30,7 +30,7 @@ OUT = HERE / "results"
 
 def load(period: str, tf: str) -> pd.DataFrame:
     path, start, end = PERIODS[period]
-    d = pd.read_csv(str(path).format(tf=tf), usecols=["date", "open", "close"], parse_dates=["date"])
+    d = pd.read_csv(str(path).format(tf=tf), usecols=["date", "open", "high", "low", "close"], parse_dates=["date"])
     d = d.iloc[:-1]  # 最後の 1 本は形成中の可能性がある
     if tf == "1D":
         d = d[d.date.dt.dayofweek < 5]
@@ -40,11 +40,14 @@ def load(period: str, tf: str) -> pd.DataFrame:
     return d.reset_index(drop=True)
 
 
-def label_sets(d: pd.DataFrame):
-    sym_a, sym_b = P.classify(d.open.to_numpy(float), d.close.to_numpy(float))
+def label_sets(d: pd.DataFrame, families):
+    o, h, l, c = (d[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    sym_a, sym_b = P.classify(o, c)
+    sym_c, sym_d = P.classify_wicks(o, h, l, c)
+    syms = {"A": sym_a, "B": sym_b, "C": sym_c, "D": sym_d}
     sets, names = [], []
-    for fam, ks in P.FAMILIES.items():
-        base, sym = (2, sym_a) if fam == "A" else (4, sym_b)
+    for fam in families:
+        ks, base, sym = P.FAMILIES[fam], P.BASES[fam], syms[fam]
         for k in ks:
             g = base ** k
             sets.append((P.pattern_labels(sym, base, k), g))
@@ -52,9 +55,9 @@ def label_sets(d: pd.DataFrame):
     return sets, names
 
 
-def measure(period: str, tf: str, h: int, rng: np.random.Generator):
+def measure(period: str, tf: str, h: int, rng: np.random.Generator, families):
     d = load(period, tf)
-    sets, names = label_sets(d)
+    sets, names = label_sets(d, families)
     fwd = P.forward_returns(d.close.to_numpy(float), h)
     n = len(d)
     shifts = rng.integers(MIN_SHIFT, n - MIN_SHIFT, size=M)
@@ -88,13 +91,16 @@ def measure(period: str, tf: str, h: int, rng: np.random.Generator):
 
 
 def main():
-    OUT.mkdir(exist_ok=True)
+    # 引数なし = §1 の族 A・B（results/）。"CD" = §3 のひげの族（results_CD/）
+    families = tuple(sys.argv[1]) if len(sys.argv) > 1 else ("A", "B")
+    out = OUT if families == ("A", "B") else HERE / f"results_{''.join(families)}"
+    out.mkdir(exist_ok=True)
     rng = np.random.default_rng(SEED)
     frames, omnis = [], []
     for period in ("IS", "OOS"):
         for tf in TFS:
             for h in HS:
-                df, om = measure(period, tf, h, rng)
+                df, om = measure(period, tf, h, rng, families)
                 frames.append(df)
                 omnis.append(om)
                 print(f"{period} {tf} h={h} bars={om['bars']} tested={om['n_tested']} "
@@ -120,9 +126,9 @@ def main():
     if len(sel):
         ok = sel.oos_p1.notna()
         sel.loc[ok, "oos_holm"] = P.holm(sel.loc[ok, "oos_p1"].to_numpy())
-    tests.to_csv(OUT / "tests.csv", index=False)
-    pd.DataFrame(omnis).to_csv(OUT / "omnibus.csv", index=False)
-    sel.to_csv(OUT / "selected.csv", index=False)
+    tests.to_csv(out / "tests.csv", index=False)
+    pd.DataFrame(omnis).to_csv(out / "omnibus.csv", index=False)
+    sel.to_csv(out / "selected.csv", index=False)
     print(f"\nIS 検定数 {len(is_)}・BH 通過 {int((is_.q < 0.05).sum())}・maxT 通過（p_fw ≤ {FW:.5f}）{len(passed)}")
     pd.set_option("display.width", 220)
     if len(sel):
