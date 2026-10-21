@@ -126,3 +126,13 @@ def test_wick_pattern_names_and_bases():
     assert P.pattern_name("D", 2, 13 * 16 + 2) == "大陽・上短下長 小陰・上長下短"
     sym = np.array([15, 0, 3])
     assert P.pattern_labels(sym, 16, 2).tolist() == [-1, 15 * 16 + 0, 0 * 16 + 3]
+
+
+def test_pass_line_is_equivalent_to_p_fw_criterion():
+    rng = rng_from_seed(4)
+    max_null = rng.gamma(4.0, 1.0, size=999)
+    fw = 0.05 / 8
+    line = P.pass_line(max_null, fw)
+    for t in np.concatenate([max_null, rng.uniform(0, 15, size=500)]):
+        p_fw = (1 + (max_null >= t).sum()) / 1000
+        assert (p_fw <= fw) == (t > line)

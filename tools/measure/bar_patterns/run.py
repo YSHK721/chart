@@ -86,8 +86,12 @@ def measure(period: str, tf: str, h: int, rng: np.random.Generator, families):
     omni = dict(period=period, tf=tf, h=h, bars=n, n_tested=int(tested.sum()), S=s_obs,
                 S_null_mean=s_null.mean(), p=(1 + (s_null >= s_obs).sum()) / (M + 1),
                 start=str(d.date.iloc[0]), end=str(d.date.iloc[-1]),
-                mean_close=float(d.close.mean()), t_req95=float(np.quantile(max_null, 0.95)))
+                mean_close=float(d.close.mean()), t_req95=float(np.quantile(max_null, 0.95)),
+                t_pass=P.pass_line(max_null, FW))
     return df, omni
+
+
+FW = 0.05 / (len(TFS) * len(HS))
 
 
 def main():
@@ -111,7 +115,6 @@ def main():
     tests = tests.merge(is_[["family", "k", "pattern", "tf", "h", "q"]], how="left",
                         on=["family", "k", "pattern", "tf", "h"])
     tests.loc[tests.period != "IS", "q"] = np.nan
-    FW = 0.05 / (len(TFS) * len(HS))
     passed = tests[(tests.period == "IS") & tests.tested & (tests.p_fw <= FW)]
     oos = tests[tests.period == "OOS"].set_index(["family", "k", "pattern", "tf", "h"])
     rows = []

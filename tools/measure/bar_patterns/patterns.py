@@ -172,6 +172,16 @@ def observed(label_sets, fwd: np.ndarray, moments=grouped_moments):
     return np.concatenate(ts), np.concatenate(ns), np.concatenate(means)
 
 
+def pass_line(max_null: np.ndarray, fw: float) -> float:
+    """p_fw ≤ fw と同値になる |t| の線。|t| がこの値を超えたときだけ通過する。
+
+    p_fw =（1 + 帰無の最大 |t| ≥ |t| の本数）÷（M + 1）≤ fw ⇔ 本数 ≤ floor(fw·(M+1)) − 1。
+    よって線は、帰無の最大 |t| を大きい順に並べた floor(fw·(M+1)) 番目の値。
+    """
+    k = int(np.floor(fw * (len(max_null) + 1) + 1e-9))
+    return float(np.sort(max_null)[-k])
+
+
 def bh_qvalues(p: np.ndarray) -> np.ndarray:
     """Benjamini–Hochberg の q 値。"""
     p = np.asarray(p, dtype=float)

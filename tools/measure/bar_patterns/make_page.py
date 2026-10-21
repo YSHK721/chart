@@ -122,12 +122,12 @@ def fig_strip(tests, omni):
     om = omni[omni.period == "IS"].set_index(["tf", "h"])
     rows = [(tf, h) for tf in TFS for h in (1, 4)]
     X0, X1 = 150, 640
-    xmax = 4.5
+    xmax = 5.5
     sx = lambda v: X0 + v / xmax * (X1 - X0)
     rh = 34
     H = 30 + rh * len(rows) + 40
     parts = []
-    for v in range(0, 5):
+    for v in range(0, 6):
         parts.append(f'<line x1="{sx(v):.1f}" x2="{sx(v):.1f}" y1="20" y2="{H-40}" class="grid"/>')
         parts.append(f'<text x="{sx(v):.1f}" y="{H-24}" text-anchor="middle" class="tk">{v}</text>')
     parts.append(f'<text x="{(X0+X1)/2}" y="{H-6}" text-anchor="middle" class="tk">|t|（大きいほど、並びの後の値動きが平均から外れている）</text>')
@@ -139,9 +139,9 @@ def fig_strip(tests, omni):
         jit = rng.uniform(-9, 9, size=len(g))
         for v, j in zip(np.abs(g.t.to_numpy()), jit):
             parts.append(f'<circle cx="{sx(min(v, xmax)):.1f}" cy="{yy+j:.1f}" r="2.6" class="dot"/>')
-        thr = om.loc[(tf, h), "t_req95"]
+        thr = om.loc[(tf, h), "t_pass"]
         parts.append(f'<line x1="{sx(thr):.1f}" x2="{sx(thr):.1f}" y1="{yy-14:.1f}" y2="{yy+14:.1f}" class="thr"/>')
-    parts.append(f'<text x="{sx(3.75):.1f}" y="16" text-anchor="middle" class="lb red">通過線</text>')
+    parts.append(f'<text x="{sx(4.3):.1f}" y="16" text-anchor="middle" class="lb red">通過線</text>')
     return (f'<svg viewBox="0 0 680 {H}" role="img" aria-label="選ぶ期間の全並びの |t| と通過線。通過線を越えた点は無い">'
             + "".join(parts) + "</svg>")
 
@@ -203,8 +203,8 @@ def fig_top(tests):
 # ---------- 図 6: 検出できる大きさ vs 費用 ----------
 def fig_power(tests, omni, cost_bp):
     is_ = tests[(tests.period == "IS") & tests.tested].merge(
-        omni[omni.period == "IS"][["tf", "h", "t_req95"]], on=["tf", "h"])
-    is_["det"] = is_.t_req95 * is_.se_bp.abs()
+        omni[omni.period == "IS"][["tf", "h", "t_pass"]], on=["tf", "h"])
+    is_["det"] = is_.t_pass * is_.se_bp.abs()
     X0, X1 = 150, 620
     lo, hi = math.log10(0.1), math.log10(300)
     sx = lambda v: X0 + (math.log10(v) - lo) / (hi - lo) * (X1 - X0)
@@ -282,7 +282,7 @@ def main(out_path: str):
     omni_rows = "".join(
         f'<tr><td>{TF_JA[tf]}</td><td class="n">{h}</td><td class="n">{fmt_n(om.loc[("IS",tf,h),"bars"])}</td>'
         f'<td class="n">{fmt_n(om.loc[("OOS",tf,h),"bars"])}</td><td class="n">{om.loc[("IS",tf,h),"p"]:.3f}</td>'
-        f'<td class="n">{om.loc[("OOS",tf,h),"p"]:.3f}</td><td class="n">{om.loc[("IS",tf,h),"t_req95"]:.2f}</td></tr>'
+        f'<td class="n">{om.loc[("OOS",tf,h),"p"]:.3f}</td><td class="n">{om.loc[("IS",tf,h),"t_pass"]:.2f}</td></tr>'
         for tf in TFS for h in (1, 4))
     top_rows = "".join(
         f'<tr><td>{TF_JA[r.tf]}</td><td class="n">{r.h}</td><td>{esc(r.pattern)}</td><td class="n">{fmt_n(r.n_is)}</td>'
