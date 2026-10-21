@@ -37,7 +37,8 @@ figcaption { font-weight: 700; font-size: .95rem; }
 .kind { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 2px; }
 .kind b { font-size: 1.05rem; }
 .kind span { color: var(--muted); font-size: .85rem; }
-ul { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+ul, ol { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+ol.steps { gap: 10px; }
 .tbl { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .9rem; font-variant-numeric: tabular-nums; }
 th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; white-space: nowrap; }
@@ -113,7 +114,13 @@ svg .lb.strong { font-weight: 700; font-size: 13px; }
   <p>t がどれだけ大きければ偶然ではないと言えるかは、「並び」と「次の値動き」の組み合わせをわざとずらした、でたらめな組み合わせと比べて決めます。</p>
   <figure class="figure"><figcaption>でたらめな組み合わせの作り方（足 8 本・数字は説明用）</figcaption>{{FIG_SHIFT}}
     <p class="cap">実際の計算では、ほぼ同じ組み合わせが残らないよう、ずらす幅を 500 本以上にしています。</p></figure>
-  <p>146 通りを同時に調べると、偶然でも |t| が大きい並びがいくつか出ます。そこで、でたらめな組み合わせ 999 通りそれぞれで「146 通りの中で一番大きい |t|」を取りました。時間足 × 何本後の 8 組を調べるので、この一番大きい |t| の上位 0.625%（0.05 ÷ 8）にあたる値を<b>通過線</b>にしました。本物の |t| が通過線を超えた並びだけを「偶然ではない」とします。</p>
+  <p>本物の |t| がどこまで大きければ「偶然ではない」と言えるかを示す線を、<b>通過線</b>と呼びます。通過線は次の順番で決めました。</p>
+  <ol class="steps">
+    <li><b>出発点は 5%。</b>「意味が無いのに、偶然これほど大きな |t| が出る確率」が 5% 以下なら、偶然ではないとみなします。統計で広く使われる基準で、取り違えを 20 回に 1 回までは許す、という決め方です。</li>
+    <li><b>1 組の中で 146 通りを同時に調べる。</b>1 組とは「1 時間足・1 本後」のような組み合わせです。146 通りもあると、意味が無くても、どれか 1 つは偶然 |t| が大きくなります。そこで、でたらめな組み合わせ 999 通りそれぞれで「146 通りの中で一番大きい |t|」を記録し、本物はこれと比べます。こうすると、1 組の中でどれか 1 つでも取り違える確率が 5% になります。</li>
+    <li><b>組が 8 つある。</b>時間足 4 つ × 何本後 2 つで 8 組です。各組で 5% を許すと、8 組のどれかで取り違える確率は約 34%（1 − 0.95⁸）になります。そこで 5% を 8 組で分け、1 組あたり 0.625%（0.05 ÷ 8）にしました。8 組合わせても、取り違える確率は 5% 以下に収まります（ボンフェローニ法）。</li>
+    <li><b>999 通りに当てはめる。</b>999 通りの 0.625% は約 6 通りです。でたらめな組み合わせの「一番大きい |t|」を大きい順に並べた 6 番目の値が通過線です。1 時間足・1 本後なら 4.05 です。本物の |t| がこれを超えれば、でたらめ 999 通りのうち 5 通り以下にしか負けていないので、「偶然ではない」と判定します。</li>
+  </ol>
   <p>期間は 2 つに分けました。<b>選ぶ期間</b>（Dukascopy・2014-01〜2020-04）で通過した並びだけを、<b>確かめる期間</b>（MT5・2020-05〜2026-10-15）で同じ向きに出るか確かめる、と実行前に決めました。</p>
 </section>
 
