@@ -73,7 +73,10 @@ svg .c-pat { fill: var(--pat); stroke: var(--is); stroke-width: 1; }
 svg .c-real { fill: var(--panel); stroke: var(--muted); stroke-width: 1; }
 svg .c-null { fill: var(--null); stroke: var(--oos); stroke-width: 1; }
 svg .cell { font-size: 12px; fill: var(--fg); }
-svg .shiftline { fill: none; stroke: var(--oos); stroke-width: 1.2; stroke-dasharray: 3 3; }
+svg .shiftline { fill: none; stroke: var(--oos); stroke-width: 1.2; }
+svg .wrapline { fill: none; stroke: var(--oos); stroke-width: 1.2; stroke-dasharray: 4 3; }
+svg .c-hl { fill: var(--pat); stroke: var(--is); stroke-width: 1.6; }
+svg .lb.strong { font-weight: 700; font-size: 13px; }
 </style>
 
 <main>
@@ -107,8 +110,9 @@ svg .shiftline { fill: none; stroke: var(--oos); stroke-width: 1.2; stroke-dasha
 <section aria-labelledby="h-how">
   <h2 id="h-how">比べ方</h2>
   <p>並びの後の平均の値動きを、全部の足の後の平均と比べます。全部の平均を引くのは、相場全体の上昇を並びの効果と取り違えないためです。差を標準誤差で割った値を t と呼びます。|t| が大きいほど、並びの後の値動きが平均から外れています。</p>
-  <p>t がどれだけ大きければ偶然ではないと言えるかは、並びと値動きの対応だけを壊した列と比べて決めます。</p>
-  <figure class="figure"><figcaption>円環状にずらす</figcaption>{{FIG_SHIFT}}</figure>
+  <p>t がどれだけ大きければ偶然ではないと言えるかは、「並び」と「次の値動き」の組み合わせをわざとずらした、でたらめな組み合わせと比べて決めます。</p>
+  <figure class="figure"><figcaption>でたらめな組み合わせの作り方（足 8 本・数字は説明用）</figcaption>{{FIG_SHIFT}}
+    <p class="cap">実際の計算では、ほぼ同じ組み合わせが残らないよう、ずらす幅を 500 本以上にしています。</p></figure>
   <p>146 通りを同時に調べると、偶然でも |t| が大きい並びがいくつか出ます。そこで、ずらした列 999 本それぞれで「146 通りの中の最大の |t|」を取り、その 95% にあたる値を通過線にしました。さらに時間足 × 本数の 8 組で割り、通過の基準を 0.05 ÷ 8 にしています。</p>
   <p>期間は 2 つに分けました。<b>選ぶ期間</b>（Dukascopy・2014-01〜2020-04）で通過した並びだけを、<b>確かめる期間</b>（MT5・2020-05〜2026-10-15）で同じ向きに出るか確かめる、と実行前に決めました。</p>
 </section>

@@ -65,33 +65,55 @@ def fig_example():
 
 # ---------- 図 2: 円環ずらし ----------
 def fig_shift():
-    n = 14
-    rng = np.random.default_rng(5)
-    pat = rng.choice(["A", "B", "C"], size=n)
-    fwd = rng.choice(["+", "−"], size=n)
-    s = 4
+    """本物の組み合わせと、値動きの行を右へ 2 つずらした組み合わせ（説明用の数字）。"""
+    pat = ["A", "B", "A", "C", "B", "A", "C", "B"]
+    fwd = [3, -1, 2, 0, -2, 4, 1, -1]
+    s = 2
+    shifted = fwd[-s:] + fwd[:-s]
+    x0, w, ch = 150, 50, 28
     parts = []
-    x0, w = 120, 32
-    def row(yy, items, cls):
+    sign = lambda v: f"{v:+d}" if v else "0"
+
+    def cells(yy, items, hl_cls, base_cls, fmt=str):
         for i, t in enumerate(items):
-            parts.append(f'<rect x="{x0+i*w}" y="{yy}" width="{w-4}" height="26" rx="3" class="{cls}"/>')
-            parts.append(f'<text x="{x0+i*w+(w-4)/2}" y="{yy+18}" text-anchor="middle" class="cell">{t}</text>')
-    parts.append('<text x="110" y="40" text-anchor="end" class="lb">並び</text>')
-    row(22, pat, "c-pat")
-    parts.append('<text x="110" y="78" text-anchor="end" class="lb">先の値動き</text>')
-    row(60, fwd, "c-real")
-    parts.append(f'<text x="{x0+n*w+8}" y="78" class="tk">本物の対応</text>')
-    parts.append('<text x="110" y="136" text-anchor="end" class="lb">ずらした列</text>')
-    row(118, np.roll(fwd, s), "c-null")
-    parts.append(f'<text x="{x0+n*w+8}" y="136" class="tk">{s} つずらす</text>')
-    for i in range(3):
-        xa = x0 + i * w + 14
-        xb = x0 + ((i + s) % n) * w + 14
-        parts.append(f'<path d="M{xa},88 C {xa},104 {xb},100 {xb},116" class="shiftline"/>')
-    parts.append(f'<text x="{x0}" y="176" class="tk">はみ出した分は先頭へ回す。値動きの並び方（つながり・荒れ方）はそのまま残り、並びとの対応だけが壊れる。</text>')
-    parts.append(f'<text x="{x0}" y="196" class="tk">これを 999 回くり返し、本物の t がずらした列の t より大きいかを比べる。</text>')
-    return (f'<svg viewBox="0 0 700 210" role="img" aria-label="先の値動きの列を円環状にずらす比べ方">'
-            + "".join(parts) + "</svg>")
+            cls = hl_cls if pat[i] == "A" else base_cls
+            parts.append(f'<rect x="{x0+i*w}" y="{yy}" width="{w-6}" height="{ch}" rx="3" class="{cls}"/>')
+            parts.append(f'<text x="{x0+i*w+(w-6)/2}" y="{yy+19}" text-anchor="middle" class="cell">{fmt(t)}</text>')
+
+    def table(y0, title, vals, avg_vals, val_label):
+        parts.append(f'<text x="20" y="{y0}" class="lb strong">{title}</text>')
+        for i in range(8):
+            parts.append(f'<text x="{x0+i*w+(w-6)/2}" y="{y0+24}" text-anchor="middle" class="tk">{i+1}</text>')
+        parts.append(f'<text x="{x0-10}" y="{y0+24}" text-anchor="end" class="tk">足</text>')
+        parts.append(f'<text x="{x0-10}" y="{y0+52}" text-anchor="end" class="lb">並び</text>')
+        cells(y0 + 33, pat, "c-hl", "c-real")
+        parts.append(f'<text x="{x0-10}" y="{y0+86}" text-anchor="end" class="lb">{val_label}</text>')
+        cells(y0 + 67, vals, "c-hl", "c-real", sign)
+        avg = sum(avg_vals) / len(avg_vals)
+        parts.append(f'<text x="{x0+8*w+10}" y="{y0+60}" class="tk">A の後の値動き</text>')
+        parts.append(f'<text x="{x0+8*w+10}" y="{y0+78}" class="tk">{"・".join(sign(v) for v in avg_vals)}</text>')
+        parts.append(f'<text x="{x0+8*w+10}" y="{y0+100}" class="lb acc">平均 {avg:+.1f}</text>')
+
+    a_idx = [i for i, p in enumerate(pat) if p == "A"]
+    table(24, "本物の組み合わせ", fwd, [fwd[i] for i in a_idx], "次の値動き")
+    # ずらす矢印（右へ 2 つ・あふれた分は左端へ）
+    ya = 138
+    for i in range(8):
+        j = (i + s) % 8
+        xa = x0 + i * w + (w - 6) / 2
+        xb = x0 + j * w + (w - 6) / 2
+        if j > i:
+            parts.append(f'<path d="M{xa},{ya} C {xa},{ya+16} {xb},{ya+10} {xb},{ya+26}" class="shiftline" marker-end="url(#sh)"/>')
+    parts.append(f'<path d="M{x0+6*w+22},{ya} C {x0+6*w+22},{ya+40} {x0+22},{ya-6} {x0+22},{ya+26}" class="wrapline" marker-end="url(#sh)"/>')
+    parts.append(f'<text x="{x0+8*w+10}" y="{ya+18}" class="lb">値動きの行だけを右へ 2 つずらす</text>')
+    parts.append(f'<text x="{x0+8*w+10}" y="{ya+34}" class="tk">右端からあふれた 2 つは左端へ回す</text>')
+    table(196, "でたらめな組み合わせ（ずらした後）", shifted, [shifted[i] for i in a_idx], "次の値動き")
+    parts.append(f'<text x="20" y="338" class="tk">並びの行は動かさない。値動きの行の中身と順番も変わらない。変わるのは「どの並びの後にどの値動きが来たか」だけ。</text>')
+    parts.append(f'<text x="20" y="358" class="tk">ずらす幅を変えて 999 通り作り、本物の偏り（+3.0）が 999 通りのほとんどより大きければ「偶然ではない」と判定する。</text>')
+    defs = ('<defs><marker id="sh" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
+            '<path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>')
+    return ('<svg viewBox="0 0 760 372" role="img" aria-label="本物の組み合わせと、値動きの行を右へ 2 つずらしたでたらめな組み合わせの比較。並び A の後の平均は +3.0 から +1.3 に変わる">'
+            + defs + "".join(parts) + "</svg>")
 
 
 # ---------- 図 3: 全並びの |t| と通過線 ----------
