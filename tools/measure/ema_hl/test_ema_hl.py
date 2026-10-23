@@ -2,7 +2,6 @@
 import numpy as np
 import pytest
 
-from indigators.moving_averages.src import core
 from tools.measure.ema_hl import ema_hl as E
 
 
@@ -22,9 +21,15 @@ def _bars(n, seed=0):
 
 # ---- 状態検証 ----
 
-def test_ema_equals_reference_implementation():
+def test_ema_equals_reference_definition():
+    """参照実装 core.exponential_ma_on_buffer の漸化式（初期値 = 最初の値・係数 2/61）を手で書いて比べる。"""
     x = _bars(500)["low"]
-    np.testing.assert_allclose(E.ema(x, 60), core.ma(x, "ema", 60), rtol=0, atol=1e-9)
+    a = 2.0 / 61.0
+    want = np.empty_like(x)
+    want[0] = x[0]
+    for i in range(1, len(x)):
+        want[i] = x[i] * a + want[i - 1] * (1.0 - a)
+    np.testing.assert_allclose(E.ema(x, 60), want, rtol=0, atol=1e-9)
 
 
 def test_touch_of_previous_value_equals_touch_of_forming_ema():
