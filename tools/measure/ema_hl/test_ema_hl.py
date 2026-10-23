@@ -147,3 +147,13 @@ def test_range_issues_exactly_one_aggregation_per_line_and_measure():
 
 def test_range_aggregation_count_does_not_grow_with_series_length():
     assert _measure_range(2000, E.RANGE_SHIFTS)[0] == _measure_range(8000, E.RANGE_SHIFTS)[0]
+
+
+def test_gap_limit_scales_with_bar_minutes():
+    c = np.array([100, 101, 102, 103, 104, 105, 106.0])
+    minutes = np.arange(7) * 15.0         # 15 分足が欠けずに並ぶ（5 本後は 75 分後）
+    line = np.full(7, 100.5)
+    one = E.outcomes(np.array([0]), np.array([100.0]), c, line, minutes, "lower", 1e9, bar_minutes=1)
+    fifteen = E.outcomes(np.array([0]), np.array([100.0]), c, line, minutes, "lower", 1e9, bar_minutes=15)
+    assert np.isnan(one["pnl5"][0])          # 1 分足として見ると上限 5 + 30 = 35 分を超える
+    assert np.isfinite(fifteen["pnl5"][0])   # 15 分足なら上限 75 + 30 = 105 分以内

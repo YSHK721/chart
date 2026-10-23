@@ -33,7 +33,7 @@ def touches(o, h, l, prev_line, side: str) -> np.ndarray:
     return np.flatnonzero(hit)
 
 
-def outcomes(idx, entry, c, line_now, minutes, side: str, end_minute: float):
+def outcomes(idx, entry, c, line_now, minutes, side: str, end_minute: float, bar_minutes: int = 1):
     """事象ごとの指標（向きつき）。値が無いものは NaN。
 
     pnl{n}: 建値から n 本後の終値までの対数収益（bp）。窓が MAX_GAP_MIN 分を超える空白をまたぐ、
@@ -47,7 +47,7 @@ def outcomes(idx, entry, c, line_now, minutes, side: str, end_minute: float):
         j = idx + n
         ok = j < n_all
         jj = np.where(ok, j, 0)
-        ok &= (minutes[jj] - minutes[idx] <= n + MAX_GAP_MIN) & (minutes[jj] < end_minute)
+        ok &= (minutes[jj] - minutes[idx] <= n * bar_minutes + MAX_GAP_MIN) & (minutes[jj] < end_minute)
         v = sgn * (np.log(c[jj]) - np.log(entry)) * 1e4
         out[f"pnl{n}"] = np.where(ok, v, np.nan)
     if side == "lower":
@@ -65,14 +65,14 @@ def day_sums(day: np.ndarray, values: np.ndarray, n_days: int):
 
 
 def measure_lines(bars: dict, side: str, in_period: np.ndarray, day: np.ndarray, n_days: int,
-                  end_minute: float, aggregate=day_sums, shifts=None):
+                  end_minute: float, aggregate=day_sums, shifts=None, span: int = SPAN, bar_minutes: int = 1):
     """線をずらし幅 shifts の各値でずらし、指標ごとの日別の和・件数を返す。
 
     shifts を省くと §1 の本物と偽の線 4 本（(0,) + FAKE_SHIFTS）。
     返り値: {指標: [(和, 件数) shifts[0], (和, 件数) shifts[1], ...]}
     """
     o, h, l, c, m = bars["open"], bars["high"], bars["low"], bars["close"], bars["minutes"]
-    base = ema(l if side == "lower" else h)
+    base = ema(l if side == "lower" else h, span)
     prev = np.concatenate([[np.nan], base[:-1]])
     res = {k: [] for k in MEASURES}
     for shift in ((0.0,) + FAKE_SHIFTS if shifts is None else shifts):
@@ -81,7 +81,7 @@ def measure_lines(bars: dict, side: str, in_period: np.ndarray, day: np.ndarray,
         idx = touches(o, h, l, prev_line, side)
         idx = idx[in_period[idx]]
         entry = prev_line[idx]  # §1.3: 始値は線の外側なので、約定は線の値
-        oc = outcomes(idx, entry, c, line_now, m, side, end_minute)
+        oc = outcomes(idx, entry, c, line_now, m, side, end_minute, bar_minutes)
         for k in MEASURES:
             res[k].append(aggregate(day[idx], oc[k], n_days))
     return res
