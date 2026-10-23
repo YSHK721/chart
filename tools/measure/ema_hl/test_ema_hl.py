@@ -108,3 +108,42 @@ def test_bootstrap_does_not_recount_events_as_resamples_grow():
         w = rng.multinomial(n_days, np.full(n_days, 1 / n_days), size=b).astype(float)
         assert E.bootstrap_d(res["hold"], w).shape == (b,)
     assert _measure(2000)[0] == issued
+
+
+# ---- 範囲（RESULTS.md §3） ----
+
+def test_shuffled_path_keeps_each_days_bar_shapes_and_chains_prices():
+    b = _bars(300, 5)
+    day = (np.arange(300) // 100).astype(int)
+    sp = E.shuffled_path(b, day, rng_from_seed(6))
+    np.testing.assert_allclose(sp["open"][1:], sp["close"][:-1])
+    for dd in range(3):
+        m = day == dd
+        for a, z in (("high", "open"), ("low", "open"), ("close", "open")):
+            np.testing.assert_allclose(np.sort((sp[a] - sp[z])[m]), np.sort((b[a] - b[z])[m]), atol=1e-9)
+
+
+def test_zone_z_weights_inner_and_outer_by_counts():
+    shifts = (-0.004, -0.001, 0.0, 0.001, 0.004)
+    e = np.array([1.0, 3.0, 5.0, 3.0, 2.0])
+    n = np.array([1.0, 1.0, 2.0, 1.0, 3.0])
+    # 内側 (3+10+3)/4 = 4・外側 (1+6)/4 = 1.75
+    assert E.zone_z(e, n, shifts) == pytest.approx(4 - 1.75)
+
+
+def _measure_range(n_bars, shifts):
+    b = _bars(n_bars, 3)
+    day = (b["minutes"] // 100).astype(int)
+    spy = AggregateSpy()
+    res = E.measure_lines(b, "upper", np.ones(n_bars, bool), day, int(day.max()) + 1, 1e18,
+                          aggregate=spy, shifts=shifts)
+    return spy.issued, sum(len(v) for v in res.values())
+
+
+def test_range_issues_exactly_one_aggregation_per_line_and_measure():
+    issued, used = _measure_range(3000, E.RANGE_SHIFTS)
+    assert issued - used == 0
+
+
+def test_range_aggregation_count_does_not_grow_with_series_length():
+    assert _measure_range(2000, E.RANGE_SHIFTS)[0] == _measure_range(8000, E.RANGE_SHIFTS)[0]

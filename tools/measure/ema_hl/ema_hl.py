@@ -13,6 +13,9 @@ HORIZONS = (5, 15, 60)
 FAKE_SHIFTS = (-0.0010, -0.0005, 0.0005, 0.0010)
 MAX_GAP_MIN = 30
 MEASURES = tuple(f"pnl{n}" for n in HORIZONS) + ("hold",)
+#: §3.1: −1.00% 〜 +1.00% を 0.05% 刻み（41 本・中央が本物）
+RANGE_SHIFTS = tuple(round(k * 0.0005, 6) for k in range(-20, 21))
+INNER, OUTER = (0.0, 0.0010), (0.0030, 0.0100)
 
 
 def ema(x: np.ndarray, span: int = SPAN) -> np.ndarray:
@@ -62,16 +65,17 @@ def day_sums(day: np.ndarray, values: np.ndarray, n_days: int):
 
 
 def measure_lines(bars: dict, side: str, in_period: np.ndarray, day: np.ndarray, n_days: int,
-                  end_minute: float, aggregate=day_sums):
-    """本物の線と偽の線 4 本について、指標ごとの日別の和・件数を返す。
+                  end_minute: float, aggregate=day_sums, shifts=None):
+    """線をずらし幅 shifts の各値でずらし、指標ごとの日別の和・件数を返す。
 
-    返り値: {指標: [(和, 件数) 本物, (和, 件数) 偽 1, ...]}
+    shifts を省くと §1 の本物と偽の線 4 本（(0,) + FAKE_SHIFTS）。
+    返り値: {指標: [(和, 件数) shifts[0], (和, 件数) shifts[1], ...]}
     """
     o, h, l, c, m = bars["open"], bars["high"], bars["low"], bars["close"], bars["minutes"]
     base = ema(l if side == "lower" else h)
     prev = np.concatenate([[np.nan], base[:-1]])
     res = {k: [] for k in MEASURES}
-    for shift in (0.0,) + FAKE_SHIFTS:
+    for shift in ((0.0,) + FAKE_SHIFTS if shifts is None else shifts):
         line_now = base * (1 + shift)
         prev_line = prev * (1 + shift)
         idx = touches(o, h, l, prev_line, side)
@@ -81,6 +85,33 @@ def measure_lines(bars: dict, side: str, in_period: np.ndarray, day: np.ndarray,
         for k in MEASURES:
             res[k].append(aggregate(day[idx], oc[k], n_days))
     return res
+
+
+def shuffled_path(bars: dict, day: np.ndarray, rng: np.random.Generator) -> dict:
+    """§3.2: 各日の 1 分足を、形（始値からの差）を保って日の中で並べ替え、終値→次の始値でつなぐ。"""
+    o, h, l, c = bars["open"], bars["high"], bars["low"], bars["close"]
+    order = np.lexsort((rng.random(len(o)), day))
+    dh, dl, dc = (h - o)[order], (l - o)[order], (c - o)[order]
+    close = o[0] + np.cumsum(dc)
+    open_ = np.concatenate([[o[0]], close[:-1]])
+    return {"open": open_, "high": open_ + dh, "low": open_ + dl, "close": close, "minutes": bars["minutes"]}
+
+
+def totals(sums_counts):
+    """日別の和・件数のリストから、線ごとの平均と件数。"""
+    n = np.array([c.sum() for _, c in sums_counts])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.array([s.sum() for s, _ in sums_counts]) / n
+    return mean, n
+
+
+def zone_z(excess: np.ndarray, counts: np.ndarray, shifts=RANGE_SHIFTS) -> float:
+    """§3.3: 内側の超過の平均 − 外側の超過の平均（事象数で重みづけ）。"""
+    a = np.abs(np.asarray(shifts))
+    inner = (a >= INNER[0] - 1e-12) & (a <= INNER[1] + 1e-12)
+    outer = (a >= OUTER[0] - 1e-12) & (a <= OUTER[1] + 1e-12)
+    w = lambda m: np.nansum(excess[m] * counts[m]) / counts[m][np.isfinite(excess[m])].sum()
+    return float(w(inner) - w(outer))
 
 
 def d_statistic(sums_counts):
