@@ -30,11 +30,7 @@
 ### 1.5 比べる相手 = 計算式
 酔歩の到達確率 P = 2 × (1 − Φ(x × ATR20 ÷ (s × √T)))。s = 足 t までの 20 本の終値の差の標準偏差（価格の単位）。
 起点ごとに P を出し、x ごとの平均を「式の予測」として、照合する期間の実際の割合との差を同じ基準で判定する。
-EOF
-git add tools/measure/reach_prob/RESULTS.md && git commit -q -m "docs(measure): 水準に届く確率 — 事前登録（実行前）
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01E6wX5cbrEAz89pKuy7Tocx" && git log --oneline -1
 ## 2. 結果（2026-10-23 実行・`python -m tools.measure.reach_prob.run`・所要 9 秒）
 
 ### 2.1 判定（§1.4: 起点 200 以上の全 x で |照合 − 表| ≤ 3 ポイント）
