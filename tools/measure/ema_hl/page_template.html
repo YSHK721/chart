@@ -1,0 +1,125 @@
+<title>60EMA 安値・高値の反応</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
+<style>
+/* 1 列の読み物。足の並びの有意性・ライン売買の検定と同じ体裁。図は実データから描く（make_page.py） */
+:root {
+  --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
+  --is: #2f6f8f; --oos: #b4442e; --low: #2e8b6e; --upl: #b0662a; --fake: #8a96a0;
+  --up: #2e8b6e; --dn: #c25b4a; --amb: #a06a12;
+  --body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --display: "BIZ UDPMincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --low: #5cc59b; --upl: #e6a15f; --fake: #7d8a94;
+  --up: #5cc59b; --dn: #ef8a73; --amb: #e0a64a; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --low: #5cc59b; --upl: #e6a15f; --fake: #7d8a94;
+  --up: #5cc59b; --dn: #ef8a73; --amb: #e0a64a; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.85 var(--body); }
+main { max-width: 46rem; margin: 0 auto; padding-inline: 16px; padding-block: 40px 64px; display: grid; gap: 40px; }
+h1 { font: 700 2rem/1.3 var(--display); margin: 0; text-wrap: balance; }
+h2 { font: 700 1.3rem/1.4 var(--display); margin: 0 0 4px; text-wrap: balance; }
+p { margin: 0; }
+section { display: grid; gap: 12px; min-width: 0; }
+.lead { font-size: 1.08rem; }
+.sub, .cap { color: var(--muted); font-size: .88rem; }
+.verdict { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--oos); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
+.verdict b { color: var(--oos); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
+.figure svg { display: block; width: 100%; min-width: 540px; height: auto; }
+figcaption { font-weight: 700; font-size: .95rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+ul, ol { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-size: .8rem; }
+td.n { text-align: right; }
+svg text { font-family: var(--body); }
+svg .tk { font-size: 11px; fill: var(--muted); }
+svg .lb { font-size: 12px; fill: var(--fg); }
+svg .lb.strong { font-weight: 700; }
+svg .c-low { fill: var(--low); font-weight: 700; } svg .c-up { fill: var(--upl); font-weight: 700; }
+svg .grid { stroke: var(--rule); stroke-width: 1; }
+svg .zero { stroke: var(--muted); stroke-width: 1.4; }
+svg .wick { stroke: var(--muted); stroke-width: 1; }
+svg .up { fill: var(--up); } svg .dn { fill: var(--dn); }
+svg .l-low { fill: none; stroke: var(--low); stroke-width: 2.2; }
+svg .l-up { fill: none; stroke: var(--upl); stroke-width: 2.2; }
+svg .l-fake { fill: none; stroke: var(--fake); stroke-width: 1.4; stroke-dasharray: 4 3; }
+svg .m-buy { fill: var(--panel); stroke: var(--low); stroke-width: 2.2; }
+svg .m-sell { fill: var(--panel); stroke: var(--upl); stroke-width: 2.2; }
+svg .m-is { fill: var(--is); } svg .m-oos { fill: var(--oos); }
+svg .ci-is { stroke: var(--is); stroke-width: 2; } svg .ci-oos { stroke: var(--oos); stroke-width: 2; }
+svg .pl-is { fill: none; stroke: var(--is); stroke-width: 1.6; } svg .pl-oos { fill: none; stroke: var(--oos); stroke-width: 1.6; }
+</style>
+
+<main>
+<header style="display:grid;gap:10px">
+  <h1>60EMA 安値・高値の反応</h1>
+  <p class="lead">1 分足で、安値の 60EMA と高値の 60EMA に触れたとき、価格が線で反応しているように見えるのは本当かを調べました。</p>
+  <p class="sub">日経 225（JP225）・1 分足・2026-10-23 実施・条件は実行前に RESULTS.md に記録</p>
+</header>
+
+<div class="verdict">
+  <p><b>結論：反応して見えるのは錯覚です。</b></p>
+  <p>線を少しずらした偽の線と比べると、本物の線で特に有利なことはありませんでした。選ぶ期間で出た小さな差（+0.16〜0.20 bp）は、確かめる期間では消えました。触れた後に線の内側へ戻る割合も、線の位置どおりの値で、本物だけが特に止まりやすいことはありません。</p>
+</div>
+
+<section aria-labelledby="h-lines">
+  <h2 id="h-lines">2 本の線と「触れた」</h2>
+  <p>安値で計算した 60EMA を<b>下の線</b>、高値で計算した 60EMA を<b>上の線</b>と呼びます。下の線に上から触れたら買い、上の線に下から触れたら売る、と見立てます。約定は線の価格です。</p>
+  <figure class="figure"><figcaption>実際の 1 分足（MT5・{{SNIP_DAY}}）</figcaption>{{FIG_CHART}}
+    <div class="legend"><span><i style="background:var(--low);height:3px"></i>下の線（安値の 60EMA）</span><span><i style="background:var(--upl);height:3px"></i>上の線（高値の 60EMA）</span><span><i style="border:2px solid var(--low);border-radius:50%;background:var(--panel)"></i>下の線に触れた（買い）</span><span><i style="border:2px solid var(--upl);border-radius:50%;background:var(--panel)"></i>上の線に触れた（売り）</span></div></figure>
+  <p>触れたかどうかは、形成中の足の線で判定します。EMA の性質上、これは「前の足の線の値に届いたか」と同じになるので、触れた瞬間に線の価格で約定できます。</p>
+</section>
+
+<section aria-labelledby="h-how">
+  <h2 id="h-how">比べ方：ずらした偽の線</h2>
+  <p>線の近くでは、線が無くても価格は行ったり来たりします。本物の線だから反応したのかを見るには、線の無い場所と比べる必要があります。そこで、本物の線を価格の 0.05%・0.10% だけ上下にずらした偽の線を 4 本引き、同じ規則で売買しました。</p>
+  <figure class="figure"><figcaption>本物の下の線と偽の線 4 本</figcaption>{{FIG_FAKES}}</figure>
+  <p>本物の線の成績から偽の線 4 本の成績の平均を引いた値を D と呼びます。D が 0 より大きければ、本物の線ならではの反応があることになります。日を単位に組み直して D のばらつきを 1,999 回作り、偶然でこの大きさになるかを確かめました。</p>
+  <p>期間は 2 つに分けました。<b>選ぶ期間</b>（Dukascopy・2014-01〜2020-04）で通過したものだけを、<b>確かめる期間</b>（MT5・2020-05〜2026-10-15）で同じ向きに出るか確かめる、と実行前に決めました。</p>
+</section>
+
+<section aria-labelledby="h-r1">
+  <h2 id="h-r1">結果 1：選ぶ期間の差は、確かめる期間で消える</h2>
+  <figure class="figure"><figcaption>差 D と 95% の範囲</figcaption>{{FIG_D}}
+    <div class="legend"><span><i style="background:var(--is);border-radius:50%"></i>選ぶ期間</span><span><i style="background:var(--oos)"></i>確かめる期間</span><span>横線は 95% の範囲。0 をまたげば偶然と区別できない</span></div></figure>
+  <p>選ぶ期間では、下の線の 5 本後（+0.16 bp）と 15 本後（+0.20 bp）だけが通過しました。確かめる期間では、どちらも −0.03 bp で、範囲は 0 をまたぎます。上の線は、選ぶ期間でも差がありません。</p>
+</section>
+
+<section aria-labelledby="h-r2">
+  <h2 id="h-r2">結果 2：本物の線は、両隣の偽の線と同じ並びにある</h2>
+  <p>線の位置を横軸にして、5 本の線の成績を並べました。本物の線に反応があれば、真ん中の点だけが飛び出すはずです。</p>
+  <figure class="figure"><figcaption>下の線・5 本後の損益</figcaption>{{FIG_PNL}}
+    <div class="legend"><span><i style="background:var(--is);border-radius:50%"></i>選ぶ期間</span><span><i style="background:var(--oos)"></i>確かめる期間</span></div></figure>
+  <p>選ぶ期間では真ん中が少し高い山になりましたが、確かめる期間では山はありません。</p>
+  <figure class="figure"><figcaption>下の線・触れた足の終値が線の上に戻った割合</figcaption>{{FIG_HOLD}}
+    <div class="legend"><span><i style="background:var(--is);border-radius:50%"></i>選ぶ期間</span><span><i style="background:var(--oos)"></i>確かめる期間</span></div></figure>
+  <p>線の上に戻る割合は、線が価格から離れるほど高くなるだけです。本物の線は両隣のちょうど間にあり、本物だけが特に止まりやすいことはありません。止まったように見える場面は、どの高さに線を引いても同じくらい起きます。</p>
+</section>
+
+<section aria-labelledby="h-r3">
+  <h2 id="h-r3">大きさ</h2>
+  <p>差 D は最大でも 0.2 bp です。MT5 の最頻の気配幅 50 point は、確かめる期間の平均終値 {{OOS_CLOSE}} に対して {{COST}} bp で、その 1/70 にすぎません。仮に差が本物でも、費用に消えます。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>期間</th><th>線</th><th>指標</th><th>本物の回数</th><th>本物</th><th>偽の線の平均</th><th>D</th><th>p</th></tr></thead>
+    <tbody>{{ROWS}}</tbody>
+  </table></div>
+  <p class="cap">損益は bp（1 bp = 0.01%）。p は「D が 0 以下」を否定する片側の値。選ぶ期間の 8 検定には Holm 法の補正をかけています。</p>
+</section>
+
+<section aria-labelledby="h-unk">
+  <h2 id="h-unk">分かっていないこと</h2>
+  <ul>
+    <li>期間 60 以外の EMA、1 分足以外の時間足は測っていません。</li>
+    <li>触れた足の中で、触れた後にどう動いたかは測っていません。</li>
+  </ul>
+  <p class="cap">コード：tools/measure/ema_hl/（run.py・ema_hl.py・make_page.py）／記録：RESULTS.md</p>
+</section>
+</main>
