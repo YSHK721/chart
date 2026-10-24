@@ -40,15 +40,24 @@ def test_falls_back_to_h1_when_there_is_no_header():
     assert out.index("</h1>") < out.index('class="ptoc ptoc-box"')
 
 
+def test_class_based_headings_for_pages_without_h2():
+    p = ('<main><h1>t</h1><div class="ftitle big">一</div><div class="other">x</div>'
+         '<div class="ftitle">二</div></main>')
+    out = T.inject_toc(p, tag="div", cls="ftitle")
+    assert '<a href="#sec-1">一</a>' in out and '<a href="#sec-2">二</a>' in out
+    assert '<div class="other">x</div>' in out and out.count(" data-ptoc>") == 2
+    assert T.inject_toc(out, tag="div", cls="ftitle") == out
+
+
 # ---- 計算量検定（注入点 scan を数える） ----
 
 class ScanSpy:
     def __init__(self):
         self.issued = 0
 
-    def __call__(self, html):
+    def __call__(self, html, tag="h2", cls=None):
         self.issued += 1
-        return T.headings(html)
+        return T.headings(html, tag, cls)
 
 
 def _count(n_heads):

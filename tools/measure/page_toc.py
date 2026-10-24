@@ -40,7 +40,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .ptoc a:hover { background: var(--toc-soft); }
 .ptoc a[aria-current="true"] { color: var(--toc-acc); font-weight: 700; background: var(--toc-soft); }
 .ptoc li::marker { color: var(--toc-muted); font-variant-numeric: tabular-nums; }
-h2[data-ptoc] { scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 64px); }
+[data-ptoc] { scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 64px); }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 </style>"""
 
@@ -60,7 +60,7 @@ _BOX = """<nav class="ptoc ptoc-box" aria-labelledby="ptoc-h">
 
 _SCRIPT = """<script>
 (() => {
-  const heads = [...document.querySelectorAll("h2[data-ptoc]")];
+  const heads = [...document.querySelectorAll("[data-ptoc]")];
   const links = (id) => document.querySelectorAll(`.ptoc a[href="#${id}"]`);
   const num = document.getElementById("ptoc-num"), title = document.getElementById("ptoc-title");
   const prog = document.getElementById("ptoc-prog"), btn = document.getElementById("ptoc-btn");
@@ -92,12 +92,18 @@ _SCRIPT = """<script>
 })();
 </script>"""
 
-_H2 = re.compile(r"<h2(\s[^>]*)?>(.*?)</h2>", re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
 
 
+def _heading_re(tag: str = "h2", cls: str | None = None):
+    """見出しにする要素の正規表現。cls を渡すと、その class を持つ tag だけを見出しにする。"""
+    if cls is None:
+        return re.compile(rf"<{tag}(\s[^>]*)?>(.*?)</{tag}>", re.S | re.I)
+    return re.compile(rf'<{tag}(\s[^>]*\bclass="[^"]*\b{re.escape(cls)}\b[^"]*"[^>]*)>(.*?)</{tag}>', re.S | re.I)
+
+
 def _strip(html: str) -> str:
-    """差し込み済みの部品を外し、h2 に付けた目印も外す（何度通しても同じ結果にするため）。"""
+    """差し込み済みの部品を外し、見出しに付けた目印も外す（何度通しても同じ結果にするため）。"""
     while MARK_START in html:
         a = html.index(MARK_START)
         b = html.index(MARK_END, a) + len(MARK_END)
@@ -105,10 +111,11 @@ def _strip(html: str) -> str:
     return html.replace(" data-ptoc", "")
 
 
-def headings(html: str):
-    """[(id, 見出しの文字)]。id の無い h2 には sec-N を付けた html も返す。"""
+def headings(html: str, tag: str = "h2", cls: str | None = None):
+    """[(id, 見出しの文字)]。id の無い見出しには sec-N を付けた html も返す。"""
     out = []
     n = 0
+    tagname = tag
 
     def repl(m):
         nonlocal n
@@ -120,18 +127,19 @@ def headings(html: str):
         if not mid:
             attrs = f' id="{hid}"' + attrs
         out.append((hid, text))
-        return f"<h2{attrs} data-ptoc>{m.group(2)}</h2>"
+        return f"<{tagname}{attrs} data-ptoc>{m.group(2)}</{tagname}>"
 
-    return _H2.sub(repl, html), out
+    return _heading_re(tag, cls).sub(repl, html), out
 
 
-def inject_toc(html: str, scan=headings) -> str:
-    """目次・上端の帯・スクリプトを差し込んだ html を返す。h2 が 2 つ未満なら何もしない。
+def inject_toc(html: str, scan=headings, tag: str = "h2", cls: str | None = None) -> str:
+    """目次・上端の帯・スクリプトを差し込んだ html を返す。見出しが 2 つ未満なら何もしない。
 
     scan: 見出しの走査（観測の境界・計算量検定の注入点）。
+    tag・cls: 見出しにする要素（既定は h2。h2 を使わないページは例えば tag="div", cls="ftitle"）。
     """
     html = _strip(html)
-    marked, heads = scan(html)
+    marked, heads = scan(html, tag, cls)
     if len(heads) < 2:
         return html
     toc = "<ol>" + "".join(f'<li><a href="#{i}">{_html.escape(t)}</a></li>' for i, t in heads) + "</ol>"
