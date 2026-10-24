@@ -56,6 +56,27 @@ def test_fit_c_is_quantile_within_each_bucket():
         assert p[k] == pytest.approx(np.quantile(y[b == k], 0.95))
 
 
+def test_har_fit_recovers_known_coefficients():
+    rng = rng_from_seed(5)
+    x = rng.uniform(0.1, 1.0, size=(2000, 3))
+    y = 0.05 + x @ np.array([0.3, 0.5, 0.2])
+    np.testing.assert_allclose(Q.har_fit(y, x), [0.05, 0.3, 0.5, 0.2], atol=1e-9)
+    f = Q.har_predict(np.array([-1.0, 0, 0, 0]), x[:3], 0.01)
+    assert f.tolist() == [0.01, 0.01, 0.01]
+
+
+def test_methods_e_and_f_use_the_estimate():
+    y, v, r = _data(1000, 6)
+    f = v * 0.5 + 0.2
+    edges, edges_f = np.quantile(v, [.2, .4, .6, .8]), np.quantile(f, [.2, .4, .6, .8])
+    pe = Q.fit("E", y, v, r, 0.8, edges, f=f, edges_f=edges_f)
+    b = np.digitize(f, edges_f)
+    assert pe[2] == pytest.approx(np.quantile(y[b == 2], 0.8))
+    pf = Q.fit("F", y, v, r, 0.8, edges, f=f, edges_f=edges_f)
+    assert pf[0] == pytest.approx(np.quantile(y / f, 0.8))
+    np.testing.assert_allclose(Q.threshold("F", pf, v[:4], r[:4], edges, f=f[:4], edges_f=edges_f), pf[0] * f[:4])
+
+
 # ---- 計算量検定（注入点 quantile を数える） ----
 
 class QuantileSpy:
@@ -71,9 +92,11 @@ def _fit_all(n):
     y, v, r = _data(n, 3)
     edges = np.quantile(v, [.2, .4, .6, .8])
     spy = QuantileSpy()
+    f = v * 0.7 + 0.1
+    edges_f = np.quantile(f, [.2, .4, .6, .8])
     used = 0
-    for m in Q.METHODS:
-        p = Q.fit(m, y, v, r, 0.8, edges, quantile=spy)
+    for m in Q.METHODS_MIX:
+        p = Q.fit(m, y, v, r, 0.8, edges, quantile=spy, f=f, edges_f=edges_f)
         used += int(np.isfinite(p).sum())
     return spy.issued, used
 
