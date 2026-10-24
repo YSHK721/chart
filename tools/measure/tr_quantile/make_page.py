@@ -66,6 +66,24 @@ def worked_example(q80: float):
                 over=y > q80, hl_pct=c1 / c[t] * 100)
 
 
+def points_vs_pct(tf="1h", q=0.8):
+    """閾値をポイントのまま決めた場合と、終値に対する割合で決めた場合の、照合する期間での超過率。"""
+    from tools.measure.tr_quantile.run import PERIODS
+    out = {}
+    for period in ("IS", "OOS"):
+        path, start, end = PERIODS[period]
+        d = pd.read_csv(ROOT / path.format(tf=tf), usecols=["date", "high", "low", "close"], parse_dates=["date"]).iloc[:-1]
+        d = d[(d.date >= start) & (d.date < end)].reset_index(drop=True)
+        h, l, c = (d[k].to_numpy(float) for k in ("high", "low", "close"))
+        tr = Q.true_range(h, l, c)
+        nxt = np.concatenate([tr[1:], [np.nan]])
+        ok = np.isfinite(nxt) & (np.arange(len(c)) > 0)
+        out[period] = (nxt[ok], nxt[ok] / c[ok] * 100, c[ok].mean())
+    (pi, yi, ci), (po, yo, co) = out["IS"], out["OOS"]
+    qp, qy = np.quantile(pi, q), np.quantile(yi, q)
+    return dict(ci=ci, co=co, qp=qp, qy=qy, rp=(po > qp).mean() * 100, ry=(yo > qy).mean() * 100)
+
+
 def fig_series():
     """MT5 1 時間足の 2024-07〜08（荒れた時期を含む）: 値幅と、A（固定）・C（区分）の閾値。"""
     yi, vi, ri, _ = load("IS", "1h")
@@ -182,6 +200,7 @@ def main(out_path: str):
     hist_svg, q80, q95 = fig_hist()
     ser_svg, over_a, over_c = fig_series()
     ex = worked_example(q80)
+    pv = points_vs_pct()
     best = max(("候補 1", ex["c1"]), ("候補 2", ex["c2"]), ("候補 3", ex["c3"]), key=lambda z: z[1])[0]
     ex_rows = (f'<tr><td>起点の足の終値（{ex["t_date"]} UTC）</td><td class="n">{ex["c_t"]:,.1f}</td><td>前の終値・割る数</td></tr>'
                f'<tr><td>次の足（{ex["j_date"]} UTC）の始値・高値・安値・終値</td><td class="n">{ex["o"]:,.1f}・{ex["h"]:,.1f}・{ex["l"]:,.1f}・{ex["c"]:,.1f}</td><td>週明けで窓が開いた足</td></tr>'
@@ -195,6 +214,11 @@ def main(out_path: str):
     page = (tpl.replace("{{FIG_HIST}}", hist_svg).replace("{{Q80}}", f"{q80:.2f}").replace("{{Q95}}", f"{q95:.2f}")
             .replace("{{EX_ROWS}}", ex_rows).replace("{{EX_HL_PCT}}", f"{ex['hl_pct']:.2f}")
             .replace("{{EX_Y}}", f"{ex['y']:.2f}").replace("{{EX_TR}}", f"{ex['tr']:,.0f}")
+            .replace("{{PV_CI}}", f"{pv['ci']:,.0f}").replace("{{PV_CO}}", f"{pv['co']:,.0f}")
+            .replace("{{PV_RATIO}}", f"{pv['co'] / pv['ci']:.1f}")
+            .replace("{{PV_QP}}", f"{pv['qp']:.0f}").replace("{{PV_QY}}", f"{pv['qy']:.3f}")
+            .replace("{{PV_RP}}", f"{pv['rp']:.1f}").replace("{{PV_RY}}", f"{pv['ry']:.1f}")
+            .replace("{{PV_X}}", f"{pv['rp'] / 20:.1f}")
             .replace("{{FIG_SERIES}}", ser_svg).replace("{{OVER_A}}", f"{over_a:.0f}").replace("{{OVER_C}}", f"{over_c:.0f}")
             .replace("{{FIG_B20}}", fig_buckets(t, "1h", 0.8)).replace("{{FIG_B5}}", fig_buckets(t, "1h", 0.95))
             .replace("{{FIG_VERDICT}}", fig_verdict(v))
