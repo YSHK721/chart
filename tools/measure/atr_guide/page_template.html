@@ -65,6 +65,7 @@ table { border-collapse: collapse; width: 100%; font-size: .92rem; font-variant-
 th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; }
 th { color: var(--muted); font-size: .8rem; }
 td.n { text-align: right; white-space: nowrap; }
+td.best { font-weight: 700; color: var(--blue); }
 dl.terms { margin: 0; display: grid; grid-template-columns: minmax(8em, max-content) 1fr; gap: 10px 18px; }
 dl.terms dt { font-weight: 700; }
 dl.terms dd { margin: 0; min-width: 0; }
@@ -186,6 +187,27 @@ svg .m-real { fill: var(--blue); }
   <p>本数が少ないほど最近の動きにすぐ反応し、多いほど滑らかになります。ワイルダーの平滑は、古い足の影響が少しずつ薄れていく平均で、単純平均のように 20 本前の足がある日いきなり抜けることがありません。どれを使っても「ふだんの大きさ」という意味は同じです。</p>
 </section>
 
+<section aria-labelledby="h-period">
+  <h2 id="h-period">母数はなぜ 14 や 20 なのか</h2>
+  <p>母数（何本を平均するか）の 14 と 20 は慣習の値で、計算で導いた最適な値ではありません。</p>
+  <ul>
+    <li><b>14：</b>考案者ワイルダーが 1978 年の本で使った値です。同じ本のほかの指標（RSI など）にも 14 を使っています。「月の満ち欠けの半周期（約 14 日）」が理由に挙げられることがありますが、根拠のはっきりしない通説です。</li>
+    <li><b>20：</b>日足でおよそ 1 か月分の営業日（週 5 日 × 4 週）です。「1 か月分の平均」という区切りの良さで使われます。このレポートの ATR20 も、この慣習に合わせたものです。</li>
+  </ul>
+  <p>母数を短くすると、最近の荒れ方にすぐ反応しますが、1 本の大きな足に振り回されて値がぶれます。長くすると値は安定しますが、相場が荒れ始めても反応が遅れます。どちらが良いかは、何を見積もりたいかで決まります。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>見積もる値幅</th>{{PERIOD_HEAD}}</tr></thead>
+    <tbody>{{PERIOD_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">表の数字は、母数ごとの ATR で次の値幅を見積もったときの外れの大きさ（平均の外れ ÷ 値幅の平均）。小さいほどよく当たる。太字はその行で一番小さい値。見積もりは「ATR × 倍率」で、倍率は実際 ÷ ATR の中央値。</p>
+  <ul>
+    <li>5〜40 の範囲では差が 1〜3 ポイントしかなく、14 と 20 の差は 0〜1 ポイントです。極端に短い（3）か長い（100）ときだけ悪くなります。</li>
+    <li>先を長く見積もるほど、長めの母数が少し有利です（日足の次の 1 日なら 5、次の 5 日なら 20 前後）。</li>
+    <li>1 時間足では 3〜5 が明らかに悪くなります。20 本はおよそ 1 日分で、時間帯による値幅の違いがならされるためと考えられます（推論）。</li>
+    <li>一番良い母数は期間によって入れ替わります（日足の次の 5 日は、MT5 では 20、Dukascopy 2014〜2020 では 10）。特定の値にこだわる理由はありません。</li>
+  </ul>
+</section>
+
 <section aria-labelledby="h-hist">
   <h2 id="h-hist">ポイントで見るか、価格の割合で見るか</h2>
   <figure class="figure"><figcaption>日足の ATR20 の推移（Dukascopy・月末の値）</figcaption>{{FIG_HISTORY}}</figure>
@@ -258,6 +280,7 @@ svg .m-real { fill: var(--blue); }
     <dt>値幅制限</dt><dd>取引所が 1 日に動いてよい価格の幅を決める仕組み。上限・下限に張り付くと取引が止まる。</dd>
     <dt>真の値幅</dt><dd>高値 − 安値、|高値 − 前の終値|、|安値 − 前の終値| のうち一番大きいもの。窓も含めた 1 本の動きの幅。</dd>
     <dt>ATR</dt><dd>Average True Range。真の値幅を直近の何本かで平均した値。ATR20 は 20 本の平均。</dd>
+    <dt>母数</dt><dd>平均を取る本数。ATR20 なら 20 本、ATR14 なら 14 本。</dd>
     <dt>単純平均</dt><dd>直近 n 本の値を足して n で割る平均。どの足も同じ重さで数える。</dd>
     <dt>ワイルダーの平滑</dt><dd>ATR の考案者 J. W. ワイルダーの平均の取り方。前の ATR に今の値を少しずつ混ぜ、古い足の影響を徐々に薄める。</dd>
     <dt>ポイント</dt><dd>日経 225 の価格の単位。1 ポイント＝ 1 円の値動き。</dd>

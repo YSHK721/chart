@@ -288,6 +288,37 @@ def break_stats():
                 brk=ex[ok & after].mean() / hl[ok & after].mean() * 100)
 
 
+PERIODS_N = (3, 5, 10, 14, 20, 40, 100)
+
+
+def period_stats():
+    """母数 n ごとに、次の値幅を n 本の単純平均で見積もったときの外れ（平均の外れ ÷ 値幅の平均・%）。
+
+    見積もり = k × ATR(n)。k は（実際 ÷ ATR）の中央値。最初の 100 本は除く（どの n でも同じ起点にそろえる）。
+    """
+    cases = [("MT5 日足・次の 1 日", MT5, "1D", 1, None, None), ("MT5 日足・次の 5 日", MT5, "1D", 5, None, None),
+             ("MT5 1 時間足・次の 5 本", MT5, "1h", 5, None, None),
+             ("Dukascopy 日足 2014〜2020・次の 5 日", DUKA, "1D", 5, "2014-01-01", "2020-05-01")]
+    rows = []
+    for label, path, tf, t, start, end in cases:
+        d = load(path, tf)
+        if start:
+            d = d[(d.date >= start) & (d.date < end)].reset_index(drop=True)
+        tr = true_range(d)
+        if t == 1:
+            f = np.concatenate([tr[1:], [np.nan]])
+        else:
+            f = R.forward_extreme(d.high.to_numpy(), t, "max") - R.forward_extreme(d.low.to_numpy(), t, "min")
+        errs = []
+        for n in PERIODS_N:
+            a = pd.Series(tr).rolling(n).mean().to_numpy()
+            ok = np.isfinite(a) & np.isfinite(f) & (np.arange(len(a)) >= 100)
+            k = np.median(f[ok] / a[ok])
+            errs.append(np.mean(np.abs(f[ok] - k * a[ok])) / np.mean(f[ok]) * 100)
+        rows.append((label, errs))
+    return rows
+
+
 def main(out_path: str):
     tr_svg, tr_cap = fig_tr()
     tf_svg, tf_rows = fig_tf()
@@ -300,6 +331,12 @@ def main(out_path: str):
     low_hours = "・".join(f"{h}時" for h in hours.sort_values().index[:3])
     tf_map = {tf: v for tf, _, v in tf_rows}
     gs = gap_stats()
+    prow = period_stats()
+    period_head = "".join(f"<th>{n}</th>" for n in PERIODS_N)
+    period_rows = "".join(
+        f"<tr><td>{label}</td>" + "".join(
+            f'<td class="n{" best" if e == min(errs) else ""}">{e:.1f}%</td>' for e in errs) + "</tr>"
+        for label, errs in prow)
     bs = break_stats()
     hrows, herr, hq, hstart = hold_stats()
     hold_rows = "".join(
@@ -331,6 +368,7 @@ def main(out_path: str):
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
             .replace("{{BRK_BARS}}", f"{bs['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs['share_gap']:.0f}")
             .replace("{{BRK_PLAIN}}", f"{bs['plain']:.1f}").replace("{{BRK_AFTER}}", f"{bs['brk']:.1f}")
+            .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
     Path(out_path).write_text(page, encoding="utf-8")
