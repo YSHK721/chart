@@ -1,0 +1,148 @@
+<title>値幅の分位で決める閾値</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
+<style>
+/* 1 列の読み物。値幅（ATR）の見方・水準に届く確率と同じ体裁。図は実データから描く（make_page.py） */
+:root {
+  --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
+  --acc: #b4442e; --blue: #2f6f8f; --amber: #a06a12; --violet: #8a4f9e; --green: #2f7a52;
+  --soft: #cfe0e8; --band: rgba(47,122,82,.12); --bad: #f3dcd6; --mid: #eef0ec; --best: #dcefe3;
+  --body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --display: "BIZ UDPMincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --acc: #ef8a73; --blue: #7fbcd8; --amber: #e0a64a; --violet: #c79bd6; --green: #6cc196;
+  --soft: #23404c; --band: rgba(108,193,150,.14); --bad: #3a2420; --mid: #232b28; --best: #1d3328; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --acc: #ef8a73; --blue: #7fbcd8; --amber: #e0a64a; --violet: #c79bd6; --green: #6cc196;
+  --soft: #23404c; --band: rgba(108,193,150,.14); --bad: #3a2420; --mid: #232b28; --best: #1d3328; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.85 var(--body); }
+main { max-width: 46rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 40px; }
+h1 { font: 700 2rem/1.3 var(--display); margin: 0; text-wrap: balance; }
+h2 { font: 700 1.3rem/1.4 var(--display); margin: 0 0 4px; text-wrap: balance; }
+p { margin: 0; }
+section { display: grid; gap: 12px; min-width: 0; }
+.lead { font-size: 1.08rem; }
+.sub, .cap { color: var(--muted); font-size: .88rem; }
+.verdict { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--amber); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
+.verdict b { color: var(--amber); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
+.figure svg { display: block; width: 100%; min-width: 540px; height: auto; }
+figcaption { font-weight: 700; font-size: .95rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+ul { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-size: .8rem; }
+dl.terms { margin: 0; display: grid; grid-template-columns: minmax(8em, max-content) 1fr; gap: 10px 18px; }
+dl.terms dt { font-weight: 700; }
+dl.terms dd { margin: 0; min-width: 0; }
+@media (max-width: 520px) { dl.terms { grid-template-columns: 1fr; gap: 2px; } dl.terms dd { margin-bottom: 10px; } }
+svg text { font-family: var(--body); }
+svg .tk { font-size: 11px; fill: var(--muted); }
+svg .lb { font-size: 12px; fill: var(--fg); }
+svg .lb.strong { font-weight: 700; }
+svg .grid { stroke: var(--rule); stroke-width: 1; }
+svg .hb { fill: var(--soft); } svg .hb.warm { fill: var(--blue); } svg .hb.hot { fill: var(--acc); }
+svg .qline { stroke: var(--fg); stroke-width: 1.4; stroke-dasharray: 4 3; }
+svg .sb { fill: var(--soft); } svg .sb.over { fill: var(--acc); }
+svg .th-a { fill: none; stroke: var(--amber); stroke-width: 2; stroke-dasharray: 6 3; }
+svg .th-c { fill: none; stroke: var(--green); stroke-width: 2; }
+svg .band { fill: var(--band); } svg .tgt { stroke: var(--green); stroke-width: 1.6; }
+svg .m-A { fill: var(--amber); } svg .m-B { fill: var(--violet); } svg .m-C { fill: var(--green); } svg .m-D { fill: var(--blue); }
+svg .c-best { fill: var(--best); stroke: var(--green); } svg .c-mid { fill: var(--mid); stroke: var(--rule); } svg .c-bad { fill: var(--bad); stroke: var(--acc); }
+svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
+</style>
+
+<main>
+<header style="display:grid;gap:10px">
+  <h1>値幅の分位で決める閾値</h1>
+  <p class="lead">値幅の平均（ATR）ではなく、値幅の分布の分位で「ふだんより大きい動き」の線（閾値）を決められるかを調べました。相場が荒れているときに閾値を超えすぎる問題を、荒れ方の区分ごとの分位で直せるかも確かめています。</p>
+  <p class="sub">日経 225（JP225）・15 分足／1 時間足／4 時間足／日足・2026-10-24 実施・条件は実行前に RESULTS.md に記録</p>
+</header>
+
+<div class="verdict">
+  <p><b>結論：荒れ方の区分ごとの分位で、荒れた時期の超えすぎは大きく減ります。ただし、事前に決めた精度（±2 ポイント）には届きませんでした。</b></p>
+  <p>全期間で 1 つの分位を使うと、荒れた時期は目標 20% の線を {{A5}}% も超えました。荒れ方の区分ごとの分位にすると {{C5}}% まで下がります。残る外れは、静かな時期に超えすぎ（{{C1}}%）、荒れた時期に超えなさすぎる向きにそろっており、荒れ方が平均へ戻る性質によるものと考えられます。合格は {{N_ALL}} 組中 {{N_PASS}} 組です。</p>
+</div>
+
+<section aria-labelledby="h-what">
+  <h2 id="h-what">分位で閾値を決めるとは</h2>
+  <p>過去の足の値幅を小さい順に並べ、上から 20% の位置にある値を「80% の分位」と呼びます。これを閾値にすると、次の足の値幅がその線を超えるのは、5 回に 1 回のはずです。95% の分位なら 20 回に 1 回です。</p>
+  <figure class="figure"><figcaption>1 時間足の値幅の分布（Dukascopy・2014〜2020）</figcaption>{{FIG_HIST}}
+    <div class="legend"><span><i style="background:var(--soft)"></i>80% の分位まで</span><span><i style="background:var(--blue)"></i>80〜95%</span><span><i style="background:var(--acc)"></i>95% の分位より上</span></div></figure>
+  <p>値幅は真の値幅（窓を含めた 1 本の動き）を、その足の終値で割った割合で測ります。1 時間足の 80% の分位は {{Q80}}%、95% の分位は {{Q95}}% でした。平均と違い、まれな大きな足があっても分位はほとんど動きません。</p>
+</section>
+
+<section aria-labelledby="h-why">
+  <h2 id="h-why">1 つの分位を使い回す問題</h2>
+  <p>全期間から 1 つの分位を決めて使い回すと、荒れた時期は値幅が全体に大きいので、閾値を超える足が続出します。</p>
+  <figure class="figure"><figcaption>MT5 の 1 時間足（2024-07-15〜08-19・8 月の急落を含む）</figcaption>{{FIG_SERIES}}
+    <div class="legend"><span><i style="background:var(--soft)"></i>値幅</span><span><i style="background:var(--acc)"></i>固定の閾値を超えた足</span><span><i style="background:var(--amber);height:3px"></i>A 固定の閾値（目標 20%）</span><span><i style="background:var(--green);height:3px"></i>C 荒れ方の区分ごとの閾値</span></div></figure>
+  <p>この期間、固定の閾値を超えた足は {{OVER_A}}%（目標 20%）、荒れ方の区分ごとの閾値なら {{OVER_C}}% でした。区分ごとの閾値は、荒れてくると階段状に上がります。</p>
+</section>
+
+<section aria-labelledby="h-how">
+  <h2 id="h-how">比べた 4 つの決め方</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>方法</th><th>閾値の決め方</th></tr></thead>
+    <tbody>
+      <tr><td>A 固定</td><td>全期間の値幅の分位を 1 つだけ使う</td></tr>
+      <tr><td>B ATR で割る</td><td>「値幅が ATR20 の何倍か」の分位を求め、その時点の ATR20 に掛ける</td></tr>
+      <tr><td>C 荒れ方の区分</td><td>荒れ方（ATR20 ÷ 終値）で足を 5 段に分け、段ごとに値幅の分位を求める。その時点の荒れ方が入る段の値を使う（依頼者の提案）</td></tr>
+      <tr><td>D 区分 × 向き</td><td>C の各段を、直近 5 本が荒れてきているか（ATR5 ÷ ATR20 ≥ 1）でさらに 2 つに分ける</td></tr>
+    </tbody>
+  </table></div>
+  <p>閾値は 2014〜2020 年（Dukascopy）だけで作り、2020〜2026 年（MT5）で「実際に超えた割合」を数えました。全体と、荒れ方の 5 段それぞれで、目標 ± 2 ポイント以内なら合格、と実行前に決めています。</p>
+</section>
+
+<section aria-labelledby="h-r1">
+  <h2 id="h-r1">結果：荒れ方の段ごとの超過率</h2>
+  <figure class="figure"><figcaption>1 時間足・目標 20%（5 回に 1 回）</figcaption>{{FIG_B20}}
+    <div class="legend"><span><i style="background:var(--amber);border-radius:50%"></i>A 固定</span><span><i style="background:var(--violet);border-radius:50%"></i>B ATR で割る</span><span><i style="background:var(--green);border-radius:50%"></i>C 荒れ方の区分</span><span><i style="background:var(--blue);border-radius:50%"></i>D 区分 × 向き</span></div></figure>
+  <p>A は、静かな段でほとんど超えず（{{A1}}%）、荒れた段で超えすぎます（{{A5}}%）。全体では 22.2% と目標に近く見えるのは、この 2 つが平均されて隠れるためです。B・C・D は荒れた段の超えすぎを大きく減らしますが、静かな段では超えすぎ、荒れた段では超えなさすぎる、逆向きの小さな外れが残ります。</p>
+  <figure class="figure"><figcaption>1 時間足・目標 5%（20 回に 1 回）</figcaption>{{FIG_B5}}</figure>
+</section>
+
+<section aria-labelledby="h-r2">
+  <h2 id="h-r2">結果：すべての組の外れ</h2>
+  <figure class="figure"><figcaption>全体と 5 段のうち、目標から一番外れた大きさ（ポイント）</figcaption>{{FIG_VERDICT}}
+    <div class="legend"><span><i style="background:var(--best);border:1px solid var(--green)"></i>その行で一番小さい</span><span><i style="background:var(--bad);border:1px solid var(--acc)"></i>8 ポイントを超える</span><span>合格の基準は 2 ポイント以内</span></div></figure>
+  <p>どの組も 2 ポイントに届きませんでした。C（荒れ方の区分）が多くの組で一番小さく、15 分足と 4 時間足の目標 5% では 2.6 ポイントまで近づきます。日足は静かな段の足が少なく（32 本・119 本）、その段は判定から外しています。</p>
+</section>
+
+<section aria-labelledby="h-why2">
+  <h2 id="h-why2">なぜ逆向きの外れが残るのか</h2>
+  <p>荒れ方は平均へ戻る性質があります。静かな時期の次は荒れやすく、荒れた時期の次は落ち着きやすいということです。C は「いまの荒れ方」だけで段を決めるので、静かな段の閾値は次の足にとって低すぎ、荒れた段の閾値は高すぎになります。外れの向きがすべての時間足でそろっていることが、その表れと考えられます（推論）。</p>
+  <p>直近 5 本の向き（D）を加えても外れは変わりませんでした。次に試すべきは、いまの荒れ方と長い期間の平均を混ぜた荒れ方の見積もりで段を決める方法です（まだ測っていません）。</p>
+</section>
+
+<section aria-labelledby="h-use">
+  <h2 id="h-use">いま使えること</h2>
+  <ul>
+    <li>全期間で 1 つの分位を使い回すのはやめる。荒れた時期に閾値を超える回数が 2.5 倍前後になります。</li>
+    <li>荒れ方の区分ごとの分位（C）を使えば、荒れた時期の超えすぎは目標近くまで下がります。ただし静かな時期は、閾値が低めに出る（超えやすい）ことを前提にします。</li>
+    <li>精度 ±2 ポイントが必要な用途には、まだ使えません。</li>
+  </ul>
+</section>
+
+<section aria-labelledby="h-terms">
+  <h2 id="h-terms">用語</h2>
+  <dl class="terms">
+    <dt>分位</dt><dd>値を小さい順に並べたときの位置で決まる値。80% の分位は、下から 80%（上から 20%）の位置の値。</dd>
+    <dt>閾値</dt><dd>「これを超えたらふだんより大きい」とみなす線。</dd>
+    <dt>超過率</dt><dd>実際に閾値を超えた足の割合。目標の分位どおりなら、80% の分位で 20%、95% の分位で 5%。</dd>
+    <dt>真の値幅</dt><dd>高値 − 安値、|高値 − 前の終値|、|安値 − 前の終値| のうち一番大きいもの。窓も含めた 1 本の動きの幅。</dd>
+    <dt>ATR20・ATR5</dt><dd>真の値幅の直近 20 本・5 本の平均。</dd>
+    <dt>荒れ方</dt><dd>ATR20 ÷ 終値。大きいほど荒れた相場。</dd>
+    <dt>区分（段）</dt><dd>荒れ方の小さい順に足を 5 等分したまとまり。境目は 2014〜2020 年の荒れ方の 20・40・60・80% の位置。</dd>
+    <dt>平均へ戻る性質</dt><dd>大きく外れた値の次は、平均に近い値になりやすいこと。荒れ方にもこの性質がある。</dd>
+  </dl>
+  <p class="cap">コード：tools/measure/tr_quantile/（run.py・tq.py・make_page.py）／記録：RESULTS.md</p>
+</section>
+</main>
