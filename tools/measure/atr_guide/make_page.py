@@ -250,6 +250,30 @@ def gap_stats():
     return out
 
 
+def hold_stats():
+    """日足で T 日持つときの値幅と、買いの逆行幅（ATR20 の倍率・MT5）。ATR3 との比較も返す。"""
+    d = load(MT5, "1D")
+    h, l, c = (d[k].to_numpy(float) for k in ("high", "low", "close"))
+    a20 = R.atr(h, l, c)
+    a3 = pd.Series(true_range(d)).rolling(3).mean().to_numpy()
+    rows = []
+    for t in (1, 3, 5, 10):
+        mx, mn = R.forward_extreme(h, t, "max"), R.forward_extreme(l, t, "min")
+        ok = np.isfinite(mx) & np.isfinite(a20)
+        rng = (mx[ok] - mn[ok]) / a20[ok]
+        adv = (c[ok] - mn[ok]) / a20[ok]
+        rows.append((t, np.median(rng), np.median(adv), np.quantile(adv, 0.8), np.quantile(adv, 0.95)))
+    mx, mn = R.forward_extreme(h, 3, "max"), R.forward_extreme(l, 3, "min")
+    f = mx - mn
+    ok = np.isfinite(f) & np.isfinite(a20) & np.isfinite(a3)
+    err = {}
+    for name, a in (("a3", a3), ("a20", a20)):
+        k = np.median(f[ok] / a[ok])
+        err[name] = (np.corrcoef(a[ok], f[ok])[0, 1], np.mean(np.abs(f[ok] - k * a[ok])))
+    q = np.quantile(a3[ok] / a20[ok], [0.1, 0.9])
+    return rows, err, q, f"{d.date.iloc[0]:%Y-%m}"
+
+
 def main(out_path: str):
     tr_svg, tr_cap = fig_tr()
     tf_svg, tf_rows = fig_tf()
@@ -262,6 +286,11 @@ def main(out_path: str):
     low_hours = "・".join(f"{h}時" for h in hours.sort_values().index[:3])
     tf_map = {tf: v for tf, _, v in tf_rows}
     gs = gap_stats()
+    hrows, herr, hq, hstart = hold_stats()
+    hold_rows = "".join(
+        f'<tr><td>{t} 日</td><td class="n">{r:.2f} 倍</td><td class="n">{m:.2f} 倍</td><td class="n">{p80:.2f} 倍</td><td class="n">{p95:.2f} 倍</td></tr>'
+        for t, r, m, p80, p95 in hrows)
+    h3 = {t: (r, p95) for t, r, _, _, p95 in hrows}
     gap_rows = "".join(
         f'<tr><td>{name}</td><td class="n">+{(gs[tf][0] - 1) * 100:.1f}%</td><td class="n">{gs[tf][1]:.1f}%</td></tr>'
         for tf, name in (("15m", "15 分足"), ("1h", "1 時間足"), ("1D", "日足")))
@@ -275,6 +304,12 @@ def main(out_path: str):
             .replace("{{TF_5M}}", f"{tf_map['5m']:.3f}")
             .replace("{{GAP_ROWS}}", gap_rows)
             .replace("{{GAP_MON}}", f"{(gs['mon'] - 1) * 100:.1f}").replace("{{GAP_OTHER}}", f"{(gs['other'] - 1) * 100:.1f}")
+            .replace("{{HOLD_ROWS}}", hold_rows).replace("{{HOLD_START}}", hstart)
+            .replace("{{H3_P95}}", f"{h3[3][1]:.1f}").replace("{{H3_R}}", f"{h3[3][0] / h3[1][0]:.1f}")
+            .replace("{{H5_R}}", f"{h3[5][0] / h3[1][0]:.1f}")
+            .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
+            .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
+            .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
     Path(out_path).write_text(page, encoding="utf-8")
