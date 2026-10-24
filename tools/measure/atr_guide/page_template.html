@@ -29,6 +29,8 @@ section { display: grid; gap: 12px; min-width: 0; }
 .lead { font-size: 1.08rem; }
 .sub, .cap { color: var(--muted); font-size: .88rem; }
 .key { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--blue); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
+.key.premise { border-left-color: var(--acc); }
+.key.premise b { color: var(--acc); }
 .formula { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 16px; font-variant-numeric: tabular-nums; display: grid; gap: 4px; }
 .formula b { color: var(--acc); }
 .figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
@@ -78,6 +80,17 @@ svg .m-real { fill: var(--blue); }
   <p class="lead">ATR は「1 本の足がふだんどれくらい動くか」を表す数字です。何を測っているのか、どう計算するのか、日経 225 ではどう動くのかを、実際のデータで説明します。</p>
   <p class="sub">日経 225（JP225）・MT5（2020-05〜）と Dukascopy（2013〜）の価格・2026-10-24 作成</p>
 </header>
+
+<div class="key premise">
+  <p><b>前提：ATR は「持ち越す」人の値幅です</b></p>
+  <p>ATR は前の足の終値からの窓（すき間）も含めて測ります。これは、前の足から次の足へポジションを持ち越した人が受ける動きを測るためです。持ち越さない取引には、そのまま当てはめると誤解のもとになります。</p>
+  <ul>
+    <li>足をまたいで持ち越さないなら、窓は受けないので高値 − 安値で足ります。</li>
+    <li>1 日より短く持つなら、持つ時間に合った時間足の ATR を使います。</li>
+    <li>何日も持ち越すなら、1 日の ATR では足りず、日数分の値幅（ATR の倍率）を使います。</li>
+  </ul>
+  <p class="cap">使い分けは「持つ時間に合わせて幅を決める」の節にまとめています。</p>
+</div>
 
 <div class="key">
   <p><b>要点</b></p>
