@@ -4,13 +4,13 @@
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from tools.measure.page_toc import inject_toc
 from tools.measure.reach_prob import reach as R
 
 HERE = Path(__file__).resolve().parent
@@ -347,10 +347,6 @@ def main(out_path: str):
         f'<tr><td>{name}</td><td class="n">+{(gs[tf][0] - 1) * 100:.1f}%</td><td class="n">{gs[tf][1]:.1f}%</td></tr>'
         for tf, name in (("15m", "15 分足"), ("1h", "1 時間足"), ("1D", "日足")))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
-    # 目次は見出し（h2）から作る（見出しと目次を二重に書かない）
-    heads = re.findall(r'<h2 id="([A-Za-z0-9_-]+)">(.*?)</h2>', tpl)
-    toc = "<ol>" + "".join(f'<li><a href="#{i}">{t}</a></li>' for i, t in heads) + "</ol>"
-    tpl = tpl.replace("{{TOC}}", toc)
     page = (tpl.replace("{{FIG_TR}}", tr_svg).replace("{{TR_CAP}}", tr_cap)
             .replace("{{FIG_SMOOTH}}", fig_smooth()).replace("{{FIG_HISTORY}}", fig_history())
             .replace("{{FIG_TF}}", tf_svg).replace("{{FIG_HOUR}}", hour_svg).replace("{{FIG_SCALE}}", sc_svg)
@@ -371,7 +367,7 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
-    Path(out_path).write_text(page, encoding="utf-8")
+    Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},
           "| tf", {k: round(v, 3) for k, v in tf_map.items()}, "| hours top", top_hours, "low", low_hours)
 

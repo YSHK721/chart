@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tools.measure.page_toc import inject_toc
 from tools.measure.ema_hl import ema_hl as E
 
 HERE = Path(__file__).resolve().parent
@@ -170,7 +171,7 @@ def main(out_path: str):
             .replace("{{SNIP_DAY}}", f'{s["date"][0]:%Y-%m-%d}')
             .replace("{{COST}}", f"{cost:.1f}").replace("{{OOS_CLOSE}}", f"{oos_close:,.0f}")
             .replace("{{ROWS}}", rows))
-    Path(out_path).write_text(page, encoding="utf-8")
+    Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page))
 
 

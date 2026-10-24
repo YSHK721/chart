@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tools.measure.page_toc import inject_toc
 from tools.measure.reach_prob import reach as R
 
 HERE = Path(__file__).resolve().parent
@@ -191,7 +192,7 @@ def main(out_path: str):
             .replace("{{N_PASS}}", str(int(v.table_pass.sum()))).replace("{{N_ALL}}", str(len(v)))
             .replace("{{N_FPASS}}", str(int(v.formula_pass.sum())))
             .replace("{{DATA}}", json.dumps({"rows": data, "pass": passed}, ensure_ascii=False)))
-    Path(out_path).write_text(page, encoding="utf-8")
+    Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page))
 
 

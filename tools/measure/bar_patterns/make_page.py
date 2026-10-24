@@ -1,6 +1,6 @@
 """足の並びの有意性の報告ページ（図は results/ の実データから描く）。
 
-実行: lightweight-charts-python-main/.venv/bin/python tools/measure/bar_patterns/make_page.py <出力 html>
+実行: lightweight-charts-python-main/.venv/bin/python -m tools.measure.bar_patterns.make_page <出力 html>
 前提: run.py を実行済み（results/tests.csv・omnibus.csv）。
 """
 from __future__ import annotations
@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from tools.measure.page_toc import inject_toc
 
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
@@ -311,7 +313,7 @@ def main(out_path: str):
             .replace("{{FIG_OMNI_CD}}", fig_omni(omni_cd, "ひげを入れた並びの全体検定の p。15 分足と 1 時間足の 1 本後は両期間で小さい"))
             .replace("{{FIG_WICK_COST}}", fig_wick_cost(tests_cd, cost_bp))
             .replace("{{N_CD}}", fmt_n(n_cd)).replace("{{CD_ROWS}}", cd_rows))
-    Path(out_path).write_text(page, encoding="utf-8")
+    Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "bytes")
 
 
