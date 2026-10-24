@@ -32,6 +32,26 @@ section { display: grid; gap: 12px; min-width: 0; }
 .key { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--blue); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
 .key.premise { border-left-color: var(--acc); }
 .key.premise b { color: var(--acc); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--panel); }
+.now { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 9; background: var(--panel); border-bottom: 1px solid var(--rule); }
+.now-in { max-width: 46rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 8px; display: flex; gap: 12px; align-items: center; min-width: 0; }
+.now button { font: inherit; font-size: .85rem; font-weight: 700; padding: 3px 12px; border: 1px solid var(--rule); border-radius: 999px; background: var(--bg); color: var(--fg); cursor: pointer; flex: none; }
+.now button[aria-expanded="true"] { border-color: var(--blue); color: var(--blue); }
+.now button:focus-visible, .toc a:focus-visible, .now-list a:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.now-label { font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#now-num { color: var(--blue); font-weight: 700; margin-right: 8px; font-variant-numeric: tabular-nums; }
+.prog { height: 3px; background: var(--rule); }
+.prog i { display: block; height: 100%; width: 0; background: var(--blue); }
+.now-list { max-width: 46rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 4px 12px; max-height: 60vh; overflow-y: auto; }
+.toc { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 18px; }
+.toc-h { font-weight: 700; margin-bottom: 4px; }
+.toc ol, .now-list ol { margin: 0; padding-left: 2em; display: grid; gap: 2px; }
+.toc a, .now-list a { color: var(--fg); text-decoration: none; display: block; padding: 2px 6px; border-radius: 4px; }
+.toc a:hover, .now-list a:hover { background: var(--bg); }
+.toc a[aria-current="true"], .now-list a[aria-current="true"] { color: var(--blue); font-weight: 700; background: var(--bg); }
+.toc li::marker, .now-list li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+section[aria-labelledby] { scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 64px); }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 .formula { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 16px; font-variant-numeric: tabular-nums; display: grid; gap: 4px; }
 .formula b { color: var(--acc); }
 .figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
@@ -75,12 +95,26 @@ svg .l-real { fill: none; stroke: var(--blue); stroke-width: 2.2; }
 svg .m-real { fill: var(--blue); }
 </style>
 
+<div class="now" id="now">
+  <div class="now-in">
+    <button type="button" id="now-btn" aria-expanded="false" aria-controls="now-list">目次</button>
+    <span class="now-label"><span id="now-num"></span><span id="now-title">はじめに</span></span>
+  </div>
+  <div class="prog" aria-hidden="true"><i id="prog"></i></div>
+  <nav class="now-list" id="now-list" aria-label="目次（移動）" hidden>{{TOC}}</nav>
+</div>
+
 <main>
 <header style="display:grid;gap:10px">
   <h1>値幅（ATR）の見方</h1>
   <p class="lead">ATR は「1 本の足がふだんどれくらい動くか」を表す数字です。何を測っているのか、どう計算するのか、日経 225 ではどう動くのかを、実際のデータで説明します。</p>
   <p class="sub">日経 225（JP225）・MT5（2020-05〜）と Dukascopy（2013〜）の価格・2026-10-24 作成</p>
 </header>
+
+<nav class="toc" aria-labelledby="h-toc">
+  <p class="toc-h" id="h-toc">目次</p>
+  {{TOC}}
+</nav>
 
 <div class="key premise">
   <p><b>前提：ATR は「持ち越す」人の値幅です</b></p>
@@ -235,3 +269,38 @@ svg .m-real { fill: var(--blue); }
   <p class="cap">図はすべてリポジトリの価格データから描いています。コード：tools/measure/atr_guide/make_page.py</p>
 </section>
 </main>
+
+<script>
+(() => {
+  const secs = [...document.querySelectorAll("main section[aria-labelledby]")]
+    .filter((s) => s.querySelector("h2"));
+  const links = (id) => document.querySelectorAll(`.toc a[href="#${id}"], .now-list a[href="#${id}"]`);
+  const num = document.getElementById("now-num"), title = document.getElementById("now-title");
+  const prog = document.getElementById("prog"), btn = document.getElementById("now-btn"), list = document.getElementById("now-list");
+  const bar = document.getElementById("now");
+  let current = null;
+  function update() {
+    const line = bar.getBoundingClientRect().bottom + 24;
+    let idx = -1;
+    secs.forEach((s, i) => { if (s.getBoundingClientRect().top <= line) idx = i; });
+    const id = idx >= 0 ? secs[idx].getAttribute("aria-labelledby") : null;
+    if (id !== current) {
+      if (current) links(current).forEach((a) => a.removeAttribute("aria-current"));
+      current = id;
+      if (id) {
+        links(id).forEach((a) => a.setAttribute("aria-current", "true"));
+        num.textContent = `${idx + 1} / ${secs.length}`;
+        title.textContent = secs[idx].querySelector("h2").textContent;
+      } else { num.textContent = ""; title.textContent = "はじめに"; }
+    }
+    const max = document.documentElement.scrollHeight - innerHeight;
+    prog.style.width = `${max > 0 ? Math.min(100, scrollY / max * 100) : 0}%`;
+  }
+  let pending = false;
+  addEventListener("scroll", () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; update(); }); } }, { passive: true });
+  addEventListener("resize", update);
+  btn.addEventListener("click", () => { const open = list.hidden; list.hidden = !open; btn.setAttribute("aria-expanded", String(open)); });
+  list.addEventListener("click", (e) => { if (e.target.closest("a")) { list.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
+  update();
+})();
+</script>

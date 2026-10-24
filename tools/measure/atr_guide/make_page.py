@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -309,6 +310,10 @@ def main(out_path: str):
         f'<tr><td>{name}</td><td class="n">+{(gs[tf][0] - 1) * 100:.1f}%</td><td class="n">{gs[tf][1]:.1f}%</td></tr>'
         for tf, name in (("15m", "15 分足"), ("1h", "1 時間足"), ("1D", "日足")))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
+    # 目次は見出し（h2）から作る（見出しと目次を二重に書かない）
+    heads = re.findall(r'<h2 id="([A-Za-z0-9_-]+)">(.*?)</h2>', tpl)
+    toc = "<ol>" + "".join(f'<li><a href="#{i}">{t}</a></li>' for i, t in heads) + "</ol>"
+    tpl = tpl.replace("{{TOC}}", toc)
     page = (tpl.replace("{{FIG_TR}}", tr_svg).replace("{{TR_CAP}}", tr_cap)
             .replace("{{FIG_SMOOTH}}", fig_smooth()).replace("{{FIG_HISTORY}}", fig_history())
             .replace("{{FIG_TF}}", tf_svg).replace("{{FIG_HOUR}}", hour_svg).replace("{{FIG_SCALE}}", sc_svg)
