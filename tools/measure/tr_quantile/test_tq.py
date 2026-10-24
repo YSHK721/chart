@@ -77,6 +77,30 @@ def test_methods_e_and_f_use_the_estimate():
     np.testing.assert_allclose(Q.threshold("F", pf, v[:4], r[:4], edges, f=f[:4], edges_f=edges_f), pf[0] * f[:4])
 
 
+def test_hour_factor_is_median_ratio_per_hour_with_fallback():
+    ratio = np.array([1.0, 3.0, 2.0, 10.0])
+    hours = np.array([0, 0, 1, 1])
+    s = Q.hour_factor(ratio, hours)
+    assert s[0] == 2.0 and s[1] == 6.0 and s[5] == np.median(ratio)
+
+
+class MedianSpy:
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, x):
+        self.issued += 1
+        return np.median(x)
+
+
+def test_hour_factor_issues_one_median_per_hour_plus_overall():
+    for n in (100, 5000):
+        rng = rng_from_seed(7)
+        spy = MedianSpy()
+        Q.hour_factor(rng.uniform(size=n), rng.integers(0, 24, size=n), quantile=spy)
+        assert spy.issued == 25  # 時間帯 24 個 + 全体 1 個。足の数が増えても増えない
+
+
 # ---- 計算量検定（注入点 quantile を数える） ----
 
 class QuantileSpy:

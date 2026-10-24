@@ -55,6 +55,16 @@ def har_predict(b, x, floor: float) -> np.ndarray:
     return np.where(f > 0, f, floor)
 
 
+def hour_factor(ratio: np.ndarray, hours: np.ndarray, quantile=np.median) -> np.ndarray:
+    """§11: 時間帯の係数 s(h) =（y ÷ f）の時間帯ごとの中央値（h = 0..23）。足の無い時間帯は全体の中央値。"""
+    s = np.full(24, float(quantile(ratio)))
+    for h in range(24):
+        m = hours == h
+        if m.any():
+            s[h] = float(quantile(ratio[m]))
+    return s
+
+
 def cells(method: str, v, r, edges, f=None, edges_f=None) -> np.ndarray:
     """区画の番号。A・B・F は 0 だけ、C は 0..4、D は 0..9（区分 × 2 + 荒れてきているか）、E は f の 0..4。"""
     if method in ("A", "B", "F"):
