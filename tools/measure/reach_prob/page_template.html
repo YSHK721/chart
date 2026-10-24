@@ -1,0 +1,171 @@
+<title>水準に届く確率</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
+<style>
+/* 1 列の読み物＋最後に引ける表。足の並び・60EMA の報告と同じ体裁。図と表は実データから作る（make_page.py） */
+:root {
+  --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
+  --is: #2f6f8f; --oos: #b4442e; --t1: #7a9a3a; --t5: #2f6f8f; --t20: #8a4f9e;
+  --ok: #2f7a52; --okbg: #e3f1e8; --ng: #a8402c; --ngbg: #f7e4df; --win: #eef3f6;
+  --up: #2e8b6e; --dn: #c25b4a; --lvl: #a06a12;
+  --body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --display: "BIZ UDPMincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --t1: #b4cf73; --t5: #7fbcd8; --t20: #c79bd6;
+  --ok: #6cc196; --okbg: #1d3328; --ng: #ef8a73; --ngbg: #3a2420; --win: #1f2a30;
+  --up: #5cc59b; --dn: #ef8a73; --lvl: #e0a64a; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --is: #7fbcd8; --oos: #ef8a73; --t1: #b4cf73; --t5: #7fbcd8; --t20: #c79bd6;
+  --ok: #6cc196; --okbg: #1d3328; --ng: #ef8a73; --ngbg: #3a2420; --win: #1f2a30;
+  --up: #5cc59b; --dn: #ef8a73; --lvl: #e0a64a; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.85 var(--body); }
+main { max-width: 46rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 40px; }
+h1 { font: 700 2rem/1.3 var(--display); margin: 0; text-wrap: balance; }
+h2 { font: 700 1.3rem/1.4 var(--display); margin: 0 0 4px; text-wrap: balance; }
+p { margin: 0; }
+section { display: grid; gap: 12px; min-width: 0; }
+.lead { font-size: 1.08rem; }
+.sub, .cap { color: var(--muted); font-size: .88rem; }
+.verdict { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--ok); border-radius: 6px; padding: 14px 18px; display: grid; gap: 8px; }
+.verdict b { color: var(--ok); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; margin: 0; overflow-x: auto; display: grid; gap: 8px; min-width: 0; }
+.figure svg { display: block; width: 100%; min-width: 540px; height: auto; }
+.figure.small svg { min-width: 0; }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+figcaption { font-weight: 700; font-size: .95rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+ul { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+.tool { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.controls label { display: flex; gap: 8px; align-items: center; font-size: .92rem; }
+select { font: inherit; font-size: .92rem; padding: 4px 8px; border: 1px solid var(--rule); border-radius: 4px; background: var(--bg); color: var(--fg); }
+select:focus-visible { outline: 2px solid var(--is); outline-offset: 1px; }
+.badge { font-size: .82rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; }
+.badge.ok { background: var(--okbg); color: var(--ok); }
+.badge.ng { background: var(--ngbg); color: var(--ng); }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-size: .8rem; }
+td.big { font-weight: 700; }
+svg text { font-family: var(--body); }
+svg .tk { font-size: 11px; fill: var(--muted); }
+svg .lb { font-size: 12px; fill: var(--fg); }
+svg .lb.strong { font-weight: 700; }
+svg .lb.t1 { fill: var(--t1); font-weight: 700; } svg .lb.t5 { fill: var(--t5); font-weight: 700; } svg .lb.t20 { fill: var(--t20); font-weight: 700; }
+svg .grid { stroke: var(--rule); stroke-width: 1; }
+svg .zero { stroke: var(--muted); stroke-width: 1.4; }
+svg .tol { stroke: var(--ok); stroke-width: 1.4; stroke-dasharray: 4 3; }
+svg .wick { stroke: var(--muted); stroke-width: 1; }
+svg .up { fill: var(--up); } svg .dn { fill: var(--dn); }
+svg .win { fill: var(--win); }
+svg .lvl { stroke: var(--lvl); stroke-width: 1.4; stroke-dasharray: 5 3; }
+svg .pt { fill: var(--fg); }
+svg .hit { fill: none; stroke: var(--oos); stroke-width: 2.4; }
+svg .c-t1 { fill: none; stroke: var(--t1); stroke-width: 2; } svg .c-t5 { fill: none; stroke: var(--t5); stroke-width: 2; } svg .c-t20 { fill: none; stroke: var(--t20); stroke-width: 2; }
+svg .p-t1 { fill: var(--t1); } svg .p-t5 { fill: var(--t5); } svg .p-t20 { fill: var(--t20); }
+svg .ok { fill: var(--okbg); stroke: var(--ok); stroke-width: 1; } svg .ng { fill: var(--ngbg); stroke: var(--ng); stroke-width: 1; }
+svg .cell { font-size: 12px; font-weight: 700; } svg .cell.ok { fill: var(--ok); stroke: none; } svg .cell.ng { fill: var(--ng); stroke: none; }
+svg .link { stroke: var(--muted); stroke-width: 1.4; }
+svg .m-f { fill: var(--muted); } svg .m-a { fill: var(--oos); }
+svg .m-up { fill: var(--up); } svg .m-dn { fill: var(--dn); }
+</style>
+
+<main>
+<header style="display:grid;gap:10px">
+  <h1>水準に届く確率</h1>
+  <p class="lead">いまの終値から、値幅（ATR）の何倍か離れた水準に、何本以内に届くかの確率を、過去の値動きから出しました。</p>
+  <p class="sub">日経 225（JP225）・15 分足／1 時間足／4 時間足／日足・2026-10-23 実施・条件は実行前に RESULTS.md に記録</p>
+</header>
+
+<div class="verdict">
+  <p><b>結論：短い地平なら、3 ポイント以内の精度で出せます。</b></p>
+  <p>2014〜2020 年で作った表を 2020〜2026 年で照合し、{{N_ALL}} 組中 {{N_PASS}} 組が合格しました。15 分足と 1 時間足は 20 本先まで全部、4 時間足は 5 本先まで合格です。日足は、期間による相場の傾きの違いで合格しませんでした。計算式（酔歩）は {{N_ALL}} 組中 {{N_FPASS}} 組しか合格せず、使えません。</p>
+</div>
+
+<section aria-labelledby="h-what">
+  <h2 id="h-what">何の確率か</h2>
+  <p>ある足の終値を起点にして、そこから上（下）へ距離 d の水準を考えます。次の T 本のうちに、高値（安値）がその水準に届けば「届いた」と数えます。距離はそのときの値幅で割り、「ATR の何倍か」で表します。ATR は直近 20 本の真の値幅（前の足の終値からの窓も含めた値幅）の平均です。値幅で割るので、荒れた日も静かな日も同じ物差しで比べられます。</p>
+  <figure class="figure"><figcaption>実際の 1 時間足（MT5）</figcaption>{{FIG_EXAMPLE}}<p class="cap">{{EX_CAP}}</p></figure>
+</section>
+
+<section aria-labelledby="h-curve">
+  <h2 id="h-curve">1 時間足の届く確率</h2>
+  <div class="pair">{{FIG_CURVES}}</div>
+  <div class="legend"><span><i style="background:var(--t1);height:3px"></i>1 本以内</span><span><i style="background:var(--t5);height:3px"></i>5 本以内</span><span><i style="background:var(--t20);height:3px"></i>20 本以内</span><span>線＝表（2014〜2020）・四角＝照合（2020〜2026）</span></div>
+  <p>線（表）と四角（照合）がほぼ重なっています。たとえば 5 本以内に ATR の 1 倍上へ届く確率は、表で 46.1%、照合で 47.4% でした。同じ距離なら、下の水準のほうが遠くまで届きやすい傾向があります（ATR の 3 倍・5 本以内で上 6% 前後、下 9% 前後）。</p>
+</section>
+
+<section aria-labelledby="h-check">
+  <h2 id="h-check">照合の結果</h2>
+  <p>起点が 200 以上あるすべての距離で、照合と表の差が 3 ポイント以内なら合格、と実行前に決めました。数字は最大の差（ポイント）です。</p>
+  <figure class="figure"><figcaption>時間足 × 何本以内 × 向き</figcaption>{{FIG_VERDICT}}</figure>
+  <p>合格は地平が短い側にそろいます。日足と 4 時間足の 20 本先は、次の節のとおり相場の傾きの影響を受けます。</p>
+</section>
+
+<section aria-labelledby="h-drift">
+  <h2 id="h-drift">日足が合格しない理由</h2>
+  <figure class="figure"><figcaption>日足・20 本以内：照合 − 表</figcaption>{{FIG_DRIFT}}
+    <div class="legend"><span><i style="background:var(--up);border-radius:50%"></i>上の水準</span><span><i style="background:var(--dn);border-radius:50%"></i>下の水準</span></div></figure>
+  <p>2020〜2026 年は、遠い上の水準に届きやすく（ATR の 3 倍で +5.8 ポイント）、遠い下の水準に届きにくく（−9.2 ポイント）なりました。この期間の上昇が 2014〜2020 年より強かったためです。地平が長いほど相場の傾きが効き、短い地平では値幅に埋もれます。日足で使うには、相場の向きを条件に入れた表が必要です（まだ測っていません）。</p>
+</section>
+
+<section aria-labelledby="h-formula">
+  <h2 id="h-formula">計算式では足りない</h2>
+  <p>値動きを酔歩（でたらめな上下の積み重ね）とみなす式 P = 2 ×（1 − Φ(距離 ÷（ばらつき × √T)））と、実際を比べました。</p>
+  <figure class="figure"><figcaption>1 時間足・5 本以内・下の水準</figcaption>{{FIG_FORMULA}}
+    <div class="legend"><span><i style="background:var(--muted);border-radius:50%"></i>式の予測</span><span><i style="background:var(--oos)"></i>実際（2020〜2026）</span></div></figure>
+  <p>式は、近い水準では届く確率を高めに、遠い水準では低めに見積もります。実際の値動きは、ふだんは式より動かず、ときどき式より大きく動くためです。</p>
+</section>
+
+<section aria-labelledby="h-tool">
+  <h2 id="h-tool">確率表</h2>
+  <div class="tool">
+    <div class="controls">
+      <label for="sel-tf">時間足 <select id="sel-tf"><option value="15m">15 分足</option><option value="1h" selected>1 時間足</option><option value="4h">4 時間足</option><option value="1D">日足</option></select></label>
+      <label for="sel-t">何本以内 <select id="sel-t"><option value="1">1 本</option><option value="5" selected>5 本</option><option value="20">20 本</option></select></label>
+      <span id="badges"></span>
+    </div>
+    <div class="tbl"><table>
+      <thead><tr><th>距離（ATR の何倍）</th><th>上・表</th><th>上・照合</th><th>下・表</th><th>下・照合</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <p class="cap">表＝2014〜2020（Dukascopy）、照合＝2020〜2026（MT5）。使うのは「表」の値です。不合格の組は参考値です。</p>
+  </div>
+</section>
+
+<section aria-labelledby="h-unk">
+  <h2 id="h-unk">分かっていないこと</h2>
+  <ul>
+    <li>相場の向き（例：長い移動平均より上か下か）で確率がどう変わるか。日足で使うにはこれが要ります。</li>
+    <li>経済指標の発表時刻など、時間帯による違い。</li>
+    <li>届いた後にどうなるか（止まるか抜けるか）。これまでの測定では、水準の種類（ライン・移動平均線）による違いは見つかっていません。</li>
+  </ul>
+  <p class="cap">コード：tools/measure/reach_prob/（run.py・reach.py・make_page.py）／記録：RESULTS.md</p>
+</section>
+</main>
+
+<script>
+const DATA = {{DATA}};
+const tfSel = document.getElementById("sel-tf"), tSel = document.getElementById("sel-t");
+function render() {
+  const tf = tfSel.value, t = tSel.value;
+  const up = DATA.rows[`${tf}|${t}|up`], dn = DATA.rows[`${tf}|${t}|down`];
+  const badge = (dir, name) => {
+    const ok = DATA.pass[`${tf}|${t}|${dir}`];
+    return `<span class="badge ${ok ? "ok" : "ng"}">${name} ${ok ? "合格" : "不合格（参考値）"}</span> `;
+  };
+  document.getElementById("badges").innerHTML = badge("up", "上") + badge("down", "下");
+  document.getElementById("rows").innerHTML = up.map((r, i) =>
+    `<tr><td>${r[0]}</td><td class="big">${r[1].toFixed(1)}%</td><td>${r[2].toFixed(1)}%</td>` +
+    `<td class="big">${dn[i][1].toFixed(1)}%</td><td>${dn[i][2].toFixed(1)}%</td></tr>`).join("");
+}
+tfSel.addEventListener("change", render); tSel.addEventListener("change", render);
+render();
+</script>
