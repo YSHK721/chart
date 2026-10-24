@@ -197,6 +197,45 @@ def fig_verdict(v):
     return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="方法ごとの最大の外れ（ポイント）">' + "".join(parts) + "</svg>"
 
 
+def ls_example():
+    """最小二乗法の説明用: 2014〜2020 年の 1 時間足から等間隔に 5 本を取り、「値幅 ＝ 重み × ATR20%」の重みを選ぶ。"""
+    from tools.measure.tr_quantile.run_mix import load as load_mix
+    y, _, _, x = load_mix("IS", "1h")
+    idx = np.linspace(2000, len(y) - 2000, 5).astype(int)
+    xs, ys = x[idx, 1], y[idx]
+    best = float((xs * ys).sum() / (xs * xs).sum())
+    ks = (0.8, round(best, 2), 1.4)
+    sq = {k: (ys - k * xs) ** 2 for k in ks}
+    rows = "".join(
+        f'<tr><td>{i + 1}</td><td class="n">{xs[i]:.3f}%</td><td class="n">{ys[i]:.3f}%</td>'
+        + "".join(f'<td class="n">{sq[k][i]:.4f}</td>' for k in ks) + "</tr>" for i in range(5))
+    sums = {k: float(sq[k].sum()) for k in ks}
+    rows += ('<tr class="hl"><td colspan="3">外れの二乗の合計</td>'
+             + "".join(f'<td class="n">{sums[k]:.4f}</td>' for k in ks) + "</tr>")
+    # 図: 5 点と 3 本の線、一番小さい線の外れ（縦の線）
+    X0, X1, Y0, Y1 = 60, 400, 20, 220
+    xmax, ymax = 0.4, 0.6
+    sx = lambda v: X0 + v / xmax * (X1 - X0)
+    sy = lambda v: Y1 - v / ymax * (Y1 - Y0)
+    parts = []
+    for g in (0, 0.2, 0.4, 0.6):
+        parts.append(f'<line x1="{X0}" x2="{X1}" y1="{sy(g):.1f}" y2="{sy(g):.1f}" class="grid"/>')
+        parts.append(f'<text x="{X0 - 6}" y="{sy(g) + 4:.1f}" text-anchor="end" class="tk">{g:.1f}%</text>')
+    for g in (0, 0.1, 0.2, 0.3, 0.4):
+        parts.append(f'<text x="{sx(g):.1f}" y="{Y1 + 16}" text-anchor="middle" class="tk">{g:.1f}%</text>')
+    parts.append(f'<text x="{(X0 + X1) / 2}" y="{Y1 + 32}" text-anchor="middle" class="tk">ATR20 ÷ 終値</text>')
+    parts.append(f'<text x="{X0}" y="12" class="tk">次の足の値幅 ÷ 終値</text>')
+    for k, cls in zip(ks, ("ls-lo", "ls-best", "ls-hi")):
+        parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(xmax):.1f}" y2="{sy(min(k * xmax, ymax)):.1f}" class="{cls}"/>')
+        parts.append(f'<text x="{sx(xmax) + 6:.1f}" y="{sy(min(k * xmax, ymax)) + 4:.1f}" class="lb">重み {k}</text>')
+    for xi, yi in zip(xs, ys):
+        parts.append(f'<line x1="{sx(xi):.1f}" x2="{sx(xi):.1f}" y1="{sy(yi):.1f}" y2="{sy(ks[1] * xi):.1f}" class="ls-res"/>')
+        parts.append(f'<circle cx="{sx(xi):.1f}" cy="{sy(yi):.1f}" r="5" class="ls-pt"/>')
+    svg = (f'<svg viewBox="0 0 480 260" role="img" aria-label="5 本の足と 3 本の線。外れの二乗の合計が一番小さい線を選ぶ">'
+           + "".join(parts) + "</svg>")
+    return rows, svg, ks, sums, len(y)
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -235,6 +274,7 @@ def main(out_path: str):
     tm = pd.read_csv(RES_MIX / "rates.csv")
     gm = tm[(tm.tf == "1h") & (tm.q == 0.8)].set_index(["method", "group"]).rate
     coef_rows, err_rows, mix_pass, mix_all = mix_tables()
+    ls_rows, ls_svg, ls_ks, ls_sums, ls_n = ls_example()
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_HIST}}", hist_svg).replace("{{Q80}}", f"{q80:.2f}").replace("{{Q95}}", f"{q95:.2f}")
             .replace("{{EX_ROWS}}", ex_rows).replace("{{EX_HL_PCT}}", f"{ex['hl_pct']:.2f}")
@@ -248,6 +288,11 @@ def main(out_path: str):
             .replace("{{FIG_B20}}", fig_buckets(t, "1h", 0.8)).replace("{{FIG_B5}}", fig_buckets(t, "1h", 0.95))
             .replace("{{FIG_VERDICT}}", fig_verdict(v))
             .replace("{{FIG_MIX}}", fig_buckets(tm, "1h", 0.8, ("C", "E", "F")))
+            .replace("{{LS_ROWS}}", ls_rows).replace("{{FIG_LS}}", ls_svg)
+            .replace("{{LS_K0}}", str(ls_ks[0])).replace("{{LS_K1}}", str(ls_ks[1])).replace("{{LS_K2}}", str(ls_ks[2]))
+            .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
+            .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
+            .replace("{{LS_N}}", f"{ls_n:,}")
             .replace("{{COEF_ROWS}}", coef_rows).replace("{{ERR_ROWS}}", err_rows)
             .replace("{{MIX_PASS}}", str(mix_pass)).replace("{{MIX_ALL}}", str(mix_all))
             .replace("{{E1}}", f"{gm[('E', '区分1')]:.1f}").replace("{{E5}}", f"{gm[('E', '区分5')]:.1f}")

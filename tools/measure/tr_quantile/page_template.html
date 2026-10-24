@@ -63,6 +63,8 @@ table.calc td.n { text-align: right; white-space: nowrap; font-variant-numeric: 
 table.err td.best { font-weight: 700; color: var(--green); }
 table.err td.pass { outline: 2px solid var(--green); outline-offset: -3px; }
 table.calc tr.hl td { font-weight: 700; background: var(--bg); }
+svg .ls-best { stroke: var(--green); stroke-width: 2.4; } svg .ls-lo, svg .ls-hi { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 5 3; }
+svg .ls-res { stroke: var(--acc); stroke-width: 1.4; stroke-dasharray: 2 2; } svg .ls-pt { fill: var(--acc); }
 svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </style>
 
@@ -161,7 +163,21 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 
 <section aria-labelledby="h-mix">
   <h2 id="h-mix">荒れ方の見積もりを混ぜる</h2>
-  <p>次の足がどれだけ荒れるかを、直近 5 本・20 本・100 本の 3 つの ATR（それぞれ終値に対する割合）を混ぜて見積もりました。混ぜる重みは、2014〜2020 年のデータで「次の足の値幅に一番よく合う」ように最小二乗法（外れの二乗の合計が一番小さくなる重みを選ぶ方法）で決めています。</p>
+  <p>次の足がどれだけ荒れるかを、直近 5 本・20 本・100 本の 3 つの ATR（それぞれ終値に対する割合）を混ぜて見積もりました。混ぜる重みは、2014〜2020 年のデータで「次の足の値幅に一番よく合う」ように最小二乗法で決めています。</p>
+  <h3 class="h3">最小二乗法とは</h3>
+  <p>「見積もり」と「実際」の差（外れ）を足ごとに出し、それを二乗して全部足した合計が、一番小さくなる重みを選ぶ方法です。考え方を、ATR20 だけを使う簡単な形「次の足の値幅 ＝ 重み × ATR20」で、実際の 5 本の足（2014〜2020 年の 1 時間足から等間隔に選んだもの）を使って示します。</p>
+  <div class="tbl"><table class="calc">
+    <thead><tr><th>足</th><th>ATR20 ÷ 終値</th><th>次の足の値幅 ÷ 終値（実際）</th><th>重み {{LS_K0}} の外れ²</th><th>重み {{LS_K1}} の外れ²</th><th>重み {{LS_K2}} の外れ²</th></tr></thead>
+    <tbody>{{LS_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">外れ ＝ 実際 − 重み × ATR20。たとえば足 1 で重み {{LS_K1}} なら、見積もりは ATR20 × {{LS_K1}}、外れはそれと実際の差で、その二乗が表の値です。</p>
+  <figure class="figure"><figcaption>5 本の足と 3 つの重みの線</figcaption>{{FIG_LS}}
+    <div class="legend"><span><i style="background:var(--acc);border-radius:50%"></i>実際の足</span><span><i style="background:var(--green);height:3px"></i>重み {{LS_K1}}（合計が一番小さい）</span><span><i style="background:var(--muted);height:3px"></i>ほかの重み</span><span>縦の線＝重み {{LS_K1}} のときの外れ</span></div></figure>
+  <p>外れの二乗の合計は、重み {{LS_K0}} で {{LS_S0}}、{{LS_K1}} で {{LS_S1}}、{{LS_K2}} で {{LS_S2}} です。合計が一番小さい {{LS_K1}} を選びます。重みを細かく動かして合計が最小になる値を探すのが最小二乗法で、この 5 本では {{LS_K1}} が最小になります。</p>
+  <ul>
+    <li><b>なぜ二乗するのか：</b>外れには「見積もりより大きい（＋）」と「小さい（−）」があり、そのまま足すと打ち消し合って 0 に近くなってしまうためです。二乗すると全部が正の値になります。また、大きな外れほど重く数えられる（外れ 2 は二乗で 4、外れ 4 は 16）ので、大きく外す重みが選ばれにくくなります。</li>
+    <li><b>実際の計算：</b>本番では、重みは 1 つではなく 4 つ（ATR5・ATR20・ATR100 の重みと定数）で、足は 1 時間足で {{LS_N}} 本（2014〜2020 年）です。4 つの重みの組み合わせの中から、その全部の足の外れの二乗の合計が一番小さくなる組み合わせを、計算で一度に求めています（時間足ごとに別々に求める）。</li>
+  </ul>
   <div class="tbl"><table class="calc">
     <thead><tr><th>時間足</th><th>ATR5 の重み</th><th>ATR20 の重み</th><th>ATR100 の重み</th><th>定数</th></tr></thead>
     <tbody>{{COEF_ROWS}}</tbody>
@@ -199,7 +215,7 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
     <dt>ATR20・ATR5</dt><dd>真の値幅の直近 20 本・5 本の平均。</dd>
     <dt>荒れ方</dt><dd>ATR20 ÷ 終値。大きいほど荒れた相場。</dd>
     <dt>区分（段）</dt><dd>荒れ方の小さい順に足を 5 等分したまとまり。境目は 2014〜2020 年の荒れ方の 20・40・60・80% の位置。</dd>
-    <dt>最小二乗法</dt><dd>見積もりと実際の差を二乗して足し合わせ、その合計が一番小さくなるように重みを決める方法。</dd>
+    <dt>最小二乗法</dt><dd>見積もりと実際の差（外れ）を二乗して足し合わせ、その合計が一番小さくなるように重みを決める方法。二乗するのは、＋と−の外れが打ち消し合わないようにするため。</dd>
     <dt>平均へ戻る性質</dt><dd>大きく外れた値の次は、平均に近い値になりやすいこと。荒れ方にもこの性質がある。</dd>
   </dl>
   <p class="cap">コード：tools/measure/tr_quantile/（run.py・tq.py・make_page.py）／記録：RESULTS.md</p>
