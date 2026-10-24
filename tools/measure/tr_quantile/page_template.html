@@ -67,6 +67,7 @@ table.err td.pass { outline: 2px solid var(--green); outline-offset: -3px; }
 table.calc tr.hl td { font-weight: 700; background: var(--bg); }
 svg .ls-best { stroke: var(--green); stroke-width: 2.4; } svg .ls-lo, svg .ls-hi { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 5 3; }
 svg .ls-res { stroke: var(--acc); stroke-width: 1.4; stroke-dasharray: 2 2; } svg .ls-pt { fill: var(--acc); }
+svg .tb-is { fill: var(--blue); } svg .tb-oos { fill: var(--acc); }
 svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </style>
 
@@ -307,7 +308,36 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
   <ul>
     <li>cvfe を値幅の分位の線に使うなら、係数の決め方をそろえる（全期間で決めて持ち込む、または同じ規則で決め直し続ける）ことが必須です。チャートの cvfe をそのまま使うと、時間足によって大きく外れます。</li>
     <li>そろえた cvfe（G）は、簡易版の見積もり（E）と同じくらいの外れ（平均 2.8〜2.9）で、はっきり上回るとは言えません。</li>
-    <li>残る課題は、静かな時期の超えすぎです。係数の決め方では直らないので、別の原因（たとえば時間帯による値幅の違い）を調べる必要があります（未測定）。</li>
+    <li>残る課題は、静かな時期の超えすぎです。係数の決め方では直らないので、次の節で時間帯による値幅の違いを調べました。</li>
+  </ul>
+</section>
+
+<section aria-labelledby="h-tod">
+  <h2 id="h-tod">時間帯による値幅の違い</h2>
+  <p>係数の決め方をそろえても、静かな時期の超えすぎは残りました。そこで、時間帯による値幅の違いを調べました。考えたのは次の筋道です（推論）。早朝のような静かな時間帯は ATR が小さくなり、閾値も低くなります。その直後の足が、値動きの大きい日本時間 9 時の寄り付きなどに入ると、低い閾値を簡単に超えてしまいます。</p>
+  <figure class="figure"><figcaption>時間帯ごとの値幅（2 つの業者）</figcaption>{{TOD_HOUR}}
+    <div class="legend"><span><i style="background:var(--blue)"></i>Dukascopy（2014〜2020）</span><span><i style="background:var(--acc)"></i>MT5（2020〜2026）</span></div></figure>
+  <p>値幅は時間帯で大きく違います。日本時間 9 時が一番大きく（Dukascopy {{TV_IS9}}%・MT5 {{TV_OOS9}}%）、6 時前後の取引の休止時間帯が一番小さくなります。2 つの業者で時刻の基準はそろっていますが、休止時間帯だけは差が大きく、6 時は Dukascopy {{TV_IS6}}% に対して MT5 {{TV_OOS6}}% です。休止中の気配の扱いが業者で違うためと考えられます（推論）。</p>
+  <h3 class="h3">時間帯で見積もりを直す</h3>
+  <p>次の足が始まる時刻ごとに「実際の値幅 ÷ 見積もり」の中央値（時間帯の係数）を 2014〜2020 年で求め、見積もりに掛けて直しました。<b>J</b> は直した見積もりで 5 段に分ける方法（E の時間帯版）、<b>K</b> は直した見積もりで割る方法（F の時間帯版）です。日足は時間帯が無いので対象外です。</p>
+  <figure class="figure"><figcaption>次の足の時刻ごとの超過率（1 時間足・目標 20%）</figcaption>{{TOD_EX}}
+    <div class="legend"><span><i style="background:var(--amber);border-radius:50%"></i>E（時間帯なし）</span><span><i style="background:var(--green);border-radius:50%"></i>J（時間帯で直した）</span></div></figure>
+  <p>時間帯を入れない E は、外れが時間帯に強く偏っていました。次の足が 9 時なら 100 本中 {{TV_E9}} 本が閾値を超え、19 時なら {{TV_E19}} 本しか超えません。全体で目標どおりに見えても、時間帯ごとには大きく外れていたことになります。J では 9 時が {{TV_J9}} 本まで下がり、ほとんどの時間帯が目標の近くに入りました。ただし休止時間帯の 5〜7 時は {{TV_J5}}〜{{TV_J7}} 本と超えすぎます。Dukascopy で決めた係数が、MT5 の休止時間帯の値幅を小さく見積もるためです。</p>
+  <div class="tbl"><table class="calc err">
+    <thead><tr><th>時間足・目標</th><th>E</th><th>F</th><th>J</th><th>K</th><th>E の時間帯の外れ</th><th>J の時間帯の外れ</th></tr></thead>
+    <tbody>{{TOD_ERR}}</tbody>
+  </table></div>
+  <p class="cap">左の 4 列は全体と 5 段のうち一番外れた段のずれ（判定に使う）。右の 2 列は 24 の時間帯のうち一番外れた時間帯のずれ（記録のみ）。単位は 100 本中の本数の差。</p>
+  <div class="tbl"><table class="calc">
+    <thead><tr><th>方法</th><th>全体</th><th>段 1（静か）</th><th>段 2</th><th>段 3</th><th>段 4</th><th>段 5（荒れ）</th></tr></thead>
+    <tbody>{{TOD_B}}</tbody>
+  </table></div>
+  <p class="cap">1 時間足・目標 20% の段ごとの超過率（100 本中の本数）。</p>
+  <ul>
+    <li><b>静かな段の超えすぎが消えた：</b>J の静かな段は 100 本中 20 本前後になり、これまでどの方法でも残っていた外れが解消しました。時間帯の違いが原因だったという筋道を裏付けます。</li>
+    <li><b>合格が増えた：</b>J は 15 分足と 1 時間足の目標 5% で合格し、段で見た外れはどの時間足でも E より小さくなりました。全体では {{TV_ALL}} 組中 {{TV_PASS}} 組が合格です。</li>
+    <li><b>残る外れ：</b>(1) 5〜7 時の休止時間帯（業者で値幅が違う）と、(2) J では荒れた段が少し超えすぎる（1 時間足で 22.5 本）ことです。</li>
+    <li><b>次の候補（未測定）：</b>休止時間帯の係数を MT5 の系列で決める、または休止時間帯を閾値の対象から外す。</li>
   </ul>
 </section>
 

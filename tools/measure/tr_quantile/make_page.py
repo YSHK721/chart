@@ -339,6 +339,76 @@ def fit4_tables():
     return shift, err, summ_rows, need_rows, fmt(bf), fmt(bb), int(v["pass"].sum()), len(v)
 
 
+def tod_parts():
+    """§12: 時間帯ごとの値幅（2 業者）の図、時間帯ごとの超過率（E・J）の図、判定と段の表。"""
+    RT = HERE / "results_tod"
+    t = pd.read_csv(RT / "rates.csv")
+    v = pd.read_csv(RT / "verdict.csv")
+    from tools.measure.tr_quantile.run import PERIODS
+    med = {}
+    for per in ("IS", "OOS"):
+        path, s, e = PERIODS[per]
+        d = pd.read_csv(ROOT / path.format(tf="1h"), usecols=["date", "high", "low", "close"], parse_dates=["date"])
+        d = d[(d.date >= s) & (d.date < e)]
+        med[per] = ((d.high - d.low) / d.close * 100).groupby((d.date + pd.Timedelta(hours=9)).dt.hour).median()
+    X0, X1, Y0, Y1 = 60, 630, 24, 210
+    bw = (X1 - X0) / 24
+    hi = max(med["IS"].max(), med["OOS"].max()) * 1.15
+    sy = lambda val: Y1 - val / hi * (Y1 - Y0)
+    parts = []
+    for g in np.linspace(0, hi, 4)[:-1]:
+        parts.append(f'<line x1="{X0}" x2="{X1}" y1="{sy(g):.1f}" y2="{sy(g):.1f}" class="grid"/>')
+        parts.append(f'<text x="{X0 - 6}" y="{sy(g) + 4:.1f}" text-anchor="end" class="tk">{g:.2f}%</text>')
+    for h in range(24):
+        x = X0 + h * bw
+        a, b = med["IS"].get(h, np.nan), med["OOS"].get(h, np.nan)
+        parts.append(f'<rect x="{x + 2:.1f}" y="{sy(a):.1f}" width="{bw / 2 - 2:.1f}" height="{Y1 - sy(a):.1f}" class="tb-is"/>')
+        parts.append(f'<rect x="{x + bw / 2:.1f}" y="{sy(b):.1f}" width="{bw / 2 - 2:.1f}" height="{Y1 - sy(b):.1f}" class="tb-oos"/>')
+        if h % 3 == 0:
+            parts.append(f'<text x="{x + bw / 2:.1f}" y="{Y1 + 16}" text-anchor="middle" class="tk">{h}時</text>')
+    parts.append(f'<text x="{X0}" y="14" class="tk">1 時間足の（高値 − 安値）÷ 終値の中央値　横軸＝日本時間</text>')
+    fig_hour = '<svg viewBox="0 0 640 236" role="img" aria-label="時間帯ごとの値幅の 2 業者の比較">' + "".join(parts) + "</svg>"
+    # 時間帯ごとの超過率
+    g = t[(t.tf == "1h") & (t.q == 0.8) & t.group.str.startswith("時")]
+    pv = g.pivot_table(index="group", columns="method", values="rate")
+    vmax = 90
+    sy2 = lambda val: Y1 - val / vmax * (Y1 - Y0)
+    parts = [f'<rect x="{X0}" y="{sy2(22):.1f}" width="{X1 - X0}" height="{sy2(18) - sy2(22):.1f}" class="band"/>',
+             f'<line x1="{X0}" x2="{X1}" y1="{sy2(20):.1f}" y2="{sy2(20):.1f}" class="tgt"/>']
+    for gv in (0, 20, 40, 60, 80):
+        parts.append(f'<text x="{X0 - 6}" y="{sy2(gv) + 4:.1f}" text-anchor="end" class="tk">{gv}%</text>')
+    for h in range(24):
+        x = X0 + h * bw + bw / 2
+        e_, j_ = pv.loc[f"時{h:02d}", "E"], pv.loc[f"時{h:02d}", "J"]
+        parts.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{sy2(e_):.1f}" y2="{sy2(j_):.1f}" class="link"/>')
+        parts.append(f'<circle cx="{x:.1f}" cy="{sy2(e_):.1f}" r="4.5" class="m-A"/>')
+        parts.append(f'<circle cx="{x:.1f}" cy="{sy2(j_):.1f}" r="4.5" class="m-C"/>')
+        if h % 3 == 0:
+            parts.append(f'<text x="{x:.1f}" y="{Y1 + 16}" text-anchor="middle" class="tk">{h}時</text>')
+    parts.append(f'<text x="{X0}" y="14" class="tk">次の足が始まる時刻ごとの、閾値を超えた割合（1 時間足・目標 20%・帯は ±2）</text>')
+    fig_ex = '<svg viewBox="0 0 640 236" role="img" aria-label="時間帯ごとの超過率。E は寄り付き前後で超えすぎ、J はほぼ帯の近く">' + "".join(parts) + "</svg>"
+    tfj = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足"}
+    pv2 = v.pivot_table(index=["tf", "q"], columns="method", values=["max_abs_err", "hour_max_err"])
+    err = ""
+    for tf in ("15m", "1h", "4h"):
+        for q in (0.8, 0.95):
+            row = pv2.loc[(tf, q)]
+            best = min(row[("max_abs_err", mm)] for mm in "EFJK")
+            err += f"<tr><td>{tfj[tf]}・目標 {(1 - q) * 100:.0f}%</td>"
+            for mm in "EFJK":
+                e_ = row[("max_abs_err", mm)]
+                err += f'<td class="n{" best" if e_ == best else ""}{" pass" if e_ <= 2 else ""}">{e_:.1f}</td>'
+            err += "".join(f'<td class="n">{row[("hour_max_err", mm)]:.0f}</td>' for mm in ("E", "J")) + "</tr>"
+    b = t[(t.tf == "1h") & (t.q == 0.8) & t.method.isin(["E", "J"]) & ~t.group.str.startswith("時")]
+    pb = b.pivot_table(index="method", columns="group", values="rate")
+    brows = "".join(f'<tr><td>{mm}</td>' + "".join(f'<td class="n">{pb.loc[mm, gg]:.1f}</td>' for gg in ["全体", "区分1", "区分2", "区分3", "区分4", "区分5"]) + "</tr>"
+                    for mm in ("E", "J"))
+    vals = dict(e9=pv.loc["時09", "E"], e19=pv.loc["時19", "E"], j9=pv.loc["時09", "J"],
+                j567=(pv.loc["時05", "J"], pv.loc["時06", "J"], pv.loc["時07", "J"]), is6=med["IS"][6], oos6=med["OOS"][6],
+                is9=med["IS"][9], oos9=med["OOS"][9], npass=int(v["pass"].sum()), nall=len(v))
+    return fig_hour, fig_ex, err, brows, vals
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -381,6 +451,7 @@ def main(out_path: str):
     et = e_thresholds()
     cv_err, cv_ratio, cv_pass, cv_all, cv_corr = cvfe_tables()
     ca1, ca2, ca3 = cause_tables()
+    tod_hour, tod_ex, tod_err, tod_b, tv = tod_parts()
     f4_shift, f4_err, f4_summ, f4_need, f4_bf, f4_bb, f4_pass, f4_all = fit4_tables()
     role_rows = "".join(f'<tr><td>段 {i + 1}{"（静か）" if i == 0 else ("（荒れ）" if i == 4 else "")}</td>'
                         f'<td class="n">{et["p20"][i]:.3f}%</td><td class="n">{et["p5"][i]:.3f}%</td></tr>' for i in range(5))
@@ -402,6 +473,12 @@ def main(out_path: str):
             .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
             .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
             .replace("{{LS_N}}", f"{ls_n:,}")
+            .replace("{{TOD_HOUR}}", tod_hour).replace("{{TOD_EX}}", tod_ex).replace("{{TOD_ERR}}", tod_err)
+            .replace("{{TOD_B}}", tod_b).replace("{{TV_E9}}", f"{tv['e9']:.0f}").replace("{{TV_E19}}", f"{tv['e19']:.0f}")
+            .replace("{{TV_J9}}", f"{tv['j9']:.0f}").replace("{{TV_J5}}", f"{min(tv['j567']):.0f}").replace("{{TV_J7}}", f"{max(tv['j567']):.0f}")
+            .replace("{{TV_IS6}}", f"{tv['is6']:.2f}").replace("{{TV_OOS6}}", f"{tv['oos6']:.2f}")
+            .replace("{{TV_IS9}}", f"{tv['is9']:.2f}").replace("{{TV_OOS9}}", f"{tv['oos9']:.2f}")
+            .replace("{{TV_PASS}}", str(tv["npass"])).replace("{{TV_ALL}}", str(tv["nall"]))
             .replace("{{F4_SHIFT}}", f4_shift).replace("{{F4_ERR}}", f4_err).replace("{{F4_SUMM}}", f4_summ)
             .replace("{{F4_NEED}}", f4_need).replace("{{F4_BF}}", f4_bf).replace("{{F4_BB}}", f4_bb)
             .replace("{{F4_PASS}}", str(f4_pass)).replace("{{F4_ALL}}", str(f4_all))
