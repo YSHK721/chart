@@ -57,6 +57,7 @@ svg .band { fill: var(--band); } svg .tgt { stroke: var(--green); stroke-width: 
 svg .m-A { fill: var(--amber); } svg .m-B { fill: var(--violet); } svg .m-C { fill: var(--green); } svg .m-D { fill: var(--blue); }
 svg .c-best { fill: var(--best); stroke: var(--green); } svg .c-mid { fill: var(--mid); stroke: var(--rule); } svg .c-bad { fill: var(--bad); stroke: var(--acc); }
 svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
+svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </style>
 
 <main>
@@ -67,7 +68,7 @@ svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
 </header>
 
 <div class="verdict">
-  <p><b>結論：荒れ方の区分ごとの分位で、荒れた時期の超えすぎは大きく減ります。ただし、事前に決めた精度（±2 ポイント）には届きませんでした。</b></p>
+  <p><b>結論：荒れ方の区分ごとの分位で、荒れた時期の超えすぎは大きく減ります。ただし、事前に決めた合格の幅（100 本中 18〜22 本）には届きませんでした。</b></p>
   <p>全期間で 1 つの分位を使うと、荒れた時期は目標 20% の線を {{A5}}% も超えました。荒れ方の区分ごとの分位にすると {{C5}}% まで下がります。残る外れは、静かな時期に超えすぎ（{{C1}}%）、荒れた時期に超えなさすぎる向きにそろっており、荒れ方が平均へ戻る性質によるものと考えられます。合格は {{N_ALL}} 組中 {{N_PASS}} 組です。</p>
 </div>
 
@@ -98,7 +99,20 @@ svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
       <tr><td>D 区分 × 向き</td><td>C の各段を、直近 5 本が荒れてきているか（ATR5 ÷ ATR20 ≥ 1）でさらに 2 つに分ける</td></tr>
     </tbody>
   </table></div>
-  <p>閾値は 2014〜2020 年（Dukascopy）だけで作り、2020〜2026 年（MT5）で「実際に超えた割合」を数えました。全体と、荒れ方の 5 段それぞれで、目標 ± 2 ポイント以内なら合格、と実行前に決めています。</p>
+  <p>閾値は 2014〜2020 年（Dukascopy）だけで作り、2020〜2026 年（MT5）で「実際に超えた割合」を数えました。</p>
+</section>
+
+<section aria-labelledby="h-tol">
+  <h2 id="h-tol">合格の幅「±2 ポイント」とは</h2>
+  <p>目標 20% の閾値は、「100 本のうち 20 本が超える線」のつもりで引いた線です。実際に数えて 20 本ちょうどになることはまずないので、どこまでのずれなら「線の引き方は正しい」とみなすかを、測る前に決めておきました。それが ±2 ポイントで、<b>100 本中 18〜22 本が超えれば合格</b>という意味です。目標 5% なら、100 本中 3〜7 本です。</p>
+  <figure class="figure"><figcaption>100 本のうち閾値を超えた本数（1 時間足・目標 20%）</figcaption>{{FIG_TOL}}
+    <div class="legend"><span><i style="background:var(--acc)"></i>閾値を超えた足</span><span><i style="background:var(--soft)"></i>超えなかった足</span></div></figure>
+  <p>C（荒れ方の区分）は、全体では 100 本中 {{C_ALL_N}} 本で合格の幅に入ります。しかし静かな段では {{C1_N}} 本（超えすぎ）、荒れた段では {{C5_N}} 本（超えなさすぎ）で、幅の外に出ます。全体と 5 つの段の<b>すべて</b>が幅に入ることを合格の条件にしたので、1 つでも外れれば不合格です。</p>
+  <ul>
+    <li><b>なぜ段ごとに見るのか：</b>全体だけを見ると、超えすぎの段と超えなさすぎの段が打ち消し合って、目標どおりに見えてしまうためです。A（固定）も全体では 100 本中 22.2 本と幅の境目すれすれですが、荒れた段では 48 本も超えています。</li>
+    <li><b>なぜ 2 ポイントなのか：</b>測る前に目安として決めた値で、統計で決まる値ではありません。目標 20% なら、超える回数が 1 割ずれる程度（20 本が 18〜22 本）です。1 時間足は各段に 3,000〜10,000 本あり、足どうしが独立とみなした計算では、偶然のぶれは 95% の範囲でおよそ ±0.8〜1.5 ポイントです。6 ポイント前後のずれは、偶然ではなく線の引き方のずれと読めます。</li>
+    <li><b>表の数字の読み方：</b>次の節の表にある「最大の外れ」は、全体と 5 つの段のうち、目標から一番離れた段のずれです。C・1 時間足・目標 20% の 6.5 は、静かな段の 26.5 本（目標 20 本から 6.5 本多い）です。</li>
+  </ul>
 </section>
 
 <section aria-labelledby="h-r1">
@@ -112,8 +126,8 @@ svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
 <section aria-labelledby="h-r2">
   <h2 id="h-r2">結果：すべての組の外れ</h2>
   <figure class="figure"><figcaption>全体と 5 段のうち、目標から一番外れた大きさ（ポイント）</figcaption>{{FIG_VERDICT}}
-    <div class="legend"><span><i style="background:var(--best);border:1px solid var(--green)"></i>その行で一番小さい</span><span><i style="background:var(--bad);border:1px solid var(--acc)"></i>8 ポイントを超える</span><span>合格の基準は 2 ポイント以内</span></div></figure>
-  <p>どの組も 2 ポイントに届きませんでした。C（荒れ方の区分）が多くの組で一番小さく、15 分足と 4 時間足の目標 5% では 2.6 ポイントまで近づきます。日足は静かな段の足が少なく（32 本・119 本）、その段は判定から外しています。</p>
+    <div class="legend"><span><i style="background:var(--best);border:1px solid var(--green)"></i>その行で一番小さい</span><span><i style="background:var(--bad);border:1px solid var(--acc)"></i>8 ポイントを超える</span><span>合格は 2 以内（100 本中のずれが 2 本以内）</span></div></figure>
+  <p>どの組も 2 以内に入りませんでした。C（荒れ方の区分）が多くの組で一番小さく、15 分足と 4 時間足の目標 5% では 2.6 ポイントまで近づきます。日足は静かな段の足が少なく（32 本・119 本）、その段は判定から外しています。</p>
 </section>
 
 <section aria-labelledby="h-why2">
@@ -127,7 +141,7 @@ svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
   <ul>
     <li>全期間で 1 つの分位を使い回すのはやめる。荒れた時期に閾値を超える回数が 2.5 倍前後になります。</li>
     <li>荒れ方の区分ごとの分位（C）を使えば、荒れた時期の超えすぎは目標近くまで下がります。ただし静かな時期は、閾値が低めに出る（超えやすい）ことを前提にします。</li>
-    <li>精度 ±2 ポイントが必要な用途には、まだ使えません。</li>
+    <li>超える回数を 100 本中 ±2 本の精度でそろえたい用途（例：「5 本に 1 本」を正確に当てたい）には、まだ使えません。</li>
   </ul>
 </section>
 
@@ -136,6 +150,7 @@ svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
   <dl class="terms">
     <dt>分位</dt><dd>値を小さい順に並べたときの位置で決まる値。80% の分位は、下から 80%（上から 20%）の位置の値。</dd>
     <dt>閾値</dt><dd>「これを超えたらふだんより大きい」とみなす線。</dd>
+    <dt>ポイント（割合の差）</dt><dd>割合と割合の差。20% と 26.5% の差は 6.5 ポイント（100 本中 6.5 本の差）。</dd>
     <dt>超過率</dt><dd>実際に閾値を超えた足の割合。目標の分位どおりなら、80% の分位で 20%、95% の分位で 5%。</dd>
     <dt>真の値幅</dt><dd>高値 − 安値、|高値 − 前の終値|、|安値 − 前の終値| のうち一番大きいもの。窓も含めた 1 本の動きの幅。</dd>
     <dt>ATR20・ATR5</dt><dd>真の値幅の直近 20 本・5 本の平均。</dd>

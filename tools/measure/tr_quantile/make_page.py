@@ -114,6 +114,27 @@ def fig_buckets(t, tf="1h", q=0.8):
     return f'<svg viewBox="0 0 680 {H}" role="img" aria-label="{TF_JA[tf]}・目標 {target:.0f}% の区分ごとの超過率">' + "".join(parts) + "</svg>"
 
 
+def fig_tol(rates):
+    """100 本の格子で、目標・合格の幅・C の全体・静かな段・荒れた段の超えた本数を見せる。"""
+    panels = [("目標", 20, "20 本"), ("合格の幅（下限）", 18, "18 本"), ("合格の幅（上限）", 22, "22 本"),
+              ("C・全体", rates["all"], f"{rates['all']:.1f} 本"), ("C・静かな段", rates["q"], f"{rates['q']:.1f} 本"),
+              ("C・荒れた段", rates["h"], f"{rates['h']:.1f} 本")]
+    cell, gap, pw = 11, 2, 10 * 13
+    W = 20 + len(panels) * (pw + 24)
+    parts = []
+    for k, (title, n, lab) in enumerate(panels):
+        x0 = 20 + k * (pw + 24)
+        filled = int(round(n))
+        for i in range(100):
+            r, c = divmod(i, 10)
+            cls = "g-on" if i < filled else "g-off"
+            parts.append(f'<rect x="{x0 + c * (cell + gap)}" y="{40 + r * (cell + gap)}" width="{cell}" height="{cell}" rx="2" class="{cls}"/>')
+        ok = 18 <= n <= 22
+        parts.append(f'<text x="{x0 + pw / 2:.1f}" y="18" text-anchor="middle" class="lb strong">{title}</text>')
+        parts.append(f'<text x="{x0 + pw / 2:.1f}" y="34" text-anchor="middle" class="tk">{lab}{"" if k < 3 else ("・幅の中" if ok else "・幅の外")}</text>')
+    return f'<svg viewBox="0 0 {W} 180" role="img" aria-label="100 本のうち閾値を超えた本数の比較">' + "".join(parts) + "</svg>"
+
+
 def fig_verdict(v):
     rows = [(tf, q) for tf in ("15m", "1h", "4h", "1D") for q in (0.8, 0.95)]
     X0, cw, rh, Y0 = 170, 110, 36, 40
@@ -146,6 +167,9 @@ def main(out_path: str):
             .replace("{{FIG_SERIES}}", ser_svg).replace("{{OVER_A}}", f"{over_a:.0f}").replace("{{OVER_C}}", f"{over_c:.0f}")
             .replace("{{FIG_B20}}", fig_buckets(t, "1h", 0.8)).replace("{{FIG_B5}}", fig_buckets(t, "1h", 0.95))
             .replace("{{FIG_VERDICT}}", fig_verdict(v))
+            .replace("{{FIG_TOL}}", fig_tol({"all": g1[("C", "全体")], "q": g1[("C", "区分1")], "h": g1[("C", "区分5")]}))
+            .replace("{{C_ALL_N}}", f"{g1[('C', '全体')]:.1f}").replace("{{C1_N}}", f"{g1[('C', '区分1')]:.1f}")
+            .replace("{{C5_N}}", f"{g1[('C', '区分5')]:.1f}")
             .replace("{{A5}}", f"{g1[('A', '区分5')]:.1f}").replace("{{C5}}", f"{g1[('C', '区分5')]:.1f}")
             .replace("{{C1}}", f"{g1[('C', '区分1')]:.1f}").replace("{{A1}}", f"{g1[('A', '区分1')]:.1f}")
             .replace("{{N_PASS}}", str(int(v["pass"].sum()))).replace("{{N_ALL}}", str(len(v))))
