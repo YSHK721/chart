@@ -1,0 +1,179 @@
+<title>公開ページ一覧</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
+<style>
+/* テーマ別の目次。各報告ページと同じ体裁。新しいページを公開したらここに 1 行足して再公開する */
+:root {
+  --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
+  --link: #2f6f8f; --mark: #b4442e; --chip: #e6eef2;
+  --body: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --display: "BIZ UDPMincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --link: #7fbcd8; --mark: #ef8a73; --chip: #1f3640; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141917; --fg: #e3e9e5; --muted: #9aa8a0; --rule: #2d3632; --panel: #1b2220;
+  --link: #7fbcd8; --mark: #ef8a73; --chip: #1f3640; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.75 var(--body); }
+main { max-width: 52rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 36px; }
+h1 { font: 700 2rem/1.3 var(--display); margin: 0; }
+h2 { font: 700 1.25rem/1.4 var(--display); margin: 0; }
+p { margin: 0; }
+.sub { color: var(--muted); font-size: .9rem; }
+.search { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.search input { font: inherit; font-size: .95rem; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); color: var(--fg); width: min(100%, 22rem); }
+.search input:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+section { display: grid; gap: 10px; min-width: 0; }
+.items { display: grid; gap: 0; border-top: 1px solid var(--rule); }
+.item { display: grid; grid-template-columns: 1fr auto; gap: 2px 16px; padding: 12px 2px; border-bottom: 1px solid var(--rule); min-width: 0; }
+.item a { color: var(--link); font-weight: 700; text-decoration: none; }
+.item a:hover, .item a:focus-visible { text-decoration: underline; }
+.item time { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.item .what { grid-column: 1 / -1; color: var(--muted); font-size: .9rem; }
+.item .res { grid-column: 1 / -1; font-size: .95rem; }
+.note { color: var(--mark); font-size: .85rem; }
+.empty { color: var(--muted); }
+</style>
+
+<main>
+<header style="display:grid;gap:10px">
+  <h1>公開ページ一覧</h1>
+  <p class="sub">日経 225（JP225）の測定・解説・道具のページ 26 件をテーマ別に並べました。各行は「何のページか」と「結論」です。2026-10-24 時点。</p>
+  <div class="search"><label for="q">絞り込み</label><input id="q" type="search" placeholder="例：S/R・EMA・確率"><span class="sub" id="count"></span></div>
+</header>
+
+<section data-group>
+  <h2>解説</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/F4z9o96WLYLbMbRk7myNHP">値幅（ATR）の見方</a><time>2026-10-24</time>
+      <p class="what">真の値幅と ATR の定義・計算方法・日経 225 での大きさ</p>
+      <p class="res">日足の ATR20 は 1,539 ポイント（終値の 2.32%）。値幅は本数の平方根に近い広がり方をする。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/HDx1j2ddMNPfYhmCp21Yor">突出度の測り方</a><time>2026-10-09</time>
+      <p class="what">高値・安値の候補の「突出度」の測り方</p>
+      <p class="res">突出度は左右の深さの小さい方。例：左 5.0%・右 3.0% なら突出度 3.0%。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/C1oJoxxncEMdi62HtdkHhb">模擬で同じ以上の割合</a><time>2026-10-12</time>
+      <p class="what">「模擬で同じ以上の割合」の測り方</p>
+      <p class="res">5% 以下で残るのは候補 4,411 本中 187 本。残った線が S/R として働く保証はない。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/6szsuqfMWL1eLUZq3B5MA2">MP列の読み方</a><time>2026-09-06</time>
+      <p class="what">価格ラダーの MP 列（市場の滞在の厚み）の読み方</p>
+      <p class="res">長いバーは節、短いバーは素通り帯、バー無しは窓の外。右端は POC（最も滞在が長い価格）。</p></div>
+  </div>
+</section>
+
+<section data-group>
+  <h2>確率と値動きの大きさ</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/Atnkq1CLtY5uAgsLfg8qBX">水準に届く確率</a><time>2026-10-24</time>
+      <p class="what">ATR の何倍離れた水準に、何本以内に届くかの確率と確率表</p>
+      <p class="res">15 分足・1 時間足・4 時間足の短い地平は 3 ポイント以内の精度で出せる（24 組中 17 組が合格）。日足は不合格。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/TXF1RifTbNxPcdFuV3Rw4d">JP225 ボラティリティ統計 — 時間足 × 連続本数</a><time>2026-08-04</time>
+      <p class="what">時間足 × 連続本数ごとの値幅の統計</p>
+      <p class="res">値幅は本数の 0.54〜0.60 乗で伸びる。原因は方向ではなく、大きさの固まり。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/7Vf67L7einaQ115XJH5tck">疑似VWAP 実測サマリー</a><time>2026-08-02</time>
+      <p class="what">疑似 VWAP の 13 通りの使い方の実測</p>
+      <p class="res">売買の向きの情報は無い。Δspread だけが短期の荒れ方を予測し、次の 25 分が 20〜23% 静か。</p></div>
+  </div>
+</section>
+
+<section data-group>
+  <h2>移動平均線と足の並び</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/KmB8EHCgmyE9k41HD8kT97">60EMA 安値・高値の反応</a><time>2026-10-23</time>
+      <p class="what">1 分足の安値・高値の 60EMA に触れたときの反応</p>
+      <p class="res">ずらした偽の線と区別できない。期間・時間足を変えても、両期間で出る差は 0.1 bp 前後（費用の 1/30 以下）。</p>
+      <p class="note what">ページの本文は、偽の線が近すぎるという指摘を受けた範囲・感度の測定の前の内容です（記録は RESULTS.md §3〜6）。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/TqxtLFd94jZBhs37oGENf2">21EMA 下方乖離の反発率</a><time>2026-10-14</time>
+      <p class="what">21EMA から何 % 下に離れたら反発しやすいか</p>
+      <p class="res">特に反発しやすい水準は無い。深いほど反発率が上がるのは、値動きのつながりの無い模擬経路でも同じ。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/23V6jAqYwEqinJvtyV7Jnz">足の並びの有意性</a><time>2026-10-21</time>
+      <p class="what">陽線・陰線、実体の大きさ、ひげの形で分けた足の並び</p>
+      <p class="res">売買に使える並びは無い。ひげの形には次の 1 本の小さな戻り（0.2〜0.5 bp・費用の 1/30 以下）がある。</p></div>
+  </div>
+</section>
+
+<section data-group>
+  <h2>ライン（ポイントの高値・安値）</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/73n1YWd8P5USNQGPDTcVyg">ライン売買の検定</a><time>2026-10-11</time>
+      <p class="what">ポイントの高値・安値のラインでの売買</p>
+      <p class="res">有利とは言えない（補正後 p 0.99〜1.00）。届いた後 24 本で 8 割以上が抜け、その割合は偽の水準と同じ。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/HkNjQ3HDv6cNYxXgi1pjjg">ライン見比べ</a><time>2026-10-09</time>
+      <p class="what">本物と偽（±0.5%）の線を見比べて当てる道具</p>
+      <p class="res">道具のため結論は無い。正解数はブラウザに保存される。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/Ay328yFuBLVPEUqJDgMq6d">ポイント高値安値</a><time>2026-10-12</time>
+      <p class="what">高値・安値の候補を絞って描く確認用チャート（MT5・1 時間足）</p>
+      <p class="res">道具のため結論は無い。初期値は突出度 3% 以上・模擬で同じ以上の割合 5% 以下。</p></div>
+  </div>
+</section>
+
+<section data-group>
+  <h2>ブロック高値・安値（S/R）</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/VmYFh4QRHWwzLyT9JjcBBN">ブロック S/R 調査のまとめ</a><time>2026-10-03</time>
+      <p class="what">ブロック S/R 調査の総まとめ</p>
+      <p class="res">短期 1〜9 本の効果は立証（偶然より約 1.5% 多い）。148 本以上は立証できなかった。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/WHDmt5CiCqqYMDRU68aPLS">ブロック高値・安値の S/R 検定</a><time>2026-10-03</time>
+      <p class="what">ブロック高値・安値の S/R 検定（MT5）</p>
+      <p class="res">全段まとめは有意（p = 0.003）。段が長いほど効く、は否定（p = 0.96）。上乗せは約 1.4%。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/HKiJEUtMnpPKxHRtDbmvFv">S/R 検定の再現</a><time>2026-10-03</time>
+      <p class="what">全段まとめの検定を別期間（Dukascopy）で再現</p>
+      <p class="res">再現した（p = 0.003）。短期 1〜9 本の効果は立証。中長期の差は負。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/T6MDs2dCcR1DAkNVizHj2V">S/R 別の到達後の動き</a><time>2026-10-03</time>
+      <p class="what">抵抗（R）・支持（S）別の到達後の動き</p>
+      <p class="res">R・S とも偽の水準と差が無い（24 検定・補正後 p ≥ 0.19）。上への偏りは相場全体の上昇による。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/1XyNTGyWYX12w7G9h1q6h1">水準到達後の内側と外側</a><time>2026-10-03</time>
+      <p class="what">水準に届いた後、内側・外側のどちらへ動くか</p>
+      <p class="res">ほぼ半々で、偽の水準と区別できない（補正後 p ≥ 0.18）。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/VpWbdQQGcPJuGogDzzPbWk">突破後の乖離率</a><time>2026-10-03</time>
+      <p class="what">中長期の水準を突破した後に加速するか</p>
+      <p class="res">加速は見られない（差 −0.13〜+0.11 ポイント・補正後 p ≥ 0.55）。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/AXZi1hbVYtmwZG8gaCBWFe">S/R の到達を 1 分足で測る</a><time>2026-10-04</time>
+      <p class="what">S/R に届いた後を 1 分足で測る</p>
+      <p class="res">水準の効果は見えない。ランダムと差が出た測定も、偽の水準で同じ大きさ。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/SKd8eGcfu86WEPivSRVd3m">S/R 到達チャート 2016</a><time>2026-10-04</time>
+      <p class="what">2016 年の S/R への到達を見るチャート（Dukascopy）</p>
+      <p class="res">結論の文は無い。埋め込みの検定値はすべて補正後 p ≥ 0.76。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/Ax85LLNmecuW9CpdJ9PTTW">安値付近の戻りとランダムエントリー</a><time>2026-10-03</time>
+      <p class="what">安値に届いた後の戻りを、ランダムな買いと比べる</p>
+      <p class="res">再現しなかった。有意は MT5 だけ（終値 35.8%・ランダム 43.5%）で、Dukascopy は補正後 p = 0.20。</p></div>
+  </div>
+</section>
+
+<section data-group>
+  <h2>道具・設計・監査</h2>
+  <div class="items">
+    <div class="item"><a href="https://claude.ai/artifact/3qwo1xc6SfgfjjkSa9C2M8">水準到達シート</a><time>2026-08-29</time>
+      <p class="what">水準到達シートの版面案（ISSUE-449）</p>
+      <p class="res">価格を唯一の軸に 88 本を 1 行ずつ並べる。次のターゲットは短期・中期・長期の 3 つ。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/Lums24Aekh1PDy8x6HFkDd">ロング・ロスカット到達（2026-08-06） — 口座状態レポート</a><time>2026-08-11</time>
+      <p class="what">ロングがロスカットに達した日の口座状態</p>
+      <p class="res">損切りより先にロスカットが発動。損益 −9,129、残高 172,000 → 162,871。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/7bmpVYEVC2QxKe8Ma5TFGN">テストと実装の設計差異 監査</a><time>2026-08-09</time>
+      <p class="what">テストと実装の設計の食い違いの監査</p>
+      <p class="res">全部緑のテストが見張っていない差異が 142 件（重大度高 42 件）。テスト全体を 1 つのコマンドで回せない。</p></div>
+    <div class="item"><a href="https://claude.ai/artifact/YA4aQzQjejgjcWsHaBjj9i">テストと実装の設計差異 監査 (Copy)</a><time>2026-08-09</time>
+      <p class="what">上の監査の複製（約 1 時間前に公開）</p>
+      <p class="res">差異 137 件版で、上のページ（142 件）と件数・見出し・末尾の 1 行が違う。最新は上のページ。</p></div>
+  </div>
+</section>
+
+<p class="empty" id="none" hidden>当てはまるページはありません。</p>
+<p class="sub">各ページは非公開です。ほかの人に見せるときは、それぞれのページの共有メニューから共有してください。</p>
+</main>
+
+<script>
+const q = document.getElementById("q");
+const items = [...document.querySelectorAll(".item")];
+function apply() {
+  const w = q.value.trim().toLowerCase();
+  let n = 0;
+  items.forEach((it) => { const hit = !w || it.textContent.toLowerCase().includes(w); it.hidden = !hit; if (hit) n++; });
+  document.querySelectorAll("[data-group]").forEach((g) => { g.hidden = ![...g.querySelectorAll(".item")].some((it) => !it.hidden); });
+  document.getElementById("count").textContent = `${n} 件`;
+  document.getElementById("none").hidden = n > 0;
+}
+q.addEventListener("input", apply);
+apply();
+</script>
