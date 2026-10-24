@@ -46,6 +46,26 @@ def fig_hist():
             + "".join(parts) + "</svg>"), q80, q95
 
 
+def worked_example(q80: float):
+    """MT5 1 時間足の実際の 2 本（起点の足と次の足）で、測る値の計算を数値で示す。
+
+    週明けで窓が開いた最新の場面（次の足の真の値幅が高値 − 安値より大きい）を選ぶ。
+    """
+    d = pd.read_csv(ROOT / "data/marketdata/rollups/jp225_mt5/jp225_mt5_1h.csv",
+                    usecols=["date", "open", "high", "low", "close"], parse_dates=["date"]).iloc[:-1].reset_index(drop=True)
+    o, h, l, c = (d[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+    tr = Q.true_range(h, l, c)
+    gap_min = d.date.diff().dt.total_seconds().to_numpy() / 60
+    cand = np.flatnonzero((tr > (h - l) * 1.5) & (gap_min > 600))
+    j = int(cand[-1])      # 次の足（週明け）
+    t = j - 1              # 起点の足（週末の最後の足）
+    c1, c2, c3 = h[j] - l[j], abs(h[j] - c[t]), abs(l[j] - c[t])
+    y = tr[j] / c[t] * 100
+    return dict(t_date=f"{d.date[t]:%Y-%m-%d %H:%M}", j_date=f"{d.date[j]:%Y-%m-%d %H:%M}", c_t=c[t],
+                o=o[j], h=h[j], l=l[j], c=c[j], c1=c1, c2=c2, c3=c3, tr=tr[j], y=y, q80=q80,
+                over=y > q80, hl_pct=c1 / c[t] * 100)
+
+
 def fig_series():
     """MT5 1 時間足の 2024-07〜08（荒れた時期を含む）: 値幅と、A（固定）・C（区分）の閾値。"""
     yi, vi, ri, _ = load("IS", "1h")
@@ -161,9 +181,20 @@ def main(out_path: str):
     v = pd.read_csv(RES / "verdict.csv")
     hist_svg, q80, q95 = fig_hist()
     ser_svg, over_a, over_c = fig_series()
+    ex = worked_example(q80)
+    best = max(("候補 1", ex["c1"]), ("候補 2", ex["c2"]), ("候補 3", ex["c3"]), key=lambda z: z[1])[0]
+    ex_rows = (f'<tr><td>起点の足の終値（{ex["t_date"]} UTC）</td><td class="n">{ex["c_t"]:,.1f}</td><td>前の終値・割る数</td></tr>'
+               f'<tr><td>次の足（{ex["j_date"]} UTC）の始値・高値・安値・終値</td><td class="n">{ex["o"]:,.1f}・{ex["h"]:,.1f}・{ex["l"]:,.1f}・{ex["c"]:,.1f}</td><td>週明けで窓が開いた足</td></tr>'
+               f'<tr><td>候補 1：高値 − 安値</td><td class="n">{ex["h"]:,.1f} − {ex["l"]:,.1f} ＝ {ex["c1"]:,.1f}</td><td></td></tr>'
+               f'<tr><td>候補 2：|高値 − 前の終値|</td><td class="n">|{ex["h"]:,.1f} − {ex["c_t"]:,.1f}| ＝ {ex["c2"]:,.1f}</td><td></td></tr>'
+               f'<tr><td>候補 3：|安値 − 前の終値|</td><td class="n">|{ex["l"]:,.1f} − {ex["c_t"]:,.1f}| ＝ {ex["c3"]:,.1f}</td><td></td></tr>'
+               f'<tr class="hl"><td>真の値幅（3 つのうち一番大きい＝{best}）</td><td class="n">{ex["tr"]:,.1f} ポイント</td><td></td></tr>'
+               f'<tr class="hl"><td>測る値 ＝ 真の値幅 ÷ 起点の足の終値</td><td class="n">{ex["tr"]:,.1f} ÷ {ex["c_t"]:,.1f} ＝ {ex["y"]:.2f}%</td><td>80% の分位 {q80:.2f}% を{"超えた" if ex["over"] else "超えていない"}</td></tr>')
     g1 = t[(t.tf == "1h") & (t.q == 0.8)].set_index(["method", "group"]).rate
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_HIST}}", hist_svg).replace("{{Q80}}", f"{q80:.2f}").replace("{{Q95}}", f"{q95:.2f}")
+            .replace("{{EX_ROWS}}", ex_rows).replace("{{EX_HL_PCT}}", f"{ex['hl_pct']:.2f}")
+            .replace("{{EX_Y}}", f"{ex['y']:.2f}").replace("{{EX_TR}}", f"{ex['tr']:,.0f}")
             .replace("{{FIG_SERIES}}", ser_svg).replace("{{OVER_A}}", f"{over_a:.0f}").replace("{{OVER_C}}", f"{over_c:.0f}")
             .replace("{{FIG_B20}}", fig_buckets(t, "1h", 0.8)).replace("{{FIG_B5}}", fig_buckets(t, "1h", 0.95))
             .replace("{{FIG_VERDICT}}", fig_verdict(v))

@@ -57,6 +57,9 @@ svg .band { fill: var(--band); } svg .tgt { stroke: var(--green); stroke-width: 
 svg .m-A { fill: var(--amber); } svg .m-B { fill: var(--violet); } svg .m-C { fill: var(--green); } svg .m-D { fill: var(--blue); }
 svg .c-best { fill: var(--best); stroke: var(--green); } svg .c-mid { fill: var(--mid); stroke: var(--rule); } svg .c-bad { fill: var(--bad); stroke: var(--acc); }
 svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
+.h3 { font: 700 1.05rem/1.5 var(--body); margin: 8px 0 0; }
+table.calc td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.calc tr.hl td { font-weight: 700; background: var(--bg); }
 svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </style>
 
@@ -77,7 +80,15 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
   <p>過去の足の値幅を小さい順に並べ、上から 20% の位置にある値を「80% の分位」と呼びます。これを閾値にすると、次の足の値幅がその線を超えるのは、5 回に 1 回のはずです。95% の分位なら 20 回に 1 回です。</p>
   <figure class="figure"><figcaption>1 時間足の値幅の分布（Dukascopy・2014〜2020）</figcaption>{{FIG_HIST}}
     <div class="legend"><span><i style="background:var(--soft)"></i>80% の分位まで</span><span><i style="background:var(--blue)"></i>80〜95%</span><span><i style="background:var(--acc)"></i>95% の分位より上</span></div></figure>
-  <p>値幅は真の値幅（窓を含めた 1 本の動き）を、その足の終値で割った割合で測ります。1 時間足の 80% の分位は {{Q80}}%、95% の分位は {{Q95}}% でした。平均と違い、まれな大きな足があっても分位はほとんど動きません。</p>
+  <p>1 時間足の 80% の分位は {{Q80}}%、95% の分位は {{Q95}}% でした。平均と違い、まれな大きな足があっても分位はほとんど動きません。</p>
+  <h3 class="h3">測る値の計算（実際の 2 本の足）</h3>
+  <p>測る値は「<b>次の足の真の値幅 ÷ 起点の足の終値</b>」です。起点の足が終わった時点で、次の 1 本がどれだけ動くかを、起点の終値に対する割合で表します。MT5 の 1 時間足で計算すると次のとおりです。</p>
+  <div class="tbl"><table class="calc">
+    <thead><tr><th>項目</th><th>値</th><th>メモ</th></tr></thead>
+    <tbody>{{EX_ROWS}}</tbody>
+  </table></div>
+  <p>この足は週明けで窓が開いたため、高値 − 安値だけなら {{EX_HL_PCT}}% ですが、窓を含めた真の値幅では {{EX_Y}}%（{{EX_TR}} ポイント）になります。</p>
+  <p><b>終値で割る理由：</b>日経 225 の価格は、2020 年の約 20,000 円から 2026 年の約 65,000 円まで動きました。同じ 300 ポイントの動きでも、20,000 円のときは 1.50%、65,000 円のときは 0.46% で、重みがまったく違います。割合にすると、価格の水準が違う時期どうしを同じ物差しで比べられ、2014〜2020 年で作った分位を 2020〜2026 年に当てはめられます。</p>
 </section>
 
 <section aria-labelledby="h-why">
