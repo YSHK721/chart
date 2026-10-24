@@ -232,6 +232,24 @@ def fig_scale():
     return f'<svg viewBox="0 0 640 260" role="img" aria-label="先の本数と値幅の広がり。実測は平方根の曲線に近い">' + "".join(parts) + "</svg>", dict(zip(ts, ratio))
 
 
+def gap_stats():
+    """窓の効き目: 真の値幅 ÷（高値 − 安値）の平均比と、窓で値幅が増えた足の割合（MT5）。"""
+    out = {}
+    for tf in ("15m", "1h", "1D"):
+        d = load(MT5, tf)
+        tr = true_range(d)
+        hl = (d.high - d.low).to_numpy()
+        ok = np.isfinite(tr)
+        out[tf] = (tr[ok].mean() / hl[ok].mean(), (tr[ok] > hl[ok] + 1e-9).mean() * 100)
+    d = load(MT5, "1D")
+    tr = true_range(d)
+    hl = (d.high - d.low).to_numpy()
+    mon = (d.date.dt.dayofweek == 0).to_numpy()
+    out["mon"] = np.nanmean(tr[mon]) / np.nanmean(hl[mon])
+    out["other"] = np.nanmean(tr[~mon]) / np.nanmean(hl[~mon])
+    return out
+
+
 def main(out_path: str):
     tr_svg, tr_cap = fig_tr()
     tf_svg, tf_rows = fig_tf()
@@ -243,6 +261,10 @@ def main(out_path: str):
     top_hours = "・".join(f"{h}時" for h in hours.sort_values(ascending=False).index[:3])
     low_hours = "・".join(f"{h}時" for h in hours.sort_values().index[:3])
     tf_map = {tf: v for tf, _, v in tf_rows}
+    gs = gap_stats()
+    gap_rows = "".join(
+        f'<tr><td>{name}</td><td class="n">+{(gs[tf][0] - 1) * 100:.1f}%</td><td class="n">{gs[tf][1]:.1f}%</td></tr>'
+        for tf, name in (("15m", "15 分足"), ("1h", "1 時間足"), ("1D", "日足")))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_TR}}", tr_svg).replace("{{TR_CAP}}", tr_cap)
             .replace("{{FIG_SMOOTH}}", fig_smooth()).replace("{{FIG_HISTORY}}", fig_history())
@@ -251,6 +273,8 @@ def main(out_path: str):
             .replace("{{LAST_CLOSE}}", f"{last['close']:,.0f}").replace("{{LAST_PCT}}", f"{last['atr'] / last['close'] * 100:.2f}")
             .replace("{{TF_1H}}", f"{tf_map['1h']:.3f}").replace("{{TF_1D}}", f"{tf_map['1D']:.2f}")
             .replace("{{TF_5M}}", f"{tf_map['5m']:.3f}")
+            .replace("{{GAP_ROWS}}", gap_rows)
+            .replace("{{GAP_MON}}", f"{(gs['mon'] - 1) * 100:.1f}").replace("{{GAP_OTHER}}", f"{(gs['other'] - 1) * 100:.1f}")
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
     Path(out_path).write_text(page, encoding="utf-8")

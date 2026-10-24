@@ -36,6 +36,11 @@ figcaption { font-weight: 700; font-size: .95rem; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--muted); align-items: center; }
 .legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
 ol, ul { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; }
+th { color: var(--muted); font-size: .8rem; }
+td.n { text-align: right; white-space: nowrap; }
 dl.terms { margin: 0; display: grid; grid-template-columns: minmax(8em, max-content) 1fr; gap: 10px 18px; }
 dl.terms dt { font-weight: 700; }
 dl.terms dd { margin: 0; min-width: 0; }
@@ -94,6 +99,23 @@ svg .m-real { fill: var(--blue); }
   <figure class="figure"><figcaption>窓が開いた実際の足</figcaption>{{FIG_TR}}<p class="cap">{{TR_CAP}}</p></figure>
 </section>
 
+<section aria-labelledby="h-gap">
+  <h2 id="h-gap">なぜ前の足の終値を含めるのか</h2>
+  <p>窓の分の動きを数えるためです。高値 − 安値は足の中の動きしか見ないので、前の足から価格が飛んだ分が抜け落ちます。</p>
+  <div class="formula">
+    <span>例：前日の終値 100 → 翌日は 110 で始まり、高値 111・安値 109</span>
+    <span>高値 − 安値 ＝ 111 − 109 ＝ 2</span>
+    <span>|高値 − 前日の終値| ＝ |111 − 100| ＝ 11</span>
+    <span><b>真の値幅 ＝ 11</b>（前日から持ち越した人が実際に受けた動き）</span>
+  </div>
+  <p>ATR は損切りの幅や建てる量を決めるのに使います。持ち越した人が受ける動きを測らないと、荒れ方を小さく見積もり、損切りの幅が狭すぎることになります。考案者のワイルダー（1978 年）が対象にした商品先物は、夜間に取引が止まり、値幅制限で 1 日中動けない日（高値 ＝ 安値）もあったため、窓を含めて測る必要がありました（一般に知られている経緯）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>時間足（MT5）</th><th>真の値幅が高値 − 安値より大きい分（平均）</th><th>窓で値幅が増えた足の割合</th></tr></thead>
+    <tbody>{{GAP_ROWS}}</tbody>
+  </table></div>
+  <p>日経 225 の CFD はほぼ 23 時間取引されるので窓は小さく、真の値幅と高値 − 安値の平均はほとんど同じです。差が出るのは窓が開く場面で、週末をはさむ月曜の日足は +{{GAP_MON}}%（ほかの曜日は +{{GAP_OTHER}}%）大きくなります。週明けや大きな発表の直後では、高値 − 安値だけを見ると動きを見落とします。</p>
+</section>
+
 <section aria-labelledby="h-avg">
   <h2 id="h-avg">ATR：真の値幅の平均</h2>
   <p>真の値幅は 1 本ごとに大きくぶれます。ふだんの大きさを知るために、直近の何本かで平均したものが <b>ATR</b>（Average True Range・平均的な真の値幅）です。</p>
@@ -147,7 +169,8 @@ svg .m-real { fill: var(--blue); }
   <dl class="terms">
     <dt>足（ローソク足）</dt><dd>一定の時間（1 分・1 時間・1 日など）ごとの値動きを 1 本にまとめたもの。その時間の長さを時間足と呼ぶ。</dd>
     <dt>始値・高値・安値・終値</dt><dd>その足の時間の最初の価格・一番高い価格・一番安い価格・最後の価格。</dd>
-    <dt>窓（すき間）</dt><dd>前の足の終値と次の足の始値が離れていること。夜間・週末・発表直後などに起きる。</dd>
+    <dt>窓（すき間）</dt><dd>前の足の終値と次の足の始値が離れていること。夜間・週末・発表直後などに起きる。高値 − 安値には現れないので、真の値幅で数える。</dd>
+    <dt>値幅制限</dt><dd>取引所が 1 日に動いてよい価格の幅を決める仕組み。上限・下限に張り付くと取引が止まる。</dd>
     <dt>真の値幅</dt><dd>高値 − 安値、|高値 − 前の終値|、|安値 − 前の終値| のうち一番大きいもの。窓も含めた 1 本の動きの幅。</dd>
     <dt>ATR</dt><dd>Average True Range。真の値幅を直近の何本かで平均した値。ATR20 は 20 本の平均。</dd>
     <dt>単純平均</dt><dd>直近 n 本の値を足して n で割る平均。どの足も同じ重さで数える。</dd>
