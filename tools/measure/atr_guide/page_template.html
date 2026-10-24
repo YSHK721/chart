@@ -3,6 +3,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=BIZ+UDPMincho:wght@700&display=swap">
 <style>
+td { vertical-align: top; }
 /* 1 列の解説。用語集を最後に置く。水準に届く確率の報告と同じ体裁。図は実データから描く（make_page.py） */
 :root {
   --bg: #f7f8f6; --fg: #1f2622; --muted: #5d6a63; --rule: #d6ddd8; --panel: #ffffff;
@@ -165,6 +166,20 @@ svg .m-real { fill: var(--blue); }
   <p>例：3 日間持つ買いで、95% の場面で損切りにかからない幅にしたいなら、ATR20 の約 {{H3_P95}} 倍が目安です。値幅は日数に比例しては増えず、1 日に比べて 3 日で約 {{H3_R}} 倍、5 日で約 {{H5_R}} 倍です（日数の平方根に近い増え方）。「1 日の ATR × 日数」で見積もると、幅を広く取りすぎます。</p>
   <p>ATR3 は、見積もりとしてぶれが大きくなります。ATR20 との比は、80% の日で {{A3_LO}}〜{{A3_HI}} 倍の間を動きます。次の 3 日間の値幅を当てる力は ATR20 とほぼ同じで（相関 {{A3_CORR}} 対 {{A20_CORR}}）、外れ方はむしろ大きくなりました（平均の外れ {{A3_ERR}} ポイント対 {{A20_ERR}} ポイント）。</p>
   <p class="cap">この倍率は 2020 年以降の MT5 だけで測った値で、別の期間での照合はしていません。日足は相場の傾きの影響を受けやすい（水準に届く確率の報告で照合に合格しなかった）点に注意が要ります。</p>
+</section>
+
+<section aria-labelledby="h-span">
+  <h2 id="h-span">持つ時間に合わせて幅を決める</h2>
+  <p>どの値幅を物差しにするかは、ポジションを持つ時間で決まります。持つ時間より長い足の値幅を使うと幅が広すぎ、短い足の値幅を使うと狭すぎます。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>持つ時間</th><th>使う値幅</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td>1 日より短い（数時間で手じまう）</td><td>持つ時間に合った時間足の ATR と、その本数分の倍率</td><td>1 日の値幅は広すぎる。日足の ATR20 は終値の {{TF_1D}}%、1 時間足は {{TF_1H}}%。1 時間足で 5 本持つなら、値幅は 1 時間足の ATR の約 {{SC5}} 倍</td></tr>
+      <tr><td>ほぼ 1 日・持ち越さない</td><td>1 日の値幅（高値 − 安値）</td><td>窓の影響を受けないので、前の日の終値を含めなくてよい</td></tr>
+      <tr><td>日をまたいで持ち越す</td><td>日足の ATR20 × 持つ日数分の倍率（前の節の表）</td><td>窓に加えて、日数に応じて値幅が広がる。1 日の値幅だけでは足りない</td></tr>
+    </tbody>
+  </table></div>
+  <p>日経 225 の CFD はほぼ 23 時間取引されるので、窓の差は小さめです（日足で真の値幅は高値 − 安値より平均 +0.8%、月曜は +{{GAP_MON}}%）。持ち越すかどうかの違いが大きく出るのは、週末をまたぐときと大きな発表の直後、そして日数分の値幅の広がりです。</p>
 </section>
 
 <section aria-labelledby="h-use">
