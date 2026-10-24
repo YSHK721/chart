@@ -258,6 +258,31 @@ def e_thresholds(tf="1h"):
     return dict(p20=p20, p5=p5, f=fo, k=k, close=close, date=f"{d.date[ok].iloc[-1]:%Y-%m-%d %H:%M}")
 
 
+def cvfe_tables():
+    """§6: C・E・G・H の最大の外れの表と、物差しの比の表。"""
+    RC = HERE / "results_cvfe"
+    v = pd.read_csv(RC / "verdict.csv")
+    info = pd.read_csv(RC / "info.csv").set_index("tf")
+    tfj = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
+    pv = v.pivot_table(index=["tf", "q"], columns="method", values="max_abs_err")
+    cols = ("C", "E", "G", "H")
+    err = ""
+    for tf in ("15m", "1h", "4h", "1D"):
+        for q in (0.8, 0.95):
+            row = pv.loc[(tf, q)]
+            best = min(row[c] for c in cols)
+            err += (f"<tr><td>{tfj[tf]}・目標 {(1 - q) * 100:.0f}%</td>"
+                    + "".join(f'<td class="n{" best" if row[c] == best else ""}{" pass" if row[c] <= 2 else ""}">{row[c]:.1f}</td>' for c in cols)
+                    + "</tr>")
+    ratio = "".join(f'<tr><td>{tfj[tf]}</td><td class="n">{r.ratio_cvfe_is:.2f}</td><td class="n">{r.ratio_cvfe_oos:.2f}</td>'
+                    f'<td class="n">{(r.ratio_cvfe_oos / r.ratio_cvfe_is - 1) * 100:+.0f}%</td>'
+                    f'<td class="n">{r.ratio_atr_is:.2f}</td><td class="n">{r.ratio_atr_oos:.2f}</td>'
+                    f'<td class="n">{(r.ratio_atr_oos / r.ratio_atr_is - 1) * 100:+.0f}%</td></tr>'
+                    for tf, r in info.loc[["15m", "1h", "4h", "1D"]].iterrows())
+    corr = (info.corr_cvfe_oos.min(), info.corr_cvfe_oos.max(), info.corr_har_oos.min(), info.corr_har_oos.max())
+    return err, ratio, int(v["pass"].sum()), len(v), corr
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -298,6 +323,7 @@ def main(out_path: str):
     coef_rows, err_rows, mix_pass, mix_all = mix_tables()
     ls_rows, ls_svg, ls_ks, ls_sums, ls_n = ls_example()
     et = e_thresholds()
+    cv_err, cv_ratio, cv_pass, cv_all, cv_corr = cvfe_tables()
     role_rows = "".join(f'<tr><td>段 {i + 1}{"（静か）" if i == 0 else ("（荒れ）" if i == 4 else "")}</td>'
                         f'<td class="n">{et["p20"][i]:.3f}%</td><td class="n">{et["p5"][i]:.3f}%</td></tr>' for i in range(5))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
@@ -318,6 +344,10 @@ def main(out_path: str):
             .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
             .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
             .replace("{{LS_N}}", f"{ls_n:,}")
+            .replace("{{CV_ERR}}", cv_err).replace("{{CV_RATIO}}", cv_ratio)
+            .replace("{{CV_PASS}}", str(cv_pass)).replace("{{CV_ALL}}", str(cv_all))
+            .replace("{{CV_C1}}", f"{cv_corr[0]:.2f}").replace("{{CV_C2}}", f"{cv_corr[1]:.2f}")
+            .replace("{{CV_H1}}", f"{cv_corr[2]:.2f}").replace("{{CV_H2}}", f"{cv_corr[3]:.2f}")
             .replace("{{ROLE_ROWS}}", role_rows).replace("{{ROLE_DATE}}", et["date"]).replace("{{ROLE_K}}", str(et["k"] + 1))
             .replace("{{ROLE_F}}", f"{et['f']:.3f}").replace("{{ROLE_CLOSE}}", f"{et['close']:,.0f}")
             .replace("{{ROLE_T5}}", f"{et['p5'][et['k']]:.3f}").replace("{{ROLE_T5P}}", f"{et['p5'][et['k']] / 100 * et['close']:,.0f}")

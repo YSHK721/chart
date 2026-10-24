@@ -49,7 +49,9 @@ def main():
         hi_, ho = Q.har_predict(b, xi, floor), Q.har_predict(b, xo, floor)
         corr = lambda f, y: float(np.corrcoef(f, y)[0, 1])
         info.append(dict(tf=tf, measure_id=mid, quality_gate=gate, n_is=len(yi), n_oos=len(yo),
-                         corr_har_oos=corr(ho, yo), corr_cvfe_oos=corr(co, yo)))
+                         corr_har_oos=corr(ho, yo), corr_cvfe_oos=corr(co, yo),
+                         ratio_cvfe_is=float(np.median(yi / ci)), ratio_cvfe_oos=float(np.median(yo / co)),
+                         ratio_atr_is=float(np.median(yi / vi)), ratio_atr_oos=float(np.median(yo / vo))))
         edges = np.quantile(vi, [0.2, 0.4, 0.6, 0.8])
         bucket = np.digitize(vo, edges)
         est = {"har": (hi_, ho), "cvfe": (ci, co)}
