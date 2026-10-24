@@ -236,6 +236,28 @@ def ls_example():
     return rows, svg, ks, sums, len(y)
 
 
+def e_thresholds(tf="1h"):
+    """E（見積もりの段）の段ごとの閾値（目標 20%・5%）と、いまの見積もりが入る段・その閾値（%・ポイント）。"""
+    from tools.measure.tr_quantile.run_mix import load as load_mix
+    yi, vi, ri, xi = load_mix("IS", tf)
+    b = Q.har_fit(yi, xi)
+    raw = b[0] + xi @ b[1:]
+    floor = float(raw[raw > 0].min())
+    fi = Q.har_predict(b, xi, floor)
+    edges = np.quantile(vi, [0.2, 0.4, 0.6, 0.8])
+    edges_f = np.quantile(fi, [0.2, 0.4, 0.6, 0.8])
+    p20 = Q.fit("E", yi, vi, ri, 0.8, edges, f=fi, edges_f=edges_f)
+    p5 = Q.fit("E", yi, vi, ri, 0.95, edges, f=fi, edges_f=edges_f)
+    d = pd.read_csv(ROOT / "data/marketdata/rollups/jp225_mt5/jp225_mt5_1h.csv",
+                    usecols=["date", "high", "low", "close"], parse_dates=["date"]).iloc[:-1]
+    h, l, c = (d[k].to_numpy(float) for k in ("high", "low", "close"))
+    _, _, _, xo, ok = Q.features_mix(h, l, c)
+    fo = Q.har_predict(b, xo[-1:], floor)[0]
+    k = int(np.digitize([fo], edges_f)[0])
+    close = float(c[ok][-1])
+    return dict(p20=p20, p5=p5, f=fo, k=k, close=close, date=f"{d.date[ok].iloc[-1]:%Y-%m-%d %H:%M}")
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -275,6 +297,9 @@ def main(out_path: str):
     gm = tm[(tm.tf == "1h") & (tm.q == 0.8)].set_index(["method", "group"]).rate
     coef_rows, err_rows, mix_pass, mix_all = mix_tables()
     ls_rows, ls_svg, ls_ks, ls_sums, ls_n = ls_example()
+    et = e_thresholds()
+    role_rows = "".join(f'<tr><td>段 {i + 1}{"（静か）" if i == 0 else ("（荒れ）" if i == 4 else "")}</td>'
+                        f'<td class="n">{et["p20"][i]:.3f}%</td><td class="n">{et["p5"][i]:.3f}%</td></tr>' for i in range(5))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_HIST}}", hist_svg).replace("{{Q80}}", f"{q80:.2f}").replace("{{Q95}}", f"{q95:.2f}")
             .replace("{{EX_ROWS}}", ex_rows).replace("{{EX_HL_PCT}}", f"{ex['hl_pct']:.2f}")
@@ -293,6 +318,10 @@ def main(out_path: str):
             .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
             .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
             .replace("{{LS_N}}", f"{ls_n:,}")
+            .replace("{{ROLE_ROWS}}", role_rows).replace("{{ROLE_DATE}}", et["date"]).replace("{{ROLE_K}}", str(et["k"] + 1))
+            .replace("{{ROLE_F}}", f"{et['f']:.3f}").replace("{{ROLE_CLOSE}}", f"{et['close']:,.0f}")
+            .replace("{{ROLE_T5}}", f"{et['p5'][et['k']]:.3f}").replace("{{ROLE_T5P}}", f"{et['p5'][et['k']] / 100 * et['close']:,.0f}")
+            .replace("{{ROLE_T20}}", f"{et['p20'][et['k']]:.3f}").replace("{{ROLE_T20P}}", f"{et['p20'][et['k']] / 100 * et['close']:,.0f}")
             .replace("{{COEF_ROWS}}", coef_rows).replace("{{ERR_ROWS}}", err_rows)
             .replace("{{MIX_PASS}}", str(mix_pass)).replace("{{MIX_ALL}}", str(mix_all))
             .replace("{{E1}}", f"{gm[('E', '区分1')]:.1f}").replace("{{E5}}", f"{gm[('E', '区分5')]:.1f}")
