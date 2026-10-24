@@ -24,6 +24,7 @@ body { background: var(--bg); color: var(--fg); font: 16px/1.85 var(--body); }
 main { max-width: 46rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 40px; }
 h1 { font: 700 2rem/1.3 var(--display); margin: 0; text-wrap: balance; }
 h2 { font: 700 1.3rem/1.4 var(--display); margin: 0 0 4px; text-wrap: balance; }
+.h3 { font: 700 1.05rem/1.5 var(--body); margin: 8px 0 0; }
 p { margin: 0; }
 section { display: grid; gap: 12px; min-width: 0; }
 .lead { font-size: 1.08rem; }
@@ -89,6 +90,7 @@ svg .m-real { fill: var(--blue); }
     <li>1 日より短く持つなら、持つ時間に合った時間足の ATR を使います。</li>
     <li>何日も持ち越すなら、1 日の ATR では足りず、日数分の値幅（ATR の倍率）を使います。</li>
   </ul>
+  <p>ここでの「持ち越し」は、日をまたぐことに限りません。<b>足から次の足へ持ち続けること</b>です。1 時間足の ATR なら、1 時間足をまたいで持つ人の値幅です。</p>
   <p class="cap">使い分けは「持つ時間に合わせて幅を決める」の節にまとめています。</p>
 </div>
 
@@ -127,6 +129,14 @@ svg .m-real { fill: var(--blue); }
     <thead><tr><th>時間足（MT5）</th><th>真の値幅が高値 − 安値より大きい分（平均）</th><th>窓で値幅が増えた足の割合</th></tr></thead>
     <tbody>{{GAP_ROWS}}</tbody>
   </table></div>
+  <h3 class="h3">短い時間足でも前の足の終値を使う</h3>
+  <p>1 時間足の ATR も、前の 1 時間足の終値を含めて計算します。数時間持つ取引は 1 時間足を何本もまたいで持つ、つまり足から次の足へ持ち越すからです。</p>
+  <p>取引が続いている時間帯では、前の足の終値と次の足の始値はほぼ同じ価格なので、含めても値はほとんど変わりません。窓が出るのは、毎日の休止や週末など取引が止まった後の足です（MT5・1 時間足の実測）。</p>
+  <ul>
+    <li>前の足から 60 分を超える空白の後の足は全体の {{BRK_BARS}}% だけですが、窓の分の {{BRK_GAP}}% がそこに集まります。</li>
+    <li>空白の無い足では、真の値幅は高値 − 安値より平均 {{BRK_PLAIN}}% 大きいだけです。空白の後の足では {{BRK_AFTER}}% 大きくなります。</li>
+  </ul>
+  <p>休止をまたがない短い取引なら、高値 − 安値で測っても ATR で測ってもほぼ同じです。休止や週末をまたぐ可能性があるなら、前の終値を含めた ATR で測っておくほうが安全です。</p>
   <p>日経 225 の CFD はほぼ 23 時間取引されるので窓は小さく、真の値幅と高値 − 安値の平均はほとんど同じです。差が出るのは窓が開く場面で、週末をはさむ月曜の日足は +{{GAP_MON}}%（ほかの曜日は +{{GAP_OTHER}}%）大きくなります。週明けや大きな発表の直後では、高値 − 安値だけを見ると動きを見落とします。</p>
 </section>
 

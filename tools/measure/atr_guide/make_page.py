@@ -274,6 +274,19 @@ def hold_stats():
     return rows, err, q, f"{d.date.iloc[0]:%Y-%m}"
 
 
+def break_stats():
+    """1 時間足で、窓の分（真の値幅 − 高値安値）が取引の休止（60 分超の空白）の直後に集まる度合い（MT5）。"""
+    d = load(MT5, "1h")
+    tr = true_range(d)
+    hl = (d.high - d.low).to_numpy()
+    ex = tr - hl
+    after = (d.date.diff().dt.total_seconds() / 60).to_numpy() > 60
+    ok = np.isfinite(ex)
+    return dict(share_bars=after[ok].mean() * 100, share_gap=ex[ok & after].sum() / ex[ok].sum() * 100,
+                plain=ex[ok & ~after].mean() / hl[ok & ~after].mean() * 100,
+                brk=ex[ok & after].mean() / hl[ok & after].mean() * 100)
+
+
 def main(out_path: str):
     tr_svg, tr_cap = fig_tr()
     tf_svg, tf_rows = fig_tf()
@@ -286,6 +299,7 @@ def main(out_path: str):
     low_hours = "・".join(f"{h}時" for h in hours.sort_values().index[:3])
     tf_map = {tf: v for tf, _, v in tf_rows}
     gs = gap_stats()
+    bs = break_stats()
     hrows, herr, hq, hstart = hold_stats()
     hold_rows = "".join(
         f'<tr><td>{t} 日</td><td class="n">{r:.2f} 倍</td><td class="n">{m:.2f} 倍</td><td class="n">{p80:.2f} 倍</td><td class="n">{p95:.2f} 倍</td></tr>'
@@ -310,6 +324,8 @@ def main(out_path: str):
             .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
             .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
+            .replace("{{BRK_BARS}}", f"{bs['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs['share_gap']:.0f}")
+            .replace("{{BRK_PLAIN}}", f"{bs['plain']:.1f}").replace("{{BRK_AFTER}}", f"{bs['brk']:.1f}")
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
     Path(out_path).write_text(page, encoding="utf-8")
