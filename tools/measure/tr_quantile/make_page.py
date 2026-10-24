@@ -19,7 +19,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RES = HERE / "results"
 TF_JA = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
-M_JA = {"A": "A 固定", "B": "B ATR で割る", "C": "C 荒れ方の区分", "D": "D 区分 × 向き"}
+M_JA = {"A": "A 固定", "B": "B ATR で割る", "C": "C 荒れ方の区分", "D": "D 区分 × 向き",
+        "E": "E 見積もりの段", "F": "F 見積もりで割る"}
+RES_MIX = HERE / "results_mix"
 
 
 def fig_hist():
@@ -122,7 +124,7 @@ def fig_series():
             + "".join(parts) + "</svg>"), over_a, over_c
 
 
-def fig_buckets(t, tf="1h", q=0.8):
+def fig_buckets(t, tf="1h", q=0.8, methods=Q.METHODS):
     """区分ごとの超過率（4 つの方法）と目標の帯。"""
     g = t[(t.tf == tf) & (t.q == q)]
     groups = ["全体", "区分1", "区分2", "区分3", "区分4", "区分5"]
@@ -139,14 +141,15 @@ def fig_buckets(t, tf="1h", q=0.8):
         parts.append(f'<line x1="{sx(v):.1f}" x2="{sx(v):.1f}" y1="20" y2="{H - 40}" class="grid"/>')
         parts.append(f'<text x="{sx(v):.1f}" y="{H - 24}" text-anchor="middle" class="tk">{v}%</text>')
     parts.append(f'<text x="{(X0 + X1) / 2}" y="{H - 6}" text-anchor="middle" class="tk">閾値を超えた割合（目標 {target:.0f}%・帯は ±2 ポイント）</text>')
-    offs = {"A": -13, "B": -4, "C": 5, "D": 14}
+    step = 27 / max(len(methods) - 1, 1)
+    offs = {mm: -13.5 + i * step for i, mm in enumerate(methods)}
     gg = g.set_index(["method", "group"])
     for j, (grp, lab) in enumerate(zip(groups, labels)):
         y = 30 + j * rh + rh / 2
         n = int(gg.loc[("A", grp), "n"])
         parts.append(f'<text x="{X0 - 10}" y="{y - 2:.1f}" text-anchor="end" class="lb">{lab}</text>')
         parts.append(f'<text x="{X0 - 10}" y="{y + 13:.1f}" text-anchor="end" class="tk">{n:,} 本</text>')
-        for m in Q.METHODS:
+        for m in methods:
             v = gg.loc[(m, grp), "rate"]
             parts.append(f'<circle cx="{sx(v):.1f}" cy="{y + offs[m]:.1f}" r="5" class="m-{m}"/>')
     return f'<svg viewBox="0 0 680 {H}" role="img" aria-label="{TF_JA[tf]}・目標 {target:.0f}% の区分ごとの超過率">' + "".join(parts) + "</svg>"
@@ -194,6 +197,25 @@ def fig_verdict(v):
     return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="方法ごとの最大の外れ（ポイント）">' + "".join(parts) + "</svg>"
 
 
+def mix_tables():
+    """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
+    coef = pd.read_csv(RES_MIX / "coef.csv")
+    v = pd.read_csv(RES_MIX / "verdict.csv")
+    tfj = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
+    coef_rows = "".join(f'<tr><td>{tfj[r.tf]}</td><td class="n">{r.b_atr5:.2f}</td><td class="n">{r.b_atr20:.2f}</td>'
+                        f'<td class="n">{r.b_atr100:.2f}</td><td class="n">{r.b0:.3f}</td></tr>' for r in coef.itertuples())
+    pv = v.pivot_table(index=["tf", "q"], columns="method", values="max_abs_err")
+    err_rows = ""
+    for tf in ("15m", "1h", "4h", "1D"):
+        for q in (0.8, 0.95):
+            row = pv.loc[(tf, q)]
+            best = row.min()
+            cells = "".join(f'<td class="n{" best" if row[mm] == best else ""}{" pass" if row[mm] <= 2 else ""}">{row[mm]:.1f}</td>'
+                            for mm in Q.METHODS_MIX)
+            err_rows += f"<tr><td>{tfj[tf]}・目標 {(1 - q) * 100:.0f}%</td>{cells}</tr>"
+    return coef_rows, err_rows, int(v["pass"].sum()), len(v)
+
+
 def main(out_path: str):
     t = pd.read_csv(RES / "rates.csv")
     v = pd.read_csv(RES / "verdict.csv")
@@ -210,6 +232,9 @@ def main(out_path: str):
                f'<tr class="hl"><td>真の値幅（3 つのうち一番大きい＝{best}）</td><td class="n">{ex["tr"]:,.1f} ポイント</td><td></td></tr>'
                f'<tr class="hl"><td>測る値 ＝ 真の値幅 ÷ 起点の足の終値</td><td class="n">{ex["tr"]:,.1f} ÷ {ex["c_t"]:,.1f} ＝ {ex["y"]:.2f}%</td><td>80% の分位 {q80:.2f}% を{"超えた" if ex["over"] else "超えていない"}</td></tr>')
     g1 = t[(t.tf == "1h") & (t.q == 0.8)].set_index(["method", "group"]).rate
+    tm = pd.read_csv(RES_MIX / "rates.csv")
+    gm = tm[(tm.tf == "1h") & (tm.q == 0.8)].set_index(["method", "group"]).rate
+    coef_rows, err_rows, mix_pass, mix_all = mix_tables()
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
     page = (tpl.replace("{{FIG_HIST}}", hist_svg).replace("{{Q80}}", f"{q80:.2f}").replace("{{Q95}}", f"{q95:.2f}")
             .replace("{{EX_ROWS}}", ex_rows).replace("{{EX_HL_PCT}}", f"{ex['hl_pct']:.2f}")
@@ -222,6 +247,11 @@ def main(out_path: str):
             .replace("{{FIG_SERIES}}", ser_svg).replace("{{OVER_A}}", f"{over_a:.0f}").replace("{{OVER_C}}", f"{over_c:.0f}")
             .replace("{{FIG_B20}}", fig_buckets(t, "1h", 0.8)).replace("{{FIG_B5}}", fig_buckets(t, "1h", 0.95))
             .replace("{{FIG_VERDICT}}", fig_verdict(v))
+            .replace("{{FIG_MIX}}", fig_buckets(tm, "1h", 0.8, ("C", "E", "F")))
+            .replace("{{COEF_ROWS}}", coef_rows).replace("{{ERR_ROWS}}", err_rows)
+            .replace("{{MIX_PASS}}", str(mix_pass)).replace("{{MIX_ALL}}", str(mix_all))
+            .replace("{{E1}}", f"{gm[('E', '区分1')]:.1f}").replace("{{E5}}", f"{gm[('E', '区分5')]:.1f}")
+            .replace("{{MC1}}", f"{gm[('C', '区分1')]:.1f}").replace("{{MC5}}", f"{gm[('C', '区分5')]:.1f}")
             .replace("{{FIG_TOL}}", fig_tol({"all": g1[("C", "全体")], "q": g1[("C", "区分1")], "h": g1[("C", "区分5")]}))
             .replace("{{C_ALL_N}}", f"{g1[('C', '全体')]:.1f}").replace("{{C1_N}}", f"{g1[('C', '区分1')]:.1f}")
             .replace("{{C5_N}}", f"{g1[('C', '区分5')]:.1f}")

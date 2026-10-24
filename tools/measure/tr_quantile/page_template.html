@@ -55,10 +55,13 @@ svg .th-a { fill: none; stroke: var(--amber); stroke-width: 2; stroke-dasharray:
 svg .th-c { fill: none; stroke: var(--green); stroke-width: 2; }
 svg .band { fill: var(--band); } svg .tgt { stroke: var(--green); stroke-width: 1.6; }
 svg .m-A { fill: var(--amber); } svg .m-B { fill: var(--violet); } svg .m-C { fill: var(--green); } svg .m-D { fill: var(--blue); }
+svg .m-E { fill: var(--blue); } svg .m-F { fill: var(--violet); }
 svg .c-best { fill: var(--best); stroke: var(--green); } svg .c-mid { fill: var(--mid); stroke: var(--rule); } svg .c-bad { fill: var(--bad); stroke: var(--acc); }
 svg .cell { font-size: 12px; font-weight: 700; fill: var(--fg); }
 .h3 { font: 700 1.05rem/1.5 var(--body); margin: 8px 0 0; }
 table.calc td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.err td.best { font-weight: 700; color: var(--green); }
+table.err td.pass { outline: 2px solid var(--green); outline-offset: -3px; }
 table.calc tr.hl td { font-weight: 700; background: var(--bg); }
 svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </style>
@@ -71,8 +74,8 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 </header>
 
 <div class="verdict">
-  <p><b>結論：荒れ方の区分ごとの分位で、荒れた時期の超えすぎは大きく減ります。ただし、事前に決めた合格の幅（100 本中 18〜22 本）には届きませんでした。</b></p>
-  <p>全期間で 1 つの分位を使うと、荒れた時期は目標 20% の線を {{A5}}% も超えました。荒れ方の区分ごとの分位にすると {{C5}}% まで下がります。残る外れは、静かな時期に超えすぎ（{{C1}}%）、荒れた時期に超えなさすぎる向きにそろっており、荒れ方が平均へ戻る性質によるものと考えられます。合格は {{N_ALL}} 組中 {{N_PASS}} 組です。</p>
+  <p><b>結論：荒れ方の区分ごとの分位で、荒れた時期の超えすぎは大きく減ります。ただし、事前に決めた合格の幅（100 本中 18〜22 本）には、ほとんどの組が届きませんでした。</b></p>
+  <p>全期間で 1 つの分位を使うと、荒れた時期は目標 20% の線を {{A5}}% も超えました。荒れ方の区分ごとの分位にすると {{C5}}% まで下がります。残る外れは、静かな時期に超えすぎ（{{C1}}%）、荒れた時期に超えなさすぎる向きにそろっており、荒れ方が平均へ戻る性質によるものと考えられます。合格は {{N_ALL}} 組中 {{N_PASS}} 組です。荒れ方を直近 5 本・20 本・100 本の ATR を混ぜて見積もり直すと（E）、外れはさらに小さくなり、1 組が合格しました。</p>
 </div>
 
 <section aria-labelledby="h-what">
@@ -153,14 +156,34 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
 <section aria-labelledby="h-why2">
   <h2 id="h-why2">なぜ逆向きの外れが残るのか</h2>
   <p>荒れ方は平均へ戻る性質があります。静かな時期の次は荒れやすく、荒れた時期の次は落ち着きやすいということです。C は「いまの荒れ方」だけで段を決めるので、静かな段の閾値は次の足にとって低すぎ、荒れた段の閾値は高すぎになります。外れの向きがすべての時間足でそろっていることが、その表れと考えられます（推論）。</p>
-  <p>直近 5 本の向き（D）を加えても外れは変わりませんでした。次に試すべきは、いまの荒れ方と長い期間の平均を混ぜた荒れ方の見積もりで段を決める方法です（まだ測っていません）。</p>
+  <p>直近 5 本の向き（D）を加えても外れは変わりませんでした。そこで次の節で、いまの荒れ方と長い期間の平均を混ぜた見積もりを試しました。</p>
+</section>
+
+<section aria-labelledby="h-mix">
+  <h2 id="h-mix">荒れ方の見積もりを混ぜる</h2>
+  <p>次の足がどれだけ荒れるかを、直近 5 本・20 本・100 本の 3 つの ATR（それぞれ終値に対する割合）を混ぜて見積もりました。混ぜる重みは、2014〜2020 年のデータで「次の足の値幅に一番よく合う」ように最小二乗法（外れの二乗の合計が一番小さくなる重みを選ぶ方法）で決めています。</p>
+  <div class="tbl"><table class="calc">
+    <thead><tr><th>時間足</th><th>ATR5 の重み</th><th>ATR20 の重み</th><th>ATR100 の重み</th><th>定数</th></tr></thead>
+    <tbody>{{COEF_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">見積もり ＝ 定数 ＋ ATR5 × 重み ＋ ATR20 × 重み ＋ ATR100 × 重み（どれも終値に対する %）。15 分足と 1 時間足では、100 本の長い期間の重みが 0.27〜0.36 と大きく出ました。</p>
+  <p>この見積もりを使って、2 つの決め方を作りました。<b>E</b> は C の「荒れ方（ATR20）」を見積もりに替えて 5 段に分けたもの、<b>F</b> は B の「ATR20 で割る」を見積もりで割るように替えたものです。段ごとの超過率は、比べやすいように A〜D と同じ段（ATR20 で分けた段）で数えています。</p>
+  <figure class="figure"><figcaption>1 時間足・目標 20%：C と、見積もりを使った E・F</figcaption>{{FIG_MIX}}
+    <div class="legend"><span><i style="background:var(--green);border-radius:50%"></i>C 荒れ方の区分</span><span><i style="background:var(--blue);border-radius:50%"></i>E 見積もりの段</span><span><i style="background:var(--violet);border-radius:50%"></i>F 見積もりで割る</span></div></figure>
+  <p>E では、荒れた段の超えなさすぎがほぼ消えました（100 本中 {{MC5}} 本 → {{E5}} 本）。静かな段の超えすぎは小さくなったものの残ります（{{MC1}} 本 → {{E1}} 本）。</p>
+  <div class="tbl"><table class="calc err">
+    <thead><tr><th>時間足・目標</th><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th><th>F</th></tr></thead>
+    <tbody>{{ERR_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">数字は全体と 5 段のうち一番外れた段のずれ（100 本中の本数の差）。太字がその行で一番小さい値、緑の枠が合格（2 以内）。見積もりに 100 本分の ATR が要るので、最初の 100 本を除いた足で数え直しています（前の節の表と少し違う）。</p>
+  <p>E は 8 組中 7 組で外れが一番小さく、C より 1〜4 小さくなりました。合格は {{MIX_ALL}} 組中 {{MIX_PASS}} 組（4 時間足・目標 5% の E）です。残る外れの多くは、静かな段の超えすぎです。静かな時期の次の荒れ方は、長い期間の ATR を混ぜても、まだ低く見積もられています。</p>
 </section>
 
 <section aria-labelledby="h-use">
   <h2 id="h-use">いま使えること</h2>
   <ul>
     <li>全期間で 1 つの分位を使い回すのはやめる。荒れた時期に閾値を超える回数が 2.5 倍前後になります。</li>
-    <li>荒れ方の区分ごとの分位（C）を使えば、荒れた時期の超えすぎは目標近くまで下がります。ただし静かな時期は、閾値が低めに出る（超えやすい）ことを前提にします。</li>
+    <li>荒れ方の段ごとの分位を使うなら、段は ATR20 ではなく、ATR5・20・100 を混ぜた見積もりで分ける（E）方が、どの段でも目標に近くなります。ただし静かな時期は、閾値が低めに出る（超えやすい）ことを前提にします。</li>
     <li>超える回数を 100 本中 ±2 本の精度でそろえたい用途（例：「5 本に 1 本」を正確に当てたい）には、まだ使えません。</li>
   </ul>
 </section>
@@ -176,6 +199,7 @@ svg .g-on { fill: var(--acc); } svg .g-off { fill: var(--soft); }
     <dt>ATR20・ATR5</dt><dd>真の値幅の直近 20 本・5 本の平均。</dd>
     <dt>荒れ方</dt><dd>ATR20 ÷ 終値。大きいほど荒れた相場。</dd>
     <dt>区分（段）</dt><dd>荒れ方の小さい順に足を 5 等分したまとまり。境目は 2014〜2020 年の荒れ方の 20・40・60・80% の位置。</dd>
+    <dt>最小二乗法</dt><dd>見積もりと実際の差を二乗して足し合わせ、その合計が一番小さくなるように重みを決める方法。</dd>
     <dt>平均へ戻る性質</dt><dd>大きく外れた値の次は、平均に近い値になりやすいこと。荒れ方にもこの性質がある。</dd>
   </dl>
   <p class="cap">コード：tools/measure/tr_quantile/（run.py・tq.py・make_page.py）／記録：RESULTS.md</p>
