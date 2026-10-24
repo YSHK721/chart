@@ -301,6 +301,44 @@ def cause_tables():
     return t1, t2, t3
 
 
+def fit4_tables():
+    """§10: 4 案の物差しのずれ・G の外れ・要る行数の表。"""
+    R4 = HERE / "results_cvfe_fit"
+    info = pd.read_csv(R4 / "info.csv")
+    v = pd.read_csv(R4 / "verdict.csv")
+    tfj = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
+    conds = ("1 現状", "2 持ち込み", "3 決め直し", "4 ブートストラップ")
+    ii = info.set_index(["tf", "cond"])
+    shift = ""
+    for tf in ("15m", "1h", "4h", "1D"):
+        cells = ""
+        for c in conds:
+            r = ii.loc[(tf, c)]
+            s = (r.ratio_oos / r.ratio_is - 1) * 100
+            cells += f'<td class="n{" bad" if abs(s) > 10 else ""}">{r.ratio_is:.2f} → {r.ratio_oos:.2f}（{s:+.0f}%）</td>'
+        shift += f"<tr><td>{tfj[tf]}</td>{cells}</tr>"
+    g = v[v.method == "G"].pivot_table(index=["tf", "q"], columns="cond", values="max_abs_err")
+    err = ""
+    for tf in ("15m", "1h", "4h", "1D"):
+        for q in (0.8, 0.95):
+            row = g.loc[(tf, q)]
+            best = row.min()
+            err += (f"<tr><td>{tfj[tf]}・目標 {(1 - q) * 100:.0f}%</td>"
+                    + "".join(f'<td class="n{" best" if row[c] == best else ""}{" pass" if row[c] <= 2 else ""}">{row[c]:.1f}</td>' for c in conds)
+                    + "</tr>")
+    summ = v[v.method == "G"].groupby("cond").agg(p=("pass", "sum"), m=("max_abs_err", "mean"), w=("max_abs_err", "max"))
+    summ_rows = "".join(f'<tr><td>{c}</td><td class="n">{int(summ.loc[c, "p"])} / 8</td><td class="n">{summ.loc[c, "m"]:.1f}</td>'
+                        f'<td class="n">{summ.loc[c, "w"]:.1f}</td></tr>' for c in conds)
+    need = info.groupby("tf").first()
+    need_rows = "".join(f'<tr><td>{tfj[tf]}</td><td class="n">{int(need.loc[tf, "n_is"]):,}</td>'
+                        f'<td class="n">{need.loc[tf, "level_sd_500"] / 2 * 100:.1f}%</td><td class="n">{need.loc[tf, "level_sd_full"] / 2 * 100:.2f}%</td>'
+                        f'<td class="n">{need.loc[tf, "rows_needed_2pct"]:,.0f}</td></tr>' for tf in ("15m", "1h", "4h", "1D"))
+    import ast
+    bf, bb = ast.literal_eval(need.loc["1h", "beta_full"]), ast.literal_eval(need.loc["1h", "beta_boot"])
+    fmt = lambda b: f"定数項 {b[0]:.3f}・1 本の項 {b[1]:.3f}・5 本の項 {b[2]:.3f}・22 本の項 {b[3]:.3f}"
+    return shift, err, summ_rows, need_rows, fmt(bf), fmt(bb), int(v["pass"].sum()), len(v)
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -343,6 +381,7 @@ def main(out_path: str):
     et = e_thresholds()
     cv_err, cv_ratio, cv_pass, cv_all, cv_corr = cvfe_tables()
     ca1, ca2, ca3 = cause_tables()
+    f4_shift, f4_err, f4_summ, f4_need, f4_bf, f4_bb, f4_pass, f4_all = fit4_tables()
     role_rows = "".join(f'<tr><td>段 {i + 1}{"（静か）" if i == 0 else ("（荒れ）" if i == 4 else "")}</td>'
                         f'<td class="n">{et["p20"][i]:.3f}%</td><td class="n">{et["p5"][i]:.3f}%</td></tr>' for i in range(5))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
@@ -363,6 +402,9 @@ def main(out_path: str):
             .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
             .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
             .replace("{{LS_N}}", f"{ls_n:,}")
+            .replace("{{F4_SHIFT}}", f4_shift).replace("{{F4_ERR}}", f4_err).replace("{{F4_SUMM}}", f4_summ)
+            .replace("{{F4_NEED}}", f4_need).replace("{{F4_BF}}", f4_bf).replace("{{F4_BB}}", f4_bb)
+            .replace("{{F4_PASS}}", str(f4_pass)).replace("{{F4_ALL}}", str(f4_all))
             .replace("{{CA1}}", ca1).replace("{{CA2}}", ca2).replace("{{CA3}}", ca3)
             .replace("{{CV_ERR}}", cv_err).replace("{{CV_RATIO}}", cv_ratio)
             .replace("{{CV_PASS}}", str(cv_pass)).replace("{{CV_ALL}}", str(cv_all))
