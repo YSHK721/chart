@@ -55,11 +55,11 @@ def har_predict(b, x, floor: float) -> np.ndarray:
     return np.where(f > 0, f, floor)
 
 
-def hour_factor(ratio: np.ndarray, hours: np.ndarray, quantile=np.median) -> np.ndarray:
+def hour_factor(ratio: np.ndarray, next_hour: np.ndarray, quantile=np.median) -> np.ndarray:
     """§11: 時間帯の係数 s(h) =（y ÷ f）の時間帯ごとの中央値（h = 0..23）。足の無い時間帯は全体の中央値。"""
     s = np.full(24, float(quantile(ratio)))
     for h in range(24):
-        m = hours == h
+        m = next_hour == h
         if m.any():
             s[h] = float(quantile(ratio[m]))
     return s

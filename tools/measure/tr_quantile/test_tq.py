@@ -79,8 +79,8 @@ def test_methods_e_and_f_use_the_estimate():
 
 def test_hour_factor_is_median_ratio_per_hour_with_fallback():
     ratio = np.array([1.0, 3.0, 2.0, 10.0])
-    hours = np.array([0, 0, 1, 1])
-    s = Q.hour_factor(ratio, hours)
+    next_hour = np.array([0, 0, 1, 1])
+    s = Q.hour_factor(ratio, next_hour)
     assert s[0] == 2.0 and s[1] == 6.0 and s[5] == np.median(ratio)
 
 
