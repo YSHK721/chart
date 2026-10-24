@@ -49,6 +49,19 @@ def test_class_based_headings_for_pages_without_h2():
     assert T.inject_toc(out, tag="div", cls="ftitle") == out
 
 
+def test_unwrap_removes_the_publish_skeleton_only():
+    sk = ('<!doctype html><html><head><meta charset=utf8><style>x{}</style></head><body>\n'
+          '<title>t</title><main><h2>a</h2><h2>b</h2></main>\n</body></html>')
+    body = T.unwrap_skeleton(sk)
+    assert body.startswith("<title>t</title>") and "</body></html>" not in body and "<!doctype" not in body
+    assert T.unwrap_skeleton(body) == body
+    # 差し込み済みで </body></html> の後ろに部品があるものも、枠だけ外れて部品は付け直せる
+    once = T.inject_toc(body)
+    broken = sk.replace("</main>\n</body></html>", "</main>\n</body></html>") + "<!-- page-toc:start -->x<!-- page-toc:end -->"
+    assert T.inject_toc(T.unwrap_skeleton(broken)).count('class="ptoc ptoc-box"') == 1
+    assert "</body></html>" not in once
+
+
 # ---- 計算量検定（注入点 scan を数える） ----
 
 class ScanSpy:

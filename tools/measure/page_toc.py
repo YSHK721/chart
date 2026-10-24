@@ -111,6 +111,23 @@ def _strip(html: str) -> str:
     return html.replace(" data-ptoc", "")
 
 
+def unwrap_skeleton(html: str) -> str:
+    """公開時に自動で付く文書の枠（<!doctype html>…<body> と </body></html>）を外す。
+
+    公開済みページを保存ファイルで取り出すと枠ごと返るので、そのまま再公開すると枠が二重になる。
+    枠が無ければそのまま返す。
+    """
+    head = html.lstrip()
+    if not head.lower().startswith("<!doctype html"):
+        return html
+    k = head.lower().find("<body>")
+    if k < 0:
+        return html
+    body = head[k + len("<body>"):]
+    # 差し込み済みの部品が </body></html> の後ろにある場合も、枠の閉じだけを取り除く
+    return body.replace("</body></html>", "", 1).lstrip("\n")
+
+
 def headings(html: str, tag: str = "h2", cls: str | None = None):
     """[(id, 見出しの文字)]。id の無い見出しには sec-N を付けた html も返す。"""
     out = []

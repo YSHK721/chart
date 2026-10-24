@@ -9,11 +9,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from tools.measure.page_toc import headings, inject_toc
+from tools.measure.page_toc import headings, inject_toc, unwrap_skeleton
 
 
 def main(src: str, dst: str, tag: str = "h2", cls: str | None = None) -> int:
-    html = Path(src).read_text(encoding="utf-8")
+    html = unwrap_skeleton(Path(src).read_text(encoding="utf-8"))
     _, heads = headings(html, tag, cls)
     print(f"見出し {len(heads)} 件")
     if len(heads) < 2:
