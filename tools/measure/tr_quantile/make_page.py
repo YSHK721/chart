@@ -283,6 +283,24 @@ def cvfe_tables():
     return err, ratio, int(v["pass"].sum()), len(v), corr
 
 
+def cause_tables():
+    """§8: 物差しの原因調査の表（学習の窓・業者・決め直し）。"""
+    RC = HERE / "results_cvfe"
+    d = pd.read_csv(RC / "diag.csv").set_index("tf")
+    vd = pd.read_csv(RC / "diag_vendor.csv").set_index("tf")
+    tfj = {"15m": "15 分足", "1h": "1 時間足", "4h": "4 時間足", "1D": "日足"}
+    t1 = "".join(f'<tr><td>{tfj[tf]}</td><td class="n">{r.x1_duka_fit2014_on2020:.2f}</td><td class="n">{r.x1_duka_fit2020_on2020:.2f}</td>'
+                 f'<td class="n">{(r.x1_duka_fit2020_on2020 / r.x1_duka_fit2014_on2020 - 1) * 100:+.0f}%</td></tr>'
+                 for tf, r in d.loc[["15m", "1h", "4h", "1D"]].iterrows())
+    t2 = "".join(f'<tr><td>{tfj[tf]}</td><td class="n">{r.x1_duka_fit2020_on2020:.3f}</td><td class="n">{r.x2_mt5_fit2020_on2020:.3f}</td>'
+                 f'<td class="n">{vd.loc[tf, "park_ratio_mt5_over_duka"]:.3f}</td></tr>'
+                 for tf, r in d.loc[["15m", "1h", "4h", "1D"]].iterrows())
+    t3 = "".join(f'<tr><td>{tfj[tf]}</td><td class="n">{r.fit2014_on_is:.2f} → {r.x1_duka_fit2014_on2020:.2f}（{(r.x1_duka_fit2014_on2020 / r.fit2014_on_is - 1) * 100:+.0f}%）</td>'
+                 f'<td class="n">{r.x3_refit_is:.2f} → {r.x3_refit_oos:.2f}（{(r.x3_refit_oos / r.x3_refit_is - 1) * 100:+.0f}%）</td></tr>'
+                 for tf, r in d.loc[["15m", "1h", "4h", "1D"]].iterrows())
+    return t1, t2, t3
+
+
 def mix_tables():
     """§4 の係数表と、最大の外れの表（行 = 時間足 × 目標、列 = A〜F）。"""
     coef = pd.read_csv(RES_MIX / "coef.csv")
@@ -324,6 +342,7 @@ def main(out_path: str):
     ls_rows, ls_svg, ls_ks, ls_sums, ls_n = ls_example()
     et = e_thresholds()
     cv_err, cv_ratio, cv_pass, cv_all, cv_corr = cvfe_tables()
+    ca1, ca2, ca3 = cause_tables()
     role_rows = "".join(f'<tr><td>段 {i + 1}{"（静か）" if i == 0 else ("（荒れ）" if i == 4 else "")}</td>'
                         f'<td class="n">{et["p20"][i]:.3f}%</td><td class="n">{et["p5"][i]:.3f}%</td></tr>' for i in range(5))
     tpl = (HERE / "page_template.html").read_text(encoding="utf-8")
@@ -344,6 +363,7 @@ def main(out_path: str):
             .replace("{{LS_S0}}", f"{ls_sums[ls_ks[0]]:.4f}").replace("{{LS_S1}}", f"{ls_sums[ls_ks[1]]:.4f}")
             .replace("{{LS_S2}}", f"{ls_sums[ls_ks[2]]:.4f}")
             .replace("{{LS_N}}", f"{ls_n:,}")
+            .replace("{{CA1}}", ca1).replace("{{CA2}}", ca2).replace("{{CA3}}", ca3)
             .replace("{{CV_ERR}}", cv_err).replace("{{CV_RATIO}}", cv_ratio)
             .replace("{{CV_PASS}}", str(cv_pass)).replace("{{CV_ALL}}", str(cv_all))
             .replace("{{CV_C1}}", f"{cv_corr[0]:.2f}").replace("{{CV_C2}}", f"{cv_corr[1]:.2f}")
