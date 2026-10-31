@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 
+from indigators.btlm_trail.src.core import rolling_ols_window_end, window_end_scalar
 from tools.measure.atr_guide import make_page as P
 
 
@@ -74,11 +75,21 @@ def test_figures_show_only_the_passed_pairs_in_the_gain_chart():
     assert "1 時間足 n=50" in svg and "日足 n=20" not in svg
 
 
-def test_fig_attrib_shows_both_additions_for_each_n():
-    df = pd.DataFrame([dict(n=50, gain_beta=0.02, gain_long=0.015), dict(n=100, gain_beta=0.07, gain_long=0.1)])
-    svg = P.fig_attrib(df)
+def _attrib_frame():
+    return pd.DataFrame([dict(n=n, corr=0.7, gain_beta=0.02, gain_long=0.015, gain_beta_lo=-0.04, gain_beta_hi=0.08,
+                              gain_long_lo=-0.06, gain_long_hi=0.09, long_minus_beta_lo=-0.05, long_minus_beta_hi=0.03,
+                              coef_beta_alone=-0.021, coef_beta_with_long=-0.011, b_p_is=0.04, b_p_oos=0.007) for n in (50, 100)])
+
+
+def test_fig_attrib_draws_each_interval_around_zero():
+    svg = P.fig_attrib(_attrib_frame())
     assert "50 本の平均を足す" in svg and "100 本の平均を足す" in svg
-    assert "0.070 ポイント" in svg and "0.100 ポイント" in svg
+    assert svg.count('class="whisker') == 4 and "改善なし 0" in svg
+
+
+def test_attrib_values_format_the_stated_numbers():
+    v = P.attrib_values(_attrib_frame())
+    assert v["A_BETA_50"] == "-0.04〜+0.08" and v["COEF_100"] == "-0.021 → -0.011" and v["BP_OOS_50"] == "0.007"
 
 
 class AvgSpy:
@@ -110,12 +121,12 @@ def test_issued_averages_do_not_grow_with_input_length():
 def _follow_issued_and_used(length):
     spy = AvgSpy()
     rows = P.follow_rows([_tr(length)], methods=(("単純平均", lambda t: spy(t, 14)),))
-    return spy.issued, len(rows)
+    return spy.issued, sum(1 + 2 for _ in rows)  # 1 行の値は 相関 1 回と追いつく本数 2 回から作る
 
 
 def test_follow_rows_issues_only_what_reaches_the_output():
     issued, used = _follow_issued_and_used(300)
-    assert issued - 3 * used == 0  # 1 行に 相関 1 回＋追いつく本数 2 回
+    assert issued - used == 0
 
 
 def test_follow_rows_issued_does_not_grow_with_input_length():
@@ -138,8 +149,125 @@ def test_issued_lines_do_not_grow_with_input_length():
     assert _trend_issued(400)[0] == _trend_issued(1600)[0]
 
 
-def test_best_method_count_counts_series_won_on_both_measures():
+def test_best_rows_report_the_best_and_the_best_of_ols():
     tr = _tr(600)
-    methods = (("良い", lambda t: P.sma(t, 25)), ("悪い", lambda t: np.full(len(t), 1.0) * (1 + np.sin(np.arange(len(t))))))
-    assert P.best_method_count([tr, tr], methods=methods, name="良い") == 2
-    assert P.best_method_count([tr], methods=methods, name="悪い") == 0
+    bad = lambda t: 1 + np.sin(np.arange(len(t)))
+    methods = (("単純平均 25", lambda t: P.sma(t, 25)), ("btlm_trail の計算 1", bad), ("btlm_trail の計算 2", lambda t: 2 * bad(t) + 1))
+    r = P.best_rows([("系列", tr)], methods=methods)[0]
+    assert r["label"] == "系列" and r["best_one"] == "単純平均 25" and r["best_twenty"] == "単純平均 25"
+    assert r["ols_one"].startswith("btlm_trail")
+    assert r["ols_err_one"] > r["err_one"]
+    assert P.ols_wins([r]) == 0
+    assert P.ols_wins([dict(best_one="btlm_trail の計算 5", best_twenty="単純平均 5")]) == 1
+
+
+def test_ols_end_equals_the_rolling_calculation_of_btlm_trail():
+    tr = _tr(120)
+    want = rolling_ols_window_end(tr, 10)[0]
+    got = P.ols_end(tr, 10)
+    assert np.isnan(got[:9]).all() and np.array_equal(got[9:], want[9:])
+    assert np.isnan(P.ols_end(tr, 10, first=50)[:50]).all()
+    assert np.array_equal(P.ols_end(tr, 10, first=50)[50:], want[50:])
+
+
+def test_ols_end_of_a_straight_line_is_the_line():
+    assert abs(P.ols_end(np.arange(20.0) * 2 + 1, 5)[-1] - 39.0) < 1e-9
+
+
+def test_next_errors_twenty_uses_the_mean_of_the_next_twenty_bars():
+    tr = np.r_[np.full(300, 1.0), np.full(300, 2.0)]
+    a = np.ones(600)
+    f = pd.Series(tr).rolling(20).mean().shift(-20).to_numpy()
+    ok = np.isfinite(f)
+    k = np.median(f[ok])
+    want = np.mean(np.abs(f[ok] - k)) / f[ok].mean() * 100
+    assert abs(P.next_errors(tr, a, start=0)[1] - want) < 1e-9
+
+
+def test_next_errors_ignore_bars_before_start_and_non_positive_estimates():
+    tr = np.r_[np.full(300, 100.0), np.full(300, 1.0)]
+    assert P.next_errors(tr, np.ones(600), start=310) == (0.0, 0.0)
+    a = np.ones(600)
+    a[:310] = -1.0
+    assert P.next_errors(tr, a, start=0) == (0.0, 0.0)
+
+
+def test_trend_rows_order_of_columns():
+    tr = np.r_[np.full(300, 1.0), np.full(300, 2.0)]
+    line = 3.0 + np.sin(np.arange(600) / 50.0)
+    name, lags, move, e1, e20 = P.trend_rows(tr, methods=(("線", lambda t: line),))[0]
+    assert name == "線" and len(lags) == len(P.CENTERS) and move > 0
+    assert e1 == P.next_errors(tr, line)[0] and e20 == P.next_errors(tr, line)[1]
+
+
+def test_trend_rows_divide_the_move_by_the_mean_of_the_line():
+    line = np.r_[np.full(300, 10.0), np.linspace(10, 20, 300)]
+    tr = _tr(600)
+    _, _, move, _, _ = P.trend_rows(tr, methods=(("線", lambda t: line),))[0]
+    want = np.mean(np.abs(np.diff(line[200:]))) / np.mean(line[200:]) * 100
+    assert abs(move - want) < 1e-12
+
+
+def test_lag_to_center_reports_a_line_that_moves_first_as_negative():
+    x = np.sin(np.arange(2000) / 60.0) + 2.0
+    a = pd.Series(x).shift(-5).to_numpy()
+    assert P.lag_to_center(x, a, start=100) == -5
+
+
+def test_beta_rows_take_d_from_oos():
+    df = pd.DataFrame([
+        dict(period="IS", tf="1D", n=20, H=0.6, H_null=0.5, H_pass=False, D=9.0, D_pass=False, err_gain=0.0, usable=False),
+        dict(period="OOS", tf="1D", n=20, H=0.6, H_null=0.5, H_pass=True, D=-0.2, D_pass=False, err_gain=-0.1, usable=False),
+    ])
+    r = P.beta_rows(df)[0]
+    assert r["d_oos"] == -0.2 and r["tf"] == "日足" and r["direction"] == "同じ向き"
+
+
+def test_fig_hit_draws_is_hollow_and_oos_filled():
+    rows = [dict(tf="日足", n=20, h_is=60.0, h_oos=40.0, h_pass=True, direction="同じ向き")]
+    svg = P.fig_hit(rows)
+    x = lambda v: 110 + (v - 30.0) / 35.0 * 390
+    assert f'<circle cx="{x(60.0):.1f}" cy="36" r="5" class="m-is"/>' in svg
+    assert f'<circle cx="{x(40.0):.1f}" cy="36" r="5" class="m-real"/>' in svg
+
+
+class WindowSpy:
+    """1 窓の OLS の発行回数を数える Test Spy（注入点 window を通す）。"""
+
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, z):
+        self.issued += 1
+        return window_end_scalar(z)
+
+
+def _ols_issued(warm, bars=100, n=20):
+    spy = WindowSpy()
+    out = P.ols_end(_tr(warm + bars), n, warm, window=spy)
+    return spy.issued, int(np.isfinite(out).sum())
+
+
+def test_every_issued_window_reaches_the_line():
+    issued, used = _ols_issued(300)
+    assert issued - used == 0
+
+
+def test_issued_windows_do_not_grow_with_warm_up_length():
+    assert _ols_issued(300)[0] == _ols_issued(3000)[0]
+
+
+def _best_issued(length):
+    spy = AvgSpy()
+    methods = (("単純平均 14", lambda t: spy(t, 14)), ("btlm_trail の計算 25", lambda t: spy(t, 25)))
+    rows = P.best_rows([("系列", _tr(length))], methods=methods)
+    return spy.issued, len(methods) * len(rows)
+
+
+def test_every_issued_line_reaches_the_best_rows():
+    issued, used = _best_issued(400)
+    assert issued - used == 0
+
+
+def test_issued_best_lines_do_not_grow_with_input_length():
+    assert _best_issued(400)[0] == _best_issued(1600)[0]

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from indigators.btlm_trail.src.core import rolling_ols_window_end, window_end_scalar
+from indigators.btlm_trail.src.core import window_end_scalar
 from tools.measure.page_toc import inject_toc
 from tools.measure.reach_prob import reach as R
 
@@ -417,19 +417,26 @@ def follow_rows(trs, methods=FOLLOW_METHODS, start: int = 100):
 
 
 # ---------- 真の値幅に btlm_trail の計算を当てはめる ----------
-def ols_end(tr: np.ndarray, n: int) -> np.ndarray:
-    """btlm_trail の計算: 足ごとに直近 n 本へ直線を当てはめた右端の値。"""
-    return rolling_ols_window_end(tr, n)[0]
+TREND_START = 200
+LAG_RANGE = (-20, 80)
+CENTERS = (41, 21)
+GRID_NS = (5, 8, 10, 14, 20, 25, 30, 50, 100, 200)
+
+
+def ols_end(tr: np.ndarray, n: int, first: int = 0, window=window_end_scalar) -> np.ndarray:
+    """btlm_trail の計算: first 以降の足で、直近 n 本へ直線を当てはめた右端の値。window は計算量検定の注入点。"""
+    out = np.full(len(tr), np.nan)
+    for t in range(max(first, n - 1), len(tr)):
+        out[t] = window(tr[t - n + 1:t + 1])[0]
+    return out
 
 
 TREND_METHODS = (("ワイルダーの平滑 14", lambda t: wilder(t, 14)), ("単純平均 25", lambda t: sma(t, 25)),
-                 ("btlm_trail の計算 25", lambda t: ols_end(t, 25)), ("btlm_trail の計算 100", lambda t: ols_end(t, 100)))
-ALL_METHODS = tuple((f"単純平均 {n}", (lambda t, n=n: sma(t, n))) for n in (14, 25, 50, 100, 200)) + \
-    tuple((f"ワイルダーの平滑 {n}", (lambda t, n=n: wilder(t, n))) for n in (14, 50, 100, 200)) + \
-    tuple((f"btlm_trail の計算 {n}", (lambda t, n=n: ols_end(t, n))) for n in (14, 25, 50, 100, 200))
-TREND_START = 200
-LAG_MAX = 80
-CENTER = 41
+                 ("btlm_trail の計算 25", lambda t: ols_end(t, 25, TREND_START)),
+                 ("btlm_trail の計算 100", lambda t: ols_end(t, 100, TREND_START)))
+OLS_NAME = "btlm_trail の計算"
+GRID_METHODS = tuple((f"{label} {n}", (lambda t, f=f, n=n: f(t, n))) for n in GRID_NS for label, f in
+                     (("単純平均", sma), ("ワイルダーの平滑", wilder), (OLS_NAME, lambda t, n: ols_end(t, n, TREND_START))))
 
 
 def next_errors(tr: np.ndarray, a: np.ndarray, start: int = TREND_START) -> tuple[float, float]:
@@ -443,31 +450,42 @@ def next_errors(tr: np.ndarray, a: np.ndarray, start: int = TREND_START) -> tupl
     return out[0], out[1]
 
 
-def lag_to_center(tr: np.ndarray, a: np.ndarray, start: int = TREND_START) -> int:
-    """前後 CENTER 本の平均と線の相関が最も高くなるずれ（本）。"""
+def lag_to_center(tr: np.ndarray, a: np.ndarray, start: int = TREND_START, center: int = 41) -> int:
+    """前後 center 本の平均と線の相関が最も高くなるずれ（本）。負は線が先に動くことを表す。"""
     line = pd.Series(a).iloc[start:]
-    center = pd.Series(tr).rolling(CENTER, center=True).mean()
-    corr = [line.corr(center.shift(k).iloc[start:]) for k in range(LAG_MAX + 1)]
-    return int(np.nanargmax(corr))
+    smooth = pd.Series(tr).rolling(center, center=True).mean()
+    lags = range(LAG_RANGE[0], LAG_RANGE[1] + 1)
+    corr = [line.corr(smooth.shift(k).iloc[start:]) for k in lags]
+    return lags[int(np.nanargmax(corr))]
 
 
 def trend_rows(tr: np.ndarray, methods=TREND_METHODS, start: int = TREND_START):
-    """方法ごとの（名前・遅れ・動き・次の 1 本の外れ・次の 20 本の外れ）。methods は計算量検定の注入点。"""
+    """方法ごとの（名前・遅れの組・動き・次の 1 本の外れ・次の 20 本の外れ）。methods は計算量検定の注入点。"""
     rows = []
     for name, avg in methods:
         a = avg(tr)
         move = np.nanmean(np.abs(np.diff(a[start:]))) / np.nanmean(a[start:]) * 100
-        rows.append((name, lag_to_center(tr, a, start), move, *next_errors(tr, a, start)))
+        rows.append((name, tuple(lag_to_center(tr, a, start, c) for c in CENTERS), move, *next_errors(tr, a, start)))
     return rows
 
 
-def best_method_count(trs, methods=ALL_METHODS, name: str = "ワイルダーの平滑 14") -> int:
-    """次の 1 本・次の 20 本の外れの両方で、name が最小だった系列の数。"""
-    count = 0
-    for tr in trs:
-        errs = {n: next_errors(tr, avg(tr)) for n, avg in methods}
-        count += all(min(errs, key=lambda k: errs[k][i]) == name for i in (0, 1))
-    return count
+def best_rows(series, methods=GRID_METHODS, ols_name: str = OLS_NAME):
+    """系列ごとに、次の 1 本・次の 20 本の外れが最小の方法と、btlm_trail の計算の中の最小を返す。"""
+    rows = []
+    for label, tr in series:
+        errs = {name: next_errors(tr, avg(tr)) for name, avg in methods}
+        row = dict(label=label)
+        for i, key in enumerate(("one", "twenty")):
+            best = min(errs, key=lambda k: errs[k][i])
+            ols = min((k for k in errs if k.startswith(ols_name)), key=lambda k: errs[k][i])
+            row.update({f"best_{key}": best, f"err_{key}": errs[best][i], f"ols_{key}": ols, f"ols_err_{key}": errs[ols][i]})
+        rows.append(row)
+    return rows
+
+
+def ols_wins(rows, ols_name: str = OLS_NAME) -> int:
+    """btlm_trail の計算が最小になった回数（系列 × 見積もり先）。"""
+    return sum(r[f"best_{k}"].startswith(ols_name) for r in rows for k in ("one", "twenty"))
 
 
 def fig_ols_fit(n: int = 25, last: str = "2024-08-09"):
@@ -524,21 +542,38 @@ def fig_tr_lines(start: str = "2024-07-01", end: str = "2024-10-15"):
 
 
 def fig_attrib(df: pd.DataFrame):
-    """1 時間足で、ワイルダーの平滑 14 に足すものごとの外れの改善（OOS）。"""
-    X0, X1 = 150, 600
-    hi = max(df.gain_beta.max(), df.gain_long.max()) * 1.25
-    sx = lambda v: X0 + v / hi * (X1 - X0)
+    """1 時間足で、ワイルダーの平滑 14 に足すものごとの外れの改善と週単位の 95% の幅（OOS）。"""
+    X0, X1 = 170, 600
+    lo = min(df.gain_beta_lo.min(), df.gain_long_lo.min()) * 1.1
+    hi = max(df.gain_beta_hi.max(), df.gain_long_hi.max()) * 1.1
+    sx = lambda v: X0 + (v - lo) / (hi - lo) * (X1 - X0)
     parts = []
-    y = 16
+    y = 34
     for _, r in df.iterrows():
-        parts.append(f'<text x="{X0 - 96}" y="{y + 26}" text-anchor="middle" class="lb strong">n = {int(r.n)}</text>')
-        for label, v, cls in (("β を足す", r.gain_beta, "tfbar"), (f"{int(r.n)} 本の平均を足す", r.gain_long, "attr-long")):
-            parts.append(f'<text x="{X0 - 10}" y="{y + 15}" text-anchor="end" class="tk">{label}</text>')
-            parts.append(f'<rect x="{X0}" y="{y}" width="{sx(v) - X0:.1f}" height="20" class="{cls}"/>')
-            parts.append(f'<text x="{sx(v) + 6:.1f}" y="{y + 15}" class="lb">{v:.3f} ポイント</text>')
+        parts.append(f'<text x="{X0 - 150}" y="{y + 18}" class="lb strong">n = {int(r.n)}</text>')
+        for label, v, a, b, cls in (("β を足す", r.gain_beta, r.gain_beta_lo, r.gain_beta_hi, "blue-m"),
+                                    (f"{int(r.n)} 本の平均を足す", r.gain_long, r.gain_long_lo, r.gain_long_hi, "amber-m")):
+            parts.append(f'<text x="{X0 - 10}" y="{y + 4}" text-anchor="end" class="tk">{label}</text>')
+            parts.append(f'<line x1="{sx(a):.1f}" x2="{sx(b):.1f}" y1="{y}" y2="{y}" class="whisker {cls}"/>')
+            parts.append(f'<circle cx="{sx(v):.1f}" cy="{y}" r="5" class="{cls}"/>')
+            parts.append(f'<text x="{sx(b) + 6:.1f}" y="{y + 4}" class="tk">{v:+.3f}</text>')
             y += 26
-        y += 14
-    return f'<svg viewBox="0 0 640 {y}" role="img" aria-label="β を足しても長い平均を足しても、外れの改善は同じ程度">' + "".join(parts) + "</svg>"
+        y += 12
+    parts.insert(0, f'<line x1="{sx(0):.1f}" x2="{sx(0):.1f}" y1="20" y2="{y - 18}" class="guide"/>')
+    parts.append(f'<text x="{sx(0):.1f}" y="14" text-anchor="middle" class="tk">改善なし 0</text>')
+    return f'<svg viewBox="0 0 640 {y}" role="img" aria-label="β を足しても長い平均を足しても、改善の幅は 0 を含む">' + "".join(parts) + "</svg>"
+
+
+def attrib_values(df: pd.DataFrame) -> dict:
+    """§4 の文に入れる値（テンプレートの差し込み名 → 文字）。"""
+    a, b = df[df.n == 50].iloc[0], df[df.n == 100].iloc[0]
+    rng = lambda lo, hi: f"{lo:+.2f}〜{hi:+.2f}"
+    return {"CORR_50": f"{a['corr']:.2f}", "CORR_100": f"{b['corr']:.2f}",
+            "A_BETA_50": rng(a.gain_beta_lo, a.gain_beta_hi), "A_BETA_100": rng(b.gain_beta_lo, b.gain_beta_hi),
+            "A_LONG_50": rng(a.gain_long_lo, a.gain_long_hi), "A_LONG_100": rng(b.gain_long_lo, b.gain_long_hi),
+            "A_DIFF_50": rng(a.long_minus_beta_lo, a.long_minus_beta_hi), "A_DIFF_100": rng(b.long_minus_beta_lo, b.long_minus_beta_hi),
+            "COEF_50": f"{a.coef_beta_alone:.3f} → {a.coef_beta_with_long:.3f}", "COEF_100": f"{b.coef_beta_alone:.3f} → {b.coef_beta_with_long:.3f}",
+            "BP_IS_50": f"{a.b_p_is:.3f}", "BP_IS_100": f"{b.b_p_is:.3f}", "BP_OOS_50": f"{a.b_p_oos:.3f}", "BP_OOS_100": f"{b.b_p_oos:.3f}"}
 
 
 def beta_rows(df: pd.DataFrame):
@@ -590,9 +625,9 @@ def fig_gain(rows, need: float = 0.5):
         y = top + step * j
         parts.append(f'<text x="{X0 - 10}" y="{y + 15}" text-anchor="end" class="lb">{r["tf"]} n={r["n"]}</text>')
         parts.append(f'<rect x="{X0}" y="{y}" width="{sx(r["gain"]) - X0:.1f}" height="22" class="tfbar"/>')
-        parts.append(f'<text x="{sx(r["gain"]) + 6:.1f}" y="{y + 15}" class="lb">{r["gain"]:.2f} ポイント</text>')
+        parts.append(f'<text x="{sx(r["gain"]) + 6:.1f}" y="{y + 15}" class="lb">{r["gain"]:.2f}%ポイント</text>')
     parts.append(f'<line x1="{sx(need):.1f}" x2="{sx(need):.1f}" y1="{top - 8}" y2="{bottom}" class="guide"/>')
-    parts.append(f'<text x="{sx(need):.1f}" y="14" text-anchor="middle" class="lb acc">実用の基準 {need} ポイント</text>')
+    parts.append(f'<text x="{sx(need):.1f}" y="14" text-anchor="middle" class="lb acc">実用の基準 {need}%ポイント</text>')
     parts.append(f'<line x1="{X0}" x2="{X0}" y1="{top - 8}" y2="{bottom}" class="grid"/>')
     return f'<svg viewBox="0 0 640 {bottom + 10}" role="img" aria-label="外れの改善は実用の基準に届かない">' + "".join(parts) + "</svg>"
 
@@ -658,11 +693,17 @@ def main(out_path: str):
         f'<td class="n">{b[2]:.1f}%</td><td class="n">{b[3]:.1f}%</td></tr>'
         for a, b in zip(sr["1h"], sr["1D"]))
     fit_svg, fit = fig_ols_fit()
+    trend = trend_rows(trs["1h"])
     trend_tbl = "".join(
-        f'<tr><td>{name}</td><td class="n">{lag} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
-        for name, lag, mv, e1, e20 in trend_rows(trs["1h"]))
+        f'<tr><td>{name}</td><td class="n">{lag[0]} 本</td><td class="n">{lag[1]} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
+        for name, lag, mv, e1, e20 in trend)
+    move_ratio = trend[2][2] / trend[1][2]
     duka = [true_range(d[(d.date >= "2014-01-01") & (d.date < "2020-05-01")].reset_index(drop=True)) for d in (load(DUKA, "1h"), load(DUKA, "1D"))]
-    best = best_method_count([trs["1h"], trs["1D"], *duka])
+    best = best_rows([("MT5 1 時間足", trs["1h"]), ("MT5 日足", trs["1D"]), ("Dukascopy 1 時間足", duka[0]), ("Dukascopy 日足", duka[1])])
+    best_tbl = "".join(
+        f'<tr><td>{r["label"]}</td><td>{r["best_one"]}（{r["err_one"]:.1f}%）</td><td>{r["best_twenty"]}（{r["err_twenty"]:.1f}%）</td>'
+        f'<td class="n">{r["ols_err_one"]:.1f}%</td><td class="n">{r["ols_err_twenty"]:.1f}%</td></tr>'
+        for r in best)
     beta = beta_rows(pd.read_csv(BETA_TESTS))
     beta_tbl = "".join(
         f'<tr><td style="white-space:nowrap">{r["tf"]}</td><td class="n">{r["n"]}</td><td class="n">{r["h_oos"]:.1f}%</td>'
@@ -671,7 +712,6 @@ def main(out_path: str):
         for r in beta)
     passed = [r for r in beta if r["d_pass"]]
     attrib = pd.read_csv(BETA_ATTRIB)
-    attr = {int(r.n): r for _, r in attrib.iterrows()}
     weights = {name: avg(np.r_[np.full(300, 1000.0), 1100.0])[-1] - 1000.0 for name, avg in (("sma", lambda t: sma(t, 100)), ("ols", lambda t: ols_end(t, 100)))}
     bs = break_stats()
     a20_med, a20_p99 = atr20_diff()
@@ -711,9 +751,8 @@ def main(out_path: str):
             .replace("{{FIG_OLS_FIT}}", fit_svg).replace("{{FIG_TR_LINES}}", fig_tr_lines())
             .replace("{{FIT_END}}", f"{fit['end']:,.0f}").replace("{{FIT_MEAN}}", f"{fit['mean']:,.0f}").replace("{{FIT_BETA}}", f"{fit['beta']:+.1f}")
             .replace("{{W_SMA}}", f"{weights['sma']:.2f}").replace("{{W_OLS}}", f"{weights['ols']:.2f}")
-            .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_COUNT}}", str(best))
-            .replace("{{FIG_ATTRIB}}", fig_attrib(attrib)).replace("{{CORR_50}}", f"{attr[50]['corr']:.2f}").replace("{{CORR_100}}", f"{attr[100]['corr']:.2f}")
-            .replace("{{P_IS_50}}", f"{attr[50].p_is:.2f}").replace("{{P_IS_100}}", f"{attr[100].p_is:.2f}")
+            .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_ROWS}}", best_tbl).replace("{{OLS_WINS}}", str(ols_wins(best))).replace("{{MOVE_RATIO}}", f"{move_ratio:.1f}")
+            .replace("{{FIG_ATTRIB}}", fig_attrib(attrib))
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
             .replace("{{SMALL_LIST}}", "〜".join(f"{abs(np.exp(r['d_oos']) - 1) * 100:.0f}" for r in passed))
@@ -728,6 +767,8 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
+    for key, value in attrib_values(attrib).items():
+        page = page.replace("{{" + key + "}}", value)
     Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},
           "| tf", {k: round(v, 3) for k, v in tf_map.items()}, "| hours top", top_hours, "low", low_hours)

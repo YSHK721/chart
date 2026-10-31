@@ -24,7 +24,7 @@ MIN_GAIN = 0.5  # §1.6 の実用基準（ポイント）
 PERIODS = {"IS": (DUKA, "2014-01-01", "2020-05-01"), "OOS": (MT5, "2020-05-01", "2100-01-01")}
 
 
-def series(path: str, tf: str, start: str, end: str) -> dict:
+def series(path: str, tf: str, start: str, end: str, ns=NS, with_long: bool = False) -> dict:
     """期間の終わりまでの足で、評価する足（start 以降）の量を作る。"""
     d = load(path, tf)
     d = d[d.date < end].reset_index(drop=True)
@@ -33,11 +33,13 @@ def series(path: str, tf: str, start: str, end: str) -> dict:
     first = int((date >= start).to_numpy().argmax())
     if tf == "1h":
         x = B.remove_hours(x, date.dt.hour.to_numpy(), first, hour_factor)
-    out = B.measures(x, first, NS)
+    out = B.measures(x, first, ns)
     out.update(w=wilder(x, 14)[first:], bars=len(x) - first)
-    for n in NS:
-        lo = max(first - n + 1, 0)
-        out[f"l{n}"] = B.past_mean(x[lo:], n)[first - lo:]
+    if with_long:
+        out["week"] = pd.factorize(date.iloc[first:].dt.to_period("W"))[0]
+        for n in ns:
+            lo = max(first - n + 1, 0)
+            out[f"l{n}"] = B.past_mean(x[lo:], n)[first - lo:]
     return out
 
 

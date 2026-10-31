@@ -306,9 +306,126 @@ def test_compare_models_fits_coefficients_only_on_is():
     is_ = _model_series(400, 1)
     oos = _model_series(400, 2)
     changed = dict(oos, y=oos["y"] * 3.0)
-    a = ATTR.compare_models(is_, oos, 100)["coef_long"]
-    b = ATTR.compare_models(is_, changed, 100)["coef_long"]
+    a = ATTR.compare_models(is_, oos, 100)["coefs"]["long"]
+    b = ATTR.compare_models(is_, changed, 100)["coefs"]["long"]
     assert np.array_equal(a, b)
+
+
+def test_compare_models_measures_errors_on_oos():
+    is_ = _model_series(400, 1)
+    oos = _model_series(400, 2)
+    want = np.mean(np.abs(oos["y"] * 3.0 - oos["y"])) / np.mean(oos["y"] * 3.0) * 100  # 見積もりは y、実際は 3 y
+    assert abs(ATTR.compare_models(is_, dict(oos, y=oos["y"] * 3.0), 100)["errs"]["long"] - want) < 1e-6
+
+
+def test_usable_excludes_zero_signs_and_missing_values():
+    s = {"y": np.array([1.0, 1.0, np.nan, 1.0]), "w": np.ones(4), "l100": np.array([1.0, 1.0, 1.0, np.nan]),
+         100: np.array([1.0, 0.0, 1.0, 1.0])}
+    assert list(ATTR.usable(s, 100)) == [True, False, False, False]
+
+
+def test_compare_models_correlates_the_sign_with_w_over_l():
+    s = _model_series(400, 1)
+    up = dict(s, w=s["l100"] * np.exp(0.5 * s[100]))
+    r = ATTR.compare_models(s, up, 100)
+    assert r["corr"] > 0.99
+
+
+def test_model_terms_keep_the_sign_of_beta():
+    s = _model_series(10, 1)
+    assert np.array_equal(B.model_terms(s, 100, ("b",))[0], s[100])
+
+
+def test_model_terms_build_only_the_requested_terms():
+    s = {"y": np.ones(3), 100: np.ones(3), "w": np.ones(3)}  # l100 が無くても w・b だけなら作れる
+    assert len(B.model_terms(s, 100, ("w", "b"))) == 2
+
+
+def test_partial_slope_is_the_regression_slope_through_the_origin():
+    r = np.array([1.0, -1.0, 2.0, 99.0])
+    e = np.array([2.0, -2.0, 4.0, 0.0])
+    assert B.partial_slope(r, e, np.array([True, True, True, False])) == 2.0
+
+
+def _partial_series(length, seed, beta_effect):
+    s = _model_series(length, seed)
+    rng = rng_from_seed(seed + 100)
+    s["y"] = s["y"] * np.exp(beta_effect * s[100] + rng.normal(0, 0.2, length))
+    return s
+
+
+def _draw(seed):
+    rng = rng_from_seed(seed)
+    return lambda m: B.draw_shifts(m, 299, 50, rng)
+
+
+def test_partial_test_finds_beta_only_when_beta_has_its_own_effect():
+    with_effect = ATTR.partial_test(_partial_series(1500, 1, 0.1), _partial_series(1500, 2, 0.1), 100, "b", _draw(3))
+    without = ATTR.partial_test(_partial_series(1500, 1, 0.0), _partial_series(1500, 2, 0.0), 100, "b", _draw(3))
+    assert with_effect["b_p_is"] < 0.05 and with_effect["b_p_oos"] < 0.05
+    assert abs(with_effect["b_slope_oos"] - 0.1) < 0.03
+    assert without["b_p_is"] > 0.05 and without["b_p_oos"] > 0.05
+
+
+def test_partial_residuals_mark_unusable_bars():
+    s = _partial_series(50, 1, 0.1)
+    s[100] = s[100].copy()
+    s[100][3] = 0.0
+    r, e = ATTR.partial_residuals(s, 100, "b", np.zeros(3), np.zeros(3))
+    assert r[3] == 0.0 and np.isnan(e[3]) and np.isfinite(e[4])
+
+
+def test_partial_residuals_remove_the_other_terms_from_both_sides():
+    s = _partial_series(50, 1, 0.1)
+    r, e = ATTR.partial_residuals(s, 100, "b", np.array([0.5, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+    assert r[4] == s[100][4] - 1.0
+    assert e[4] == np.log(s["y"][4]) - 0.5
+    log_w = np.log(s["w"][4])
+    r2, _ = ATTR.partial_residuals(s, 100, "b", np.zeros(3), np.array([0.0, 2.0, 0.0]))
+    assert r2[4] == s[100][4] - 2.0 * log_w
+
+
+def test_partial_test_decides_the_removed_terms_only_on_is():
+    is_ = _partial_series(600, 1, 0.1)
+    oos = _partial_series(600, 2, 0.1)
+    changed = dict(oos, y=oos["y"] * 3.0, w=oos["w"] * 2.0)
+    a = ATTR.partial_test(is_, oos, 100, "b", _draw(3))
+    b = ATTR.partial_test(is_, changed, 100, "b", _draw(3))
+    assert a["b_slope_is"] == b["b_slope_is"]
+
+
+def test_gain_interval_is_zero_for_identical_models_and_holds_a_constant_gain():
+    rng = rng_from_seed(4)
+    y = np.full(100, 2.0)
+    week = np.repeat(np.arange(10), 10)
+    assert B.gain_interval(y, y + 1, y + 1, week, 50, rng) == (0.0, 0.0)
+    lo, hi = B.gain_interval(y, y + 1, y + 0.5, week, 50, rng)  # 外れ 50% → 25% で改善 25 ポイント
+    assert abs(lo - 25.0) < 1e-9 and abs(hi - 25.0) < 1e-9
+
+
+def test_gain_interval_widens_when_weeks_disagree():
+    rng = rng_from_seed(5)
+    y = np.full(100, 1.0)
+    week = np.repeat(np.arange(10), 10)
+    pred = np.where(week % 2 == 0, 1.5, 1.0)  # 外れは偶数週 0.5・奇数週 0
+    base = np.full(100, 1.25)  # 外れはどの週も 0.25
+    lo, hi = B.gain_interval(y, base, pred, week, 500, rng)
+    assert lo < hi
+
+
+def test_series_builds_long_means_from_past_bars_only(monkeypatch):
+    dates = pd.date_range("2020-01-01", periods=400, freq="D")
+    dates = dates[dates.dayofweek < 5]
+    rng = rng_from_seed(6)
+    close = 100.0 + rng.uniform(0, 5, len(dates))
+    d = pd.DataFrame({"date": dates, "open": close, "high": close + 1, "low": close - 1, "close": close})
+    monkeypatch.setattr(RUN, "load", lambda path, tf: d)
+    s = RUN.series("", "1D", "2020-06-01", "2020-12-01", ns=(50,), with_long=True)
+    full = RUN.series("", "1D", "2020-01-01", "2020-12-01", ns=(50,), with_long=True)
+    k = len(full["y"]) - len(s["y"])
+    assert np.isfinite(s["l50"][0])
+    assert np.allclose(s["l50"], full["l50"][k:])
+    assert s["week"][0] == 0 and s["week"][-1] >= 20
 
 
 class SolveSpy:
