@@ -470,11 +470,15 @@ def trend_rows(tr: np.ndarray, methods=TREND_METHODS, start: int = TREND_START):
     return rows
 
 
-def best_rows(series, methods=GRID_METHODS, ols_name: str = OLS_NAME):
+def grid_errors(series, methods=GRID_METHODS) -> dict:
+    """系列ごとの {方法の名前: (次の 1 本の外れ, 次の 20 本の外れ)}。"""
+    return {label: {name: next_errors(tr, avg(tr)) for name, avg in methods} for label, tr in series}
+
+
+def best_rows(grid: dict, ols_name: str = OLS_NAME):
     """系列ごとに、次の 1 本・次の 20 本の外れが最小の方法と、btlm_trail の計算の中の最小を返す。"""
     rows = []
-    for label, tr in series:
-        errs = {name: next_errors(tr, avg(tr)) for name, avg in methods}
+    for label, errs in grid.items():
         row = dict(label=label)
         for i, key in enumerate(("one", "twenty")):
             best = min(errs, key=lambda k: errs[k][i])
@@ -610,27 +614,82 @@ def skill_counts(table: dict, labels) -> dict:
     return {(h, k, n): sum(positive(table[l, h, f"{k}{n}"]) for l in labels) for h in HORIZONS for k, _ in SKILL_AVG for n in SKILL_NS}
 
 
-def skill_count_rows(table: dict, labels) -> str:
-    """線ごとの系列の数の表（本文の行）。"""
+def fig_counts(table: dict, labels):
+    """一定の値より良いと言える系列の数のます目（色が濃いほど多い）。"""
     names = (("S", "単純平均"), ("W", "ワイルダーの平滑"), ("O", "btlm_trail の計算"))
     c = skill_counts(table, labels)
-    return "".join(f"<tr><td>{name}</td>" + "".join(f'<td class="n">{c[h, k, n]} / {len(labels)}</td>' for h in HORIZONS for n in SKILL_NS) + "</tr>"
-                   for k, name in names)
+    X0, W, H, y0 = 150, 78, 34, 46
+    parts = []
+    for i, h in enumerate(HORIZONS):
+        parts.append(f'<text x="{X0 + W * (3 * i + 1.5)}" y="16" text-anchor="middle" class="lb strong">{HORIZON_LABEL[h]}</text>')
+        for j, n in enumerate(SKILL_NS):
+            parts.append(f'<text x="{X0 + W * (3 * i + j + 0.5)}" y="36" text-anchor="middle" class="tk">n = {n}</text>')
+    for r, (k, name) in enumerate(names):
+        y = y0 + H * r
+        parts.append(f'<text x="{X0 - 10}" y="{y + 21}" text-anchor="end" class="tk">{name}</text>')
+        for i, h in enumerate(HORIZONS):
+            for j, n in enumerate(SKILL_NS):
+                v = c[h, k, n]
+                x = X0 + W * (3 * i + j)
+                parts.append(f'<rect x="{x + 2}" y="{y + 2}" width="{W - 4}" height="{H - 4}" rx="3" class="cell-count" fill-opacity="{v / len(labels):.2f}"/>')
+                parts.append(f'<rect x="{x + 2}" y="{y + 2}" width="{W - 4}" height="{H - 4}" rx="3" class="cell-n"/>')
+                parts.append(f'<text x="{x + W / 2}" y="{y + 21}" text-anchor="middle" class="lb{" strong" if v == len(labels) else ""}">{v} / {len(labels)}</text>')
+    return f'<svg viewBox="0 0 640 {y0 + H * 3 + 8}" role="img" aria-label="線ごとの、一定の値より良いと言える系列の数">' + "".join(parts) + "</svg>"
 
 
-def wins_over_ols(table: dict, labels, n: int) -> dict:
-    """ワイルダーの平滑と btlm_trail の計算の差で、0 を含まず上回った組の数。"""
-    v = [table[l, h, f"W{n}-O{n}"] for l in labels for h in HORIZONS]
-    return dict(w=sum(positive(x) for x in v), o=sum(x[2] < 0 for x in v), all=len(v))
+def win_counts(table: dict, labels, key: str) -> dict:
+    """差 key で、0 を含まず左の線が上回った組・右の線が上回った組の数。"""
+    v = [table[l, h, key] for l in labels for h in HORIZONS]
+    return dict(left=sum(positive(x) for x in v), right=sum(x[2] < 0 for x in v), all=len(v))
 
 
-def wins_by_n(table: dict, labels) -> str:
-    """ワイルダーの平滑が単純平均を 0 を含まずに上回った組の数・下回った組の数（行）。"""
-    rows = []
-    for n in SKILL_NS:
-        v = [table[l, h, f"W{n}-S{n}"] for l in labels for h in HORIZONS]
-        rows.append(f'<tr><td>n = {n}</td><td class="n">{sum(positive(x) for x in v)} / {len(v)}</td><td class="n">{sum(x[2] < 0 for x in v)} / {len(v)}</td></tr>')
-    return "".join(rows)
+def fig_wins(table: dict, labels):
+    """線どうしの勝敗を、組ごとのます目で並べる。"""
+    rows = (("単純平均と n = 14", "W14-S14"), ("単純平均と n = 25", "W25-S25"), ("単純平均と n = 100", "W100-S100"),
+            ("btlm_trail の計算と n = 25", "W25-O25"), ("btlm_trail の計算と n = 100", "W100-O100"))
+    X0, W, H, y0 = 190, 50, 28, 10
+    parts = []
+    for r, (name, key) in enumerate(rows):
+        c = win_counts(table, labels, key)
+        y = y0 + H * r + (10 if r >= 3 else 0)
+        parts.append(f'<text x="{X0 - 10}" y="{y + 18}" text-anchor="end" class="tk">{name}</text>')
+        marks = ["cell-w"] * c["left"] + ["cell-n"] * (c["all"] - c["left"] - c["right"]) + ["cell-o"] * c["right"]
+        for j, cls in enumerate(marks):
+            parts.append(f'<rect x="{X0 + W * j + 2}" y="{y + 2}" width="{W - 4}" height="{H - 4}" rx="3" class="{cls}"/>')
+    return f'<svg viewBox="0 0 640 {y0 + H * 5 + 20}" role="img" aria-label="ワイルダーの平滑と他の線の勝敗。本数が短いほどワイルダーの平滑が上回る組が多い">' + "".join(parts) + "</svg>"
+
+
+def fig_curves(grid: dict, labels):
+    """本数ごとの外れの曲線（列は見積もり先、行は系列）。ワイルダーの平滑の最小に印を付ける。"""
+    methods = (("単純平均", "l-s"), ("ワイルダーの平滑", "l-w"), (OLS_NAME, "l-o"))
+    W, H, top, gap = 270, 112, 40, 28
+    log = np.log(GRID_NS)
+    parts = []
+    for i, h in enumerate(HORIZONS):
+        x0 = 44 + (W + 44) * i
+        parts.append(f'<text x="{x0}" y="14" class="lb strong">{HORIZON_LABEL[h]}</text>')
+        sx = lambda n, x0=x0: x0 + (np.log(n) - log[0]) / (log[-1] - log[0]) * W
+        for r, label in enumerate(labels):
+            y0 = top + (H + gap) * r
+            errs = {name: np.array([grid[label][f"{name} {n}"][i] for n in GRID_NS]) for name, _ in methods}
+            lo = min(e.min() for e in errs.values())
+            hi = min(max(e.max() for e in errs.values()), lo * 1.4)  # 極端に悪い短い本数は枠の上で切る
+            sy = lambda v, y0=y0, lo=lo, hi=hi: y0 + H - (min(v, hi) - lo) / (hi - lo) * H
+            parts.append(f'<rect x="{x0}" y="{y0}" width="{W}" height="{H}" class="panel"/>')
+            parts.append(f'<text x="{x0}" y="{y0 - 5}" class="tk">{label}</text>')
+            parts.append(f'<text x="{x0 - 5}" y="{y0 + H + 3}" text-anchor="end" class="tk">{lo:.0f}%</text>')
+            parts.append(f'<text x="{x0 - 5}" y="{y0 + 10}" text-anchor="end" class="tk">{hi:.0f}%</text>')
+            for name, cls in methods:
+                parts.append('<path d="M' + " L".join(f"{sx(n):.1f},{sy(v):.1f}" for n, v in zip(GRID_NS, errs[name])) + f'" class="{cls}"/>')
+            e = errs["ワイルダーの平滑"]
+            k = int(np.argmin(e))
+            parts.append(f'<circle cx="{sx(GRID_NS[k]):.1f}" cy="{sy(e[k]):.1f}" r="4.5" class="m-real"/>')
+            parts.append(f'<text x="{sx(GRID_NS[k]):.1f}" y="{sy(e[k]) - 9:.1f}" text-anchor="middle" class="lb blue">{GRID_NS[k]} 本</text>')
+            if r == len(labels) - 1:
+                for n in (3, 10, 25, 50, 200):
+                    parts.append(f'<text x="{sx(n):.1f}" y="{y0 + H + 15}" text-anchor="middle" class="tk">{n}</text>')
+    height = top + (H + gap) * len(labels) + 4
+    return f'<svg viewBox="0 0 640 {height}" role="img" aria-label="本数ごとの外れの曲線。どの枠でもワイルダーの平滑が最も低い位置にある">' + "".join(parts) + "</svg>"
 
 
 def fig_ols_fit(n: int = 25, last: str = "2024-08-09"):
@@ -860,7 +919,8 @@ def main(out_path: str):
         f'<tr><td>{name}</td><td class="n">{lag[0]} 本</td><td class="n">{lag[1]} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
         for name, lag, mv, e1, e20 in trend)
     move_ratio = trend[2][2] / trend[1][2]
-    best = best_rows([(f[0], f[3]) for f in frames])
+    grid = grid_errors([(f[0], f[3]) for f in frames])
+    best = best_rows(grid)
     labels = [f[0] for f in frames]
     skill = skill_table(frames, np.random.default_rng(SKILL_SEED))
     best_tbl = "".join(
@@ -917,8 +977,9 @@ def main(out_path: str):
             .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_ROWS}}", best_tbl).replace("{{OLS_WINS}}", str(ols_wins(best))).replace("{{MOVE_RATIO}}", f"{move_ratio:.1f}")
             .replace("{{FIG_ATTRIB}}", fig_attrib(attrib))
             .replace("{{FIG_SKILL}}", fig_skill(skill, labels)).replace("{{FIG_DIFF}}", fig_diff(skill, labels))
-            .replace("{{W25_WINS}}", str(wins_over_ols(skill, labels, 25)["w"])).replace("{{W100_WINS}}", str(wins_over_ols(skill, labels, 100)["w"])).replace("{{O100_WINS}}", str(wins_over_ols(skill, labels, 100)["o"]))
-            .replace("{{SKILL_COUNT_ROWS}}", skill_count_rows(skill, labels)).replace("{{WINS_ROWS}}", wins_by_n(skill, labels))
+            .replace("{{W25_WINS}}", str(win_counts(skill, labels, "W25-O25")["left"])).replace("{{W100_WINS}}", str(win_counts(skill, labels, "W100-O100")["left"])).replace("{{O100_WINS}}", str(win_counts(skill, labels, "W100-O100")["right"]))
+            .replace("{{FIG_COUNTS}}", fig_counts(skill, labels)).replace("{{FIG_WINS}}", fig_wins(skill, labels)).replace("{{FIG_CURVES}}", fig_curves(grid, labels))
+            .replace("{{EX_ONE_W}}", f"{skill[labels[0], 'one', 'W25'][0]:.1f}").replace("{{EX_ONE_O}}", f"{skill[labels[0], 'one', 'O25'][0]:.1f}")
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
             .replace("{{SMALL_LIST}}", "〜".join(f"{abs(np.exp(r['d_oos']) - 1) * 100:.0f}" for r in passed))

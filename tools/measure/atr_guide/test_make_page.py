@@ -251,13 +251,44 @@ def test_skill_counts_count_only_positive_gains_excluding_zero():
     assert c["twenty", "S", 25] == 1 and c["one", "O", 25] == 1 and c["one", "S", 25] == 2
 
 
-def test_wins_count_both_directions():
+def test_win_counts_count_both_directions():
     t = _table_for_figures()
-    assert P.wins_over_ols(t, ["A", "B"], 100) == dict(w=0, o=3, all=4)
-    assert P.wins_over_ols(t, ["A", "B"], 25) == dict(w=4, o=0, all=4)
-    rows = P.wins_by_n(t, ["A", "B"])
-    assert "n = 14</td><td class=\"n\">0 / 4</td><td class=\"n\">0 / 4" in rows
-    assert "n = 25</td><td class=\"n\">4 / 4</td>" in rows
+    assert P.win_counts(t, ["A", "B"], "W100-O100") == dict(left=0, right=3, all=4)
+    assert P.win_counts(t, ["A", "B"], "W25-O25") == dict(left=4, right=0, all=4)
+
+
+def test_fig_counts_shade_by_the_share_of_series():
+    t = _table_for_figures()
+    svg = P.fig_counts(t, ["A", "B"])
+    assert svg.count('class="cell-count"') == 18
+    assert 'fill-opacity="1.00"' in svg and 'fill-opacity="0.50"' in svg
+    assert "1 / 2" in svg and "2 / 2" in svg
+
+
+def test_fig_wins_draws_one_cell_for_each_pair():
+    svg = P.fig_wins(_table_for_figures(), ["A", "B"])
+    assert svg.count("<rect") == 5 * 4
+    assert svg.count('class="cell-o"') == 3
+
+
+def _grid():
+    errs = {}
+    for name, base in (("単純平均", 30.0), ("ワイルダーの平滑", 20.0), (P.OLS_NAME, 40.0)):
+        for n in P.GRID_NS:
+            errs[f"{name} {n}"] = (base + abs(n - 25) * 0.01, base + abs(n - 50) * 0.01)
+    return {"A": errs}
+
+
+def test_fig_curves_marks_the_smallest_wilder_of_each_panel():
+    svg = P.fig_curves(_grid(), ["A"])
+    assert svg.count('class="m-real"') == 2 and ">25 本<" in svg and ">50 本<" in svg
+    assert svg.count('class="l-w"') == 2 and svg.count('class="l-o"') == 2
+
+
+def test_best_rows_read_the_grid():
+    r = P.best_rows(_grid())[0]
+    assert r["best_one"] == "ワイルダーの平滑 25" and r["best_twenty"] == "ワイルダーの平滑 50"
+    assert r["ols_one"] == f"{P.OLS_NAME} 25" and r["ols_err_twenty"] == 40.0
 
 
 class AvgSpy:
@@ -321,7 +352,7 @@ def test_best_rows_report_the_best_and_the_best_of_ols():
     tr = _tr(600)
     bad = lambda t: 1 + np.sin(np.arange(len(t)))
     methods = (("単純平均 25", lambda t: P.sma(t, 25)), ("btlm_trail の計算 1", bad), ("btlm_trail の計算 2", lambda t: 2 * bad(t) + 1))
-    r = P.best_rows([("系列", tr)], methods=methods)[0]
+    r = P.best_rows(P.grid_errors([("系列", tr)], methods=methods))[0]
     assert r["label"] == "系列" and r["best_one"] == "単純平均 25" and r["best_twenty"] == "単純平均 25"
     assert r["ols_one"].startswith("btlm_trail")
     assert r["ols_err_one"] > r["err_one"]
@@ -428,7 +459,7 @@ def test_issued_windows_do_not_grow_with_warm_up_length():
 def _best_issued(length):
     spy = AvgSpy()
     methods = (("単純平均 14", lambda t: spy(t, 14)), ("btlm_trail の計算 25", lambda t: spy(t, 25)))
-    rows = P.best_rows([("系列", _tr(length))], methods=methods)
+    rows = P.best_rows(P.grid_errors([("系列", _tr(length))], methods=methods))
     return spy.issued, len(methods) * len(rows)
 
 
@@ -458,8 +489,8 @@ def test_every_issued_skill_interval_is_read_by_the_page():
     labels = ["A", "B"]
     P.fig_skill(table, labels)
     P.fig_diff(table, labels)
-    P.skill_count_rows(table, labels)
-    P.wins_by_n(table, labels)
+    P.fig_counts(table, labels)
+    P.fig_wins(table, labels)
     assert set(table) - table.read == set()
 
 
