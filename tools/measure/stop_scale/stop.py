@@ -72,17 +72,24 @@ def picks(n_blocks: int, count: int, rng) -> np.ndarray:
     return rng.integers(0, n_blocks, (count, n_blocks))
 
 
-def compare_distance(ev: dict, name: str, base: str, draws: np.ndarray, survival: float = 0.9, measure=distance) -> dict:
-    """尺度 1 の比較: name の距離 ÷ base の距離 − 1（%）。measure は計算量検定の注入点。"""
+def distance_table(ev: dict, names, draws: np.ndarray, survival: float = 0.9, measure=distance) -> dict:
+    """物差しごとの距離（実測と各抽出）。同じ計算は 1 度だけ行う。measure は計算量検定の注入点。"""
     block = ev["block"]
     index = [np.flatnonzero(block == b) for b in range(int(block.max()) + 1)]
-    value = lambda key, idx: measure(ev["ratio"][key][idx], ev["scale"][key][idx], survival)
-    point = (value(name, np.arange(len(block))) / value(base, np.arange(len(block))) - 1) * 100
-    out = np.empty(len(draws))
-    for i, pick in enumerate(draws):
-        idx = np.concatenate([index[b] for b in pick])
-        out[i] = (value(name, idx) / value(base, idx) - 1) * 100
-    return dict(point=point, lo=float(np.percentile(out, 2.5)), hi=float(np.percentile(out, 97.5)), p=two_sided_p(out))
+    picked = [np.concatenate([index[b] for b in pick]) for pick in draws]
+    out = {}
+    for name in names:
+        ratio, scale = ev["ratio"][name], ev["scale"][name]
+        out[name] = dict(point=measure(ratio, scale, survival),
+                         draws=np.array([measure(ratio[idx], scale[idx], survival) for idx in picked]))
+    return out
+
+
+def compare_distance(table: dict, name: str, base: str) -> dict:
+    """尺度 1 の比較: name の距離 ÷ base の距離 − 1（%）。"""
+    out = (table[name]["draws"] / table[base]["draws"] - 1) * 100
+    return dict(point=(table[name]["point"] / table[base]["point"] - 1) * 100,
+                lo=float(np.percentile(out, 2.5)), hi=float(np.percentile(out, 97.5)), p=two_sided_p(out))
 
 
 def compare_gap(ev: dict, name: str, base: str, k_name: float, k_base: float, draws: np.ndarray, target: float = 10.0) -> dict:
@@ -108,6 +115,27 @@ def judge(df: pd.DataFrame, measure: str, level: float = 0.05) -> pd.DataFrame:
     out[f"{measure}_holm"] = np.where(is_row, is_holm.reindex(out.key).to_numpy(), oos_holm.reindex(out.key).to_numpy())
     out[f"{measure}_pass"] = final.reindex(out.key).fillna(False).astype(bool).to_numpy() & ~is_row
     return out
+
+
+def tier_rates(ratio: np.ndarray, state: np.ndarray, edges: np.ndarray, k: float) -> np.ndarray:
+    """荒れ方の段ごとの掛かる割合（%）。state を edges で分ける（低い段から順）。"""
+    tier = np.searchsorted(edges, state, side="right")
+    return np.array([np.mean(ratio[tier == i] >= k) * 100 for i in range(len(edges) + 1)])
+
+
+def summary_distance(ratio: np.ndarray, scale: np.ndarray, summary, survival: float = 0.9) -> float:
+    """§3 の事後の記述: 物差しの要約を summary に替えた距離。"""
+    return multiple_for(ratio, survival) * float(summary(scale))
+
+
+def harmonic(x: np.ndarray) -> float:
+    """調和平均（距離で割ったものの平均を戻した値）。"""
+    return float(len(x) / np.sum(1 / x))
+
+
+def geometric(x: np.ndarray) -> float:
+    """幾何平均。"""
+    return float(np.exp(np.mean(np.log(x))))
 
 
 def verdict(row, min_distance: float = 5.0, min_gap: float = 1.0) -> str:
