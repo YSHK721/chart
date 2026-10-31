@@ -2,7 +2,9 @@
 import numpy as np
 import pandas as pd
 
+from indigators.btlm_trail.src.core import rolling_ols_window_end, window_end_scalar
 from tools.measure.tr_beta import beta as B
+from tools.measure.tr_beta import run as RUN
 
 
 def rng_from_seed(seed):
@@ -14,20 +16,13 @@ def test_future_mean_excludes_the_current_bar():
     x = np.arange(10.0)
     want = (x[1] + x[2]) / 2  # 足 0 の次の 2 本の平均を手で計算した値
     assert B.future_mean(x, 2)[0] == want
-    assert np.isnan(B.future_mean(x, 2)[-1])
+    assert B.future_mean(x, 2)[7] == (x[8] + x[9]) / 2
+    assert np.isnan(B.future_mean(x, 2)[8])
 
 
 def test_past_mean_includes_the_current_bar():
     x = np.arange(10.0)
     assert B.past_mean(x, 2)[5] == (x[4] + x[5]) / 2
-
-
-def test_future_mean_is_not_changed_by_past_bars():
-    rng = rng_from_seed(0)
-    x = rng.uniform(1, 2, 50)
-    z = x.copy()
-    z[:10] += 5
-    assert B.future_mean(z, 5)[10] == x[11:16].mean()
 
 
 def test_beta_sign_follows_the_slope_and_marks_short_windows_as_zero():
@@ -36,12 +31,49 @@ def test_beta_sign_follows_the_slope_and_marks_short_windows_as_zero():
     assert B.beta_sign(np.arange(10.0)[::-1], 4)[-1] == -1
 
 
+def test_beta_sign_equals_the_rolling_calculation_of_btlm_trail():
+    rng = rng_from_seed(0)
+    x = rng.uniform(1, 2, 80)
+    want = np.sign(rolling_ols_window_end(x, 10)[2])
+    want[:9] = 0
+    assert np.array_equal(B.beta_sign(x, 10), want)
+    assert np.array_equal(B.beta_sign(x, 10, first=30), want[30:])
+
+
 def test_beta_sign_does_not_use_future_bars():
     rng = rng_from_seed(0)
     x = rng.uniform(1, 2, 60)
     z = x.copy()
     z[30:] = 99.0
     assert np.array_equal(B.beta_sign(x, 10)[:30], B.beta_sign(z, 10)[:30])
+
+
+def test_measures_reads_warm_up_for_a_but_not_for_y():
+    x = np.arange(100.0)
+    m = B.measures(x, 50, (20,))
+    assert m["y"][0] == x[51:71].mean()
+    assert m["a"][0] == x[31:51].mean()
+    assert m[20][0] == 1
+    assert len(m["y"]) == len(m["a"]) == len(m[20]) == 50
+
+
+def test_measures_at_series_start_has_no_warm_up():
+    m = B.measures(np.arange(50.0), 0, (20,))
+    assert np.isnan(m["a"][18]) and m["a"][19] == np.arange(20.0).mean()
+    assert m[20][18] == 0 and m[20][19] == 1
+
+
+def test_remove_hours_decides_factors_in_the_period_and_aligns_each_hour():
+    x = np.array([99.0, 2.0, 6.0, 4.0, 12.0])
+    hour = np.array([1, 0, 1, 0, 1])
+    seen = []
+
+    def factor(ratio, h):
+        seen.append(list(ratio))
+        return np.array([2.0, 6.0])
+
+    assert list(B.remove_hours(x, hour, 1, factor)) == [16.5, 1.0, 1.0, 2.0, 2.0]
+    assert seen == [[2.0, 6.0, 4.0, 12.0]]
 
 
 def test_range_pct_divides_by_the_previous_close():
@@ -58,6 +90,13 @@ def test_hit_rate_and_mean_gap():
     assert B.mean_gap(sign, np.array([3.0, 1.0, 0.0, 2.0]), ok) == 1.0
 
 
+def test_hit_rate_and_mean_gap_ignore_bars_outside_ok():
+    sign = np.array([1.0, 1.0, -1.0, -1.0])
+    ok = np.array([True, False, True, False])
+    assert B.hit_rate(sign, np.array([1.0, -1.0, -1.0, 1.0]), ok) == 1.0
+    assert B.mean_gap(sign, np.array([3.0, 100.0, 1.0, -100.0]), ok) == 2.0
+
+
 def test_fit_level_recovers_known_coefficients():
     rng = rng_from_seed(0)
     w = rng.uniform(0.5, 2.0, 200)
@@ -72,9 +111,17 @@ def test_fit_sign_recovers_the_half_gap():
     assert abs(B.fit_sign(0.2 * sign, sign, np.ones(100, bool)) - 0.2) < 1e-12
 
 
-def test_relative_error():
-    y = np.array([2.0, 2.0])
-    assert B.relative_error(y, np.array([1.0, 3.0]), np.ones(2, bool)) == 50.0
+def test_relative_error_divides_by_the_mean_of_y():
+    y = np.array([2.0, 2.0, 100.0])
+    ok = np.array([True, True, False])
+    assert B.relative_error(y, np.array([3.0, 3.0, 0.0]), ok) == 50.0
+
+
+def test_two_sided_p_matches_a_hand_calculation():
+    # 帰無の平均 1。外れは 2,0,0,2。実測 3 の外れは 2。外れ 2 以上が 2 個なので (1 + 2) / (4 + 1)。
+    center, p = B.two_sided_p(3.0, np.array([-1.0, 1.0, 1.0, 3.0]))
+    assert center == 1.0
+    assert p == (1 + 2) / 5
 
 
 def test_circular_test_finds_a_planted_relation_and_not_a_missing_one():
@@ -88,62 +135,144 @@ def test_circular_test_finds_a_planted_relation_and_not_a_missing_one():
     assert B.circular_test(sign, absent, B.mean_gap, shifts)[2] > 0.05
 
 
-def test_circular_test_excludes_missing_targets_and_zero_signs():
+def test_circular_test_excludes_missing_targets_and_zero_signs_in_observed_and_null():
     sign = np.array([1.0, -1.0, 0.0, 1.0])
     target = np.array([1.0, 0.0, 9.0, np.nan])
     seen = []
-    B.circular_test(sign, target, lambda s, t, ok: seen.append(ok.copy()) or 0.0, [])
-    assert list(seen[0]) == [True, True, False, False]
+
+    def stat(s, t, ok):
+        seen.append((list(t), list(ok)))
+        return 0.0
+
+    B.circular_test(sign, target, stat, [1])
+    assert seen[0][1] == [True, True, False, False]
+    # 1 本ずらすと欠損は先頭へ移り、0 の sign は足 2 のまま
+    assert seen[1] == ([0.0, 1.0, 0.0, 9.0], [False, True, False, True])
 
 
-def test_draw_shifts_stays_in_the_margin():
-    s = B.draw_shifts(1000, 500, 250, rng_from_seed(0))
+def test_draw_shifts_includes_both_ends():
+    rng = rng_from_seed(0)
+    s = B.draw_shifts(1000, 500, 250, rng)
     assert s.min() >= 250 and s.max() <= 750
+    assert set(B.draw_shifts(10, 200, 4, rng)) == {4, 5, 6}
 
 
-class StatSpy:
-    """統計量の発行回数を数える Test Spy（注入点 stat を通す）。"""
+def _frame(stat, is_p, oos_p, oos_value=1.0):
+    rows = []
+    for period, ps, value in (("IS", is_p, 1.0), ("OOS", oos_p, oos_value)):
+        for n, p in zip((20, 50, 100), ps):
+            rows.append({"period": period, "tf": "1h", "n": n, stat: value, f"{stat}_null": 0.0, f"{stat}_p": p})
+    return pd.DataFrame(rows)
+
+
+def _passed(df, stat):
+    return df[df[f"{stat}_pass"]].n.tolist()
+
+
+def test_judge_applies_holm_only_to_the_pairs_that_passed_is():
+    # IS の Holm 後: 0.003, 0.003, 0.9 → 2 組通過。OOS は 2 組で Holm: 小さい 0.01 × 2 = 0.02、大きい 0.06 × 1 = 0.06
+    df = B.judge(_frame("D", [0.001, 0.001, 0.9], [0.06, 0.01, 0.0001]), "D")
+    assert _passed(df, "D") == [50]
+    assert np.isnan(df[(df.period == "OOS") & (df.n == 100)].D_holm.iloc[0])
+    assert df[(df.period == "OOS") & (df.n == 20)].D_holm.iloc[0] == 0.06
+
+
+def test_judge_leaves_the_pair_that_failed_is_out_of_the_oos_holm():
+    # 2 組の Holm: 0.02 × 2 = 0.04、0.03 × 1 → 単調にして 0.04。不通過の組を混ぜて 3 組にすると 0.06 になり落ちる
+    df = B.judge(_frame("D", [0.001, 0.001, 0.9], [0.03, 0.02, 0.5]), "D")
+    assert _passed(df, "D") == [20, 50]
+
+
+def test_judge_rejects_the_opposite_direction():
+    df = B.judge(_frame("D", [0.001, 0.001, 0.9], [0.001, 0.001, 0.9], oos_value=-1.0), "D")
+    assert _passed(df, "D") == []
+
+
+def test_series_ends_targets_inside_the_period(monkeypatch):
+    dates = pd.date_range("2020-01-01", periods=400, freq="D")
+    dates = dates[dates.dayofweek < 5]
+    close = 100.0 + np.arange(len(dates), dtype=float) * 0.1
+    d = pd.DataFrame({"date": dates, "open": close, "high": close + 1, "low": close - 1, "close": close})
+    monkeypatch.setattr(RUN, "load", lambda path, tf: d)
+    end = "2020-10-01"
+    s = RUN.series("", "1D", "2020-03-02", end)
+    want_bars = int(((dates >= "2020-03-02") & (dates < end)).sum())
+    assert s["bars"] == want_bars
+    assert np.isnan(s["y"][-20:]).all() and np.isfinite(s["y"][-21])
+    assert np.isfinite(s["a"][0])
+
+
+class ObservedTest:
+    """統計量の発行と、p の計算に届いた帰無の本数を数える Test Spy（注入点 stat・p_value を通す）。"""
 
     def __init__(self):
         self.issued = 0
+        self.used = 0
 
-    def __call__(self, sign, target, ok):
+    def stat(self, sign, target, ok):
         self.issued += 1
         return B.mean_gap(sign, target, ok)
 
+    def p_value(self, obs, null):
+        self.used += 1 + len(null)  # 実測 1 個と帰無の全本数
+        return B.two_sided_p(obs, null)
 
-def _issued(n, count=50):
+
+def _observed(n, count=50):
     rng = rng_from_seed(2)
-    spy = StatSpy()
+    spy = ObservedTest()
     sign = rng.choice([-1.0, 1.0], n)
-    B.circular_test(sign, rng.normal(0, 1, n), spy, B.draw_shifts(n, count, 10, rng))
-    return spy.issued, count + 1  # 実測 1 回＋帰無の分（どれも p の計算に使う）
+    B.circular_test(sign, rng.normal(0, 1, n), spy.stat, B.draw_shifts(n, count, 10, rng), spy.p_value)
+    return spy
 
 
-def test_every_issued_stat_reaches_the_output():
-    issued, used = _issued(300)
-    assert issued - used == 0
+def test_every_issued_stat_reaches_the_p_value():
+    spy = _observed(300)
+    assert spy.issued - spy.used == 0
 
 
 def test_issued_stats_do_not_grow_with_input_length():
-    assert _issued(300)[0] == _issued(1200)[0]
+    assert _observed(300).issued == _observed(1200).issued
 
 
-class FitSpy:
-    """OLS の発行回数を数える Test Spy（注入点 fit を通す）。"""
+class WindowSpy:
+    """1 窓の OLS の発行回数を数える Test Spy（注入点 window を通す）。"""
 
     def __init__(self):
         self.issued = 0
 
-    def __call__(self, x, n):
+    def __call__(self, z):
         self.issued += 1
-        from indigators.btlm_trail.src.core import rolling_ols_window_end
-        return rolling_ols_window_end(x, n)
+        return window_end_scalar(z)
 
 
-def test_beta_sign_issues_the_fit_once_per_series():
-    rng = rng_from_seed(0)
-    for length in (50, 200):
-        spy = FitSpy()
-        B.beta_sign(rng.uniform(1, 2, length), 10, fit=spy)
-        assert spy.issued == 1
+class MeanSpy:
+    """平均に渡した足の本数を数える Test Spy（注入点 mean を通す）。"""
+
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, x, h):
+        self.issued += len(x)
+        return B.rolling_mean(x, h)
+
+
+def _measured(warm, bars=120, n=20):
+    rng = rng_from_seed(3)
+    window, mean = WindowSpy(), MeanSpy()
+    m = B.measures(rng.uniform(1, 2, warm + bars), warm, (n,), window=window, mean=mean)
+    used_windows = int(np.count_nonzero(m[n]))
+    return window.issued, used_windows, mean.issued
+
+
+def test_every_issued_window_reaches_the_output():
+    issued, used, _ = _measured(warm=300)
+    assert issued - used == 0
+
+
+def test_issued_windows_do_not_grow_with_warm_up_length():
+    assert _measured(warm=300)[0] == _measured(warm=3000)[0]
+
+
+def test_issued_means_do_not_grow_with_warm_up_length():
+    assert _measured(warm=300)[2] == _measured(warm=3000)[2]

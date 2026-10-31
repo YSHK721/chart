@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 
 from tools.measure.atr_guide.make_page import DUKA, MT5, load, true_range, wilder
-from tools.measure.bar_patterns.patterns import holm
 from tools.measure.tr_beta import beta as B
 from tools.measure.tr_quantile.tq import hour_factor
 
@@ -21,23 +20,21 @@ COUNT = 1999
 MARGIN = 250
 SEED = 20261031
 NS = (20, 50, 100)
+MIN_GAIN = 0.5  # §1.6 の実用基準（ポイント）
 PERIODS = {"IS": (DUKA, "2014-01-01", "2020-05-01"), "OOS": (MT5, "2020-05-01", "2100-01-01")}
 
 
 def series(path: str, tf: str, start: str, end: str) -> dict:
-    """期間の終わりまでの足で量を作り、評価する足だけに切り出す。"""
+    """期間の終わりまでの足で、評価する足（start 以降）の量を作る。"""
     d = load(path, tf)
     d = d[d.date < end].reset_index(drop=True)
     x = B.range_pct(d, true_range)[1:]
     date = d.date.iloc[1:].reset_index(drop=True)
+    first = int((date >= start).to_numpy().argmax())
     if tf == "1h":
-        in_period = (date >= start).to_numpy()
-        s = hour_factor(x[in_period], date.dt.hour.to_numpy()[in_period])
-        x = x / s[date.dt.hour.to_numpy()]
-    keep = (date >= start).to_numpy()
-    out = dict(y=B.future_mean(x)[keep], a=B.past_mean(x)[keep], w=wilder(x, 14)[keep], bars=int(keep.sum()))
-    for n in NS:
-        out[n] = B.beta_sign(x, n)[keep]
+        x = B.remove_hours(x, date.dt.hour.to_numpy(), first, hour_factor)
+    out = B.measures(x, first, NS)
+    out.update(w=wilder(x, 14)[first:], bars=len(x) - first)
     return out
 
 
@@ -66,9 +63,9 @@ def main():
                                  err_beta=B.relative_error(s["y"], base * np.exp(c * s[n]), ok),
                                  share_up=float(np.nanmean(up))))
     df = pd.DataFrame(rows)
-    is_rows = df.period == "IS"
-    df.loc[is_rows, "H_holm"] = holm(df.loc[is_rows, "H_p"].to_numpy())
-    df.loc[is_rows, "D_holm"] = holm(df.loc[is_rows, "D_p"].to_numpy())
+    df = B.judge(B.judge(df, "H"), "D")
+    df["err_gain"] = df.err_base - df.err_beta
+    df["usable"] = df.D_pass & (df.err_gain >= MIN_GAIN)
     OUT.mkdir(exist_ok=True)
     df.to_csv(OUT / "tests.csv", index=False)
     pd.set_option("display.width", 220, "display.max_columns", 30)
