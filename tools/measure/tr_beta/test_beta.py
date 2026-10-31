@@ -471,6 +471,13 @@ def test_attrib_row_states_the_directions_of_each_difference():
     assert abs(row["coef_is_alone"]) < 0.05 and abs(row["coef_is_with_long"]) < 0.05
 
 
+def test_attrib_row_interval_of_the_increment_points_at_beta():
+    is_ = dict(_partial_series(800, 1, 0.3), week=np.repeat(np.arange(80), 10))
+    oos = dict(_partial_series(800, 2, 0.3), week=np.repeat(np.arange(80), 10))
+    row = ATTR.attrib_row(is_, oos, 100, rng_from_seed(14), count=200, margin=50)
+    assert row["gain_incr"] > 0 and row["gain_incr_lo"] > 0  # β に効果がある合成データでは正の幅になる
+
+
 def test_attrib_row_reads_the_beta_coefficient_of_each_model():
     is_ = dict(_partial_series(800, 1, 0.3), week=np.repeat(np.arange(80), 10))
     oos = dict(_partial_series(800, 2, 0.1), week=np.repeat(np.arange(80), 10))
