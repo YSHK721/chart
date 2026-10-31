@@ -5,7 +5,8 @@ import pandas as pd
 from tools.measure.tr_beta import beta as B
 
 
-def _rng(seed=0):
+def rng_from_seed(seed):
+    """乱数は必ずシードから作る（再現性）。"""
     return np.random.default_rng(seed)
 
 
@@ -22,10 +23,11 @@ def test_past_mean_includes_the_current_bar():
 
 
 def test_future_mean_is_not_changed_by_past_bars():
-    x = _rng().uniform(1, 2, 50)
+    rng = rng_from_seed(0)
+    x = rng.uniform(1, 2, 50)
     z = x.copy()
     z[:10] += 5
-    assert B.future_mean(x, 5)[10] == B.future_mean(z, 5)[10]
+    assert B.future_mean(z, 5)[10] == x[11:16].mean()
 
 
 def test_beta_sign_follows_the_slope_and_marks_short_windows_as_zero():
@@ -35,7 +37,8 @@ def test_beta_sign_follows_the_slope_and_marks_short_windows_as_zero():
 
 
 def test_beta_sign_does_not_use_future_bars():
-    x = _rng().uniform(1, 2, 60)
+    rng = rng_from_seed(0)
+    x = rng.uniform(1, 2, 60)
     z = x.copy()
     z[30:] = 99.0
     assert np.array_equal(B.beta_sign(x, 10)[:30], B.beta_sign(z, 10)[:30])
@@ -56,7 +59,8 @@ def test_hit_rate_and_mean_gap():
 
 
 def test_fit_level_recovers_known_coefficients():
-    w = _rng().uniform(0.5, 2.0, 200)
+    rng = rng_from_seed(0)
+    w = rng.uniform(0.5, 2.0, 200)
     y = np.exp(0.3) * w ** 0.7
     a, b = B.fit_level(y, w, np.ones(200, bool))
     assert abs(a - 0.3) < 1e-9 and abs(b - 0.7) < 1e-9
@@ -74,7 +78,7 @@ def test_relative_error():
 
 
 def test_circular_test_finds_a_planted_relation_and_not_a_missing_one():
-    rng = _rng(1)
+    rng = rng_from_seed(1)
     n = 3000
     sign = np.repeat(rng.choice([-1.0, 1.0], n // 30), 30)
     shifts = B.draw_shifts(n, 299, 100, rng)
@@ -93,7 +97,7 @@ def test_circular_test_excludes_missing_targets_and_zero_signs():
 
 
 def test_draw_shifts_stays_in_the_margin():
-    s = B.draw_shifts(1000, 500, 250, _rng())
+    s = B.draw_shifts(1000, 500, 250, rng_from_seed(0))
     assert s.min() >= 250 and s.max() <= 750
 
 
@@ -109,7 +113,7 @@ class StatSpy:
 
 
 def _issued(n, count=50):
-    rng = _rng(2)
+    rng = rng_from_seed(2)
     spy = StatSpy()
     sign = rng.choice([-1.0, 1.0], n)
     B.circular_test(sign, rng.normal(0, 1, n), spy, B.draw_shifts(n, count, 10, rng))
@@ -138,7 +142,8 @@ class FitSpy:
 
 
 def test_beta_sign_issues_the_fit_once_per_series():
+    rng = rng_from_seed(0)
     for length in (50, 200):
         spy = FitSpy()
-        B.beta_sign(_rng().uniform(1, 2, length), 10, fit=spy)
+        B.beta_sign(rng.uniform(1, 2, length), 10, fit=spy)
         assert spy.issued == 1
