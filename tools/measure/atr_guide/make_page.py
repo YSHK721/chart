@@ -13,6 +13,7 @@ import pandas as pd
 from indigators.btlm_trail.src.core import window_end_scalar
 from tools.measure.page_toc import inject_toc
 from tools.measure.reach_prob import reach as R
+from tools.measure.tr_beta.beta import gain_interval
 
 HERE = Path(__file__).resolve().parent
 BETA_TESTS = HERE.parent / "tr_beta/results/tests.csv"
@@ -488,6 +489,126 @@ def ols_wins(rows, ols_name: str = OLS_NAME) -> int:
     return sum(r[f"best_{k}"].startswith(ols_name) for r in rows for k in ("one", "twenty"))
 
 
+SKILL_NS = (14, 25, 100)
+SKILL_AVG = (("S", sma), ("W", wilder), ("O", lambda t, n: ols_end(t, n, TREND_START)))
+SKILL_COUNT = 1999
+SKILL_SEED = 20261031
+HORIZONS = ("one", "twenty")
+
+
+def series_frames():
+    """比べる 4 系列（名前・真の値幅・再標本の単位の四半期）。"""
+    frames = []
+    for label, path, tf, start, end in (("MT5 1 時間足", MT5, "1h", None, None), ("MT5 日足", MT5, "1D", None, None),
+                                        ("Dukascopy 1 時間足", DUKA, "1h", "2014-01-01", "2020-05-01"),
+                                        ("Dukascopy 日足", DUKA, "1D", "2014-01-01", "2020-05-01")):
+        d = load(path, tf)
+        if start:
+            d = d[(d.date >= start) & (d.date < end)].reset_index(drop=True)
+        frames.append((label, true_range(d), pd.factorize(d.date.dt.to_period("Q"))[0]))
+    return frames
+
+
+def _gain(y: np.ndarray, base: np.ndarray, pred: np.ndarray) -> float:
+    """base から pred への外れの改善（%ポイント）。"""
+    return float((np.abs(y - base).sum() - np.abs(y - pred).sum()) / y.sum() * 100)
+
+
+def skill_table(frames, rng, count: int = SKILL_COUNT, ns=SKILL_NS, avg=SKILL_AVG, start: int = TREND_START) -> dict:
+    """線の見積もりの力と差を（改善・幅の下・幅の上）で返す。
+
+    キーは（系列・見積もり先・"S14" など）が一定値との比較、（系列・見積もり先・"W25-O25" など）が線どうしの差。
+    avg は線の計算（計算量検定の注入点）。線は系列ごとに 1 度だけ作る。
+    """
+    out = {}
+    for label, tr, block in frames:
+        lines = {f"{k}{n}": f(tr, n) for n in ns for k, f in avg}
+        s = pd.Series(tr)
+        for horizon, f in (("one", s.shift(-1).to_numpy()), ("twenty", s.rolling(20).mean().shift(-20).to_numpy())):
+            ok = np.isfinite(f) & (np.arange(len(tr)) >= start)
+            for a in lines.values():
+                ok &= np.isfinite(a) & (a > 0)
+            y, week = f[ok], pd.factorize(block[ok])[0]
+            const = np.full(ok.sum(), np.median(y))
+            pred = {k: np.median(y / a[ok]) * a[ok] for k, a in lines.items()}
+            for k in lines:
+                out[label, horizon, k] = (_gain(y, const, pred[k]), *gain_interval(y, const, pred[k], week, count, rng))
+                n = k[1:]
+                if k[0] == "O":
+                    for other in ("S", "W"):
+                        out[label, horizon, f"{other}{n}-O{n}"] = (_gain(y, pred[k], pred[other + n]),
+                                                                   *gain_interval(y, pred[k], pred[other + n], week, count, rng))
+                if k[0] == "W":
+                    out[label, horizon, f"W{n}-S{n}"] = (_gain(y, pred["S" + n], pred[k]),
+                                                         *gain_interval(y, pred["S" + n], pred[k], week, count, rng))
+    return out
+
+
+def excludes_zero(v) -> bool:
+    """幅が 0 を含まないか。"""
+    return v[1] > 0 or v[2] < 0
+
+
+HORIZON_LABEL = {"one": "次の 1 本", "twenty": "次の 20 本の平均"}
+
+
+def fig_skill(table: dict, labels, n: int = 25):
+    """一定値で見積もるより外れがどれだけ小さいか（点と 95% の幅）。"""
+    methods = (("S", "単純平均", "amber-m"), ("W", "ワイルダーの平滑", "blue-m"), ("O", "btlm_trail の計算", "violet-m"))
+    vals = [table[l, h, f"{k}{n}"] for l in labels for h in HORIZONS for k, _, _ in methods]
+    lo, hi = min(v[1] for v in vals) - 2, max(v[2] for v in vals) + 2
+    X0, X1 = 150, 620
+    sx = lambda v: X0 + (v - lo) / (hi - lo) * (X1 - X0)
+    parts = []
+    y = 20
+    for h in HORIZONS:
+        parts.append(f'<text x="14" y="{y + 4}" class="lb strong">{HORIZON_LABEL[h]}</text>')
+        y += 18
+        for l in labels:
+            parts.append(f'<text x="{X0 - 12}" y="{y + 16}" text-anchor="end" class="tk">{l}</text>')
+            for k, _, cls in methods:
+                v = table[l, h, f"{k}{n}"]
+                parts.append(f'<line x1="{sx(v[1]):.1f}" x2="{sx(v[2]):.1f}" y1="{y}" y2="{y}" class="whisker {cls}"/>')
+                parts.append(f'<circle cx="{sx(v[0]):.1f}" cy="{y}" r="4" class="{cls}"/>')
+                y += 13
+            y += 7
+        y += 10
+    parts.insert(0, f'<line x1="{sx(0):.1f}" x2="{sx(0):.1f}" y1="8" y2="{y - 16}" class="guide"/>')
+    for v in range(int(np.ceil(lo / 10)) * 10, int(hi) + 1, 10):
+        parts.append(f'<text x="{sx(v):.1f}" y="{y - 2}" text-anchor="middle" class="tk">{v:+d}</text>')
+    return f'<svg viewBox="0 0 640 {y + 6}" role="img" aria-label="3 つの線と一定値の比較。点が 0 の線より右なら一定値より外れが小さい">' + "".join(parts) + "</svg>"
+
+
+def fig_diff(table: dict, labels):
+    """ワイルダーの平滑 − btlm_trail の計算の差のます目（色は幅が 0 を含まない組）。"""
+    cols = [(h, n) for h in HORIZONS for n in (25, 100)]
+    X0, W, H = 150, 118, 34
+    y0 = 46
+    parts = []
+    for i, h in enumerate(HORIZONS):
+        parts.append(f'<text x="{X0 + W * (2 * i + 1)}" y="16" text-anchor="middle" class="lb strong">{HORIZON_LABEL[h]}</text>')
+    for j, (h, n) in enumerate(cols):
+        parts.append(f'<text x="{X0 + W * j + W / 2}" y="36" text-anchor="middle" class="tk">n = {n}</text>')
+    for i, l in enumerate(labels):
+        y = y0 + H * i
+        parts.append(f'<text x="{X0 - 10}" y="{y + 21}" text-anchor="end" class="tk">{l}</text>')
+        for j, (h, n) in enumerate(cols):
+            v = table[l, h, f"W{n}-O{n}"]
+            cls = ("cell-w" if v[0] > 0 else "cell-o") if excludes_zero(v) else "cell-n"
+            parts.append(f'<rect x="{X0 + W * j + 2}" y="{y + 2}" width="{W - 4}" height="{H - 4}" rx="3" class="{cls}"/>')
+            parts.append(f'<text x="{X0 + W * j + W / 2}" y="{y + 21}" text-anchor="middle" class="lb{" strong" if excludes_zero(v) else ""}">{v[0]:+.2f}</text>')
+    return f'<svg viewBox="0 0 640 {y0 + H * len(labels) + 8}" role="img" aria-label="ワイルダーの平滑と btlm_trail の計算の差。短い本数ではワイルダーの平滑、1 時間足の長い本数では btlm_trail の計算が上回る">' + "".join(parts) + "</svg>"
+
+
+def skill_values(table: dict, labels) -> dict:
+    """本文に入れる数（差し込み名 → 文字）。"""
+    methods = ("S25", "W25", "O25")
+    count = lambda h: sum(excludes_zero(table[l, h, k]) and table[l, h, k][0] > 0 for l in labels for k in methods)
+    w_s = [table[l, h, "W14-S14"] for l in labels for h in HORIZONS]
+    return {"SKILL_ONE": str(count("one")), "SKILL_TWENTY": str(count("twenty")),
+            "W_OVER_S": str(sum(excludes_zero(v) and v[0] > 0 for v in w_s)), "W_S_ALL": str(len(w_s))}
+
+
 def fig_ols_fit(n: int = 25, last: str = "2024-08-09"):
     """last までの n 本の真の値幅に当てはめた直線と、その右端の値・単純平均（MT5 日足）。"""
     full = load(MT5, "1D")
@@ -698,7 +819,8 @@ def main(out_path: str):
             f'<td class="n{" best" if e == min(errs) else ""}">{e:.1f}%</td>' for e in errs) + "</tr>"
         for label, errs in prow)
     exit_svg, ex = fig_exit()
-    trs = {tf: true_range(load(MT5, tf)) for tf in ("1h", "1D")}
+    frames = series_frames()
+    trs = {"1h": frames[0][1], "1D": frames[1][1]}
     sr = {tf: smooth_rows(tr) for tf, tr in trs.items()}
     follow_tbl = "".join(
         f'<tr><td>{name}</td><td class="n">{half} 本</td><td class="n">{most} 本</td>'
@@ -714,8 +836,9 @@ def main(out_path: str):
         f'<tr><td>{name}</td><td class="n">{lag[0]} 本</td><td class="n">{lag[1]} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
         for name, lag, mv, e1, e20 in trend)
     move_ratio = trend[2][2] / trend[1][2]
-    duka = [true_range(d[(d.date >= "2014-01-01") & (d.date < "2020-05-01")].reset_index(drop=True)) for d in (load(DUKA, "1h"), load(DUKA, "1D"))]
-    best = best_rows([("MT5 1 時間足", trs["1h"]), ("MT5 日足", trs["1D"]), ("Dukascopy 1 時間足", duka[0]), ("Dukascopy 日足", duka[1])])
+    best = best_rows([(label, tr) for label, tr, _ in frames])
+    labels = [label for label, _, _ in frames]
+    skill = skill_table(frames, np.random.default_rng(SKILL_SEED))
     best_tbl = "".join(
         f'<tr><td>{r["label"]}</td><td>{r["best_one"]}（{r["err_one"]:.1f}%）</td><td>{r["best_twenty"]}（{r["err_twenty"]:.1f}%）</td>'
         f'<td class="n">{r["ols_err_one"]:.1f}%</td><td class="n">{r["ols_err_twenty"]:.1f}%</td></tr>'
@@ -769,6 +892,7 @@ def main(out_path: str):
             .replace("{{W_SMA}}", f"{weights['sma']:.2f}").replace("{{W_OLS}}", f"{weights['ols']:.2f}")
             .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_ROWS}}", best_tbl).replace("{{OLS_WINS}}", str(ols_wins(best))).replace("{{MOVE_RATIO}}", f"{move_ratio:.1f}")
             .replace("{{FIG_ATTRIB}}", fig_attrib(attrib))
+            .replace("{{FIG_SKILL}}", fig_skill(skill, labels)).replace("{{FIG_DIFF}}", fig_diff(skill, labels))
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
             .replace("{{SMALL_LIST}}", "〜".join(f"{abs(np.exp(r['d_oos']) - 1) * 100:.0f}" for r in passed))
@@ -783,7 +907,7 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
-    for key, value in attrib_values(attrib).items():
+    for key, value in {**attrib_values(attrib), **skill_values(skill, labels)}.items():
         page = page.replace("{{" + key + "}}", value)
     Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},

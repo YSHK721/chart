@@ -115,6 +115,77 @@ def test_grid_methods_name_the_n_they_compute():
     assert names["単純平均"] == names["ワイルダーの平滑"] == names[P.OLS_NAME] == {str(n) for n in P.GRID_NS}
 
 
+def _skill_frame(length=600, seed=0):
+    rng = np.random.default_rng(seed)
+    level = np.repeat(rng.uniform(50, 200, length // 30 + 1), 30)[:length]
+    tr = level * rng.uniform(0.9, 1.1, length)
+    return ("系列", tr, np.repeat(np.arange(length // 30 + 1), 30)[:length])
+
+
+def _skill(frames, count=100, ns=(25,), seed=1):
+    # S は過去の平均、W は 1 本先の値を使う線（見積もりが必ず当たる）、O は一定の値の線
+    avg = (("S", P.sma), ("W", lambda t, n: np.r_[t[1:], t[-1]]), ("O", lambda t, n: np.full(len(t), 1.0)))
+    return P.skill_table(frames, np.random.default_rng(seed), count=count, ns=ns, avg=avg)
+
+
+def test_skill_table_scores_a_perfect_line_above_a_constant_line():
+    t = _skill([_skill_frame()])
+    assert t["系列", "one", "W25"][0] > t["系列", "one", "S25"][0] > 0
+    assert abs(t["系列", "one", "O25"][0]) < 1e-9  # 一定の値は基準と同じ
+    assert t["系列", "one", "W25-O25"][0] > 0 and P.excludes_zero(t["系列", "one", "W25-O25"])
+    assert t["系列", "one", "W25-S25"][0] > 0
+
+
+def test_skill_table_gain_matches_a_hand_calculation():
+    y = np.array([1.0, 3.0])
+    assert P._gain(y, np.array([2.0, 2.0]), np.array([1.0, 3.0])) == 50.0  # 外れの和 2 → 0、y の和 4
+
+
+def test_skill_table_twenty_uses_the_mean_of_the_next_twenty_bars():
+    frame = _skill_frame()
+    tr = frame[1]
+    future = pd.Series(tr).rolling(20).mean().shift(-20).to_numpy()
+    avg = (("S", lambda t, n: np.where(np.isfinite(future), future, 1.0)), ("W", P.wilder), ("O", lambda t, n: np.ones(len(t))))
+    t = P.skill_table([frame], np.random.default_rng(2), count=50, ns=(25,), avg=avg)
+    assert t["系列", "twenty", "S25"][0] > t["系列", "twenty", "W25"][0]
+    assert t["系列", "twenty", "S25"][0] > 5
+
+
+def test_excludes_zero():
+    assert P.excludes_zero((1.0, 0.1, 2.0)) and P.excludes_zero((-1.0, -2.0, -0.1))
+    assert not P.excludes_zero((1.0, -0.1, 2.0))
+
+
+def _table_for_figures():
+    t = {}
+    for l in ("A", "B"):
+        for h in P.HORIZONS:
+            for k in ("S25", "W25", "O25"):
+                t[l, h, k] = (5.0, 1.0, 9.0)
+            t[l, h, "W25-O25"] = (2.0, 1.0, 3.0)
+            t[l, h, "W100-O100"] = (-2.0, -3.0, -1.0)
+            t[l, h, "W14-S14"] = (1.0, -1.0, 2.0)
+    t["A", "one", "W100-O100"] = (0.5, -1.0, 2.0)
+    t["A", "one", "O25"] = (1.0, -2.0, 4.0)
+    return t
+
+
+def test_fig_diff_colors_only_the_differences_that_exclude_zero():
+    svg = P.fig_diff(_table_for_figures(), ["A", "B"])
+    assert svg.count('class="cell-w"') == 4 and svg.count('class="cell-o"') == 3 and svg.count('class="cell-n"') == 1
+
+
+def test_fig_skill_draws_every_method_for_every_series_and_horizon():
+    assert P.fig_skill(_table_for_figures(), ["A", "B"]).count('class="whisker') == 12
+
+
+def test_skill_values_count_only_positive_gains_excluding_zero():
+    t = _table_for_figures()
+    t["A", "twenty", "S25"] = (-5.0, -9.0, -1.0)  # 0 を含まないが負なので数えない
+    v = P.skill_values(t, ["A", "B"])
+    assert v["SKILL_ONE"] == "5" and v["SKILL_TWENTY"] == "5" and v["W_OVER_S"] == "0" and v["W_S_ALL"] == "4"
+
+
 class AvgSpy:
     """平均の計算の発行回数を数える Test Spy（注入点 smoothers を通す）。"""
 
@@ -294,3 +365,19 @@ def test_every_issued_line_reaches_the_best_rows():
 
 def test_issued_best_lines_do_not_grow_with_input_length():
     assert _best_issued(400)[0] == _best_issued(1600)[0]
+
+
+def _skill_issued(length):
+    spy = AvgSpy()
+    avg = (("S", spy), ("W", spy), ("O", spy))
+    table = P.skill_table([_skill_frame(length)], np.random.default_rng(3), count=10, ns=(14, 25), avg=avg)
+    return spy.issued, len({k[2] for k in table if "-" not in k[2]})
+
+
+def test_every_issued_skill_line_reaches_the_table():
+    issued, used = _skill_issued(600)
+    assert issued - used == 0
+
+
+def test_issued_skill_lines_do_not_grow_with_input_length():
+    assert _skill_issued(600)[0] == _skill_issued(2400)[0]
