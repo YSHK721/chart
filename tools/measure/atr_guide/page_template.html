@@ -184,7 +184,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
     <thead><tr><th>方法</th><th>1 時間足の外れ</th><th>1 時間足の動き</th><th>日足の外れ</th><th>日足の動き</th></tr></thead>
     <tbody>{{SMOOTH_ROWS}}</tbody>
   </table></div>
-  <p>同じ n では、ワイルダーの平滑のほうが外れも動きも小さくなりました。ただし有意性の検定はしていないので、「ワイルダーの平滑が優れている」とはまだ言えません。損益も検証していません。</p>
+  <p>この表の n = 14・20 では、ワイルダーの平滑のほうが外れも動きも小さくなりました。ただし有意性の検定はしていないので、「ワイルダーの平滑が優れている」とはまだ言えません。損益も検証していません。</p>
   <h3 class="h3">ワイルダーの平滑と EMA の関係</h3>
   <p>ワイルダーの平滑は EMA と同じ式です。違うのは n の数え方だけです。EMA（指数移動平均）は、新しい値ほど重く、古い値ほど一定の割合で軽くする平均です。</p>
   <div class="formula">
@@ -219,7 +219,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
 <section aria-labelledby="h-btlm">
   <h2 id="h-btlm">真の値幅に btlm_trail を使えるか</h2>
   <div class="key">
-    <span><b>結論：</b>真の値幅の見積もりに btlm_trail の計算を使う理由は見つかりませんでした。4 系列のどの見積もり先でも、外れが最小なのはワイルダーの平滑で、btlm_trail の計算は最小になりません。線としては見積もりの力がありますが、短い本数ではワイルダーの平滑に劣ります。傾き β も見積もりを実用的には良くせず、わずかな改善も btlm_trail の改善とは説明できません。</span>
+    <span><b>結論：</b>真の値幅の見積もりに btlm_trail の計算を使う理由は見つかりませんでした。下の表のどの系列・見積もり先でも、点として外れが最小なのはワイルダーの平滑で、btlm_trail の計算は最小になりません。線としては次の 1 本の見積もりの力がありますが、25 本では多くの組でワイルダーの平滑に劣ります。傾き β も見積もりを実用的には良くせず、わずかな改善も btlm_trail の改善とは説明できません。</span>
   </div>
   <h3 class="h3">btlm_trail の計算</h3>
   <p>btlm_trail は、足ごとに直近 n 本へ直線を当てはめ（最小二乗法）、その右端の値を線にします。直線の傾きが <b>β</b> です。平均の値は n 本の真ん中あたりの位置を表しますが、直線の右端は今の位置を表すので、遅れが減ります。</p>
@@ -236,24 +236,32 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <figure class="figure"><figcaption>荒れた時期の 2 本の線（MT5 日足）</figcaption>{{FIG_TR_LINES}}
     <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 14</span><span><i style="background:var(--acc);height:3px"></i>btlm_trail の計算 25</span></div></figure>
   <p>同じ 25 本なら遅れは減りますが、動きは {{MOVE_RATIO}} 倍です。真の値幅は 1 本ごとに大きくぶれるので、最新の足への強い反応はそのままぶれになります。動きの近い btlm_trail の計算 100 と単純平均 25 を比べると、遅れの優位もありません。</p>
-  <p>本数を変えて、3 つの方法を同じ本数（3〜200 本の 13 通り）で比べました。</p>
+  <p>本数を変えて、3 つの方法を同じ本数（3〜200 本の 13 通り）で比べました。価格帯による単位の偏りを除くため、値幅 ÷ 前の足の終値で測っています。</p>
   <div class="tbl"><table>
     <thead><tr><th>系列</th><th>次の 1 本の外れが最小</th><th>次の 20 本の平均の外れが最小</th><th>btlm_trail の計算の最小（次の 1 本）</th><th>同（次の 20 本）</th></tr></thead>
     <tbody>{{BEST_ROWS}}</tbody>
   </table></div>
-  <p>btlm_trail の計算が最小になった回数は、8 回中 {{OLS_WINS}} 回です。ワイルダーの平滑の中で最適な本数は見積もり先で変わり、次の 1 本は 3〜6 本の短い本数で、次の 20 本の平均は 14〜30 本で外れが小さくなります。差の有意性は検定していません。</p>
+  <p>btlm_trail の計算が最小になった回数は、8 回中 {{OLS_WINS}} 回です。ワイルダーの平滑の中で最適な本数は見積もり先で変わり、次の 1 本は 3〜6 本、次の 20 本の平均は 20〜50 本です。これは点としての比較で、差が 0 と区別できるかはここでは調べていません。</p>
   <h3 class="h3">線そのものに見積もりの力はあるか</h3>
-  <p>「btlm_trail に有意性が無い」のではありません。線としての btlm_trail の計算には、単純平均・ワイルダーの平滑と同じように見積もりの力があります。実用的な改善が無いと判定したのは、この後で調べる傾き β です。</p>
-  <p>比べる相手は、期間全体の中央値という一定の値です。荒れ方を見ずに毎回同じ値で見積もるより、外れがどれだけ小さくなるかを測ります。</p>
+  <p>実用的な改善が無いと判定したのは、この後で調べる傾き β です。線としての btlm_trail の計算は別に測ります。</p>
+  <p>比べる相手は、期間全体の中央値という一定の値です。荒れ方を見ずに毎回同じ値で見積もるより、外れがどれだけ小さくなるかを測ります。ここでも値幅 ÷ 前の足の終値で比べます。ポイントのままでは、価格水準の上昇に伴う値幅の増加が改善に混ざり、荒れ方を見た効果と分けられません。</p>
   <figure class="figure"><figcaption>一定の値より外れがどれだけ小さいか（%ポイント・n = 25）</figcaption>{{FIG_SKILL}}
     <div class="legend"><span><i style="background:var(--amber);border-radius:50%"></i>単純平均</span><span><i style="background:var(--blue);border-radius:50%"></i>ワイルダーの平滑</span><span><i style="background:var(--violet);border-radius:50%"></i>btlm_trail の計算</span></div>
     <p class="cap">点線が 0 で、右にあるほど一定の値より外れが小さいことを表します。横線は四半期を単位に再標本した 95% の幅で、点線にかからなければ 0 と区別できます。</p></figure>
-  <p>幅が 0 を含まず一定の値より良いと言えるのは、次の 1 本で 12 組中 {{SKILL_ONE}} 組、次の 20 本の平均で 12 組中 {{SKILL_TWENTY}} 組です。次の 20 本の平均は、Dukascopy の日足ではどの線も 0 と区別できません。</p>
-  <p>線どうしの優劣は、本数と見積もり先で変わります。</p>
+  <div class="tbl"><table>
+    <thead><tr><th rowspan="2">線</th><th colspan="3">次の 1 本</th><th colspan="3">次の 20 本の平均</th></tr><tr><th>n = 14</th><th>n = 25</th><th>n = 100</th><th>n = 14</th><th>n = 25</th><th>n = 100</th></tr></thead>
+    <tbody>{{SKILL_COUNT_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">幅が 0 を含まず、一定の値より外れが小さかった系列の数です。4 系列は 2 つの業者の 2 つの時間足で、互いに独立ではありません。</p>
+  <p>次の 1 本では、3 つの線ともほとんどの系列で一定の値より良いと言えます。次の 20 本の平均では系列で分かれ、btlm_trail の計算は n = 14 で 1 系列もありません。</p>
   <figure class="figure"><figcaption>ワイルダーの平滑 − btlm_trail の計算の、外れの差（%ポイント）</figcaption>{{FIG_DIFF}}
     <div class="legend"><span><i style="background:var(--soft)"></i>ワイルダーの平滑が上回る</span><span><i style="background:var(--amber);opacity:.35"></i>btlm_trail の計算が上回る</span><span><i style="border:1px solid var(--rule)"></i>0 と区別できない</span></div>
     <p class="cap">正の値はワイルダーの平滑のほうが外れが小さいことを表します。</p></figure>
-  <p>短い本数の 25 本では、ワイルダーの平滑が上回る組が多くなります。特に次の 20 本の平均は、4 系列すべてで上回ります。長い本数の 100 本では、1 時間足の次の 1 本だけ btlm_trail の計算が上回ります。ただし、上の表のとおり外れが最小になるのは、常にワイルダーの平滑の短めの本数です。単純平均とワイルダーの平滑を n = 14 で比べると、{{W_S_ALL}} 組中 {{W_OVER_S}} 組でワイルダーの平滑が 0 を含まずに上回ります。</p>
+  <p>n = 25 では 8 組中 {{W25_WINS}} 組でワイルダーの平滑が上回ります。n = 100 ではワイルダーの平滑が {{W100_WINS}} 組、btlm_trail の計算が {{O100_WINS}} 組で上回り、残りは 0 と区別できません。線どうしの優劣は、本数と見積もり先で変わります。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>本数</th><th>ワイルダーの平滑が単純平均を上回る組</th><th>単純平均がワイルダーの平滑を上回る組</th></tr></thead>
+    <tbody>{{WINS_ROWS}}</tbody>
+  </table></div>
   <p class="cap">この比較は探索で、事前登録も多重比較の補正もしていません。見積もりの係数と一定の値も同じ期間で決めています。</p>
   <h3 class="h3">傾き β で値幅の増減を当てられるか</h3>
   <p>線には無い β が役に立つかを、実行前に手順と基準を書き出して検定しました（事前登録）。Dukascopy の 2014-01〜2020-04（IS・選ぶ期間）で通過した組だけを、MT5 の 2020-05 以降（OOS・確かめる期間）で確かめます。偶然との比較には円環ずらしを使います。</p>

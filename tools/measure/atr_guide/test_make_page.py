@@ -117,52 +117,117 @@ def test_grid_methods_name_the_n_they_compute():
 
 def _skill_frame(length=600, seed=0):
     rng = np.random.default_rng(seed)
-    level = np.repeat(rng.uniform(50, 200, length // 30 + 1), 30)[:length]
-    tr = level * rng.uniform(0.9, 1.1, length)
-    return ("系列", tr, np.repeat(np.arange(length // 30 + 1), 30)[:length])
+    level = np.repeat(rng.uniform(0.5, 2.0, length // 30 + 1), 30)[:length]
+    x = level * rng.uniform(0.9, 1.1, length)
+    return ("系列", x * 100, np.repeat(np.arange(length // 30 + 1), 30)[:length], x)
 
 
-def _skill(frames, count=100, ns=(25,), seed=1):
-    # S は過去の平均、W は 1 本先の値を使う線（見積もりが必ず当たる）、O は一定の値の線
-    avg = (("S", P.sma), ("W", lambda t, n: np.r_[t[1:], t[-1]]), ("O", lambda t, n: np.full(len(t), 1.0)))
-    return P.skill_table(frames, np.random.default_rng(seed), count=count, ns=ns, avg=avg)
+KEYS_25 = ("S25", "W25", "O25", "W25-O25", "W25-S25")
 
 
-def test_skill_table_scores_a_perfect_line_above_a_constant_line():
-    t = _skill([_skill_frame()])
-    assert t["系列", "one", "W25"][0] > t["系列", "one", "S25"][0] > 0
+def _skill(frames, count=100, seed=1, avg=None, keys=KEYS_25, interval=P.gain_interval):
+    # S は過去の平均、W は 1 本先の値（必ず当たる線）、O は一定の値の線
+    avg = avg or (("S", P.sma), ("W", lambda t, n: np.r_[t[1:], t[-1]]), ("O", lambda t, n: np.full(len(t), 1.0)))
+    return P.skill_table(frames, np.random.default_rng(seed), count=count, ns=(25,), avg=avg, keys=keys, interval=interval)
+
+
+def test_skill_table_scores_a_perfect_line_at_the_error_of_the_constant():
+    frame = _skill_frame()
+    x = frame[3]
+    t = _skill([frame])
+    f = x[1:]
+    ok = np.arange(len(f)) >= 200  # 共通の線はどれも欠けないので、対象は start 以降の次の足
+    want = np.mean(np.abs(f[ok] - np.median(f[ok]))) / f[ok].mean() * 100
+    assert abs(t["系列", "one", "W25"][0] - want) < 1e-9
     assert abs(t["系列", "one", "O25"][0]) < 1e-9  # 一定の値は基準と同じ
     assert t["系列", "one", "W25-O25"][0] > 0 and P.excludes_zero(t["系列", "one", "W25-O25"])
-    assert t["系列", "one", "W25-S25"][0] > 0
 
 
-def test_skill_table_gain_matches_a_hand_calculation():
+def test_skill_table_twenty_scores_a_line_equal_to_the_next_twenty_bars():
+    frame = _skill_frame()
+    x = frame[3]
+    future = pd.Series(x).rolling(20).mean().shift(-20).to_numpy()
+    avg = (("S", lambda t, n: np.where(np.isfinite(future), future, 1.0)), ("W", P.wilder), ("O", lambda t, n: np.ones(len(t))))
+    t = _skill([frame], avg=avg, keys=("S25",))
+    ok = np.isfinite(future) & (np.arange(len(x)) >= 200)
+    want = np.mean(np.abs(future[ok] - np.median(future[ok]))) / future[ok].mean() * 100
+    assert abs(t["系列", "twenty", "S25"][0] - want) < 1e-9
+
+
+def test_skill_table_uses_the_percent_series_and_not_the_points():
+    frame = _skill_frame()
+    swapped = (frame[0], frame[1] * np.linspace(1, 50, len(frame[1])), frame[2], frame[3])  # ポイントだけ水準を変える
+    assert _skill([frame]) == _skill([swapped])
+
+
+def test_gain_matches_a_hand_calculation():
     y = np.array([1.0, 3.0])
     assert P._gain(y, np.array([2.0, 2.0]), np.array([1.0, 3.0])) == 50.0  # 外れの和 2 → 0、y の和 4
 
 
-def test_skill_table_twenty_uses_the_mean_of_the_next_twenty_bars():
+class IntervalSpy:
+    """幅の計算の発行と、受け取った足の本数・塊を記録する Test Spy（注入点 interval を通す）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, y, base, pred, block, count, rng):
+        self.calls.append((len(y), block.max() + 1))
+        return (0.0, 0.0)
+
+
+def test_skill_table_applies_a_common_mask_and_start_to_every_line():
     frame = _skill_frame()
-    tr = frame[1]
-    future = pd.Series(tr).rolling(20).mean().shift(-20).to_numpy()
-    avg = (("S", lambda t, n: np.where(np.isfinite(future), future, 1.0)), ("W", P.wilder), ("O", lambda t, n: np.ones(len(t))))
-    t = P.skill_table([frame], np.random.default_rng(2), count=50, ns=(25,), avg=avg)
-    assert t["系列", "twenty", "S25"][0] > t["系列", "twenty", "W25"][0]
-    assert t["系列", "twenty", "S25"][0] > 5
+    bad = np.ones(600)
+    bad[300] = np.nan
+    bad[310] = -1.0
+    spy = IntervalSpy()
+    avg = (("S", P.sma), ("W", P.wilder), ("O", lambda t, n: bad))
+    _skill([frame], avg=avg, interval=spy, keys=("S25",))
+    assert spy.calls[0][0] == (600 - 1 - 200) - 2  # 次の足のある start 以降から、O の欠けた 2 本を全線で除く
 
 
-def test_excludes_zero():
+def test_skill_table_resamples_the_given_blocks():
+    frame = _skill_frame()
+    spy = IntervalSpy()
+    _skill([frame], interval=spy, keys=("S25",))
+    assert spy.calls[0][1] == len(np.unique(frame[2][200:-1]))
+
+
+def test_skill_table_reports_the_point_inside_its_interval():
+    t = _skill([_skill_frame()], count=400)
+    for v in t.values():
+        assert v[1] - 1e-9 <= v[0] <= v[2] + 1e-9
+
+
+def test_series_frames_filter_periods_and_divide_by_the_previous_close(monkeypatch):
+    dates = pd.date_range("2013-06-03", periods=3000, freq="B")
+    close = 100.0 + np.arange(3000) * 0.1
+    d = pd.DataFrame({"date": dates, "open": close, "high": close + 1, "low": close - 1, "close": close})
+    monkeypatch.setattr(P, "load", lambda path, tf: d)
+    frames = P.series_frames()
+    label, tr, block, pct = frames[2]
+    keep = (dates >= "2014-01-01") & (dates < "2020-05-01")
+    assert label == "Dukascopy 1 時間足" and len(tr) == keep.sum()
+    want = tr[5] / close[keep][4] * 100
+    assert abs(pct[5] - want) < 1e-12
+    assert np.isfinite(pct[0])
+    assert block[0] == 0 and block[-1] == len(pd.period_range("2014-01-01", dates[keep][-1], freq="Q")) - 1
+    assert len(frames[0][1]) == 3000  # MT5 は全期間
+
+
+def test_excludes_zero_and_positive():
     assert P.excludes_zero((1.0, 0.1, 2.0)) and P.excludes_zero((-1.0, -2.0, -0.1))
     assert not P.excludes_zero((1.0, -0.1, 2.0))
+    assert P.positive((1.0, 0.1, 2.0)) and not P.positive((-1.0, -2.0, -0.1))
 
 
 def _table_for_figures():
     t = {}
     for l in ("A", "B"):
         for h in P.HORIZONS:
-            for k in ("S25", "W25", "O25"):
-                t[l, h, k] = (5.0, 1.0, 9.0)
-            t[l, h, "W25-O25"] = (2.0, 1.0, 3.0)
+            for key in P.SKILL_KEYS:
+                t[l, h, key] = (5.0, 1.0, 9.0)
             t[l, h, "W100-O100"] = (-2.0, -3.0, -1.0)
             t[l, h, "W14-S14"] = (1.0, -1.0, 2.0)
     t["A", "one", "W100-O100"] = (0.5, -1.0, 2.0)
@@ -179,11 +244,20 @@ def test_fig_skill_draws_every_method_for_every_series_and_horizon():
     assert P.fig_skill(_table_for_figures(), ["A", "B"]).count('class="whisker') == 12
 
 
-def test_skill_values_count_only_positive_gains_excluding_zero():
+def test_skill_counts_count_only_positive_gains_excluding_zero():
     t = _table_for_figures()
     t["A", "twenty", "S25"] = (-5.0, -9.0, -1.0)  # 0 を含まないが負なので数えない
-    v = P.skill_values(t, ["A", "B"])
-    assert v["SKILL_ONE"] == "5" and v["SKILL_TWENTY"] == "5" and v["W_OVER_S"] == "0" and v["W_S_ALL"] == "4"
+    c = P.skill_counts(t, ["A", "B"])
+    assert c["twenty", "S", 25] == 1 and c["one", "O", 25] == 1 and c["one", "S", 25] == 2
+
+
+def test_wins_count_both_directions():
+    t = _table_for_figures()
+    assert P.wins_over_ols(t, ["A", "B"], 100) == dict(w=0, o=3, all=4)
+    assert P.wins_over_ols(t, ["A", "B"], 25) == dict(w=4, o=0, all=4)
+    rows = P.wins_by_n(t, ["A", "B"])
+    assert "n = 14</td><td class=\"n\">0 / 4</td><td class=\"n\">0 / 4" in rows
+    assert "n = 25</td><td class=\"n\">4 / 4</td>" in rows
 
 
 class AvgSpy:
@@ -367,17 +441,47 @@ def test_issued_best_lines_do_not_grow_with_input_length():
     assert _best_issued(400)[0] == _best_issued(1600)[0]
 
 
+class ReadSpy(dict):
+    """公開する側が読んだキーを記録する Test Spy。"""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.read = set()
+
+    def __getitem__(self, key):
+        self.read.add(key)
+        return super().__getitem__(key)
+
+
+def test_every_issued_skill_interval_is_read_by_the_page():
+    table = ReadSpy(_table_for_figures())
+    labels = ["A", "B"]
+    P.fig_skill(table, labels)
+    P.fig_diff(table, labels)
+    P.skill_count_rows(table, labels)
+    P.wins_by_n(table, labels)
+    assert set(table) - table.read == set()
+
+
 def _skill_issued(length):
     spy = AvgSpy()
+    interval = IntervalSpy()
     avg = (("S", spy), ("W", spy), ("O", spy))
-    table = P.skill_table([_skill_frame(length)], np.random.default_rng(3), count=10, ns=(14, 25), avg=avg)
-    return spy.issued, len({k[2] for k in table if "-" not in k[2]})
+    table = P.skill_table([_skill_frame(length)], np.random.default_rng(3), count=10, ns=(14, 25), avg=avg,
+                          keys=("S14", "W14", "O14", "S25", "W25", "O25", "W14-S14"), interval=interval)
+    return spy.issued, len({k[2] for k in table if "-" not in k[2]}), len(interval.calls), len(table)
 
 
 def test_every_issued_skill_line_reaches_the_table():
-    issued, used = _skill_issued(600)
+    issued, used, _, _ = _skill_issued(600)
     assert issued - used == 0
 
 
-def test_issued_skill_lines_do_not_grow_with_input_length():
+def test_every_issued_interval_reaches_the_table():
+    _, _, issued, used = _skill_issued(600)
+    assert issued - used == 0
+
+
+def test_issued_skill_work_does_not_grow_with_input_length():
     assert _skill_issued(600)[0] == _skill_issued(2400)[0]
+    assert _skill_issued(600)[2] == _skill_issued(2400)[2]

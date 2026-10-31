@@ -134,13 +134,13 @@ def exact_partial_test(r: np.ndarray, e: np.ndarray, margin: int, rfft=np.fft.rf
     return float(slopes[0]), center, p
 
 
-def gain_interval(y: np.ndarray, base: np.ndarray, pred: np.ndarray, week: np.ndarray, count: int, rng,
+def gain_interval(y: np.ndarray, base: np.ndarray, pred: np.ndarray, block: np.ndarray, count: int, rng,
                   level: float = 0.95) -> tuple[float, float]:
-    """週を単位に再標本した、外れの改善（%ポイント）の幅。"""
-    n_weeks = int(week.max()) + 1
-    wy = np.bincount(week, y, n_weeks)
-    wgain = np.bincount(week, np.abs(y - base) - np.abs(y - pred), n_weeks)
-    pick = rng.integers(0, n_weeks, (count, n_weeks))
+    """塊（週や四半期）を単位に再標本した、外れの改善（%ポイント）の幅。"""
+    n_blocks = int(block.max()) + 1
+    wy = np.bincount(block, y, n_blocks)
+    wgain = np.bincount(block, np.abs(y - base) - np.abs(y - pred), n_blocks)
+    pick = rng.integers(0, n_blocks, (count, n_blocks))
     gains = wgain[pick].sum(axis=1) / wy[pick].sum(axis=1) * 100
     tail = (1 - level) / 2 * 100
     return float(np.percentile(gains, tail)), float(np.percentile(gains, 100 - tail))

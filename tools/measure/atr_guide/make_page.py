@@ -494,10 +494,13 @@ SKILL_AVG = (("S", sma), ("W", wilder), ("O", lambda t, n: ols_end(t, n, TREND_S
 SKILL_COUNT = 1999
 SKILL_SEED = 20261031
 HORIZONS = ("one", "twenty")
+# 公開する比較の宣言（"S14" は一定の値との比較、"W25-O25" は O25 から W25 への改善）。
+SKILL_KEYS = tuple(f"{k}{n}" for n in SKILL_NS for k, _ in SKILL_AVG) + \
+    tuple(f"W{n}-O{n}" for n in (25, 100)) + tuple(f"W{n}-S{n}" for n in SKILL_NS)
 
 
 def series_frames():
-    """比べる 4 系列（名前・真の値幅・再標本の単位の四半期）。"""
+    """比べる 4 系列（名前・真の値幅・再標本の単位の四半期・真の値幅 ÷ 前の足の終値 × 100）。"""
     frames = []
     for label, path, tf, start, end in (("MT5 1 時間足", MT5, "1h", None, None), ("MT5 日足", MT5, "1D", None, None),
                                         ("Dukascopy 1 時間足", DUKA, "1h", "2014-01-01", "2020-05-01"),
@@ -505,7 +508,10 @@ def series_frames():
         d = load(path, tf)
         if start:
             d = d[(d.date >= start) & (d.date < end)].reset_index(drop=True)
-        frames.append((label, true_range(d), pd.factorize(d.date.dt.to_period("Q"))[0]))
+        tr = true_range(d)
+        pct = tr / d.close.shift(1).to_numpy() * 100
+        pct[0] = pct[1]  # 先頭の足は前の足が無い。次の足の値で埋める（評価は TREND_START 以降なので結果に入らない）
+        frames.append((label, tr, pd.factorize(d.date.dt.to_period("Q"))[0], pct))
     return frames
 
 
@@ -514,39 +520,38 @@ def _gain(y: np.ndarray, base: np.ndarray, pred: np.ndarray) -> float:
     return float((np.abs(y - base).sum() - np.abs(y - pred).sum()) / y.sum() * 100)
 
 
-def skill_table(frames, rng, count: int = SKILL_COUNT, ns=SKILL_NS, avg=SKILL_AVG, start: int = TREND_START) -> dict:
-    """線の見積もりの力と差を（改善・幅の下・幅の上）で返す。
+def skill_table(frames, rng, count: int = SKILL_COUNT, ns=SKILL_NS, avg=SKILL_AVG, start: int = TREND_START,
+                keys=SKILL_KEYS, interval=gain_interval) -> dict:
+    """線の見積もりの力と差を（改善・幅の下・幅の上）で返す。入力は値幅 ÷ 前の足の終値。
 
-    キーは（系列・見積もり先・"S14" など）が一定値との比較、（系列・見積もり先・"W25-O25" など）が線どうしの差。
-    avg は線の計算（計算量検定の注入点）。線は系列ごとに 1 度だけ作る。
+    キーは（系列・見積もり先・keys の要素）。avg・interval は計算量検定の注入点。線は系列ごとに 1 度だけ作る。
     """
     out = {}
-    for label, tr, block in frames:
-        lines = {f"{k}{n}": f(tr, n) for n in ns for k, f in avg}
-        s = pd.Series(tr)
+    for label, _, block, x in frames:
+        lines = {f"{k}{n}": f(x, n) for n in ns for k, f in avg}
+        s = pd.Series(x)
         for horizon, f in (("one", s.shift(-1).to_numpy()), ("twenty", s.rolling(20).mean().shift(-20).to_numpy())):
-            ok = np.isfinite(f) & (np.arange(len(tr)) >= start)
+            ok = np.isfinite(f) & (np.arange(len(x)) >= start)
             for a in lines.values():
                 ok &= np.isfinite(a) & (a > 0)
-            y, week = f[ok], pd.factorize(block[ok])[0]
+            y, unit = f[ok], pd.factorize(block[ok])[0]
             const = np.full(ok.sum(), np.median(y))
             pred = {k: np.median(y / a[ok]) * a[ok] for k, a in lines.items()}
-            for k in lines:
-                out[label, horizon, k] = (_gain(y, const, pred[k]), *gain_interval(y, const, pred[k], week, count, rng))
-                n = k[1:]
-                if k[0] == "O":
-                    for other in ("S", "W"):
-                        out[label, horizon, f"{other}{n}-O{n}"] = (_gain(y, pred[k], pred[other + n]),
-                                                                   *gain_interval(y, pred[k], pred[other + n], week, count, rng))
-                if k[0] == "W":
-                    out[label, horizon, f"W{n}-S{n}"] = (_gain(y, pred["S" + n], pred[k]),
-                                                         *gain_interval(y, pred["S" + n], pred[k], week, count, rng))
+            for key in keys:
+                new, old = key.split("-") if "-" in key else (key, None)
+                base = const if old is None else pred[old]
+                out[label, horizon, key] = (_gain(y, base, pred[new]), *interval(y, base, pred[new], unit, count, rng))
     return out
 
 
 def excludes_zero(v) -> bool:
     """幅が 0 を含まないか。"""
     return v[1] > 0 or v[2] < 0
+
+
+def positive(v) -> bool:
+    """幅が 0 を含まず、改善が正か。"""
+    return v[1] > 0
 
 
 HORIZON_LABEL = {"one": "次の 1 本", "twenty": "次の 20 本の平均"}
@@ -600,13 +605,32 @@ def fig_diff(table: dict, labels):
     return f'<svg viewBox="0 0 640 {y0 + H * len(labels) + 8}" role="img" aria-label="ワイルダーの平滑と btlm_trail の計算の差。短い本数ではワイルダーの平滑、1 時間足の長い本数では btlm_trail の計算が上回る">' + "".join(parts) + "</svg>"
 
 
-def skill_values(table: dict, labels) -> dict:
-    """本文に入れる数（差し込み名 → 文字）。"""
-    methods = ("S25", "W25", "O25")
-    count = lambda h: sum(excludes_zero(table[l, h, k]) and table[l, h, k][0] > 0 for l in labels for k in methods)
-    w_s = [table[l, h, "W14-S14"] for l in labels for h in HORIZONS]
-    return {"SKILL_ONE": str(count("one")), "SKILL_TWENTY": str(count("twenty")),
-            "W_OVER_S": str(sum(excludes_zero(v) and v[0] > 0 for v in w_s)), "W_S_ALL": str(len(w_s))}
+def skill_counts(table: dict, labels) -> dict:
+    """（見積もり先・線・n）→ 幅が 0 を含まず一定の値より良かった系列の数。"""
+    return {(h, k, n): sum(positive(table[l, h, f"{k}{n}"]) for l in labels) for h in HORIZONS for k, _ in SKILL_AVG for n in SKILL_NS}
+
+
+def skill_count_rows(table: dict, labels) -> str:
+    """線ごとの系列の数の表（本文の行）。"""
+    names = (("S", "単純平均"), ("W", "ワイルダーの平滑"), ("O", "btlm_trail の計算"))
+    c = skill_counts(table, labels)
+    return "".join(f"<tr><td>{name}</td>" + "".join(f'<td class="n">{c[h, k, n]} / {len(labels)}</td>' for h in HORIZONS for n in SKILL_NS) + "</tr>"
+                   for k, name in names)
+
+
+def wins_over_ols(table: dict, labels, n: int) -> dict:
+    """ワイルダーの平滑と btlm_trail の計算の差で、0 を含まず上回った組の数。"""
+    v = [table[l, h, f"W{n}-O{n}"] for l in labels for h in HORIZONS]
+    return dict(w=sum(positive(x) for x in v), o=sum(x[2] < 0 for x in v), all=len(v))
+
+
+def wins_by_n(table: dict, labels) -> str:
+    """ワイルダーの平滑が単純平均を 0 を含まずに上回った組の数・下回った組の数（行）。"""
+    rows = []
+    for n in SKILL_NS:
+        v = [table[l, h, f"W{n}-S{n}"] for l in labels for h in HORIZONS]
+        rows.append(f'<tr><td>n = {n}</td><td class="n">{sum(positive(x) for x in v)} / {len(v)}</td><td class="n">{sum(x[2] < 0 for x in v)} / {len(v)}</td></tr>')
+    return "".join(rows)
 
 
 def fig_ols_fit(n: int = 25, last: str = "2024-08-09"):
@@ -836,8 +860,8 @@ def main(out_path: str):
         f'<tr><td>{name}</td><td class="n">{lag[0]} 本</td><td class="n">{lag[1]} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
         for name, lag, mv, e1, e20 in trend)
     move_ratio = trend[2][2] / trend[1][2]
-    best = best_rows([(label, tr) for label, tr, _ in frames])
-    labels = [label for label, _, _ in frames]
+    best = best_rows([(f[0], f[3]) for f in frames])
+    labels = [f[0] for f in frames]
     skill = skill_table(frames, np.random.default_rng(SKILL_SEED))
     best_tbl = "".join(
         f'<tr><td>{r["label"]}</td><td>{r["best_one"]}（{r["err_one"]:.1f}%）</td><td>{r["best_twenty"]}（{r["err_twenty"]:.1f}%）</td>'
@@ -893,6 +917,8 @@ def main(out_path: str):
             .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_ROWS}}", best_tbl).replace("{{OLS_WINS}}", str(ols_wins(best))).replace("{{MOVE_RATIO}}", f"{move_ratio:.1f}")
             .replace("{{FIG_ATTRIB}}", fig_attrib(attrib))
             .replace("{{FIG_SKILL}}", fig_skill(skill, labels)).replace("{{FIG_DIFF}}", fig_diff(skill, labels))
+            .replace("{{W25_WINS}}", str(wins_over_ols(skill, labels, 25)["w"])).replace("{{W100_WINS}}", str(wins_over_ols(skill, labels, 100)["w"])).replace("{{O100_WINS}}", str(wins_over_ols(skill, labels, 100)["o"]))
+            .replace("{{SKILL_COUNT_ROWS}}", skill_count_rows(skill, labels)).replace("{{WINS_ROWS}}", wins_by_n(skill, labels))
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
             .replace("{{SMALL_LIST}}", "〜".join(f"{abs(np.exp(r['d_oos']) - 1) * 100:.0f}" for r in passed))
@@ -907,7 +933,7 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
-    for key, value in {**attrib_values(attrib), **skill_values(skill, labels)}.items():
+    for key, value in attrib_values(attrib).items():
         page = page.replace("{{" + key + "}}", value)
     Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},
