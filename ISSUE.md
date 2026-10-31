@@ -16821,3 +16821,18 @@ P5（ISSUE-531）が塞がるまで、同じツリーでの実 UI 確認は構�
   何も渡さなくても、包んだうえで「`pending_lifecycle`」=True を明示した run と取引 158 件が発注量まで一致。
   包んだ run でも内側の宣言の読み取り − 1 = 0（足 60 / 240 本）。透過の 1 行を None にすると 3 件とも落ちる。
   成行 EA との対照は置かない（サイジングは SL 必須・MA_Slope_EA は SL を受け付けない）。
+
+## ISSUE-558: 指示ファイルが存在しないスキル・ファイル・コマンドを参照している（監査 2026-10-31）
+- **ステータス**: OPEN（修正は後日）
+- **重大度**: 中（損害を実測したのは A-6 のみ。他は発生未実測のため、実測後に見直す）
+- **依頼者の言葉**: 「この問題は後日対応するのでドキュメントにまとめて起票して」
+- **起票の根拠（実測で損害が出たもの）**: `skills/upstream-input-validation/output.md` のテンプレートが実行結果で上書きされて消えた。
+  `grep -c '上流入力なしのケース'` は現行版 0 件、`git show ec92e4a2:` の版 1 件。`SKILL.md:107-109` は同ファイルをテンプレートとして参照している。
+- **記録（発生未実測）**: 次は機構をコードと公式文書で確認しただけで、実行時の失敗は再現していない。
+  - `disable-model-invocation: true` の `git` スキルを programmer-executor と git-executor が事前読み込みに指定している。
+  - `system-internal-design`、`system-design`、`spec-driven-developer`、`git-local`、TDD の `references/`、`Coding/output.md` が存在しない。
+  - git スキルの `git restore --staged` が `block_destructive_git.py:40` の正規表現に一致する（正規表現の評価のみ）。
+  - `.claude/CLAUDE.md:125` と「起票の基準」が矛盾する。「公式仕様：ネスト不可」が公式文書と矛盾する。
+- **数え方**: ファイルの有無と履歴は参照の抽出と `git log --all` で確認。エージェントとスキルは起動していない。作業ツリーの指示ファイルは変更していない。
+- **対策案（根本・未実施・要承認）**: 全指摘と段階分割は `docs/prompt-audit-2026-10-31.md`、提案差分は `docs/prompt-audit-2026-10-31.patch`。
+  依頼者の判断が必要な項目は同文書の C 節（破壊的変更の承認、`reset --hard`、リモート操作ほか）。

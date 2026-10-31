@@ -1,0 +1,919 @@
+diff --git a/.claude/CLAUDE.md b/.claude/CLAUDE.md
+index 9abef28..e36967a 100644
+--- a/.claude/CLAUDE.md
++++ b/.claude/CLAUDE.md
+@@ -1,13 +1,13 @@
+ 指示された範囲内でのみ処理し、不要な追加実装は行わない（範囲外が必要な場合は承認を得て拡張する）。不明点・重要な判断が必要な場合は即時中断してユーザーに報告し、承認を得る。
+ 
+-## ⚠️ 絶対遵守ルール（最優先・作業開始前に確認）
++## 基本ルール
+ 
+ - 分かりやすく端的に結論のみ述べよ。
+ - 問題に対する抜本的解決方法を提示しろ。
+ - 問題が抜本的に解決する場合に限り、コードの変更を許可する。ライブラリの追加については、必ず承認を得てから実行しろ。
+-- **計算量テスト（algorithmic complexity test）を必ず組み込め。例外はない**（絶対命令 2026-08-28）。
++- 計算を伴う実装・修正には計算量テスト（algorithmic complexity test）を組み込め（例外なし）。
+ 
+-### 計算量テストの規約（絶対命令・例外なし）
++### 計算量テストの規約
+ 
+ 計算を伴う実装・修正には、出力の正しさを見る検査（状態検証）とは**別に**、計算量テストを必ず添える。
+ 
+@@ -25,7 +25,7 @@ ISSUE-450 では既存テスト 1,233 件が緑のまま 20 日間この浪費
+ 検査に落とさなかったため再発した。**規約は宣言でなく機械的検査で強制する。**
+ 
+ ### 禁止事項
+-- **応急処置は絶対に禁止**。対策案として提示してよいのは**根本原因を除去するもの**だけ。応急処置は選択肢として並べることすら禁止。推奨案にするのは論外。
++- **応急処置は禁止**。対策案として提示してよいのは**根本原因を除去するもの**だけ。応急処置は選択肢として並べることすら禁止。推奨案にするのは論外。
+     - **応急処置の判別**: 「原因を除去したか」ではなく「症状の出る条件を避けたか」は応急処置。
+     - 根本解決に時間がかかる場合でも、**応急処置を「暫定案」として提示しない**。提示するのは根本解決の設計と段階分割（着手順・各段階の通過条件）。
+     - 実測で「この対策は原因のどこを消したか」を言えないなら、それは応急処置。
+@@ -61,7 +61,7 @@ ISSUE-450 では既存テスト 1,233 件が緑のまま 20 日間この浪費
+   「自分自身を指す symlink」になって venv・データの実体参照が失われる。
+   詳細と復旧手順: `docs/git-worktree-workflow.md` §7。
+ 
+-### 起票の基準（絶対命令 2026-09-25・台帳の無制限な膨張を止める）
++### 起票の基準（台帳の無制限な膨張を止める）
+ 
+ **欠陥は探せば無限に出る。したがって「見つけた」ことは起票の理由にならない。**
+ 争点は「品質 vs 速度」ではなく、**「現に損害が出るもの」対「探せば見つかるもの」**である。
+@@ -77,7 +77,7 @@ ISSUE-450 では既存テスト 1,233 件が緑のまま 20 日間この浪費
+ **「記録（発生未実測）」として書き、`OPEN` にしない**。消してはならない——実測で踏んだ時点で `OPEN` へ戻す。
+ 報告でも同じ。作業の途中で気づいた未実測の欠陥は、**1 行の記録に留め、その場で調査を始めない**。
+ 
+-### 断定と出所の基準（絶対命令 2026-09-25）
++### 断定と出所の基準
+ 
+ - **損害を断定してよいのは、その損害を再現して観測したときだけである。** 機構をコードで読めることは
+   発生の証拠ではない。読めただけなら「機構は確認・発生は未実測」と**そう書く**
+@@ -87,7 +87,7 @@ ISSUE-450 では既存テスト 1,233 件が緑のまま 20 日間この浪費
+   依頼者が言っていないことを「ご指摘のとおり」と書いてはならない（2026-09-25 に発生・厳命）。
+ - **実測に使った手順を本文に残す。** 何を変え、何に触れていないかを書く（「数え方」を書く）。
+ 
+-### 検査側の設計（絶対命令 2026-09-25・ISSUE-532）
++### 検査側の設計
+ 
+ 検定・ゲートも設計の対象である。本番コードの依存方向だけを整えても、**検査側に設計が無ければ
+ 正しい設計変更のたびに検定と衝突し、承認の往復が定額の税になる**（2026-09-25 実測: 7 段で毎段 1〜2 回）。
+@@ -112,21 +112,15 @@ ISSUE-450 では既存テスト 1,233 件が緑のまま 20 日間この浪費
+ **0. 指示内容の変換**：着手前に以下を提示する（軽微・自明なタスクでは省略してよい）。
+ ```markdown
+ # 👀 指示内容の確認
+-[指示を最大 200 字で要約]
++[指示の要約]
+ ## 📝 具体的なコンテキストへの変換
+-[具体コンテキストへ変換し最大 200 字]
++[具体コンテキストへの変換]
+ ```
+ 
+-**1. 分析と計画**：主要タスク要約／要件・制約の特定／潜在課題の列挙／具体ステップの列挙と順序決定。
++**1. 品質管理と問題対応**：結果を検証し、エラー・不整合時は次を行う。
++a. 原因特定（ログ・デバッグ確認） → b. 「起票の基準」を満たすものは `ISSUE.md` に即時追記（`OPEN`）、満たさないものは記録（発生未実測）に留める → c. 対策案作成 → d. 承認対象なら `IN_PROGRESS`（承認待ち）にして承認取得 → e. 承認不要な修正（構文・型・明示バグ）は即時実施し報告 → f. 動作検証 → g. 検証後 `RESOLVED` に更新し結果記入 → h. デバッグログ分析。
+ 
+-**2. 実行**：ステップを一つずつ実行し、各完了後に進捗を簡潔に報告する。
+-
+-**3. 品質管理と問題対応**：結果を検証し、エラー・不整合時は次を行う。
+-a. 原因特定（ログ・デバッグ確認） → b. `ISSUE.md` に即時追記（`OPEN`） → c. 対策案作成 → d. 承認対象なら `IN_PROGRESS`（承認待ち）にして承認取得 → e. 承認不要な修正（構文・型・明示バグ）は即時実施し報告 → f. 動作検証 → g. 検証後 `RESOLVED` に更新し結果記入 → h. デバッグログ分析。
+-
+-**4. 最終確認**：成果物全体を評価し、当初指示との整合性を確認する。
+-
+-**5. 結果報告**：下記「結果報告」節の規則に従って報告する。
++**2. 結果報告**：下記「結果報告」節の規則に従って報告する。
+ 
+ ### ISSUE.md ルール
+ - 新規 Issue：末尾に追記（既存は変更しない）。番号は既存最大 +1、無ければ `ISSUE-001`。
+@@ -149,23 +143,21 @@ a. 原因特定（ログ・デバッグ確認） → b. `ISSUE.md` に即時追
+ 
+ **直列実行時の規則**：依存関係の順に実行する。
+ 
+-並列・直列のいずれでも、上記「絶対遵守ルール」と承認規則を各実行環境に等しく適用する。
++並列・直列のいずれでも、上記「基本ルール」と承認規則を各実行環境に等しく適用する。
+ 
+ ## 出力規則
+ 
+-最優先絶対遵守事項。例外は認めない。
+-
+ - 言い換えるな。認知負荷を下げろ。
+-- 散文の作法を技術的な文章に絶対に持ち込むな。
++- 散文の作法を技術的な文章に持ち込むな。
+ - 言葉の概念を確定させて反復しろ。
+ 
+ ### 1. 名前：1つの対象に1つの名前だけを使え
+ - ユーザーが使った名前をそのまま使え。別名に置き換えるな。
+ - 一度使った名前は最後まで変えるな。
+-- 名前を変えるときは、絶対に変える前に「AをBと呼ぶ」と書け。
++- 名前を変えるときは、変える前に「AをBと呼ぶ」と書け。
+ 
+ ### 2. 語彙：日本語で言えるものを日本語で書け
+-- カタカナ語に絶対に置き換えるな。エクスパンドは「広げる」、アグリーメントは「同意」、ロジックは「処理」と書け。
++- カタカナ語に置き換えるな。エクスパンドは「広げる」、アグリーメントは「同意」、ロジックは「処理」と書け。
+ - 専門用語は、それが正式名称のときだけ使え。初出で1行の説明は必須。
+ - 語彙を平易にストレートに説明しろ。
+ 
+@@ -188,22 +180,19 @@ a. 原因特定（ログ・デバッグ確認） → b. `ISSUE.md` に即時追
+ 
+ ### 最小版（既定）
+ 分析は多角的でよいが、報告は結論のみ述べよ。
+-- その場しのぎの応急処置の推奨案の提示は論外。
+-- 抜本的に解決する方法を提示しろ。
+-- 結論だけを端的に報告しろ。 
+ - 最重要ポイント（判断報告なら課題／完了報告なら実施事項）を **1 点だけ** 選定する。
+-- その 1 点の中身を **100 字以内** で提示する（判断報告は推奨案 1 案／完了報告は結果）。
+-- その他の要点は優先順位順に **50 字程度** の要点だけ箇条書きにする（背景・根拠は書かない）。
++- その 1 点の中身を結論から提示する（判断報告は推奨案 1 案／完了報告は結果）。
++- その他の要点は優先順位順に 要点だけ箇条書きにする（背景・根拠は書かない）。
+ - 多角的分析の途中経過・代替案比較は含めない。
+ 
+ ```markdown
+ # 結果報告
+ ## 🎯 最重要ポイント
+-**[内容/課題/実施事項]：**[50字以内] 
+-**[結果/抜本的解決方法]：** [100 字以内：抜本的解決方法または完了結果]
++**[内容/課題/実施事項]：**[内容]
++**[結果/抜本的解決方法]：** [抜本的解決方法または完了結果]
+ ## 📋 その他の要点（優先順位順）
+-1. [50 字程度]
+-2. [50 字程度]
++1. [要点]
++2. [要点]
+ ```
+ 
+ ### 詳細版（トリガー該当時のみ・最小版へ追補）
+diff --git a/.claude/agents/architecture-executor.md b/.claude/agents/architecture-executor.md
+index 1e9b47e..81cf187 100644
+--- a/.claude/agents/architecture-executor.md
++++ b/.claude/agents/architecture-executor.md
+@@ -60,7 +60,7 @@ skills:
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `clean-architecture` スキルが出力する違反リストが空集合であること
++- [ ] `clean-architecture` スキルの §4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] 評価対象のモジュール・ファイル一覧が出力冒頭に明記されていること
+ - [ ] 依存方向違反ごとに修正方法（DIP / Output Boundary 追加 / 隔離先）が併記されていること
+diff --git a/.claude/agents/code-review-executor.md b/.claude/agents/code-review-executor.md
+index 121bedc..b37c9e4 100644
+--- a/.claude/agents/code-review-executor.md
++++ b/.claude/agents/code-review-executor.md
+@@ -11,7 +11,7 @@ description: |
+   - マージ承認可否（差戻 / 承認）を判定したい
+   - 事前チェック（変更行数上限・CI 通過・Issue リンク）を適用したい
+ 
+-  使用しないケース：実装作業そのもの（→ coding-executor）／TDD サイクルの Red-Green-Refactor 管理（→ tdd-executor）／設計判断のみで差分が存在しない場合（→ system-design / clean-architecture スキル）。
++  使用しないケース：実装作業そのもの（→ coding-executor）／TDD サイクルの Red-Green-Refactor 管理（→ tdd-executor）／設計判断のみで差分が存在しない場合（→ system-basic-design / clean-architecture スキル）。
+ tools: [Read, Grep, Glob, Bash]
+ model: opus
+ color: green
+@@ -59,7 +59,7 @@ skills:
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `code-review` スキルが出力する違反リストが空集合であること
++- [ ] `code-review` スキルの §4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] 🔴 必須修正カテゴリの指摘がすべて出力に明記されていること
+ - [ ] リスクレベル判定（4 軸）と採用したレビュー深度が出力に明記されていること
+diff --git a/.claude/agents/coding-executor.md b/.claude/agents/coding-executor.md
+index b6d9f69..9f1e502 100644
+--- a/.claude/agents/coding-executor.md
++++ b/.claude/agents/coding-executor.md
+@@ -53,5 +53,5 @@ SOLID 5 原則（SRP / OCP / LSP / ISP / DIP）に基づきクラス・インタ
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `coding` スキルが出力する違反リストが空集合であること
++- [ ] `coding` スキルの §4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+diff --git a/.claude/agents/document-executor.md b/.claude/agents/document-executor.md
+index 8226dcd..bc4beec 100644
+--- a/.claude/agents/document-executor.md
++++ b/.claude/agents/document-executor.md
+@@ -56,7 +56,7 @@ skills:
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `code-documentation` スキルが出力する違反リストが空集合であること
++- [ ] `code-documentation` スキルの §4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] 判定したドキュメント粒度（高 / 中 / 低）が出力に明記されていること
+ - [ ] 実装と公開 API ドキュメントの記述が一致していること
+diff --git a/.claude/agents/git-executor.md b/.claude/agents/git-executor.md
+index c88593f..9f9f8ab 100644
+--- a/.claude/agents/git-executor.md
++++ b/.claude/agents/git-executor.md
+@@ -20,7 +20,6 @@ color: green
+ skills:
+   - prompt-validation-workflow
+   - upstream-input-validation
+-  - git
+ ---
+ 
+ # 役割
+@@ -62,7 +61,7 @@ GitFlow 準拠のブランチ運用と原子的コミットに基づき、Git 
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `git-local` スキルが出力する違反リストが空集合であること
++- [ ] `.claude/skills/git/SKILL.md` を作業前に読み、§4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] ブランチ作成時にバックアップブランチが先行して作成されていること
+ - [ ] コミット前のシークレットスキャンでヒットが 0 件であること
+diff --git a/.claude/agents/programmer-executor.md b/.claude/agents/programmer-executor.md
+index 6744d02..a422ff7 100644
+--- a/.claude/agents/programmer-executor.md
++++ b/.claude/agents/programmer-executor.md
+@@ -11,7 +11,7 @@ description: |
+   - 完了前に prompt-validation-workflow による自己レビューを含めて一括起動したい
+   - 実装対象範囲が確定済み（要件書または設計書が入力として揃っている）であり、フェーズ間の合意確認を要しない
+ 
+-  使用しないケース：要件抽出・基本設計・内部設計が未確定の場合（→ spec-driven-developer）／単発のクラス・インターフェース粒度設計のみが目的の場合（→ coding-executor）／単発のレイヤー間構造評価のみが目的の場合（→ architecture-executor）／単発の TDD サイクル管理のみが目的の場合（→ tdd-executor）／単発のコードレビューのみが目的の場合（→ code-review-executor）／単発の Git 操作のみが目的の場合（→ git-executor）。
++  使用しないケース：要件抽出・基本設計・内部設計が未確定の場合（→ メイン会話へ差し戻す）／単発のクラス・インターフェース粒度設計のみが目的の場合（→ coding-executor）／単発のレイヤー間構造評価のみが目的の場合（→ architecture-executor）／単発の TDD サイクル管理のみが目的の場合（→ tdd-executor）／単発のコードレビューのみが目的の場合（→ code-review-executor）／単発の Git 操作のみが目的の場合（→ git-executor）。
+ tools: [Read, Write, Edit, Glob, Grep, Bash]
+ model: opus
+ color: blue
+@@ -20,7 +20,6 @@ skills:
+   - upstream-input-validation
+   - clean-architecture
+   - tdd
+-  - git
+   - coding
+ ---
+ 
+@@ -46,7 +45,7 @@ skills:
+ 
+ - 要件抽出・基本設計・内部設計の作成（要件・設計が未確定の場合は受付けず、メイン会話に差し戻す）
+ - 他サブエージェントの起動指示
+-- フェーズ間のユーザー合意確認（合意確認が必要な場合は spec-driven-developer の責務）
++- フェーズ間のユーザー合意確認（合意確認が必要な場合はメイン会話の責務）
+ - 3 段階エスカレーション統制（Phase 1/2/3 起動判定・対立可能性スコア算出・時間制約監視・ログレコード生成）
+ 
+ ## §3. プロセス
+@@ -56,7 +55,7 @@ skills:
+ 
+ ### step 1：戦略 ブランチ・コミット
+ 
+-- `git` スキル本文を取得し、ブランチ命名規則・初期コミット規則に準拠する
++- `.claude/skills/git/SKILL.md` を Read で読み、ブランチ命名規則・初期コミット規則に準拠する
+ - 起点ブランチを特定し、作業ブランチを作成する
+ - 既存変更がある場合はステージング状態を確認し、未コミット差分の取り扱いを決定する
+ - 当該ステップの成果物：作成した作業ブランチ名・起点ブランチ名・初期コミット ID（該当時）
+@@ -84,7 +83,7 @@ skills:
+ 
+ ### step 5：戦略 コミット・ブランチ
+ 
+-- `git` スキル本文を取得し、原子的コミット規則・コミットメッセージ規則に準拠する
++- `.claude/skills/git/SKILL.md` を Read で読み、原子的コミット規則・コミットメッセージ規則に準拠する
+ - step 1〜4 の成果物を論理単位に分割してコミットする（1 コミット = 1 目的）
+ - 作業ブランチをマージ準備済み状態に整える（push の要否はメイン会話の判断に委ねる）
+ - 当該ステップの成果物：コミット ID 一覧・コミットメッセージ一覧・最終ブランチ状態
+@@ -118,16 +117,16 @@ skills:
+ - [ ] step 1〜5 すべての成果物が §4 出力概要に含まれていること
+ - [ ] step 3 で作成したテストが step 4 完了時点で全通過していること
+ - [ ] step 4 の実装が step 2 で確定したレイヤー責務・依存方向に準拠していること
+-- [ ] step 4 の実装が `coding` スキル本文の SOLID 5 原則違反リストで空集合判定であること
++- [ ] step 4 の実装が `coding` スキル本文の SOLID 5 原則に違反がないこと
+ - [ ] step 5 のコミットが原子的（1 コミット = 1 目的）に分割されていること
+-- [ ] §4 出力に他サブエージェントの起動指示が含まれていないこと（公式仕様：ネスト不可）
++- [ ] §4 出力に他サブエージェントの起動指示が含まれていないこと（tools に Agent を持たない）
+ - [ ] §4 出力に要件抽出・基本設計・内部設計の作成成果物が含まれていないこと（責務外）
+ - [ ] §4 出力概要が親会話の context を汚染しない粒度（中間生成物の全文を含まない）であること
+ 
+ ## §6. 禁止事項
+ 
+ - 指示以外の処理を禁止する
+-- 他サブエージェントを起動する記述・指示の出力を禁止する（公式仕様：サブエージェントは他のサブエージェントを生成できない）
++- 他サブエージェントを起動する記述・指示の出力を禁止する（tools に Agent を持たない）
+ - 要件抽出・基本設計・内部設計の作成を禁止する（責務外。未確定の場合はメイン会話に差し戻す）
+ - step 順序の入れ替えを禁止する
+ - 取得したスキル本文と矛盾する判断を本文記述から導出することを禁止する
+diff --git a/.claude/agents/security-executor.md b/.claude/agents/security-executor.md
+index e7bd68a..2f5b731 100644
+--- a/.claude/agents/security-executor.md
++++ b/.claude/agents/security-executor.md
+@@ -11,7 +11,7 @@ description: |
+   - 既存対策・依存関係が最新出典（OWASP/CVE）に対して陳腐化していないか検証したい
+   - 脅威情報の更新タイミング・差分検出基準を判定したい
+ 
+-  使用しないケース：脆弱性スキャンの自動実行（→ DAST/SAST ツール側）／コードレビュー全般（→ code-review スキル）／設計判断のみで脅威分析を伴わない場合（→ system-design / clean-architecture スキル）。
++  使用しないケース：脆弱性スキャンの自動実行（→ DAST/SAST ツール側）／コードレビュー全般（→ code-review スキル）／設計判断のみで脅威分析を伴わない場合（→ system-basic-design / clean-architecture スキル）。
+ tools: [WebSearch, WebFetch, Read, Edit, Bash]
+ model: opus
+ color: red
+diff --git a/.claude/agents/spec-reviewer-executor.md b/.claude/agents/spec-reviewer-executor.md
+index c99d7d9..19a2260 100644
+--- a/.claude/agents/spec-reviewer-executor.md
++++ b/.claude/agents/spec-reviewer-executor.md
+@@ -158,13 +158,13 @@ skills:
+ - [ ] step 6 の書き換え版が step 1〜5 の検出結果すべてに対応していること
+ - [ ] step 7 の保証境界が step 6 の書き換え版を対象に確定していること
+ - [ ] step 8 の最終判定 3 軸（Deterministic / Testable / Implementable）すべてに Yes / No と理由が明記されていること
+-- [ ] §4 出力に他サブエージェントの起動指示が含まれていないこと（公式仕様：ネスト不可）
++- [ ] §4 出力に他サブエージェントの起動指示が含まれていないこと（tools に Agent を持たない）
+ - [ ] 推測による情報補完が出力に含まれていないこと（書かれていない情報は UNDEFINED と明示）
+ 
+ ## §6. 禁止事項
+ 
+ - 指示以外の処理を禁止する
+-- 他サブエージェントを起動する記述・指示の出力を禁止する（公式仕様：サブエージェントは他のサブエージェントを生成できない）
++- 他サブエージェントを起動する記述・指示の出力を禁止する（tools に Agent を持たない）
+ - 意図の理解・解釈による情報補完を禁止する（明示的に書かれていない情報は UNDEFINED として扱う）
+ - 可読性向上を目的とした検出緩和を禁止する（決定論性とテスト可能性を最優先する）
+ - 仕様の作成・抽出を禁止する（責務外。spec-items-clarifier スキルの責務）
+diff --git a/.claude/agents/system-basic-designer-executor.md b/.claude/agents/system-basic-designer-executor.md
+index 1496467..48e6a01 100644
+--- a/.claude/agents/system-basic-designer-executor.md
++++ b/.claude/agents/system-basic-designer-executor.md
+@@ -61,7 +61,7 @@ skills:
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `system-basic-design` スキルが出力する違反リストが空集合であること
++- [ ] `system-basic-design` スキルの §4 強制ルールに違反がないこと
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] 全設計判断に技術的根拠（代替案比較を含む）が併記されていること
+ - [ ] 機能・データ・インターフェース・非機能の 4 領域すべてが文書化されていること
+diff --git a/.claude/agents/system-internal-designer-executor.md b/.claude/agents/system-internal-designer-executor.md
+index 0c66004..b78b418 100644
+--- a/.claude/agents/system-internal-designer-executor.md
++++ b/.claude/agents/system-internal-designer-executor.md
+@@ -18,7 +18,6 @@ color: blue
+ skills:
+   - prompt-validation-workflow
+   - upstream-input-validation
+-  - system-internal-design
+ ---
+ 
+ # 役割
+@@ -64,7 +63,6 @@ skills:
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+ - [ ] 上流入力（依頼指示・前段成果物・他者レビュー指摘・既存合意の引き継ぎ）が存在する場合、`upstream-input-validation` スキルで上流入力前提検証が実施され、各上流入力について採用 / 棄却 / 条件付き採用の判定が下されていること
+ - [ ] 実証が取れない上流前提を所与として採用していないこと（証拠不在の前提は棄却または条件付き採用と明示）
+-- [ ] `system-internal-design` スキルが出力する違反リストが空集合であること
+ - [ ] 修正指示を発行した場合、修正後の再検証で合格パターンに到達していること
+ - [ ] 全設計判断に技術的根拠・代替案比較・パフォーマンス影響の定量評価が併記されていること
+ - [ ] 基本設計書で承認された範囲を逸脱していないこと
+diff --git a/.claude/agents/toulmin-argument-toolkit-executor.md b/.claude/agents/toulmin-argument-toolkit-executor.md
+index 1398b8b..a084e29 100644
+--- a/.claude/agents/toulmin-argument-toolkit-executor.md
++++ b/.claude/agents/toulmin-argument-toolkit-executor.md
+@@ -12,7 +12,7 @@ description: |
+   - 論証の弱点（保証の欠落・裏付け不足・例外未検討）を構造的に特定したい
+   - 実質的議論・分析的議論の区別を踏まえた論証評価を行いたい
+ 
+-  使用しないケース：文体校正・誤字脱字修正・敬語表現のみの修正（→ 通常の編集作業）／コード実装そのもの（→ coding-executor）／設計判断のみで論証評価を伴わない場合（→ system-design / clean-architecture スキル）／単発の確認質問のみで論証構造分解を要しない場合。
++  使用しないケース：文体校正・誤字脱字修正・敬語表現のみの修正（→ 通常の編集作業）／コード実装そのもの（→ coding-executor）／設計判断のみで論証評価を伴わない場合（→ system-basic-design / clean-architecture スキル）／単発の確認質問のみで論証構造分解を要しない場合。
+ tools: [Read]
+ model: opus
+ effort: high
+diff --git a/.claude/skills/Coding/SKILL.md b/.claude/skills/Coding/SKILL.md
+index 961e60c..6037c13 100644
+--- a/.claude/skills/Coding/SKILL.md
++++ b/.claude/skills/Coding/SKILL.md
+@@ -10,7 +10,7 @@ when_to_use: |
+   - 変更軸を特定し OCP のための抽象化点を決定したい
+   - クライアント別にインターフェースを分割（ISP）したい
+   - クラス間の依存方向（DIP）を確定したい
+-  使用しないケース：レイヤー間構造設計（→ clean-architecture スキル）／基本設計書・内部設計書の文書化（→ system-design スキル）。
++  使用しないケース：レイヤー間構造設計（→ clean-architecture スキル）／基本設計書・内部設計書の文書化（→ system-basic-design スキル）。
+ context: fork
+ model: opus
+ effort: high
+@@ -36,7 +36,7 @@ SOLID で構造設計する。
+ 
+ ## §1. 定義
+ 
+-本スキルは、入力として与えられた仕様・要件のみを対象に、SOLID 5 原則（SRP / OCP / LSP / ISP / DIP）に基づきクラス・インターフェース粒度の設計判断（責務分割／変更軸特定／契約定義／インターフェース分離／依存方向確定）を構造化し、各判断の動機・採用理由・代替案を記録する一連の認知手順である。コード実装前の構造設計フェーズを対象とする。レイヤー間構造設計（clean-architecture）および設計書文書化（system-design）とは責務を分離する。
++本スキルは、入力として与えられた仕様・要件のみを対象に、SOLID 5 原則（SRP / OCP / LSP / ISP / DIP）に基づきクラス・インターフェース粒度の設計判断（責務分割／変更軸特定／契約定義／インターフェース分離／依存方向確定）を構造化し、各判断の動機・採用理由・代替案を記録する一連の認知手順である。コード実装前の構造設計フェーズを対象とする。レイヤー間構造設計（clean-architecture）および設計書文書化（system-basic-design）とは責務を分離する。
+ 
+ ## §2. 原理原則
+ 
+@@ -70,8 +70,8 @@ SOLID で構造設計する。
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象の出力は禁止する |
+ | 推測禁止 | 観察外の事項は「仮説：」プレフィックスなしで記述してはならない |
+ | 根拠必須 | すべての設計判断に動機（変更想定／契約／クライアント要件）を併記する |
+ | 代替案必須 | すべての設計判断に検討した代替案と棄却理由を併記する |
+@@ -79,15 +79,10 @@ SOLID で構造設計する。
+ | 出力順序固定 | §6 が指す出力テンプレートの項目順序を変更しない |
+ | YAGNI 遵守 | 現存する変更要求がない抽象化を導入してはならない |
+ | 範囲限定 | 設計対象は入力として明示された仕様・要件のみとする |
+-| スコープ分離 | レイヤー設計は clean-architecture スキル、文書化は system-design スキルに委譲する |
++| スコープ分離 | レイヤー設計は clean-architecture スキル、文書化は system-basic-design スキルに委譲する |
+ 
+ ## §5. 実行プロセス
+ 
+-> 各ステップに付随する **判定基準 / 出力先 / アンチパターン** は template.md 末尾「ステップ詳細化要素」に定義される選択適用要素（プロジェクト規約 B.6）。本スキルは 3 要素を以下の方針で適用する：
+-> - **判定基準（T1）**：全ステップに適用（各ステップに判断要素が存在するため）
+-> - **出力先（T2）**：全ステップに適用（外部 output.md テンプレートが存在するため）
+-> - **アンチパターン（T2）**：S-2〜S-6 の SOLID 原則適用ステップのみ適用。S-1（仕様確定）は spec-items-clarifier 委譲で代替されるため、S-7（パッケージ整理）/ S-8（記録）はマッピング・記録タスクで既知失敗パターンが蓄積されていないため、それぞれ省略する
+-
+ ### step S-1: 仕様・前提の確定
+ - **判定基準**：仕様の Objective / Scope / Assumptions / Constraints / Input / Processing / Entities / Output / Exception の 9 項目が揃っているか確認。未充足なら spec-items-clarifier スキルへ委譲する
+ - **出力先**：output.md §1（仕様・前提の確定）
+diff --git b/.claude/skills/Coding/output.md b/.claude/skills/Coding/output.md
+new file mode 100644
+index 0000000..276cef9
+--- /dev/null
++++ b/.claude/skills/Coding/output.md
+@@ -0,0 +1,32 @@
++# SOLID 構造設計
++
++## §1 仕様・前提の確定
++
++## §2 アクター × 責務マトリクス（A-N）
++
++## §3 クラス責務割当（C-N）
++
++## §4 変更軸と抽象化点（AB-N）
++
++## §5 階層と契約
++
++### §5.1 基底型契約
++
++### §5.2 派生型と置換性
++
++## §6 クライアント別インターフェース（I-N）
++
++## §7 依存方向
++
++### §7.1 Mermaid 依存方向図
++
++### §7.2 依存規則・注入方式
++
++## §8 パッケージ・ディレクトリ構造
++
++## §9 設計判断インデックス
++
++| ID | 動機 | 採用理由 | 代替案 | 棄却理由 |
++|---|---|---|---|---|
++
++## §10 未解決事項
+diff --git a/.claude/skills/TDD/SKILL.md b/.claude/skills/TDD/SKILL.md
+index 265f496..c8a9f94 100755
+--- a/.claude/skills/TDD/SKILL.md
++++ b/.claude/skills/TDD/SKILL.md
+@@ -43,14 +43,12 @@ Red-Green-Refactor を厳守する
+ 
+ - テストファースト：プロダクションコードはテストの後にしか書かない（Martin TDD 第一法則）
+ - 最小単位：1 サイクルで 1 振る舞いのみを扱い、複数機能の同時実装を禁止する
+-- 順序厳守：Red→Green→Refactor の順序を絶対に逆転させない
++- 順序厳守：Red→Green→Refactor の順序を逆転させない
+ - 不変条件：リファクタ中に新規振る舞いを追加せず、テストが Green の状態でのみ構造改善する
+ - 100% カバレッジ：すべての分岐・境界・例外パスを累積結果としてカバーする（事後指標）
+ - AAA：各テストを Arrange / Act / Assert の 3 区分で構造化する
+ - F.I.R.S.T：Fast / Independent / Repeatable / Self-Validating / Timely を満たす
+ 
+-詳細は `${CLAUDE_SKILL_DIR}/references/principles.md` を参照（進歩的開示適用）。
+-
+ ## §3. 用語定義
+ 
+ | 用語 | 定義 |
+@@ -61,7 +59,7 @@ Red-Green-Refactor を厳守する
+ | AAA | Arrange（準備）/ Act（実行）/ Assert（検証）の 3 区分テスト構造 |
+ | F.I.R.S.T | Fast / Independent / Repeatable / Self-Validating / Timely の 5 原則（Beck） |
+ | 最小単位 | 1 サイクル = 1 機能 = 1 テストケース = 1 実装単位 |
+-| 境界値 | 同値クラスの境界に位置する入力値（references/test-design-patterns.md §TD.2） |
++| 境界値 | 同値クラスの境界に位置する入力値 |
+ | カバレッジ 100% | 分岐・境界・例外パスのすべてに対応するテストケースが存在する状態 |
+ | 完了判定ゲート | 各サイクル完了時にチェックリスト全項目を検証するゲート（D6 防御） |
+ 
+@@ -69,10 +67,10 @@ Red-Green-Refactor を厳守する
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 「良いテスト」等の感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 「良いテスト」等の感想・印象の出力は禁止する |
+ | テストなし実装禁止 | テストなしで実装コードを 1 行も書かない |
+-| 順序逆転禁止 | Red → Green → Refactor の順序を絶対に逆転させない |
++| 順序逆転禁止 | Red → Green → Refactor の順序を逆転させない |
+ | 同時実装禁止 | 1 サイクルで複数機能を扱わない |
+ | 成功テスト先行禁止 | 必ず通るテストを Red と称さない（Red は期待された理由で失敗する必要がある） |
+ | Refactor 中の振る舞い追加禁止 | リファクタ中に新規ロジック・分岐・APIを追加しない |
+@@ -116,14 +114,14 @@ assert し、浪費を仕様へ昇格させていた。同型は ISSUE-257 で
+ 
+ ### step S-2: テストケース設計
+ 
+-- **判定基準**：正常系・境界値（下限/上限/0/空）・異常系を網羅し、各テストケースに references/test-design-patterns.md §TD.X の設計根拠が紐付いているか
++- **判定基準**：正常系・境界値（下限/上限/0/空）・異常系を網羅し、各テストケースに設計根拠（同値分割・境界値・デシジョンテーブル・状態遷移）が紐付いているか
+ - **出力先**：`${CLAUDE_SKILL_DIR}/output.md` §2 テストケース設計テンプレート
+ - **アンチパターン**：正常系のみで進む。設計根拠を記載せず「思いつき」でケースを並べる
+ 
+ ### step S-3: 🔴 Red — 失敗テスト作成・実行・確認
+ 
+ - **判定基準**：以下をすべて満たすか
+-  - 書いたテストが「期待された理由」で失敗している（コンパイルエラー・関数未定義による失敗は判定基準を満たさない場合がある — references/anti-patterns.md §AP.1 R-5 を参照）
++  - 書いたテストが「期待された理由」で失敗している（コンパイルエラー・関数未定義による失敗は判定基準を満たさない場合がある）
+   - テスト対象の実装（クラス・関数・メソッド）が事前に存在しないことを実証している（grep / Read による不在確認）— Red 観測ゲート（§4 強制ルール）の事前条件
+   - 1 回目実行で当該テストが Pass しない（Pass した場合は R-7 Red 観測欠落に該当 → §6 異常時出力に進む）
+ - **手順**（D1 原理ラッピング — 判定基準と必ず併記）：
+@@ -133,7 +131,7 @@ assert し、浪費を仕様へ昇格させていた。同型は ISSUE-257 で
+   4. テストを実行
+   5. 失敗内容を確認し「期待された理由か」を判定。**初回実行で Pass した場合は R-7 Red 観測欠落として §X 異常時中断報告に進む**（手順 2 で不在確認したにも関わらず Pass する場合は assertion 弱体を疑う）
+ - **出力先**：`${CLAUDE_SKILL_DIR}/output.md` §3 Red 結果テンプレート
+-- **アンチパターン**：references/anti-patterns.md §AP.1（実装ファースト / 成功テスト先行 / 失敗確認スキップ / 多機能テスト / コンパイルエラー Red / 期待値置き去り / **Red 観測欠落**）
++- **アンチパターン**：（実装ファースト / 成功テスト先行 / 失敗確認スキップ / 多機能テスト / コンパイルエラー Red / 期待値置き去り / **Red 観測欠落**）
+ 
+ ### step S-4: 🟢 Green — 最小実装・全テスト通過確認
+ 
+@@ -144,7 +142,7 @@ assert し、浪費を仕様へ昇格させていた。同型は ISSUE-257 で
+   3. 全テストを実行して破壊なし確認
+   4. カバレッジ計測（前回比較）
+ - **出力先**：`${CLAUDE_SKILL_DIR}/output.md` §4 Green 結果テンプレート
+-- **アンチパターン**：references/anti-patterns.md §AP.2（過剰実装 / 設計最適化 / 並行機能追加 / 全テスト未実行 / テスト改変 / カバレッジ無視）
++- **アンチパターン**：（過剰実装 / 設計最適化 / 並行機能追加 / 全テスト未実行 / テスト改変 / カバレッジ無視）
+ 
+ ### step S-5: ♻️ Refactor — リファクタリング・全テスト通過確認
+ 
+@@ -156,17 +154,16 @@ assert し、浪費を仕様へ昇格させていた。同型は ISSUE-257 で
+   4. 全テストを実行して通過確認
+   5. カバレッジ維持を確認
+ - **出力先**：`${CLAUDE_SKILL_DIR}/output.md` §5 Refactor 結果テンプレート
+-- **アンチパターン**：references/anti-patterns.md §AP.3（新規ロジック追加 / テスト未実行 / 赤のままリファクタ / テストコード変更 / 過剰抽象化 / 全置き換え）
++- **アンチパターン**：（新規ロジック追加 / テスト未実行 / 赤のままリファクタ / テストコード変更 / 過剰抽象化 / 全置き換え）
+ 
+ ### step S-6: 完了判定（D6 完了判定ゲート）
+ 
+ - **判定基準**：以下すべて充足するか
+   - テストが存在し実行可能（step S-3 出力にテストコード）
+   - Red / Green / Refactor の各 step 出力が揃っている
+-  - カバレッジ 100%（references/principles.md §P.6 条件）
++  - カバレッジ 100%
+   - テスト名が機能・期待結果を正確に記述
+   - リファクタ後も全テストが通過
+-  - 横断アンチパターン（references/anti-patterns.md §AP.4）非該当
+ - **出力先**：`${CLAUDE_SKILL_DIR}/output.md` §6 完了判定テンプレート
+ - **アンチパターン**：未充足項目があるのに「完了」と報告する
+ 
+@@ -194,26 +191,10 @@ step S-6 完了判定ゲートが 3 回連続で未充足の場合も同様に
+ - §6 完了判定テンプレート（step S-6 完了時 / D6 完了判定ゲート）
+ - §X 異常時中断報告テンプレート（D6 完了判定 3 回連続未充足時）
+ 
+-## 付録 A：原理原則・テスト設計・アンチパターン参照
+-
+-詳細は references/ に外出し（進歩的開示適用）。各 step 実行直前に該当ファイルを読み込む。
+-
+-| ファイル | 内容 | 主な参照タイミング |
+-|---|------|------|
+-| `references/principles.md` | TDD 3 法則 / Red-Green-Refactor / AAA / F.I.R.S.T / 最小単位 / カバレッジ 100% 条件 | §2 原理原則 / step S-3〜S-5 / step S-6 完了判定 |
+-| `references/test-design-patterns.md` | 同値分割 / 境界値 / デシジョンテーブル / 状態遷移 / AAA 細則 / テストダブル | step S-2 テストケース設計 |
+-| `references/anti-patterns.md` | Red / Green / Refactor / 横断の 24 アンチパターン | step S-3〜S-5 アンチパターン検出 / step S-6 完了判定 |
+-
+-**読み込みルール**：
+-- 該当 step を実行する直前に該当ファイル全文を読み込む
+-- 1 セッション内で複数 step を実行する場合、関連ファイルは 1 回読み込みで済む
+-- 自動コンパクション後は本付録（約 10 行）のみ保持され、詳細は再読み込みで復元する
+-
+ ## 付録 B：プロジェクト規約との連携（推奨／仮説）
+ 
+ | 規約 | 内容 |
+ |---|---|
+ | B.1 | テストフレームワーク選定はプロジェクトに既存設定があれば優先する。なければ言語標準（Python: pytest / TypeScript: vitest / Go: testing パッケージ等）を採用する（推奨／仮説） |
+ | B.2 | カバレッジ計測ツールはプロジェクト既存設定を優先する（推奨／仮説） |
+-| B.3 | spec-driven-development.md フローに組み込む場合、§0.6 ログスキーマに準拠する（推奨／仮説） |
+ | B.4 | レスポンス時のフェーズ表記は 🔴 Red / 🟢 Green / ♻️ Refactor を使用する（プロジェクト規約より：可視性向上） |
+diff --git a/.claude/skills/code-documentation/SKILL.md b/.claude/skills/code-documentation/SKILL.md
+index 104374d..d94fa80 100644
+--- a/.claude/skills/code-documentation/SKILL.md
++++ b/.claude/skills/code-documentation/SKILL.md
+@@ -65,8 +65,8 @@ effort: high
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象（「良いドキュメント」等）の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象（「良いドキュメント」等）の出力は禁止する |
+ | 必須項目省略禁止 | 役割・目的・パラメータ・戻り値・例外・使用例の 6 項目を「実装を読めば分かる」を理由に省略することを禁止する |
+ | 粒度ゼロ禁止 | 粒度判定で「書かない」を選択することを禁止する。低粒度（簡潔記載）が下限である |
+ | 曖昧語禁止 | 「適切に」「可能な限り」「効率的に」「一般的に」「標準的な」「速やかに」等の曖昧語をドキュメント本文で使用することを禁止する |
+diff --git a/.claude/skills/code-review/SKILL.md b/.claude/skills/code-review/SKILL.md
+index 62c8122..ac5e83e 100755
+--- a/.claude/skills/code-review/SKILL.md
++++ b/.claude/skills/code-review/SKILL.md
+@@ -7,7 +7,7 @@ description: |
+   - リスクレベルに応じてレビュー深度を調整する
+   - 必須修正・推奨修正・将来改善の優先度別にフィードバックを構造化する
+   - マージ承認可否（差し戻し／承認）を判定する
+-  使用しないケース：実装作業そのもの（→ coding スキル）／設計判断のみで差分が存在しない場合（→ system-design / clean-architecture スキル）／TDD サイクルの Red-Green-Refactor 管理（→ tdd スキル）。
++  使用しないケース：実装作業そのもの（→ coding スキル）／設計判断のみで差分が存在しない場合（→ system-basic-design / clean-architecture スキル）／TDD サイクルの Red-Green-Refactor 管理（→ tdd スキル）。
+ allowed-tools: Read, Grep, Glob, Bash
+ context: fork
+ model: opus
+@@ -58,8 +58,8 @@ effort: high
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象（「良いコード」「きれい」「美しい」等）の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象（「良いコード」「きれい」「美しい」等）の出力は禁止する |
+ | リスク判定省略禁止 | step S-1 のリスクレベル判定を省略してレビューに入ることを禁止する |
+ | 証拠なし指摘禁止 | 該当箇所の引用・根拠・修正案を伴わない指摘の発行を禁止する |
+ | 優先度未分類禁止 | 必須／推奨／将来改善の優先度を付与せず指摘を羅列することを禁止する |
+diff --git a/.claude/skills/git/SKILL.md b/.claude/skills/git/SKILL.md
+index 7b83878..7132d1e 100755
+--- a/.claude/skills/git/SKILL.md
++++ b/.claude/skills/git/SKILL.md
+@@ -78,8 +78,8 @@ effort: medium
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象の出力は禁止する |
+ | リモート操作禁止 | `git push` / `git pull` / `git fetch` / PR 作成 / CI 起動を一切実行しない |
+ | バックアップ不変 | バックアップ専用ブランチへの変更・マージ・rebase・squash・削除を禁止する |
+ | 主要ブランチ保護 | `develop` を削除しない。`main` への直接コミットは hotfix を除き禁止する |
+@@ -119,7 +119,7 @@ effort: medium
+ - **手順**：
+   1. `git add -p` で粒度を調整、またはファイル単位で `git add <path>`。**一括ステージングは §4 で禁止**
+   2. `git diff --cached --stat` を読む
+-  3. **目的に属さないファイルが 1 件でもあれば `git restore --staged <path>` で外す**。外し終えるまで次へ進まない
++  3. **目的に属さないファイルが 1 件でもあれば `git reset -q HEAD -- <path>` で外す**。外し終えるまで次へ進まない
+   4. ローカルで lint / format / secret-scan / 静的解析 / テストを実行し合格を確認
+   5. `type(scope): summary` 形式でメッセージ作成。本文に意図・影響を箇条書き、必要に応じ `Refs: #<ID>` を付記
+   6. `git commit -m "..."` を実行
+@@ -149,7 +149,7 @@ effort: medium
+   1. `git status` で衝突ファイル特定
+   2. 衝突ファイルを編集して解消
+   3. `git add <resolved-files>` でステージング（**解決したファイルのみ**。一括ステージング禁止）
+-  4. `git diff --cached --stat` を読み、**解決対象以外のファイルがあれば `git restore --staged <path>` で外す**
++  4. `git diff --cached --stat` を読み、**解決対象以外のファイルがあれば `git reset -q HEAD -- <path>` で外す**
+   5. rebase 中は `git rebase --continue`、merge 中は `git commit -m "fix: resolve merge conflicts in <module> due to <reason>"`
+   6. テスト再実行と差分再点検で動作確認
+ 
+diff --git a/.claude/skills/prompt-validation-workflow/SKILL.md b/.claude/skills/prompt-validation-workflow/SKILL.md
+index 393021c..90cec48 100644
+--- a/.claude/skills/prompt-validation-workflow/SKILL.md
++++ b/.claude/skills/prompt-validation-workflow/SKILL.md
+@@ -2,7 +2,7 @@
+ name: prompt-validation-workflow
+ description: LLMの出力が直前の合意形成に過度に同調する傾向(追従性)を、構造的に遮断するためのスキル。
+ context: fork
+-model: claude-opus-4-7
++model: opus
+ effort: high
+ ---
+ 
+@@ -14,7 +14,7 @@ LLMの出力が直前の合意形成に過度に同調する傾向(追従性)を
+ 
+ - 本タスクは努力レベル `${CLAUDE_EFFORT}` で実行する。
+ - このレベルで追随バイアスを抑制して、自己レビューを実行する。
+-- 自己レビューの結果を `${CLAUDE_SKILL_DIR}/output.md` のフォーマットに遵守して出力する。
++- 自己レビューの結果を `${CLAUDE_SKILL_DIR}/output.md` のフォーマットで応答として返す。output.md はテンプレートであり書き換えない。
+ 
+ ## 用語定義
+ 
+@@ -86,8 +86,6 @@ Pre-mortem 段階で **以下のパターンが含まれていないか必ず確
+ 
+ | 観察 | 拡大解釈の例 |
+ |---|---|
+-| 「Theorem 1 は stack=4000 で 86o が mix 必須」と証明 | 「全 stack で minimax は mixed を要求」（射程外、stack=4000 specific） |
+-| 「論文 Figure 5 で複数 stack に mix hand が観測」と記述 | 「すべての stack で必ず mix が必要」（観測 → 必然性の論理飛躍） |
+ | 「仕様書に X と記載」 | 「X を含むすべての類似ケース」（仕様外への拡大） |
+ 
+ #### 検出方法
+@@ -121,18 +119,4 @@ Pre-mortem 段階で **以下のパターンが含まれていないか必ず確
+ | 一部の辺が pending | **部分検証**（"triangulation 完了" と称してはならない）|
+ | 部分検証で結論を出す場合 | 未実施の辺による不確実性を **明示的にラベリング** し、残存リスクに転記 |
+ 
+-### 違反例（本ワークフロー実施履歴より、2026-05-16）
+-
+-ISSUE-014 Phase 3a「軽量三角検証」の失敗:
+-
+-| # | 辺 | 検証内容 | 実施状態 | 結果 |
+-|---|----|---------|----------|------|
+-| 1 | CandyPoker vs Theorem 1 | minimally-mixed = non-minimax と判定 | ☑ done | CandyPoker は非 minimax 設計と確定 |
+-| 2 | **our_solver vs M-S 2007** | **academic gold standard との直接比較** | **□ skipped** | **未検証**（自己レビューで露呈） |
+-| 3 | our_solver vs CandyPoker at stack_bb=15 | 14 hand 系統的乖離を観測 | ☑ done | 乖離原因の片側のみ判明 |
+-
+-**結果**: 辺 #2 の skip により「our_solver = academic 整合」を過大評価。後の自己レビューで独立検証を実施した結果、stack_bb=7 で我々 66.3% jam vs M-S 57% jam の ~10 pp 系統的乖離が判明し、ISSUE-015 として独立調査を起票することになった。
+-
+-**再発防止**: 事前に 3 辺を checklist 化していれば、辺 #2 の skip が pre-mortem 段階で明示的に検出され、判断強度を「部分検証」として正しくラベリングできた。
+-
+ ---
+\ No newline at end of file
+diff --git a/.claude/skills/security/SKILL.md b/.claude/skills/security/SKILL.md
+index c86f2ff..037d997 100644
+--- a/.claude/skills/security/SKILL.md
++++ b/.claude/skills/security/SKILL.md
+@@ -10,7 +10,7 @@ when_to_use: |
+   - PR・コミット差分にセキュリティレビューを適用したい
+   - 既存対策・依存関係が最新出典（2025 年版）に対して陳腐化していないか検証したい
+   - 脅威情報の更新タイミング・差分検出基準を決定したい
+-  使用しないケース：脆弱性スキャンの自動実行（→ DAST/SAST ツール）／コードレビュー全般（→ code-review スキル）／設計判断のみで脅威分析を伴わない場合（→ system-design / clean-architecture スキル）。
++  使用しないケース：脆弱性スキャンの自動実行（→ DAST/SAST ツール）／コードレビュー全般（→ code-review スキル）／設計判断のみで脅威分析を伴わない場合（→ system-basic-design / clean-architecture スキル）。
+ context: fork
+ model: opus
+ effort: high
+diff --git a/.claude/skills/skill-designer/SKILL.md b/.claude/skills/skill-designer/SKILL.md
+index 0dbbe3c..ae5bdc3 100644
+--- a/.claude/skills/skill-designer/SKILL.md
++++ b/.claude/skills/skill-designer/SKILL.md
+@@ -455,7 +455,7 @@ description のトリガー条件は語尾を言い切り形（「〜する」
+ | 適用条件 | 適用例 |
+ |---------|--------|
+ | 外部権威からの引用と実務派生の推奨が混在する | clean-architecture / coding 系 / security |
+-| 主張の出所種別が複数ある | system-design / spec-driven-development / skill-designer |
++| 主張の出所種別が複数ある | system-basic-design / skill-designer |
+ | 「（推奨／仮説）」マーキングが本文に頻出する | clean-architecture / coding 系 |
+ 
+ 不適用：機械的処理中心スキル（update-config 等）への適用は形骸化リスクのため避ける。
+@@ -476,9 +476,9 @@ description のトリガー条件は語尾を言い切り形（「〜する」
+ 
+ | 要素 | 適用条件 | 適用例 |
+ |------|----------|--------|
+-| 判定基準 | ステップに判断要素がある（≒ ほぼ全ステップ） | system-design / error-diagnosis / tdd / spec-items-clarifier / code-review / coding 系 |
++| 判定基準 | ステップに判断要素がある（≒ ほぼ全ステップ） | system-basic-design / error-diagnosis / tdd / spec-items-clarifier / code-review / coding 系 |
+ | 出力先 | スキルが外部出力テンプレート（`${CLAUDE_SKILL_DIR}/output.md` 等）を持つ | clean-architecture / coding 系 |
+-| アンチパターン | ドメインに既知失敗パターンが蓄積されている | tdd / git-local / document / coding 系 |
++| アンチパターン | ドメインに既知失敗パターンが蓄積されている | tdd / git / document / coding 系 |
+ 
+ 重複適用回避：clean-architecture / subagent-creator / skill-designer 等、既に richer な per-step プロトコル（「ユーザーからの問い／根拠／手順／出力」等）を持つスキルには適用しない。
+ 
+diff --git a/.claude/skills/skill-designer/references/project-conventions.md b/.claude/skills/skill-designer/references/project-conventions.md
+index dd99770..7e796ef 100644
+--- a/.claude/skills/skill-designer/references/project-conventions.md
++++ b/.claude/skills/skill-designer/references/project-conventions.md
+@@ -59,9 +59,9 @@ F4 冗長模倣は D4（出力分離・運用規律）で対応するが、現
+ 
+ | 適用 | 適用例 | 不適用 | 不適用例 |
+ |------|--------|--------|---------|
+-| 順序が結果を変える操作 | system-design / error-diagnosis / tdd / clean-architecture（既採用 4 要素プロトコル） | 並列実行可能な観察 | code-review / coding 系（観察的レビュー） |
++| 順序が結果を変える操作 | system-basic-design / error-diagnosis / tdd / clean-architecture（既採用 4 要素プロトコル） | 並列実行可能な観察 | code-review / coding 系（観察的レビュー） |
+ | 各サブ操作に独立成果物 | spec-items-clarifier / security | 1 つの判断のみ | 単純判定スキル |
+-| 操作が決定論的 | git-local | 創造的判断中心 | document |
++| 操作が決定論的 | git | 創造的判断中心 | document |
+ 
+ ### 段階的導入履歴
+ 
+diff --git a/.claude/skills/skill-designer/template.md b/.claude/skills/skill-designer/template.md
+index 5805b4a..678a41a 100644
+--- a/.claude/skills/skill-designer/template.md
++++ b/.claude/skills/skill-designer/template.md
+@@ -110,7 +110,7 @@ T1+T2 はプロジェクト規約 B.6 由来、T3 はプロジェクト規約 B.
+ | 適用条件 | 該当例 |
+ |---------|--------|
+ | 外部権威からの引用と実務派生の推奨が混在する | clean-architecture / coding 系 / security |
+-| 主張の出所種別が複数ある | system-design / spec-driven-development / skill-designer |
++| 主張の出所種別が複数ある | system-basic-design / skill-designer |
+ | 「（推奨／仮説）」マーキングが本文に頻出する | clean-architecture / coding 系 |
+ 
+ 不適用例：機械的処理中心スキル（update-config 等）への適用は形骸化リスクのため避ける。
+diff --git a/.claude/skills/spec-items-clarifier/SKILL.md b/.claude/skills/spec-items-clarifier/SKILL.md
+index 1900587..c0702dd 100644
+--- a/.claude/skills/spec-items-clarifier/SKILL.md
++++ b/.claude/skills/spec-items-clarifier/SKILL.md
+@@ -50,8 +50,8 @@ allowed-tools:
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象の出力は禁止する |
+ | オプション内の曖昧語禁止 | 提示するオプションに「適切に」「高速に」「なるべく」を含めない。数値・条件式に置換する |
+ | 推測補完の禁止 | 選択されていない項目の値を推測で補完しない。確定はユーザー選択を経由する |
+ | 3 択の差別化の徹底 | 3 つのオプションが同じ判断軸上で明確に異なることを確認してから提示する |
+diff --git a/.claude/skills/subagent-creator/SKILL.md b/.claude/skills/subagent-creator/SKILL.md
+index e7dc9f1..0f1ee3a 100644
+--- a/.claude/skills/subagent-creator/SKILL.md
++++ b/.claude/skills/subagent-creator/SKILL.md
+@@ -49,7 +49,7 @@ Claude Code カスタムサブエージェント（`.claude/agents/<name>.md` 
+ - 公式仕様を一次出典とし、推測値・公式仕様外フィールドの生成を禁止する
+ - description は自動委譲発火条件として動詞ベース・トリガー列挙形式で記述する
+ - ツール権限は最小権限の原則に従い `tools` または `disallowedTools` で明示する
+-- サブエージェントはネスト不可・独立 context・概要返却の構造的制約を持つ
++- サブエージェントは独立 context・概要返却の構造的制約を持つ
+ - 委譲先選定は subagent / Skill / メイン会話 / フォーク / Agent Teams / `/btw` の 6 選択肢から、最初に該当した選択肢を採用する
+ 
+ ## §3. 用語定義
+@@ -59,7 +59,7 @@ Claude Code カスタムサブエージェント（`.claude/agents/<name>.md` 
+ | サブエージェント | 独立 context で動作し、概要のみ親会話に返却する委譲先（`.claude/agents/<name>.md`） |
+ | 自動委譲 | description のトリガー条件に基づき Claude が自律的に subagent を呼び出すこと |
+ | 最小権限の原則 | `tools` フィールドで必要ツールのみを列挙し、暗黙の全継承を回避する設計方針 |
+-| ネスト不可 | サブエージェントが他のサブエージェントを生成できない公式制約 |
++| ネスト不可 | サブエージェントから他のサブエージェントを生成させないプロジェクト方針（`tools` から `Agent` を除く） |
+ | 委譲先選定 | タスクを subagent / Skill / メイン会話 / フォーク（`/fork`）/ Agent Teams / `/btw` のどれに割り当てるかの判定 |
+ | プロジェクト規約 | 公式仕様外でプロジェクト内合意済みのルール（references/project-conventions.md 参照） |
+ 
+@@ -67,8 +67,8 @@ Claude Code カスタムサブエージェント（`.claude/agents/<name>.md` 
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 「良いエージェント」等の感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 「良いエージェント」等の感想・印象の出力は禁止する |
+ | 公式仕様外フィールド禁止 | frontmatter に references/official-spec.md §A.1 で未定義のキーを追加しない |
+ | 推測値禁止 | 不明な値は TBD として明示し、確認すべき情報源を示す |
+ | 曖昧表現禁止 | references/review-observations.md 観点 9 の禁止語リストに準拠する |
+@@ -94,7 +94,7 @@ Claude Code カスタムサブエージェント（`.claude/agents/<name>.md` 
+   - 1 セッションで 1 回しか使わない → メイン会話で実行（公式：頻繁な往復・反復改善はメイン会話）
+   - 単純な再利用ワークフロー → Skill（skill-designer スキルへ）
+   - 並列・長時間継続実行 → Agent Teams（公式：subagent は単一セッション内）
+-  - ネスト呼び出し前提 → Skill またはチェーン（references/official-spec.md §A.5 ネスト不可）
++  - ネスト呼び出し前提 → Skill またはチェーン（プロジェクト方針：ネスト不可）
+   - 親履歴を継承して並行作業 → フォーク（`/fork`）
+   - 既出情報への単純質問 → `/btw`
+ - **アンチパターン**：上記 1 件でも該当するのに subagent 化する（公式仕様の典型誤用）
+diff --git a/.claude/skills/subagent-creator/references/official-spec.md b/.claude/skills/subagent-creator/references/official-spec.md
+index bac0ae7..a898821 100644
+--- a/.claude/skills/subagent-creator/references/official-spec.md
++++ b/.claude/skills/subagent-creator/references/official-spec.md
+@@ -73,7 +73,7 @@ subagent-creator スキルから参照される公式仕様の即時参照用サ
+ 
+ ## A.5 サブエージェントの構造的制約（公式準拠）
+ 
+-- サブエージェントは他のサブエージェントを生成できない（ネスト不可）
++- サブエージェントは既定で自身のサブエージェントを生成できる（メイン会話から 3 層まで）。`tools` から `Agent` を除くと生成しない
+ - メイン会話の作業ディレクトリで開始する。`cd` は bash 呼び出し間で永続化されない。親には影響しない
+ - システムプロンプトは frontmatter 本文のみ。Claude Code のデフォルトシステムプロンプトは継承しない
+ - プラグインから提供される subagent は `hooks` / `mcpServers` / `permissionMode` を無視する
+diff --git a/.claude/skills/subagent-creator/template.md b/.claude/skills/subagent-creator/template.md
+index 16ae4e1..ee5262c 100644
+--- a/.claude/skills/subagent-creator/template.md
++++ b/.claude/skills/subagent-creator/template.md
+@@ -62,7 +62,7 @@ skills: [prompt-validation-workflow, {追加の処理スキル名}, ...]    [必
+ 以下 2 項目は既定の必須検証項目として常に含める（評価系 subagent の二値判定（合格／不合格）相当）：
+ 
+ - [ ] `prompt-validation-workflow` の自己レビューで欠陥が検出されないこと（全 subagent 共通）
+-- [ ] {違反検出系スキル名}（例：`clean-architecture` / `security` / `code-review` 等）が出力する違反リストが空集合であること（評価系 subagent のみ。非該当 subagent は本項目を削除）
++- [ ] {違反検出系スキル名}（例：`clean-architecture` / `security` / `code-review` 等）の §4 強制ルールに違反がないこと
+ 
+ 以下は subagent 固有の追加検証項目（任意で追記）：
+ 
+diff --git a/.claude/skills/system-basic-design/SKILL.md b/.claude/skills/system-basic-design/SKILL.md
+index b6211bd..909f86a 100644
+--- a/.claude/skills/system-basic-design/SKILL.md
++++ b/.claude/skills/system-basic-design/SKILL.md
+@@ -7,7 +7,7 @@ description: |
+   - 機能・データ・インターフェース・非機能の各領域を体系的に文書化する
+   - アーキテクチャパターン・技術スタックを代替案比較付きで選定する
+   - 設計判断の技術的根拠を明文化し下流（内部設計）への引き渡し情報を整える
+-  使用しないケース：内部設計（クラス設計・物理 DB 設計・実装詳細仕様）は対象外（system-design スキルの内部設計部、または別スキルを使用する）／要件抽出のみで設計を伴わない場合（→ spec-items-clarifier スキル）。
++  使用しないケース：内部設計（クラス設計・物理 DB 設計・実装詳細仕様）は対象外／要件抽出のみで設計を伴わない場合（→ spec-items-clarifier スキル）。
+ when_to_use: 要件文書を入力としてシステム基本設計書を生成する場合に使用する。
+ context: fork
+ model: opus
+@@ -64,8 +64,8 @@ allowed-tools:
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象（「優れた構成」「良い設計」等）の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象（「優れた構成」「良い設計」等）の出力は禁止する |
+ | 根拠必須 | すべての設計判断に技術的根拠を併記する |
+ | 代替案比較必須 | アーキテクチャパターン・技術スタックの選定には 2 案以上を提示し採用理由を明記する |
+ | 抽象度維持 | クラス名・物理テーブル名・SQL DDL・実装コードは出力に含めない（内部設計の対象） |
+@@ -93,7 +93,7 @@ allowed-tools:
+ |---|---|---|
+ | 要件文書 | 機能要件・非機能要件・制約条件が文書化されているか | ユーザーに要件文書の所在を質問する |
+ | スコープ | 設計対象システム／サブシステムの境界が明示されているか | ユーザーに対象範囲を質問する |
+-| 設計レベル | 「基本設計」であることが確定しているか（内部設計・要件抽出ではないか） | 内部設計要請なら system-design スキル等へ誘導 |
++| 設計レベル | 「基本設計」であることが確定しているか（内部設計・要件抽出ではないか） | 内部設計要請なら本スキルの対象外として中断し報告 |
+ | 制約条件 | 技術スタック制約・運用環境制約・法規制制約が確認可能か | 不明項目は TBD として記録し、推定根拠を併記する |
+ 
+ ### step S-1: 要件分析と設計方針決定
+diff --git a/.claude/skills/upstream-input-validation/SKILL.md b/.claude/skills/upstream-input-validation/SKILL.md
+index 3918204..42b94f5 100644
+--- a/.claude/skills/upstream-input-validation/SKILL.md
++++ b/.claude/skills/upstream-input-validation/SKILL.md
+@@ -9,7 +9,7 @@ description: |
+   - 既存合意の引き継ぎ（plan / ADR / commit）を所与とする判断を行う
+   使用しないケース：自己出力の論理整合性チェックのみが目的の場合（→ prompt-validation-workflow）、単発の文法・スタイル修正のみが目的の場合、上流入力 0 件の場合。
+ context: fork
+-model: claude-opus-4-7
++model: opus
+ effort: high
+ ---
+ 
+@@ -43,8 +43,8 @@ effort: high
+ 
+ | ルール | 内容 |
+ |---|---|
+-| 改変禁止 | 指示以外の改変は絶対に禁止する |
+-| 主観禁止 | 主観・感想・印象の出力は絶対に禁止する |
++| 改変禁止 | 指示以外の改変は禁止する |
++| 主観禁止 | 主観・感想・印象の出力は禁止する |
+ | 証拠先行 | 判定（採用 / 棄却 / 条件付き採用）の確定よりも前に実証手段を提示する。証拠を後付けする順序は禁止する |
+ | 立証責任の非対称性 | 上流入力への同意は実証的証拠の提示が必須。実証的証拠なき同意は「追従」として棄却する |
+ | 思考代替防止 | 各 step の「手順」は必ず「判定基準」と併記する。手順単独記述を禁止する（D1） |
+@@ -104,6 +104,6 @@ effort: high
+ 
+ ## §6. 結果出力
+ 
+-1. `${CLAUDE_SKILL_DIR}/output.md` に記載されたテンプレート構造に従って出力する
++1. `${CLAUDE_SKILL_DIR}/output.md` に記載されたテンプレート構造で応答として返す。output.md は書き換えない
+ 2. 上流入力 0 件の場合は output.md「上流入力なしのケース」例に従い「該当なし」を明示する
+ 3. 上流入力 1 件以上の場合は output.md「上流入力ありのケース」例に従い 5 セクション（上流入力の整理 / 前提抽出 / 証拠先行検証 / 判定結果 / 残存リスク）すべてを出力する
