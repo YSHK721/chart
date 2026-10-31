@@ -123,6 +123,17 @@ def tier_rates(ratio: np.ndarray, state: np.ndarray, edges: np.ndarray, k: float
     return np.array([np.mean(ratio[tier == i] >= k) * 100 for i in range(len(edges) + 1)])
 
 
+def tier_counts(state: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """荒れ方の段ごとの事象の数。"""
+    return np.bincount(np.searchsorted(edges, state, side="right"), minlength=len(edges) + 1)
+
+
+def hit_distance(ratio: np.ndarray, scale: np.ndarray, survival: float = 0.9) -> float:
+    """§3 の事後の記述: 掛かった事象に限った距離の平均（%）。"""
+    k = multiple_for(ratio, survival)
+    return k * float(np.mean(scale[ratio >= k]))
+
+
 def summary_distance(ratio: np.ndarray, scale: np.ndarray, summary, survival: float = 0.9) -> float:
     """§3 の事後の記述: 物差しの要約を summary に替えた距離。"""
     return multiple_for(ratio, survival) * float(summary(scale))

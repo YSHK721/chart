@@ -1,7 +1,7 @@
 """損切りの距離の比較を、事前登録（RESULTS.md §1）どおりに実行する。
 
 実行: lightweight-charts-python-main/.venv/bin/python -m tools.measure.stop_scale.run
-出力: tools/measure/stop_scale/results/{compare.csv, levels.csv, tiers.csv, post.csv}
+出力: tools/measure/stop_scale/results/{compare.csv, levels.csv, tiers.csv, post.csv, summary.csv}
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def frame(path: str, tf: str, start: str, end: str) -> dict:
                 block=pd.factorize(d.date.dt.to_period("Q"))[0])
 
 
-def combo(data: dict, tf: str, t: int, rng) -> tuple[list, list, list]:
+def combo(data: dict, tf: str, t: int, rng, measure=S.distance) -> tuple[list, list, list]:
     """時間足と持つ本数の 1 組の、比較・倍数と掛かる割合・荒れ方の段の行を返す。倍数は IS で決める。"""
     ev = {p: S.common_events(S.adverse_moves(data[p, tf]["high"], data[p, tf]["low"], data[p, tf]["close"], t),
                              data[p, tf]["scales"], data[p, tf]["block"], data[p, tf]["first"]) for p in PERIODS}
@@ -55,8 +55,10 @@ def combo(data: dict, tf: str, t: int, rng) -> tuple[list, list, list]:
                                    distance=S.distance(e["ratio"][name], e["scale"][name], sv),
                                    gap=S.rate_gap(e["ratio"][name], e["block"], ks[name][sv], (1 - sv) * 100)))
             rates = S.tier_rates(e["ratio"][name], e["scale"][BASE], edges, ks[name][0.9])
-            tiers.append(dict(period=p, tf=tf, t=t, scale=name, **{f"tier{i + 1}": v for i, v in enumerate(rates)}))
-        table = S.distance_table(e, [BASE, *names], draws)
+            counts = S.tier_counts(e["scale"][BASE], edges)
+            tiers.append(dict(period=p, tf=tf, t=t, scale=name, **{f"tier{i + 1}": v for i, v in enumerate(rates)},
+                              **{f"n{i + 1}": int(v) for i, v in enumerate(counts)}))
+        table = S.distance_table(e, [BASE, *names], draws, measure=measure)
         for name in names:
             c1 = S.compare_distance(table, name, BASE)
             c2 = S.compare_gap(e, name, BASE, ks[name][0.9], ks[BASE][0.9], draws)
@@ -79,8 +81,29 @@ def post_rows(data: dict, tf: str, t: int) -> list:
                          geometric=S.summary_distance(e["ratio"][name], e["scale"][name], S.geometric),
                          harmonic=S.summary_distance(e["ratio"][name], e["scale"][name], S.harmonic),
                          gap=S.rate_gap(e["ratio"][name], e["block"], S.multiple_for(ei["ratio"][name], 0.9)),
+                         hit_distance=S.hit_distance(e["ratio"][name], e["scale"][name]),
                          q90_q50=S.multiple_for(e["ratio"][name], 0.9) / S.multiple_for(e["ratio"][name], 0.5)))
     return rows
+
+
+SUMMARIES = {"mean": np.mean, "geometric": S.geometric, "harmonic": S.harmonic}
+
+
+def verdicts_by_summary(data: dict) -> list:
+    """§3 の事後の記述: 距離の要約を替えた §1.6 の判定の数。"""
+    out = []
+    for name, summary in SUMMARIES.items():
+        rng = np.random.default_rng(SEED)
+        rows = []
+        for tf, holds in HOLDS.items():
+            for t in holds:
+                rows += combo(data, tf, t, rng, lambda r, sc, sv, f=summary: S.summary_distance(r, sc, f, sv))[0]
+        df = S.judge(S.judge(pd.DataFrame(rows), "distance"), "gap")
+        oos = df[df.period == "OOS"]
+        counts = pd.Series([S.verdict(r) for r in oos.itertuples()]).value_counts()
+        out.append(dict(summary=name, atr=int(counts.get("ATR が良い", 0)), none=int(counts.get("差があるとは言えない", 0)),
+                        sigma=int(counts.get("σ が良い", 0)), lo=oos.distance_point.min(), hi=oos.distance_point.max()))
+    return out
 
 
 def main():
@@ -101,6 +124,9 @@ def main():
     pd.DataFrame(levels).to_csv(OUT / "levels.csv", index=False)
     pd.DataFrame(tiers).to_csv(OUT / "tiers.csv", index=False)
     pd.DataFrame(post).to_csv(OUT / "post.csv", index=False)
+    summary = pd.DataFrame(verdicts_by_summary(data))
+    summary.to_csv(OUT / "summary.csv", index=False)
+    print(summary.round(2).to_string())
     pd.set_option("display.width", 240, "display.max_columns", 40)
     print(df.verdict[df.period == "OOS"].value_counts().to_string())
     print(pd.DataFrame(tiers).round(1).to_string())

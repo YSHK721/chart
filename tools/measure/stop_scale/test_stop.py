@@ -248,6 +248,30 @@ def test_tier_rates_split_by_the_edges():
     assert list(S.tier_rates(ratio, state, np.array([1.0, 3.0]), 2.0)) == [50.0, 100.0, 100.0]
 
 
+def test_tier_counts_count_each_tier():
+    assert list(S.tier_counts(np.array([0.5, 2.0, 2.5, 5.0]), np.array([1.0, 3.0]))) == [1, 2, 1]
+
+
+def test_hit_distance_averages_only_the_hit_events():
+    ratio = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    scale = np.array([9.0, 9.0, 9.0, 9.0, 1.0])
+    k = S.multiple_for(ratio, 0.8)  # 分位は 4.2 で、掛かるのは比 5 の事象だけ
+    assert abs(S.hit_distance(ratio, scale, 0.8) - k * 1.0) < 1e-12
+
+
+def test_verdicts_by_summary_use_the_named_summary(monkeypatch):
+    data, _ = _data(monkeypatch)
+    monkeypatch.setattr(RUN, "HOLDS", {"1D": (1,)})
+    monkeypatch.setattr(RUN, "SUMMARIES", {"mean": np.mean, "harmonic": S.harmonic})
+    rows = RUN.verdicts_by_summary(data)
+    assert [r["summary"] for r in rows] == ["mean", "harmonic"]
+    assert rows[0]["atr"] + rows[0]["none"] + rows[0]["sigma"] == 3
+    d = data["OOS", "1D"]
+    e = S.common_events(S.adverse_moves(d["high"], d["low"], d["close"], 1), d["scales"], d["block"], d["first"])
+    want = [(S.summary_distance(e["ratio"][k], e["scale"][k], S.harmonic) / S.summary_distance(e["ratio"]["W14"], e["scale"]["W14"], S.harmonic) - 1) * 100 for k in ("s20", "s50", "s100")]
+    assert abs(rows[1]["lo"] - min(want)) < 1e-9 and abs(rows[1]["hi"] - max(want)) < 1e-9
+
+
 def test_summaries():
     x = np.array([1.0, 4.0])
     assert S.harmonic(x) == 1.6 and S.geometric(x) == 2.0

@@ -868,14 +868,15 @@ HOLD_ROWS = (("1h", 8, "1 時間足・8 本"), ("1h", 24, "1 時間足・24 本"
 STOP_SIGMAS = (("s20", "σ20", "amber-m"), ("s50", "σ50", "violet-m"), ("s100", "σ100", "blue-m"))
 
 
-def fig_stop_example(levels: pd.DataFrame, entry: str = "2025-03-03", hold: int = 5, before: int = 12):
+def fig_stop_example(levels: pd.DataFrame, entry: str = "2025-12-19", hold: int = 5, before: int = 12):
     """建てた足から 2 つの物差しで引いた損切りの線（MT5 日足・買い）。"""
     d = load(MT5, "1D")
     tr = true_range(d)
     i = int(d.date.searchsorted(pd.Timestamp(entry)))
     close = d.close.to_numpy()
-    w = wilder(tr, 14)[i]
-    sg = residual_sigma(close[i - 100 + 1:i + 1], 100)[-1]
+    w_all = wilder(tr, 14)
+    s_all = residual_sigma(close, 100, 99)
+    w, sg = w_all[i], s_all[i]
     k = lambda name: levels[(levels.period == "IS") & (levels.tf == "1D") & (levels.t == hold) & (levels.scale == name) & (levels.survival == 0.9)].k.iloc[0]
     k_w, k_s = k("W14"), k("s100")
     line_w, line_s = close[i] - k_w * w, close[i] - k_s * sg
@@ -900,7 +901,8 @@ def fig_stop_example(levels: pd.DataFrame, entry: str = "2025-03-03", hold: int 
         parts.append(f'<text x="{X1 + 6}" y="{sy(v) + 4:.1f}" class="lb {cls}">{label}</text>')
     parts.append(f'<text x="{sx(i + hold / 2 + 0.5):.1f}" y="{Y0 + 14}" text-anchor="middle" class="tk">持つ {hold} 本</text>')
     svg = f'<svg viewBox="0 0 640 248" role="img" aria-label="買った足から 2 つの物差しで引いた損切りの線と、次の 5 本の値動き">' + "".join(parts) + "</svg>"
-    return svg, dict(date=f"{d.date[i]:%Y-%m-%d}", w=k_w * w, s=k_s * sg, hit_w=bool(d.low[i + 1:i + hold + 1].min() <= line_w), hit_s=bool(d.low[i + 1:i + hold + 1].min() <= line_s))
+    ratio = s_all * k_s / (w_all * k_w)
+    return svg, dict(date=f"{d.date[i]:%Y-%m-%d}", w=k_w * w, s=k_s * sg, ratio=ratio[i], median=float(np.nanmedian(ratio)))
 
 
 def fig_stop_distance(compare: pd.DataFrame):
@@ -962,7 +964,8 @@ def fig_stop_tiers(tiers: pd.DataFrame):
         parts.append(f'<text x="{x0}" y="{y0 - 6}" class="tk">{label}</text>')
         parts.append(f'<rect x="{x0}" y="{y0}" width="{W}" height="{H}" class="panel"/>')
         parts.append(f'<line x1="{x0}" x2="{x0 + W}" y1="{sy(10):.1f}" y2="{sy(10):.1f}" class="guide"/>')
-        parts.append(f'<text x="{x0 - 5}" y="{sy(10) + 4:.1f}" text-anchor="end" class="tk">10%</text>')
+        for v in (0, 10, 20):
+            parts.append(f'<text x="{x0 - 5}" y="{sy(v) + 4:.1f}" text-anchor="end" class="tk">{v}%</text>')
         for name, cls in (("W14", "l-s20"), ("s100", "l-w14")):
             row = t0[(t0.tf == tf) & (t0.t == t) & (t0.scale == name)][cols].iloc[0].to_numpy()
             parts.append('<path d="M' + " L".join(f"{sx(i):.1f},{sy(v):.1f}" for i, v in enumerate(row)) + f'" class="{cls}"/>')
@@ -970,17 +973,35 @@ def fig_stop_tiers(tiers: pd.DataFrame):
     return f'<svg viewBox="0 0 640 {20 + (H + gapy) * 2}" role="img" aria-label="荒れ方の段ごとの掛かる割合。静かな段で高く、日足の σ100 は荒れた段でも下がらない">' + "".join(parts) + "</svg>"
 
 
-def stop_numbers(compare: pd.DataFrame, post: pd.DataFrame) -> dict:
+def stop_numbers(compare: pd.DataFrame, summary: pd.DataFrame, tiers: pd.DataFrame) -> dict:
     """本文に入れる数（差し込み名 → 文字）。"""
     oos = compare[compare.period == "OOS"]
-    ratio = lambda col: {(r.tf, r.t, r.scale): getattr(r, col) for r in post.itertuples()}
-    def span(col):
-        v = ratio(col)
-        x = [(v[tf, t, k] / v[tf, t, "W14"] - 1) * 100 for tf, t, _ in HOLD_ROWS for k, _, _ in STOP_SIGMAS]
-        return f"{min(x):+.0f}〜{max(x):+.0f}%"
+    by = summary.set_index("summary")
     return {"STOP_ATR": str(int((oos.verdict == "ATR が良い").sum())), "STOP_NONE": str(int((oos.verdict == "差があるとは言えない").sum())),
             "STOP_SIGMA": str(int((oos.verdict == "σ が良い").sum())), "STOP_ALL": str(len(oos)),
-            "SPAN_MEAN": span("mean"), "SPAN_GEO": span("geometric"), "SPAN_HARM": span("harmonic")}
+            "HARM_ATR": str(int(by.loc["harmonic", "atr"])), "CALM_SHARE": f"{calm_share(tiers):.1f}"}
+
+
+def calm_share(tiers: pd.DataFrame) -> float:
+    """日足で、静かな段の事象が全体に占める割合（%）。"""
+    t0 = tiers[(tiers.period == "OOS") & (tiers.tf == "1D") & (tiers.t == 1) & (tiers.scale == "W14")].iloc[0]
+    return float(t0.n1 / sum(t0[f"n{i}"] for i in range(1, 6)) * 100)
+
+
+def stop_summary_rows(summary: pd.DataFrame) -> str:
+    """距離のまとめ方ごとの差と判定の数の表の行。"""
+    label = {"mean": "算術平均（事前登録の定義）", "geometric": "幾何平均", "harmonic": "調和平均"}
+    return "".join(f'<tr><td>{label[r.summary]}</td><td class="n">{r.lo:+.0f}〜{r.hi:+.0f}%</td><td class="n">{int(r.atr)}</td>'
+                   f'<td class="n">{int(r.none)}</td><td class="n">{int(r.sigma)}</td></tr>' for r in summary.itertuples())
+
+
+def stop_hit_rows(post: pd.DataFrame) -> str:
+    """掛かった事象の距離の表の行。"""
+    rows = []
+    for tf, t, label in HOLD_ROWS:
+        g = post[(post.tf == tf) & (post.t == t)].set_index("scale").hit_distance
+        rows.append(f'<tr><td>{label}</td><td class="n">{g["W14"]:.2f}%</td>' + "".join(f'<td class="n">{(g[k] / g["W14"] - 1) * 100:+.1f}%</td>' for k, _, _ in STOP_SIGMAS) + "</tr>")
+    return "".join(rows)
 
 
 def stop_fixed_rows(post: pd.DataFrame) -> str:
@@ -1077,7 +1098,7 @@ def main(out_path: str):
     passed = [r for r in beta if r["d_pass"]]
     attrib = pd.read_csv(BETA_ATTRIB)
     weights = {name: avg(np.r_[np.full(300, 1000.0), 1100.0])[-1] - 1000.0 for name, avg in (("sma", lambda t: sma(t, 100)), ("ols", lambda t: ols_end(t, 100, len(t) - 1)))}
-    st_compare, st_levels, st_tiers, st_post = (pd.read_csv(STOP_RESULTS / f"{n}.csv") for n in ("compare", "levels", "tiers", "post"))
+    st_compare, st_levels, st_tiers, st_post, st_summary = (pd.read_csv(STOP_RESULTS / f"{n}.csv") for n in ("compare", "levels", "tiers", "post", "summary"))
     example_svg, example = fig_stop_example(st_levels)
     bs = break_stats()
     a20_med, a20_p99 = atr20_diff()
@@ -1123,7 +1144,8 @@ def main(out_path: str):
             .replace("{{FIG_COUNTS}}", fig_counts(skill, labels)).replace("{{FIG_WINS}}", fig_wins(skill, labels)).replace("{{FIG_CURVES}}", fig_curves(grid, labels))
             
             .replace("{{FIG_STOP_EXAMPLE}}", example_svg).replace("{{FIG_STOP_DISTANCE}}", fig_stop_distance(st_compare)).replace("{{FIG_STOP_HITS}}", fig_stop_hits(st_levels))
-            .replace("{{FIG_STOP_TIERS}}", fig_stop_tiers(st_tiers)).replace("{{STOP_FIXED_ROWS}}", stop_fixed_rows(st_post))
+            .replace("{{FIG_STOP_TIERS}}", fig_stop_tiers(st_tiers)).replace("{{STOP_FIXED_ROWS}}", stop_fixed_rows(st_post)).replace("{{STOP_SUMMARY_ROWS}}", stop_summary_rows(st_summary)).replace("{{STOP_HIT_ROWS}}", stop_hit_rows(st_post))
+            .replace("{{EXAMPLE_RATIO}}", f"{example['ratio']:.2f}").replace("{{EXAMPLE_MEDIAN}}", f"{example['median']:.2f}")
             .replace("{{EXAMPLE_DATE}}", example["date"]).replace("{{EXAMPLE_W}}", f"{example['w']:,.0f}").replace("{{EXAMPLE_S}}", f"{example['s']:,.0f}")
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
@@ -1139,7 +1161,7 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
-    for key, value in {**attrib_values(attrib), **skill_numbers(skill, labels), **stop_numbers(st_compare, st_post)}.items():
+    for key, value in {**attrib_values(attrib), **skill_numbers(skill, labels), **stop_numbers(st_compare, st_summary, st_tiers)}.items():
         page = page.replace("{{" + key + "}}", value)
     Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},

@@ -307,48 +307,50 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <h2 id="h-stop">損切りの距離は ATR と残差 σ のどちらで測るか</h2>
   <div class="key">
     <span><b>結論：</b>損切りの距離の物差しとして、残差 σ を ATR より優先する理由はありませんでした。事前登録した {{STOP_ALL}} 比較のうち、{{STOP_ATR}} 比較が「ATR が良い」、{{STOP_NONE}} 比較が「差があるとは言えない」、{{STOP_SIGMA}} 比較が「σ が良い」です。</span>
-    <span><b>注意：</b>どれだけ短いかは距離のまとめ方で変わります。また、全ての足で建てた場合の測定で、損益は測っていません。</span>
+    <span><b>注意：</b>「ATR が良い」の数は距離のまとめ方で変わり、調和平均では {{HARM_ATR}} 比較です（「σ が良い」はどのまとめ方でも 0 比較）。平均の距離は σ が長い一方、掛かった事象の距離は σ が短くなります。全ての足で建てた場合の測定で、損益は測っていません。</span>
   </div>
   <h3 class="h3">何を比べるのか</h3>
   <p>損切りの距離を、物差し × 倍数で決めます。物差しは次の 2 種類です。<b>残差 σ</b> は、直近 n 本の終値に直線を当てはめたときの、直線からの外れの大きさです（btlm_trail の計算）。</p>
   <div class="formula">
     <span>ATR の距離 ＝ ATR（ワイルダーの平滑 14）× 倍数</span>
     <span>残差 σ の距離 ＝ 残差 σ（n = 20・50・100）× 倍数</span>
-    <span>倍数は「90% の事象で損切りに掛からない」値を IS で決める</span>
+    <span>倍数は「90% の事象で損切りに掛からない」値にする（どの期間で決めるかは下の図ごとに書きます）</span>
   </div>
   <figure class="figure"><figcaption>{{EXAMPLE_DATE}} に買った場合の 2 本の損切りの線（MT5 日足）</figcaption>{{FIG_STOP_EXAMPLE}}
-    <p class="cap">距離は ATR の線で {{EXAMPLE_W}} ポイント、σ100 の線で {{EXAMPLE_S}} ポイントです。次の 5 本の安値が線に届けば「掛かった」と数えます。どちらの線が近いかは日によって変わるので、この 1 例は物差しの優劣の根拠ではありません。</p></figure>
-  <p>全ての足について、買いと売りの両方を建てたとして数えます。Dukascopy の 2014-01〜2020-04（IS）で倍数と通過する組を決め、MT5 の 2020-05 以降（OOS）で確かめます。手順と基準は実行前に書き出しました（事前登録）。費用は含めていません。</p>
+    <p class="cap">距離は ATR の線で {{EXAMPLE_W}} ポイント、σ100 の線で {{EXAMPLE_S}} ポイントです。倍数は IS で決めた値です。この日の σ100 の距離 ÷ ATR の距離は {{EXAMPLE_RATIO}} で、OOS の日の中央値 {{EXAMPLE_MEDIAN}} に近い日を選びました。次の 5 本の安値が線に届けば「掛かった」と数えます。この日はどちらの線にも届いていません。</p></figure>
+  <p>全ての足について、買いと売りの両方を建てたとして数えます。Dukascopy の 2014-01〜2020-04（IS）で通過する組を決め、MT5 の 2020-05 以降（OOS）で確かめます。手順と基準は実行前に書き出しました（事前登録）。費用は含めていません。</p>
   <h3 class="h3">同じ生き残りに要る距離</h3>
   <figure class="figure"><figcaption>生き残り 90% に要る距離の、ATR に対する長さ（%・OOS）</figcaption>{{FIG_STOP_DISTANCE}}
     <div class="legend"><span><i style="background:var(--amber);border-radius:50%"></i>σ20</span><span><i style="background:var(--violet);border-radius:50%"></i>σ50</span><span><i style="background:var(--blue);border-radius:50%"></i>σ100</span><span><i style="background:var(--panel);border:1.8px solid var(--muted);border-radius:50%"></i>IS で通過しなかった組</span></div>
-    <p class="cap">点線より右は、残差 σ の距離が ATR より長いことを表します。横線は四半期を単位に再標本した 95% の幅です。</p></figure>
-  <p>物差しの算術平均で測ると、どの組でも残差 σ のほうが長い距離を要します。同じだけ生き残るのに距離が長ければ、掛かったときの損失が大きくなるか、建てる量を減らすことになります。</p>
+    <p class="cap">倍数は OOS の中で決め直し、どの物差しも掛かる割合がちょうど 10% になるように揃えています。距離は物差しの算術平均 × 倍数です。点線より右は、残差 σ の距離が ATR より長いことを表します。横線は四半期を単位に再標本した 95% の幅です。</p></figure>
+  <p>物差しの算術平均で測ると、どの組でも残差 σ のほうが長い距離を要します。ただし、掛かったときの距離（損切りの損失の大きさ）は逆で、掛かった事象に限ると残差 σ のほうが短くなります（事前登録の外の確認）。σ の線が近い日に掛かりやすいためと考えられます（推論）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>掛かった事象の距離の平均</th><th>ATR</th><th>σ20</th><th>σ50</th><th>σ100</th></tr></thead>
+    <tbody>{{STOP_HIT_ROWS}}</tbody>
+  </table></div>
+  <p class="cap">σ の列は ATR に対する長さです。倍数は OOS の中で決め直しています。線の価格で約定したとして数えています。</p>
   <h3 class="h3">掛かる割合が保たれるか</h3>
   <p>IS で決めた倍数を OOS にそのまま使います。目標の 10% に近いほど、決めた倍数が別の期間でも通用しています。</p>
   <figure class="figure"><figcaption>掛かる割合（%・OOS）</figcaption>{{FIG_STOP_HITS}}
     <div class="legend"><span><i style="background:var(--acc);border-radius:50%"></i>ATR</span><span><i style="background:var(--blue);border-radius:50%"></i>σ100</span></div></figure>
-  <p>1 時間足では、どちらも目標に近い値です。日足では σ100 の掛かる割合が目標を大きく超えます。</p>
+  <p>1 時間足では、どちらも目標に近い値です。日足では σ100 の掛かる割合が目標を大きく超えます。日足・5 本の ATR は目標より低く、距離が余る向きです。</p>
   <figure class="figure"><figcaption>荒れ方の 5 段ごとの掛かる割合（%・OOS）</figcaption>{{FIG_STOP_TIERS}}
     <div class="legend"><span><i style="background:var(--acc);height:3px"></i>ATR</span><span><i style="background:var(--blue);height:3px"></i>σ100</span></div>
-    <p class="cap">段は IS の ATR ÷ 終値の分位で切っています。切る基準が ATR なので、ATR に不利な可能性があります（未検証）。</p></figure>
-  <p>どちらの物差しでも、静かな段で掛かりやすくなります。ATR は荒れた段で距離が余る向きで、日足の σ100 は荒れた段でも掛かる割合が下がりません。</p>
+    <p class="cap">倍数は IS で決めた値です。段は IS の ATR ÷ 終値の分位で切っています。切る基準が ATR なので、ATR に不利な可能性があります（未検証）。OOS の荒れ方に偏りがあるので、段ごとの事象の数は同じではありません。</p></figure>
+  <p>1 時間足では、どちらの物差しでも静かな段で掛かりやすくなり、ATR は荒れた段で距離が余る向きです。日足は静かな段の事象が全体の {{CALM_SHARE}}% しかなく、静かな段については判断できません。日足の σ100 は、荒れた段でも掛かる割合が 13〜14% で、目標の 10% を超えたままです。</p>
   <h3 class="h3">距離の短さだけでは決められない</h3>
   <p>実行後に足した確認です（事前登録の外）。上の図の距離は、物差しの算術平均 × 倍数です。物差しのばらつきも距離に効くので、まとめ方を替えると ATR との差は変わります。</p>
   <div class="tbl"><table>
-    <thead><tr><th>距離のまとめ方</th><th>残差 σ の距離の、ATR に対する長さ</th></tr></thead>
-    <tbody>
-      <tr><td>算術平均（事前登録の定義）</td><td class="n">{{SPAN_MEAN}}</td></tr>
-      <tr><td>幾何平均</td><td class="n">{{SPAN_GEO}}</td></tr>
-      <tr><td>調和平均</td><td class="n">{{SPAN_HARM}}</td></tr>
-    </tbody>
+    <thead><tr><th>距離のまとめ方</th><th>残差 σ の距離の、ATR に対する長さ</th><th>ATR が良い</th><th>差があるとは言えない</th><th>σ が良い</th></tr></thead>
+    <tbody>{{STOP_SUMMARY_ROWS}}</tbody>
   </table></div>
-  <p>物差しを使わず毎回同じ割合の距離を置くと、距離だけなら ATR より短いか同じです。ただし局面が変わると掛かる割合が大きくずれます。距離と掛かる割合の安定は、両方見る必要があります。</p>
+  <p class="cap">右の 3 列は、事前登録の判定（{{STOP_ALL}} 比較）をまとめ方だけ替えて数えた数です。</p>
+  <p>物差しを使わず毎回同じ割合の距離を置くと、算術平均の距離なら ATR より短いか同じです。ただし局面が変わると掛かる割合が大きくずれます。距離と掛かる割合の安定は、両方見る必要があります。</p>
   <div class="tbl"><table>
-    <thead><tr><th>時間足・持つ本数</th><th>固定した距離</th><th>ATR の距離</th><th>四半期ごとのずれ：固定</th><th>ATR</th><th>σ100</th></tr></thead>
+    <thead><tr><th>時間足・持つ本数</th><th>固定した距離（算術平均）</th><th>ATR の距離（算術平均）</th><th>四半期ごとのずれ：固定</th><th>ATR</th><th>σ100</th></tr></thead>
     <tbody>{{STOP_FIXED_ROWS}}</tbody>
   </table></div>
-  <p class="cap">四半期ごとのずれは、掛かる割合と目標 10% の差の絶対値の平均（%ポイント）で、小さいほど安定しています。OOS の値です。</p>
+  <p class="cap">距離の倍数は OOS の中で決め直しています。四半期ごとのずれは IS で決めた倍数を固定し、掛かる割合と目標 10% の差の絶対値を平均した値（%ポイント）で、小さいほど安定しています。OOS の値です。</p>
 </section>
 
 <section aria-labelledby="h-hist">

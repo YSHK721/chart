@@ -1,4 +1,6 @@
 """make_page.py の平均の比較の状態検証と計算量検定（CLAUDE.md の計算量テスト規約）。"""
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -339,10 +341,10 @@ def test_best_rows_read_the_grid():
 
 def _stop_compare():
     rows = []
-    for period in ("IS", "OOS"):
+    for period, offset in (("IS", 50.0), ("OOS", 0.0)):
         for tf, t, _ in P.HOLD_ROWS:
             for i, (key, _, _) in enumerate(P.STOP_SIGMAS):
-                rows.append(dict(period=period, tf=tf, t=t, scale=key, distance_point=5.0 + i, distance_lo=1.0, distance_hi=9.0 + i,
+                rows.append(dict(period=period, tf=tf, t=t, scale=key, distance_point=5.0 + i + offset, distance_lo=1.0 + offset, distance_hi=9.0 + i + offset,
                                  distance_pass=i != 2, verdict="ATR が良い" if i else "差があるとは言えない"))
     return pd.DataFrame(rows)
 
@@ -350,48 +352,108 @@ def _stop_compare():
 def _stop_post():
     rows = []
     for tf, t, _ in P.HOLD_ROWS:
-        for name, mean, gap in (("W14", 2.0, 1.0), ("s20", 2.2, 0.5), ("s50", 2.4, 1.5), ("s100", 2.1, 3.0), ("fixed", 1.9, 6.0)):
-            rows.append(dict(tf=tf, t=t, scale=name, mean=mean, geometric=mean * 0.9 if name != "W14" else 2.0, harmonic=2.0, gap=gap))
+        for name, mean, gap, hit in (("W14", 2.0, 1.0, 1.0), ("s20", 2.2, 0.5, 0.9), ("s50", 2.4, 1.5, 0.8), ("s100", 2.1, 3.0, 0.95), ("fixed", 1.9, 6.0, 1.1)):
+            rows.append(dict(tf=tf, t=t, scale=name, mean=mean, gap=gap, hit_distance=hit))
     return pd.DataFrame(rows)
 
 
-def test_fig_stop_distance_draws_oos_rows_and_hollows_the_failed_ones():
+def _stop_summary():
+    return pd.DataFrame([dict(summary="mean", atr=11, none=1, sigma=0, lo=5.97, hi=17.28), dict(summary="geometric", atr=8, none=4, sigma=0, lo=3.3, hi=9.93),
+                         dict(summary="harmonic", atr=1, none=11, sigma=0, lo=-1.25, hi=4.74)])
+
+
+def _stop_tiers():
+    rows = []
+    for period, shift in (("OOS", 0.0), ("IS", 3.0)):
+        for tf, t, _ in P.HOLD_ROWS:
+            for scale, base in (("W14", 20.0), ("s100", 12.0)):
+                rows.append(dict(period=period, tf=tf, t=t, scale=scale, tier1=base + shift, tier2=15.0, tier3=10.0, tier4=8.0, tier5=6.0, n1=1, n2=1, n3=1, n4=3, n5=4))
+    return pd.DataFrame(rows)
+
+
+def test_fig_stop_distance_draws_only_oos_rows_and_hollows_the_failed_ones():
     svg = P.fig_stop_distance(_stop_compare())
     assert svg.count('class="whisker') == 12
     assert svg.count('class="m-is"') == 4  # σ100 の 4 組が IS で通過しなかった想定
+    assert ">+5.0<" in svg and ">+55.0<" not in svg
 
 
-def test_fig_stop_hits_show_w14_and_s100_values():
+def test_fig_stop_hits_show_w14_and_s100_values_at_survival_90():
     rows = []
     for tf, t, _ in P.HOLD_ROWS:
         for scale, hit in (("W14", 9.1), ("s100", 13.5), ("s20", 99.0)):
+            rows.append(dict(period="OOS", survival=0.75, tf=tf, t=t, scale=scale, hit=66.0))
             rows.append(dict(period="OOS", survival=0.9, tf=tf, t=t, scale=scale, hit=hit))
             rows.append(dict(period="IS", survival=0.9, tf=tf, t=t, scale=scale, hit=77.0))
     svg = P.fig_stop_hits(pd.DataFrame(rows))
     assert svg.count(">9.1<") == 4 and svg.count(">13.5<") == 4
-    assert ">99.0<" not in svg and ">77.0<" not in svg
+    assert ">99.0<" not in svg and ">77.0<" not in svg and ">66.0<" not in svg
 
 
-def test_fig_stop_tiers_draw_one_panel_per_hold():
-    rows = []
-    for tf, t, _ in P.HOLD_ROWS:
-        for scale in ("W14", "s100"):
-            rows.append(dict(period="OOS", tf=tf, t=t, scale=scale, tier1=20.0, tier2=15.0, tier3=10.0, tier4=8.0, tier5=6.0))
-    svg = P.fig_stop_tiers(pd.DataFrame(rows))
+def test_fig_stop_tiers_draw_w14_in_red_from_calm_to_rough():
+    svg = P.fig_stop_tiers(_stop_tiers())
     assert svg.count('class="panel"') == 4 and svg.count("<path") == 8
+    first_w = re.search(r'<path d="M([0-9.]+),([0-9.]+) L[^"]*" class="l-s20"', svg)
+    first_s = re.search(r'<path d="M([0-9.]+),([0-9.]+) L[^"]*" class="l-w14"', svg)
+    assert float(first_w.group(2)) < float(first_s.group(2))  # 静かな段の W14 (20) は s100 (12) より上に描く
 
 
-def test_stop_numbers_count_oos_verdicts_and_span_each_summary():
-    v = P.stop_numbers(_stop_compare(), _stop_post())
+def test_stop_numbers_count_oos_verdicts_and_read_the_summary():
+    v = P.stop_numbers(_stop_compare(), _stop_summary(), _stop_tiers())
     assert v["STOP_ATR"] == "8" and v["STOP_NONE"] == "4" and v["STOP_SIGMA"] == "0" and v["STOP_ALL"] == "12"
-    assert v["SPAN_MEAN"] == "+5〜+20%" and v["SPAN_HARM"] == "+0〜+0%"
-    assert v["SPAN_GEO"] == "-5〜+8%"
+    assert v["HARM_ATR"] == "1" and v["CALM_SHARE"] == "10.0"
+
+
+def test_stop_summary_rows_show_each_summary():
+    rows = P.stop_summary_rows(_stop_summary())
+    assert '<td>調和平均</td><td class="n">-1〜+5%</td><td class="n">1</td><td class="n">11</td><td class="n">0</td>' in rows
+
+
+def test_stop_hit_rows_compare_with_w14():
+    rows = P.stop_hit_rows(_stop_post())
+    assert '<td class="n">1.00%</td><td class="n">-10.0%</td><td class="n">-20.0%</td><td class="n">-5.0%</td>' in rows
 
 
 def test_stop_fixed_rows_read_the_named_scales():
     rows = P.stop_fixed_rows(_stop_post())
     assert rows.count("<tr>") == 4
     assert '<td class="n">1.90%</td><td class="n">2.00%</td><td class="n">6.0</td><td class="n">1.0</td><td class="n">3.0</td>' in rows
+
+
+def _example_levels(k_w=2.0, k_s=1.0, period="IS"):
+    return pd.DataFrame([dict(period=period, tf="1D", t=5, scale=n, survival=0.9, k=k) for n, k in (("W14", k_w), ("s100", k_s))])
+
+
+def _example_market(n=200):
+    rng = np.random.default_rng(5)
+    close = 1000 + np.cumsum(rng.normal(0, 5, n))
+    dates = pd.date_range("2024-01-01", periods=n, freq="B")
+    return pd.DataFrame({"date": dates, "open": close, "high": close + 3, "low": close - 3, "close": close})
+
+
+def test_fig_stop_example_uses_values_known_at_the_entry_bar(monkeypatch):
+    d = _example_market()
+    entry = str(d.date[150].date())
+    monkeypatch.setattr(P, "load", lambda path, tf: d)
+    _, a = P.fig_stop_example(_example_levels(), entry=entry)
+    want_s = 1.0 * rolling_ols_window_end(d.close.to_numpy()[:151], 100)[3][150]
+    assert abs(a["s"] - want_s) < 1e-9
+    assert abs(a["w"] - 2.0 * P.wilder(P.true_range(d.iloc[:151]), 14)[150]) < 1e-9
+    assert a["date"] == entry
+    changed = d.copy()
+    changed.loc[151:, ["open", "high", "low", "close"]] += 500.0  # 先の足を変えても距離は同じ
+    monkeypatch.setattr(P, "load", lambda path, tf: changed)
+    _, b = P.fig_stop_example(_example_levels(), entry=entry)
+    assert a["w"] == b["w"] and a["s"] == b["s"]
+
+
+def test_fig_stop_example_reads_the_is_multiples(monkeypatch):
+    d = _example_market()
+    monkeypatch.setattr(P, "load", lambda path, tf: d)
+    levels = pd.concat([_example_levels(2.0, 1.0, "IS"), _example_levels(9.0, 9.0, "OOS")])
+    _, r = P.fig_stop_example(levels, entry=str(d.date[150].date()))
+    single, _ = P.fig_stop_example(_example_levels(2.0, 1.0, "IS"), entry=str(d.date[150].date()))
+    assert "ATR × 2.00" in single and abs(r["s"] / r["w"] * 2.0 - r["ratio"] * 2.0) < 1e-9
 
 
 class AvgSpy:
