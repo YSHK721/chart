@@ -55,6 +55,7 @@ svg .tk { font-size: 11px; fill: var(--muted); }
 svg .lb { font-size: 12px; fill: var(--fg); }
 svg .lb.strong { font-weight: 700; }
 svg .lb.acc { fill: var(--acc); font-weight: 700; }
+svg .lb.blue { fill: var(--blue); font-weight: 700; }
 svg .grid { stroke: var(--rule); stroke-width: 1; }
 svg .guide { stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 4 3; }
 svg .wick { stroke: var(--muted); stroke-width: 1.4; }
@@ -154,6 +155,36 @@ svg .m-real { fill: var(--blue); }
   <figure class="figure"><figcaption>日足の真の値幅（棒）と 3 通りの平均（MT5・直近 160 日）</figcaption>{{FIG_SMOOTH}}
     <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--acc);height:3px"></i>単純平均 20（ATR20）</span><span><i style="background:var(--amber);height:3px"></i>単純平均 14</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 14</span></div></figure>
   <p>本数が少ないほど最近の動きにすぐ反応し、多いほど滑らかになります。ワイルダーの平滑は、古い足の影響が少しずつ薄れていく平均で、単純平均のように 20 本前の足がある日いきなり抜けることがありません。どれを使っても「ふだんの大きさ」という意味は同じです。</p>
+  <h3 class="h3">単純平均とワイルダーの平滑の違い</h3>
+  <p>違いは古い足の抜け方です。単純平均は n 本前の足が一度に抜けます。ワイルダーの平滑は古い足が少しずつ薄れます。大きな足が入ったときの上がり方は、どちらもほぼ同じです。</p>
+  <figure class="figure"><figcaption>計算例：値幅 100 が続く中に 1,500 の足が 1 本入ったとき（n = 14）</figcaption>{{FIG_IMPULSE}}</figure>
+  <div class="tbl"><table>
+    <thead><tr><th>性質</th><th>単純平均 n 本</th><th>ワイルダーの平滑 n 本</th></tr></thead>
+    <tbody>
+      <tr><td>足の重み</td><td>直近 n 本に同じ重み、それより前は 0</td><td>新しい足ほど重く、古い足も 0 にならない</td></tr>
+      <tr><td>直近 n 本の重みの合計</td><td>100%</td><td>約 64%</td></tr>
+      <tr><td>足の平均の古さ</td><td>(n − 1) ÷ 2 本前（n = 14 で 6.5 本前）</td><td>n − 1 本前（n = 14 で 13 本前）</td></tr>
+      <tr><td>大きな足が抜けるとき</td><td>n 本後に一度に下がる</td><td>一度には下がらず、少しずつ下がる</td></tr>
+    </tbody>
+  </table></div>
+  <p>足の平均の古さが 2 倍近いので、ワイルダーの平滑は同じ n の単純平均より動きへの追いつきが遅くなります。古さがそろうのは単純平均 2n − 1 本です（平滑 14 は単純平均 27、平滑 20 は単純平均 39）。</p>
+  <figure class="figure"><figcaption>実例：{{EX_DATE}} の前後（MT5 日足・n = 20）</figcaption>{{FIG_EXIT}}
+    <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--acc);height:3px"></i>単純平均 20</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 20</span></div>
+    <p class="cap">{{EX_DATE}} の値幅は {{EX_TR}} で、大きくありません。それでも {{EX_OUT_DATE}} の値幅 {{EX_OUT_TR}} が抜けたので、単純平均 20 は {{EX_A0}} → {{EX_A1}} と {{EX_A_PCT}}% 下がりました。市場が急に落ち着いたわけではなく、計算上の下落です。ワイルダーの平滑 20 は {{EX_W0}} → {{EX_W1}} と {{EX_W_PCT}}% の下落でした。</p></figure>
+  <p>次の 1 本の値幅を見積もったときの外れと、ATR の動きを比べました（MT5）。外れは「外れの平均 ÷ 値幅の平均」、動きは「ATR の 1 本ごとの変化率の平均」です。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>方法</th><th>1 時間足の外れ</th><th>1 時間足の動き</th><th>日足の外れ</th><th>日足の動き</th></tr></thead>
+    <tbody>{{SMOOTH_ROWS}}</tbody>
+  </table></div>
+  <p>同じ n では、ワイルダーの平滑のほうが外れも動きも小さくなりました。ただし有意性の検定はしていないので、「ワイルダーの平滑が優れている」とはまだ言えません。損益も検証していません。</p>
+  <h3 class="h3">ワイルダーの平滑と EMA の関係</h3>
+  <p>ワイルダーの平滑は EMA と同じ式です。違うのは n の数え方だけです。EMA（指数移動平均）は、新しい値ほど重く、古い値ほど一定の割合で軽くする平均です。</p>
+  <div class="formula">
+    <span>EMA：今の値 ＝ 前の値 ×（1 − α）＋ 今の真の値幅 × α（α は今の足に置く重み）</span>
+    <span>ワイルダーの平滑 n 本：<b>α ＝ 1 ÷ n</b></span>
+    <span>一般の EMA n 本：<b>α ＝ 2 ÷（n + 1）</b></span>
+  </div>
+  <p>同じ α になるのは、ワイルダーの平滑 n 本と EMA 2n − 1 本です。ワイルダーの平滑 14 は EMA 27、ワイルダーの平滑 20 は EMA 39 と同じ計算です。EMA 14 の α は約 0.133 で、ワイルダーの平滑 14 の約 0.071 の 1.9 倍なので、別の値になります。</p>
 </section>
 
 <section aria-labelledby="h-period">

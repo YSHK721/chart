@@ -300,6 +300,97 @@ def atr20_diff():
     return r.median(), r.quantile(0.99)
 
 
+# ---------- 図: 単純平均とワイルダーの平滑の違い ----------
+def sma(tr: np.ndarray, n: int) -> np.ndarray:
+    """単純平均 n 本。"""
+    return pd.Series(tr).rolling(n).mean().to_numpy()
+
+
+def fig_impulse(n: int = 14, base: float = 100.0, spike: float = 1500.0):
+    """計算例: 値幅 base が続く中に spike の足が 1 本入ったときの、2 つの平均の動き。"""
+    lead, after = 60, 45
+    tr = np.r_[np.full(lead, base), spike, np.full(after, base)]
+    a, w = sma(tr, n)[lead - 4:], wilder(tr, n)[lead - 4:]
+    X0, X1, Y0, Y1 = 50, 620, 24, 210
+    top = max(np.nanmax(a), np.nanmax(w)) * 1.15
+    sx = lambda j: X0 + j / (len(a) - 1) * (X1 - X0)
+    sy = lambda v: Y1 - v / top * (Y1 - Y0)
+    parts = []
+    for v in (0, 100, 200):
+        parts.append(f'<line x1="{X0}" x2="{X1}" y1="{sy(v):.1f}" y2="{sy(v):.1f}" class="grid"/>')
+        parts.append(f'<text x="{X0 - 6}" y="{sy(v) + 4:.1f}" text-anchor="end" class="tk">{v}</text>')
+    step = [f"{sx(0):.1f},{sy(a[0]):.1f}"]
+    for j in range(1, len(a)):
+        step += [f"{sx(j):.1f},{sy(a[j - 1]):.1f}", f"{sx(j):.1f},{sy(a[j]):.1f}"]
+    parts.append('<path d="M' + " L".join(step) + '" class="l-s20"/>')
+    parts.append('<path d="M' + " L".join(f"{sx(j):.1f},{sy(v):.1f}" for j, v in enumerate(w)) + '" class="l-w14"/>')
+    parts.append(f'<line x1="{sx(4):.1f}" x2="{sx(4):.1f}" y1="{Y0}" y2="{Y1}" class="guide"/>')
+    parts.append(f'<line x1="{sx(4 + n):.1f}" x2="{sx(4 + n):.1f}" y1="{Y0}" y2="{Y1}" class="guide"/>')
+    parts.append(f'<text x="{sx(4) + 5:.1f}" y="{Y0 + 2}" class="lb">{spike:,.0f} の足が入る</text>')
+    parts.append(f'<text x="{sx(4 + n) + 5:.1f}" y="{Y0 + 2}" class="lb">{n} 本後に抜ける</text>')
+    parts.append(f'<text x="{sx(4 + n) + 5:.1f}" y="{sy(a[4 + n]) + 18:.1f}" class="lb acc">単純平均：一度に下がる</text>')
+    parts.append(f'<text x="{sx(4 + n + 4):.1f}" y="{sy(w[4 + n + 4]) - 10:.1f}" class="lb blue">ワイルダーの平滑：少しずつ下がる</text>')
+    for k in (0, 10, 20, 30, 40):
+        parts.append(f'<text x="{sx(4 + k):.1f}" y="{Y1 + 16}" text-anchor="middle" class="tk">{k} 本後</text>')
+    return f'<svg viewBox="0 0 640 236" role="img" aria-label="大きな足が 1 本入ったときの動き。単純平均は {n} 本後に一度に下がり、ワイルダーの平滑は少しずつ下がる">' + "".join(parts) + "</svg>"
+
+
+def fig_exit(n: int = 20):
+    """実例: 単純平均 n 本が 1 本で最も大きく下がった日の前後（MT5 日足）。"""
+    d = load(MT5, "1D")
+    tr = true_range(d)
+    a, w = sma(tr, n), wilder(tr, n)
+    i = int(np.nanargmin(np.diff(a))) + 1
+    lo, hi_i = i - n - 12, min(i + 15, len(tr) - 1)
+    idx = np.arange(lo, hi_i + 1)
+    X0, X1, Y0, Y1 = 60, 620, 26, 230
+    top = tr[idx].max() * 1.05
+    sx = lambda j: X0 + (j - lo) / (hi_i - lo) * (X1 - X0)
+    sy = lambda v: Y1 - v / top * (Y1 - Y0)
+    parts = []
+    for v in np.linspace(0, top, 5)[:-1]:
+        parts.append(f'<line x1="{X0}" x2="{X1}" y1="{sy(v):.1f}" y2="{sy(v):.1f}" class="grid"/>')
+        parts.append(f'<text x="{X0 - 6}" y="{sy(v) + 4:.1f}" text-anchor="end" class="tk">{v:,.0f}</text>')
+    bw = (X1 - X0) / len(idx) * 0.7
+    for j in idx:
+        parts.append(f'<rect x="{sx(j) - bw / 2:.1f}" y="{sy(tr[j]):.1f}" width="{bw:.1f}" height="{Y1 - sy(tr[j]):.1f}" class="trbar"/>')
+    for arr, cls in ((w, "l-w14"), (a, "l-s20")):
+        parts.append('<path d="M' + " L".join(f"{sx(j):.1f},{sy(arr[j]):.1f}" for j in idx) + f'" class="{cls}"/>')
+    out, gone = i - n, i
+    for j in (out, gone):
+        parts.append(f'<line x1="{sx(j):.1f}" x2="{sx(j):.1f}" y1="{Y0}" y2="{Y1}" class="guide"/>')
+    parts.append(f'<text x="{sx(out) + 8:.1f}" y="{Y0 + 2}" class="lb">{d.date[out]:%Y-%m-%d}：値幅 {tr[out]:,.0f}</text>')
+    parts.append(f'<text x="{sx(gone) + 5:.1f}" y="{Y0 + 2}" class="lb">{d.date[gone]:%Y-%m-%d}：{n} 本前が抜ける</text>')
+    for j in (lo, out, gone, hi_i):
+        parts.append(f'<text x="{sx(j):.1f}" y="{Y1 + 16}" text-anchor="middle" class="tk">{d.date[j]:%m-%d}</text>')
+    parts.append(f'<text x="{X0}" y="12" class="tk">ポイント（円）</text>')
+    svg = f'<svg viewBox="0 0 640 256" role="img" aria-label="大きな足が抜けた日に単純平均 {n} だけが急に下がる実例">' + "".join(parts) + "</svg>"
+    return svg, dict(n=n, date=f"{d.date[gone]:%Y-%m-%d}", tr=tr[gone], out_date=f"{d.date[out]:%Y-%m-%d}", out_tr=tr[out],
+                     a0=a[i - 1], a1=a[i], a_pct=(a[i] / a[i - 1] - 1) * 100,
+                     w0=w[i - 1], w1=w[i], w_pct=(w[i] / w[i - 1] - 1) * 100)
+
+
+SMOOTHERS = (("単純平均", sma), ("ワイルダーの平滑", wilder))
+
+
+def smooth_rows(tr: np.ndarray, ns=(14, 20), smoothers=SMOOTHERS, start: int = 100):
+    """方法と母数ごとに、次の 1 本の外れ（period_stats と同じ定義）と、1 本ごとの変化率の平均（動き）を返す。
+
+    smoothers: 平均の計算（観測の境界・計算量検定の注入点）。
+    """
+    f = np.concatenate([tr[1:], [np.nan]])
+    rows = []
+    for n in ns:
+        for name, avg in smoothers:
+            a = avg(tr, n)
+            ok = np.isfinite(a) & np.isfinite(f) & (np.arange(len(a)) >= start)
+            k = np.median(f[ok] / a[ok])
+            err = np.mean(np.abs(f[ok] - k * a[ok])) / np.mean(f[ok]) * 100
+            move = np.mean(np.abs(a[start + 1:] / a[start:-1] - 1)) * 100
+            rows.append((name, n, err, move))
+    return rows
+
+
 PERIODS_N = (3, 5, 10, 14, 20, 40, 100)
 
 
@@ -349,6 +440,12 @@ def main(out_path: str):
         f"<tr><td>{label}</td>" + "".join(
             f'<td class="n{" best" if e == min(errs) else ""}">{e:.1f}%</td>' for e in errs) + "</tr>"
         for label, errs in prow)
+    exit_svg, ex = fig_exit()
+    sr = {tf: smooth_rows(true_range(load(MT5, tf))) for tf in ("1h", "1D")}
+    smooth_tbl = "".join(
+        f'<tr><td>{a[0]} {a[1]}</td><td class="n">{a[2]:.1f}%</td><td class="n">{a[3]:.1f}%</td>'
+        f'<td class="n">{b[2]:.1f}%</td><td class="n">{b[3]:.1f}%</td></tr>'
+        for a, b in zip(sr["1h"], sr["1D"]))
     bs = break_stats()
     a20_med, a20_p99 = atr20_diff()
     hrows, herr, hq, hstart = hold_stats()
@@ -384,6 +481,11 @@ def main(out_path: str):
             .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
             .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
+            .replace("{{FIG_IMPULSE}}", fig_impulse()).replace("{{FIG_EXIT}}", exit_svg).replace("{{SMOOTH_ROWS}}", smooth_tbl)
+            .replace("{{EX_DATE}}", ex["date"]).replace("{{EX_TR}}", f"{ex['tr']:,.0f}")
+            .replace("{{EX_OUT_DATE}}", ex["out_date"]).replace("{{EX_OUT_TR}}", f"{ex['out_tr']:,.0f}")
+            .replace("{{EX_A0}}", f"{ex['a0']:,.0f}").replace("{{EX_A1}}", f"{ex['a1']:,.0f}").replace("{{EX_A_PCT}}", f"{-ex['a_pct']:.1f}")
+            .replace("{{EX_W0}}", f"{ex['w0']:,.0f}").replace("{{EX_W1}}", f"{ex['w1']:,.0f}").replace("{{EX_W_PCT}}", f"{-ex['w_pct']:.1f}")
             .replace("{{BRK_ROWS}}", brk_rows).replace("{{BRK_PLAIN}}", f"{bs[1]['pct']:.1f}")
             .replace("{{A20_MED}}", f"{a20_med:.1f}").replace("{{A20_P99}}", f"{a20_p99:.1f}")
             .replace("{{BRK_BARS}}", f"{bs[0]['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs[0]['share_gap']:.0f}")
