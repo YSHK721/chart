@@ -75,21 +75,44 @@ def test_figures_show_only_the_passed_pairs_in_the_gain_chart():
     assert "1 時間足 n=50" in svg and "日足 n=20" not in svg
 
 
+def _attrib_row(n, hours, base):
+    row = dict(n=n, hours=hours, corr=base + 0.5, b_p_is=0.04, b_p_oos=base, l_p_oos=0.0002,
+               coef_is_alone=-base, coef_is_with_long=-base / 2, coef_oos_alone=-base / 4, coef_oos_with_long=-base / 8)
+    for i, k in enumerate(("gain_beta", "gain_long", "gain_incr", "long_minus_beta")):
+        row.update({k: base + i, f"{k}_lo": base + i - 1, f"{k}_hi": base + i + 1})
+    return row
+
+
 def _attrib_frame():
-    return pd.DataFrame([dict(n=n, corr=0.7, gain_beta=0.02, gain_long=0.015, gain_beta_lo=-0.04, gain_beta_hi=0.08,
-                              gain_long_lo=-0.06, gain_long_hi=0.09, long_minus_beta_lo=-0.05, long_minus_beta_hi=0.03,
-                              coef_beta_alone=-0.021, coef_beta_with_long=-0.011, b_p_is=0.04, b_p_oos=0.007) for n in (50, 100)])
+    return pd.DataFrame([_attrib_row(50, "oos_hours", 0.1), _attrib_row(100, "oos_hours", 0.2),
+                         _attrib_row(50, "is_hours", 0.3), _attrib_row(100, "is_hours", 0.4)])
 
 
 def test_fig_attrib_draws_each_interval_around_zero():
     svg = P.fig_attrib(_attrib_frame())
     assert "50 本の平均を足す" in svg and "100 本の平均を足す" in svg
-    assert svg.count('class="whisker') == 4 and "改善なし 0" in svg
+    assert svg.count('class="whisker') == 12 and "改善なし 0" in svg
+    assert "OOS の係数" in svg and "IS の係数" in svg
 
 
-def test_attrib_values_format_the_stated_numbers():
+def test_attrib_values_keep_each_condition_apart():
     v = P.attrib_values(_attrib_frame())
-    assert v["A_BETA_50"] == "-0.04〜+0.08" and v["COEF_100"] == "-0.021 → -0.011" and v["BP_OOS_50"] == "0.007"
+    assert v["BETA_O50"] == "-0.90〜+1.10" and v["BETA_O100"] == "-0.80〜+1.20"
+    assert v["BETA_I50"] == "-0.70〜+1.30" and v["BETA_I100"] == "-0.60〜+1.40"
+    assert v["INCR_O50"] == "+1.10〜+3.10" and v["LONG_O50"] == "+0.10〜+2.10" and v["DIFF_O50"] == "+2.10〜+4.10"
+    assert v["BP_I100"] == "0.400" and v["LP_O50"] == "0.001 未満"
+    assert v["COEF_IS_100"] == "-0.200 → -0.100" and v["COEF_I50"] == "-0.075 → -0.037"
+    assert v["CORR_100"] == "0.70" and v["BP_IS_50"] == "0.040"
+
+
+def test_grid_methods_name_the_n_they_compute():
+    tr = _tr(300)
+    methods = dict(P.GRID_METHODS)
+    assert np.array_equal(methods["単純平均 14"](tr), P.sma(tr, 14), equal_nan=True)
+    assert np.array_equal(methods["ワイルダーの平滑 50"](tr), P.wilder(tr, 50), equal_nan=True)
+    assert np.array_equal(methods["btlm_trail の計算 25"](tr)[P.TREND_START:], P.ols_end(tr, 25)[P.TREND_START:])
+    names = {label: {k.rsplit(" ", 1)[1] for k in methods if k.startswith(label)} for label in ("単純平均", "ワイルダーの平滑", P.OLS_NAME)}
+    assert names["単純平均"] == names["ワイルダーの平滑"] == names[P.OLS_NAME] == {str(n) for n in P.GRID_NS}
 
 
 class AvgSpy:
@@ -121,7 +144,7 @@ def test_issued_averages_do_not_grow_with_input_length():
 def _follow_issued_and_used(length):
     spy = AvgSpy()
     rows = P.follow_rows([_tr(length)], methods=(("単純平均", lambda t: spy(t, 14)),))
-    return spy.issued, sum(1 + 2 for _ in rows)  # 1 行の値は 相関 1 回と追いつく本数 2 回から作る
+    return spy.issued, sum(2 + len(corr) for _, _, _, corr in rows)  # 出力の値（追いつく本数 2 つと相関）を数える
 
 
 def test_follow_rows_issues_only_what_reaches_the_output():

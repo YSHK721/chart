@@ -420,7 +420,7 @@ def follow_rows(trs, methods=FOLLOW_METHODS, start: int = 100):
 TREND_START = 200
 LAG_RANGE = (-20, 80)
 CENTERS = (41, 21)
-GRID_NS = (5, 8, 10, 14, 20, 25, 30, 50, 100, 200)
+GRID_NS = (3, 4, 5, 6, 8, 10, 14, 20, 25, 30, 50, 100, 200)
 
 
 def ols_end(tr: np.ndarray, n: int, first: int = 0, window=window_end_scalar) -> np.ndarray:
@@ -521,8 +521,8 @@ def fig_tr_lines(start: str = "2024-07-01", end: str = "2024-10-15"):
     """荒れた時期の真の値幅と、ワイルダーの平滑 14・btlm_trail の計算 25（MT5 日足）。"""
     d = load(MT5, "1D")
     tr = true_range(d)
-    w, o = wilder(tr, 14), ols_end(tr, 25)
     idx = np.flatnonzero((d.date >= start) & (d.date < end))
+    w, o = wilder(tr, 14), ols_end(tr, 25, int(idx[0]))
     X0, X1, Y0, Y1 = 60, 620, 16, 230
     top = tr[idx].max() * 1.05
     sx = lambda j: X0 + (j - idx[0]) / (idx[-1] - idx[0]) * (X1 - X0)
@@ -541,39 +541,55 @@ def fig_tr_lines(start: str = "2024-07-01", end: str = "2024-10-15"):
     return f'<svg viewBox="0 0 640 252" role="img" aria-label="荒れた時期の真の値幅と 2 本の線。btlm_trail の計算のほうが大きく上下する">' + "".join(parts) + "</svg>"
 
 
+HOURS_LABEL = {"oos_hours": "OOS の係数", "is_hours": "IS の係数"}
+
+
 def fig_attrib(df: pd.DataFrame):
-    """1 時間足で、ワイルダーの平滑 14 に足すものごとの外れの改善と週単位の 95% の幅（OOS）。"""
-    X0, X1 = 170, 600
-    lo = min(df.gain_beta_lo.min(), df.gain_long_lo.min()) * 1.1
-    hi = max(df.gain_beta_hi.max(), df.gain_long_hi.max()) * 1.1
+    """1 時間足で、足すものごとの外れの改善と週単位の 95% の幅（OOS）。時間帯の補正の 2 通りを並べる。"""
+    X0, X1 = 200, 590
+    keys = ("gain_beta", "gain_long", "gain_incr")
+    lo = min(df[f"{k}_lo"].min() for k in keys) * 1.1
+    hi = max(df[f"{k}_hi"].max() for k in keys) * 1.1
     sx = lambda v: X0 + (v - lo) / (hi - lo) * (X1 - X0)
     parts = []
     y = 34
     for _, r in df.iterrows():
-        parts.append(f'<text x="{X0 - 150}" y="{y + 18}" class="lb strong">n = {int(r.n)}</text>')
-        for label, v, a, b, cls in (("β を足す", r.gain_beta, r.gain_beta_lo, r.gain_beta_hi, "blue-m"),
-                                    (f"{int(r.n)} 本の平均を足す", r.gain_long, r.gain_long_lo, r.gain_long_hi, "amber-m")):
+        parts.append(f'<text x="14" y="{y + 26}" class="lb strong">n = {int(r.n)}</text>')
+        parts.append(f'<text x="14" y="{y + 42}" class="tk">{HOURS_LABEL[r.hours]}</text>')
+        for label, key, cls in (("β を足す", "gain_beta", "blue-m"), (f"{int(r.n)} 本の平均を足す", "gain_long", "amber-m"),
+                                ("平均にさらに β を足す", "gain_incr", "violet-m")):
             parts.append(f'<text x="{X0 - 10}" y="{y + 4}" text-anchor="end" class="tk">{label}</text>')
-            parts.append(f'<line x1="{sx(a):.1f}" x2="{sx(b):.1f}" y1="{y}" y2="{y}" class="whisker {cls}"/>')
-            parts.append(f'<circle cx="{sx(v):.1f}" cy="{y}" r="5" class="{cls}"/>')
-            parts.append(f'<text x="{sx(b) + 6:.1f}" y="{y + 4}" class="tk">{v:+.3f}</text>')
-            y += 26
-        y += 12
+            parts.append(f'<line x1="{sx(r[key + "_lo"]):.1f}" x2="{sx(r[key + "_hi"]):.1f}" y1="{y}" y2="{y}" class="whisker {cls}"/>')
+            parts.append(f'<circle cx="{sx(r[key]):.1f}" cy="{y}" r="5" class="{cls}"/>')
+            parts.append(f'<text x="{sx(r[key + "_hi"]) + 6:.1f}" y="{y + 4}" class="tk">{r[key]:+.3f}</text>')
+            y += 22
+        y += 14
     parts.insert(0, f'<line x1="{sx(0):.1f}" x2="{sx(0):.1f}" y1="20" y2="{y - 18}" class="guide"/>')
     parts.append(f'<text x="{sx(0):.1f}" y="14" text-anchor="middle" class="tk">改善なし 0</text>')
-    return f'<svg viewBox="0 0 640 {y}" role="img" aria-label="β を足しても長い平均を足しても、改善の幅は 0 を含む">' + "".join(parts) + "</svg>"
+    return f'<svg viewBox="0 0 640 {y}" role="img" aria-label="平均にさらに β を足した改善の幅は、どの条件でも 0 を含む">' + "".join(parts) + "</svg>"
+
+
+def p_text(p: float) -> str:
+    """p の表示。"""
+    return "0.001 未満" if p < 0.001 else f"{p:.3f}"
 
 
 def attrib_values(df: pd.DataFrame) -> dict:
     """§4 の文に入れる値（テンプレートの差し込み名 → 文字）。"""
-    a, b = df[df.n == 50].iloc[0], df[df.n == 100].iloc[0]
     rng = lambda lo, hi: f"{lo:+.2f}〜{hi:+.2f}"
-    return {"CORR_50": f"{a['corr']:.2f}", "CORR_100": f"{b['corr']:.2f}",
-            "A_BETA_50": rng(a.gain_beta_lo, a.gain_beta_hi), "A_BETA_100": rng(b.gain_beta_lo, b.gain_beta_hi),
-            "A_LONG_50": rng(a.gain_long_lo, a.gain_long_hi), "A_LONG_100": rng(b.gain_long_lo, b.gain_long_hi),
-            "A_DIFF_50": rng(a.long_minus_beta_lo, a.long_minus_beta_hi), "A_DIFF_100": rng(b.long_minus_beta_lo, b.long_minus_beta_hi),
-            "COEF_50": f"{a.coef_beta_alone:.3f} → {a.coef_beta_with_long:.3f}", "COEF_100": f"{b.coef_beta_alone:.3f} → {b.coef_beta_with_long:.3f}",
-            "BP_IS_50": f"{a.b_p_is:.3f}", "BP_IS_100": f"{b.b_p_is:.3f}", "BP_OOS_50": f"{a.b_p_oos:.3f}", "BP_OOS_100": f"{b.b_p_oos:.3f}"}
+    out = {}
+    for tag, hours in (("O", "oos_hours"), ("I", "is_hours")):
+        for n in (50, 100):
+            r = df[(df.n == n) & (df.hours == hours)].iloc[0]
+            k = f"{tag}{n}"
+            out.update({f"INCR_{k}": rng(r.gain_incr_lo, r.gain_incr_hi), f"BETA_{k}": rng(r.gain_beta_lo, r.gain_beta_hi),
+                        f"LONG_{k}": rng(r.gain_long_lo, r.gain_long_hi), f"DIFF_{k}": rng(r.long_minus_beta_lo, r.long_minus_beta_hi),
+                        f"BP_{k}": p_text(r.b_p_oos), f"LP_{k}": p_text(r.l_p_oos),
+                        f"COEF_{k}": f"{r.coef_oos_alone:.3f} → {r.coef_oos_with_long:.3f}"})
+            if tag == "O":
+                out.update({f"CORR_{n}": f"{r['corr']:.2f}", f"COEF_IS_{n}": f"{r.coef_is_alone:.3f} → {r.coef_is_with_long:.3f}",
+                            f"BP_IS_{n}": p_text(r.b_p_is)})
+    return out
 
 
 def beta_rows(df: pd.DataFrame):
@@ -712,7 +728,7 @@ def main(out_path: str):
         for r in beta)
     passed = [r for r in beta if r["d_pass"]]
     attrib = pd.read_csv(BETA_ATTRIB)
-    weights = {name: avg(np.r_[np.full(300, 1000.0), 1100.0])[-1] - 1000.0 for name, avg in (("sma", lambda t: sma(t, 100)), ("ols", lambda t: ols_end(t, 100)))}
+    weights = {name: avg(np.r_[np.full(300, 1000.0), 1100.0])[-1] - 1000.0 for name, avg in (("sma", lambda t: sma(t, 100)), ("ols", lambda t: ols_end(t, 100, len(t) - 1)))}
     bs = break_stats()
     a20_med, a20_p99 = atr20_diff()
     hrows, herr, hq, hstart = hold_stats()

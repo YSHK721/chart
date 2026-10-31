@@ -24,17 +24,20 @@ MIN_GAIN = 0.5  # §1.6 の実用基準（ポイント）
 PERIODS = {"IS": (DUKA, "2014-01-01", "2020-05-01"), "OOS": (MT5, "2020-05-01", "2100-01-01")}
 
 
-def series(path: str, tf: str, start: str, end: str, ns=NS, with_long: bool = False) -> dict:
-    """期間の終わりまでの足で、評価する足（start 以降）の量を作る。"""
+def series(path: str, tf: str, start: str, end: str, ns=NS, with_long: bool = False, hours=None) -> dict:
+    """期間の終わりまでの足で、評価する足（start 以降）の量を作る。hours を渡すと時間帯の係数にそれを使う。"""
     d = load(path, tf)
     d = d[d.date < end].reset_index(drop=True)
     x = B.range_pct(d, true_range)[1:]
     date = d.date.iloc[1:].reset_index(drop=True)
     first = int((date >= start).to_numpy().argmax())
+    factors = None
     if tf == "1h":
-        x = B.remove_hours(x, date.dt.hour.to_numpy(), first, hour_factor)
+        hour = date.dt.hour.to_numpy()
+        factors = hour_factor(x[first:], hour[first:]) if hours is None else hours
+        x = x / factors[hour]
     out = B.measures(x, first, ns)
-    out.update(w=wilder(x, 14)[first:], bars=len(x) - first)
+    out.update(w=wilder(x, 14)[first:], bars=len(x) - first, hours=factors)
     if with_long:
         out["week"] = pd.factorize(date.iloc[first:].dt.to_period("W"))[0]
         for n in ns:

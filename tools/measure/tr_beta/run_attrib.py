@@ -40,34 +40,38 @@ def partial_residuals(s: dict, n: int, term: str, y_coef, v_coef) -> tuple[np.nd
     return r, e
 
 
-def partial_test(is_: dict, oos: dict, n: int, term: str, draw) -> dict:
-    """term の偏回帰の傾きを IS・OOS で検定する。除く項の係数は IS で決める。draw は (本数) → ずらし幅。"""
+def partial_test(is_: dict, oos: dict, n: int, term: str, margin: int = RN.MARGIN, solve=np.linalg.lstsq) -> dict:
+    """term の偏回帰の傾きを IS・OOS で全ずらし検定する。除く項の係数は IS で決める。"""
     ok = usable(is_, n)
     others = OTHERS[term]
-    y_coef = B.fit_log_model(is_, n, others, ok)
-    v_coef = B.fit_linear(B.TERMS[term](is_, n), is_, n, others, ok)
+    y_coef = B.fit_log_model(is_, n, others, ok, solve)
+    v_coef = B.fit_linear(B.TERMS[term](is_, n), is_, n, others, ok, solve)
     out = {}
     for label, s in (("is", is_), ("oos", oos)):
         r, e = partial_residuals(s, n, term, y_coef, v_coef)
-        slope, _, p = B.circular_test(r, e, B.partial_slope, draw(len(r)))
+        slope, _, p = B.exact_partial_test(r, e, margin)
         out.update({f"{term}_slope_{label}": slope, f"{term}_p_{label}": p})
     return out
 
 
-def attrib_row(is_: dict, oos: dict, n: int, rng) -> dict:
+def attrib_row(is_: dict, oos: dict, n: int, rng, count: int = RN.COUNT, margin: int = RN.MARGIN, label: str = "oos_hours") -> dict:
+    """1 行分の値。n の見積もりの比較・係数の縮み・偏回帰の p・週単位の幅。"""
     r = compare_models(is_, oos, n)
-    row = dict(n=n, corr=r["corr"], coef_beta_alone=r["coefs"]["beta"][2], coef_beta_with_long=r["coefs"]["both"][3],
+    ok_oos = r["ok"]
+    row = dict(n=n, hours=label, corr=r["corr"],
+               coef_is_alone=r["coefs"]["beta"][2], coef_is_with_long=r["coefs"]["both"][3],
+               coef_oos_alone=B.fit_log_model(oos, n, MODELS["beta"], ok_oos)[2],
+               coef_oos_with_long=B.fit_log_model(oos, n, MODELS["both"], ok_oos)[3],
                **{f"gain_{k}": v for k, v in r["gain"].items()})
-    draw = lambda m: B.draw_shifts(m, RN.COUNT, RN.MARGIN, rng)
-    row.update(partial_test(is_, oos, n, "b", draw))
-    row.update(partial_test(is_, oos, n, "l", draw))
-    ok = r["ok"]
-    y, week, base = oos["y"][ok], oos["week"][ok], r["preds"]["w"][ok]
-    for name in ("beta", "long"):
-        lo, hi = B.gain_interval(y, base, r["preds"][name][ok], week, RN.COUNT, rng)
-        row.update({f"gain_{name}_lo": lo, f"gain_{name}_hi": hi})
-    lo, hi = B.gain_interval(y, r["preds"]["beta"][ok], r["preds"]["long"][ok], week, RN.COUNT, rng)
-    row.update(long_minus_beta_lo=lo, long_minus_beta_hi=hi)
+    row["gain_incr"] = r["gain"]["both"] - r["gain"]["long"]
+    row.update(partial_test(is_, oos, n, "b", margin))
+    row.update(partial_test(is_, oos, n, "l", margin))
+    y, week = oos["y"][ok_oos], oos["week"][ok_oos]
+    pred = {k: v[ok_oos] for k, v in r["preds"].items()}
+    pairs = {"gain_beta": ("w", "beta"), "gain_long": ("w", "long"), "long_minus_beta": ("beta", "long"), "gain_incr": ("long", "both")}
+    for name, (base, new) in pairs.items():
+        lo, hi = B.gain_interval(y, pred[base], pred[new], week, count, rng)
+        row.update({f"{name}_lo": lo, f"{name}_hi": hi})
     return row
 
 
@@ -75,7 +79,9 @@ def main():
     rng = np.random.default_rng(RN.SEED)
     is_ = RN.series(RN.PERIODS["IS"][0], "1h", *RN.PERIODS["IS"][1:], ns=NS, with_long=True)
     oos = RN.series(RN.PERIODS["OOS"][0], "1h", *RN.PERIODS["OOS"][1:], ns=NS, with_long=True)
-    df = pd.DataFrame([attrib_row(is_, oos, n, rng) for n in NS])
+    oos_is_hours = RN.series(RN.PERIODS["OOS"][0], "1h", *RN.PERIODS["OOS"][1:], ns=NS, with_long=True, hours=is_["hours"])
+    rows = [attrib_row(is_, oos, n, rng) for n in NS] + [attrib_row(is_, oos_is_hours, n, rng, label="is_hours") for n in NS]
+    df = pd.DataFrame(rows)
     df.to_csv(RN.OUT / "attrib.csv", index=False)
     print(df.round(4).T.to_string())
 

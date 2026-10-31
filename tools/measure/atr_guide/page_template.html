@@ -75,7 +75,7 @@ svg .l-sq { fill: none; stroke: var(--acc); stroke-width: 1.8; stroke-dasharray:
 svg .l-lin { fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 2 3; }
 svg .l-real { fill: none; stroke: var(--blue); stroke-width: 2.2; }
 svg .m-real { fill: var(--blue); }
-svg .blue-m { fill: var(--blue); stroke: var(--blue); } svg .amber-m { fill: var(--amber); stroke: var(--amber); } svg .whisker { stroke-width: 2; }
+svg .violet-m { fill: var(--violet); stroke: var(--violet); } svg .blue-m { fill: var(--blue); stroke: var(--blue); } svg .amber-m { fill: var(--amber); stroke: var(--amber); } svg .whisker { stroke-width: 2; }
 svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
 </style>
 
@@ -210,7 +210,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <ul>
     <li>5〜40 の範囲では差が 1〜3%ポイントしかなく、14 と 20 の差は 0〜1%ポイントです。極端に短い（3）か長い（100）ときだけ悪くなります。</li>
     <li>先を長く見積もるほど、長めの母数が少し有利です（日足の次の 1 日なら 5、次の 5 日なら 20 前後）。</li>
-    <li>1 時間足では 3〜5 が明らかに悪くなります。20 本はおよそ 1 日分で、時間帯による値幅の違いがならされるためと考えられます（推論）。</li>
+    <li>1 時間足の次の 5 本では 3〜5 が明らかに悪くなります。20 本はおよそ 1 日分で、時間帯による値幅の違いがならされるためと考えられます（推論）。</li>
     <li>一番良い母数は期間によって入れ替わります（日足の次の 5 日は、MT5 では 20、Dukascopy 2014〜2020 では 10）。特定の値にこだわる理由はありません。</li>
   </ul>
 </section>
@@ -235,12 +235,12 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <figure class="figure"><figcaption>荒れた時期の 2 本の線（MT5 日足）</figcaption>{{FIG_TR_LINES}}
     <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 14</span><span><i style="background:var(--acc);height:3px"></i>btlm_trail の計算 25</span></div></figure>
   <p>同じ 25 本なら遅れは減りますが、動きは {{MOVE_RATIO}} 倍です。真の値幅は 1 本ごとに大きくぶれるので、最新の足への強い反応はそのままぶれになります。動きの近い btlm_trail の計算 100 と単純平均 25 を比べると、遅れの優位もありません。</p>
-  <p>本数を変えて、3 つの方法を同じ本数（5〜200 本の 10 通り）で比べました。</p>
+  <p>本数を変えて、3 つの方法を同じ本数（3〜200 本の 13 通り）で比べました。</p>
   <div class="tbl"><table>
     <thead><tr><th>系列</th><th>次の 1 本の外れが最小</th><th>次の 20 本の平均の外れが最小</th><th>btlm_trail の計算の最小（次の 1 本）</th><th>同（次の 20 本）</th></tr></thead>
     <tbody>{{BEST_ROWS}}</tbody>
   </table></div>
-  <p>btlm_trail の計算が最小になった回数は、8 回中 {{OLS_WINS}} 回です。ワイルダーの平滑の中で最適な本数は見積もり先で変わり、次の 1 本は短いほど外れが小さく、次の 20 本の平均は 14〜30 本の間で外れが小さくなります（最小の本数は系列で変わります）。次の 1 本で最小の 5 本は比べた範囲の下端なので、さらに短い本数のほうが小さい可能性があります。差の有意性は検定していません。</p>
+  <p>btlm_trail の計算が最小になった回数は、8 回中 {{OLS_WINS}} 回です。ワイルダーの平滑の中で最適な本数は見積もり先で変わり、次の 1 本は 3〜6 本の短い本数で、次の 20 本の平均は 14〜30 本で外れが小さくなります。差の有意性は検定していません。</p>
   <h3 class="h3">傾き β で値幅の増減を当てられるか</h3>
   <p>線には無い β が役に立つかを、実行前に手順と基準を書き出して検定しました（事前登録）。Dukascopy の 2014-01〜2020-04（IS・選ぶ期間）で通過した組だけを、MT5 の 2020-05 以降（OOS・確かめる期間）で確かめます。偶然との比較には円環ずらしを使います。</p>
   <div class="formula">
@@ -261,16 +261,18 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <p>水準を除いても情報が残ったのは 1 時間足の n = 50・100 で、β が正のほうが次の 20 本は {{SMALL_LIST}}% 小さくなりました。ただし見積もりの外れの改善は {{GAIN_LIST}}%ポイントで、基準の 0.5%ポイントに届きません。β を足しても、見積もりは実用的には良くなりません。</p>
   <h3 class="h3">わずかな改善も btlm_trail の改善とは説明できない</h3>
   <p>同じ改善が β の計算無しでも出るかを、検定の後に確かめました（事前登録の外で、多重比較の補正はしていません）。ワイルダーの平滑 14 に、β の代わりに n 本の単純平均を足して比べます。ここではワイルダーの平滑 14 の係数も決め直すので、上の {{GAIN_LIST}}%ポイントとは値が違います。</p>
-  <figure class="figure"><figcaption>ワイルダーの平滑 14 に足すものごとの、外れの改善（%ポイント・OOS・1 時間足）</figcaption>{{FIG_ATTRIB}}
-    <div class="legend"><span><i style="background:var(--blue);border-radius:50%"></i>β を足す</span><span><i style="background:var(--amber);border-radius:50%"></i>n 本の平均を足す</span></div>
-    <p class="cap">横線は週を単位に再標本した 95% の幅です。OOS の時間帯の補正には OOS 全体の中央値を使っています。</p></figure>
+  <p>時間帯の補正は 2 通りで測りました。OOS の係数は OOS 全期間の中央値で、先のデータを含みます。IS の係数は先のデータを含みませんが、データの業者が違います。</p>
+  <figure class="figure"><figcaption>足すものごとの、外れの改善（%ポイント・OOS・1 時間足）</figcaption>{{FIG_ATTRIB}}
+    <div class="legend"><span><i style="background:var(--blue);border-radius:50%"></i>β を足す</span><span><i style="background:var(--amber);border-radius:50%"></i>n 本の平均を足す</span><span><i style="background:var(--violet);border-radius:50%"></i>平均にさらに β を足す</span></div>
+    <p class="cap">横線は週を単位に再標本した 95% の幅です。</p></figure>
   <ul>
-    <li><b>改善そのものが 0 と区別できません。</b>95% の幅は β で {{A_BETA_50}}（n = 50）・{{A_BETA_100}}（n = 100）、平均で {{A_LONG_50}}・{{A_LONG_100}} で、どれも 0 を含みます。</li>
-    <li><b>平均を足しても同じ程度です。</b>平均と β の改善の差の 95% の幅は {{A_DIFF_50}}・{{A_DIFF_100}} で、0 を含みます。</li>
-    <li><b>β の効きは平均を足すと半分前後に縮みます。</b>β の係数は {{COEF_50}}（n = 50）・{{COEF_100}}（n = 100）です。β の符号は「ワイルダーの平滑 14 が n 本の平均より高いか」と重なっています（相関 {{CORR_50}}・{{CORR_100}}）。</li>
-    <li><b>ただし、β に情報が無いとも言えません。</b>ワイルダーの平滑 14 と平均を除いた β の係数の p は、IS で {{BP_IS_50}}・{{BP_IS_100}}、OOS で {{BP_OOS_50}}・{{BP_OOS_100}} です。</li>
+    <li><b>平均にさらに β を足した改善は、どの条件でも 0 と区別できません。</b>95% の幅は OOS の係数で {{INCR_O50}}（n = 50）・{{INCR_O100}}（n = 100）、IS の係数で {{INCR_I50}}・{{INCR_I100}} です。</li>
+    <li><b>β だけを足した改善も、0 と区別できません。</b>95% の幅は OOS の係数で {{BETA_O50}}・{{BETA_O100}}、IS の係数で {{BETA_I50}}・{{BETA_I100}} です。</li>
+    <li><b>平均を足した改善は、時間帯の補正で変わります。</b>95% の幅は OOS の係数で {{LONG_O50}}・{{LONG_O100}}（0 を含む）、IS の係数で {{LONG_I50}}・{{LONG_I100}}（0 を含まない）です。平均と β の差は OOS の係数で {{DIFF_O50}}・{{DIFF_O100}}、IS の係数で {{DIFF_I50}}・{{DIFF_I100}} です。</li>
+    <li><b>β の係数は、平均を足すと小さくなります。</b>単独 → 平均ありで、IS は {{COEF_IS_50}}・{{COEF_IS_100}}、OOS（OOS の係数）は {{COEF_O50}}・{{COEF_O100}}、OOS（IS の係数）は {{COEF_I50}}・{{COEF_I100}} です。β の符号は「ワイルダーの平滑 14 が n 本の平均より高いか」と重なっています（相関 {{CORR_50}}・{{CORR_100}}）。</li>
+    <li><b>β に残る情報は、時間帯の補正で変わります。</b>ワイルダーの平滑 14 と平均を除いた β の p は、OOS で OOS の係数なら {{BP_O50}}・{{BP_O100}}、IS の係数なら {{BP_I50}}・{{BP_I100}} です（IS では {{BP_IS_50}}・{{BP_IS_100}}）。平均の p は同じ順に {{LP_O50}}・{{LP_O100}}、{{LP_I50}}・{{LP_I100}} です。</li>
   </ul>
-  <p>この改善は大きさが 0 と区別できず、平均を足しても同じ程度に出るので、btlm_trail の改善とは説明できません。β に小さな情報が残る可能性はありますが、見積もりを良くする大きさではありません。</p>
+  <p>平均を入れたあとに β を足しても改善が増えるとは言えないので、この改善は btlm_trail の改善とは説明できません。β に小さな情報が残るかどうかは、時間帯の補正の取り方で変わります。</p>
 </section>
 
 <section aria-labelledby="h-hist">

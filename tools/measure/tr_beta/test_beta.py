@@ -64,19 +64,6 @@ def test_measures_at_series_start_has_no_warm_up():
     assert m[20][18] == 0 and m[20][19] == 1
 
 
-def test_remove_hours_decides_factors_in_the_period_and_aligns_each_hour():
-    x = np.array([99.0, 2.0, 6.0, 4.0, 12.0])
-    hour = np.array([1, 0, 1, 0, 1])
-    seen = []
-
-    def factor(ratio, h):
-        seen.append(list(ratio))
-        return np.array([2.0, 6.0])
-
-    assert list(B.remove_hours(x, hour, 1, factor)) == [16.5, 1.0, 1.0, 2.0, 2.0]
-    assert seen == [[2.0, 6.0, 4.0, 12.0]]
-
-
 def test_range_pct_divides_by_the_previous_close():
     d = pd.DataFrame({"close": [100.0, 200.0, 400.0]})
     out = B.range_pct(d, lambda _: np.array([1.0, 4.0, 2.0]))
@@ -354,14 +341,9 @@ def _partial_series(length, seed, beta_effect):
     return s
 
 
-def _draw(seed):
-    rng = rng_from_seed(seed)
-    return lambda m: B.draw_shifts(m, 299, 50, rng)
-
-
 def test_partial_test_finds_beta_only_when_beta_has_its_own_effect():
-    with_effect = ATTR.partial_test(_partial_series(1500, 1, 0.1), _partial_series(1500, 2, 0.1), 100, "b", _draw(3))
-    without = ATTR.partial_test(_partial_series(1500, 1, 0.0), _partial_series(1500, 2, 0.0), 100, "b", _draw(3))
+    with_effect = ATTR.partial_test(_partial_series(1500, 1, 0.1), _partial_series(1500, 2, 0.1), 100, "b", 50)
+    without = ATTR.partial_test(_partial_series(1500, 1, 0.0), _partial_series(1500, 2, 0.0), 100, "b", 50)
     assert with_effect["b_p_is"] < 0.05 and with_effect["b_p_oos"] < 0.05
     assert abs(with_effect["b_slope_oos"] - 0.1) < 0.03
     assert without["b_p_is"] > 0.05 and without["b_p_oos"] > 0.05
@@ -388,10 +370,54 @@ def test_partial_residuals_remove_the_other_terms_from_both_sides():
 def test_partial_test_decides_the_removed_terms_only_on_is():
     is_ = _partial_series(600, 1, 0.1)
     oos = _partial_series(600, 2, 0.1)
-    changed = dict(oos, y=oos["y"] * 3.0, w=oos["w"] * 2.0)
-    a = ATTR.partial_test(is_, oos, 100, "b", _draw(3))
-    b = ATTR.partial_test(is_, changed, 100, "b", _draw(3))
-    assert a["b_slope_is"] == b["b_slope_is"]
+    ok = ATTR.usable(is_, 100)
+    y_coef = B.fit_log_model(is_, 100, ("w", "l"), ok)
+    v_coef = B.fit_linear(is_[100], is_, 100, ("w", "l"), ok)
+    r, e = ATTR.partial_residuals(oos, 100, "b", y_coef, v_coef)
+    want = np.sum(r * e) / np.sum(r * r)
+    assert abs(ATTR.partial_test(is_, oos, 100, "b", 50)["b_slope_oos"] - want) < 1e-9
+
+
+def _brute_force(r, e, margin):
+    finite = np.isfinite(e)
+    vals = np.where(finite, e, 0.0)
+    ok = r != 0
+    obs = B.partial_slope(r, vals, finite & ok)
+    null = np.array([B.partial_slope(r, np.roll(vals, s), np.roll(finite, s) & ok) for s in range(margin, len(r) - margin + 1)])
+    return (obs, *B.two_sided_p(obs, null))
+
+
+def test_exact_partial_test_equals_counting_every_shift():
+    rng = rng_from_seed(7)
+    r = rng.normal(0, 1, 400)
+    r[::13] = 0.0
+    e = 0.2 * r + rng.normal(0, 1, 400)
+    e[::17] = np.nan
+    got = B.exact_partial_test(r, e, 50)
+    assert np.allclose(got, _brute_force(r, e, 50))
+
+
+class FftSpy:
+    """畳み込みの発行回数を数える Test Spy（注入点 rfft を通す）。"""
+
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, x):
+        self.issued += 1
+        return np.fft.rfft(x)
+
+
+def _fft_issued(length):
+    rng = rng_from_seed(8)
+    spy = FftSpy()
+    r = rng.normal(0, 1, length)
+    B.exact_partial_test(r, rng.normal(0, 1, length), 10, rfft=spy)
+    return spy.issued
+
+
+def test_exact_partial_test_issues_do_not_grow_with_input_length_or_margin():
+    assert _fft_issued(300) == _fft_issued(2400)
 
 
 def test_gain_interval_is_zero_for_identical_models_and_holds_a_constant_gain():
@@ -403,6 +429,71 @@ def test_gain_interval_is_zero_for_identical_models_and_holds_a_constant_gain():
     assert abs(lo - 25.0) < 1e-9 and abs(hi - 25.0) < 1e-9
 
 
+def test_gain_interval_divides_by_the_y_of_the_chosen_weeks():
+    rng = rng_from_seed(9)
+    week = np.repeat(np.arange(2), 10)
+    y = np.where(week == 0, 1.0, 3.0)
+    base = y + 1.0  # どの足も外れ 1
+    pred = y + 0.0  # 外れ 0
+    lo, hi = B.gain_interval(y, base, pred, week, 400, rng, level=1.0)
+    # 全部 0 週なら 1 ÷ 1、全部 1 週なら 1 ÷ 3（%ポイント）
+    assert abs(hi - 100.0) < 1e-9 and abs(lo - 100.0 / 3) < 1e-9
+
+
+def test_gain_interval_resamples_whole_weeks():
+    rng = rng_from_seed(10)
+    week = np.repeat(np.arange(4), 10)
+    y = np.ones(40)
+    # 週の中で良い足と悪い足が相殺する。週で再標本すれば幅は 0、足で再標本すると幅が出る
+    pred = np.where(np.arange(40) % 2 == 0, 1.0, 1.5)
+    base = np.full(40, 1.25)
+    lo, hi = B.gain_interval(y, base, pred, week, 200, rng)
+    assert abs(lo) < 1e-9 and abs(hi) < 1e-9
+
+
+def test_gain_interval_narrows_with_a_lower_level():
+    week = np.repeat(np.arange(20), 5)
+    y = np.ones(100)
+    pred = 1 + 0.5 * (week % 2)
+    base = np.full(100, 1.25)
+    wide = B.gain_interval(y, base, pred, week, 2000, rng_from_seed(11), level=0.95)
+    narrow = B.gain_interval(y, base, pred, week, 2000, rng_from_seed(11), level=0.5)
+    assert wide[1] - wide[0] > narrow[1] - narrow[0]
+
+
+def test_attrib_row_states_the_directions_of_each_difference():
+    is_ = dict(_partial_series(800, 1, 0.0), week=np.repeat(np.arange(80), 10))
+    oos = dict(_partial_series(800, 2, 0.0), week=np.repeat(np.arange(80), 10))
+    row = ATTR.attrib_row(is_, oos, 100, rng_from_seed(12), count=200, margin=50)
+    assert abs(row["gain_incr"] - (row["gain_both"] - row["gain_long"])) < 1e-12
+    assert row["gain_long"] > 0.5  # 長い平均だけに情報がある合成データ
+    assert row["long_minus_beta_lo"] > 0  # 長い平均の側から β を引いた向き
+    assert abs(row["coef_is_alone"]) < 0.05 and abs(row["coef_is_with_long"]) < 0.05
+
+
+def test_attrib_row_reads_the_beta_coefficient_of_each_model():
+    is_ = dict(_partial_series(800, 1, 0.3), week=np.repeat(np.arange(80), 10))
+    oos = dict(_partial_series(800, 2, 0.1), week=np.repeat(np.arange(80), 10))
+    row = ATTR.attrib_row(is_, oos, 100, rng_from_seed(13), count=50, margin=50)
+    assert abs(row["coef_is_alone"] - 0.3) < 0.05 and abs(row["coef_is_with_long"] - 0.3) < 0.05
+    assert abs(row["coef_oos_alone"] - 0.1) < 0.05 and abs(row["coef_oos_with_long"] - 0.1) < 0.05
+
+
+def _partial_issued(length):
+    spy = SolveSpy()
+    r = ATTR.partial_test(_partial_series(length, 1, 0.1), _partial_series(length, 2, 0.1), 100, "b", 20, solve=spy)
+    return spy.issued, 2 * sum(k.startswith("b_slope") for k in r) // 2  # 傾きはどちらの期間も同じ 2 つの回帰から作る
+
+
+def test_partial_test_issues_the_two_fits_only_once():
+    issued, periods = _partial_issued(300)
+    assert periods == 2 and issued == len(ATTR.OTHERS)
+
+
+def test_partial_test_issued_fits_do_not_grow_with_input_length():
+    assert _partial_issued(300)[0] == _partial_issued(1200)[0]
+
+
 def test_gain_interval_widens_when_weeks_disagree():
     rng = rng_from_seed(5)
     y = np.full(100, 1.0)
@@ -411,6 +502,16 @@ def test_gain_interval_widens_when_weeks_disagree():
     base = np.full(100, 1.25)  # 外れはどの週も 0.25
     lo, hi = B.gain_interval(y, base, pred, week, 500, rng)
     assert lo < hi
+
+
+def test_series_uses_the_given_hour_factors(monkeypatch):
+    dates = pd.date_range("2020-01-01", periods=2000, freq="h")
+    close = 100.0 + 0.001 * np.arange(2000)
+    d = pd.DataFrame({"date": dates, "open": close, "high": close + 1, "low": close - 1, "close": close})
+    monkeypatch.setattr(RUN, "load", lambda path, tf: d)
+    own = RUN.series("", "1h", "2020-01-10", "2020-03-01", ns=(20,))
+    doubled = RUN.series("", "1h", "2020-01-10", "2020-03-01", ns=(20,), hours=own["hours"] * 2)
+    assert np.allclose(doubled["w"][300:], own["w"][300:] / 2)
 
 
 def test_series_builds_long_means_from_past_bars_only(monkeypatch):

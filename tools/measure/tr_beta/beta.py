@@ -15,11 +15,6 @@ def range_pct(d: pd.DataFrame, true_range) -> np.ndarray:
     return true_range(d) / d.close.shift(1).to_numpy() * 100
 
 
-def remove_hours(x: np.ndarray, hour: np.ndarray, first: int, factor) -> np.ndarray:
-    """x を時間帯の係数で割る。係数は評価する足（first 以降）だけで決める。"""
-    return x / factor(x[first:], hour[first:])[hour]
-
-
 def rolling_mean(x: np.ndarray, h: int) -> np.ndarray:
     """直近 h 本の平均。"""
     return pd.Series(x).rolling(h).mean().to_numpy()
@@ -119,6 +114,24 @@ def predict_log_model(s: dict, n: int, terms, coef: np.ndarray) -> np.ndarray:
 def partial_slope(r: np.ndarray, e: np.ndarray, ok: np.ndarray) -> float:
     """偏回帰の傾き: 他の項を除いた r と e の回帰の傾き。r は circular_test の sign の位置に渡す。"""
     return float(np.sum(r[ok] * e[ok]) / np.sum(r[ok] ** 2))
+
+
+def exact_partial_test(r: np.ndarray, e: np.ndarray, margin: int, rfft=np.fft.rfft) -> tuple[float, float, float]:
+    """偏回帰の傾きの円環ずらしを、[margin, N − margin] の全幅で数える（実測・帰無の平均・両側 p）。
+
+    r は固定し e をずらす。e の NaN と r の 0 は除く。分子・分母を畳み込みで全幅まとめて計算する。
+    rfft は計算量検定の注入点。
+    """
+    n = len(r)
+    finite = np.isfinite(e)
+    vals = np.where(finite, e, 0.0)
+    fr, fr2 = rfft(r), rfft(r * r)
+    top = np.fft.irfft(fr * np.conj(rfft(vals)), n)
+    bottom = np.fft.irfft(fr2 * np.conj(rfft(finite.astype(float))), n)
+    slopes = top / bottom
+    null = slopes[margin:n - margin + 1]
+    center, p = two_sided_p(slopes[0], null)
+    return float(slopes[0]), center, p
 
 
 def gain_interval(y: np.ndarray, base: np.ndarray, pred: np.ndarray, week: np.ndarray, count: int, rng,
