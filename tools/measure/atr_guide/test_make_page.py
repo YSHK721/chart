@@ -257,6 +257,44 @@ def test_win_counts_count_both_directions():
     assert P.win_counts(t, ["A", "B"], "W25-O25") == dict(left=4, right=0, all=4)
 
 
+def test_win_counts_do_not_count_a_negative_point_whose_interval_includes_zero():
+    t = {("A", h, "W25-O25"): (-1.0, -2.0, 1.0) for h in P.HORIZONS}
+    assert P.win_counts(t, ["A"], "W25-O25") == dict(left=0, right=0, all=2)
+
+
+def test_fig_counts_name_each_row_with_its_own_line():
+    t = _table_for_figures()
+    for l in ("A", "B"):
+        for h in P.HORIZONS:
+            for n in P.SKILL_NS:
+                t[l, h, f"S{n}"] = (-5.0, -9.0, -1.0)  # 単純平均の行だけ 0 / 2 にする
+    svg = P.fig_counts(t, ["A", "B"])
+    row = svg[svg.index(">単純平均<"):svg.index(">ワイルダーの平滑<")]
+    assert row.count("0 / 2") == 6
+
+
+def test_fig_wins_name_each_row_with_its_own_difference():
+    t = _table_for_figures()
+    for l in ("A", "B"):
+        for h in P.HORIZONS:
+            for key in ("W14-S14", "W25-S25", "W100-S100", "W14-O14", "W25-O25"):
+                t[l, h, key] = (0.0, -1.0, 1.0)
+            t[l, h, "W100-O100"] = (5.0, 1.0, 9.0)
+    svg = P.fig_wins(t, ["A", "B"])
+    row = svg[svg.index(">btlm_trail の計算と n = 100<"):]
+    assert row.count('class="cell-w"') == 4 and svg.count('class="cell-w"') == 4
+
+
+def test_skill_numbers_read_the_named_differences():
+    t = _table_for_figures()
+    t["A", "one", "W14-O14"] = (5.0, 1.0, 9.0)
+    t["A", "one", "W25-O25"] = (0.0, -1.0, 1.0)
+    t["A", "one", "W25"] = (7.44, 1.0, 9.0)
+    v = P.skill_numbers(t, ["A", "B"])
+    assert v["W25_WINS"] == "3" and v["W100_WINS"] == "0" and v["O100_WINS"] == "3"
+    assert v["O_ONE"] == "5" and v["ALL_ONE"] == "6" and v["EX_ONE_W"] == "7.4"
+
+
 def test_fig_counts_shade_by_the_share_of_series():
     t = _table_for_figures()
     svg = P.fig_counts(t, ["A", "B"])
@@ -267,7 +305,7 @@ def test_fig_counts_shade_by_the_share_of_series():
 
 def test_fig_wins_draws_one_cell_for_each_pair():
     svg = P.fig_wins(_table_for_figures(), ["A", "B"])
-    assert svg.count("<rect") == 5 * 4
+    assert svg.count("<rect") == 6 * 4
     assert svg.count('class="cell-o"') == 3
 
 
@@ -283,6 +321,14 @@ def test_fig_curves_marks_the_smallest_wilder_of_each_panel():
     svg = P.fig_curves(_grid(), ["A"])
     assert svg.count('class="m-real"') == 2 and ">25 本<" in svg and ">50 本<" in svg
     assert svg.count('class="l-w"') == 2 and svg.count('class="l-o"') == 2
+
+
+def test_fig_curves_mark_the_wilder_line_and_not_the_others():
+    grid = _grid()
+    for n in P.GRID_NS:
+        one, twenty = grid["A"][f"{P.OLS_NAME} {n}"]
+        grid["A"][f"{P.OLS_NAME} {n}"] = (one + abs(n - 100) * 0.1 - abs(n - 25) * 0.01, twenty)
+    assert ">25 本<" in P.fig_curves(grid, ["A"]) and ">100 本<" not in P.fig_curves(grid, ["A"])
 
 
 def test_best_rows_read_the_grid():

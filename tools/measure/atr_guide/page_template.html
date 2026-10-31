@@ -221,7 +221,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
 <section aria-labelledby="h-btlm">
   <h2 id="h-btlm">真の値幅に btlm_trail を使えるか</h2>
   <div class="key">
-    <span><b>結論：</b>真の値幅の見積もりに btlm_trail の計算を使う理由は見つかりませんでした。下の表のどの系列・見積もり先でも、点として外れが最小なのはワイルダーの平滑で、btlm_trail の計算は最小になりません。線としては次の 1 本の見積もりの力がありますが、25 本では多くの組でワイルダーの平滑に劣ります。傾き β も見積もりを実用的には良くせず、わずかな改善も btlm_trail の改善とは説明できません。</span>
+    <span><b>結論：</b>真の値幅の見積もりに btlm_trail の計算を使う理由は見つかりませんでした。下の表のどの系列・見積もり先でも、点として外れが最小なのはワイルダーの平滑で、btlm_trail の計算は最小になりません。線としては次の 1 本でほとんどの系列に見積もりの力がありますが、14・25 本では多くの組でワイルダーの平滑に劣ります。傾き β も見積もりを実用的には良くせず、わずかな改善も btlm_trail の改善とは説明できません。</span>
   </div>
   <h3 class="h3">btlm_trail の計算</h3>
   <p>btlm_trail は、足ごとに直近 n 本へ直線を当てはめ（最小二乗法）、その右端の値を線にします。直線の傾きが <b>β</b> です。平均の値は n 本の真ん中あたりの位置を表しますが、直線の右端は今の位置を表すので、遅れが減ります。</p>
@@ -234,7 +234,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
     <thead><tr><th>方法（MT5 1 時間足）</th><th>遅れ（前後 41 本）</th><th>遅れ（前後 21 本）</th><th>動き</th><th>次の 1 本の外れ</th><th>次の 20 本の平均の外れ</th></tr></thead>
     <tbody>{{TREND_ROWS}}</tbody>
   </table></div>
-  <p class="cap">遅れは、前後の平均と線の相関が最も高くなるずれで、比べる平均の本数で変わる目安の値です。負は線が先に動くことを表します。動きは線の 1 本ごとの変化の平均 ÷ 線の平均、外れは外れの平均 ÷ 値幅の平均です。</p>
+  <p class="cap">値幅 ÷ 前の足の終値で測っています。遅れは、前後の平均と線の相関が最も高くなるずれで、比べる平均の本数で変わる目安の値です。負は線が先に動くことを表します。動きは線の 1 本ごとの変化の平均 ÷ 線の平均、外れは外れの平均 ÷ 値幅の平均です。</p>
   <figure class="figure"><figcaption>荒れた時期の 2 本の線（MT5 日足）</figcaption>{{FIG_TR_LINES}}
     <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 14</span><span><i style="background:var(--acc);height:3px"></i>btlm_trail の計算 25</span></div></figure>
   <p>同じ 25 本なら遅れは減りますが、動きは {{MOVE_RATIO}} 倍です。真の値幅は 1 本ごとに大きくぶれるので、最新の足への強い反応はそのままぶれになります。動きの近い btlm_trail の計算 100 と単純平均 25 を比べると、遅れの優位もありません。</p>
@@ -245,12 +245,12 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   </table></div>
   <figure class="figure"><figcaption>本数ごとの外れ（低いほど良い）</figcaption>{{FIG_CURVES}}
     <div class="legend"><span><i style="background:var(--amber);height:3px"></i>単純平均</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑</span><span><i style="background:var(--violet);height:3px"></i>btlm_trail の計算</span><span><i style="background:var(--blue);border-radius:50%"></i>ワイルダーの平滑の最小</span></div>
-    <p class="cap">横軸は本数です。枠ごとに縦軸の範囲が違います。短い本数で大きく外れる線は枠の上で切っています。</p></figure>
+    <p class="cap">横軸は本数です。枠ごとに縦軸の範囲が違います。大きく外れる部分は枠の上で切っています。</p></figure>
   <p>btlm_trail の計算が最小になった回数は、8 回中 {{OLS_WINS}} 回です。ワイルダーの平滑の中で最適な本数は見積もり先で変わり、次の 1 本は 3〜6 本、次の 20 本の平均は 20〜50 本です。これは点としての比較で、差が 0 と区別できるかはここでは調べていません。</p>
   <h3 class="h3">線そのものに見積もりの力はあるか</h3>
   <div class="key">
-    <span><b>この節の答え：</b>「btlm_trail だけ有意性が無い」とは言えません。ただし、btlm_trail の計算は 3 つの線の中で見積もりの力が弱い側です。</span>
-    <span><b>次の 1 本：</b>3 つの線とも、毎回同じ値で見積もるより当たります。例えば MT5 1 時間足（25 本）で、外れはワイルダーの平滑で {{EX_ONE_W}}%ポイント、btlm_trail の計算で {{EX_ONE_O}}%ポイント小さくなります。</span>
+    <span><b>この節の答え：</b>「btlm_trail だけ有意性が無い」とは言えません。ただし、ワイルダーの平滑と同じ本数で比べると、14・25 本では弱く、100 本では差が小さくなります。各線の最も良い本数どうしでは、8 組すべてで btlm_trail の計算の外れが大きくなります。</span>
+    <span><b>次の 1 本：</b>単純平均とワイルダーの平滑は、毎回同じ値で見積もるより当たります。btlm_trail の計算も {{ALL_ONE}} ます中 {{O_ONE}} ますで同じで、25・100 本の MT5 日足だけ 0 と区別できません。例えば MT5 1 時間足（25 本）で、外れはワイルダーの平滑で {{EX_ONE_W}}%ポイント、btlm_trail の計算で {{EX_ONE_O}}%ポイント小さくなります。</span>
     <span><b>次の 20 本の平均：</b>当たるかどうかは系列で分かれます。btlm_trail の計算は 14 本では 1 系列も届きません。</span>
   </div>
   <p>実用的な改善が無いと判定したのは、この後で調べる傾き β です。線としての btlm_trail の計算は別に測ります。</p>
@@ -264,7 +264,7 @@ svg .m-is { fill: var(--panel); stroke: var(--muted); stroke-width: 1.8; }
   <figure class="figure"><figcaption>ワイルダーの平滑 − btlm_trail の計算の、外れの差（%ポイント）</figcaption>{{FIG_DIFF}}
     <div class="legend"><span><i style="background:var(--soft)"></i>ワイルダーの平滑が上回る</span><span><i style="background:var(--amber);opacity:.35"></i>btlm_trail の計算が上回る</span><span><i style="border:1px solid var(--rule)"></i>0 と区別できない</span></div>
     <p class="cap">正の値はワイルダーの平滑のほうが外れが小さいことを表します。</p></figure>
-  <p>n = 25 では 8 組中 {{W25_WINS}} 組でワイルダーの平滑が上回ります。n = 100 ではワイルダーの平滑が {{W100_WINS}} 組、btlm_trail の計算が {{O100_WINS}} 組で上回り、残りは 0 と区別できません。線どうしの優劣は、本数と見積もり先で変わります。</p>
+  <p>n = 14 では 8 組中 {{W14_WINS}} 組、n = 25 では 8 組中 {{W25_WINS}} 組でワイルダーの平滑が上回ります。n = 100 ではワイルダーの平滑が {{W100_WINS}} 組、btlm_trail の計算が {{O100_WINS}} 組で上回り、残りは 0 と区別できません。線どうしの優劣は、本数と見積もり先で変わります。</p>
   <figure class="figure"><figcaption>ワイルダーの平滑と他の線の勝敗（1 ます＝ 1 組・8 組）</figcaption>{{FIG_WINS}}
     <div class="legend"><span><i style="background:var(--soft)"></i>ワイルダーの平滑が上回る</span><span><i style="background:var(--amber);opacity:.35"></i>相手の線が上回る</span><span><i style="border:1px solid var(--rule)"></i>0 と区別できない</span></div></figure>
   <p class="cap">この比較は探索で、事前登録も多重比較の補正もしていません。見積もりの係数と一定の値も同じ期間で決めています。</p>

@@ -500,7 +500,7 @@ SKILL_SEED = 20261031
 HORIZONS = ("one", "twenty")
 # 公開する比較の宣言（"S14" は一定の値との比較、"W25-O25" は O25 から W25 への改善）。
 SKILL_KEYS = tuple(f"{k}{n}" for n in SKILL_NS for k, _ in SKILL_AVG) + \
-    tuple(f"W{n}-O{n}" for n in (25, 100)) + tuple(f"W{n}-S{n}" for n in SKILL_NS)
+    tuple(f"W{n}-O{n}" for n in SKILL_NS) + tuple(f"W{n}-S{n}" for n in SKILL_NS)
 
 
 def series_frames():
@@ -643,10 +643,19 @@ def win_counts(table: dict, labels, key: str) -> dict:
     return dict(left=sum(positive(x) for x in v), right=sum(x[2] < 0 for x in v), all=len(v))
 
 
+def skill_numbers(table: dict, labels) -> dict:
+    """本文に入れる数（差し込み名 → 文字）。"""
+    counts = skill_counts(table, labels)
+    wo = {n: win_counts(table, labels, f"W{n}-O{n}") for n in SKILL_NS}
+    return {"W14_WINS": str(wo[14]["left"]), "W25_WINS": str(wo[25]["left"]), "W100_WINS": str(wo[100]["left"]), "O100_WINS": str(wo[100]["right"]),
+            "O_ONE": str(sum(counts["one", "O", n] for n in SKILL_NS)), "ALL_ONE": str(len(SKILL_NS) * len(labels)),
+            "EX_ONE_W": f"{table[labels[0], 'one', 'W25'][0]:.1f}", "EX_ONE_O": f"{table[labels[0], 'one', 'O25'][0]:.1f}"}
+
+
 def fig_wins(table: dict, labels):
     """線どうしの勝敗を、組ごとのます目で並べる。"""
     rows = (("単純平均と n = 14", "W14-S14"), ("単純平均と n = 25", "W25-S25"), ("単純平均と n = 100", "W100-S100"),
-            ("btlm_trail の計算と n = 25", "W25-O25"), ("btlm_trail の計算と n = 100", "W100-O100"))
+            ("btlm_trail の計算と n = 14", "W14-O14"), ("btlm_trail の計算と n = 25", "W25-O25"), ("btlm_trail の計算と n = 100", "W100-O100"))
     X0, W, H, y0 = 190, 50, 28, 10
     parts = []
     for r, (name, key) in enumerate(rows):
@@ -656,7 +665,7 @@ def fig_wins(table: dict, labels):
         marks = ["cell-w"] * c["left"] + ["cell-n"] * (c["all"] - c["left"] - c["right"]) + ["cell-o"] * c["right"]
         for j, cls in enumerate(marks):
             parts.append(f'<rect x="{X0 + W * j + 2}" y="{y + 2}" width="{W - 4}" height="{H - 4}" rx="3" class="{cls}"/>')
-    return f'<svg viewBox="0 0 640 {y0 + H * 5 + 20}" role="img" aria-label="ワイルダーの平滑と他の線の勝敗。本数が短いほどワイルダーの平滑が上回る組が多い">' + "".join(parts) + "</svg>"
+    return f'<svg viewBox="0 0 640 {y0 + H * len(rows) + 20}" role="img" aria-label="ワイルダーの平滑と他の線の勝敗。本数が短いほどワイルダーの平滑が上回る組が多い">' + "".join(parts) + "</svg>"
 
 
 def fig_curves(grid: dict, labels):
@@ -914,7 +923,7 @@ def main(out_path: str):
         f'<td class="n">{b[2]:.1f}%</td><td class="n">{b[3]:.1f}%</td></tr>'
         for a, b in zip(sr["1h"], sr["1D"]))
     fit_svg, fit = fig_ols_fit()
-    trend = trend_rows(trs["1h"])
+    trend = trend_rows(frames[0][3])
     trend_tbl = "".join(
         f'<tr><td>{name}</td><td class="n">{lag[0]} 本</td><td class="n">{lag[1]} 本</td><td class="n">{mv:.2f}%</td><td class="n">{e1:.1f}%</td><td class="n">{e20:.1f}%</td></tr>'
         for name, lag, mv, e1, e20 in trend)
@@ -977,9 +986,8 @@ def main(out_path: str):
             .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_ROWS}}", best_tbl).replace("{{OLS_WINS}}", str(ols_wins(best))).replace("{{MOVE_RATIO}}", f"{move_ratio:.1f}")
             .replace("{{FIG_ATTRIB}}", fig_attrib(attrib))
             .replace("{{FIG_SKILL}}", fig_skill(skill, labels)).replace("{{FIG_DIFF}}", fig_diff(skill, labels))
-            .replace("{{W25_WINS}}", str(win_counts(skill, labels, "W25-O25")["left"])).replace("{{W100_WINS}}", str(win_counts(skill, labels, "W100-O100")["left"])).replace("{{O100_WINS}}", str(win_counts(skill, labels, "W100-O100")["right"]))
             .replace("{{FIG_COUNTS}}", fig_counts(skill, labels)).replace("{{FIG_WINS}}", fig_wins(skill, labels)).replace("{{FIG_CURVES}}", fig_curves(grid, labels))
-            .replace("{{EX_ONE_W}}", f"{skill[labels[0], 'one', 'W25'][0]:.1f}").replace("{{EX_ONE_O}}", f"{skill[labels[0], 'one', 'O25'][0]:.1f}")
+            
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
             .replace("{{SMALL_LIST}}", "〜".join(f"{abs(np.exp(r['d_oos']) - 1) * 100:.0f}" for r in passed))
@@ -994,7 +1002,7 @@ def main(out_path: str):
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
-    for key, value in attrib_values(attrib).items():
+    for key, value in {**attrib_values(attrib), **skill_numbers(skill, labels)}.items():
         page = page.replace("{{" + key + "}}", value)
     Path(out_path).write_text(inject_toc(page), encoding="utf-8")
     print("wrote", out_path, len(page), "| 1h 比", {k: round(v, 2) for k, v in sc.items()},
