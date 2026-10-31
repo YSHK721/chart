@@ -31,6 +31,13 @@ def test_smooth_rows_returns_one_row_per_method_and_n():
     assert all(r[2] > 0 and r[3] > 0 for r in rows)
 
 
+def test_bars_to_catch_up_follows_the_weights():
+    assert P.bars_to_catch_up(lambda t: P.sma(t, 14), 0.5) == 7
+    n = 14
+    want = int(np.ceil(np.log(0.1) / np.log(1 - 1 / n)))  # ワイルダーの平滑は 1 − (1 − 1/n)^k まで追いつく
+    assert P.bars_to_catch_up(lambda t: P.wilder(t, n), 0.9) == want
+
+
 class AvgSpy:
     """平均の計算の発行回数を数える Test Spy（注入点 smoothers を通す）。"""
 
@@ -55,3 +62,18 @@ def test_every_issued_average_reaches_the_output():
 
 def test_issued_averages_do_not_grow_with_input_length():
     assert _issued_and_used(300)[0] == _issued_and_used(1200)[0]
+
+
+def _follow_issued_and_used(length):
+    spy = AvgSpy()
+    rows = P.follow_rows([_tr(length)], methods=(("単純平均", lambda t: spy(t, 14)),))
+    return spy.issued, len(rows)
+
+
+def test_follow_rows_issues_only_what_reaches_the_output():
+    issued, used = _follow_issued_and_used(300)
+    assert issued - 3 * used == 0  # 1 行に 相関 1 回＋追いつく本数 2 回
+
+
+def test_follow_rows_issued_does_not_grow_with_input_length():
+    assert _follow_issued_and_used(300)[0] == _follow_issued_and_used(1200)[0]

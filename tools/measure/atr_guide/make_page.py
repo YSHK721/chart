@@ -391,6 +391,28 @@ def smooth_rows(tr: np.ndarray, ns=(14, 20), smoothers=SMOOTHERS, start: int = 1
     return rows
 
 
+FOLLOW_METHODS = (("単純平均 14", lambda t: sma(t, 14)), ("ワイルダーの平滑 14", lambda t: wilder(t, 14)),
+                  ("単純平均 27", lambda t: sma(t, 27)))
+
+
+def bars_to_catch_up(avg, share: float, lead: int = 200, after: int = 200) -> int:
+    """値幅の水準が 100 から 200 へ変わったあと、変化の share まで追いつくのに要る本数。"""
+    a = avg(np.r_[np.full(lead, 100.0), np.full(after, 200.0)])[lead:]
+    return int(np.argmax(a >= 100.0 + 100.0 * share)) + 1
+
+
+def follow_rows(trs, methods=FOLLOW_METHODS, start: int = 100):
+    """方法ごとに、半分・9 割まで追いつく本数と、系列ごとの直近 1 本の真の値幅との相関を返す。
+
+    methods: 平均の計算（観測の境界・計算量検定の注入点）。
+    """
+    rows = []
+    for name, avg in methods:
+        corr = [np.corrcoef(a[start:], tr[start:])[0, 1] for tr in trs for a in [avg(tr)]]
+        rows.append((name, bars_to_catch_up(avg, 0.5), bars_to_catch_up(avg, 0.9), corr))
+    return rows
+
+
 PERIODS_N = (3, 5, 10, 14, 20, 40, 100)
 
 
@@ -441,7 +463,12 @@ def main(out_path: str):
             f'<td class="n{" best" if e == min(errs) else ""}">{e:.1f}%</td>' for e in errs) + "</tr>"
         for label, errs in prow)
     exit_svg, ex = fig_exit()
-    sr = {tf: smooth_rows(true_range(load(MT5, tf))) for tf in ("1h", "1D")}
+    trs = {tf: true_range(load(MT5, tf)) for tf in ("1h", "1D")}
+    sr = {tf: smooth_rows(tr) for tf, tr in trs.items()}
+    follow_tbl = "".join(
+        f'<tr><td>{name}</td><td class="n">{half} 本</td><td class="n">{most} 本</td>'
+        f'<td class="n">{c[0]:.3f}</td><td class="n">{c[1]:.3f}</td></tr>'
+        for name, half, most, c in follow_rows([trs["1h"], trs["1D"]]))
     smooth_tbl = "".join(
         f'<tr><td>{a[0]} {a[1]}</td><td class="n">{a[2]:.1f}%</td><td class="n">{a[3]:.1f}%</td>'
         f'<td class="n">{b[2]:.1f}%</td><td class="n">{b[3]:.1f}%</td></tr>'
@@ -481,7 +508,7 @@ def main(out_path: str):
             .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
             .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
-            .replace("{{FIG_IMPULSE}}", fig_impulse()).replace("{{FIG_EXIT}}", exit_svg).replace("{{SMOOTH_ROWS}}", smooth_tbl)
+            .replace("{{FIG_IMPULSE}}", fig_impulse()).replace("{{FIG_EXIT}}", exit_svg).replace("{{SMOOTH_ROWS}}", smooth_tbl).replace("{{FOLLOW_ROWS}}", follow_tbl)
             .replace("{{EX_DATE}}", ex["date"]).replace("{{EX_TR}}", f"{ex['tr']:,.0f}")
             .replace("{{EX_OUT_DATE}}", ex["out_date"]).replace("{{EX_OUT_TR}}", f"{ex['out_tr']:,.0f}")
             .replace("{{EX_A0}}", f"{ex['a0']:,.0f}").replace("{{EX_A1}}", f"{ex['a1']:,.0f}").replace("{{EX_A_PCT}}", f"{-ex['a_pct']:.1f}")

@@ -167,7 +167,12 @@ svg .m-real { fill: var(--blue); }
       <tr><td>大きな足が抜けるとき</td><td>n 本後に一度に下がる</td><td>一度には下がらず、少しずつ下がる</td></tr>
     </tbody>
   </table></div>
-  <p>足の平均の古さが 2 倍近いので、ワイルダーの平滑は同じ n の単純平均より動きへの追いつきが遅くなります。古さがそろうのは単純平均 2n − 1 本です（平滑 14 は単純平均 27、平滑 20 は単純平均 39）。</p>
+  <p>足の平均の古さがそろうのは単純平均 2n − 1 本です（平滑 14 は単純平均 27、平滑 20 は単純平均 39）。直近の真の値幅への追随は、何で測るかで結果が変わります。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>方法</th><th>水準の変化に半分追いつく本数</th><th>9 割追いつく本数</th><th>直近 1 本の真の値幅との相関（1 時間足）</th><th>同（日足）</th></tr></thead>
+    <tbody>{{FOLLOW_ROWS}}</tbody>
+  </table></div>
+  <p>追いつく本数は、値幅の水準が 100 から 200 へ変わったままになる場合の計算です。相関は MT5 の実測で、1 に近いほど ATR が直近 1 本の真の値幅に沿って動いています。ワイルダーの平滑は、直近 1 本との相関がいちばん高く、直近の真の値幅に追随します。一方で古い足が残るので、水準が変わったままの場面で 9 割追いつくのは最も遅くなります。相関の差は小さく、有意性の検定はしていません。</p>
   <figure class="figure"><figcaption>実例：{{EX_DATE}} の前後（MT5 日足・n = 20）</figcaption>{{FIG_EXIT}}
     <div class="legend"><span><i style="background:var(--soft)"></i>真の値幅</span><span><i style="background:var(--acc);height:3px"></i>単純平均 20</span><span><i style="background:var(--blue);height:3px"></i>ワイルダーの平滑 20</span></div>
     <p class="cap">{{EX_DATE}} の値幅は {{EX_TR}} で、大きくありません。それでも {{EX_OUT_DATE}} の値幅 {{EX_OUT_TR}} が抜けたので、単純平均 20 は {{EX_A0}} → {{EX_A1}} と {{EX_A_PCT}}% 下がりました。市場が急に落ち着いたわけではなく、計算上の下落です。ワイルダーの平滑 20 は {{EX_W0}} → {{EX_W1}} と {{EX_W_PCT}}% の下落でした。</p></figure>
