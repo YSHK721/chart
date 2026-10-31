@@ -712,7 +712,7 @@ def main(out_path: str):
             .replace("{{FIT_END}}", f"{fit['end']:,.0f}").replace("{{FIT_MEAN}}", f"{fit['mean']:,.0f}").replace("{{FIT_BETA}}", f"{fit['beta']:+.1f}")
             .replace("{{W_SMA}}", f"{weights['sma']:.2f}").replace("{{W_OLS}}", f"{weights['ols']:.2f}")
             .replace("{{TREND_ROWS}}", trend_tbl).replace("{{BEST_COUNT}}", str(best))
-            .replace("{{FIG_ATTRIB}}", fig_attrib(attrib)).replace("{{CORR_50}}", f"{attr[50].corr:.2f}").replace("{{CORR_100}}", f"{attr[100].corr:.2f}")
+            .replace("{{FIG_ATTRIB}}", fig_attrib(attrib)).replace("{{CORR_50}}", f"{attr[50]['corr']:.2f}").replace("{{CORR_100}}", f"{attr[100]['corr']:.2f}")
             .replace("{{P_IS_50}}", f"{attr[50].p_is:.2f}").replace("{{P_IS_100}}", f"{attr[100].p_is:.2f}")
             .replace("{{FIG_HIT}}", fig_hit(beta)).replace("{{FIG_GAIN}}", fig_gain(beta)).replace("{{BETA_ROWS}}", beta_tbl)
             .replace("{{GAIN_LIST}}", "・".join(f"{r['gain']:.2f}" for r in passed))
