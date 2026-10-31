@@ -87,6 +87,25 @@ def relative_error(y: np.ndarray, pred: np.ndarray, ok: np.ndarray) -> float:
     return float(np.mean(np.abs(y[ok] - pred[ok])) / np.mean(y[ok]) * 100)
 
 
+def model_terms(s: dict, n: int) -> dict:
+    """§4 の見積もりの項（log の回帰の説明変数）。s は Y・W・長い平均 L・β の符号を持つ。"""
+    return {"w": np.log(s["w"]), "l": np.log(s[f"l{n}"]), "b": s[n]}
+
+
+def fit_log_model(s: dict, n: int, terms, ok: np.ndarray, solve=np.linalg.lstsq) -> np.ndarray:
+    """log Y = 定数 + Σ 係数 × 項 の最小二乗の係数。solve は計算量検定の注入点。"""
+    t = model_terms(s, n)
+    x = np.column_stack([np.ones(ok.sum()), *[t[k][ok] for k in terms]])
+    return solve(x, np.log(s["y"][ok]), rcond=None)[0]
+
+
+def predict_log_model(s: dict, n: int, terms, coef: np.ndarray) -> np.ndarray:
+    """fit_log_model の係数で Y を見積もる。"""
+    t = model_terms(s, n)
+    out = coef[0] + sum(c * t[k] for c, k in zip(coef[1:], terms))
+    return np.exp(out)
+
+
 def draw_shifts(n: int, count: int, margin: int, rng: np.random.Generator) -> np.ndarray:
     """円環ずらしの幅（[margin, n − margin] の一様乱数）。"""
     return rng.integers(margin, n - margin + 1, count)

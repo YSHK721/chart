@@ -35,6 +35,9 @@ def series(path: str, tf: str, start: str, end: str) -> dict:
         x = B.remove_hours(x, date.dt.hour.to_numpy(), first, hour_factor)
     out = B.measures(x, first, NS)
     out.update(w=wilder(x, 14)[first:], bars=len(x) - first)
+    for n in NS:
+        lo = max(first - n + 1, 0)
+        out[f"l{n}"] = B.past_mean(x[lo:], n)[first - lo:]
     return out
 
 

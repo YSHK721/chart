@@ -5,6 +5,7 @@ import pandas as pd
 from indigators.btlm_trail.src.core import rolling_ols_window_end, window_end_scalar
 from tools.measure.tr_beta import beta as B
 from tools.measure.tr_beta import run as RUN
+from tools.measure.tr_beta import run_attrib as ATTR
 
 
 def rng_from_seed(seed):
@@ -276,3 +277,61 @@ def test_issued_windows_do_not_grow_with_warm_up_length():
 
 def test_issued_means_do_not_grow_with_warm_up_length():
     assert _measured(warm=300)[2] == _measured(warm=3000)[2]
+
+
+def _model_series(length, seed):
+    rng = rng_from_seed(seed)
+    w = rng.uniform(0.5, 2.0, length)
+    l = rng.uniform(0.5, 2.0, length)
+    sign = rng.choice([-1.0, 1.0], length)
+    y = np.exp(0.1 + 0.5 * np.log(w) + 0.25 * np.log(l))  # 長い平均だけに情報がある
+    return {"y": y, "w": w, "l100": l, 100: sign}
+
+
+def test_fit_log_model_recovers_known_coefficients():
+    s = _model_series(300, 0)
+    coef = B.fit_log_model(s, 100, ("w", "l"), np.ones(300, bool))
+    assert np.allclose(coef, [0.1, 0.5, 0.25])
+    assert np.allclose(B.predict_log_model(s, 100, ("w", "l"), coef), s["y"])
+
+
+def test_compare_models_credits_the_long_average_when_only_it_has_information():
+    r = ATTR.compare_models(_model_series(400, 1), _model_series(400, 2), 100)
+    assert r["gain"]["w"] == 0.0
+    assert r["gain"]["long"] > 1.0
+    assert abs(r["gain"]["beta"]) < 0.5
+
+
+def test_compare_models_fits_coefficients_only_on_is():
+    is_ = _model_series(400, 1)
+    oos = _model_series(400, 2)
+    changed = dict(oos, y=oos["y"] * 3.0)
+    a = ATTR.compare_models(is_, oos, 100)["coef_long"]
+    b = ATTR.compare_models(is_, changed, 100)["coef_long"]
+    assert np.array_equal(a, b)
+
+
+class SolveSpy:
+    """最小二乗の発行回数を数える Test Spy（注入点 solve を通す）。"""
+
+    def __init__(self):
+        self.issued = 0
+
+    def __call__(self, x, y, rcond=None):
+        self.issued += 1
+        return np.linalg.lstsq(x, y, rcond=rcond)
+
+
+def _solves(length):
+    spy = SolveSpy()
+    r = ATTR.compare_models(_model_series(length, 1), _model_series(length, 2), 100, solve=spy)
+    return spy.issued, len(r["errs"])
+
+
+def test_every_issued_fit_reaches_an_error():
+    issued, used = _solves(300)
+    assert issued - used == 0
+
+
+def test_issued_fits_do_not_grow_with_input_length():
+    assert _solves(300)[0] == _solves(1200)[0]
