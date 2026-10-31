@@ -283,9 +283,12 @@ def break_stats():
     ex = tr - hl
     after = (d.date.diff().dt.total_seconds() / 60).to_numpy() > 60
     ok = np.isfinite(ex)
-    return dict(share_bars=after[ok].mean() * 100, share_gap=ex[ok & after].sum() / ex[ok].sum() * 100,
-                plain=ex[ok & ~after].mean() / hl[ok & ~after].mean() * 100,
-                brk=ex[ok & after].mean() / hl[ok & after].mean() * 100)
+    rows = []
+    for name, mask in (("取引が止まった後の足", ok & after), ("取引が続いている足", ok & ~after)):
+        rows.append(dict(name=name, bars=int(mask.sum()), share_bars=mask.sum() / ok.sum() * 100,
+                         total=ex[mask].sum(), share_gap=ex[mask].sum() / ex[ok].sum() * 100,
+                         mean=ex[mask].mean(), pct=ex[mask].mean() / hl[mask].mean() * 100))
+    return rows
 
 
 PERIODS_N = (3, 5, 10, 14, 20, 40, 100)
@@ -343,6 +346,11 @@ def main(out_path: str):
         f'<tr><td>{t} 日</td><td class="n">{r:.2f} 倍</td><td class="n">{m:.2f} 倍</td><td class="n">{p80:.2f} 倍</td><td class="n">{p95:.2f} 倍</td></tr>'
         for t, r, m, p80, p95 in hrows)
     h3 = {t: (r, p95) for t, r, _, _, p95 in hrows}
+    brk_rows = "".join(
+        f'<tr><td>{r["name"]}</td><td class="n">{r["bars"]:,} 本（{r["share_bars"]:.1f}%）</td>'
+        f'<td class="n">{r["total"]:,.0f} ポイント（{r["share_gap"]:.0f}%）</td>'
+        f'<td class="n">{r["mean"]:.2f} ポイント</td><td class="n">+{r["pct"]:.1f}%</td></tr>'
+        for r in bs)
     gap_rows = "".join(
         f'<tr><td>{name}</td><td class="n">+{(gs[tf][0] - 1) * 100:.1f}%</td><td class="n">{gs[tf][1]:.1f}%</td></tr>'
         for tf, name in (("15m", "15 分足"), ("1h", "1 時間足"), ("1D", "日足")))
@@ -366,8 +374,8 @@ def main(out_path: str):
             .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
             .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
-            .replace("{{BRK_BARS}}", f"{bs['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs['share_gap']:.0f}")
-            .replace("{{BRK_PLAIN}}", f"{bs['plain']:.1f}").replace("{{BRK_AFTER}}", f"{bs['brk']:.1f}")
+            .replace("{{BRK_ROWS}}", brk_rows)
+            .replace("{{BRK_BARS}}", f"{bs[0]['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs[0]['share_gap']:.0f}")
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
             .replace("{{SC5}}", f"{sc[5]:.1f}").replace("{{SC20}}", f"{sc[20]:.1f}").replace("{{SC1}}", f"{sc[1]:.2f}"))
