@@ -291,6 +291,15 @@ def break_stats():
     return rows
 
 
+def atr20_diff():
+    """1 時間足で、ATR20 が高値安値の 20 本平均より何 % 大きいか（中央値・上位 1%。MT5）。"""
+    d = load(MT5, "1h")
+    tr = pd.Series(true_range(d))
+    hl = (d.high - d.low).reset_index(drop=True)
+    r = ((tr.rolling(20).mean() / hl.rolling(20).mean() - 1) * 100).dropna()
+    return r.median(), r.quantile(0.99)
+
+
 PERIODS_N = (3, 5, 10, 14, 20, 40, 100)
 
 
@@ -341,6 +350,7 @@ def main(out_path: str):
             f'<td class="n{" best" if e == min(errs) else ""}">{e:.1f}%</td>' for e in errs) + "</tr>"
         for label, errs in prow)
     bs = break_stats()
+    a20_med, a20_p99 = atr20_diff()
     hrows, herr, hq, hstart = hold_stats()
     hold_rows = "".join(
         f'<tr><td>{t} 日</td><td class="n">{r:.2f} 倍</td><td class="n">{m:.2f} 倍</td><td class="n">{p80:.2f} 倍</td><td class="n">{p95:.2f} 倍</td></tr>'
@@ -374,7 +384,8 @@ def main(out_path: str):
             .replace("{{A3_LO}}", f"{hq[0]:.2f}").replace("{{A3_HI}}", f"{hq[1]:.2f}")
             .replace("{{A3_CORR}}", f"{herr['a3'][0]:.3f}").replace("{{A20_CORR}}", f"{herr['a20'][0]:.3f}")
             .replace("{{A3_ERR}}", f"{herr['a3'][1]:,.0f}").replace("{{A20_ERR}}", f"{herr['a20'][1]:,.0f}")
-            .replace("{{BRK_ROWS}}", brk_rows)
+            .replace("{{BRK_ROWS}}", brk_rows).replace("{{BRK_PLAIN}}", f"{bs[1]['pct']:.1f}")
+            .replace("{{A20_MED}}", f"{a20_med:.1f}").replace("{{A20_P99}}", f"{a20_p99:.1f}")
             .replace("{{BRK_BARS}}", f"{bs[0]['share_bars']:.1f}").replace("{{BRK_GAP}}", f"{bs[0]['share_gap']:.0f}")
             .replace("{{PERIOD_HEAD}}", period_head).replace("{{PERIOD_ROWS}}", period_rows)
             .replace("{{TOP_HOURS}}", top_hours).replace("{{LOW_HOURS}}", low_hours)
