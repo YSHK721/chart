@@ -337,6 +337,63 @@ def test_best_rows_read_the_grid():
     assert r["ols_one"] == f"{P.OLS_NAME} 25" and r["ols_err_twenty"] == 40.0
 
 
+def _stop_compare():
+    rows = []
+    for period in ("IS", "OOS"):
+        for tf, t, _ in P.HOLD_ROWS:
+            for i, (key, _, _) in enumerate(P.STOP_SIGMAS):
+                rows.append(dict(period=period, tf=tf, t=t, scale=key, distance_point=5.0 + i, distance_lo=1.0, distance_hi=9.0 + i,
+                                 distance_pass=i != 2, verdict="ATR が良い" if i else "差があるとは言えない"))
+    return pd.DataFrame(rows)
+
+
+def _stop_post():
+    rows = []
+    for tf, t, _ in P.HOLD_ROWS:
+        for name, mean, gap in (("W14", 2.0, 1.0), ("s20", 2.2, 0.5), ("s50", 2.4, 1.5), ("s100", 2.1, 3.0), ("fixed", 1.9, 6.0)):
+            rows.append(dict(tf=tf, t=t, scale=name, mean=mean, geometric=mean * 0.9 if name != "W14" else 2.0, harmonic=2.0, gap=gap))
+    return pd.DataFrame(rows)
+
+
+def test_fig_stop_distance_draws_oos_rows_and_hollows_the_failed_ones():
+    svg = P.fig_stop_distance(_stop_compare())
+    assert svg.count('class="whisker') == 12
+    assert svg.count('class="m-is"') == 4  # σ100 の 4 組が IS で通過しなかった想定
+
+
+def test_fig_stop_hits_show_w14_and_s100_values():
+    rows = []
+    for tf, t, _ in P.HOLD_ROWS:
+        for scale, hit in (("W14", 9.1), ("s100", 13.5), ("s20", 99.0)):
+            rows.append(dict(period="OOS", survival=0.9, tf=tf, t=t, scale=scale, hit=hit))
+            rows.append(dict(period="IS", survival=0.9, tf=tf, t=t, scale=scale, hit=77.0))
+    svg = P.fig_stop_hits(pd.DataFrame(rows))
+    assert svg.count(">9.1<") == 4 and svg.count(">13.5<") == 4
+    assert ">99.0<" not in svg and ">77.0<" not in svg
+
+
+def test_fig_stop_tiers_draw_one_panel_per_hold():
+    rows = []
+    for tf, t, _ in P.HOLD_ROWS:
+        for scale in ("W14", "s100"):
+            rows.append(dict(period="OOS", tf=tf, t=t, scale=scale, tier1=20.0, tier2=15.0, tier3=10.0, tier4=8.0, tier5=6.0))
+    svg = P.fig_stop_tiers(pd.DataFrame(rows))
+    assert svg.count('class="panel"') == 4 and svg.count("<path") == 8
+
+
+def test_stop_numbers_count_oos_verdicts_and_span_each_summary():
+    v = P.stop_numbers(_stop_compare(), _stop_post())
+    assert v["STOP_ATR"] == "8" and v["STOP_NONE"] == "4" and v["STOP_SIGMA"] == "0" and v["STOP_ALL"] == "12"
+    assert v["SPAN_MEAN"] == "+5〜+20%" and v["SPAN_HARM"] == "+0〜+0%"
+    assert v["SPAN_GEO"] == "-5〜+8%"
+
+
+def test_stop_fixed_rows_read_the_named_scales():
+    rows = P.stop_fixed_rows(_stop_post())
+    assert rows.count("<tr>") == 4
+    assert '<td class="n">1.90%</td><td class="n">2.00%</td><td class="n">6.0</td><td class="n">1.0</td><td class="n">3.0</td>' in rows
+
+
 class AvgSpy:
     """平均の計算の発行回数を数える Test Spy（注入点 smoothers を通す）。"""
 
